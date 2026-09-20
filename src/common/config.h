@@ -598,6 +598,13 @@ struct Config
     int reach_direct_drive = 0;
     // Swing angle in degrees for the reach_direct_drive=1 test (about world-up). (default 45)
     int reach_dd_test_deg = 45;
+    // DEV write-watchpoint locator (default 0 = off). 1 = arm a hardware DR0 write-watchpoint on
+    // unit+0x214 (the derived aiming vector) and log the faulting instruction + x64 unwind chain
+    // for the first several writes -- the on-foot per-frame control updater is in that chain, and
+    // that is the function to hook for direct drive. HREK<->retail bodies don't map and retail has
+    // 253 desired_angles writers, so this runtime signal is the only way to pin the on-foot writer.
+    // Read-only diagnostic: it never changes aim; it disarms itself after capturing. Leave at 0.
+    int reach_dd_watchpoint = 0;
 
     // rendering. The game's own HUD reticle sits at head-center and is wrong
     // whenever hand aim is on; this one is the truth.

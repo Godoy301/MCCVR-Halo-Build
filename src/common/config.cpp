@@ -778,6 +778,7 @@ void ConfigLoad(const wchar_t* path)
         if (!strcmp(key, "reach_desired_aim_offset")) { g_config.reach_desired_aim_offset=(int)strtol(val,nullptr,0); continue; }
         if (!strcmp(key, "reach_direct_drive")) { g_config.reach_direct_drive=atoi(val); continue; }
         if (!strcmp(key, "reach_dd_test_deg")) { g_config.reach_dd_test_deg=atoi(val); continue; }
+        if (!strcmp(key, "reach_dd_watchpoint")) { g_config.reach_dd_watchpoint=atoi(val); continue; }
         if (!strcmp(key, "honest_reticle_onfoot")) { g_config.honest_reticle_onfoot=atoi(val)!=0; continue; }
         if (!strcmp(key, "halo4_helmet"))
         {
@@ -1523,6 +1524,11 @@ void ConfigSave()
     fprintf(f, "reach_direct_drive = %d\n\n", g_config.reach_direct_drive);
     fprintf(f, "# Swing angle in degrees for the reach_direct_drive=1 test. (default %d)\n", d.reach_dd_test_deg);
     fprintf(f, "reach_dd_test_deg = %d\n\n", g_config.reach_dd_test_deg);
+    fprintf(f, "# DEV locator: 1 = hardware write-watchpoint on unit+0x214; logs the on-foot control\n");
+    fprintf(f, "# updater's address + call chain so it can be hooked for direct drive. Read-only\n");
+    fprintf(f, "# (never changes aim), self-disarms after a few captures. Leave at 0. (default %d)\n",
+            d.reach_dd_watchpoint);
+    fprintf(f, "reach_dd_watchpoint = %d\n\n", g_config.reach_dd_watchpoint);
     fprintf(f, "# -------------------------------------------------------------------\n");
     fprintf(f, "#  WEAPON CALIBRATION\n");
     fprintf(f, "#  Personal trims applied over the active title's verified base pose.\n");

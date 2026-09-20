@@ -24933,6 +24933,262 @@ namespace
             }
         }
     }
+
+    // ========================================================================
+    // Reach direct-drive WRITE-WATCHPOINT locator (reach_dd_watchpoint=1, DEV, default off).
+    // ------------------------------------------------------------------------
+    // HREK<->retail function bodies do NOT map (only struct offsets transfer) and retail has 253
+    // sites that write the desired_angles pair (0x94/0x98), so the on-foot per-frame control
+    // updater cannot be found statically. This finds it at runtime with ONE signal: arm a hardware
+    // WRITE watchpoint (DR0) on unit+0x214 (the derived aiming vector we already resolve), and on
+    // the first write capture the faulting RIP + the x64 unwind chain -> the writer function AND its
+    // callers. The per-frame aim/control updater is in that chain; hooking it (or its caller) is the
+    // real desired_angles drive point. Read-only: this NEVER changes aim.
+    //
+    // VR-safe: one hardware trap per arm (microseconds), disarmed inside the handler the instant it
+    // fires; a persistent data breakpoint in the 90 Hz loop would be nausea. Debug registers are
+    // PER-THREAD and the writer runs on THIS engine thread, so both arm and disarm are done by
+    // MODIFYING THIS THREAD'S CONTEXT INSIDE THE VEH (a benign RaiseException carries the request) --
+    // the identical, known-good mechanism the disarm uses, avoiding any self-SetThreadContext
+    // question. The VEH does the minimum (record raw addresses + program DR7); the engine tick
+    // formats/logs/re-arms, so no locks or formatting run in exception context. All guarded; if the
+    // VEH cannot install the lane disables itself and does nothing.
+    // ========================================================================
+    static constexpr int      kReachWpMaxFrames  = 16;
+    static constexpr int      kReachWpMaxSamples = 8;
+    static constexpr DWORD    kReachWpArmCode    = 0x20485750;  // 'WPH ' custom, bit29 set (non-continuable-safe)
+
+    struct ReachWpSample { uintptr_t writerRva; uintptr_t callerRva; int count; };
+
+    static std::atomic<bool>  g_reachWpArmed{false};
+    static std::atomic<bool>  g_reachWpHitPending{false};
+    static uintptr_t          g_reachWpHitFrames[kReachWpMaxFrames]{};
+    static int                g_reachWpHitFrameN = 0;
+    static PVOID              g_reachWpVeh = nullptr;
+    static bool               g_reachWpVehTried = false;
+    static uintptr_t          g_reachWpModBase = 0;
+    static uintptr_t          g_reachWpModEnd  = 0;
+    static ReachWpSample      g_reachWpSamples[kReachWpMaxSamples]{};
+    static int                g_reachWpSampleN = 0;
+    static bool               g_reachWpDone = false;
+    static uint64_t           g_reachWpLastArmMs = 0;
+
+    // DR7 fields for watchpoint 0: L0 (enable), R/W0 (=01 write), LEN0 (=11 four bytes @ 4-byte-aligned).
+    static constexpr DWORD64  kReachWpDr7Clear = (1ull << 0) | (3ull << 16) | (3ull << 18);   // 0xF0001
+    static constexpr DWORD64  kReachWpDr7Set   = (1ull << 0) | (1ull << 16) | (3ull << 18);   // 0xD0001
+
+    // Read-only x64 unwind of a faulting context -> return-address chain (frame 0 = faulting RIP).
+    static int ReachWpUnwind(const CONTEXT* ctxIn, uintptr_t* out, int maxFrames)
+    {
+        CONTEXT c = *ctxIn;
+        int n = 0;
+        while (n < maxFrames && c.Rip)
+        {
+            out[n++] = static_cast<uintptr_t>(c.Rip);
+            DWORD64 imageBase = 0;
+            PRUNTIME_FUNCTION rf = RtlLookupFunctionEntry(c.Rip, &imageBase, nullptr);
+            if (!rf)
+            {
+                DWORD64 ret = 0;   // leaf frame: return address sits at [Rsp]
+                __try { ret = *reinterpret_cast<DWORD64*>(c.Rsp); }
+                __except (EXCEPTION_EXECUTE_HANDLER) { break; }
+                c.Rip = ret; c.Rsp += 8;
+                continue;
+            }
+            PVOID handlerData = nullptr; DWORD64 establisher = 0;
+            __try {
+                RtlVirtualUnwind(UNW_FLAG_NHANDLER, imageBase, c.Rip, rf,
+                                 &c, &handlerData, &establisher, nullptr);
+            } __except (EXCEPTION_EXECUTE_HANDLER) { break; }
+        }
+        return n;
+    }
+
+    static LONG CALLBACK ReachWpVeh(EXCEPTION_POINTERS* ep)
+    {
+        if (!ep || !ep->ExceptionRecord || !ep->ContextRecord)
+            return EXCEPTION_CONTINUE_SEARCH;
+        CONTEXT* c = ep->ContextRecord;
+        const DWORD code = ep->ExceptionRecord->ExceptionCode;
+
+        // (1) Arm/disarm request carried by our own benign RaiseException (runs on the engine thread,
+        //     so modifying its context here loads the debug registers on continue -- guaranteed).
+        if (code == kReachWpArmCode)
+        {
+            const uintptr_t addr = ep->ExceptionRecord->NumberParameters >= 1
+                ? static_cast<uintptr_t>(ep->ExceptionRecord->ExceptionInformation[0]) : 0;
+            c->Dr6 = 0;
+            if (addr)
+            {
+                c->Dr0 = addr;
+                c->Dr7 = (c->Dr7 & ~kReachWpDr7Clear) | kReachWpDr7Set;
+                g_reachWpArmed.store(true, std::memory_order_release);
+            }
+            else
+            {
+                c->Dr0 = 0;
+                c->Dr7 &= ~kReachWpDr7Clear;
+                g_reachWpArmed.store(false, std::memory_order_release);
+            }
+            // NtContinue only reloads DR0-7 when the context advertises them: a software
+            // RaiseException context does NOT set this bit, so without it the DR writes above
+            // are silently dropped and nothing ever fires.
+            c->ContextFlags |= CONTEXT_DEBUG_REGISTERS;
+            return EXCEPTION_CONTINUE_EXECUTION;
+        }
+
+        // (2) The watchpoint fired (data breakpoint -> single-step status, DR6 bit0 for DR0).
+        if (code == EXCEPTION_SINGLE_STEP &&
+            g_reachWpArmed.load(std::memory_order_acquire) && (c->Dr6 & 0x1))
+        {
+            if (!g_reachWpHitPending.load(std::memory_order_acquire))
+            {
+                g_reachWpHitFrameN = ReachWpUnwind(c, g_reachWpHitFrames, kReachWpMaxFrames);
+                g_reachWpHitPending.store(true, std::memory_order_release);
+            }
+            // Disarm in-context so it cannot re-fire; the tick re-arms if more samples are wanted.
+            c->Dr0 = 0; c->Dr6 = 0; c->Dr7 &= ~kReachWpDr7Clear;
+            c->ContextFlags |= CONTEXT_DEBUG_REGISTERS;   // ensure the disarm is actually loaded
+            g_reachWpArmed.store(false, std::memory_order_release);
+            return EXCEPTION_CONTINUE_EXECUTION;
+        }
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+
+    static bool ReachWpResolveModule()
+    {
+        if (g_reachWpModBase) return true;
+        HMODULE h = GetModuleHandleW(L"haloreach.dll");
+        if (!h) return false;
+        const auto base = reinterpret_cast<uintptr_t>(h);
+        __try {
+            auto* dos = reinterpret_cast<IMAGE_DOS_HEADER*>(base);
+            if (dos->e_magic != IMAGE_DOS_SIGNATURE) return false;
+            auto* nt = reinterpret_cast<IMAGE_NT_HEADERS64*>(base + dos->e_lfanew);
+            if (nt->Signature != IMAGE_NT_SIGNATURE) return false;
+            g_reachWpModBase = base;
+            g_reachWpModEnd  = base + nt->OptionalHeader.SizeOfImage;
+        } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+        return true;
+    }
+
+    // haloreach RVA of the FUNCTION containing addr (raw RVA if no unwind entry; 0 if outside module).
+    static uintptr_t ReachWpFuncRva(uintptr_t addr)
+    {
+        if (!addr || addr < g_reachWpModBase || addr >= g_reachWpModEnd) return 0;
+        DWORD64 imageBase = 0;
+        PRUNTIME_FUNCTION rf = RtlLookupFunctionEntry(addr, &imageBase, nullptr);
+        if (rf && imageBase) return (imageBase + rf->BeginAddress) - g_reachWpModBase;
+        return addr - g_reachWpModBase;
+    }
+
+    // Program DR0 for THIS thread via the VEH (addr!=0 arms on addr; addr==0 disarms).
+    static void ReachWpProgram(uintptr_t addr)
+    {
+        if (!g_reachWpVeh) return;
+        ULONG_PTR arg = addr;
+        RaiseException(kReachWpArmCode, 0, 1, &arg);
+    }
+
+    // Runs on the engine thread from the same host as the other Reach probes. DEV, default off.
+    void ReachWatchpoint_OnEngineTick()
+    {
+        if (!g_config.reach_dd_watchpoint)
+        {
+            if (g_reachWpArmed.load(std::memory_order_acquire)) ReachWpProgram(0);
+            return;
+        }
+        if (g_reachWpDone) return;
+        if (!g_reachCamera.base || !g_reachCamera.playerUnitByOutputUser) return;
+        if (!ReachWpResolveModule()) return;
+
+        if (!g_reachWpVeh && !g_reachWpVehTried)
+        {
+            g_reachWpVehTried = true;
+            g_reachWpVeh = AddVectoredExceptionHandler(1, &ReachWpVeh);
+            if (!g_reachWpVeh)
+            {
+                LOG("REACHWP: AddVectoredExceptionHandler FAILED; watchpoint locator unavailable");
+                return;
+            }
+            LOG("REACHWP: locator active -- watching unit+0x214 writes to find the on-foot control "
+                "updater (module haloreach.dll @ 0x%llX)", (unsigned long long)g_reachWpModBase);
+        }
+        if (!g_reachWpVeh) return;
+
+        // Consume a pending capture: resolve to functions, dedup on (writer,caller), log new chains.
+        if (g_reachWpHitPending.load(std::memory_order_acquire))
+        {
+            uintptr_t frames[kReachWpMaxFrames];
+            const int fn = g_reachWpHitFrameN < kReachWpMaxFrames ? g_reachWpHitFrameN : kReachWpMaxFrames;
+            for (int i = 0; i < fn; ++i) frames[i] = g_reachWpHitFrames[i];
+            g_reachWpHitPending.store(false, std::memory_order_release);
+
+            const uintptr_t writerRva = fn > 0 ? ReachWpFuncRva(frames[0]) : 0;
+            const uintptr_t callerRva = fn > 1 ? ReachWpFuncRva(frames[1]) : 0;
+
+            int idx = -1;
+            for (int i = 0; i < g_reachWpSampleN; ++i)
+                if (g_reachWpSamples[i].writerRva == writerRva &&
+                    g_reachWpSamples[i].callerRva == callerRva) { idx = i; break; }
+            if (idx < 0 && g_reachWpSampleN < kReachWpMaxSamples)
+            {
+                idx = g_reachWpSampleN++;
+                g_reachWpSamples[idx].writerRva = writerRva;
+                g_reachWpSamples[idx].callerRva = callerRva;
+                g_reachWpSamples[idx].count = 0;
+                char chain[512]; int off = 0;
+                for (int i = 0; i < fn && off < static_cast<int>(sizeof(chain)) - 40; ++i)
+                {
+                    const uintptr_t r = frames[i];
+                    const bool in = (r >= g_reachWpModBase && r < g_reachWpModEnd);
+                    off += snprintf(chain + off, sizeof(chain) - off, "%s%s0x%llX",
+                                    i ? " <- " : "", in ? "haloreach+" : "",
+                                    (unsigned long long)(in ? r - g_reachWpModBase : r));
+                }
+                LOG("REACHWP HIT #%d writerFn=haloreach+0x%llX callerFn=haloreach+0x%llX  chain: %s",
+                    g_reachWpSampleN, (unsigned long long)writerRva,
+                    (unsigned long long)callerRva, chain);
+            }
+            if (idx >= 0) g_reachWpSamples[idx].count++;
+
+            if (g_reachWpSampleN >= kReachWpMaxSamples)
+            {
+                g_reachWpDone = true;
+                if (g_reachWpArmed.load(std::memory_order_acquire)) ReachWpProgram(0);
+                LOG("REACHWP DONE: %d distinct writer/caller sites -- the on-foot per-frame updater is "
+                    "the highest-count callerFn; hook it (or its writer) for the desired_angles drive:",
+                    g_reachWpSampleN);
+                for (int i = 0; i < g_reachWpSampleN; ++i)
+                    LOG("REACHWP   [%2dx] writerFn=haloreach+0x%llX callerFn=haloreach+0x%llX",
+                        g_reachWpSamples[i].count,
+                        (unsigned long long)g_reachWpSamples[i].writerRva,
+                        (unsigned long long)g_reachWpSamples[i].callerRva);
+                return;
+            }
+        }
+
+        // Re-arm on a freshly resolved unit+0x214 whenever not currently armed (throttled, so the
+        // samples span ~1 s of movement rather than all landing in one frame).
+        if (!g_reachWpArmed.load(std::memory_order_acquire))
+        {
+            const uint64_t now = GetTickCount64();
+            if (now - g_reachWpLastArmMs < 150) return;
+            g_reachWpLastArmMs = now;
+            __try
+            {
+                const int unit = g_reachCamera.playerUnitByOutputUser(0);
+                if (unit != -1)
+                {
+                    uint8_t kind = 0;
+                    unsigned char* d = ReachVehicleObjectData(unit, kind);
+                    if (d && kind != kReachObjectKindVehicle)
+                        ReachWpProgram(reinterpret_cast<uintptr_t>(d + kReachUnitAimingVectorOffset));
+                }
+            }
+            __except (EXCEPTION_EXECUTE_HANDLER) { }
+        }
+    }
 #endif
 
     unsigned char* ReachPackedTagBlockElement(
@@ -26654,6 +26910,7 @@ namespace
 #if HALOMCCVR_EXPERIMENTAL_REACH_RENDER_CANDIDATE
         ReachAimProbe_OnEngineTick();     // read-only desired-aim offset probe (default off)
         ReachDirectDrive_OnEngineTick();  // desired-aim write mechanism test (default off)
+        ReachWatchpoint_OnEngineTick();   // DEV: hw write-watchpoint -> on-foot control updater (default off)
 #endif
 
         uintptr_t expectedWorkspace = 0;
