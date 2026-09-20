@@ -24945,18 +24945,16 @@ namespace
     // callers. The per-frame aim/control updater is in that chain; hooking it (or its caller) is the
     // real desired_angles drive point. Read-only: this NEVER changes aim.
     //
-    // VR-safe: one hardware trap per arm (microseconds), disarmed inside the handler the instant it
-    // fires; a persistent data breakpoint in the 90 Hz loop would be nausea. Debug registers are
-    // PER-THREAD and the writer runs on THIS engine thread, so both arm and disarm are done by
-    // MODIFYING THIS THREAD'S CONTEXT INSIDE THE VEH (a benign RaiseException carries the request) --
-    // the identical, known-good mechanism the disarm uses, avoiding any self-SetThreadContext
-    // question. The VEH does the minimum (record raw addresses + program DR7); the engine tick
-    // formats/logs/re-arms, so no locks or formatting run in exception context. All guarded; if the
-    // VEH cannot install the lane disables itself and does nothing.
+    // VR-safe: the watchpoint fires once and is disarmed inside the handler; it costs nothing until a
+    // write happens. Debug registers are PER-THREAD, and Reach's sim writes unit+0x214 on its OWN
+    // thread (not the mod's tick thread), so we arm DR0 on EVERY thread in the process via the
+    // debugger-standard suspend -> SetThreadContext -> resume (the kernel loads DR on resume, and we
+    // read them back to confirm). The VEH does the minimum (record RIP + unwind on whatever thread
+    // wrote) and clears that thread's DR; the engine tick formats/logs and disarms the rest. All
+    // guarded; if nothing can be armed the lane logs it and does nothing else.
     // ========================================================================
     static constexpr int      kReachWpMaxFrames  = 16;
     static constexpr int      kReachWpMaxSamples = 8;
-    static constexpr DWORD    kReachWpArmCode    = 0x20485750;  // 'WPH ' custom, bit29 set (non-continuable-safe)
 
     struct ReachWpSample { uintptr_t writerRva; uintptr_t callerRva; int count; };
 
@@ -24964,6 +24962,7 @@ namespace
     static std::atomic<bool>  g_reachWpHitPending{false};
     static uintptr_t          g_reachWpHitFrames[kReachWpMaxFrames]{};
     static int                g_reachWpHitFrameN = 0;
+    static DWORD              g_reachWpHitTid = 0;
     static PVOID              g_reachWpVeh = nullptr;
     static bool               g_reachWpVehTried = false;
     static uintptr_t          g_reachWpModBase = 0;
@@ -24971,7 +24970,6 @@ namespace
     static ReachWpSample      g_reachWpSamples[kReachWpMaxSamples]{};
     static int                g_reachWpSampleN = 0;
     static bool               g_reachWpDone = false;
-    static uint64_t           g_reachWpLastArmMs = 0;
 
     // DR7 fields for watchpoint 0: L0 (enable), R/W0 (=01 write), LEN0 (=11 four bytes @ 4-byte-aligned).
     static constexpr DWORD64  kReachWpDr7Clear = (1ull << 0) | (3ull << 16) | (3ull << 18);   // 0xF0001
@@ -25009,46 +25007,20 @@ namespace
         if (!ep || !ep->ExceptionRecord || !ep->ContextRecord)
             return EXCEPTION_CONTINUE_SEARCH;
         CONTEXT* c = ep->ContextRecord;
-        const DWORD code = ep->ExceptionRecord->ExceptionCode;
-
-        // (1) Arm/disarm request carried by our own benign RaiseException (runs on the engine thread,
-        //     so modifying its context here loads the debug registers on continue -- guaranteed).
-        if (code == kReachWpArmCode)
-        {
-            const uintptr_t addr = ep->ExceptionRecord->NumberParameters >= 1
-                ? static_cast<uintptr_t>(ep->ExceptionRecord->ExceptionInformation[0]) : 0;
-            c->Dr6 = 0;
-            if (addr)
-            {
-                c->Dr0 = addr;
-                c->Dr7 = (c->Dr7 & ~kReachWpDr7Clear) | kReachWpDr7Set;
-                g_reachWpArmed.store(true, std::memory_order_release);
-            }
-            else
-            {
-                c->Dr0 = 0;
-                c->Dr7 &= ~kReachWpDr7Clear;
-                g_reachWpArmed.store(false, std::memory_order_release);
-            }
-            // NtContinue only reloads DR0-7 when the context advertises them: a software
-            // RaiseException context does NOT set this bit, so without it the DR writes above
-            // are silently dropped and nothing ever fires.
-            c->ContextFlags |= CONTEXT_DEBUG_REGISTERS;
-            return EXCEPTION_CONTINUE_EXECUTION;
-        }
-
-        // (2) The watchpoint fired (data breakpoint -> single-step status, DR6 bit0 for DR0).
-        if (code == EXCEPTION_SINGLE_STEP &&
+        // The watchpoint fired (data breakpoint -> single-step status, DR6 bit0 = DR0), on whatever
+        // thread performed the write to unit+0x214.
+        if (ep->ExceptionRecord->ExceptionCode == EXCEPTION_SINGLE_STEP &&
             g_reachWpArmed.load(std::memory_order_acquire) && (c->Dr6 & 0x1))
         {
             if (!g_reachWpHitPending.load(std::memory_order_acquire))
             {
+                g_reachWpHitTid    = GetCurrentThreadId();
                 g_reachWpHitFrameN = ReachWpUnwind(c, g_reachWpHitFrames, kReachWpMaxFrames);
                 g_reachWpHitPending.store(true, std::memory_order_release);
             }
-            // Disarm in-context so it cannot re-fire; the tick re-arms if more samples are wanted.
+            // Clear THIS thread's watchpoint so it cannot re-fire; the tick disarms the other threads.
             c->Dr0 = 0; c->Dr6 = 0; c->Dr7 &= ~kReachWpDr7Clear;
-            c->ContextFlags |= CONTEXT_DEBUG_REGISTERS;   // ensure the disarm is actually loaded
+            c->ContextFlags |= CONTEXT_DEBUG_REGISTERS;
             g_reachWpArmed.store(false, std::memory_order_release);
             return EXCEPTION_CONTINUE_EXECUTION;
         }
@@ -25082,12 +25054,59 @@ namespace
         return addr - g_reachWpModBase;
     }
 
-    // Program DR0 for THIS thread via the VEH (addr!=0 arms on addr; addr==0 disarms).
-    static void ReachWpProgram(uintptr_t addr)
+    // Set/clear the DR0 write-watchpoint on one thread handle. addr!=0 arms (4 bytes, break on
+    // write), addr==0 disarms. The caller suspends the thread first (or handles it in place).
+    static bool ReachWpSetDrOnThread(HANDLE h, uintptr_t addr)
     {
-        if (!g_reachWpVeh) return;
-        ULONG_PTR arg = addr;
-        RaiseException(kReachWpArmCode, 0, 1, &arg);
+        CONTEXT ctx{};
+        ctx.ContextFlags = CONTEXT_DEBUG_REGISTERS;
+        if (!GetThreadContext(h, &ctx)) return false;
+        if (addr) { ctx.Dr0 = addr; ctx.Dr6 = 0; ctx.Dr7 = (ctx.Dr7 & ~kReachWpDr7Clear) | kReachWpDr7Set; }
+        else      { ctx.Dr0 = 0;    ctx.Dr6 = 0; ctx.Dr7 &= ~kReachWpDr7Clear; }
+        ctx.ContextFlags = CONTEXT_DEBUG_REGISTERS;
+        return SetThreadContext(h, &ctx) != 0;
+    }
+
+    // Program DR0 across EVERY OTHER thread in this process (addr!=0 arm, 0 disarm) via the
+    // debugger-standard suspend -> set -> resume, then read DR0 back to confirm. Reach's sim writer
+    // is not on the mod's tick thread, so the current thread is skipped (SetThreadContext on a
+    // running self is unreliable and the writer is elsewhere anyway). *setCount/*verified tally it.
+    static void ReachWpProgramAll(uintptr_t addr, int* setCount, int* verified)
+    {
+        int set = 0, ver = 0;
+        const DWORD myPid = GetCurrentProcessId();
+        const DWORD myTid = GetCurrentThreadId();
+        HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+        if (snap != INVALID_HANDLE_VALUE)
+        {
+            THREADENTRY32 te{}; te.dwSize = sizeof(te);
+            if (Thread32First(snap, &te))
+            {
+                do {
+                    if (te.th32OwnerProcessID != myPid || te.th32ThreadID == myTid) continue;
+                    HANDLE h = OpenThread(THREAD_GET_CONTEXT | THREAD_SET_CONTEXT |
+                                          THREAD_SUSPEND_RESUME, FALSE, te.th32ThreadID);
+                    if (!h) continue;
+                    if (SuspendThread(h) != static_cast<DWORD>(-1))
+                    {
+                        const bool ok = ReachWpSetDrOnThread(h, addr);
+                        ResumeThread(h);
+                        if (ok)
+                        {
+                            ++set;
+                            CONTEXT rb{}; rb.ContextFlags = CONTEXT_DEBUG_REGISTERS;
+                            if (GetThreadContext(h, &rb) &&
+                                (addr ? (rb.Dr0 == addr && (rb.Dr7 & 0x1)) : (rb.Dr0 == 0)))
+                                ++ver;
+                        }
+                    }
+                    CloseHandle(h);
+                } while (Thread32Next(snap, &te));
+            }
+            CloseHandle(snap);
+        }
+        if (setCount) *setCount = set;
+        if (verified) *verified = ver;
     }
 
     // Runs on the engine thread from the same host as the other Reach probes. DEV, default off.
@@ -25095,7 +25114,11 @@ namespace
     {
         if (!g_config.reach_dd_watchpoint)
         {
-            if (g_reachWpArmed.load(std::memory_order_acquire)) ReachWpProgram(0);
+            if (g_reachWpArmed.load(std::memory_order_acquire))
+            {
+                ReachWpProgramAll(0, nullptr, nullptr);
+                g_reachWpArmed.store(false, std::memory_order_release);
+            }
             return;
         }
         if (g_reachWpDone) return;
@@ -25146,19 +25169,20 @@ namespace
                                     i ? " <- " : "", in ? "haloreach+" : "",
                                     (unsigned long long)(in ? r - g_reachWpModBase : r));
                 }
-                LOG("REACHWP HIT #%d writerFn=haloreach+0x%llX callerFn=haloreach+0x%llX  chain: %s",
-                    g_reachWpSampleN, (unsigned long long)writerRva,
+                LOG("REACHWP HIT #%d (tid=%lu) writerFn=haloreach+0x%llX callerFn=haloreach+0x%llX  chain: %s",
+                    g_reachWpSampleN, (unsigned long)g_reachWpHitTid, (unsigned long long)writerRva,
                     (unsigned long long)callerRva, chain);
             }
             if (idx >= 0) g_reachWpSamples[idx].count++;
 
-            if (g_reachWpSampleN >= kReachWpMaxSamples)
+            if (g_reachWpSampleN >= 1)   // one clean capture identifies the writer; stop and disarm
             {
                 g_reachWpDone = true;
-                if (g_reachWpArmed.load(std::memory_order_acquire)) ReachWpProgram(0);
-                LOG("REACHWP DONE: %d distinct writer/caller sites -- the on-foot per-frame updater is "
-                    "the highest-count callerFn; hook it (or its writer) for the desired_angles drive:",
-                    g_reachWpSampleN);
+                ReachWpProgramAll(0, nullptr, nullptr);
+                g_reachWpArmed.store(false, std::memory_order_release);
+                LOG("REACHWP DONE: captured the on-foot unit+0x214 writer. callerFn is the per-frame "
+                    "control updater to hook for the desired_angles drive; writerFn is the 0x214 "
+                    "consumer it calls. Set reach_dd_watchpoint=0 to silence:");
                 for (int i = 0; i < g_reachWpSampleN; ++i)
                     LOG("REACHWP   [%2dx] writerFn=haloreach+0x%llX callerFn=haloreach+0x%llX",
                         g_reachWpSamples[i].count,
@@ -25168,13 +25192,11 @@ namespace
             }
         }
 
-        // Re-arm on a freshly resolved unit+0x214 whenever not currently armed (throttled, so the
-        // samples span ~1 s of movement rather than all landing in one frame).
+        // Arm ONCE across every other thread on a freshly resolved unit+0x214 (debug registers are
+        // per-thread; Reach's sim writer is on its own thread, so we cover them all). unit+0x214 is
+        // re-derived every frame, so the watchpoint fires whether or not you are moving.
         if (!g_reachWpArmed.load(std::memory_order_acquire))
         {
-            const uint64_t now = GetTickCount64();
-            if (now - g_reachWpLastArmMs < 150) return;
-            g_reachWpLastArmMs = now;
             __try
             {
                 const int unit = g_reachCamera.playerUnitByOutputUser(0);
@@ -25183,7 +25205,17 @@ namespace
                     uint8_t kind = 0;
                     unsigned char* d = ReachVehicleObjectData(unit, kind);
                     if (d && kind != kReachObjectKindVehicle)
-                        ReachWpProgram(reinterpret_cast<uintptr_t>(d + kReachUnitAimingVectorOffset));
+                    {
+                        const uintptr_t addr =
+                            reinterpret_cast<uintptr_t>(d + kReachUnitAimingVectorOffset);
+                        int nset = 0, nver = 0;
+                        ReachWpProgramAll(addr, &nset, &nver);
+                        g_reachWpArmed.store(true, std::memory_order_release);
+                        LOG("REACHWP: armed DR0 write-watchpoint on unit+0x214=0x%llX across %d "
+                            "threads (%d verified) -- waiting for the write%s",
+                            (unsigned long long)addr, nset, nver,
+                            nver == 0 ? "  [0 verified -> debug registers blocked here]" : "");
+                    }
                 }
             }
             __except (EXCEPTION_EXECUTE_HANDLER) { }
