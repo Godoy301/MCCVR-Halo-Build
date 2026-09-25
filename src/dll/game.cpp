@@ -24935,7 +24935,9 @@ namespace
     }
 
     // ========================================================================
-    // Reach direct-drive WRITE-WATCHPOINT locator (reach_dd_watchpoint=1, DEV, default off).
+    // Reach direct-drive WRITE-WATCHPOINT locator (reach_dd_watchpoint=1/2/3, DEV, default off).
+    // Modes 1/2 are the original single-address locator described here; mode 3 (value-scan in the
+    // sim's MASTER game state + a multi-address watch) is documented at ReachValueScan_Tick below.
     // ------------------------------------------------------------------------
     // HREK<->retail function bodies do NOT map (only struct offsets transfer) and retail has 253
     // sites that write the desired_angles pair (0x94/0x98), so the on-foot per-frame control
@@ -24971,9 +24973,70 @@ namespace
     static int                g_reachWpSampleN = 0;
     static bool               g_reachWpDone = false;
 
-    // DR7 fields for watchpoint 0: L0 (enable), R/W0 (=01 write), LEN0 (=11 four bytes @ 4-byte-aligned).
-    static constexpr DWORD64  kReachWpDr7Clear = (1ull << 0) | (3ull << 16) | (3ull << 18);   // 0xF0001
-    static constexpr DWORD64  kReachWpDr7Set   = (1ull << 0) | (1ull << 16) | (3ull << 18);   // 0xD0001
+    // DR7 fields for watchpoint slot b (0..3): L_b = bit 2b (local enable), R/W_b = bits 16+4b..17+4b
+    // (01 = break on data WRITE), LEN_b = bits 18+4b..19+4b (11 = four bytes, 4-byte aligned).
+    // Slot 0 gives the original constants: field 0xF0001, write-4 0xD0001.
+    static constexpr DWORD64 ReachWpDr7Field(int b)  { return (1ull << (2 * b)) | (0xFull << (16 + 4 * b)); }
+    static constexpr DWORD64 ReachWpDr7Write4(int b) { return (1ull << (2 * b)) | (0xDull << (16 + 4 * b)); }
+
+    static DWORD64& ReachWpCtxDr(CONTEXT* c, int b)
+    {
+        switch (b) { case 0: return c->Dr0; case 1: return c->Dr1; case 2: return c->Dr2; default: return c->Dr3; }
+    }
+
+    // Every address this lane has EVER armed. The VEH consumes a data-breakpoint trap only when the DR
+    // that fired holds one of these. That makes a LATE trap safe: after a capture or a batch ends, other
+    // threads stay armed until the tick's disarm reaches them, and a write in that window used to fall
+    // through as an unhandled SINGLE_STEP (fatal). Now it is swallowed and that DR cleared in-context.
+    // Append-only: the tick writes an entry before publishing the count; the VEH reads up to the count.
+    static constexpr int      kReachWpMaxOwned = 128;
+    static uintptr_t          g_reachWpOwned[kReachWpMaxOwned]{};
+    static std::atomic<int>   g_reachWpOwnedN{0};
+
+    static bool ReachWpOwn(uintptr_t a)
+    {
+        const int n = g_reachWpOwnedN.load(std::memory_order_relaxed);
+        for (int i = 0; i < n; ++i)
+            if (g_reachWpOwned[i] == a) return true;
+        if (n >= kReachWpMaxOwned) return false;   // caller must not arm an address it cannot own
+        g_reachWpOwned[n] = a;
+        g_reachWpOwnedN.store(n + 1, std::memory_order_release);
+        return true;
+    }
+
+    static bool ReachWpOwns(uintptr_t a)
+    {
+        if (!a) return false;
+        const int n = g_reachWpOwnedN.load(std::memory_order_acquire);
+        for (int i = 0; i < n; ++i)
+            if (g_reachWpOwned[i] == a) return true;
+        return false;
+    }
+
+    // Mode 3 multi-DR capture (see ReachValueScan_Tick). One record per DR slot for the current batch;
+    // the VEH fills it on whatever thread writes, the tick copies it out after disarming the batch.
+    static constexpr int      kReachVsWriters   = 3;     // distinct writer sites kept per address
+    static constexpr int      kReachVsFrames    = 12;
+    static constexpr int      kReachVsHitBudget = 240;   // per DR per batch; a hotter address self-disarms
+    struct ReachVsWriter
+    {
+        uintptr_t rip;
+        uintptr_t frames[kReachVsFrames];
+        int       nframes;
+        DWORD     tid;
+        float     val[2];
+        int       count;
+    };
+    struct ReachVsDrRec
+    {
+        std::atomic<int> hits{0};
+        std::atomic<int> busy{0};
+        int              nw = 0;
+        ReachVsWriter    w[kReachVsWriters]{};
+    };
+    static ReachVsDrRec          g_reachVsDr[4];
+    static uintptr_t             g_reachVsDrAddr[4]{};
+    static std::atomic<uint32_t> g_reachVsArmedMask{0};
 
     // Read-only x64 unwind of a faulting context -> return-address chain (frame 0 = faulting RIP).
     static int ReachWpUnwind(const CONTEXT* ctxIn, uintptr_t* out, int maxFrames)
@@ -25006,25 +25069,76 @@ namespace
     {
         if (!ep || !ep->ExceptionRecord || !ep->ContextRecord)
             return EXCEPTION_CONTINUE_SEARCH;
+        if (ep->ExceptionRecord->ExceptionCode != EXCEPTION_SINGLE_STEP)
+            return EXCEPTION_CONTINUE_SEARCH;
         CONTEXT* c = ep->ContextRecord;
-        // The watchpoint fired (data breakpoint -> single-step status, DR6 bit0 = DR0), on whatever
-        // thread performed the write to unit+0x214.
-        if (ep->ExceptionRecord->ExceptionCode == EXCEPTION_SINGLE_STEP &&
-            g_reachWpArmed.load(std::memory_order_acquire) && (c->Dr6 & 0x1))
+        // A data breakpoint reports as SINGLE_STEP with DR6 B0..B3 naming the slot(s). B bits can be set
+        // for DISABLED slots too (Intel SDM), so only enabled slots count.
+        uint32_t enabled = 0;
+        for (int b = 0; b < 4; ++b)
+            if (c->Dr7 & (1ull << (2 * b))) enabled |= 1u << b;
+        const uint32_t fired = static_cast<uint32_t>(c->Dr6 & 0xF) & enabled;
+        if (!fired)
+            return EXCEPTION_CONTINUE_SEARCH;              // a real single-step, not one of ours
+
+        bool ours = false;
+        for (int b = 0; b < 4; ++b)
         {
-            if (!g_reachWpHitPending.load(std::memory_order_acquire))
+            if (!(fired & (1u << b))) continue;
+            DWORD64& dr = ReachWpCtxDr(c, b);
+            const uintptr_t a = static_cast<uintptr_t>(dr);
+            if (!ReachWpOwns(a)) continue;                  // someone else's breakpoint: not ours to eat
+            ours = true;
+            bool keep = false;
+            if (b == 0 && g_reachWpArmed.load(std::memory_order_acquire))
             {
-                g_reachWpHitTid    = GetCurrentThreadId();
-                g_reachWpHitFrameN = ReachWpUnwind(c, g_reachWpHitFrames, kReachWpMaxFrames);
-                g_reachWpHitPending.store(true, std::memory_order_release);
+                // Modes 1/2: one-shot capture of the first write, on whatever thread performed it.
+                if (!g_reachWpHitPending.load(std::memory_order_acquire))
+                {
+                    g_reachWpHitTid    = GetCurrentThreadId();
+                    g_reachWpHitFrameN = ReachWpUnwind(c, g_reachWpHitFrames, kReachWpMaxFrames);
+                    g_reachWpHitPending.store(true, std::memory_order_release);
+                }
+                g_reachWpArmed.store(false, std::memory_order_release);
             }
-            // Clear THIS thread's watchpoint so it cannot re-fire; the tick disarms the other threads.
-            c->Dr0 = 0; c->Dr6 = 0; c->Dr7 &= ~kReachWpDr7Clear;
-            c->ContextFlags |= CONTEXT_DEBUG_REGISTERS;
-            g_reachWpArmed.store(false, std::memory_order_release);
-            return EXCEPTION_CONTINUE_EXECUTION;
+            else if ((g_reachVsArmedMask.load(std::memory_order_acquire) & (1u << b)) &&
+                     a == g_reachVsDrAddr[b])
+            {
+                // Mode 3: record every distinct writer site; the slot stays armed for the batch window.
+                ReachVsDrRec& r = g_reachVsDr[b];
+                const int h = r.hits.fetch_add(1, std::memory_order_relaxed) + 1;
+                int expected = 0;
+                if (r.busy.compare_exchange_strong(expected, 1, std::memory_order_acquire))
+                {
+                    int k = -1;
+                    for (int i = 0; i < r.nw; ++i)
+                        if (r.w[i].rip == static_cast<uintptr_t>(c->Rip)) { k = i; break; }
+                    if (k >= 0)
+                        r.w[k].count++;
+                    else if (r.nw < kReachVsWriters)
+                    {
+                        ReachVsWriter& w = r.w[r.nw];
+                        w.rip     = static_cast<uintptr_t>(c->Rip);
+                        w.tid     = GetCurrentThreadId();
+                        w.count   = 1;
+                        w.nframes = ReachWpUnwind(c, w.frames, kReachVsFrames);
+                        const float* v = reinterpret_cast<const float*>(a);   // just written: mapped
+                        w.val[0] = v[0];
+                        w.val[1] = v[1];
+                        r.nw++;
+                    }
+                    r.busy.store(0, std::memory_order_release);
+                }
+                keep = h < kReachVsHitBudget;
+            }
+            // Clear this slot on THIS thread (one-shot, over budget, or a late trap after its batch).
+            if (!keep) { dr = 0; c->Dr7 &= ~ReachWpDr7Field(b); }
         }
-        return EXCEPTION_CONTINUE_SEARCH;
+        if (!ours)
+            return EXCEPTION_CONTINUE_SEARCH;
+        c->Dr6 = 0;
+        c->ContextFlags |= CONTEXT_DEBUG_REGISTERS;
+        return EXCEPTION_CONTINUE_EXECUTION;
     }
 
     static bool ReachWpResolveModule()
@@ -25054,24 +25168,32 @@ namespace
         return addr - g_reachWpModBase;
     }
 
-    // Set/clear the DR0 write-watchpoint on one thread handle. addr!=0 arms (4 bytes, break on
-    // write), addr==0 disarms. The caller suspends the thread first (or handles it in place).
-    static bool ReachWpSetDrOnThread(HANDLE h, uintptr_t addr)
+    // Program all four DR slots on one (suspended) thread: a[b]!=0 arms slot b as a 4-byte WRITE
+    // watchpoint, a[b]==0 clears it. DR7 bits outside the four slot fields are preserved.
+    static bool ReachWpSetDrsOnThread(HANDLE h, const uintptr_t a[4])
     {
         CONTEXT ctx{};
         ctx.ContextFlags = CONTEXT_DEBUG_REGISTERS;
         if (!GetThreadContext(h, &ctx)) return false;
-        if (addr) { ctx.Dr0 = addr; ctx.Dr6 = 0; ctx.Dr7 = (ctx.Dr7 & ~kReachWpDr7Clear) | kReachWpDr7Set; }
-        else      { ctx.Dr0 = 0;    ctx.Dr6 = 0; ctx.Dr7 &= ~kReachWpDr7Clear; }
+        DWORD64 dr7 = ctx.Dr7;
+        for (int b = 0; b < 4; ++b)
+        {
+            dr7 &= ~ReachWpDr7Field(b);
+            ReachWpCtxDr(&ctx, b) = a[b];
+            if (a[b]) dr7 |= ReachWpDr7Write4(b);
+        }
+        ctx.Dr6 = 0;
+        ctx.Dr7 = dr7;
         ctx.ContextFlags = CONTEXT_DEBUG_REGISTERS;
         return SetThreadContext(h, &ctx) != 0;
     }
 
-    // Program DR0 across EVERY OTHER thread in this process (addr!=0 arm, 0 disarm) via the
-    // debugger-standard suspend -> set -> resume, then read DR0 back to confirm. Reach's sim writer
+    // Program DR0..DR3 across EVERY OTHER thread in this process (a[b]!=0 arm, 0 disarm) via the
+    // debugger-standard suspend -> set -> resume, then read them back to confirm. Reach's sim writer
     // is not on the mod's tick thread, so the current thread is skipped (SetThreadContext on a
     // running self is unreliable and the writer is elsewhere anyway). *setCount/*verified tally it.
-    static void ReachWpProgramAll(uintptr_t addr, int* setCount, int* verified)
+    // Every nonzero address must already be registered with ReachWpOwn.
+    static void ReachWpProgramAll4(const uintptr_t a[4], int* setCount, int* verified)
     {
         int set = 0, ver = 0;
         const DWORD myPid = GetCurrentProcessId();
@@ -25089,15 +25211,22 @@ namespace
                     if (!h) continue;
                     if (SuspendThread(h) != static_cast<DWORD>(-1))
                     {
-                        const bool ok = ReachWpSetDrOnThread(h, addr);
+                        const bool ok = ReachWpSetDrsOnThread(h, a);
                         ResumeThread(h);
                         if (ok)
                         {
                             ++set;
                             CONTEXT rb{}; rb.ContextFlags = CONTEXT_DEBUG_REGISTERS;
-                            if (GetThreadContext(h, &rb) &&
-                                (addr ? (rb.Dr0 == addr && (rb.Dr7 & 0x1)) : (rb.Dr0 == 0)))
-                                ++ver;
+                            if (GetThreadContext(h, &rb))
+                            {
+                                bool good = true;
+                                for (int b = 0; b < 4 && good; ++b)
+                                {
+                                    const bool en = (rb.Dr7 & (1ull << (2 * b))) != 0;
+                                    good = a[b] ? (en && ReachWpCtxDr(&rb, b) == a[b]) : !en;
+                                }
+                                if (good) ++ver;
+                            }
                         }
                     }
                     CloseHandle(h);
@@ -25109,6 +25238,939 @@ namespace
         if (verified) *verified = ver;
     }
 
+    // Modes 1/2: DR0 only (addr!=0 arm, 0 disarm); slots 1-3 are cleared.
+    static void ReachWpProgramAll(uintptr_t addr, int* setCount, int* verified)
+    {
+        const uintptr_t a[4] = { addr, 0, 0, 0 };
+        ReachWpProgramAll4(a, setCount, verified);
+    }
+
+    // "haloreach+0x..", "<module>+0x.." or a raw address -- for logging chains (tick thread only).
+    static void ReachWpFmtAddr(uintptr_t a, char* out, size_t n)
+    {
+        if (a >= g_reachWpModBase && a < g_reachWpModEnd)
+        {
+            snprintf(out, n, "haloreach+0x%llX", (unsigned long long)(a - g_reachWpModBase));
+            return;
+        }
+        HMODULE m = nullptr;
+        if (a && GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                                    GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                                    reinterpret_cast<LPCWSTR>(a), &m) && m)
+        {
+            wchar_t path[MAX_PATH] = {};
+            char name[64] = "?";
+            if (GetModuleFileNameW(m, path, MAX_PATH))
+            {
+                const wchar_t* s = wcsrchr(path, L'\\');
+                WideCharToMultiByte(CP_UTF8, 0, s ? s + 1 : path, -1, name, sizeof(name), nullptr, nullptr);
+            }
+            snprintf(out, n, "%s+0x%llX", name, (unsigned long long)(a - reinterpret_cast<uintptr_t>(m)));
+            return;
+        }
+        snprintf(out, n, "0x%llX", (unsigned long long)a);
+    }
+
+    static void ReachWpFmtChain(const uintptr_t* frames, int n, char* out, size_t cap)
+    {
+        size_t off = 0;
+        out[0] = 0;
+        for (int i = 0; i < n && off + 48 < cap; ++i)
+        {
+            char one[96];
+            ReachWpFmtAddr(frames[i], one, sizeof(one));
+            off += snprintf(out + off, cap - off, "%s%s", i ? " <- " : "", one);
+        }
+    }
+
+    // ========================================================================
+    // Mode 3 (reach_dd_watchpoint=3): VALUE-SCAN for desired_angles in the SIM's MASTER game state,
+    // then a multi-address write watch on the survivors. DEV, read-only, default off.
+    // ------------------------------------------------------------------------
+    // Why the earlier locators could not work (RE'd 2026-09-25 from the retail binary itself; see
+    // docs/REACH-DIRECT-DRIVE-RE-2026-09-19.md): Reach's sim runs on its own thread (thread proc
+    // haloreach+0xDC78, main loop +0x34818) and every iteration PUBLISHES its whole game-state block
+    // into a small ring of snapshot slots (publish fn +0x1CD2BC: memcpy(slot.data, master.data, size),
+    // then per-sub-block fix-ups). The mod's engine tick resolves the unit through the render thread's
+    // TLS, so the unit it sees lives in a SNAPSHOT SLOT -- which is exactly why mode 1 caught only that
+    // memcpy. Anything written into a slot is overwritten on the next publish and never reaches the
+    // sim: the direct-drive target has to be found (and later written) in the MASTER block.
+    //
+    // The two ring managers are static objects in haloreach .data, passed by `lea rcx,[rip+X]; call
+    // 1CD2BC` from the sim loop: A = +0x27C5630 (mode 1's hit went through this one), B = +0x27CA100.
+    // Layout, read from the retail publish fn (not HREK): +0x18+i*0x18 slot i object (->+0x20 data),
+    // +0x68 publish counter, +0x70 latest slot, +0x90 master object (->+0x20 data), +0xA0 block size
+    // (u64), +0xB8 slot count.
+    // ADDR-HYGIENE: dev-only + guarded. Both manager RVAs and the thread-proc RVA are measurements of
+    // ONE build. The rings are validated before use (slot count 1..4, sane size, every block
+    // committed, AND ValueAgreement: the render thread's unit must fall inside a slot, and the MASTER
+    // copy at the same offset must hold a unit-length aim vector). On any mismatch the lane says so
+    // and falls back to a whole-process scan: a moved manager costs precision, never a wrong answer.
+    // The thread-proc RVA only labels the sim thread in the log.
+    //
+    // Procedure (never writes game memory):
+    //   1. wait for a STILL on-foot aim; the reference is yaw/pitch of the MASTER unit's aim vector
+    //      (unit+0x214). A worker thread (never the VR tick) finds every (yaw,pitch) float pair [ANG]
+    //      and every aim-vector copy [VEC], in the ring masters first, then in all other committed RW
+    //      memory (thread stacks, ring slots, write-combined memory and our own image excluded);
+    //   2. at each later still aim >= 3 deg away, drop candidates that stopped matching;
+    //   3. watch the survivors with hardware write watchpoints, DR0-DR3 in 2 s batches, recording the
+    //      distinct writer sites + unwind chains. A MASTER ANG candidate written by haloreach code
+    //      (not a CRT memcpy) is desired_angles, and its writer is the direct-drive hook target.
+    // Cost: the scan runs off-thread; each batch arm/disarm suspends every thread briefly (logged in
+    // ms). Harmless in FA, a handful of short hitches for a human in the headset.
+    // ========================================================================
+    static constexpr uintptr_t kReachRingMgrRva[2]    = { 0x27C5630, 0x27CA100 };
+    static constexpr uintptr_t kReachSimThreadProcRva = 0xDC78;
+
+    struct ReachRing
+    {
+        uintptr_t mgr = 0;
+        uintptr_t master = 0;         // the sim's live block
+        uintptr_t slot[4]{};          // published snapshot copies
+        int       slots = 0;
+        size_t    size = 0;
+        bool      ok = false;
+    };
+    static ReachRing g_reachRing[2];
+
+    enum : uint8_t { kReachVsAng = 0, kReachVsVec = 1 };
+    enum : uint8_t { kReachVsClsMasterA = 0, kReachVsClsMasterB = 1, kReachVsClsImage = 2, kReachVsClsOther = 3 };
+    static const char* const kReachVsClsName[4] = { "MASTER-A", "MASTER-B", "IMAGE", "HEAP" };
+
+    struct ReachVsCand { uintptr_t addr; uint8_t kind; uint8_t cls; uint8_t alive; uint8_t pad; };
+    static constexpr int   kReachVsMaxCand = 32768;
+    static ReachVsCand     g_reachVsCand[kReachVsMaxCand];
+    static int             g_reachVsCandN = 0;
+    static int             g_reachVsCandNMaster = 0;
+    static bool            g_reachVsOverflow = false;
+    static uint64_t        g_reachVsBytes = 0;
+    static int             g_reachVsFaults = 0;
+
+    // Match windows: written by the tick before the worker starts / before a re-check, read-only while
+    // the worker runs. Yaw is matched modulo 2*pi (either wrap convention).
+    static constexpr float kReachVsAngTol = 0.005f;   // rad (~0.29 deg)
+    static constexpr float kReachVsVecTol = 0.002f;
+    static float           g_reachVsYawLo[3], g_reachVsYawHi[3], g_reachVsPitLo, g_reachVsPitHi;
+    static float           g_reachVsVecLo[3], g_reachVsVecHi[3];
+
+    // Scan exclusions, sorted by begin: thread stacks (dead frames hold stale copies of everything),
+    // the ring blocks (masters are scanned first on their own, slots are copies), our own image.
+    static constexpr int   kReachVsMaxExcl = 1024;
+    static uintptr_t       g_reachVsExclB[kReachVsMaxExcl], g_reachVsExclE[kReachVsMaxExcl];
+    static int             g_reachVsExclN = 0;
+
+    static std::atomic<int> g_reachVsWorker{0};   // 0 idle, 1 running, 2 done
+    static HANDLE           g_reachVsThread = nullptr;
+    static DWORD            g_reachVsSimTid = 0;
+
+    static void ReachVsSetWindows(float yaw, float pitch, const float v[3])
+    {
+        const float twoPi = 6.28318531f;
+        const float ys[3] = { yaw, yaw + twoPi, yaw - twoPi };
+        for (int k = 0; k < 3; ++k)
+        {
+            g_reachVsYawLo[k] = ys[k] - kReachVsAngTol;
+            g_reachVsYawHi[k] = ys[k] + kReachVsAngTol;
+            g_reachVsVecLo[k] = v[k] - kReachVsVecTol;
+            g_reachVsVecHi[k] = v[k] + kReachVsVecTol;
+        }
+        g_reachVsPitLo = pitch - kReachVsAngTol;
+        g_reachVsPitHi = pitch + kReachVsAngTol;
+    }
+
+    static bool ReachVsAngMatch(float y, float p)
+    {
+        return ((y > g_reachVsYawLo[0] && y < g_reachVsYawHi[0]) ||
+                (y > g_reachVsYawLo[1] && y < g_reachVsYawHi[1]) ||
+                (y > g_reachVsYawLo[2] && y < g_reachVsYawHi[2])) &&
+               p > g_reachVsPitLo && p < g_reachVsPitHi;
+    }
+
+    static bool ReachVsVecMatch(const float* v)
+    {
+        return v[0] > g_reachVsVecLo[0] && v[0] < g_reachVsVecHi[0] &&
+               v[1] > g_reachVsVecLo[1] && v[1] < g_reachVsVecHi[1] &&
+               v[2] > g_reachVsVecLo[2] && v[2] < g_reachVsVecHi[2];
+    }
+
+    static void ReachVsEmit(uintptr_t a, uint8_t kind, uint8_t cls)
+    {
+        if (g_reachVsCandN >= kReachVsMaxCand) { g_reachVsOverflow = true; return; }
+        ReachVsCand& c = g_reachVsCand[g_reachVsCandN++];
+        c.addr = a; c.kind = kind; c.cls = cls; c.alive = 1; c.pad = 0;
+    }
+
+    // Scan [b,e) for both candidate kinds. A region that faults part-way (freed under us) is dropped.
+    static void ReachVsScanRange(uintptr_t b, uintptr_t e, uint8_t cls)
+    {
+        b = (b + 3) & ~static_cast<uintptr_t>(3);
+        if (e <= b + 16) return;
+        const float y0l = g_reachVsYawLo[0], y0h = g_reachVsYawHi[0];
+        const float y1l = g_reachVsYawLo[1], y1h = g_reachVsYawHi[1];
+        const float y2l = g_reachVsYawLo[2], y2h = g_reachVsYawHi[2];
+        const float pl = g_reachVsPitLo, ph = g_reachVsPitHi;
+        const float xl = g_reachVsVecLo[0], xh = g_reachVsVecHi[0];
+        __try
+        {
+            const float* p = reinterpret_cast<const float*>(b);
+            const size_t n = (e - b) / sizeof(float) - 2;
+            for (size_t i = 0; i < n; ++i)
+            {
+                const float f = p[i];
+                if (((f > y0l && f < y0h) || (f > y1l && f < y1h) || (f > y2l && f < y2h)) &&
+                    p[i + 1] > pl && p[i + 1] < ph)
+                    ReachVsEmit(b + i * sizeof(float), kReachVsAng, cls);
+                if (f > xl && f < xh && ReachVsVecMatch(p + i))
+                    ReachVsEmit(b + i * sizeof(float), kReachVsVec, cls);
+            }
+            g_reachVsBytes += e - b;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) { ++g_reachVsFaults; }
+    }
+
+    // Scan [rb,re) minus the (sorted) exclusion intervals.
+    static void ReachVsScanClipped(uintptr_t rb, uintptr_t re, uint8_t cls)
+    {
+        uintptr_t cur = rb;
+        for (int i = 0; i < g_reachVsExclN && cur < re; ++i)
+        {
+            const uintptr_t xb = g_reachVsExclB[i], xe = g_reachVsExclE[i];
+            if (xe <= cur || xb >= re) continue;
+            if (xb > cur) ReachVsScanRange(cur, xb, cls);
+            if (xe > cur) cur = xe;
+        }
+        if (cur < re) ReachVsScanRange(cur, re, cls);
+    }
+
+    static DWORD WINAPI ReachVsWorkerProc(LPVOID)
+    {
+        // Phase 1: the sim's master blocks -- small, and where desired_angles is expected to live.
+        for (int r = 0; r < 2; ++r)
+            if (g_reachRing[r].ok)
+                ReachVsScanRange(g_reachRing[r].master, g_reachRing[r].master + g_reachRing[r].size,
+                                 r == 0 ? kReachVsClsMasterA : kReachVsClsMasterB);
+        g_reachVsCandNMaster = g_reachVsCandN;
+        // Phase 2: every other committed, plainly-readable RW region (write-combined/uncached GPU
+        // mappings are skipped: reading them is pathologically slow and they hold no sim state).
+        MEMORY_BASIC_INFORMATION mbi{};
+        uintptr_t a = 0x10000;
+        while (a < 0x7FFFFFFF0000ull && !g_reachVsOverflow)
+        {
+            if (!VirtualQuery(reinterpret_cast<LPCVOID>(a), &mbi, sizeof(mbi))) break;
+            const uintptr_t rb = reinterpret_cast<uintptr_t>(mbi.BaseAddress);
+            const uintptr_t re = rb + mbi.RegionSize;
+            if (re <= a) break;
+            a = re;
+            if (mbi.State != MEM_COMMIT) continue;
+            const DWORD prot = mbi.Protect;
+            if (prot & (PAGE_GUARD | PAGE_NOCACHE | PAGE_WRITECOMBINE | PAGE_NOACCESS)) continue;
+            if (!(prot & (PAGE_READWRITE | PAGE_WRITECOPY | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)))
+                continue;
+            ReachVsScanClipped(rb, re, mbi.Type == MEM_IMAGE ? kReachVsClsImage : kReachVsClsOther);
+        }
+        g_reachVsWorker.store(2, std::memory_order_release);
+        return 0;
+    }
+
+    static void ReachVsAddExcl(uintptr_t b, uintptr_t e)
+    {
+        if (e <= b || g_reachVsExclN >= kReachVsMaxExcl) return;
+        int i = g_reachVsExclN++;
+        while (i > 0 && g_reachVsExclB[i - 1] > b)
+        {
+            g_reachVsExclB[i] = g_reachVsExclB[i - 1];
+            g_reachVsExclE[i] = g_reachVsExclE[i - 1];
+            --i;
+        }
+        g_reachVsExclB[i] = b;
+        g_reachVsExclE[i] = e;
+    }
+
+    // Every page of [a, a+len) committed and readable.
+    static bool ReachVsCommitted(uintptr_t a, size_t len)
+    {
+        uintptr_t p = a;
+        const uintptr_t e = a + len;
+        while (p < e)
+        {
+            MEMORY_BASIC_INFORMATION mbi{};
+            if (!VirtualQuery(reinterpret_cast<LPCVOID>(p), &mbi, sizeof(mbi))) return false;
+            if (mbi.State != MEM_COMMIT || (mbi.Protect & (PAGE_GUARD | PAGE_NOACCESS))) return false;
+            const uintptr_t next = reinterpret_cast<uintptr_t>(mbi.BaseAddress) + mbi.RegionSize;
+            if (next <= p) return false;
+            p = next;
+        }
+        return true;
+    }
+
+    static bool ReachVsReadRingRaw(uintptr_t mgr, ReachRing& g)
+    {
+        __try
+        {
+            const int    count = *reinterpret_cast<const int*>(mgr + 0xB8);
+            const size_t size  = *reinterpret_cast<const size_t*>(mgr + 0xA0);
+            if (count < 1 || count > 4 || size < 0x1000 || size > 0x40000000) return false;
+            const uintptr_t mobj = *reinterpret_cast<const uintptr_t*>(mgr + 0x90);
+            if (!mobj) return false;
+            g.master = *reinterpret_cast<const uintptr_t*>(mobj + 0x20);
+            for (int i = 0; i < count; ++i)
+            {
+                const uintptr_t sobj = *reinterpret_cast<const uintptr_t*>(mgr + 0x18 + i * 0x18);
+                if (!sobj) return false;
+                g.slot[i] = *reinterpret_cast<const uintptr_t*>(sobj + 0x20);
+                if (!g.slot[i]) return false;
+            }
+            g.slots = count;
+            g.size  = size;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+        return true;
+    }
+
+    static bool ReachVsReadRing(int r)
+    {
+        ReachRing g{};
+        g.mgr = g_reachWpModBase + kReachRingMgrRva[r];
+        if (!ReachVsReadRingRaw(g.mgr, g)) return false;
+        if (!g.master || (g.master & 3) || !ReachVsCommitted(g.master, g.size)) return false;
+        for (int i = 0; i < g.slots; ++i)
+            if (g.slot[i] == g.master || !ReachVsCommitted(g.slot[i], g.size)) return false;
+        g.ok = true;
+        g_reachRing[r] = g;
+        return true;
+    }
+
+    static int ReachVsRingInt(int r, uintptr_t off)
+    {
+        __try { return *reinterpret_cast<const int*>(g_reachRing[r].mgr + off); }
+        __except (EXCEPTION_EXECUTE_HANDLER) { return -1; }
+    }
+
+    // Which ring block holds a? Returns the block base (0 = none); r = ring, blk = -1 master / slot i.
+    static uintptr_t ReachVsLocate(uintptr_t a, int& r, int& blk)
+    {
+        for (r = 0; r < 2; ++r)
+        {
+            const ReachRing& g = g_reachRing[r];
+            if (!g.ok) continue;
+            if (a >= g.master && a < g.master + g.size) { blk = -1; return g.master; }
+            for (int i = 0; i < g.slots; ++i)
+                if (a >= g.slot[i] && a < g.slot[i] + g.size) { blk = i; return g.slot[i]; }
+        }
+        r = -1; blk = -2;
+        return 0;
+    }
+
+    static bool ReachVsReadF(uintptr_t a, float* v, int n)
+    {
+        __try { for (int i = 0; i < n; ++i) v[i] = reinterpret_cast<const float*>(a)[i]; }
+        __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+        return true;
+    }
+
+    static bool ReachVsReadAim(uintptr_t a, float v[3])
+    {
+        if (!ReachVsReadF(a, v, 3)) return false;
+        const float len2 = v[0] * v[0] + v[1] * v[1] + v[2] * v[2];
+        return std::isfinite(len2) && len2 > 0.96f && len2 < 1.04f;
+    }
+
+    struct ReachThreadBasicInfo
+    {
+        LONG      ExitStatus;
+        PVOID     TebBaseAddress;
+        PVOID     UniqueProcess;
+        PVOID     UniqueThread;
+        ULONG_PTR AffinityMask;
+        LONG      Priority;
+        LONG      BasePriority;
+    };
+    using ReachNtQueryInformationThread = LONG (NTAPI*)(HANDLE, ULONG, PVOID, ULONG, PULONG);
+
+    static bool ReachVsTebStack(uintptr_t teb, uintptr_t& lo, uintptr_t& hi)
+    {
+        __try
+        {
+            hi = *reinterpret_cast<const uintptr_t*>(teb + 0x08);        // NT_TIB.StackBase
+            lo = *reinterpret_cast<const uintptr_t*>(teb + 0x1478);      // TEB.DeallocationStack (x64)
+            if (!lo) lo = *reinterpret_cast<const uintptr_t*>(teb + 0x10);   // NT_TIB.StackLimit
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+        return hi > lo && hi - lo < (1ull << 30);
+    }
+
+    // Exclude every thread's stack reservation from the scan; note the sim thread's id (its Win32 start
+    // address is the haloreach thread proc) so the watch log can label its writes.
+    static int ReachVsCollectThreads()
+    {
+        static const auto qit = reinterpret_cast<ReachNtQueryInformationThread>(
+            GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtQueryInformationThread"));
+        if (!qit) return 0;
+        int stacks = 0;
+        const DWORD pid = GetCurrentProcessId();
+        HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+        if (snap == INVALID_HANDLE_VALUE) return 0;
+        THREADENTRY32 te{}; te.dwSize = sizeof(te);
+        if (Thread32First(snap, &te))
+        {
+            do {
+                if (te.th32OwnerProcessID != pid) continue;
+                HANDLE h = OpenThread(THREAD_QUERY_INFORMATION, FALSE, te.th32ThreadID);
+                if (!h) continue;
+                ReachThreadBasicInfo tbi{};
+                uintptr_t lo = 0, hi = 0;
+                if (qit(h, 0 /*ThreadBasicInformation*/, &tbi, sizeof(tbi), nullptr) >= 0 && tbi.TebBaseAddress &&
+                    ReachVsTebStack(reinterpret_cast<uintptr_t>(tbi.TebBaseAddress), lo, hi))
+                {
+                    ReachVsAddExcl(lo, hi);
+                    ++stacks;
+                }
+                PVOID start = nullptr;
+                if (qit(h, 9 /*ThreadQuerySetWin32StartAddress*/, &start, sizeof(start), nullptr) >= 0 &&
+                    reinterpret_cast<uintptr_t>(start) == g_reachWpModBase + kReachSimThreadProcRva)
+                    g_reachVsSimTid = te.th32ThreadID;
+                CloseHandle(h);
+            } while (Thread32Next(snap, &te));
+        }
+        CloseHandle(snap);
+        return stacks;
+    }
+
+    static size_t ReachVsImageSize(uintptr_t base)
+    {
+        __try
+        {
+            auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
+            auto* nt  = reinterpret_cast<const IMAGE_NT_HEADERS64*>(base + dos->e_lfanew);
+            return nt->OptionalHeader.SizeOfImage;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) { return 0; }
+    }
+
+    // Human-readable class of an address for the log.
+    static void ReachVsDescribe(uintptr_t a, uint8_t cls, char* out, size_t n)
+    {
+        if (cls == kReachVsClsMasterA || cls == kReachVsClsMasterB)
+        {
+            const ReachRing& g = g_reachRing[cls == kReachVsClsMasterA ? 0 : 1];
+            snprintf(out, n, "%s+0x%llX", kReachVsClsName[cls], (unsigned long long)(a - g.master));
+            return;
+        }
+        if (cls == kReachVsClsImage)
+        {
+            char mod[96];
+            ReachWpFmtAddr(a, mod, sizeof(mod));
+            snprintf(out, n, "IMAGE %s", mod);
+            return;
+        }
+        MEMORY_BASIC_INFORMATION mbi{};
+        if (VirtualQuery(reinterpret_cast<LPCVOID>(a), &mbi, sizeof(mbi)))
+            snprintf(out, n, "HEAP 0x%llX (alloc 0x%llX +0x%llX)", (unsigned long long)a,
+                     (unsigned long long)reinterpret_cast<uintptr_t>(mbi.AllocationBase),
+                     (unsigned long long)(a - reinterpret_cast<uintptr_t>(mbi.AllocationBase)));
+        else
+            snprintf(out, n, "HEAP 0x%llX", (unsigned long long)a);
+    }
+
+    enum class ReachVsPhase : int { Resolve, Stable1, Scanning, Narrow, Watch, Done };
+    static ReachVsPhase g_reachVsPhase = ReachVsPhase::Resolve;
+    static uintptr_t    g_reachVsAimAddr  = 0;       // MASTER unit+0x214 (the snapshot one in fallback)
+    static bool         g_reachVsFallback = false;   // rings did not validate / unit not inside a slot
+    static int          g_reachVsRingTries = 0;
+    static ULONGLONG    g_reachVsRingNextT = 0;
+    static int32_t      g_reachVsUnit = -1;
+    static float        g_reachVsPrev[3]{};
+    static int          g_reachVsStable = 0;
+    static float        g_reachVsLastRef[3]{};
+    static int          g_reachVsNarrowSteps = 0;
+    static int          g_reachVsAlive = 0;
+    static ULONGLONG    g_reachVsPhaseT0 = 0;
+    static ULONGLONG    g_reachVsHintT = 0;
+
+    static constexpr int       kReachVsStableTicks = 45;     // ~0.5 s of an unchanged master aim at 90 Hz
+    static constexpr float     kReachVsMoveCos     = 0.99863f;   // cos(3 deg): next reference must differ
+    static constexpr ULONGLONG kReachVsBatchMs     = 2000;
+    static constexpr int       kReachVsMaxWatch    = 32;
+
+    struct ReachVsWatch
+    {
+        uintptr_t     addr;
+        uint8_t       kind;
+        uint8_t       cls;
+        bool          ref;          // the master unit aim vector itself (cross-check lane)
+        int           hits;
+        int           nw;
+        ReachVsWriter w[kReachVsWriters];
+    };
+    static ReachVsWatch g_reachVsWatch[kReachVsMaxWatch];
+    static int          g_reachVsWatchN = 0, g_reachVsWatchNext = 0;
+    static int          g_reachVsBatchIdx[4] = { -1, -1, -1, -1 };
+    static bool         g_reachVsBatchActive = false;
+    static ULONGLONG    g_reachVsBatchT0 = 0;
+
+    static void ReachVsRestart(const char* why)
+    {
+        LOG("REACHVS: restarting (%s)", why);
+        g_reachVsPhase = ReachVsPhase::Resolve;
+        g_reachVsAimAddr = 0; g_reachVsFallback = false; g_reachVsUnit = -1;
+        g_reachVsStable = 0; g_reachVsNarrowSteps = 0; g_reachVsCandN = 0; g_reachVsCandNMaster = 0;
+        g_reachVsOverflow = false; g_reachVsBytes = 0; g_reachVsFaults = 0;
+    }
+
+    // Feed one aim sample; true once the aim has held still for kReachVsStableTicks ticks.
+    static bool ReachVsFeedStable(const float v[3])
+    {
+        const float d = fmaxf(fabsf(v[0] - g_reachVsPrev[0]),
+                              fmaxf(fabsf(v[1] - g_reachVsPrev[1]), fabsf(v[2] - g_reachVsPrev[2])));
+        g_reachVsPrev[0] = v[0]; g_reachVsPrev[1] = v[1]; g_reachVsPrev[2] = v[2];
+        g_reachVsStable = (d < 2e-5f) ? g_reachVsStable + 1 : 0;
+        return g_reachVsStable >= kReachVsStableTicks;
+    }
+
+    static void ReachVsAngles(const float v[3], float& yaw, float& pitch)
+    {
+        yaw   = atan2f(v[1], v[0]);
+        pitch = asinf(fmaxf(-1.0f, fminf(1.0f, v[2])));
+    }
+
+    // A reference is only useful if its float pair is rare: level pitch (0.0 is everywhere) or a yaw
+    // on an axis (0, +-pi/2, pi are common constants) floods the scan with coincidences.
+    static bool ReachVsDistinct(float yaw, float pitch)
+    {
+        if (fabsf(pitch) < 0.02f) return false;
+        const float q = 1.57079633f;
+        const float r = fmodf(fabsf(yaw), q);
+        return r > 0.01f && r < q - 0.01f;
+    }
+
+    // Re-check every live candidate against the current windows. Returns survivors; tallies per class.
+    static int ReachVsRecheck(int byCls[2][4])
+    {
+        int alive = 0;
+        for (int i = 0; i < g_reachVsCandN; ++i)
+        {
+            ReachVsCand& c = g_reachVsCand[i];
+            if (!c.alive) continue;
+            float v[3] = {};
+            bool ok = (c.kind == kReachVsAng) ? (ReachVsReadF(c.addr, v, 2) && ReachVsAngMatch(v[0], v[1]))
+                                              : (ReachVsReadF(c.addr, v, 3) && ReachVsVecMatch(v));
+            c.alive = ok ? 1 : 0;
+            if (ok) { ++alive; byCls[c.kind][c.cls]++; }
+        }
+        return alive;
+    }
+
+    static void ReachVsLogCands(const char* tag, int maxLines)
+    {
+        int shown = 0;
+        for (int i = 0; i < g_reachVsCandN && shown < maxLines; ++i)
+        {
+            const ReachVsCand& c = g_reachVsCand[i];
+            if (!c.alive) continue;
+            float v[3] = {};
+            ReachVsReadF(c.addr, v, c.kind == kReachVsAng ? 2 : 3);
+            char where[160];
+            ReachVsDescribe(c.addr, c.cls, where, sizeof(where));
+            if (c.kind == kReachVsAng)
+                LOG("REACHVS %s ANG %s  yaw=%.5f pitch=%.5f", tag, where, v[0], v[1]);
+            else
+                LOG("REACHVS %s VEC %s  (%.5f %.5f %.5f)%s", tag, where, v[0], v[1], v[2],
+                    c.addr == g_reachVsAimAddr ? "  <- master unit+0x214 (reference)" : "");
+            ++shown;
+        }
+    }
+
+    // Order the watch list: master ANG first (the expected answer), the reference (the sim's unit-aim
+    // writer, for cross-checking chains), then other ANG, then other VEC. Ring slots never appear:
+    // their only writer is the publish memcpy.
+    static void ReachVsBuildWatch()
+    {
+        g_reachVsWatchN = 0;
+        g_reachVsWatchNext = 0;
+        auto add = [](uintptr_t a, uint8_t kind, uint8_t cls, bool ref)
+        {
+            if (g_reachVsWatchN >= kReachVsMaxWatch || !a || (a & 3)) return;
+            for (int i = 0; i < g_reachVsWatchN; ++i)
+                if (g_reachVsWatch[i].addr == a) return;
+            ReachVsWatch& w = g_reachVsWatch[g_reachVsWatchN++];
+            w = ReachVsWatch{};
+            w.addr = a; w.kind = kind; w.cls = cls; w.ref = ref;
+        };
+        auto pass = [&](uint8_t kind, uint8_t cls)
+        {
+            for (int i = 0; i < g_reachVsCandN; ++i)
+            {
+                const ReachVsCand& c = g_reachVsCand[i];
+                if (c.alive && c.kind == kind && c.cls == cls && c.addr != g_reachVsAimAddr)
+                    add(c.addr, kind, cls, false);
+            }
+        };
+        pass(kReachVsAng, kReachVsClsMasterA);
+        pass(kReachVsAng, kReachVsClsMasterB);
+        if (!g_reachVsFallback)
+            add(g_reachVsAimAddr, kReachVsVec, kReachVsClsMasterA, true);
+        pass(kReachVsAng, kReachVsClsImage);
+        pass(kReachVsAng, kReachVsClsOther);
+        pass(kReachVsVec, kReachVsClsMasterA);
+        pass(kReachVsVec, kReachVsClsMasterB);
+        pass(kReachVsVec, kReachVsClsImage);
+        pass(kReachVsVec, kReachVsClsOther);
+    }
+
+    static double ReachVsMs(const LARGE_INTEGER& a, const LARGE_INTEGER& b)
+    {
+        LARGE_INTEGER f; QueryPerformanceFrequency(&f);
+        return f.QuadPart ? 1000.0 * static_cast<double>(b.QuadPart - a.QuadPart) / static_cast<double>(f.QuadPart) : 0.0;
+    }
+
+    static void ReachVsArmNextBatch()
+    {
+        uintptr_t a[4] = {};
+        uint32_t mask = 0;
+        for (int b = 0; b < 4; ++b)
+        {
+            g_reachVsBatchIdx[b] = -1;
+            while (g_reachVsWatchNext < g_reachVsWatchN)
+            {
+                const int wi = g_reachVsWatchNext++;
+                if (!ReachWpOwn(g_reachVsWatch[wi].addr)) continue;   // registry full: never arm unowned
+                a[b] = g_reachVsWatch[wi].addr;
+                g_reachVsBatchIdx[b] = wi;
+                g_reachVsDrAddr[b] = a[b];
+                g_reachVsDr[b].hits.store(0, std::memory_order_relaxed);
+                g_reachVsDr[b].nw = 0;
+                mask |= 1u << b;
+                break;
+            }
+        }
+        // Publish the mask BEFORE programming so the very first trap is recorded, not swallowed.
+        g_reachVsArmedMask.store(mask, std::memory_order_release);
+        int nset = 0, nver = 0;
+        LARGE_INTEGER t0, t1;
+        QueryPerformanceCounter(&t0);
+        ReachWpProgramAll4(a, &nset, &nver);
+        QueryPerformanceCounter(&t1);
+        g_reachVsBatchT0 = GetTickCount64();
+        g_reachVsBatchActive = true;
+        LOG("REACHVS watch batch: W[%d] W[%d] W[%d] W[%d] armed on %d threads (%d verified) in %.1f ms%s",
+            g_reachVsBatchIdx[0], g_reachVsBatchIdx[1], g_reachVsBatchIdx[2], g_reachVsBatchIdx[3],
+            nset, nver, ReachVsMs(t0, t1), nver == 0 ? "  [0 verified -> debug registers blocked here]" : "");
+    }
+
+    static void ReachVsCollectBatch()
+    {
+        g_reachVsArmedMask.store(0, std::memory_order_release);   // late traps are now swallowed
+        const uintptr_t zero[4] = {};
+        LARGE_INTEGER t0, t1;
+        QueryPerformanceCounter(&t0);
+        ReachWpProgramAll4(zero, nullptr, nullptr);
+        QueryPerformanceCounter(&t1);
+        for (int b = 0; b < 4; ++b)
+        {
+            const int wi = g_reachVsBatchIdx[b];
+            if (wi < 0) continue;
+            ReachVsDrRec& r = g_reachVsDr[b];
+            for (int spin = 0; spin < 100000 && r.busy.load(std::memory_order_acquire); ++spin)
+                YieldProcessor();
+            ReachVsWatch& w = g_reachVsWatch[wi];
+            w.hits = r.hits.load(std::memory_order_relaxed);
+            w.nw = r.nw;
+            for (int i = 0; i < r.nw; ++i) w.w[i] = r.w[i];
+            g_reachVsDrAddr[b] = 0;
+        }
+        g_reachVsBatchActive = false;
+        LOG("REACHVS watch batch collected (disarm %.1f ms)", ReachVsMs(t0, t1));
+    }
+
+    static void ReachVsSummary()
+    {
+        LOG("REACHVS ===== WATCH RESULTS (%d addresses; sim thread tid=%lu) =====", g_reachVsWatchN,
+            (unsigned long)g_reachVsSimTid);
+        uintptr_t chainFns[16]; int chainN = 0;
+        int verdicts = 0;
+        for (int i = 0; i < g_reachVsWatchN; ++i)
+        {
+            const ReachVsWatch& w = g_reachVsWatch[i];
+            char where[160];
+            ReachVsDescribe(w.addr, w.cls, where, sizeof(where));
+            LOG("REACHVS W[%d] %s %s%s  hits=%d writers=%d", i, w.kind == kReachVsAng ? "ANG" : "VEC", where,
+                w.ref ? " [REFERENCE master unit+0x214]" : "", w.hits, w.nw);
+            for (int k = 0; k < w.nw; ++k)
+            {
+                const ReachVsWriter& wr = w.w[k];
+                char site[96], fn[96] = "-", caller[96] = "-";
+                ReachWpFmtAddr(wr.rip, site, sizeof(site));
+                const uintptr_t fnRva = ReachWpFuncRva(wr.rip);
+                const uintptr_t caRva = wr.nframes > 1 ? ReachWpFuncRva(wr.frames[1]) : 0;
+                if (fnRva) snprintf(fn, sizeof(fn), "haloreach+0x%llX", (unsigned long long)fnRva);
+                if (caRva) snprintf(caller, sizeof(caller), "haloreach+0x%llX", (unsigned long long)caRva);
+                LOG("REACHVS   writer site=%s fn=%s callerFn=%s tid=%lu%s x%d value=(%.5f %.5f)", site, fn, caller,
+                    (unsigned long)wr.tid, wr.tid == g_reachVsSimTid ? " (SIM)" : "", wr.count, wr.val[0], wr.val[1]);
+                bool seen = false;
+                for (int j = 0; j < chainN; ++j) if (chainFns[j] == wr.rip) seen = true;
+                if (!seen && chainN < 16)
+                {
+                    chainFns[chainN++] = wr.rip;
+                    char chain[768];
+                    ReachWpFmtChain(wr.frames, wr.nframes, chain, sizeof(chain));
+                    LOG("REACHVS     chain: %s", chain);
+                }
+                const bool masterAng = w.kind == kReachVsAng &&
+                                       (w.cls == kReachVsClsMasterA || w.cls == kReachVsClsMasterB);
+                if (masterAng && fnRva)
+                {
+                    ++verdicts;
+                    LOG("REACHVS VERDICT: desired_angles candidate %s is written by haloreach code "
+                        "fn=haloreach+0x%llX (caller haloreach+0x%llX)%s -- the direct-drive hook target "
+                        "(overwrite this pair in the MASTER right after that function runs)",
+                        where, (unsigned long long)fnRva, (unsigned long long)caRva,
+                        wr.tid == g_reachVsSimTid ? " on the SIM thread" : "");
+                }
+            }
+        }
+        if (!verdicts)
+            LOG("REACHVS VERDICT: no master (yaw,pitch) candidate was written by haloreach code in the watch "
+                "window -- read the table above (HEAP/IMAGE writers, reference chain) before concluding");
+        LOG("REACHVS DONE. Set reach_dd_watchpoint=0 to silence.");
+    }
+
+    // Mode 3 driver: runs on the engine thread, one step per tick.
+    static void ReachValueScan_Tick()
+    {
+        const int unit = g_reachCamera.playerUnitByOutputUser(0);
+        uint8_t kind = 0;
+        unsigned char* d = unit != -1 ? ReachVehicleObjectData(unit, kind) : nullptr;
+        const bool onFoot = d && kind != kReachObjectKindVehicle;
+        const uintptr_t snapAim = onFoot ? reinterpret_cast<uintptr_t>(d + kReachUnitAimingVectorOffset) : 0;
+
+        // Translate the render thread's unit aim into the master block (same offset in every block).
+        auto masterOf = [](uintptr_t a) -> uintptr_t
+        {
+            int r = -1, blk = -2;
+            const uintptr_t base = ReachVsLocate(a, r, blk);
+            return base ? g_reachRing[r].master + (a - base) : 0;
+        };
+
+        switch (g_reachVsPhase)
+        {
+        case ReachVsPhase::Resolve:
+        {
+            if (!onFoot) return;
+            const ULONGLONG now = GetTickCount64();
+            if (!g_reachRing[0].ok && g_reachVsRingTries < 10)
+            {
+                if (now < g_reachVsRingNextT) return;
+                g_reachVsRingNextT = now + 1000;
+                ++g_reachVsRingTries;
+                for (int r = 0; r < 2; ++r)
+                    if (!g_reachRing[r].ok && ReachVsReadRing(r))
+                    {
+                        const ReachRing& g = g_reachRing[r];
+                        LOG("REACHVS ring %c: mgr=haloreach+0x%llX slots=%d size=0x%llX master=0x%llX "
+                            "slot0=0x%llX slot1=0x%llX slot2=0x%llX slot3=0x%llX counter=%d latest=%d",
+                            'A' + r, (unsigned long long)kReachRingMgrRva[r], g.slots, (unsigned long long)g.size,
+                            (unsigned long long)g.master, (unsigned long long)g.slot[0],
+                            (unsigned long long)g.slot[1], (unsigned long long)g.slot[2],
+                            (unsigned long long)g.slot[3], ReachVsRingInt(r, 0x68), ReachVsRingInt(r, 0x70));
+                    }
+                if (!g_reachRing[0].ok && g_reachVsRingTries < 10) return;   // retry next second
+                if (!g_reachRing[0].ok)
+                    LOG("REACHVS: ring A at haloreach+0x%llX never validated (10 tries) -- layout moved on this build",
+                        (unsigned long long)kReachRingMgrRva[0]);
+            }
+            int r = -1, blk = -2;
+            const uintptr_t base = ReachVsLocate(snapAim, r, blk);
+            float sv[3] = {}, mv[3] = {};
+            const bool snapOk = ReachVsReadAim(snapAim, sv);
+            if (base)
+            {
+                const uintptr_t m = g_reachRing[r].master + (snapAim - base);
+                if (ReachVsReadAim(m, mv))
+                {
+                    g_reachVsAimAddr = m;
+                    g_reachVsFallback = false;
+                    LOG("REACHVS render-thread unit aim 0x%llX = ring %c %s%d +0x%llX -> MASTER unit aim 0x%llX "
+                        "(%.4f %.4f %.4f); snapshot (%.4f %.4f %.4f). ValueAgreement OK.",
+                        (unsigned long long)snapAim, 'A' + r, blk < 0 ? "master" : "slot", blk < 0 ? 0 : blk,
+                        (unsigned long long)(snapAim - base), (unsigned long long)m, mv[0], mv[1], mv[2],
+                        sv[0], sv[1], sv[2]);
+                }
+            }
+            if (!g_reachVsAimAddr)
+            {
+                if (!snapOk) return;
+                g_reachVsAimAddr = snapAim;
+                g_reachVsFallback = true;
+                LOG("REACHVS: the render thread's unit (0x%llX) is not inside any validated ring block, or the "
+                    "master copy failed ValueAgreement -- the ring layout differs on this build. FALLBACK: "
+                    "whole-process scan referenced to the snapshot aim (slower, noisier, still correct).",
+                    (unsigned long long)snapAim);
+            }
+            g_reachVsUnit = unit;
+            g_reachVsStable = 0;
+            g_reachVsPhase = ReachVsPhase::Stable1;
+            g_reachVsPhaseT0 = g_reachVsHintT = now;
+            LOG("REACHVS: hold the aim still ~0.5 s, looking slightly up or down (not level, not along an axis)");
+            return;
+        }
+
+        case ReachVsPhase::Stable1:
+        case ReachVsPhase::Narrow:
+        {
+            if (!onFoot) return;
+            // A frame whose snapshot is outside the rings (masterOf == 0) says nothing; only a DIFFERENT
+            // master location (the unit was recreated) invalidates the reference.
+            const uintptr_t mNow = g_reachVsFallback ? 0 : masterOf(snapAim);
+            if (unit != g_reachVsUnit || (mNow && mNow != g_reachVsAimAddr))
+            {
+                ReachVsRestart("player unit changed (death/respawn/level change)");
+                return;
+            }
+            float v[3];
+            if (!ReachVsReadAim(g_reachVsAimAddr, v)) { g_reachVsStable = 0; return; }
+            const ULONGLONG now = GetTickCount64();
+            if (now - g_reachVsHintT > 20000)
+            {
+                g_reachVsHintT = now;
+                if (g_reachVsPhase == ReachVsPhase::Stable1)
+                    LOG("REACHVS: waiting for a still, distinctive aim (tilt up/down a little and hold)");
+                else
+                    LOG("REACHVS: waiting for a NEW still aim >=3 deg away (turn/look elsewhere and hold) -- "
+                        "%d candidates alive, step %d", g_reachVsAlive, g_reachVsNarrowSteps);
+            }
+            if (!ReachVsFeedStable(v)) return;
+            float yaw, pitch;
+            ReachVsAngles(v, yaw, pitch);
+
+            if (g_reachVsPhase == ReachVsPhase::Stable1)
+            {
+                if (!ReachVsDistinct(yaw, pitch) && now - g_reachVsPhaseT0 < 15000) return;
+                ReachVsSetWindows(yaw, pitch, v);
+                g_reachVsLastRef[0] = v[0]; g_reachVsLastRef[1] = v[1]; g_reachVsLastRef[2] = v[2];
+                // Exclusions: stacks, ring blocks, our own image.
+                g_reachVsExclN = 0;
+                const int stacks = ReachVsCollectThreads();
+                for (int r = 0; r < 2; ++r)
+                {
+                    const ReachRing& g = g_reachRing[r];
+                    if (!g.ok) continue;
+                    ReachVsAddExcl(g.master, g.master + g.size);
+                    for (int i = 0; i < g.slots; ++i) ReachVsAddExcl(g.slot[i], g.slot[i] + g.size);
+                }
+                HMODULE self = nullptr;
+                if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                                       GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                                       reinterpret_cast<LPCWSTR>(&ReachVsWorkerProc), &self) && self)
+                {
+                    const uintptr_t sb = reinterpret_cast<uintptr_t>(self);
+                    ReachVsAddExcl(sb, sb + ReachVsImageSize(sb));
+                }
+                g_reachVsCandN = g_reachVsCandNMaster = 0;
+                g_reachVsOverflow = false; g_reachVsBytes = 0; g_reachVsFaults = 0;
+                g_reachVsWorker.store(1, std::memory_order_release);
+                g_reachVsThread = CreateThread(nullptr, 0, &ReachVsWorkerProc, nullptr, 0, nullptr);
+                if (!g_reachVsThread)
+                {
+                    g_reachVsWorker.store(0, std::memory_order_release);
+                    LOG("REACHVS: CreateThread failed (%lu); value-scan unavailable", GetLastError());
+                    g_reachVsPhase = ReachVsPhase::Done;
+                    return;
+                }
+                g_reachVsPhase = ReachVsPhase::Scanning;
+                g_reachVsPhaseT0 = now;
+                LOG("REACHVS scan 1 started: yaw=%.5f pitch=%.5f vec=(%.5f %.5f %.5f)%s; %d stacks + %d ring blocks "
+                    "excluded; sim thread tid=%lu", yaw, pitch, v[0], v[1], v[2],
+                    ReachVsDistinct(yaw, pitch) ? "" : " [NOT distinctive -- expect many coincidences]",
+                    stacks, g_reachVsExclN - stacks, (unsigned long)g_reachVsSimTid);
+                return;
+            }
+
+            // Narrow: needs a new still aim at least 3 degrees from the last reference.
+            const float dot = v[0] * g_reachVsLastRef[0] + v[1] * g_reachVsLastRef[1] + v[2] * g_reachVsLastRef[2];
+            if (dot > kReachVsMoveCos)
+            {
+                if (now - g_reachVsPhaseT0 > 180000)
+                {
+                    LOG("REACHVS: no new aim in 180 s -- watching the unnarrowed candidates (masters first)");
+                    ReachVsBuildWatch();
+                    g_reachVsPhase = ReachVsPhase::Watch;
+                }
+                return;
+            }
+            ReachVsSetWindows(yaw, pitch, v);
+            g_reachVsLastRef[0] = v[0]; g_reachVsLastRef[1] = v[1]; g_reachVsLastRef[2] = v[2];
+            int byCls[2][4] = {};
+            g_reachVsAlive = ReachVsRecheck(byCls);
+            ++g_reachVsNarrowSteps;
+            g_reachVsStable = 0;
+            g_reachVsPhaseT0 = now;
+            LOG("REACHVS narrow step %d at yaw=%.5f pitch=%.5f: %d alive -- ANG masterA=%d masterB=%d image=%d "
+                "heap=%d | VEC masterA=%d masterB=%d image=%d heap=%d", g_reachVsNarrowSteps, yaw, pitch,
+                g_reachVsAlive, byCls[0][0], byCls[0][1], byCls[0][2], byCls[0][3],
+                byCls[1][0], byCls[1][1], byCls[1][2], byCls[1][3]);
+            if (g_reachVsNarrowSteps >= 3 || (g_reachVsNarrowSteps >= 2 && g_reachVsAlive <= 24))
+            {
+                ReachVsLogCands("survivor", 48);
+                ReachVsBuildWatch();
+                g_reachVsPhase = ReachVsPhase::Watch;
+                LOG("REACHVS: narrowing done -- watching %d addresses in batches of 4 (%llu ms each)",
+                    g_reachVsWatchN, (unsigned long long)kReachVsBatchMs);
+            }
+            return;
+        }
+
+        case ReachVsPhase::Scanning:
+        {
+            if (g_reachVsWorker.load(std::memory_order_acquire) != 2) return;
+            if (g_reachVsThread) { CloseHandle(g_reachVsThread); g_reachVsThread = nullptr; }
+            int n[2][4] = {};
+            for (int i = 0; i < g_reachVsCandN; ++i) n[g_reachVsCand[i].kind][g_reachVsCand[i].cls]++;
+            g_reachVsAlive = g_reachVsCandN;
+            LOG("REACHVS scan 1 done in %.1f s: %.1f MB read, %d faulted regions, %d candidates%s -- "
+                "ANG masterA=%d masterB=%d image=%d heap=%d | VEC masterA=%d masterB=%d image=%d heap=%d",
+                (GetTickCount64() - g_reachVsPhaseT0) / 1000.0, g_reachVsBytes / 1048576.0, g_reachVsFaults,
+                g_reachVsCandN, g_reachVsOverflow ? " [OVERFLOW: heap list truncated; masters complete]" : "",
+                n[0][0], n[0][1], n[0][2], n[0][3], n[1][0], n[1][1], n[1][2], n[1][3]);
+            ReachVsLogCands("scan1", 32);   // masters come first in the list
+            g_reachVsPhase = ReachVsPhase::Narrow;
+            g_reachVsPhaseT0 = g_reachVsHintT = GetTickCount64();
+            g_reachVsStable = 0;
+            LOG("REACHVS: now turn/look to a NEW direction (>=3 deg) and hold still; repeat 2-3 times");
+            return;
+        }
+
+        case ReachVsPhase::Watch:
+        {
+            if (g_reachVsBatchActive)
+            {
+                if (GetTickCount64() - g_reachVsBatchT0 >= kReachVsBatchMs) ReachVsCollectBatch();
+                return;
+            }
+            if (g_reachVsWatchNext < g_reachVsWatchN) { ReachVsArmNextBatch(); return; }
+            ReachVsSummary();
+            g_reachVsPhase = ReachVsPhase::Done;
+            return;
+        }
+
+        case ReachVsPhase::Done:
+        default:
+            return;
+        }
+    }
+
+    static void ReachValueScan_TickGuarded()
+    {
+        static bool s_faulted = false;
+        if (s_faulted) return;
+        __try { ReachValueScan_Tick(); }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            s_faulted = true;
+            LOG("REACHVS: faulted inside the value-scan tick -- lane stopped (no game state was written)");
+        }
+    }
+
     // Runs on the engine thread from the same host as the other Reach probes. DEV, default off.
     void ReachWatchpoint_OnEngineTick()
     {
@@ -25116,12 +26178,13 @@ namespace
         {
             if (g_reachWpArmed.load(std::memory_order_acquire))
             {
-                ReachWpProgramAll(0, nullptr, nullptr);
                 g_reachWpArmed.store(false, std::memory_order_release);
+                ReachWpProgramAll(0, nullptr, nullptr);
             }
+            if (g_reachVsBatchActive)
+                ReachVsCollectBatch();
             return;
         }
-        if (g_reachWpDone) return;
         if (!g_reachCamera.base || !g_reachCamera.playerUnitByOutputUser) return;
         if (!ReachWpResolveModule()) return;
 
@@ -25134,10 +26197,21 @@ namespace
                 LOG("REACHWP: AddVectoredExceptionHandler FAILED; watchpoint locator unavailable");
                 return;
             }
-            LOG("REACHWP: locator active -- watching unit+0x214 writes to find the on-foot control "
-                "updater (module haloreach.dll @ 0x%llX)", (unsigned long long)g_reachWpModBase);
+            if (g_config.reach_dd_watchpoint == 3)
+                LOG("REACHWP: locator active -- mode 3 value-scan for desired_angles in the sim's MASTER "
+                    "game state (module haloreach.dll @ 0x%llX)", (unsigned long long)g_reachWpModBase);
+            else
+                LOG("REACHWP: locator active -- mode %d single-address watch (module haloreach.dll @ 0x%llX)",
+                    g_config.reach_dd_watchpoint, (unsigned long long)g_reachWpModBase);
         }
         if (!g_reachWpVeh) return;
+
+        if (g_config.reach_dd_watchpoint == 3)
+        {
+            ReachValueScan_TickGuarded();
+            return;
+        }
+        if (g_reachWpDone) return;
 
         // Consume a pending capture: resolve to functions, dedup on (writer,caller), log new chains.
         if (g_reachWpHitPending.load(std::memory_order_acquire))
@@ -25160,15 +26234,8 @@ namespace
                 g_reachWpSamples[idx].writerRva = writerRva;
                 g_reachWpSamples[idx].callerRva = callerRva;
                 g_reachWpSamples[idx].count = 0;
-                char chain[512]; int off = 0;
-                for (int i = 0; i < fn && off < static_cast<int>(sizeof(chain)) - 40; ++i)
-                {
-                    const uintptr_t r = frames[i];
-                    const bool in = (r >= g_reachWpModBase && r < g_reachWpModEnd);
-                    off += snprintf(chain + off, sizeof(chain) - off, "%s%s0x%llX",
-                                    i ? " <- " : "", in ? "haloreach+" : "",
-                                    (unsigned long long)(in ? r - g_reachWpModBase : r));
-                }
+                char chain[768];
+                ReachWpFmtChain(frames, fn, chain, sizeof(chain));
                 LOG("REACHWP HIT #%d (tid=%lu) writerFn=haloreach+0x%llX callerFn=haloreach+0x%llX  chain: %s",
                     g_reachWpSampleN, (unsigned long)g_reachWpHitTid, (unsigned long long)writerRva,
                     (unsigned long long)callerRva, chain);
@@ -25201,13 +26268,11 @@ namespace
         // its own thread, so we cover them all). Target chosen by reach_dd_watchpoint:
         //   1 = unit+0x214 -- the DERIVED aim-vector MIRROR (a memcpy state-copy re-stamps it every
         //       frame; found downstream, not the control input).
-        //   2 = player_control[i].desired_angles.yaw (+0x94) -- the CONTROL INPUT. Its on-foot writer
-        //       is the direct-drive hook target. player_control array base = haloreach+0xC026F0, stride
-        //       0xB8, desired_angles yaw@+0x94/pitch@+0x98 (RE'd 2026-09-21 via a .pdata struct-shape
-        //       scan; docs/REACH-DIRECT-DRIVE-RE-2026-09-19.md). ADDR-HYGIENE guarded (ValueAgreement):
-        //       the READ-VERIFY below logs all 4 slots first and auto-selects the radians-plausible
-        //       live one, so a wrong base is visible in the log rather than silently trusted; the
-        //       watchpoint only READS, so even a wrong address cannot corrupt aim.
+        //   2 = player_control[i].desired_angles.yaw (+0x94) at haloreach+0xC026F0 + i*0xB8.
+        //       REFUTED 2026-09-25: the READ-VERIFY below read all four slots as zero in gameplay (its
+        //       ValueAgreement guard doing its job -- nothing was trusted or written). The 0xB8 stride was
+        //       a coincidental struct-shape match; struct SIZES do not transfer HREK->retail. Kept only as
+        //       the record of that dead end -- use mode 3.
         if (!g_reachWpArmed.load(std::memory_order_acquire))
         {
             uintptr_t addr = 0;
@@ -25235,9 +26300,9 @@ namespace
                                 plaus ? "(radians-plausible)" : "(zero/out-of-range)");
                         }
                         s_pcIdx = firstPlaus >= 0 ? firstPlaus : 0;
-                        LOG("REACHWP: player_control base=haloreach+0xC026F0 stride=0xB8; watching slot "
-                            "%d desired_angles.yaw (+0x94)%s", s_pcIdx,
-                            firstPlaus < 0 ? "  [NO plausible slot -- base may be wrong]" : "");
+                        LOG("REACHWP: player_control base=haloreach+0xC026F0 stride=0xB8 (REFUTED 2026-09-25 -- "
+                            "use mode 3); watching slot %d desired_angles.yaw (+0x94)%s", s_pcIdx,
+                            firstPlaus < 0 ? "  [NO plausible slot -- base is wrong]" : "");
                     }
                     addr = pcBase + static_cast<uintptr_t>(s_pcIdx) * stride + 0x94;
                 }
@@ -25252,11 +26317,13 @@ namespace
                             addr = reinterpret_cast<uintptr_t>(d + kReachUnitAimingVectorOffset);
                     }
                 }
-                if (addr)
+                if (addr && ReachWpOwn(addr))
                 {
                     int nset = 0, nver = 0;
-                    ReachWpProgramAll(addr, &nset, &nver);
+                    // Armed BEFORE programming: a thread that writes the instant it is armed must be
+                    // recorded, not swallowed as a late trap (which would also disarm that thread).
                     g_reachWpArmed.store(true, std::memory_order_release);
+                    ReachWpProgramAll(addr, &nset, &nver);
                     LOG("REACHWP: armed DR0 write-watchpoint on 0x%llX (mode %d) across %d threads "
                         "(%d verified) -- waiting for the write%s",
                         (unsigned long long)addr, g_config.reach_dd_watchpoint, nset, nver,

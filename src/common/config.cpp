@@ -1524,10 +1524,11 @@ void ConfigSave()
     fprintf(f, "reach_direct_drive = %d\n\n", g_config.reach_direct_drive);
     fprintf(f, "# Swing angle in degrees for the reach_direct_drive=1 test. (default %d)\n", d.reach_dd_test_deg);
     fprintf(f, "reach_dd_test_deg = %d\n\n", g_config.reach_dd_test_deg);
-    fprintf(f, "# DEV locator: hardware write-watchpoint (logs the on-foot writer's address + call\n");
-    fprintf(f, "# chain so it can be hooked for direct drive). 1 = watch unit+0x214 (derived mirror);\n");
-    fprintf(f, "# 2 = watch player_control.desired_angles (the control input -- the real drive point).\n");
-    fprintf(f, "# Read-only (never changes aim), self-disarms after one capture. Leave at 0. (default %d)\n",
+    fprintf(f, "# DEV locator: hardware write-watchpoints (logs the on-foot writer's address + call\n");
+    fprintf(f, "# chain so it can be hooked for direct drive). 3 = value-scan: finds desired_angles in\n");
+    fprintf(f, "# the sim's master game state, narrows it over 2-3 still aims >=3 deg apart, then logs\n");
+    fprintf(f, "# its writer. 1/2 = older single-address modes (1 sees only a snapshot copy; 2 is\n");
+    fprintf(f, "# refuted). Read-only (never changes aim). Leave at 0. (default %d)\n",
             d.reach_dd_watchpoint);
     fprintf(f, "reach_dd_watchpoint = %d\n\n", g_config.reach_dd_watchpoint);
     fprintf(f, "# -------------------------------------------------------------------\n");
