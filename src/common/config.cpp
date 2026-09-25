@@ -1524,9 +1524,10 @@ void ConfigSave()
     fprintf(f, "reach_direct_drive = %d\n\n", g_config.reach_direct_drive);
     fprintf(f, "# Swing angle in degrees for the reach_direct_drive=1 test. (default %d)\n", d.reach_dd_test_deg);
     fprintf(f, "reach_dd_test_deg = %d\n\n", g_config.reach_dd_test_deg);
-    fprintf(f, "# DEV locator: 1 = hardware write-watchpoint on unit+0x214; logs the on-foot control\n");
-    fprintf(f, "# updater's address + call chain so it can be hooked for direct drive. Read-only\n");
-    fprintf(f, "# (never changes aim), self-disarms after a few captures. Leave at 0. (default %d)\n",
+    fprintf(f, "# DEV locator: hardware write-watchpoint (logs the on-foot writer's address + call\n");
+    fprintf(f, "# chain so it can be hooked for direct drive). 1 = watch unit+0x214 (derived mirror);\n");
+    fprintf(f, "# 2 = watch player_control.desired_angles (the control input -- the real drive point).\n");
+    fprintf(f, "# Read-only (never changes aim), self-disarms after one capture. Leave at 0. (default %d)\n",
             d.reach_dd_watchpoint);
     fprintf(f, "reach_dd_watchpoint = %d\n\n", g_config.reach_dd_watchpoint);
     fprintf(f, "# -------------------------------------------------------------------\n");

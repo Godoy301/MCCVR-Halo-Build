@@ -25180,9 +25180,14 @@ namespace
                 g_reachWpDone = true;
                 ReachWpProgramAll(0, nullptr, nullptr);
                 g_reachWpArmed.store(false, std::memory_order_release);
-                LOG("REACHWP DONE: captured the on-foot unit+0x214 writer. callerFn is the per-frame "
-                    "control updater to hook for the desired_angles drive; writerFn is the 0x214 "
-                    "consumer it calls. Set reach_dd_watchpoint=0 to silence:");
+                if (g_config.reach_dd_watchpoint == 2)
+                    LOG("REACHWP DONE: captured the on-foot player_control.desired_angles writer -- "
+                        "callerFn/writerFn IS the control update to hook for DIRECT DRIVE (overwrite "
+                        "desired_angles right after it runs). Set reach_dd_watchpoint=0 to silence:");
+                else
+                    LOG("REACHWP DONE: captured the on-foot unit+0x214 writer. callerFn is the per-frame "
+                        "control updater to hook for the desired_angles drive; writerFn is the 0x214 "
+                        "consumer it calls. Set reach_dd_watchpoint=0 to silence:");
                 for (int i = 0; i < g_reachWpSampleN; ++i)
                     LOG("REACHWP   [%2dx] writerFn=haloreach+0x%llX callerFn=haloreach+0x%llX",
                         g_reachWpSamples[i].count,
@@ -25192,30 +25197,70 @@ namespace
             }
         }
 
-        // Arm ONCE across every other thread on a freshly resolved unit+0x214 (debug registers are
-        // per-thread; Reach's sim writer is on its own thread, so we cover them all). unit+0x214 is
-        // re-derived every frame, so the watchpoint fires whether or not you are moving.
+        // Arm ONCE across every other thread (debug registers are per-thread; Reach's sim writer is on
+        // its own thread, so we cover them all). Target chosen by reach_dd_watchpoint:
+        //   1 = unit+0x214 -- the DERIVED aim-vector MIRROR (a memcpy state-copy re-stamps it every
+        //       frame; found downstream, not the control input).
+        //   2 = player_control[i].desired_angles.yaw (+0x94) -- the CONTROL INPUT. Its on-foot writer
+        //       is the direct-drive hook target. player_control array base = haloreach+0xC026F0, stride
+        //       0xB8, desired_angles yaw@+0x94/pitch@+0x98 (RE'd 2026-09-21 via a .pdata struct-shape
+        //       scan; docs/REACH-DIRECT-DRIVE-RE-2026-09-19.md). ADDR-HYGIENE guarded (ValueAgreement):
+        //       the READ-VERIFY below logs all 4 slots first and auto-selects the radians-plausible
+        //       live one, so a wrong base is visible in the log rather than silently trusted; the
+        //       watchpoint only READS, so even a wrong address cannot corrupt aim.
         if (!g_reachWpArmed.load(std::memory_order_acquire))
         {
+            uintptr_t addr = 0;
             __try
             {
-                const int unit = g_reachCamera.playerUnitByOutputUser(0);
-                if (unit != -1)
+                if (g_config.reach_dd_watchpoint == 2)
                 {
-                    uint8_t kind = 0;
-                    unsigned char* d = ReachVehicleObjectData(unit, kind);
-                    if (d && kind != kReachObjectKindVehicle)
+                    const uintptr_t pcBase = g_reachWpModBase + 0xC026F0;
+                    const uintptr_t stride = 0xB8;
+                    static bool s_pcVerified = false;
+                    static int s_pcIdx = 0;
+                    if (!s_pcVerified)
                     {
-                        const uintptr_t addr =
-                            reinterpret_cast<uintptr_t>(d + kReachUnitAimingVectorOffset);
-                        int nset = 0, nver = 0;
-                        ReachWpProgramAll(addr, &nset, &nver);
-                        g_reachWpArmed.store(true, std::memory_order_release);
-                        LOG("REACHWP: armed DR0 write-watchpoint on unit+0x214=0x%llX across %d "
-                            "threads (%d verified) -- waiting for the write%s",
-                            (unsigned long long)addr, nset, nver,
-                            nver == 0 ? "  [0 verified -> debug registers blocked here]" : "");
+                        s_pcVerified = true;
+                        int firstPlaus = -1;
+                        for (int i = 0; i < 4; ++i)
+                        {
+                            const float* p = reinterpret_cast<const float*>(pcBase + i * stride + 0x94);
+                            const float yaw = p[0], pitch = p[1];
+                            const bool plaus = yaw > -6.5f && yaw < 6.5f && pitch > -1.7f && pitch < 1.7f
+                                               && (yaw != 0.0f || pitch != 0.0f);
+                            if (plaus && firstPlaus < 0) firstPlaus = i;
+                            LOG("REACHWP PC[%d] @0x%llX yaw=%.4f pitch=%.4f %s", i,
+                                (unsigned long long)(pcBase + i * stride), yaw, pitch,
+                                plaus ? "(radians-plausible)" : "(zero/out-of-range)");
+                        }
+                        s_pcIdx = firstPlaus >= 0 ? firstPlaus : 0;
+                        LOG("REACHWP: player_control base=haloreach+0xC026F0 stride=0xB8; watching slot "
+                            "%d desired_angles.yaw (+0x94)%s", s_pcIdx,
+                            firstPlaus < 0 ? "  [NO plausible slot -- base may be wrong]" : "");
                     }
+                    addr = pcBase + static_cast<uintptr_t>(s_pcIdx) * stride + 0x94;
+                }
+                else
+                {
+                    const int unit = g_reachCamera.playerUnitByOutputUser(0);
+                    if (unit != -1)
+                    {
+                        uint8_t kind = 0;
+                        unsigned char* d = ReachVehicleObjectData(unit, kind);
+                        if (d && kind != kReachObjectKindVehicle)
+                            addr = reinterpret_cast<uintptr_t>(d + kReachUnitAimingVectorOffset);
+                    }
+                }
+                if (addr)
+                {
+                    int nset = 0, nver = 0;
+                    ReachWpProgramAll(addr, &nset, &nver);
+                    g_reachWpArmed.store(true, std::memory_order_release);
+                    LOG("REACHWP: armed DR0 write-watchpoint on 0x%llX (mode %d) across %d threads "
+                        "(%d verified) -- waiting for the write%s",
+                        (unsigned long long)addr, g_config.reach_dd_watchpoint, nset, nver,
+                        nver == 0 ? "  [0 verified -> debug registers blocked here]" : "");
                 }
             }
             __except (EXCEPTION_EXECUTE_HANDLER) { }
