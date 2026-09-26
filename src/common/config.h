@@ -595,6 +595,11 @@ struct Config
     //       install the hook; the aim stick is neutralized while it runs. Verify replication with a
     //       co-op host-follow test. (reach_dd_test_deg is ignored in mode 3.)
     // Co-op host-follow (does the write REPLICATE?) is a SEPARATE later step for modes 1/2.
+    //   4 = PERSISTENCE TEST of the sim's MASTER player_control.desired_angles (ring A master
+    //       +0x2417C, found by reach_dd_watchpoint=3): holds the aim stick neutral, checks the pair
+    //       against the master unit aim (no write if they disagree), writes yaw+reach_dd_test_deg and
+    //       pitch+-10deg ONCE, logs whether it persisted and steered the aim (REACHDDP ...), then
+    //       writes the original back and releases the stick. One-shot per session.
     int reach_direct_drive = 0;
     // Swing angle in degrees for the reach_direct_drive=1 test (about world-up). (default 45)
     int reach_dd_test_deg = 45;

@@ -24834,9 +24834,15 @@ namespace
     // at the swing angle. Value-agreement + SEH guarded. This is the SOLO half of the direct-drive
     // proof; replication (co-op host-follow) is a separate later step. The stick loop is suppressed
     // for Reach while this is on (input.cpp), so the write is the only aim influence.
+    // NOTE (2026-09-25): modes 1/2 write the unit the RENDER thread sees, which is a published
+    // SNAPSHOT of the game state -- overwritten on the next publish, so "persist=OVERWRITTEN" here says
+    // nothing about the sim. Mode 4 (ReachDdp_OnEngineTick) tests the sim's MASTER desired_angles.
+    static void ReachDdp_OnEngineTick(bool active);   // mode 4, defined with the value-scan helpers
     void ReachDirectDrive_OnEngineTick()
     {
         const int mode = g_config.reach_direct_drive;
+        ReachDdp_OnEngineTick(mode == 4);   // mode 4: MASTER desired_angles persistence test (one-shot)
+        if (mode == 4) return;
         static int s_active = 0;
         static float s_tgt[3] = {0.0f, 0.0f, 0.0f};
         static uint64_t s_logMs = 0;
@@ -26156,6 +26162,316 @@ namespace
         case ReachVsPhase::Done:
         default:
             return;
+        }
+    }
+
+    // ========================================================================
+    // reach_direct_drive=4: MASTER desired_angles PERSISTENCE TEST (DEV, one-shot, default off).
+    // ------------------------------------------------------------------------
+    // The value-scan (reach_dd_watchpoint=3, 2026-09-25) located player_control.desired_angles in the
+    // sim's MASTER game state -- ring A master +0x2417C (yaw) / +0x24180 (pitch) -- and showed its writer
+    // 0x6375C ACCUMULATES (desired += stick delta). If that is right, ONE external write must persist:
+    // the next tick adds the (neutral) stick delta to OUR value, and everything built from it (unit aim,
+    // the published snapshots, the view) follows. This proves or refutes that before any hook:
+    //   1. hold the aim stick neutral (input.cpp) so nothing else steers the aim;
+    //   2. wait for a still aim; ValueAgreement: the pair at +0x2417C must equal the MASTER unit aim's
+    //      yaw/pitch, else FAIL CLOSED with no write;
+    //   3. write yaw + reach_dd_test_deg and pitch +-10 deg ONCE. Re-write only if the value came back
+    //      exactly as it was, which means the sim's own read-modify-write swallowed ours;
+    //   4. verdict per axis after 3 s: PERSISTED (the pair still holds our value), CONSUMED (the master
+    //      unit aim turned to it), RENDERED (the render thread's snapshot followed);
+    //   5. write the original pair back, verify, release the stick.
+    // Any change to the pair that we did not make is logged: that is what a competing writer looks like.
+    // ADDR-HYGIENE: dev-only + guarded. +0x2417C is a measurement of one build; step 2's ValueAgreement
+    // is what makes writing it safe, and the write is one-shot and restored.
+    // ========================================================================
+    static constexpr uintptr_t kReachPcDesiredYawOff = 0x2417C;   // in ring A's master block; pitch +4
+    static constexpr float     kReachDdpPitchSwing   = 0.17453293f;   // 10 deg
+
+    enum class ReachDdpPhase : int { Resolve, Settle, Verify, Restore, Done };
+    static ReachDdpPhase     g_reachDdpPhase = ReachDdpPhase::Resolve;
+    static std::atomic<bool> g_reachDdpOwnsAim{false};
+    static uintptr_t         g_reachDdpDesired = 0;   // master desired yaw (pitch at +4)
+    static uintptr_t         g_reachDdpAim = 0;       // master unit aim vector (unit+0x214)
+    static int32_t           g_reachDdpUnit = -1;
+    static float             g_reachDdpPrev[3]{};
+    static int               g_reachDdpStable = 0;
+    static float             g_reachDdpY0 = 0.0f, g_reachDdpP0 = 0.0f, g_reachDdpTy = 0.0f, g_reachDdpTp = 0.0f;
+    static float             g_reachDdpLast[2]{};
+    static ULONGLONG         g_reachDdpT0 = 0, g_reachDdpTw = 0, g_reachDdpNextLogT = 0;
+    static int               g_reachDdpWrites = 0, g_reachDdpForeign = 0, g_reachDdpSample = 0;
+    static bool              g_reachDdpRetryChecked = false;
+    static bool              g_reachDdpPass = false;
+
+    static float ReachAngDist(float a, float b)
+    {
+        float d = fmodf(a - b, 6.28318531f);
+        if (d > 3.14159265f) d -= 6.28318531f;
+        if (d < -3.14159265f) d += 6.28318531f;
+        return fabsf(d);
+    }
+
+    static bool ReachDdpWritePair(uintptr_t a, float yaw, float pitch)
+    {
+        __try
+        {
+            float* p = reinterpret_cast<float*>(a);
+            p[0] = yaw;
+            p[1] = pitch;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+        return true;
+    }
+
+    static void ReachDdpFinish(const char* why)
+    {
+        g_reachDdpOwnsAim.store(false, std::memory_order_release);
+        g_reachDdpPhase = ReachDdpPhase::Done;
+        LOG("REACHDDP: done -- %s. Aim stick released. Set reach_direct_drive=0 to silence.", why);
+    }
+
+    // Start a write (or restore) and its 3 s observation window.
+    static bool ReachDdpBeginWrite(float yaw, float pitch, ReachDdpPhase next, ULONGLONG now)
+    {
+        if (!ReachDdpWritePair(g_reachDdpDesired, yaw, pitch)) return false;
+        g_reachDdpWrites = 1;
+        g_reachDdpTw = now;
+        g_reachDdpLast[0] = yaw; g_reachDdpLast[1] = pitch;
+        g_reachDdpForeign = 0;
+        g_reachDdpSample = 0;
+        g_reachDdpRetryChecked = false;
+        g_reachDdpPhase = next;
+        return true;
+    }
+
+    static void ReachDdp_Tick(ULONGLONG now)
+    {
+        const int unit = g_reachCamera.playerUnitByOutputUser(0);
+        uint8_t kind = 0;
+        unsigned char* d = unit != -1 ? ReachVehicleObjectData(unit, kind) : nullptr;
+        const bool onFoot = d && kind != kReachObjectKindVehicle;
+        const uintptr_t snapAim = onFoot ? reinterpret_cast<uintptr_t>(d + kReachUnitAimingVectorOffset) : 0;
+
+        switch (g_reachDdpPhase)
+        {
+        case ReachDdpPhase::Resolve:
+        {
+            if (!onFoot) return;
+            if (!g_reachRing[0].ok && !ReachVsReadRing(0))
+            {
+                if (now >= g_reachDdpNextLogT)
+                {
+                    g_reachDdpNextLogT = now + 5000;
+                    LOG("REACHDDP: ring A (haloreach+0x%llX) does not validate yet -- waiting",
+                        (unsigned long long)kReachRingMgrRva[0]);
+                }
+                return;
+            }
+            int r = -1, blk = -2;
+            const uintptr_t base = ReachVsLocate(snapAim, r, blk);
+            if (!base || r != 0)
+            {
+                ReachDdpFinish("FAIL CLOSED: the render thread's unit is not inside ring A, so its master copy "
+                               "cannot be located on this build -- no write");
+                return;
+            }
+            if (kReachPcDesiredYawOff + 8 > g_reachRing[0].size)
+            {
+                ReachDdpFinish("FAIL CLOSED: ring A is smaller than the desired_angles offset -- no write");
+                return;
+            }
+            float v[3];
+            const uintptr_t aim = g_reachRing[0].master + (snapAim - base);
+            if (!ReachVsReadAim(aim, v))
+            {
+                ReachDdpFinish("FAIL CLOSED: the master unit aim is not a unit vector -- no write");
+                return;
+            }
+            g_reachDdpAim = aim;
+            g_reachDdpDesired = g_reachRing[0].master + kReachPcDesiredYawOff;
+            g_reachDdpUnit = unit;
+            g_reachDdpStable = 0;
+            g_reachDdpT0 = now;
+            g_reachDdpOwnsAim.store(true, std::memory_order_release);   // stick neutral from here on
+            g_reachDdpPhase = ReachDdpPhase::Settle;
+            LOG("REACHDDP: master unit aim 0x%llX, desired_angles 0x%llX (ring A master +0x%llX); aim stick "
+                "held neutral -- waiting for a still aim", (unsigned long long)aim,
+                (unsigned long long)g_reachDdpDesired, (unsigned long long)kReachPcDesiredYawOff);
+            return;
+        }
+
+        case ReachDdpPhase::Settle:
+        {
+            if (!onFoot || unit != g_reachDdpUnit)
+            {
+                ReachDdpFinish("the player unit changed before the write -- nothing written");
+                return;
+            }
+            float v[3];
+            if (!ReachVsReadAim(g_reachDdpAim, v)) return;
+            const float dd = fmaxf(fabsf(v[0] - g_reachDdpPrev[0]),
+                                   fmaxf(fabsf(v[1] - g_reachDdpPrev[1]), fabsf(v[2] - g_reachDdpPrev[2])));
+            g_reachDdpPrev[0] = v[0]; g_reachDdpPrev[1] = v[1]; g_reachDdpPrev[2] = v[2];
+            g_reachDdpStable = dd < 2e-5f ? g_reachDdpStable + 1 : 0;
+            if (g_reachDdpStable < kReachVsStableTicks || now - g_reachDdpT0 < 750)
+            {
+                if (now - g_reachDdpT0 > 20000)
+                    ReachDdpFinish("the aim never held still for 20 s with the stick neutral (something else "
+                                   "is steering it) -- nothing written");
+                return;
+            }
+            float yaw, pitch;
+            ReachVsAngles(v, yaw, pitch);
+            float dp[2] = {};
+            if (!ReachVsReadF(g_reachDdpDesired, dp, 2))
+            {
+                ReachDdpFinish("FAIL CLOSED: the desired_angles pair is unreadable -- no write");
+                return;
+            }
+            const float ey = ReachAngDist(dp[0], yaw), ep = fabsf(dp[1] - pitch);
+            LOG("REACHDDP ValueAgreement: desired=(%.5f %.5f) master-unit-aim=(%.5f %.5f) err=(%.5f %.5f) rad",
+                dp[0], dp[1], yaw, pitch, ey, ep);
+            if (ey > 0.01f || ep > 0.01f)
+            {
+                ReachDdpFinish("FAIL CLOSED: +0x2417C does not hold desired_angles here (ValueAgreement "
+                               "failed) -- no write");
+                return;
+            }
+            g_reachDdpY0 = dp[0];
+            g_reachDdpP0 = dp[1];
+            const float dy = static_cast<float>(g_config.reach_dd_test_deg) * 0.01745329f;
+            g_reachDdpTy = (fabsf(g_reachDdpY0 + dy) < 3.04f) ? g_reachDdpY0 + dy : g_reachDdpY0 - dy;
+            g_reachDdpTp = (g_reachDdpP0 > 0.0f) ? g_reachDdpP0 - kReachDdpPitchSwing
+                                                 : g_reachDdpP0 + kReachDdpPitchSwing;
+            if (!ReachDdpBeginWrite(g_reachDdpTy, g_reachDdpTp, ReachDdpPhase::Verify, now))
+            {
+                ReachDdpFinish("the write faulted -- nothing changed");
+                return;
+            }
+            LOG("REACHDDP WRITE: desired (%.5f %.5f) -> (%.5f %.5f) [yaw %+.1f deg, pitch %+.1f deg] -- ONE "
+                "write into the sim's master, then hands off", g_reachDdpY0, g_reachDdpP0, g_reachDdpTy,
+                g_reachDdpTp, (g_reachDdpTy - g_reachDdpY0) * 57.29578f, (g_reachDdpTp - g_reachDdpP0) * 57.29578f);
+            return;
+        }
+
+        case ReachDdpPhase::Verify:
+        case ReachDdpPhase::Restore:
+        {
+            const bool restoring = g_reachDdpPhase == ReachDdpPhase::Restore;
+            const float wantY = restoring ? g_reachDdpY0 : g_reachDdpTy;
+            const float wantP = restoring ? g_reachDdpP0 : g_reachDdpTp;
+            const float fromY = restoring ? g_reachDdpTy : g_reachDdpY0;
+            const float fromP = restoring ? g_reachDdpTp : g_reachDdpP0;
+            if (unit != g_reachDdpUnit)
+            {
+                ReachDdpFinish(restoring ? "the player unit changed during the restore"
+                                         : "the player unit changed mid-test (death?) -- no verdict, no restore");
+                return;
+            }
+            float dp[2] = {};
+            if (!ReachVsReadF(g_reachDdpDesired, dp, 2))
+            {
+                ReachDdpFinish("the desired_angles pair became unreadable mid-test");
+                return;
+            }
+            // Anything that changes the pair besides us is a competing writer: log the first few.
+            if (ReachAngDist(dp[0], g_reachDdpLast[0]) > 1e-4f || fabsf(dp[1] - g_reachDdpLast[1]) > 1e-4f)
+            {
+                if (++g_reachDdpForeign <= 4)
+                    LOG("REACHDDP: the pair changed without us: (%.5f %.5f) -> (%.5f %.5f) at +%llu ms",
+                        g_reachDdpLast[0], g_reachDdpLast[1], dp[0], dp[1],
+                        (unsigned long long)(now - g_reachDdpTw));
+                g_reachDdpLast[0] = dp[0]; g_reachDdpLast[1] = dp[1];
+            }
+            // A write swallowed by the sim's own read-modify-write comes back EXACTLY as it was before we
+            // wrote; only that pattern is retried, so a real revert is never masked.
+            if (!g_reachDdpRetryChecked && now - g_reachDdpTw >= 150)
+            {
+                g_reachDdpRetryChecked = true;
+                const bool swallowed = ReachAngDist(dp[0], fromY) < 1e-5f && fabsf(dp[1] - fromP) < 1e-5f;
+                if (swallowed && g_reachDdpWrites < 3)
+                {
+                    ReachDdpWritePair(g_reachDdpDesired, wantY, wantP);
+                    ++g_reachDdpWrites;
+                    g_reachDdpLast[0] = wantY; g_reachDdpLast[1] = wantP;
+                    g_reachDdpRetryChecked = false;
+                    g_reachDdpTw = now;
+                    LOG("REACHDDP: write #%d -- the previous one was swallowed by the sim's read-modify-write",
+                        g_reachDdpWrites);
+                    return;
+                }
+            }
+            static constexpr ULONGLONG kSampleMs[3] = { 500, 1500, 3000 };
+            if (g_reachDdpSample >= 3 || now - g_reachDdpTw < kSampleMs[g_reachDdpSample]) return;
+            float mv[3] = {}, sv[3] = {};
+            float my = 0, mp = 0, sy = 0, sp = 0;
+            const bool mok = ReachVsReadAim(g_reachDdpAim, mv);
+            const bool sok = snapAim && ReachVsReadAim(snapAim, sv);
+            if (mok) ReachVsAngles(mv, my, mp);
+            if (sok) ReachVsAngles(sv, sy, sp);
+            LOG("REACHDDP %s +%llu ms: desired=(%.5f %.5f) want=(%.5f %.5f) | master unit aim=(%.5f %.5f)%s | "
+                "render snapshot=(%.5f %.5f)%s", restoring ? "restore" : "verify",
+                (unsigned long long)(now - g_reachDdpTw), dp[0], dp[1], wantY, wantP, my, mp, mok ? "" : "?",
+                sy, sp, sok ? "" : "?");
+            ++g_reachDdpSample;
+            if (g_reachDdpSample < 3) return;
+
+            const bool persY = ReachAngDist(dp[0], wantY) < 0.01f, persP = fabsf(dp[1] - wantP) < 0.01f;
+            const bool consY = mok && ReachAngDist(my, wantY) < 0.02f, consP = mok && fabsf(mp - wantP) < 0.02f;
+            const bool rendY = sok && ReachAngDist(sy, wantY) < 0.02f, rendP = sok && fabsf(sp - wantP) < 0.02f;
+            if (!restoring)
+            {
+                g_reachDdpPass = persY && consY && persP && consP;
+                LOG("REACHDDP VERDICT yaw: %s %s %s | pitch: %s %s %s | %d write(s), %d change(s) by others",
+                    persY ? "PERSISTED" : "REVERTED", consY ? "CONSUMED" : "NOT-CONSUMED",
+                    rendY ? "RENDERED" : "not-rendered", persP ? "PERSISTED" : "REVERTED",
+                    consP ? "CONSUMED" : "NOT-CONSUMED", rendP ? "RENDERED" : "not-rendered",
+                    g_reachDdpWrites, g_reachDdpForeign);
+                if (g_reachDdpPass)
+                    LOG("REACHDDP PASS: one write to the MASTER desired_angles steered the sim and stayed -- this "
+                        "accumulator is the direct-drive target (write it on the sim thread after 0x6375C runs)");
+                else
+                    LOG("REACHDDP FAIL: see the per-axis verdict and the 'changed without us' lines above");
+                if (!ReachDdpBeginWrite(g_reachDdpY0, g_reachDdpP0, ReachDdpPhase::Restore, now))
+                    ReachDdpFinish("the restore write faulted");
+                return;
+            }
+            const bool restored = persY && persP && consY && consP;
+            ReachDdpFinish(restored ? (g_reachDdpPass ? "PASS; original aim restored and verified"
+                                                      : "FAIL; original aim restored and verified")
+                                    : "restore did NOT fully take (see the last restore line)");
+            return;
+        }
+
+        case ReachDdpPhase::Done:
+        default:
+            return;
+        }
+    }
+
+    // Engine-thread entry for reach_direct_drive=4. When the mode is switched off mid-test, the stick is
+    // released at once; the pair keeps whatever it held (restore needs the running test).
+    static void ReachDdp_OnEngineTick(bool active)
+    {
+        static bool s_faulted = false;
+        if (!active)
+        {
+            if (g_reachDdpOwnsAim.load(std::memory_order_acquire))
+            {
+                g_reachDdpOwnsAim.store(false, std::memory_order_release);
+                LOG("REACHDDP: mode switched off mid-test -- aim stick released");
+            }
+            return;
+        }
+        if (s_faulted || g_reachDdpPhase == ReachDdpPhase::Done) return;
+        if (!g_reachCamera.base || !g_reachCamera.playerUnitByOutputUser) return;
+        if (!ReachWpResolveModule()) return;
+        __try { ReachDdp_Tick(GetTickCount64()); }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            s_faulted = true;
+            g_reachDdpOwnsAim.store(false, std::memory_order_release);
+            LOG("REACHDDP: faulted inside the test tick -- lane stopped, aim stick released");
         }
     }
 
@@ -46605,6 +46921,13 @@ extern "C" void ReachPcApplyDesiredAngles(void* pc)
     if (now - s_last >= 1000) { s_last = now;
         LOG("REACHDRIVE apply DETOUR-RAN armed=%d pcnull=%d valid=%d age=%llu yaw=%.3f pitch=%.3f wrote=%d n/s=%llu",
             (int)g_reachPcDriveArmed, pc ? 0 : 1, valid, age, yaw, pitch, wrote, s_n); s_n = 0; }
+}
+
+// True while the reach_direct_drive=4 persistence test owns Reach's aim: input.cpp then holds the
+// aim stick neutral so the one-shot MASTER desired_angles write is the only influence on aim.
+bool Game_ReachDdTestOwnsAim()
+{
+    return g_reachDdpOwnsAim.load(std::memory_order_acquire);
 }
 #endif
 bool Game_ComputeAimStick(float& outRx, float& outRy)

@@ -133,6 +133,9 @@ void Game_ToggleVrAim();        // Insert: right controller steers the weapon ai
 // the right-stick deflection (-1..1) that turns the game's aim toward the
 // right controller ray; false = leave the player's real stick alone.
 bool Game_ComputeAimStick(float& outRx, float& outRy);
+// DEV (reach_direct_drive=4): true while the MASTER desired_angles persistence test owns Reach's aim;
+// the XInput hook then holds the aim stick neutral. Defined only in experimental Reach builds.
+bool Game_ReachDdTestOwnsAim();
 // C-H2-41. True only while Halo 2's controller-owned aim/weapon feature is
 // requested; tracking loss still makes each call fail open independently.
 bool Game_Halo2ControllerAimActive();

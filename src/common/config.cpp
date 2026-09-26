@@ -1520,9 +1520,11 @@ void ConfigSave()
     fprintf(f, "# field by reach_dd_test_deg each tick; if that field drives the SHOT, bullets land that\n");
     fprintf(f, "# many degrees off your reticle. 3 = ACTIVE DIRECT DRIVE: the VR aim writes the game's\n");
     fprintf(f, "# replicated control angles directly (crisp, multiplayer-correct); needs a relaunch to\n");
-    fprintf(f, "# arm. Leave at 0 unless testing. (default %d)\n", d.reach_direct_drive);
+    fprintf(f, "# arm. 4 = PERSISTENCE TEST: one write to the sim's own control angles, checks that it\n");
+    fprintf(f, "# sticks and turns your view, then puts your aim back (your view jumps briefly; the\n");
+    fprintf(f, "# stick is ignored while it runs). Leave at 0 unless testing. (default %d)\n", d.reach_direct_drive);
     fprintf(f, "reach_direct_drive = %d\n\n", g_config.reach_direct_drive);
-    fprintf(f, "# Swing angle in degrees for the reach_direct_drive=1 test. (default %d)\n", d.reach_dd_test_deg);
+    fprintf(f, "# Swing angle in degrees for the reach_direct_drive=1 and =4 tests. (default %d)\n", d.reach_dd_test_deg);
     fprintf(f, "reach_dd_test_deg = %d\n\n", g_config.reach_dd_test_deg);
     fprintf(f, "# DEV locator: hardware write-watchpoints (logs the on-foot writer's address + call\n");
     fprintf(f, "# chain so it can be hooked for direct drive). 3 = value-scan: finds desired_angles in\n");
