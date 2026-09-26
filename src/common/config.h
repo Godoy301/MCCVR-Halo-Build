@@ -589,11 +589,14 @@ struct Config
     //       reach_dd_test_deg degrees about world-up into the desired-aim field, while you aim
     //       normally. If that field drives the SHOT, bullets land reach_dd_test_deg off your reticle
     //       (proof with no suppression confound); if not, shots go to the reticle as usual.
-    //   3 = ACTIVE DIRECT DRIVE (the real thing): hooks main_player_control_update and writes the VR
-    //       aim into player_control->state.desired_angles (yaw/pitch) -- upstream of the derived aim
-    //       vector AND of replication, so aim is crisp and multiplayer-correct. Requires a relaunch to
-    //       install the hook; the aim stick is neutralized while it runs. Verify replication with a
-    //       co-op host-follow test. (reach_dd_test_deg is ignored in mode 3.)
+    //   3 = ACTIVE DIRECT DRIVE (the real thing): hooks the per-user control update haloreach+0x6375C
+    //       (the desired_angles ACCUMULATOR, proven 2026-09-26) and, on the sim thread, writes the VR aim
+    //       into player_control.desired_angles (yaw/pitch) -- upstream of the derived aim vector AND of
+    //       replication, so aim is crisp and multiplayer-correct. Requires a relaunch to install the hook.
+    //       Writes start only after an arm-gate validates player_control (render TLS -> ring A master ==
+    //       sim TLS, plus ValueAgreement with the unit aim); the aim stick is neutralized only while it
+    //       is actually writing, so vehicles/menus keep the stick servo. Verify replication with a co-op
+    //       host-follow test. (reach_dd_test_deg is ignored in mode 3.)
     // Co-op host-follow (does the write REPLICATE?) is a SEPARATE later step for modes 1/2.
     //   4 = PERSISTENCE TEST of the sim's MASTER player_control.desired_angles (ring A master
     //       +0x2417C, found by reach_dd_watchpoint=3): holds the aim stick neutral, checks the pair
