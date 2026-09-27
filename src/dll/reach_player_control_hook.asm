@@ -10,14 +10,20 @@
 ; logs its state. Naked so the native ABI (rcx + xmm1..xmm3, integer return in rax) is forwarded
 ; byte-exact. No stack arguments exist, so shifting rsp here cannot misplace any.
 ; No allocation, logging, locks, file I/O or scans here (those live in the C callee).
+; PROC FRAME + .allocstack give it a .pdata/unwind entry. Two things depend on that: an exception
+; unwinding through this frame (it moves rsp, so without unwind info the unwinder reads a garbage
+; return address), and the Reach teardown's ingress scan, which finds this detour's code range with
+; RtlLookupFunctionEntry before it may remove the hook (ScanForReachDetourIngress in game.cpp).
 option casemap:none
 
 EXTERN g_reachPcOrig:QWORD                ; MinHook trampoline to the native control update
 EXTERN ReachPcApplyForUser:PROC           ; void ReachPcApplyForUser(int user /*ecx*/)
 
 .code
-ReachPlayerControlHook PROC
+ReachPlayerControlHook PROC FRAME
     sub  rsp, 38h                         ; 20h shadow + saves + align: entry rsp%16==8 -> here %16==0
+    .allocstack 38h
+    .endprolog
     mov  QWORD PTR [rsp+30h], rcx         ; save the user index across the native call (rcx is volatile)
     call QWORD PTR [g_reachPcOrig]        ; native runs (rcx/xmm1..xmm3 still original); ret in rax
     mov  QWORD PTR [rsp+28h], rax         ; preserve native's return value across the C call

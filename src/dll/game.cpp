@@ -29168,7 +29168,7 @@ namespace
     bool ScanForReachDetourIngress(bool& busy)
     {
         static bool rangesResolved = false;
-        static ReachDetourCodeRange ranges[18]{};
+        static ReachDetourCodeRange ranges[19]{};
         if (!rangesResolved)
         {
             const void* functions[] = {
@@ -29190,6 +29190,9 @@ namespace
                 reinterpret_cast<const void*>(&ReachContactUpdateDetour),
                 reinterpret_cast<const void*>(&ReachContactDamageDetour),
                 reinterpret_cast<const void*>(&ReachHudAnchorBasisDetour),
+                // Direct drive's naked asm detour: its PROC FRAME gives it the .pdata entry that
+                // ResolveReachDetourCodeRange needs (without one, every Reach teardown would fail).
+                reinterpret_cast<const void*>(&ReachPlayerControlHook),
             };
             static_assert(_countof(functions) == _countof(ranges));
             bool resolved = true;
@@ -29221,6 +29224,7 @@ namespace
             g_reachContact.target,
             g_reachContact.damageTarget,
             g_reachHudAnchorBasisTarget,
+            g_reachPcTarget,
         };
         void* const trampolines[] = {
             reinterpret_cast<void*>(g_reachOrigMainRenderView),
@@ -29241,6 +29245,7 @@ namespace
             reinterpret_cast<void*>(g_reachContact.original),
             reinterpret_cast<void*>(g_reachContact.damageOriginal),
             reinterpret_cast<void*>(g_reachOrigHudAnchorBasis),
+            g_reachPcOrig,
         };
         static_assert(_countof(targets) == _countof(ranges));
         static_assert(_countof(trampolines) == _countof(ranges));
@@ -29353,8 +29358,16 @@ namespace
         g_reachWorldCollision.installed.store(
             false, std::memory_order_release);
         RevokeReachFiringOriginFeature();
+        // Direct drive: make the control-update detour a pass-through first (no setpoint, not armed),
+        // and forget the proven address -- the next title session must prove its own. Without this the
+        // gate stayed armed across a module reload while the new module had no hook, so the provider
+        // chose WriteState and held the stick neutral with nothing writing: dead VR aim.
+        g_reachDriveValid.store(false, std::memory_order_release);
+        ReachDriveDisarm();
+        g_reachDriveGate.release();
         bool disabledAll = true;
         void* const targets[] = {
+            g_reachPcTarget,
             g_reachHudAnchorBasisTarget,
             g_reachWorldCollision.target,
             g_reachContact.target,
@@ -29390,6 +29403,23 @@ namespace
             return false;
 
         bool removedAll = true;
+        if (g_reachPcTarget)
+        {
+            // Clearing the target lets the next title session reinstall on ITS module; the install
+            // block skips while g_reachPcTarget is set.
+            const MH_STATUS status = MH_RemoveHook(g_reachPcTarget);
+            if (status == MH_OK || status == MH_ERROR_NOT_CREATED)
+            {
+                g_reachPcTarget = nullptr;
+                g_reachPcOrig = nullptr;
+            }
+            else
+            {
+                removedAll = false;
+                LOG("Reach direct-drive cleanup: control-update hook remove failed (%d)",
+                    static_cast<int>(status));
+            }
+        }
         if (g_reachHudAnchorBasisTarget)
         {
             const MH_STATUS status = MH_RemoveHook(g_reachHudAnchorBasisTarget);
@@ -32027,6 +32057,11 @@ namespace
                 }
                 else
                 {
+                    // Created but not enabled: remove it, or every later install on this target would
+                    // fail with MH_ERROR_ALREADY_CREATED and the teardown (keyed on g_reachPcTarget)
+                    // would never clean it up.
+                    if (created == MH_OK)
+                        MH_RemoveHook(target);
                     g_reachPcOrig = nullptr;
                     LOG("Reach direct-drive: FAILED to install the control-update hook (create=%d); the stick "
                         "servo keeps aiming", (int)created);
