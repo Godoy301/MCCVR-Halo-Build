@@ -3,21 +3,23 @@
 // Reach's aim provider -- the FIRST per-game implementation of aim_solve::IAimProvider
 // (src/common/aim_provider.h). Reach is closest to CampE, so it leads.
 //
-// STATUS: ACTIVE (StickLoop delegation). Wired behind the `aim_provider` config flag (default 0),
-// Reach only. Runs the engine-free orchestrator (solve_and_actuate) to pick the actuation strategy
-// and log diagnostics, then DELEGATES the actuation to Game_ComputeAimStick -- the unchanged
-// closed-loop path Reach already uses. Because the StickLoop rung is that same function, routing the
-// aim through the provider is a no-op BY CONSTRUCTION: with the flag on, the stick is bit-identical
-// to the shipped path, so the in-headset check is a confirmation, not a gate. Flag off = the shipped
-// call is untouched.
+// ROUTING (input.cpp, experimental Reach builds): the provider owns Reach's aim stick when
+// `aim_provider` is on, and always when `reach_direct_drive=3`, because its WriteState rung is the only
+// thing that actuates the direct drive. Both default off, leaving the shipped call untouched.
 //
-// NEXT (needs the co-op loop): the direct-drive WriteState rung -- once Reach's replicated angular
-// control record is located (its unit+0x214 is only the DERIVED vector, a mirror) and co-op
-// host-follow-verified, caps.can_write_state flips true, select_actuation returns WriteState, and the
-// switch below writes the record instead of servoing a stick. Until then WriteState fails SAFE back
-// to the stick loop, so aim never dies on an unverified path.
+// RUNGS. The core picks from caps() every poll:
+//   WriteState -- direct drive into player_control.desired_angles (hook on haloreach+0x6375C). Offered
+//                 only with reach_direct_drive=3, the arm-gate armed, and on foot. The aim stick is
+//                 held neutral while it drives.
+//   StickLoop  -- Game_ComputeAimStick, the shipped closed loop, byte-for-byte: vehicles, cinematics,
+//                 an unarmed gate, and the default configuration all aim exactly as before.
+// The servo runs FIRST every poll -- it records the desired aim the core takes as its intent and
+// computes the fallback stick -- so dropping from WriteState to StickLoop is immediate, never a gap.
+//
+// NOT YET CLAIMED: a replicated write. Co-op host-follow is unverified, so actuate() reports
+// wrote_replicated_state=false even while the direct drive runs.
 
-// Runs the provider solve (selection + diagnostics) and produces the aim right-stick for this tick.
-// Returns true and fills outRx/outRy when the stick is driven, false when aim is not steering
-// (matches Game_ComputeAimStick's contract, which it delegates to for the StickLoop rung).
+// Runs the provider solve and produces the aim right-stick for this poll. Returns true and fills
+// outRx/outRy when the stick is driven (zeros while the state write owns aim), false when aim is not
+// steering (matches Game_ComputeAimStick's contract).
 bool ReachAimProvider_ProduceStick(float& outRx, float& outRy);

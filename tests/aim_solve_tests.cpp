@@ -3,6 +3,7 @@
 // Check() harness; non-zero exit = failure, so CTest reports it.
 
 #include "../src/common/aim_provider.h"
+#include "../src/common/aim_write_logic.h"
 
 #include <cmath>
 #include <cstdio>
@@ -137,11 +138,102 @@ static void test_orchestrator() {
     }
 }
 
+// ---- aim_write_logic.h: the state-write rung's guards --------------------------------------------
+static void test_unwrap_to_branch() {
+    using aim_write::unwrap_to_branch;
+    using aim_write::kTwoPi;
+    CHECK(near(unwrap_to_branch(1.0f, 1.2f), 1.0f, 1e-5f));                   // same branch: unchanged
+    // Game holds yaw on [0,2pi); the aim computes -0.1 for the same direction as 6.183. Keep 6.183.
+    CHECK(near(unwrap_to_branch(-0.1f, 6.2f), kTwoPi - 0.1f, 1e-4f));
+    CHECK(near(unwrap_to_branch(6.2f, -0.1f), 6.2f - kTwoPi, 1e-4f));         // and the other way
+    // Accumulated game yaw far past 2*pi (never normalised): still the nearest branch.
+    CHECK(near(unwrap_to_branch(0.5f, 5.0f * kTwoPi + 0.4f), 5.0f * kTwoPi + 0.5f, 1e-3f));
+    CHECK(near(unwrap_to_branch(0.3f, NAN), 0.3f, 1e-6f));                    // no current value
+    // Never more than half a turn from the current value.
+    for (float t = -10.0f; t <= 10.0f; t += 0.37f)
+        CHECK(std::fabs(unwrap_to_branch(t, 2.0f) - 2.0f) <= 3.1416f);
+}
+
+static void test_clamp_pitch() {
+    using aim_write::clamp_pitch;
+    CHECK(near(clamp_pitch(0.2f, 1.45f), 0.2f, 1e-6f));
+    CHECK(near(clamp_pitch(1.6f, 1.45f), 1.45f, 1e-6f));
+    CHECK(near(clamp_pitch(-2.0f, 1.45f), -1.45f, 1e-6f));
+}
+
+static void test_arm_gate() {
+    using aim_write::ArmGate;
+    using Ev = ArmGate::Event;
+    constexpr uint64_t A = 0x1000, B = 0x2000;   // two candidate record addresses
+    {   // arms only after 3 CONSECUTIVE agreements, and reports what it proved
+        ArmGate g;
+        CHECK(g.step(true, A, 0, 0) == Ev::None && g.step(true, A, 0, 10) == Ev::None);
+        CHECK(g.step(false, A, 0, 20) == Ev::None && !g.armed);               // streak broken
+        CHECK(g.step(true, A, 0, 30) == Ev::None && g.step(true, A, 0, 40) == Ev::None);
+        CHECK(g.step(true, A, 0, 50) == Ev::Armed && g.armed && g.record == A);
+        CHECK(g.step(false, 0, 0, 60) == Ev::None && g.armed);                // agreement not consulted while armed
+        CHECK(!g.wants_evidence(70));                                        // ...so the caller need not gather it
+    }
+    {   // a streak must be about ONE record: a changed candidate restarts the count on the new one
+        ArmGate g;
+        g.step(true, A, 0, 0); g.step(true, A, 0, 1);
+        CHECK(g.step(true, B, 0, 2) == Ev::None && g.streak == 1 && g.record == B);
+        CHECK(g.step(true, B, 0, 3) == Ev::None);
+        CHECK(g.step(true, B, 0, 4) == Ev::Armed && g.record == B);
+    }
+    {   // "agreement" about no record at all never counts
+        ArmGate g;
+        for (int i = 0; i < 5; ++i) CHECK(g.step(true, 0, 0, i) == Ev::None);
+        CHECK(!g.armed);
+    }
+    {   // a writer mismatch disarms at once, then backs off before re-validating
+        ArmGate g;
+        for (int i = 0; i < 3; ++i) g.step(true, A, 0, i);
+        CHECK(g.armed);
+        CHECK(g.step(true, 0, 1, 100) == Ev::Disarmed && !g.armed && g.disarms == 1);
+        CHECK(!g.wants_evidence(200) && g.wants_evidence(5100));
+        for (int i = 0; i < 5; ++i) CHECK(g.step(true, A, 1, 200 + i) == Ev::None);  // inside the backoff
+        CHECK(!g.armed);
+        g.step(true, A, 1, 5200); g.step(true, A, 1, 5210);
+        CHECK(g.step(true, A, 1, 5220) == Ev::Armed);                         // re-proven after backoff
+    }
+    {   // mismatches counted while DISARMED are not the armed record's fault
+        ArmGate g;
+        g.step(true, A, 7, 0); g.step(true, A, 8, 1);
+        CHECK(g.step(true, A, 9, 2) == Ev::Armed);
+        CHECK(g.step(true, 0, 9, 3) == Ev::None && g.armed);
+    }
+    {   // three disarms -> give up for the session, and stay given up
+        ArmGate g;
+        uint64_t t = 0; unsigned mm = 0;
+        for (int round = 0; round < 3; ++round) {
+            for (int i = 0; i < 3; ++i) g.step(true, A, mm, t++);
+            CHECK(g.armed);
+            const Ev e = g.step(true, 0, ++mm, t);
+            CHECK(e == (round < 2 ? Ev::Disarmed : Ev::GaveUp));
+            t += 6000;
+        }
+        CHECK(g.given_up && !g.armed && !g.wants_evidence(t));
+        for (int i = 0; i < 5; ++i) CHECK(g.step(true, A, mm, t + i) == Ev::None && !g.armed);
+    }
+    {   // release() drops the arm without counting a failure; re-arming re-proves from scratch
+        ArmGate g;
+        for (int i = 0; i < 3; ++i) g.step(true, A, 0, i);
+        g.release();
+        CHECK(!g.armed && g.disarms == 0 && g.record == 0);
+        CHECK(g.step(true, A, 0, 10) == Ev::None && g.step(true, A, 0, 11) == Ev::None);
+        CHECK(g.step(true, A, 0, 12) == Ev::Armed);
+    }
+}
+
 int main() {
     test_selectors();
     test_angles_from_dir();
     test_converge();
     test_orchestrator();
+    test_unwrap_to_branch();
+    test_clamp_pitch();
+    test_arm_gate();
     if (g_fail == 0) std::printf("aim_solve_tests: OK\n");
     return g_fail == 0 ? 0 : 1;
 }

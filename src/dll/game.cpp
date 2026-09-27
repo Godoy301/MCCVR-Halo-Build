@@ -71,23 +71,34 @@
 #if HALOMCCVR_EXPERIMENTAL_REACH_RENDER_CANDIDATE
 // Reach direct-drive (reach_direct_drive==3): hook the per-user control update haloreach+0x6375C (the
 // ACCUMULATOR of player_control.desired_angles, found 2026-09-25 and proven by a one-shot write
-// 2026-09-26) and, after it runs on the SIM thread, write the VR aim into desired_angles (yaw +0x94 /
-// pitch +0x98) -- upstream of the derived aim vector AND of replication. The detour is in
-// reach_player_control_hook.asm; the definitions are next to Game_ComputeAimStick. The previous target,
-// 0x1E0834, installed but never ran on foot.
+// 2026-09-26) and, after it runs on the SIM thread, write the aim provider's WriteState setpoint into
+// desired_angles (yaw +0x94 / pitch +0x98) -- upstream of the derived aim vector and, we expect, of
+// replication (co-op host-follow not yet verified). The detour is in reach_player_control_hook.asm; the
+// definitions are next to Game_ComputeAimStick; the actuator is src/dll/reach_aim_provider.cpp. The
+// previous target, 0x1E0834, installed but never ran on foot.
 extern "C" void ReachPlayerControlHook();                          // naked MinHook detour (asm)
-extern "C" { void* g_reachPcOrig = nullptr; unsigned char g_reachPcDriveArmed = 0; }
+extern "C" { void* g_reachPcOrig = nullptr; }
+// The SETPOINT the hook writes: published only by the aim provider's WriteState actuation
+// (Game_ReachDirectDrivePublish) and released the moment it stops selecting WriteState.
 static std::atomic<float>              g_reachDriveYaw{0.0f};
 static std::atomic<float>              g_reachDrivePitch{0.0f};
 static std::atomic<unsigned long long> g_reachDriveMs{0};
 static std::atomic<bool>               g_reachDriveValid{false};
+// The game-basis aim Game_ComputeAimStick computed during the current input poll (the same target its
+// stick servo chases). The provider TAKES it once as its intent; a measurement, never written to the game.
+static std::atomic<float>              g_reachDesiredYaw{0.0f};
+static std::atomic<float>              g_reachDesiredPitch{0.0f};
+static std::atomic<bool>               g_reachDesiredFresh{false};
 // The MASTER player_control address the engine-thread arm-gate validated (render TLS -> ring A -> master,
 // plus ValueAgreement against the master unit aim). The hook writes only while ITS OWN (sim-thread) TLS
 // resolves to this same address; any mismatch is counted, and the gate disarms and re-validates.
+// Publication order: arming stores the address THEN the flag (release); the hook loads the flag
+// (acquire) THEN the address, so an armed hook never sees a stale address.
+static std::atomic<bool>               g_reachPcArmed{false};
 static std::atomic<uintptr_t>          g_reachPcExpected{0};
 static std::atomic<unsigned>           g_reachPcMismatch{0};
 static void* g_reachPcTarget = nullptr;
-static void ReachPublishDriveAim(float worldYaw, float worldPitch);
+static void ReachRecordDesiredAim(float gameYaw, float gamePitch);
 extern "C" void ReachPcApplyForUser(int user);
 // player_control through the engine TLS, exactly as 0x6375C does it (mov edi,0xD8; lea rbx,[rsi+rsi*2];
 // shl rbx,7): globals = *(TLS + 0xD8); user entry = globals + user * 0x180. Both constants are verified
@@ -96,6 +107,7 @@ static constexpr size_t kReachPlayerControlTlsOffset = 0xD8;
 static constexpr size_t kReachPlayerControlStride    = 0x180;
 #endif
 #include "../common/aim_servo_logic.h"
+#include "../common/aim_write_logic.h"
 #include "../common/log.h"
 #include "../common/config.h"
 #include "../common/cutscene_theater_logic.h"
@@ -26514,50 +26526,34 @@ namespace
         return pc != 0;
     }
 
-    static void ReachDriveArmGate_Tick()
-    {
-        static unsigned  s_seenMismatch = 0;
-        static int       s_agree = 0, s_disarms = 0;
-        static ULONGLONG s_nextLog = 0, s_retryAt = 0;
-        const ULONGLONG now = GetTickCount64();
-        const unsigned mm = g_reachPcMismatch.load(std::memory_order_relaxed);
-        if (g_reachPcDriveArmed == 1)
-        {
-            if (mm != s_seenMismatch)
-            {
-                g_reachPcDriveArmed = 0;
-                g_reachPcExpected.store(0, std::memory_order_release);
-                s_seenMismatch = mm;
-                s_agree = 0;
-                s_retryAt = now + 5000;
-                LOG("REACHDRIVE: DISARMED (#%d) -- the sim thread's player_control no longer matches the "
-                    "validated address (map change / reload?); stick servo aims, re-validating in 5 s", ++s_disarms);
-            }
-            return;
-        }
-        s_seenMismatch = mm;
-        if (s_disarms >= 3)
-        {
-            if (s_retryAt)
-            {
-                s_retryAt = 0;
-                LOG("REACHDRIVE: disarmed 3 times -- the sim and render threads disagree about player_control on "
-                    "this build; direct drive OFF for this session (stick servo aims)");
-            }
-            return;
-        }
-        if (now < s_retryAt) return;
+    // The arm POLICY -- consecutive agreements about one record, disarm on a writer mismatch, backoff,
+    // give up after repeated disarms -- is aim_write::ArmGate, unit-tested engine-free. This lane only
+    // supplies the evidence and publishes the result to the hook.
+    static aim_write::ArmGate g_reachDriveGate;
 
+    // Disarm order is the reverse of arming: the flag first, then the address (see g_reachPcArmed).
+    static void ReachDriveDisarm()
+    {
+        g_reachPcArmed.store(false, std::memory_order_release);
+        g_reachPcExpected.store(0, std::memory_order_release);
+    }
+
+    // One tick of evidence: the render thread's player_control translated through ring A to the sim's
+    // MASTER block (masterPc, set whenever the translation succeeds), and whether that master's desired
+    // pair agrees with the master unit aim.
+    static bool ReachDriveGateEvidence(ULONGLONG now, ULONGLONG& nextLog, uintptr_t& masterPc, float& ey, float& ep)
+    {
+        masterPc = 0; ey = 0.0f; ep = 0.0f;
         const int unit = g_reachCamera.playerUnitByOutputUser(0);
         uint8_t kind = 0;
         unsigned char* d = unit != -1 ? ReachVehicleObjectData(unit, kind) : nullptr;
-        if (!d || kind == kReachObjectKindVehicle) { s_agree = 0; return; }
+        if (!d || kind == kReachObjectKindVehicle) return false;
         const uintptr_t snapAim = reinterpret_cast<uintptr_t>(d + kReachUnitAimingVectorOffset);
         if (!g_reachRing[0].ok && !ReachVsReadRing(0))
         {
-            if (now >= s_nextLog) { s_nextLog = now + 10000;
+            if (now >= nextLog) { nextLog = now + 10000;
                 LOG("REACHDRIVE gate: ring A does not validate on this build -- staying disarmed (stick servo aims)"); }
-            return;
+            return false;
         }
         uintptr_t snapPc = 0;
         int r1 = -1, b1 = -2, r2 = -1, b2 = -2;
@@ -26565,37 +26561,59 @@ namespace
         const uintptr_t aimBase = ReachVsLocate(snapAim, r2, b2);
         if (!pcBase || r1 != 0 || !aimBase || r2 != 0)
         {
-            s_agree = 0;
-            if (now >= s_nextLog) { s_nextLog = now + 10000;
+            if (now >= nextLog) { nextLog = now + 10000;
                 LOG("REACHDRIVE gate: render-thread player_control 0x%llX / unit aim 0x%llX not both inside ring A "
                     "-- staying disarmed", (unsigned long long)snapPc, (unsigned long long)snapAim); }
-            return;
+            return false;
         }
-        const uintptr_t masterPc  = g_reachRing[0].master + (snapPc - pcBase);
+        masterPc = g_reachRing[0].master + (snapPc - pcBase);
         const uintptr_t masterAim = g_reachRing[0].master + (snapAim - aimBase);
         float pair[2] = {}, v[3] = {};
-        if (!ReachVsReadF(masterPc + 0x94, pair, 2) || !ReachVsReadAim(masterAim, v)) { s_agree = 0; return; }
+        if (!ReachVsReadF(masterPc + 0x94, pair, 2) || !ReachVsReadAim(masterAim, v)) return false;
         float yaw, pitch;
         ReachVsAngles(v, yaw, pitch);
-        const float ey = ReachAngDist(pair[0], yaw), ep = fabsf(pair[1] - pitch);
-        if (ey < 0.02f && ep < 0.02f)
-            ++s_agree;
-        else
+        ey = ReachAngDist(pair[0], yaw);
+        ep = fabsf(pair[1] - pitch);
+        if (ey < 0.02f && ep < 0.02f) return true;
+        if (now >= nextLog) { nextLog = now + 10000;
+            LOG("REACHDRIVE gate: ValueAgreement not yet: desired=(%.4f %.4f) unit-aim=(%.4f %.4f) at master "
+                "+0x%llX", pair[0], pair[1], yaw, pitch, (unsigned long long)(masterPc - g_reachRing[0].master)); }
+        return false;
+    }
+
+    static void ReachDriveArmGate_Tick()
+    {
+        using Ev = aim_write::ArmGate::Event;
+        static ULONGLONG s_nextLog = 0;
+        const ULONGLONG now = GetTickCount64();
+        auto& gate = g_reachDriveGate;
+        uintptr_t masterPc = 0;
+        float ey = 0.0f, ep = 0.0f;
+        // Evidence costs ring reads; gather it only on ticks where the gate can use it.
+        const bool agree = gate.wants_evidence(now) && ReachDriveGateEvidence(now, s_nextLog, masterPc, ey, ep);
+        switch (gate.step(agree, masterPc, g_reachPcMismatch.load(std::memory_order_relaxed), now))
         {
-            s_agree = 0;
-            if (now >= s_nextLog) { s_nextLog = now + 10000;
-                LOG("REACHDRIVE gate: ValueAgreement not yet: desired=(%.4f %.4f) unit-aim=(%.4f %.4f) at master "
-                    "+0x%llX", pair[0], pair[1], yaw, pitch,
-                    (unsigned long long)(masterPc - g_reachRing[0].master)); }
-            return;
+        case Ev::Armed:
+            g_reachPcExpected.store(static_cast<uintptr_t>(gate.record), std::memory_order_release);
+            g_reachPcArmed.store(true, std::memory_order_release);
+            LOG("REACHDRIVE: ARMED -- player_control 0x%llX (ring A master +0x%llX) agrees with the master unit aim "
+                "(err %.5f/%.5f rad); the aim provider's WriteState now drives desired_angles on the sim thread",
+                (unsigned long long)gate.record, (unsigned long long)(gate.record - g_reachRing[0].master), ey, ep);
+            break;
+        case Ev::Disarmed:
+            ReachDriveDisarm();
+            LOG("REACHDRIVE: DISARMED (#%d) -- the sim thread's player_control no longer matches the validated "
+                "address (map change / reload?); stick servo aims, re-validating in %llu s", gate.disarms,
+                (unsigned long long)(gate.backoff_ms / 1000));
+            break;
+        case Ev::GaveUp:
+            ReachDriveDisarm();
+            LOG("REACHDRIVE: disarmed %d times -- the sim and render threads disagree about player_control on "
+                "this build; direct drive OFF for this session (stick servo aims)", gate.disarms);
+            break;
+        case Ev::None:
+            break;
         }
-        if (s_agree < 3) return;
-        g_reachPcExpected.store(masterPc, std::memory_order_release);
-        g_reachPcDriveArmed = 1;
-        s_agree = 0;
-        LOG("REACHDRIVE: ARMED -- player_control 0x%llX (ring A master +0x%llX) agrees with the master unit aim "
-            "(err %.5f/%.5f rad); the VR aim now writes desired_angles on the sim thread", (unsigned long long)masterPc,
-            (unsigned long long)(masterPc - g_reachRing[0].master), ey, ep);
     }
 
     // Engine-thread entry for mode 3. Switching the mode away disarms at once (the hook stays installed
@@ -26605,12 +26623,12 @@ namespace
         static bool s_faulted = false;
         if (!active)
         {
-            if (g_reachPcDriveArmed)
+            if (g_reachPcArmed.load(std::memory_order_acquire))
             {
-                g_reachPcDriveArmed = 0;
-                g_reachPcExpected.store(0, std::memory_order_release);
+                ReachDriveDisarm();
                 LOG("REACHDRIVE: mode switched off -- direct drive disarmed");
             }
+            g_reachDriveGate.release();
             return;
         }
         if (s_faulted || !g_reachPcTarget) return;
@@ -26620,8 +26638,8 @@ namespace
         __except (EXCEPTION_EXECUTE_HANDLER)
         {
             s_faulted = true;
-            g_reachPcDriveArmed = 0;
-            g_reachPcExpected.store(0, std::memory_order_release);
+            ReachDriveDisarm();
+            g_reachDriveGate.release();
             LOG("REACHDRIVE gate: faulted -- direct drive disarmed for this session (stick servo aims)");
         }
     }
@@ -32003,7 +32021,7 @@ namespace
                 if (created == MH_OK && MH_EnableHook(target) == MH_OK)
                 {
                     g_reachPcTarget = target;
-                    g_reachPcDriveArmed = 0;   // the arm-gate enables writes once the address is validated
+                    g_reachPcArmed.store(false, std::memory_order_release);   // the arm-gate arms once validated
                     LOG("Reach direct-drive: control-update hook INSTALLED at haloreach.dll+0x6375C (disarmed "
                         "until the arm-gate validates player_control)");
                 }
@@ -47053,26 +47071,78 @@ void Game_Halo2RestoreAimAssist()
 }
 
 #if HALOMCCVR_EXPERIMENTAL_REACH_RENDER_CANDIDATE
-// Publish the world desired aim (radians) the on-foot Reach controller path just computed, for the
-// player_control hook to consume ~a frame later (cross-thread: input thread -> engine thread).
-static void ReachPublishDriveAim(float worldYaw, float worldPitch)
+// Record the game-basis aim (radians) Game_ComputeAimStick just computed -- the same target its stick
+// servo chases. The Reach aim provider takes it as its intent (Game_ReachTakeDesiredAim). Recording
+// writes nothing to the game.
+static void ReachRecordDesiredAim(float gameYaw, float gamePitch)
 {
-    g_reachDriveYaw.store(worldYaw, std::memory_order_relaxed);
-    g_reachDrivePitch.store(worldPitch, std::memory_order_relaxed);
+    g_reachDesiredYaw.store(gameYaw, std::memory_order_relaxed);
+    g_reachDesiredPitch.store(gamePitch, std::memory_order_relaxed);
+    g_reachDesiredFresh.store(true, std::memory_order_release);
+}
+
+// The aim recorded during THIS input poll, consumed once: true only if Game_ComputeAimStick recorded
+// one since the last take. An aim path that just stopped (VR aim toggled off, pause, tracking lost)
+// therefore can never leave the state write chasing its last target.
+bool Game_ReachTakeDesiredAim(float& yaw, float& pitch)
+{
+    if (!g_reachDesiredFresh.exchange(false, std::memory_order_acq_rel)) return false;
+    yaw = g_reachDesiredYaw.load(std::memory_order_relaxed);
+    pitch = g_reachDesiredPitch.load(std::memory_order_relaxed);
+    return std::isfinite(yaw) && std::isfinite(pitch);
+}
+
+// The state-write rung exists right now: the hook is installed and the arm-gate has proven the
+// player_control address. (Whether it SHOULD be used is the provider's call: opt-in + on foot.)
+bool Game_ReachDirectDriveReady()
+{
+    return g_reachPcTarget && g_reachPcArmed.load(std::memory_order_acquire);
+}
+
+// Fresh on-foot, player-controlled Reach gameplay -- the same engine-thread publications the roomscale
+// camera trusts (vehicle-input snapshot + cinematic-control heartbeat, both within 100 ms, both of the
+// current title generation), so it is safe to read from the input thread. Vehicles and cinematics keep
+// the stick servo: the state write is proven on foot only.
+bool Game_ReachDirectDriveOnFoot()
+{
+    const GameTitle title = GameTitle::HaloReach;
+    if (TitleAdapter_GetActiveTitle() != title ||
+        TitleAdapter_GetRuntimeMode() != RuntimeMode::Gameplay) return false;
+    const auto now = GetTickCount64();
+    const auto at = g_reachVehicleSampleMs.load(std::memory_order_acquire);
+    const auto cine = TitleAdapter_GetCinematicControlPublication(title);
+    const uint32_t gen = TitleAdapter_GetGeneration(title);
+    return at && now >= at && now - at <= 100 &&
+        g_reachVehicleInputSnapshot.load(std::memory_order_acquire) ==
+            ReachVehicleInputSnapshot(gen, ReachVehicleInputState::OnFoot) &&
+        cine.generation == gen &&
+        cine.heartbeatMs && now >= cine.heartbeatMs && now - cine.heartbeatMs <= 100 &&
+        cine.state == CinematicControlState::PlayerControlled;
+}
+
+// The provider's WriteState actuation: the setpoint the sim-thread hook writes on its next tick.
+void Game_ReachDirectDrivePublish(float gameYaw, float gamePitch)
+{
+    g_reachDriveYaw.store(gameYaw, std::memory_order_relaxed);
+    g_reachDrivePitch.store(gamePitch, std::memory_order_relaxed);
     g_reachDriveMs.store(GetTickCount64(), std::memory_order_release);
     g_reachDriveValid.store(true, std::memory_order_release);
-    static unsigned long long s_last = 0, s_n = 0; s_n++;   // DIAG: is the aim being published, and tracking?
-    const unsigned long long now = GetTickCount64();
-    if (now - s_last >= 1000) { s_last = now;
-        LOG("REACHDRIVE publish yaw=%.3f pitch=%.3f n/s=%llu", worldYaw, worldPitch, s_n); s_n = 0; }
 }
+
+// The provider stopped selecting WriteState: invalidate the setpoint so the hook stops writing at once
+// (rather than for up to its 200 ms staleness window, where it would fight the stick servo).
+void Game_ReachDirectDriveRelease()
+{
+    g_reachDriveValid.store(false, std::memory_order_release);
+}
+
 // Runs on the SIM thread from the naked detour, AFTER native 0x6375C updated desired_angles (stick
 // delta + clamps). Overwrites the pair with the published VR aim, but only for the first local player,
 // only while armed, only for a fresh aim, and only when THIS thread's TLS resolves to the MASTER
 // address the engine-thread arm-gate validated. SEH-guarded; skips on stale/NaN/out-of-range.
 extern "C" void ReachPcApplyForUser(int user)
 {
-    int wrote = 0, valid = 0, same = 0; float yaw = 0.0f, pitch = 0.0f; unsigned long long age = 0;
+    int wrote = 0, valid = 0, same = 0, armed = 0; float yaw = 0.0f, pitch = 0.0f; unsigned long long age = 0;
     uintptr_t pc = 0;
     __try
     {
@@ -47084,26 +47154,27 @@ extern "C" void ReachPcApplyForUser(int user)
             const uintptr_t globals = tls ? *reinterpret_cast<const uintptr_t*>(tls + kReachPlayerControlTlsOffset) : 0;
             pc = globals ? globals + static_cast<uintptr_t>(user) * kReachPlayerControlStride : 0;
         }
+        armed = g_reachPcArmed.load(std::memory_order_acquire) ? 1 : 0;   // flag first, then the address
         const uintptr_t expected = g_reachPcExpected.load(std::memory_order_acquire);
         same = (pc && pc == expected) ? 1 : 0;
-        if (g_reachPcDriveArmed == 1 && pc && !same)
+        // A mismatch needs a validated address to disagree with (a disarm clears it after the flag).
+        if (armed && pc && expected && !same)
             g_reachPcMismatch.fetch_add(1, std::memory_order_relaxed);   // the gate disarms + re-validates
         valid = g_reachDriveValid.load(std::memory_order_acquire) ? 1 : 0;
         age = GetTickCount64() - g_reachDriveMs.load(std::memory_order_acquire);
         yaw = g_reachDriveYaw.load(std::memory_order_relaxed);
         pitch = g_reachDrivePitch.load(std::memory_order_relaxed);
-        if (same && g_reachPcDriveArmed == 1 && valid && age <= 200 &&
+        if (same && armed && valid && age <= 200 &&
             std::isfinite(yaw) && std::isfinite(pitch))
         {
             float* pair = reinterpret_cast<float*>(pc + 0x94);   // desired_angles: yaw, pitch
-            const float cur = pair[0];
             // Keep yaw on the branch the game's value is on (never a 2*pi jump between ticks, which an
-            // interpolated snapshot would render as a spin).
-            const float y = std::isfinite(cur) ? cur + remainderf(yaw - cur, 6.28318531f) : yaw;
+            // interpolated snapshot would render as a spin), and pitch inside the game's own clamp.
+            const float y = aim_write::unwrap_to_branch(yaw, pair[0]);
             if (std::isfinite(y))
             {
                 pair[0] = y;
-                pair[1] = pitch < -1.45f ? -1.45f : (pitch > 1.45f ? 1.45f : pitch);
+                pair[1] = aim_write::clamp_pitch(pitch, 1.45f);
                 wrote = 1;
             }
         }
@@ -47113,20 +47184,9 @@ extern "C" void ReachPcApplyForUser(int user)
     const unsigned long long now = GetTickCount64();
     if (now - s_last >= 1000) { s_last = now;
         LOG("REACHDRIVE apply user=%d armed=%d pcMatch=%d valid=%d age=%llu yaw=%.3f pitch=%.3f wrote %llu/%llu per s "
-            "(mismatches %u)", user, (int)g_reachPcDriveArmed, same, valid, age, yaw, pitch, s_w, s_n,
+            "(mismatches %u)", user, armed, same, valid, age, yaw, pitch, s_w, s_n,
             g_reachPcMismatch.load(std::memory_order_relaxed));
         s_n = 0; s_w = 0; }
-}
-
-// True while the direct drive is actually writing Reach's desired_angles: hook installed, armed by the
-// validated gate, and a VR aim published within 200 ms. input.cpp holds the aim stick neutral only
-// then, so the servo and the state write never both steer; the rest of the time (vehicles, menus, VR
-// aim toggled off, not yet armed) the stick servo aims as usual.
-bool Game_ReachDirectDriveActive()
-{
-    return g_reachPcTarget && g_reachPcDriveArmed == 1 &&
-           g_reachDriveValid.load(std::memory_order_acquire) &&
-           GetTickCount64() - g_reachDriveMs.load(std::memory_order_acquire) <= 200;
 }
 
 // True while the reach_direct_drive=4 persistence test owns Reach's aim: input.cpp then holds the
@@ -47272,11 +47332,6 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
         desiredYaw = atan2f(followedAim[1], followedAim[0]);
         desiredPitch = asinf(Clamp(followedAim[2], -1.0f, 1.0f));
     }
-#if HALOMCCVR_EXPERIMENTAL_REACH_RENDER_CANDIDATE
-    // Feed the direct-drive hook (reach_direct_drive==3): the world aim the player wants this frame.
-    if (TitleAdapter_GetActiveTitle() == GameTitle::HaloReach)
-        ReachPublishDriveAim(desiredYaw, desiredPitch);
-#endif
 
     // ODST and Reach need no correction here: each has a shot-origin hook that
     // substitutes our rendered eye into (unit_get_camera_position, aiming
@@ -47332,6 +47387,13 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
             g_halo3SeatAimReOrigins.fetch_add(1, std::memory_order_relaxed);
         }
     }
+#if HALOMCCVR_EXPERIMENTAL_REACH_RENDER_CANDIDATE
+    // Record the final game-basis aim -- exactly the target the servo below chases. The Reach aim
+    // provider takes it as its intent and, when it selects WriteState, publishes the converged
+    // setpoint to the direct-drive hook instead of servoing a stick toward it.
+    if (TitleAdapter_GetActiveTitle() == GameTitle::HaloReach)
+        ReachRecordDesiredAim(desiredYaw, desiredPitch);
+#endif
 
     float aimForward[3] = {
         g_aimFwdX.load(), g_aimFwdY.load(), g_aimFwdZ.load()};

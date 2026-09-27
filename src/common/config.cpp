@@ -1499,9 +1499,9 @@ void ConfigSave()
     fprintf(f, "# (default %d)\n", d.kill_reticle ? 1 : 0);
     fprintf(f, "kill_reticle = %d\n\n", g_config.kill_reticle ? 1 : 0);
     fprintf(f, "# EXPERIMENTAL / diagnostic, Halo Reach only. Routes aiming through the\n");
-    fprintf(f, "# game-agnostic aim-solve core instead of the built-in path. Right now\n");
-    fprintf(f, "# this is an OBSERVE scaffold: it only writes to the log what it WOULD\n");
-    fprintf(f, "# drive and does not change your aim. Leave it at 0. (default %d)\n",
+    fprintf(f, "# game-agnostic aim-solve core. On its own it aims exactly like the built-in\n");
+    fprintf(f, "# path (that path is its fallback) and logs its decisions; direct drive through\n");
+    fprintf(f, "# it is reach_direct_drive = 3. Leave it at 0. (default %d)\n",
             d.aim_provider);
     fprintf(f, "aim_provider = %d\n\n", g_config.aim_provider);
     fprintf(f, "# EXPERIMENTAL / diagnostic, Halo Reach only, READ-ONLY. Confirms the desired-aim\n");
@@ -1518,10 +1518,10 @@ void ConfigSave()
     fprintf(f, "# foot). 1 = swing your aim reach_dd_test_deg degrees and hold it there (suppresses the\n");
     fprintf(f, "# stick). 2 = LIVE OFFSET (no suppression): aim normally and it offsets the desired-aim\n");
     fprintf(f, "# field by reach_dd_test_deg each tick; if that field drives the SHOT, bullets land that\n");
-    fprintf(f, "# many degrees off your reticle. 3 = ACTIVE DIRECT DRIVE: the VR aim writes the game's\n");
-    fprintf(f, "# replicated control angles directly (crisp, multiplayer-correct); needs a relaunch to\n");
-    fprintf(f, "# install, then arms itself once it has validated the address (log: REACHDRIVE ARMED);\n");
-    fprintf(f, "# vehicles and menus keep the normal stick aim.\n");
+    fprintf(f, "# many degrees off your reticle. 3 = ACTIVE DIRECT DRIVE: your aim writes the game's own\n");
+    fprintf(f, "# control angles directly (crisp; co-op replication not yet verified); needs a relaunch\n");
+    fprintf(f, "# to install, then arms itself once it has validated the address (log: REACHDRIVE ARMED).\n");
+    fprintf(f, "# On foot only: vehicles, cutscenes and menus keep the normal stick aim.\n");
     fprintf(f, "# 4 = PERSISTENCE TEST: one write to the sim's own control angles, checks that it\n");
     fprintf(f, "# sticks and turns your view, then puts your aim back (your view jumps briefly; the\n");
     fprintf(f, "# stick is ignored while it runs). Leave at 0 unless testing. (default %d)\n", d.reach_direct_drive);

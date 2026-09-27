@@ -428,23 +428,17 @@ namespace
             // landing off the reticle.
             rx = 0; ry = 0; haveStick = true;
         }
-        // Experimental: when the per-game aim provider is enabled on Reach, route the aim stick
-        // through it. Its StickLoop rung delegates to Game_ComputeAimStick, so this is a no-op by
-        // construction until the direct-drive rung lands. Off (the default) leaves the call untouched.
-        else if (g_config.aim_provider && TitleAdapter_GetActiveTitle() == GameTitle::HaloReach)
+        // Experimental: the per-game aim provider owns Reach's aim stick when enabled, and always for
+        // direct drive (mode 3), whose WriteState rung only the provider actuates (it then returns a
+        // neutral stick, so the state write is the only driver). Its StickLoop rung IS
+        // Game_ComputeAimStick, so whatever it does not take over aims exactly as the shipped path.
+        // Both off (the default) leaves the call untouched.
+        else if ((g_config.aim_provider || g_config.reach_direct_drive == 3) &&
+                 TitleAdapter_GetActiveTitle() == GameTitle::HaloReach)
             haveStick = ReachAimProvider_ProduceStick(rx, ry);
         else
 #endif
             haveStick = Game_ComputeAimStick(rx, ry);
-#if HALOMCCVR_EXPERIMENTAL_REACH_RENDER_CANDIDATE
-        // Mode 3 (active direct drive): Game_ComputeAimStick still runs above so it PUBLISHES the world
-        // desired aim for the player_control hook; while the hook is actually writing (armed + fresh
-        // aim) we neutralize the stick so the state write is the only aim influence (no two drivers).
-        // Otherwise -- vehicles, menus, VR aim off, not yet armed -- the stick servo aims as usual.
-        if (g_config.reach_direct_drive == 3 && TitleAdapter_GetActiveTitle() == GameTitle::HaloReach &&
-            Game_ReachDirectDriveActive())
-        { rx = 0; ry = 0; }
-#endif
         if (haveStick)
         {
             state->Gamepad.sThumbRX = ToRawStick(rx);

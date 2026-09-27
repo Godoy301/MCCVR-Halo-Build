@@ -136,9 +136,19 @@ bool Game_ComputeAimStick(float& outRx, float& outRy);
 // DEV (reach_direct_drive=4): true while the MASTER desired_angles persistence test owns Reach's aim;
 // the XInput hook then holds the aim stick neutral. Defined only in experimental Reach builds.
 bool Game_ReachDdTestOwnsAim();
-// DEV (reach_direct_drive=3): true while the direct drive is actually writing Reach's desired_angles
-// (hook installed, arm-gate passed, VR aim fresh); the XInput hook then holds the aim stick neutral.
-bool Game_ReachDirectDriveActive();
+// DEV (reach_direct_drive=3): Reach direct drive, the aim provider's WriteState rung
+// (reach_aim_provider.cpp is the only caller). Defined only in experimental Reach builds.
+//   TakeDesiredAim -- the game-basis aim (radians) Game_ComputeAimStick recorded during THIS input
+//                     poll; consumed once, so a stopped aim path can never be chased.
+//   Ready          -- the hook is installed and the arm-gate has proven the player_control address.
+//   OnFoot         -- fresh on-foot, player-controlled Reach gameplay (the write is proven on foot only).
+//   Publish        -- set the setpoint (radians) the sim-thread hook writes on its next tick.
+//   Release        -- invalidate it at once, so the hook stops writing and the stick servo aims alone.
+bool Game_ReachTakeDesiredAim(float& yaw, float& pitch);
+bool Game_ReachDirectDriveReady();
+bool Game_ReachDirectDriveOnFoot();
+void Game_ReachDirectDrivePublish(float gameYaw, float gamePitch);
+void Game_ReachDirectDriveRelease();
 // C-H2-41. True only while Halo 2's controller-owned aim/weapon feature is
 // requested; tracking loss still makes each call fail open independently.
 bool Game_Halo2ControllerAimActive();

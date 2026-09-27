@@ -561,7 +561,10 @@ struct Config
 
     // EXPERIMENTAL (dev): route this title's aim through the game-agnostic aim-solve core + per-game
     // provider (src/common/aim_solve_logic.h, aim_provider.h). 0 = off (shipped path untouched).
-    // Currently a Reach OBSERVE scaffold -- logs what the provider would drive; does not steer.
+    // Reach only. The provider's StickLoop rung IS the shipped servo (Game_ComputeAimStick), so on its
+    // own this aims exactly as before and logs the provider's decisions (AIMPROVIDER ...); its
+    // WriteState rung is the direct drive, enabled separately by reach_direct_drive=3 (which routes
+    // Reach through the provider by itself).
     int aim_provider = 0;
 
     // EXPERIMENTAL (Halo Reach, READ-ONLY diagnostic): confirm the desired-aiming struct offset for
@@ -590,13 +593,15 @@ struct Config
     //       normally. If that field drives the SHOT, bullets land reach_dd_test_deg off your reticle
     //       (proof with no suppression confound); if not, shots go to the reticle as usual.
     //   3 = ACTIVE DIRECT DRIVE (the real thing): hooks the per-user control update haloreach+0x6375C
-    //       (the desired_angles ACCUMULATOR, proven 2026-09-26) and, on the sim thread, writes the VR aim
-    //       into player_control.desired_angles (yaw/pitch) -- upstream of the derived aim vector AND of
-    //       replication, so aim is crisp and multiplayer-correct. Requires a relaunch to install the hook.
-    //       Writes start only after an arm-gate validates player_control (render TLS -> ring A master ==
-    //       sim TLS, plus ValueAgreement with the unit aim); the aim stick is neutralized only while it
-    //       is actually writing, so vehicles/menus keep the stick servo. Verify replication with a co-op
-    //       host-follow test. (reach_dd_test_deg is ignored in mode 3.)
+    //       (the desired_angles ACCUMULATOR, proven 2026-09-26) and, on the sim thread, writes the aim
+    //       into player_control.desired_angles (yaw/pitch) -- upstream of the derived aim vector and,
+    //       we expect, of replication (co-op host-follow NOT yet verified). Requires a relaunch to
+    //       install the hook. Actuated ONLY by the aim provider's WriteState rung (Reach is routed
+    //       through the provider automatically): writes start once an arm-gate validates player_control
+    //       (render TLS -> ring A master == sim TLS, plus ValueAgreement with the unit aim; policy in
+    //       aim_write::ArmGate), on foot and player-controlled only, with the aim stick held neutral
+    //       while it drives. Vehicles, cinematics and menus keep the stick servo.
+    //       (reach_dd_test_deg is ignored in mode 3.)
     // Co-op host-follow (does the write REPLICATE?) is a SEPARATE later step for modes 1/2.
     //   4 = PERSISTENCE TEST of the sim's MASTER player_control.desired_angles (ring A master
     //       +0x2417C, found by reach_dd_watchpoint=3): holds the aim stick neutral, checks the pair
