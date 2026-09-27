@@ -41,9 +41,11 @@ public:
         AimCaps c;
         // Rung 1 is player_control.desired_angles, the accumulator's own record: after stick
         // conditioning, before the aim vector is derived, and persistent (one write steers the sim).
-        // Offered only when opted in (reach_direct_drive=3), with the hook proven by the arm-gate, and on
-        // foot -- vehicles and cinematics keep the stick loop, which is proven there. Co-op host-follow
-        // is UNVERIFIED, so actuate() never claims a replicated write.
+        // Offered only when opted in (reach_direct_drive=3), with the hook proven by the arm-gate AND
+        // demonstrably running (its heartbeat -- a hook that stopped would otherwise leave the stick
+        // neutral with nothing writing), and on foot -- vehicles and cinematics keep the stick loop,
+        // which is proven there. Co-op host-follow is UNVERIFIED, so actuate() never claims a
+        // replicated write.
         c.can_write_state       = g_config.reach_direct_drive == 3 && Game_ReachDirectDriveReady() &&
                                   Game_ReachDirectDriveOnFoot();
         c.has_stick_loop        = true;   // Reach steers via Game_ComputeAimStick, like Halo 3
@@ -122,7 +124,8 @@ bool ReachAimProvider_ProduceStick(float& outRx, float& outRy) {
     if (now - last_ms >= 2000) {
         last_ms = now;
         const AimCaps c = provider.caps();
-        LOG("AIMPROVIDER reach: rung=%s (WriteState %u/%u polls) mode=%d armed=%d onfoot=%d converge=%d "
+        // ready = hook installed + arm-gate armed + hook heartbeat fresh (Game_ReachDirectDriveReady).
+        LOG("AIMPROVIDER reach: rung=%s (WriteState %u/%u polls) mode=%d ready=%d onfoot=%d converge=%d "
             "barrel=%d yaw=%.1f pitch=%.1f",
             rung_name(provider.last_how), writes, polls, g_config.reach_direct_drive,
             Game_ReachDirectDriveReady() ? 1 : 0, Game_ReachDirectDriveOnFoot() ? 1 : 0,

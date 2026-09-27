@@ -140,7 +140,8 @@ bool Game_ReachDdTestOwnsAim();
 // (reach_aim_provider.cpp is the only caller). Defined only in experimental Reach builds.
 //   TakeDesiredAim -- the game-basis aim (radians) Game_ComputeAimStick recorded during THIS input
 //                     poll; consumed once, so a stopped aim path can never be chased.
-//   Ready          -- the hook is installed and the arm-gate has proven the player_control address.
+//   Ready          -- the hook is installed, the arm-gate has proven the player_control address, and
+//                     the hook has run on it within 150 ms (installed is not running).
 //   OnFoot         -- fresh on-foot, player-controlled Reach gameplay (the write is proven on foot only).
 //   Publish        -- set the setpoint (radians) the sim-thread hook writes on its next tick.
 //   Release        -- invalidate it at once, so the hook stops writing and the stick servo aims alone.

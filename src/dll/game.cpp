@@ -97,6 +97,10 @@ static std::atomic<bool>               g_reachDesiredFresh{false};
 static std::atomic<bool>               g_reachPcArmed{false};
 static std::atomic<uintptr_t>          g_reachPcExpected{0};
 static std::atomic<unsigned>           g_reachPcMismatch{0};
+// HEARTBEAT: the last tick the hook ran, armed, on the validated record -- i.e. it would write a
+// setpoint if given one. "Installed" and "armed" both outlive the writer (a module reload, a patch,
+// a state where the sim stops calling it), so the WriteState rung requires this to be fresh.
+static std::atomic<unsigned long long> g_reachPcLiveMs{0};
 static void* g_reachPcTarget = nullptr;
 static void ReachRecordDesiredAim(float gameYaw, float gamePitch);
 extern "C" void ReachPcApplyForUser(int user);
@@ -47127,11 +47131,17 @@ bool Game_ReachTakeDesiredAim(float& yaw, float& pitch)
     return std::isfinite(yaw) && std::isfinite(pitch);
 }
 
-// The state-write rung exists right now: the hook is installed and the arm-gate has proven the
-// player_control address. (Whether it SHOULD be used is the provider's call: opt-in + on foot.)
+// The state-write rung exists right now: the hook is installed, the arm-gate has proven the
+// player_control address, AND the hook has demonstrably run on that address within the last 150 ms
+// (the sim ticks it at 60 Hz). Installed is not running: without the heartbeat, a hook that stopped
+// running would leave the provider holding the stick neutral with nothing writing -- dead aim.
+// (Whether the rung SHOULD be used is the provider's call: opt-in + on foot.)
 bool Game_ReachDirectDriveReady()
 {
-    return g_reachPcTarget && g_reachPcArmed.load(std::memory_order_acquire);
+    const unsigned long long live = g_reachPcLiveMs.load(std::memory_order_acquire);
+    const unsigned long long now = GetTickCount64();
+    return g_reachPcTarget && g_reachPcArmed.load(std::memory_order_acquire) &&
+           live && now >= live && now - live <= 150;
 }
 
 // Fresh on-foot, player-controlled Reach gameplay -- the same engine-thread publications the roomscale
@@ -47195,8 +47205,11 @@ extern "C" void ReachPcApplyForUser(int user)
         // A mismatch needs a validated address to disagree with (a disarm clears it after the flag).
         if (armed && pc && expected && !same)
             g_reachPcMismatch.fetch_add(1, std::memory_order_relaxed);   // the gate disarms + re-validates
+        const unsigned long long tick = GetTickCount64();
+        if (armed && same)
+            g_reachPcLiveMs.store(tick, std::memory_order_release);    // heartbeat: ready to write
         valid = g_reachDriveValid.load(std::memory_order_acquire) ? 1 : 0;
-        age = GetTickCount64() - g_reachDriveMs.load(std::memory_order_acquire);
+        age = tick - g_reachDriveMs.load(std::memory_order_acquire);
         yaw = g_reachDriveYaw.load(std::memory_order_relaxed);
         pitch = g_reachDrivePitch.load(std::memory_order_relaxed);
         if (same && armed && valid && age <= 200 &&
