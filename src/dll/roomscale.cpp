@@ -7,6 +7,7 @@
 #include <windows.h>
 #include <atomic>
 #include <bit>
+#include <cstdio>
 
 namespace {
 // Re-enabled after title admission and nested XInput cancellation fixes.
@@ -23,6 +24,15 @@ std::atomic<uint64_t> manualSamples{0}, demandSamples{0}, travelMm{0};
 // Follow quality for the report: how far the head is from where the body will be (the controller's
 // error), the largest in the window, and the largest stick command issued.
 std::atomic<uint64_t> errorLastMm{0}, errorMaxMm{0}, commandMaxMilli{0};
+// Follow trace: one sample per ~100 ms while a follow is in progress (error past the deadband, a
+// command, or native travel still settling). Written only by the camera hook under `publishing`,
+// dumped by the status tick, so a catch-up that lurches, overshoots or stalls shows its shape in
+// the log. The 64-slot ring holds ~6 s, three report periods.
+struct FollowSample { uint64_t at; float error, command, speed; };
+constexpr unsigned kFollowTrace = 64;
+FollowSample followTrace[kFollowTrace]{};
+std::atomic<unsigned> followHead{0};
+uint64_t followSampledAt = 0;
 }
 
 void Roomscale_Input(bool allowed,float x,float y) noexcept
@@ -135,6 +145,16 @@ void Roomscale_Camera(GameTitle title,bool allowed,const float body[3],
                 uint64_t prior=commandMaxMilli.load(std::memory_order_relaxed);
                 while (milli>prior && !commandMaxMilli.compare_exchange_weak(prior,milli,std::memory_order_relaxed)) {}
             }
+            const float speed=std::hypot(state.velocity[0],state.velocity[1]);
+            if (std::isfinite(err) && std::isfinite(cmd) && std::isfinite(speed) &&
+                (err>0.015f || cmd>0 || state.settling) &&
+                (now<followSampledAt || now-followSampledAt>=100))
+            {
+                const unsigned slot=followHead.load(std::memory_order_relaxed);
+                followTrace[slot%kFollowTrace]={now,err,cmd,speed};
+                followHead.store(slot+1,std::memory_order_release);
+                followSampledAt=now;
+            }
         }
     }
     version.fetch_add(1,std::memory_order_acq_rel);
@@ -179,4 +199,23 @@ void Roomscale_Report() noexcept
             (unsigned long long)errLast,(unsigned long long)errMax,double(cmdMax)*0.001,
             good ? "native body follow available" :
             "StockFallback: awaiting fresh on-foot camera, tracking and gameplay input; VR stays active");
+    static unsigned printed=0;
+    const unsigned head=followHead.load(std::memory_order_acquire);
+    if (enabled && head!=printed)
+    {
+        if (head-printed>kFollowTrace) printed=head-kFollowTrace;
+        char line[1024];
+        int used=snprintf(line,sizeof line,"Roomscale trace (error mm/stick/speed mm/s, ~100 ms apart; | = gap):");
+        uint64_t previousAt=0;
+        for (unsigned i=printed; i!=head && used>0 && used<int(sizeof line)-40; ++i)
+        {
+            const FollowSample s=followTrace[i%kFollowTrace];
+            if (previousAt && s.at-previousAt>250) used+=snprintf(line+used,sizeof line-used," |");
+            used+=snprintf(line+used,sizeof line-used," %.0f/%.2f/%.0f",
+                double(s.error)*1000.0,double(s.command),double(s.speed)*1000.0);
+            previousAt=s.at;
+        }
+        LOG("%s",line);
+        printed=head;
+    }
 }
