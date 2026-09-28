@@ -55,33 +55,20 @@ namespace
     thread_local vr_mapping::Mapper g_vrActionMapper;
     std::atomic<uint64_t> g_startPulseUntilMs{0};
 
-    // MCC's own crouch-lock (TOGGLE crouch) preference, controller and mouse/keyboard, one slot per
-    // game (GameUserSettings.ini: CrouchLockEnabled[0..6] / MKCrouchLockEnabled[0..6]). Physical
-    // crouch HOLDS the crouch button, which is right only under hold-to-crouch: under crouch lock
-    // every other duck would toggle the character back up. Bitmasks (bit n = MCC settings slot n),
-    // -1 = not read. Written by the cold worker (Input_PollMccCrouchLock); the hook only loads them.
+    // MCC's crouch-lock (toggle crouch) preference as saved in GameUserSettings.ini
+    // (CrouchLockEnabled[0..6] / MKCrouchLockEnabled[0..6]), bitmasks (bit n = slot n), -1 = not read.
+    // LOGGED ONLY, never acted on: FA 2026-09-28, Reach kept HOLD behaviour for the crouch press with
+    // slot 6, slot 5, and finally every slot of both arrays set, so the file cannot predict how Reach
+    // treats the button and a stand-down keyed on it would disable a crouch that works. If a toggle
+    // ever does invert physical crouch, the CROUCH line shows it directly: active=0 pressed=0x0 with
+    // unitCrouched=1 persisting after standing. Written by the cold worker; the hook only loads them.
     std::atomic<int> g_mccCrouchLockPad{-1}, g_mccCrouchLockMk{-1};
-
-    // MCC's per-game settings slot order: CE, H2, H3, H4, H2A multiplayer, ODST, Reach.
-    int MccSettingsSlot(GameTitle title) noexcept
-    {
-        switch (title)
-        {
-        case GameTitle::HaloCE: return 0;
-        case GameTitle::Halo2: return 1;
-        case GameTitle::Halo3: return 2;
-        case GameTitle::Halo4: return 3;
-        case GameTitle::Halo3ODST: return 5;
-        case GameTitle::HaloReach: return 6;
-        default: return -1;
-        }
-    }
 
     // 1 Hz physical-crouch line, so a crouch that does or does not happen explains itself: every gate,
     // the tracked head height against the learned baseline, what we pressed, and (Reach) what the
     // character actually did (native crouch state, unit +0x1C4 bit 20; -1 = not read).
     void LogPhysicalCrouch(uint64_t now, GameTitle title, bool tracking, bool nativeReady, bool onFoot,
-                           bool lockedOut, float head, const PhysicalCrouch& g, uint32_t pressed,
+                           float head, const PhysicalCrouch& g, uint32_t pressed,
                            uint32_t transport, uint64_t epoch, uint32_t generation)
     {
         static uint64_t s_last = 0;
@@ -92,10 +79,10 @@ namespace
         if (title == GameTitle::HaloReach) unit = Game_ReachUnitCrouchState();
 #endif
         // epoch = calibration count : tracking-space count; either changing re-samples the baseline.
-        LOG("CROUCH: title=%u gate(tracking=%d native=%d onfoot=%d crouchlock=%d) head=%.3f base=%.3f down=%.3f "
+        LOG("CROUCH: title=%u gate(tracking=%d native=%d onfoot=%d) head=%.3f base=%.3f down=%.3f "
             "init=%d active=%d suspended=%d pressed=0x%X transport=0x%X unitCrouched=%d mccCrouchLock(pad=0x%X mk=0x%X) "
             "epoch=%u:%u gen=%u",
-            unsigned(title), tracking ? 1 : 0, nativeReady ? 1 : 0, onFoot ? 1 : 0, lockedOut ? 1 : 0, head,
+            unsigned(title), tracking ? 1 : 0, nativeReady ? 1 : 0, onFoot ? 1 : 0, head,
             g.Baseline(), g.Baseline() - head, g.Initialized() ? 1 : 0, g.Active() ? 1 : 0,
             g.Suspended() ? 1 : 0, pressed, transport, unit,
             g_mccCrouchLockPad.load(std::memory_order_relaxed), g_mccCrouchLockMk.load(std::memory_order_relaxed),
@@ -356,10 +343,7 @@ namespace
 #if HALOMCCVR_EXPERIMENTAL_REACH_RENDER_CANDIDATE
         if(currentTitle==GameTitle::HaloReach) crouchOnFoot=Game_ReachDirectDriveOnFootWhy()==0;
 #endif
-        // MCC crouch lock (toggle) on for this game: a held button would toggle, inverting every other
-        // duck, so physical crouch stands down (menu + log say why). Unknown proceeds: hold is MCC's default.
-        const bool crouchLockedOut=physicalCrouchEnabled&&Input_MccCrouchLockForTitle(currentTitle)==1;
-        const bool crouchTracking=physicalCrouchEnabled&&!crouchLockedOut&&inputMode==RuntimeMode::Gameplay&&
+        const bool crouchTracking=physicalCrouchEnabled&&inputMode==RuntimeMode::Gameplay&&
             gameplayMode&&crouchOnFoot&&Game_IsHeadTracking()&&Game_IsPositionalTracking()&&
             VR_IsStereoEnabled()&&VR_RoomscaleTrackingFresh()&&
             VR_GetHeadPose(crouchHeadQuat,crouchHeadPos);
@@ -370,7 +354,7 @@ namespace
         PhysicalCrouchCamera_Publish(currentTitle,TitleAdapter_GetGeneration(currentTitle),
             VR_PhysicalCrouchEpoch(),inputNow,physicalCrouchEnabled&&crouchTracking&&nativeReady,crouchButtons!=0);
         if(physicalCrouchEnabled)
-            LogPhysicalCrouch(inputNow,currentTitle,crouchTracking,nativeReady,crouchOnFoot,crouchLockedOut,crouchHeadPos[1],
+            LogPhysicalCrouch(inputNow,currentTitle,crouchTracking,nativeReady,crouchOnFoot,crouchHeadPos[1],
                 g_physicalCrouchInput.Gesture(),crouchButtons,nativeActions[vr_mapping::Crouch],
                 VR_PhysicalCrouchEpoch(),TitleAdapter_GetGeneration(currentTitle));
         uint32_t actionSources=collectedSources;
@@ -1019,16 +1003,8 @@ void Input_PollMccCrouchLock(uint64_t now)
     const int oldPad = g_mccCrouchLockPad.exchange(pad, std::memory_order_acq_rel);
     const int oldMk = g_mccCrouchLockMk.exchange(mk, std::memory_order_acq_rel);
     if (pad != oldPad || mk != oldMk)
-        LOG("MCC crouch lock (toggle crouch): controller=0x%X keyboard=0x%X (bit = MCC game slot: CE 0, H2 1, "
-            "H3 2, H4 3, H2A-MP 4, ODST 5, Reach 6). Physical crouch pauses in a game whose controller bit is set.",
-            pad, mk);
-}
-
-int Input_MccCrouchLockForTitle(GameTitle title)
-{
-    const int slot = MccSettingsSlot(title);
-    const int pad = g_mccCrouchLockPad.load(std::memory_order_acquire);
-    return slot < 0 || pad < 0 ? -1 : (pad >> slot) & 1;
+        LOG("MCC crouch lock settings (GameUserSettings.ini, bit n = slot n; logged only, the slot-to-game "
+            "mapping is unverified): controller=0x%X keyboard=0x%X", pad, mk);
 }
 
 int Input_ClaimXInputIat()
