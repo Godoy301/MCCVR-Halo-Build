@@ -25,6 +25,11 @@ struct RoomscaleFollow
     // Reach: a 2.5 cm lean moved the body 13 mm in one burst), each a walk-cycle blip. The view is
     // head-locked either way; only the collision body lags, by at most kFollowStart.
     static constexpr float kFollowStart=0.03f, kFollowStop=0.015f;
+    // How long after the last command the body's own stopping tail may still be consumed as ours (it
+    // also ends after 150 ms without motion). Commands stop at the edge of the stop band, so this
+    // covers a lagged native walker coasting in from there; it is still a hard cap, so later platform
+    // or physics travel is never claimed.
+    static constexpr uint64_t kSettleMaxMs=700;
     bool seeded=false, commanded=false, settling=false;
     bool manualPaused=false, following=false;
     uint32_t generation=0;
@@ -37,7 +42,10 @@ struct RoomscaleFollow
     {
         // Manual travel cannot be attributed to a prior physical-follow
         // packet. Retain the tracked goal, but retire that movement receipt.
-        commanded=settling=false;velocity[0]=velocity[1]=0;
+        // A follow the stick interrupted is over too: once native travel is
+        // quiet again, a catch-up must re-cross kFollowStart like any other,
+        // or a residual inside the start band would resume walking.
+        commanded=settling=following=false;velocity[0]=velocity[1]=0;
         manualPaused=true;manualQuietSince=now;
     }
 
@@ -76,7 +84,7 @@ struct RoomscaleFollow
             if (now>=manualQuietSince&&now-manualQuietSince>=150)
                 manualPaused=false;
         }
-        else if (!reset && (commanded || (settling && now>=lastCommand && now-lastCommand<=500 &&
+        else if (!reset && (commanded || (settling && now>=lastCommand && now-lastCommand<=kSettleMaxMs &&
             now>=lastMotion && now-lastMotion<=150)))
         {
             const float dx=(position[0]-body[0])/scale;
@@ -113,9 +121,14 @@ struct RoomscaleFollow
         }
         else
         {
-            following=distance>kFollowStart || (following && distance>kFollowStop);
-            if (!manualMove && !manualPaused && (following ||
-                (settling && std::hypot(velocity[0],velocity[1])>.05f)))
+            following=!manualMove && !manualPaused &&
+                (distance>kFollowStart || (following && distance>kFollowStop));
+            // Command ONLY while a follow is running. Once it ends inside kFollowStop, the game's own
+            // deceleration finishes the step: `settling` below still consumes that tail into the
+            // reference, but a command here would be floored by MCC to a >=27% stick -- a fresh walk
+            // step inside the band the hysteresis exists to keep quiet. A real overshoot past
+            // kFollowStart starts a new follow, which corrects it.
+            if (following)
             {
                 // Position feedback follows promptly; measured native velocity
                 // brakes before overshoot. A short filter tolerates 30 Hz body
@@ -140,7 +153,7 @@ struct RoomscaleFollow
         // Do not claim unrelated later platform/physics travel. Settling ends
         // after a quiet interval and always expires after half a second without
         // a command. Fresh input/tracking admission is still required outside.
-        settling=commanded || (settling && now>=lastCommand && now-lastCommand<=500 &&
+        settling=commanded || (settling && now>=lastCommand && now-lastCommand<=kSettleMaxMs &&
             now>=lastMotion && now-lastMotion<=150);
         generation=epoch; time=now;
         body[0]=position[0]; body[1]=position[1];

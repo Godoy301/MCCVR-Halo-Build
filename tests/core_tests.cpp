@@ -17862,6 +17862,42 @@ int main()
         }
         Check(neverReversed && released, "approaching fast, the follow releases the stick instead of reversing it");
     }
+    // Inside the stop band nothing is commanded, even while the body still coasts toward the head (MCC
+    // floors any nonzero move command to a >=27% stick: a fresh step, not a nudge). The coasting travel
+    // is still consumed into the reference.
+    {
+        RoomscaleFollow follow;
+        float body[3]{}, head[3]{0,1.7f,0}, reference[3]{0,1.7f,0};
+        float mx=0,my=0; uint64_t now=100;
+        auto step=[&]{now+=11;return follow.Update(3,now,true,false,body,head,reference,0,-1,1,0,1.0f,mx,my);};
+        step();
+        head[0]=0.035f; step();
+        Check(follow.following && (mx!=0 || my!=0), "fixture: a 3.5 cm lean starts a follow");
+        for (int i=0;i<40 && follow.following;++i) { body[1]-=0.001f; step(); }   // ~9 cm/s toward the head
+        Check(!follow.following, "fixture: the follow ends inside the stop band");
+        const float consumed=reference[0];
+        body[1]-=0.001f; step();
+        Check(mx==0 && my==0, "a body still coasting inside the stop band is not commanded");
+        Check(reference[0]>consumed, "its coasting travel is still consumed into the reference");
+    }
+    // A stick press ends a running follow: once native travel is quiet again, a residual inside the
+    // start band stays quiet instead of resuming the old follow down to the stop band.
+    {
+        RoomscaleFollow follow;
+        float body[3]{}, head[3]{0,1.7f,0}, reference[3]{0,1.7f,0};
+        float mx=0,my=0; uint64_t now=100;
+        auto step=[&](bool manual){now+=11;return follow.Update(3,now,true,manual,body,head,reference,0,-1,1,0,1.0f,mx,my);};
+        step(false);
+        head[0]=0.035f; step(false);
+        Check(follow.following && (mx!=0 || my!=0), "fixture: a follow is running");
+        head[0]=0.025f; step(true);
+        Check(!follow.following && mx==0 && my==0, "the stick ends the follow");
+        bool quiet=true;
+        for (int i=0;i<30;++i) { step(false); quiet&=mx==0 && my==0 && !follow.following; }
+        Check(quiet && !follow.manualPaused, "a 2.5 cm residual does not resume walking after the stick");
+        head[0]=0.045f; step(false);
+        Check(follow.following && (mx!=0 || my!=0), "a lean past the start band still starts a new follow");
+    }
     Check(!Config{}.roomscale_movement, "roomscale is opt-in for existing and new configurations");
 
     g_failures += RunRoomscaleInputTests();

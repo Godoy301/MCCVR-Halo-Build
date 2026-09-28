@@ -24,15 +24,17 @@ std::atomic<uint64_t> manualSamples{0}, demandSamples{0}, travelMm{0};
 // Follow quality for the report: how far the head is from where the body will be (the controller's
 // error), the largest in the window, and the largest stick command issued.
 std::atomic<uint64_t> errorLastMm{0}, errorMaxMm{0}, commandMaxMilli{0};
-// Follow trace: one sample per ~100 ms while a follow is in progress (error past the deadband, a
-// command, or native travel still settling). Written only by the camera hook under `publishing`,
-// dumped by the status tick, so a catch-up that lurches, overshoots or stalls shows its shape in
-// the log. The 64-slot ring holds ~6 s, three report periods.
+#if HALOMCCVR_DEV_DIAGNOSTICS
+// Follow trace (dev builds only): one sample per ~100 ms while a follow is in progress (error past the
+// deadband, a command, or native travel still settling). Written only by the camera hook under
+// `publishing`, dumped by the status tick, so a catch-up that lurches, overshoots or stalls shows its
+// shape in the log. The 64-slot ring holds ~6 s, three report periods.
 struct FollowSample { uint64_t at; float errorX, errorZ, command, speed; };
 constexpr unsigned kFollowTrace = 64;
 FollowSample followTrace[kFollowTrace]{};
 std::atomic<unsigned> followHead{0};
 uint64_t followSampledAt = 0;
+#endif
 }
 
 void Roomscale_Input(bool allowed,float x,float y) noexcept
@@ -145,6 +147,7 @@ void Roomscale_Camera(GameTitle title,bool allowed,const float body[3],
                 uint64_t prior=commandMaxMilli.load(std::memory_order_relaxed);
                 while (milli>prior && !commandMaxMilli.compare_exchange_weak(prior,milli,std::memory_order_relaxed)) {}
             }
+#if HALOMCCVR_DEV_DIAGNOSTICS
             // Only while a follow is actually running: a steady lean inside the start band is the
             // normal idle state and must not log a line every report.
             const float speed=std::hypot(state.velocity[0],state.velocity[1]);
@@ -157,6 +160,7 @@ void Roomscale_Camera(GameTitle title,bool allowed,const float body[3],
                 followHead.store(slot+1,std::memory_order_release);
                 followSampledAt=now;
             }
+#endif
         }
     }
     version.fetch_add(1,std::memory_order_acq_rel);
@@ -201,6 +205,7 @@ void Roomscale_Report() noexcept
             (unsigned long long)errLast,(unsigned long long)errMax,double(cmdMax)*0.001,
             good ? "native body follow available" :
             "StockFallback: awaiting fresh on-foot camera, tracking and gameplay input; VR stays active");
+#if HALOMCCVR_DEV_DIAGNOSTICS
     static unsigned printed=0;
     const unsigned head=followHead.load(std::memory_order_acquire);
     if (enabled && head!=printed)
@@ -223,4 +228,5 @@ void Roomscale_Report() noexcept
         LOG("%s",line);
         printed=head;
     }
+#endif
 }
