@@ -28,18 +28,27 @@ struct ReachSightTracePublication
     std::atomic<uint32_t> hit{0};
     std::atomic<uint32_t> hitType{0};
     std::atomic<float> rangeWu{0.0f};
-    std::atomic<bool> faulted{false};
-    std::atomic<uint64_t> traces{0}, hits{0}, misses{0}, skips{0};
-    // Why a tick did not trace (reported each window, so "0 traces" always names its cause).
+    std::atomic<bool> faulted{false};     // latched by a native fault; cleared by the next Reach install
+    std::atomic<uint64_t> traces{0};      // the player-facing state line reads this ("running")
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    // Why a tick did not trace, and what the traces found. Dev builds only: the player-facing state
+    // line needs none of it, and the hook runs for every unit on every sim tick.
+    std::atomic<uint64_t> hits{0}, misses{0}, skips{0};
     std::atomic<uint64_t> blockedUnresolved{0}, blockedFaulted{0}, blockedIdle{0}, blockedUnhooked{0},
         blockedUnarmed{0}, blockedRate{0};
     std::atomic<uint32_t> nearestMm{UINT32_MAX}, farthestMm{0};
-#if HALOMCCVR_DEV_DIAGNOSTICS
     std::atomic<uint64_t> traceTicksSum{0}, traceTicksMax{0}, timed{0};
     std::atomic<uint32_t> objectHits{0};   // type 4: bipeds, vehicles, crates, scenery ...
     std::atomic<uint32_t> bipedHits{0};    // ...of which the hit object's kind is 0 (a biped)
 #endif
 } g_reachSightTrace;
+
+// A dev-build counter on the trace's gates; compiles to nothing (argument unevaluated) in a player build.
+#if HALOMCCVR_DEV_DIAGNOSTICS
+#define REACH_SIGHT_DEV_COUNT(counter) (counter).fetch_add(1, std::memory_order_relaxed)
+#else
+#define REACH_SIGHT_DEV_COUNT(counter) ((void)0)
+#endif
 
 // Beyond ~60 wu (~180 m) the convergence correction is a small fraction of a degree.
 inline constexpr float kReachSightTraceLengthWu = 60.0f;
@@ -213,6 +222,13 @@ void ReachClearSightFlags(const char* why)
 void ReachResolveSightFlags(uintptr_t base, size_t size)
 {
     ReachClearSightFlags("resolving");
+    // A native fault latches the trace off for the rest of THIS install; a new install tries again.
+    g_reachSightTrace.faulted.store(false, std::memory_order_release);
+    uint64_t expected = kReachCollisionTestFlagsInit;
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    if (g_config.reach_sight_fault & 4)   // fault injection, bit 2: the value check must refuse
+        expected ^= 1ull;
+#endif
     const uintptr_t collisionTest = reinterpret_cast<uintptr_t>(g_reachWorldCollision.target);
     static constexpr char kAnchor[] = "81 C9 00 20 20 00";   // or ecx, 0x202000
     uintptr_t textBegin = 0, textEnd = 0, anchor = 0, global = 0;
@@ -233,16 +249,16 @@ void ReachResolveSightFlags(uintptr_t base, size_t size)
         ;
     else if (!ReachGuardedReadQword(global, value))
         why = "the flags global is unreadable";
-    else if (value != kReachCollisionTestFlagsInit)
+    else if (value != expected)
         why = "the flags global disagrees with HREK's initial value";
     if (why)
     {
         ReachClearSightFlags(why);
-        LOG("REACHSIGHT aim-trace flags NOT resolved: %s (anchor +0x%llX, global +0x%llX = 0x%llX, HREK 0x%llX); "
-            "the aim trace stays off and aim keeps the fixed-distance steer",
+        LOG("REACHSIGHT aim-trace flags NOT resolved: %s (anchor +0x%llX, global +0x%llX = 0x%llX, expected "
+            "0x%llX); the aim trace stays off and aim keeps the fixed-distance steer",
             why, anchor ? static_cast<unsigned long long>(anchor - base) : 0ull,
             global ? static_cast<unsigned long long>(global - base) : 0ull, static_cast<unsigned long long>(value),
-            static_cast<unsigned long long>(kReachCollisionTestFlagsInit));
+            static_cast<unsigned long long>(expected));
         return;
     }
     const uint64_t flags = value | kReachAimTraceFlagsOr;
@@ -270,7 +286,7 @@ uint64_t ReachSightActiveFlags(int32_t& mode)
         flags = g_config.reach_sight_trace_flags;
         mode = g_config.reach_sight_trace_mode;
     }
-    if (g_config.reach_sight_fault & 2)      // fault injection: behave as if the resolve failed
+    if (g_config.reach_sight_fault & 2)      // fault injection, bit 1: withhold the resolved flags
         flags = 0;
 #endif
     return flags;
@@ -278,25 +294,28 @@ uint64_t ReachSightActiveFlags(int32_t& mode)
 
 void ReachSightTraceTick(uint32_t unit)
 {
+    // Every unit comes through this hook on every sim tick, so the cheapest gate comes first: one plain
+    // config load. Only direct drive (mode 3) consumes the trace.
+    if (g_config.reach_direct_drive != 3)
+        return;
     auto& trace = g_reachSightTrace;
-    // Every unit comes through this hook each tick, so the cheap gates come first.
     const uint64_t now = GetTickCount64();
     const uint64_t demand = g_reachSightDemandMs.load(std::memory_order_relaxed);
     if (!demand || now < demand || now - demand > kReachSightDemandFreshMs)
     {
-        trace.blockedIdle.fetch_add(1, std::memory_order_relaxed);
+        REACH_SIGHT_DEV_COUNT(trace.blockedIdle);
         return;
     }
     int32_t mode = 0;
     const uint64_t flags = ReachSightActiveFlags(mode);
     if (!flags)
     {
-        trace.blockedUnresolved.fetch_add(1, std::memory_order_relaxed);
+        REACH_SIGHT_DEV_COUNT(trace.blockedUnresolved);
         return;
     }
     if (trace.faulted.load(std::memory_order_acquire))
     {
-        trace.blockedFaulted.fetch_add(1, std::memory_order_relaxed);
+        REACH_SIGHT_DEV_COUNT(trace.blockedFaulted);
         return;
     }
     // The call below is the 8-argument collision_test_vector trampoline -- proven by the install that
@@ -305,12 +324,12 @@ void ReachSightTraceTick(uint32_t unit)
     if (!g_reachWorldCollision.installed.load(std::memory_order_acquire) ||
         !g_reachWorldCollision.originalIsVectorTest || !ReachContactMeleeReady())
     {
-        trace.blockedUnhooked.fetch_add(1, std::memory_order_relaxed);
+        REACH_SIGHT_DEV_COUNT(trace.blockedUnhooked);
         return;
     }
     if (!g_reachCamera.armed.load(std::memory_order_acquire))
     {
-        trace.blockedUnarmed.fetch_add(1, std::memory_order_relaxed);
+        REACH_SIGHT_DEV_COUNT(trace.blockedUnarmed);
         return;
     }
     // Rate-limit first, then find the local unit through a cache so a busy level does not cost a native
@@ -319,19 +338,9 @@ void ReachSightTraceTick(uint32_t unit)
     static int32_t s_localUnit = -1;
     if (s_lastTraceMs && now >= s_lastTraceMs && now - s_lastTraceMs < kReachSightTraceIntervalMs)
     {
-        trace.blockedRate.fetch_add(1, std::memory_order_relaxed);
+        REACH_SIGHT_DEV_COUNT(trace.blockedRate);
         return;
     }
-#if HALOMCCVR_DEV_DIAGNOSTICS
-    // Fault injection (dev): prove the fallbacks run. Bit 0 = behave as if the native trace faulted
-    // (off for the rest of the Reach install); bit 1 (in ReachSightActiveFlags) = as if the flags never
-    // resolved.
-    if (g_config.reach_sight_fault & 1)
-    {
-        trace.faulted.store(true, std::memory_order_release);
-        return;
-    }
-#endif
     if (!s_localAtMs || now < s_localAtMs || now - s_localAtMs > 100)
     {
         s_localUnit = LegacyCollisionIgnoredObject(GameTitle::HaloReach);
@@ -344,7 +353,7 @@ void ReachSightTraceTick(uint32_t unit)
     const auto original = reinterpret_cast<LegacyCollisionTestVectorFn>(g_reachWorldCollision.original);
     if (!original)
     {
-        trace.blockedUnhooked.fetch_add(1, std::memory_order_relaxed);
+        REACH_SIGHT_DEV_COUNT(trace.blockedUnhooked);
         return;
     }
     const uint32_t generation = g_reachCamera.generation.load(std::memory_order_acquire);
@@ -353,14 +362,14 @@ void ReachSightTraceTick(uint32_t unit)
         ray.generation != generation || !ray.sampleMs || now < ray.sampleMs || now - ray.sampleMs > 100 ||
         ray.key.unitHandle != localUnit)
     {
-        trace.skips.fetch_add(1, std::memory_order_relaxed);
+        REACH_SIGHT_DEV_COUNT(trace.skips);
         return;
     }
     float u[3]{ray.target[0] - ray.origin[0], ray.target[1] - ray.origin[1], ray.target[2] - ray.origin[2]};
     const float length = std::sqrt(u[0] * u[0] + u[1] * u[1] + u[2] * u[2]);
     if (!std::isfinite(length) || length < 1.0e-3f)
     {
-        trace.skips.fetch_add(1, std::memory_order_relaxed);
+        REACH_SIGHT_DEV_COUNT(trace.skips);
         return;
     }
     for (float& c : u) c /= length;
@@ -378,11 +387,18 @@ void ReachSightTraceTick(uint32_t unit)
     const bool previousOwned = g_legacyCollisionOwnedQuery;
     g_legacyCollisionOwnedQuery = true;
 #if HALOMCCVR_DEV_DIAGNOSTICS
+    // Fault injection (dev), bit 0: raise INSIDE the guarded native call, so the genuine __except runs
+    // (the owned-query flag restore and the fault latch) -- the exact path a real native fault takes.
+    const bool injectFault = (g_config.reach_sight_fault & 1) != 0;
     LARGE_INTEGER qpcStart{};
     QueryPerformanceCounter(&qpcStart);
 #endif
     __try
     {
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        if (injectFault)
+            RaiseException(0xE0FA0001u, 0, 0, nullptr);
+#endif
         // Ignored object: the local unit, as the engine's crosshair trace ignores the unit's root (on
         // foot, the unit itself).
         returned = original(flags, mode, start, vector, localUnit, -1, -1, result);
@@ -394,6 +410,13 @@ void ReachSightTraceTick(uint32_t unit)
         return;
     }
     g_legacyCollisionOwnedQuery = previousOwned;
+    trace.traces.fetch_add(1, std::memory_order_relaxed);
+    uint32_t type = 0;
+    float fraction = 1.0f;
+    memcpy(&type, result, sizeof(type));
+    memcpy(&fraction, result + 4, sizeof(fraction));
+    const bool hit = returned && std::isfinite(fraction) && fraction >= 0.0f && fraction <= 1.0f;
+    const float rangeWu = hit ? kReachSightTraceSkipWu + fraction * kReachSightTraceLengthWu : 0.0f;
 #if HALOMCCVR_DEV_DIAGNOSTICS
     LARGE_INTEGER qpcEnd{};
     QueryPerformanceCounter(&qpcEnd);
@@ -402,23 +425,13 @@ void ReachSightTraceTick(uint32_t unit)
     trace.timed.fetch_add(1, std::memory_order_relaxed);
     uint64_t priorTicks = trace.traceTicksMax.load(std::memory_order_relaxed);
     while (spent > priorTicks && !trace.traceTicksMax.compare_exchange_weak(priorTicks, spent, std::memory_order_relaxed)) {}
-#endif
-    trace.traces.fetch_add(1, std::memory_order_relaxed);
-    uint32_t type = 0;
-    float fraction = 1.0f;
-    memcpy(&type, result, sizeof(type));
-    memcpy(&fraction, result + 4, sizeof(fraction));
-    const bool hit = returned && std::isfinite(fraction) && fraction >= 0.0f && fraction <= 1.0f;
-    const float rangeWu = hit ? kReachSightTraceSkipWu + fraction * kReachSightTraceLengthWu : 0.0f;
     (hit ? trace.hits : trace.misses).fetch_add(1, std::memory_order_relaxed);
-#if HALOMCCVR_DEV_DIAGNOSTICS
     if (hit && type == 4)
     {
         trace.objectHits.fetch_add(1, std::memory_order_relaxed);
         if (ReachSightHitObjectKind(result) == 0)
             trace.bipedHits.fetch_add(1, std::memory_order_relaxed);
     }
-#endif
     if (hit)
     {
         const uint32_t mm = static_cast<uint32_t>(rangeWu / kReachWorldUnitsPerMeter * 1000.0f);
@@ -427,6 +440,7 @@ void ReachSightTraceTick(uint32_t unit)
         prior = trace.farthestMm.load(std::memory_order_relaxed);
         while (mm > prior && !trace.farthestMm.compare_exchange_weak(prior, mm, std::memory_order_relaxed)) {}
     }
+#endif
     trace.sequence.fetch_add(1, std::memory_order_acq_rel);
     trace.generation.store(generation, std::memory_order_relaxed);
     trace.sampleMs.store(now, std::memory_order_relaxed);
@@ -592,29 +606,29 @@ void ReportReachSightTrace()
 
     // VALUE AGREEMENT, continued: the engine reads this global on every crosshair trace, so if anything
     // ever re-wrote it our trace would measure a different ray than the engine's. Withdraw at once.
+    uint64_t expected = kReachCollisionTestFlagsInit;
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    if (g_config.reach_sight_fault & 8)   // fault injection, bit 3: this re-check must withdraw
+        expected ^= 1ull;
+#endif
     const uintptr_t global = g_reachSightFlags.global.load(std::memory_order_acquire);
     uint64_t globalValue = 0;
-    if (global && (!ReachGuardedReadQword(global, globalValue) || globalValue != kReachCollisionTestFlagsInit))
+    if (global && (!ReachGuardedReadQword(global, globalValue) || globalValue != expected))
     {
         ReachClearSightFlags("the flags global changed after it was resolved");
-        LOG("REACHSIGHT aim-trace flags WITHDRAWN: the global now reads 0x%llX (HREK 0x%llX); the aim trace is "
-            "off and aim keeps the fixed-distance steer", static_cast<unsigned long long>(globalValue),
-            static_cast<unsigned long long>(kReachCollisionTestFlagsInit));
+        LOG("REACHSIGHT aim-trace flags WITHDRAWN: the global now reads 0x%llX (expected 0x%llX); the aim "
+            "trace is off and aim keeps the fixed-distance steer", static_cast<unsigned long long>(globalValue),
+            static_cast<unsigned long long>(expected));
     }
 
     // Player-facing state, logged when it changes: whether the aim trace is running and, if not, why.
     int32_t mode = 0;
     const uint64_t flags = ReachSightActiveFlags(mode);
     const uint64_t traces = trace.traces.exchange(0, std::memory_order_relaxed);
-    const uint64_t hits = trace.hits.exchange(0, std::memory_order_relaxed);
-    const uint64_t misses = trace.misses.exchange(0, std::memory_order_relaxed);
-    const uint64_t skips = trace.skips.exchange(0, std::memory_order_relaxed);
-    const uint64_t unresolved = trace.blockedUnresolved.exchange(0, std::memory_order_relaxed);
-    const uint64_t faulted = trace.blockedFaulted.exchange(0, std::memory_order_relaxed);
-    const uint64_t idle = trace.blockedIdle.exchange(0, std::memory_order_relaxed);
-    const uint64_t unhooked = trace.blockedUnhooked.exchange(0, std::memory_order_relaxed);
-    const uint64_t unarmed = trace.blockedUnarmed.exchange(0, std::memory_order_relaxed);
-    (void)trace.blockedRate.exchange(0, std::memory_order_relaxed);
+    // The trace runs inside contact melee's per-unit hook and calls the collision hook's trampoline;
+    // without both it cannot run at all, and "idle" would hide why.
+    const bool hostLive = g_reachWorldCollision.installed.load(std::memory_order_acquire) &&
+                          g_reachWorldCollision.originalIsVectorTest && ReachContactMeleeReady();
     const char* state =
 #if HALOMCCVR_DEV_DIAGNOSTICS
         // A fault-injected OFF must never read like a genuine one.
@@ -628,8 +642,8 @@ void ReportReachSightTrace()
                  "fixed-distance steer" :
         trace.faulted.load(std::memory_order_acquire) ? "OFF: the native trace faulted; aim keeps the "
                                                           "fixed-distance steer" :
-        unhooked && !traces ? "OFF: the collision hook or contact melee is not live; aim keeps the "
-                              "fixed-distance steer" :
+        !hostLive ? "OFF: the collision hook or contact melee (the per-unit hook the trace runs in) is not "
+                    "live; aim keeps the fixed-distance steer" :
         traces ? "running" : "idle (direct drive not converging: not on foot, not armed, or not in use)";
     static const char* s_lastState = nullptr;
     if (state != s_lastState)
@@ -659,11 +673,17 @@ void ReportReachSightTrace()
             "range last %.2f m (nearest %.2f / farthest %.2f m), type %u; converged-shot live=%d; shots %u "
             "(%u measured): miss at the traced point avg %u / max %u mm, last %u mm at %.2f m; native origin "
             "vs engine eye max %u mm",
-            (unsigned long long)traces, (unsigned long long)hits,
+            (unsigned long long)traces,
+            (unsigned long long)trace.hits.exchange(0, std::memory_order_relaxed),
             trace.objectHits.exchange(0, std::memory_order_relaxed),
-            trace.bipedHits.exchange(0, std::memory_order_relaxed), (unsigned long long)misses,
-            (unsigned long long)skips, (unsigned long long)unresolved, (unsigned long long)faulted,
-            (unsigned long long)idle, (unsigned long long)unhooked, (unsigned long long)unarmed,
+            trace.bipedHits.exchange(0, std::memory_order_relaxed),
+            (unsigned long long)trace.misses.exchange(0, std::memory_order_relaxed),
+            (unsigned long long)trace.skips.exchange(0, std::memory_order_relaxed),
+            (unsigned long long)trace.blockedUnresolved.exchange(0, std::memory_order_relaxed),
+            (unsigned long long)trace.blockedFaulted.exchange(0, std::memory_order_relaxed),
+            (unsigned long long)trace.blockedIdle.exchange(0, std::memory_order_relaxed),
+            (unsigned long long)trace.blockedUnhooked.exchange(0, std::memory_order_relaxed),
+            (unsigned long long)trace.blockedUnarmed.exchange(0, std::memory_order_relaxed),
             timed ? double(sumTicks) / double(timed) * usPerTick : 0.0, double(maxTicks) * usPerTick,
             double(trace.rangeWu.load(std::memory_order_relaxed) / kReachWorldUnitsPerMeter),
             nearest == UINT32_MAX ? 0.0 : nearest / 1000.0,
@@ -675,6 +695,7 @@ void ReportReachSightTrace()
             shots.lastMissMm.load(std::memory_order_relaxed),
             shots.lastRangeMm.load(std::memory_order_relaxed) / 1000.0,
             shots.originOffsetMaxMm.exchange(0, std::memory_order_relaxed));
+        (void)trace.blockedRate.exchange(0, std::memory_order_relaxed);
     }
     if (!g_config.reach_collision_census)
         return;
@@ -694,7 +715,5 @@ void ReportReachSightTrace()
             copy[i].ownerIgnored, double(copy[i].maxLengthWu), copy[i].reported ? "" : " (NEW)");
     if (dropped)
         LOG("CENSUS collision_test_vector: %u calls not recorded (table full)", dropped);
-#else
-    (void)hits; (void)misses; (void)skips; (void)unresolved; (void)faulted; (void)idle; (void)unarmed;
 #endif
 }

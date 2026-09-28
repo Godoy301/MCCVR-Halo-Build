@@ -31,7 +31,7 @@ using reach_aim_basis::kCmPerWorldUnit;   // 304.8: a Reach world unit is 10 ft
 // Trace-and-reaim bends the aim only on a range measured this recently. A miss, a stale trace or a
 // gap never bends it on a held or assumed range: the older hand shot ray is exact at every range, so
 // it is the right fallback whenever the range is not known.
-constexpr uint64_t kFreshHitMs = 200;
+constexpr uint64_t kFreshHitMs = 150;   // = Game_ReachSightSample's own trace freshness
 
 const char* rung_name(Actuation how) {
     switch (how) {

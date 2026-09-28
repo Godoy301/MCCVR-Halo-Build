@@ -682,8 +682,10 @@ struct Config
     // DEV BUILDS ONLY (not parsed otherwise): replace the resolved flags for an experiment. 0 = use them.
     unsigned long long reach_sight_trace_flags = 0;
     int reach_sight_trace_mode = 0;
-    // DEV BUILDS ONLY (compiled out otherwise): fault injection proving the trace's fallbacks run.
-    // Bit 0 = behave as if the native trace faulted; bit 1 = as if the flags never resolved.
+    // DEV BUILDS ONLY (compiled out otherwise): fault injection proving the trace's fallbacks run, each
+    // through the real path. Bit 0 = raise inside the guarded native call (the genuine fault handler);
+    // bit 1 = withhold the resolved flags; bit 2 = the resolver's value check refuses at install;
+    // bit 3 = the cold worker's periodic re-check withdraws the flags.
     int reach_sight_fault = 0;
     // Diagnostic: log the distinct (caller, flags, mode) of Reach's own collision_test_vector calls,
     // to identify the flags a bullet's flight test uses. Leave at 0 for play.

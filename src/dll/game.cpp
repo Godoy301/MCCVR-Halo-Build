@@ -101,6 +101,10 @@ static std::atomic<bool>               g_reachDriveValid{false};
 // ray stands down exactly while the angles in effect are converged.
 static std::atomic<bool>               g_reachDriveConverged{false};
 static std::atomic<unsigned long long> g_reachWrittenConvergedMs{0};
+// Seqlock over the setpoint (yaw, pitch, converged, publish time): the sim-thread hook must never pair
+// one publish's angles with another publish's converged bit, because the firing site's stand-down of
+// the hand shot ray follows that bit. One writer (the provider, on the input poll).
+static std::atomic<uint32_t>           g_reachDriveSeq{0};
 // The hook's status, counted on the sim thread and logged by the cold worker.
 static std::atomic<unsigned>           g_reachApplyCalls{0}, g_reachApplyWrites{0}, g_reachApplyLast{0};
 static std::atomic<uint32_t>           g_reachApplyAgeMs{0};
@@ -47350,10 +47354,12 @@ bool Game_ReachDirectDriveOnFoot()
 // The provider's WriteState actuation: the setpoint the sim-thread hook writes on its next tick.
 void Game_ReachDirectDrivePublish(float gameYaw, float gamePitch, bool converged)
 {
+    g_reachDriveSeq.fetch_add(1, std::memory_order_acq_rel);   // odd: a publish is in progress
     g_reachDriveYaw.store(gameYaw, std::memory_order_relaxed);
     g_reachDrivePitch.store(gamePitch, std::memory_order_relaxed);
     g_reachDriveConverged.store(converged, std::memory_order_relaxed);
-    g_reachDriveMs.store(GetTickCount64(), std::memory_order_release);
+    g_reachDriveMs.store(GetTickCount64(), std::memory_order_relaxed);
+    g_reachDriveSeq.fetch_add(1, std::memory_order_release);    // even: one coherent setpoint
     g_reachDriveValid.store(true, std::memory_order_release);
 }
 
@@ -47374,7 +47380,10 @@ bool Game_ReachSightSample(ReachSightSample& out)
     if (g_config.reach_direct_drive != 3)
         return false;
     const uint64_t now = GetTickCount64();
-    g_reachSightDemandMs.store(now, std::memory_order_relaxed);
+    // And only while it can act on the result right now (the provider's can_write_state: hook armed with
+    // a fresh heartbeat, on foot). That predicate does not depend on the trace, so asking cannot starve.
+    if (Game_ReachDirectDriveReady() && Game_ReachDirectDriveOnFoot())
+        g_reachSightDemandMs.store(now, std::memory_order_relaxed);
     int32_t mode = 0;
     if (!ReachSightActiveFlags(mode) || g_reachSightTrace.faulted.load(std::memory_order_acquire))
         return false;
@@ -47469,10 +47478,24 @@ extern "C" void ReachPcApplyForUser(int user)
         const unsigned long long tick = GetTickCount64();
         if (armed && same)
             g_reachPcLiveMs.store(tick, std::memory_order_release);    // heartbeat: ready to write
-        valid = g_reachDriveValid.load(std::memory_order_acquire) ? 1 : 0;
-        age = tick - g_reachDriveMs.load(std::memory_order_acquire);
-        yaw = g_reachDriveYaw.load(std::memory_order_relaxed);
-        pitch = g_reachDrivePitch.load(std::memory_order_relaxed);
+        // One coherent setpoint (the seqlock in Game_ReachDirectDrivePublish): angles, publish time and
+        // the converged bit all from the same publish. A torn read retries once; still torn, this tick
+        // writes nothing and the game keeps last tick's angles.
+        bool coherent = false, drivenConverged = false;
+        unsigned long long publishedMs = 0;
+        for (int attempt = 0; attempt < 2 && !coherent; ++attempt)
+        {
+            const uint32_t before = g_reachDriveSeq.load(std::memory_order_acquire);
+            if (before & 1u)
+                continue;
+            yaw = g_reachDriveYaw.load(std::memory_order_relaxed);
+            pitch = g_reachDrivePitch.load(std::memory_order_relaxed);
+            drivenConverged = g_reachDriveConverged.load(std::memory_order_relaxed);
+            publishedMs = g_reachDriveMs.load(std::memory_order_relaxed);
+            coherent = g_reachDriveSeq.load(std::memory_order_acquire) == before;
+        }
+        valid = (coherent && g_reachDriveValid.load(std::memory_order_acquire)) ? 1 : 0;
+        age = publishedMs && publishedMs <= tick ? tick - publishedMs : (publishedMs ? 0 : ~0ull);
         if (same && armed && valid && age <= 200 &&
             std::isfinite(yaw) && std::isfinite(pitch))
         {
@@ -47491,9 +47514,7 @@ extern "C" void ReachPcApplyForUser(int user)
         // player only -- the other slots' calls must not clear it). The firing site reads this on this
         // same thread, so its stand-down tracks the write, not a publish.
         if (user == 0)
-            g_reachWrittenConvergedMs.store(
-                (wrote && g_reachDriveConverged.load(std::memory_order_relaxed)) ? tick : 0,
-                std::memory_order_release);
+            g_reachWrittenConvergedMs.store((wrote && drivenConverged) ? tick : 0, std::memory_order_release);
     }
     __except (EXCEPTION_EXECUTE_HANDLER) {}
     // Counted here, logged by the cold worker (Game_ReachDirectDriveReport): no file I/O or log lock on
