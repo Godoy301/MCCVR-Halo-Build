@@ -557,9 +557,14 @@ void ReportReachSightTrace()
     auto& trace = g_reachSightTrace;
     const uint32_t leashFrames = g_reachLeashHeldFrames.exchange(0, std::memory_order_relaxed);
     const uint32_t leashMax = g_reachLeashMaxLiftMm.exchange(0, std::memory_order_relaxed);
-    if (leashFrames)
-        LOG("Reach leash below the character's eye: view held on %u frames, max lift %u mm (limit %.2f m)",
-            leashFrames, leashMax, double(g_config.head_leash_below_eye_m));
+    const uint32_t crouchFrames = g_reachCrouchLiftFrames.exchange(0, std::memory_order_relaxed);
+    const uint32_t crouchMax = g_reachCrouchMaxLiftMm.exchange(0, std::memory_order_relaxed);
+    if (leashFrames || crouchFrames)
+        LOG("Reach view over the character's eye: leash held it on %u frames (max lift %u mm, limit %.2f m); "
+            "the physical-crouch correction gave back his crouch drop on %u frames (max %u mm); the hands and "
+            "reticle ray rose with it", leashFrames, leashMax, double(g_config.head_leash_below_eye_m),
+            crouchFrames, crouchMax);
+    ReportReachCachedCrouch();
 
     // VALUE AGREEMENT, continued: the engine reads this global on every crosshair trace, so if anything
     // ever re-wrote it our trace would measure a different ray than the engine's. Withdraw at once.

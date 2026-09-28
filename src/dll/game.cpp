@@ -17854,10 +17854,11 @@ namespace
         ReachVrRenderAccess* renderAccess = nullptr;
         float gameplayBasePosition[3]{};
         float presentedCameraBasePosition[3]{};
-        // World-unit lift the leash below the character's eye gave the view this frame (on foot).
-        // Added to the hands' and the reticle ray's base so they rise with the view; the stock
+        // World-unit lift our corrections gave the view over the character's eye this frame (on
+        // foot): the crouch correction's given-back native drop plus the leash's lift. Added to the
+        // hands' and the reticle ray's base so they rise with the view; the stock
         // presentedCameraBasePosition itself stays the engine's own eye, the native shot origin.
-        float leashLiftWu = 0.0f;
+        float viewLiftWu = 0.0f;
         ReachVehicleFrame vehicle{};
         bool vehicleViewApplied = false;
         ReachPendingSeatRecenter pendingSeatRecenter{};
@@ -21170,12 +21171,17 @@ namespace
     constexpr float kReachCineCutJumpUnitsSq = 4.0f;        // 2 world units
 
 
-    // The vertical lift the leash below the character's eye applied to the last head-look camera
-    // on this (render) thread, in world units. Read by ReachMainRenderView right after the head-centre
-    // build, the only caller, so the hands and the reticle ray can rise with the view.
+    // The vertical corrections of ours the last head-look camera on this (render) thread received over
+    // the character's own eye, in world units: the native crouch drop the physical-crouch correction
+    // gave back, and the lift of the leash below the character's eye. Read by ReachMainRenderView right
+    // after the head-centre build, the only caller: the hands and the reticle ray are built from the
+    // stock camera, so they must rise by the same amount or they sink away from the eyes.
+    thread_local float g_reachHeadLookCrouchLiftWu = 0.0f;
     thread_local float g_reachHeadLookLeashLiftWu = 0.0f;
     std::atomic<uint32_t> g_reachLeashHeldFrames{0};
     std::atomic<uint32_t> g_reachLeashMaxLiftMm{0};
+    std::atomic<uint32_t> g_reachCrouchLiftFrames{0};
+    std::atomic<uint32_t> g_reachCrouchMaxLiftMm{0};
 
     bool ReachApplyHeadLook(
         unsigned char* cam, const ReachVrRenderSnapshot& tracking,
@@ -21184,6 +21190,7 @@ namespace
         ReachPendingSeatRecenter& pendingSeatRecenter)
     {
         pendingSeatRecenter={};
+        g_reachHeadLookCrouchLiftWu = 0.0f;
         g_reachHeadLookLeashLiftWu = 0.0f;
         float q[4] = {
             tracking.headOrientation[0], tracking.headOrientation[1],
@@ -21331,6 +21338,11 @@ namespace
         const float characterEyeZ = pos[2];
         ApplyCachedPhysicalCrouch(GameTitle::HaloReach,pos,
             -Clamp((hpos[1]-effectiveHeadPosRef[1])*kReachWorldUnitsPerMeter,-1.5f,1.5f),!vehicleEntryRecenter);
+        // What it gave back (0 unless physical crouch holds a crouch): the view now follows the real
+        // head, so the hands' and the reticle ray's stock-camera base needs the same lift.
+        const float crouchLiftWu = pos[2] - characterEyeZ;
+        if (std::isfinite(crouchLiftWu) && crouchLiftWu > 0.0f && crouchLiftWu < 1.5f)
+            g_reachHeadLookCrouchLiftWu = crouchLiftWu;
         Roomscale_Camera(GameTitle::HaloReach, !vehicleEntryRecenter &&
             Game_RoomscaleCameraAllowed(GameTitle::HaloReach), pos, hpos, q, fwd,
             effectiveHeadPosRef, kReachWorldUnitsPerMeter);
@@ -21376,14 +21388,17 @@ namespace
             // THE LEASH BELOW THE CHARACTER'S EYE (Halo: Campaign Evolved's heightleash). A physical
             // duck deeper than the character's own crouch took the view inside his chest and legs:
             // the crouch correction above cancels his native camera drop, so the view follows your
-            // real head all the way down. Hold it at most head_leash_below_eye_m below his CURRENT
-            // eye; because that is measured from his camera, the limit drops with him when he
-            // crouches. On foot only (a seat composes its own view). The lift is recorded so the
-            // hands and the reticle ray, which are built from the stock camera, rise with the view
-            // instead of sinking away from the eyes (ReachMainRenderView applies it).
+            // real head all the way down (and without physical crouch a duck simply goes there).
+            // Hold it at most head_leash_below_eye_m below his CURRENT eye; because that is
+            // measured from his camera, the limit drops with him when he crouches. Only while he is
+            // on foot and player-controlled -- the proof roomscale and direct drive use; a seat or a
+            // cinematic composes its own view. The lift is recorded so the hands and the reticle
+            // ray, which are built from the stock camera, rise with the view instead of sinking away
+            // from the eyes (ReachMainRenderView applies it). CampE likewise leashes with or without
+            // its crouch feature: the leash is about the view entering the body, however it got low.
             const float leash = g_config.head_leash_below_eye_m;
-            if (!(vehicle && vehicle->active) && std::isfinite(leash) && leash >= 0.0f &&
-                std::isfinite(characterEyeZ))
+            if (!(vehicle && vehicle->active) && Game_ReachDirectDriveOnFootWhy() == 0 &&
+                std::isfinite(leash) && leash >= 0.0f && std::isfinite(characterEyeZ))
             {
                 const float floorZ = characterEyeZ - leash * kReachWorldUnitsPerMeter;
                 if (pos[2] < floorZ)
@@ -22262,11 +22277,11 @@ namespace
                 // camera base. gameplayBasePosition may deliberately select the
                 // rigid hands base and would offset the sight when
                 // body-following hands are enabled.
-                // On foot the leash lift (0 unless the view is being held) rides along, so the
-                // reticle ray stays where the lifted hands and view are.
+                // On foot the view lift (crouch correction + leash; 0 when neither acts) rides
+                // along, so the reticle ray stays where the lifted hands and view are.
                 const float base=owner.vehicleViewApplied && owner.vehicle.active
                     ? owner.vehicle.cameraBase[axis]
-                    : owner.presentedCameraBasePosition[axis]+(axis==2?owner.leashLiftWu:0.0f);
+                    : owner.presentedCameraBasePosition[axis]+(axis==2?owner.viewLiftWu:0.0f);
                 out[axis] = base +
                     offset[axis] * kReachWorldUnitsPerMeter;
                 if (!std::isfinite(out[axis]))
@@ -28746,6 +28761,10 @@ namespace
 
         alignas(16) unsigned char headDerived[kReachDerivedBlockSize]{};
         bool headCullReady = false;
+        // The head-centre build skips ReachApplyHeadLook in cutscene theater and on early rejects;
+        // a lift left from the last on-foot frame must not lift this frame's hands and reticle.
+        g_reachHeadLookCrouchLiftWu = 0.0f;
+        g_reachHeadLookLeashLiftWu = 0.0f;
         __try
         {
             headCullReady = ReachBuildHeadCullCamera(
@@ -28783,18 +28802,34 @@ namespace
             memcpy(candidate.gameplayBasePosition, handOrigin,
                    sizeof(candidate.gameplayBasePosition));
         }
-        else if (std::isfinite(g_reachHeadLookLeashLiftWu) && g_reachHeadLookLeashLiftWu > 0.0f &&
-                 g_reachHeadLookLeashLiftWu < 1.5f)
+        else if (!candidate.cutsceneTheater)
         {
-            // The leash held the view up this frame: lift the hands' base by the same amount so the
-            // controllers keep their real relation to the eyes (Campaign Evolved moves its standing
-            // origin, which carries every hand placement; this is the same move in this frame).
-            candidate.leashLiftWu = g_reachHeadLookLeashLiftWu;
-            candidate.gameplayBasePosition[2] += candidate.leashLiftWu;
-            g_reachLeashHeldFrames.fetch_add(1, std::memory_order_relaxed);
-            const uint32_t mm = static_cast<uint32_t>(candidate.leashLiftWu / kReachWorldUnitsPerMeter * 1000.0f);
-            uint32_t prior = g_reachLeashMaxLiftMm.load(std::memory_order_relaxed);
-            while (mm > prior && !g_reachLeashMaxLiftMm.compare_exchange_weak(prior, mm, std::memory_order_relaxed)) {}
+            // Our corrections raised the view over the character's eye this frame (the crouch
+            // correction gave back his native drop; the leash held a deep duck up): lift the hands'
+            // base by the same amount so the controllers keep their real relation to the eyes
+            // (Campaign Evolved moves its standing origin, which carries every hand placement; this
+            // is the same move in this frame).
+            const auto admit = [](float wu) { return std::isfinite(wu) && wu > 0.0f && wu < 1.5f ? wu : 0.0f; };
+            const auto noteMax = [](std::atomic<uint32_t>& max, float wu)
+            {
+                const uint32_t mm = static_cast<uint32_t>(wu / kReachWorldUnitsPerMeter * 1000.0f);
+                uint32_t prior = max.load(std::memory_order_relaxed);
+                while (mm > prior && !max.compare_exchange_weak(prior, mm, std::memory_order_relaxed)) {}
+            };
+            const float crouchLift = admit(g_reachHeadLookCrouchLiftWu);
+            const float leashLift = admit(g_reachHeadLookLeashLiftWu);
+            candidate.viewLiftWu = crouchLift + leashLift;
+            candidate.gameplayBasePosition[2] += candidate.viewLiftWu;
+            if (crouchLift > 0.0f)
+            {
+                g_reachCrouchLiftFrames.fetch_add(1, std::memory_order_relaxed);
+                noteMax(g_reachCrouchMaxLiftMm, crouchLift);
+            }
+            if (leashLift > 0.0f)
+            {
+                g_reachLeashHeldFrames.fetch_add(1, std::memory_order_relaxed);
+                noteMax(g_reachLeashMaxLiftMm, leashLift);
+            }
         }
         alignas(16) unsigned char savedWorkspace[kReachCameraPairDataSize];
         alignas(16) unsigned char savedPv[kReachPvSnapshotBytes];
