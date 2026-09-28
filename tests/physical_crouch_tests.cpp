@@ -71,5 +71,41 @@ int main()
     Check(!state.Update(1.7f,1,1020,true,.4f),"sensitivity edit cannot create a crouch edge");
     Check(!state.Update(1.7f,1,1040,true,std::numeric_limits<float>::infinity()),"invalid sensitivity uses finite default and recalibrates");
     Check(state.Update(1.4f,1,1060,true,.22f),"finite fallback still permits physical crouching");
+
+    // Learned standing height (only rises). Steps are 20 ms; a rise needs 1 s held steady.
+    {
+        PhysicalCrouch c;uint64_t now=5000;const float normal=1.7f,depth=.22f;
+        auto step=[&](float h){now+=20;return c.Update(h,9,now,true,depth);};
+        Check(!step(normal-.15f),"calibration taken slouched");
+        for(int i=0;i<60;++i) step(normal);   // stand tall for 1.2 s
+        Check(std::fabs(c.Baseline()-normal)<.001f,"standing tall for a second raises the baseline");
+        Check(step(normal-depth*1.1f),"a crouch is measured from the learned standing height");
+        Check(!step(normal),"and releases on standing");
+    }
+    {
+        PhysicalCrouch c;uint64_t now=5000;const float normal=1.7f,depth=.22f;
+        auto step=[&](float h){now+=20;return c.Update(h,9,now,true,depth);};
+        Check(!step(normal),"calibrated standing");
+        for(int i=0;i<30;++i) step(normal+.10f);   // 0.6 s: too brief
+        step(normal);
+        Check(std::fabs(c.Baseline()-normal)<.001f,"a brief rise does not move the baseline");
+        for(int i=0;i<100;++i) step(normal+.80f);  // headset lifted off the head, held still for 2 s
+        Check(std::fabs(c.Baseline()-normal)<.001f,"a rise beyond the cap (headset lifted) is ignored");
+        Check(step(normal-depth*1.1f),"crouch still measured from the true standing height");
+    }
+    {
+        PhysicalCrouch c;uint64_t now=5000;const float normal=1.7f,depth=.22f;
+        auto step=[&](float h){now+=20;return c.Update(h,9,now,true,depth);};
+        Check(!step(normal),"calibrated standing");
+        Check(step(normal-depth*1.5f),"crouched");
+        for(int i=0;i<100;++i) step(normal-depth*1.5f);  // a long crouch
+        Check(std::fabs(c.Baseline()-normal)<.001f,"a long crouch never drags the line down");
+        Check(!step(normal),"stands");
+        for(int i=0;i<60;++i) step(normal+.05f);          // standing taller later
+        Check(std::fabs(c.Baseline()-(normal+.05f))<.001f,"standing taller later still raises it");
+        // Raised line = 1.75 - 0.22 = 1.53; old line was 1.48. A head at 1.50 is past the raised line
+        // (crouches) but would not have been past the old one.
+        Check(step(normal-depth+.02f),"the raised line triggers higher, as learned");
+    }
     std::printf("Physical crouch: %u checks passed\n",checks);
 }
