@@ -20,6 +20,9 @@ std::atomic_flag publishing = ATOMIC_FLAG_INIT;
 std::atomic<uint64_t> admitted{0}, refused{0}, consumed{0};
 std::atomic<uint64_t> nativeBlocked{0}, trackingBlocked{0}, inputBlocked{0};
 std::atomic<uint64_t> manualSamples{0}, demandSamples{0}, travelMm{0};
+// Follow quality for the report: how far the head is from where the body will be (the controller's
+// error), the largest in the window, and the largest stick command issued.
+std::atomic<uint64_t> errorLastMm{0}, errorMaxMm{0}, commandMaxMilli{0};
 }
 
 void Roomscale_Input(bool allowed,float x,float y) noexcept
@@ -115,6 +118,24 @@ void Roomscale_Camera(GameTitle title,bool allowed,const float body[3],
         const float distance=std::hypot(reference[0]-oldRefX,reference[2]-oldRefZ);
         if (valid && std::isfinite(distance) && distance<=0.4f)
             travelMm.fetch_add(uint64_t(distance*1000.0f+0.5f),std::memory_order_relaxed);
+        if (valid)
+        {
+            const float err=std::hypot(state.error[0],state.error[1]);
+            const float cmd=std::hypot(x,y);
+            if (std::isfinite(err))
+            {
+                const uint64_t mm=uint64_t(err*1000.0f+0.5f);
+                errorLastMm.store(mm,std::memory_order_relaxed);
+                uint64_t prior=errorMaxMm.load(std::memory_order_relaxed);
+                while (mm>prior && !errorMaxMm.compare_exchange_weak(prior,mm,std::memory_order_relaxed)) {}
+            }
+            if (std::isfinite(cmd))
+            {
+                const uint64_t milli=uint64_t(cmd*1000.0f+0.5f);
+                uint64_t prior=commandMaxMilli.load(std::memory_order_relaxed);
+                while (milli>prior && !commandMaxMilli.compare_exchange_weak(prior,milli,std::memory_order_relaxed)) {}
+            }
+        }
     }
     version.fetch_add(1,std::memory_order_acq_rel);
     command.store(uint64_t(std::bit_cast<uint32_t>(x))|
@@ -145,13 +166,17 @@ void Roomscale_Report() noexcept
     const auto good=admitted.exchange(0),bad=refused.exchange(0),moves=consumed.exchange(0);
     const auto native=nativeBlocked.exchange(0), tracking=trackingBlocked.exchange(0), input=inputBlocked.exchange(0);
     const auto manual=manualSamples.exchange(0), demand=demandSamples.exchange(0), travel=travelMm.exchange(0);
+    const auto errLast=errorLastMm.load(std::memory_order_relaxed), errMax=errorMaxMm.exchange(0);
+    const auto cmdMax=commandMaxMilli.exchange(0);
     if (enabled)
         LOG("Roomscale: title=%u admitted=%llu unavailable=%llu movement polls=%llu; "
-            "blocked native=%llu tracking=%llu input=%llu manual=%llu demand=%llu consumed-mm=%llu; %s",
+            "blocked native=%llu tracking=%llu input=%llu manual=%llu demand=%llu consumed-mm=%llu; "
+            "follow error now=%llu max=%llu mm, stick cmd max=%.2f; %s",
             unsigned(TitleAdapter_GetActiveTitle()), (unsigned long long)good,
             (unsigned long long)bad,(unsigned long long)moves,
             (unsigned long long)native,(unsigned long long)tracking,(unsigned long long)input,
             (unsigned long long)manual,(unsigned long long)demand,(unsigned long long)travel,
+            (unsigned long long)errLast,(unsigned long long)errMax,double(cmdMax)*0.001,
             good ? "native body follow available" :
             "StockFallback: awaiting fresh on-foot camera, tracking and gameplay input; VR stays active");
 }

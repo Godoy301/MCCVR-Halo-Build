@@ -118,6 +118,9 @@ static std::atomic<unsigned long long> g_reachPcLiveMs{0};
 // stayed off until the next teardown. Every reset bumps the sequence; the gate releases on a change.
 static std::atomic<bool>               g_reachDriveTearingDown{false};
 static std::atomic<unsigned>           g_reachDriveResetSeq{0};
+// The player unit's native crouch state as last read by the engine-thread master read (-1 unknown).
+static std::atomic<int>                g_reachUnitCrouchState{-1};
+static std::atomic<unsigned long long> g_reachUnitCrouchMs{0};
 static void* g_reachPcTarget = nullptr;
 static void ReachRecordDesiredAim(float gameYaw, float gamePitch);
 extern "C" void ReachPcApplyForUser(int user);
@@ -26427,7 +26430,16 @@ namespace
         const int unit = g_reachCamera.playerUnitByOutputUser(0);
         uint8_t kind = 0;
         unsigned char* d = unit != -1 ? ReachVehicleObjectData(unit, kind) : nullptr;
-        if (!d || kind == kReachObjectKindVehicle) return ReachDriveRead::NoUnit;
+        if (!d || kind == kReachObjectKindVehicle)
+        {
+            g_reachUnitCrouchState.store(-1, std::memory_order_relaxed);
+            return ReachDriveRead::NoUnit;
+        }
+        // Diagnostics: the unit's native crouch state (+0x1C4 bit 20, per docs/PHYSICAL-CROUCH-CAMERA),
+        // so the physical-crouch line can show what the character actually did.
+        g_reachUnitCrouchState.store(static_cast<int>((*reinterpret_cast<const uint32_t*>(d + 0x1C4) >> 20) & 1u),
+                                     std::memory_order_relaxed);
+        g_reachUnitCrouchMs.store(GetTickCount64(), std::memory_order_relaxed);
         const uintptr_t snapAim = reinterpret_cast<uintptr_t>(d + kReachUnitAimingVectorOffset);
         if (snapAimOut) *snapAimOut = snapAim;
         if (!g_reachRing[0].ok && !ReachVsReadRing(0)) return ReachDriveRead::RingInvalid;
@@ -47112,6 +47124,16 @@ bool Game_ReachDirectDriveReady()
     const unsigned long long now = GetTickCount64();
     return g_reachPcTarget && g_reachPcArmed.load(std::memory_order_acquire) &&
            live && now >= live && now - live <= 150;
+}
+
+// The player unit's native crouch state (0/1), or -1 when unknown or older than 250 ms. Published by the
+// engine-thread master read, so it is live while direct drive is armed (diagnostics for now).
+int Game_ReachUnitCrouchState()
+{
+    const unsigned long long at = g_reachUnitCrouchMs.load(std::memory_order_relaxed);
+    const unsigned long long now = GetTickCount64();
+    if (!at || now < at || now - at > 250) return -1;
+    return g_reachUnitCrouchState.load(std::memory_order_relaxed);
 }
 
 // Fresh on-foot, player-controlled Reach gameplay -- the same engine-thread publications the roomscale

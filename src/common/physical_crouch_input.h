@@ -30,6 +30,7 @@ public:
         if(!enabled) m_gesture.Reset();
         else (void)m_gesture.Update(0,0,0,false,.22f);
     }
+    const PhysicalCrouch& Gesture() const noexcept {return m_gesture;}   // diagnostics only
 private:
     PhysicalCrouch m_gesture;
     GameTitle m_title=GameTitle::None;

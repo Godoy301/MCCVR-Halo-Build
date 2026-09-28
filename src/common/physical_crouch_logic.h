@@ -32,6 +32,11 @@ public:
         return active_;
     }
     void Reset() noexcept {*this=PhysicalCrouch{};}
+    // Diagnostics only (the input hook's 1 Hz crouch line).
+    float Baseline() const noexcept {return baseline_;}
+    bool Active() const noexcept {return active_;}
+    bool Suspended() const noexcept {return suspended_;}
+    bool Initialized() const noexcept {return initialized_;}
 private:
     uint64_t epoch_{},last_{};
     float baseline_{},threshold_{};
