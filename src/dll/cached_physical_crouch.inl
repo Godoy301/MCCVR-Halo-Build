@@ -65,6 +65,10 @@ const uint8_t* CachedCrouchLocalUnit(GameTitle title,uint32_t& owner)
 std::atomic<uint32_t> g_reachCachedCrouchWhy{0};
 std::atomic<float> g_reachCachedCrouchReduction{0.0f}, g_reachCachedCrouchDown{0.0f},
     g_reachCachedCrouchApplied{0.0f};
+// For 0x080: the reader's failing step and the heights it read (physical_crouch_cached_read.h).
+std::atomic<int> g_reachCachedCrouchStep{0}, g_reachCachedCrouchPhysics{0}, g_reachCachedCrouchAnimation{0};
+std::atomic<float> g_reachCachedCrouchStanding{0.0f}, g_reachCachedCrouchCrouched{0.0f},
+    g_reachCachedCrouchCurrent{0.0f}, g_reachCachedCrouchScale{0.0f};
 #endif
 
 void ApplyCachedPhysicalCrouch(GameTitle title,float* position,float physicalDown,bool playerControlled)
@@ -83,6 +87,7 @@ void ApplyCachedPhysicalCrouch(GameTitle title,float* position,float physicalDow
         (TitleAdapter_GetActiveTitle()!=title?0x010u:0u);
     if(!why&&!PhysicalCrouchCamera_Read(request)) why|=0x020u;
     float reduction=0,correction=0;
+    physical_crouch_cached::ReductionDiag diag{};
     if(why) lease.Reset();
     else
     {
@@ -101,7 +106,8 @@ void ApplyCachedPhysicalCrouch(GameTitle title,float* position,float physicalDow
             {
                 unit=CachedCrouchLocalUnit(title,owner);
                 table=binding.tagTable?*binding.tagTable:nullptr;
-                if(!physical_crouch_cached::Reduction(layout,unit,table,binding.pages,reduction,definition))
+                if(!physical_crouch_cached::Reduction(layout,unit,table,binding.pages,reduction,definition,
+                        &diag))
                     why|=0x080u;
             }
             if(why)
@@ -131,9 +137,16 @@ void ApplyCachedPhysicalCrouch(GameTitle title,float* position,float physicalDow
         g_reachCachedCrouchReduction.store(reduction,std::memory_order_relaxed);
         g_reachCachedCrouchDown.store(physicalDown,std::memory_order_relaxed);
         g_reachCachedCrouchApplied.store(why?0.0f:correction,std::memory_order_relaxed);
+        g_reachCachedCrouchStep.store(diag.step,std::memory_order_relaxed);
+        g_reachCachedCrouchPhysics.store(diag.physics,std::memory_order_relaxed);
+        g_reachCachedCrouchAnimation.store(diag.animation,std::memory_order_relaxed);
+        g_reachCachedCrouchStanding.store(diag.standing,std::memory_order_relaxed);
+        g_reachCachedCrouchCrouched.store(diag.crouched,std::memory_order_relaxed);
+        g_reachCachedCrouchCurrent.store(diag.current,std::memory_order_relaxed);
+        g_reachCachedCrouchScale.store(diag.scale,std::memory_order_relaxed);
     }
 #else
-    (void)reduction;
+    (void)reduction;(void)diag;
 #endif
 }
 
@@ -153,8 +166,16 @@ void ReportReachCachedCrouch()
     s_last=now;
     s_lastWhy=why;
     const auto mm=[](float wu){return double(wu/kReachWorldUnitsPerMeter*1000.0f);};
-    LOG("REACHCROUCHCAM why=0x%03X native crouch drop %.0f mm, physical depth %.0f mm, applied %.0f mm",
+    LOG("REACHCROUCHCAM why=0x%03X native crouch drop %.0f mm, physical depth %.0f mm, applied %.0f mm; "
+        "reader step %d (physics +0x%X animation +0x%X; standing %.4f crouched %.4f current %.4f scale %.4f)",
         why,mm(g_reachCachedCrouchReduction.load(std::memory_order_relaxed)),
-        mm(g_reachCachedCrouchDown.load(std::memory_order_relaxed)),mm(applied));
+        mm(g_reachCachedCrouchDown.load(std::memory_order_relaxed)),mm(applied),
+        g_reachCachedCrouchStep.load(std::memory_order_relaxed),
+        unsigned(g_reachCachedCrouchPhysics.load(std::memory_order_relaxed)),
+        unsigned(g_reachCachedCrouchAnimation.load(std::memory_order_relaxed)),
+        double(g_reachCachedCrouchStanding.load(std::memory_order_relaxed)),
+        double(g_reachCachedCrouchCrouched.load(std::memory_order_relaxed)),
+        double(g_reachCachedCrouchCurrent.load(std::memory_order_relaxed)),
+        double(g_reachCachedCrouchScale.load(std::memory_order_relaxed)));
 #endif
 }
