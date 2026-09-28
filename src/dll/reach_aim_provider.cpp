@@ -125,10 +125,12 @@ bool ReachAimProvider_ProduceStick(float& outRx, float& outRy) {
         last_ms = now;
         const AimCaps c = provider.caps();
         // ready = hook installed + arm-gate armed + hook heartbeat fresh (Game_ReachDirectDriveReady).
-        LOG("AIMPROVIDER reach: rung=%s (WriteState %u/%u polls) mode=%d ready=%d onfoot=%d converge=%d "
-            "barrel=%d yaw=%.1f pitch=%.1f",
+        // why = the failing on-foot conditions (Game_ReachDirectDriveOnFootWhy's bits; 0 = on foot).
+        LOG("AIMPROVIDER reach: rung=%s (WriteState %u/%u polls) mode=%d ready=%d onfoot=%d why=0x%02X "
+            "converge=%d barrel=%d yaw=%.1f pitch=%.1f",
             rung_name(provider.last_how), writes, polls, g_config.reach_direct_drive,
             Game_ReachDirectDriveReady() ? 1 : 0, Game_ReachDirectDriveOnFoot() ? 1 : 0,
+            static_cast<unsigned>(Game_ReachDirectDriveOnFootWhy()),
             static_cast<int>(select_converge(c)), c.has_barrel_marker ? 1 : 0,
             provider.last_angles.yaw_deg, provider.last_angles.pitch_deg);
         polls = 0;

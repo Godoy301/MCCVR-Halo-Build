@@ -148,6 +148,7 @@ bool Game_ReachDdTestOwnsAim();
 bool Game_ReachTakeDesiredAim(float& yaw, float& pitch);
 bool Game_ReachDirectDriveReady();
 bool Game_ReachDirectDriveOnFoot();
+uint32_t Game_ReachDirectDriveOnFootWhy();   // failing on-foot conditions as bits (0 = on foot)
 void Game_ReachDirectDrivePublish(float gameYaw, float gamePitch);
 void Game_ReachDirectDriveRelease();
 // C-H2-41. True only while Halo 2's controller-owned aim/weapon feature is

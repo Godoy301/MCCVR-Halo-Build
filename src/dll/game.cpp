@@ -101,6 +101,13 @@ static std::atomic<unsigned>           g_reachPcMismatch{0};
 // setpoint if given one. "Installed" and "armed" both outlive the writer (a module reload, a patch,
 // a state where the sim stops calling it), so the WriteState rung requires this to be fresh.
 static std::atomic<unsigned long long> g_reachPcLiveMs{0};
+// Teardown and reinstall reach the engine-thread arm-gate ONLY through these two atomics, never by
+// touching g_reachDriveGate (a plain struct the engine thread owns). While tearing down the gate may
+// not arm: measured 2026-09-27, it re-armed during the teardown's quiescence wait, the reinstall then
+// reset only the published flag, and the gate object sat "armed" with nothing armed -- direct drive
+// stayed off until the next teardown. Every reset bumps the sequence; the gate releases on a change.
+static std::atomic<bool>               g_reachDriveTearingDown{false};
+static std::atomic<unsigned>           g_reachDriveResetSeq{0};
 static void* g_reachPcTarget = nullptr;
 static void ReachRecordDesiredAim(float gameYaw, float gamePitch);
 extern "C" void ReachPcApplyForUser(int user);
@@ -26542,47 +26549,113 @@ namespace
         g_reachPcExpected.store(0, std::memory_order_release);
     }
 
+    // The sim's MASTER copies of the player's desired_angles pair and unit aim (radians), reached by
+    // translating the render thread's player_control and unit aim through ring A. Shared by the gate's
+    // evidence and the tracker; logs nothing (callers decide).
+    enum class ReachDriveRead { Ok, NoUnit, RingInvalid, NotInRing, ReadFail };
+    static ReachDriveRead ReachDriveReadMaster(uintptr_t& masterPc, float pair[2], float aim[2],
+                                               uintptr_t* snapPcOut = nullptr, uintptr_t* snapAimOut = nullptr)
+    {
+        masterPc = 0;
+        const int unit = g_reachCamera.playerUnitByOutputUser(0);
+        uint8_t kind = 0;
+        unsigned char* d = unit != -1 ? ReachVehicleObjectData(unit, kind) : nullptr;
+        if (!d || kind == kReachObjectKindVehicle) return ReachDriveRead::NoUnit;
+        const uintptr_t snapAim = reinterpret_cast<uintptr_t>(d + kReachUnitAimingVectorOffset);
+        if (snapAimOut) *snapAimOut = snapAim;
+        if (!g_reachRing[0].ok && !ReachVsReadRing(0)) return ReachDriveRead::RingInvalid;
+        uintptr_t snapPc = 0;
+        int r1 = -1, b1 = -2, r2 = -1, b2 = -2;
+        const uintptr_t pcBase  = ReachDriveReadRenderPc(snapPc) ? ReachVsLocate(snapPc, r1, b1) : 0;
+        const uintptr_t aimBase = ReachVsLocate(snapAim, r2, b2);
+        if (snapPcOut) *snapPcOut = snapPc;
+        if (!pcBase || r1 != 0 || !aimBase || r2 != 0) return ReachDriveRead::NotInRing;
+        masterPc = g_reachRing[0].master + (snapPc - pcBase);
+        const uintptr_t masterAim = g_reachRing[0].master + (snapAim - aimBase);
+        float v[3] = {};
+        if (!ReachVsReadF(masterPc + 0x94, pair, 2) || !ReachVsReadAim(masterAim, v)) return ReachDriveRead::ReadFail;
+        ReachVsAngles(v, aim[0], aim[1]);
+        return ReachDriveRead::Ok;
+    }
+
     // One tick of evidence: the render thread's player_control translated through ring A to the sim's
     // MASTER block (masterPc, set whenever the translation succeeds), and whether that master's desired
     // pair agrees with the master unit aim.
     static bool ReachDriveGateEvidence(ULONGLONG now, ULONGLONG& nextLog, uintptr_t& masterPc, float& ey, float& ep)
     {
-        masterPc = 0; ey = 0.0f; ep = 0.0f;
-        const int unit = g_reachCamera.playerUnitByOutputUser(0);
-        uint8_t kind = 0;
-        unsigned char* d = unit != -1 ? ReachVehicleObjectData(unit, kind) : nullptr;
-        if (!d || kind == kReachObjectKindVehicle) return false;
-        const uintptr_t snapAim = reinterpret_cast<uintptr_t>(d + kReachUnitAimingVectorOffset);
-        if (!g_reachRing[0].ok && !ReachVsReadRing(0))
+        ey = 0.0f; ep = 0.0f;
+        float pair[2] = {}, aim[2] = {};
+        uintptr_t snapPc = 0, snapAim = 0;
+        switch (ReachDriveReadMaster(masterPc, pair, aim, &snapPc, &snapAim))
         {
+        case ReachDriveRead::Ok: break;
+        case ReachDriveRead::RingInvalid:
             if (now >= nextLog) { nextLog = now + 10000;
                 LOG("REACHDRIVE gate: ring A does not validate on this build -- staying disarmed (stick servo aims)"); }
             return false;
-        }
-        uintptr_t snapPc = 0;
-        int r1 = -1, b1 = -2, r2 = -1, b2 = -2;
-        const uintptr_t pcBase  = ReachDriveReadRenderPc(snapPc) ? ReachVsLocate(snapPc, r1, b1) : 0;
-        const uintptr_t aimBase = ReachVsLocate(snapAim, r2, b2);
-        if (!pcBase || r1 != 0 || !aimBase || r2 != 0)
-        {
+        case ReachDriveRead::NotInRing:
             if (now >= nextLog) { nextLog = now + 10000;
                 LOG("REACHDRIVE gate: render-thread player_control 0x%llX / unit aim 0x%llX not both inside ring A "
                     "-- staying disarmed", (unsigned long long)snapPc, (unsigned long long)snapAim); }
             return false;
+        default:
+            return false;
         }
-        masterPc = g_reachRing[0].master + (snapPc - pcBase);
-        const uintptr_t masterAim = g_reachRing[0].master + (snapAim - aimBase);
-        float pair[2] = {}, v[3] = {};
-        if (!ReachVsReadF(masterPc + 0x94, pair, 2) || !ReachVsReadAim(masterAim, v)) return false;
-        float yaw, pitch;
-        ReachVsAngles(v, yaw, pitch);
-        ey = ReachAngDist(pair[0], yaw);
-        ep = fabsf(pair[1] - pitch);
+        ey = ReachAngDist(pair[0], aim[0]);
+        ep = fabsf(pair[1] - aim[1]);
         if (ey < 0.02f && ep < 0.02f) return true;
         if (now >= nextLog) { nextLog = now + 10000;
             LOG("REACHDRIVE gate: ValueAgreement not yet: desired=(%.4f %.4f) unit-aim=(%.4f %.4f) at master "
-                "+0x%llX", pair[0], pair[1], yaw, pitch, (unsigned long long)(masterPc - g_reachRing[0].master)); }
+                "+0x%llX", pair[0], pair[1], aim[0], aim[1], (unsigned long long)(masterPc - g_reachRing[0].master)); }
         return false;
+    }
+
+    // TRACKING -- this lane's analogue of Campaign Evolved's BLAMCTL want-vs-record line. While armed,
+    // read the game's own aim (the MASTER unit aim, which the sim derives from desired_angles every tick)
+    // and compare it with the setpoint the hook is writing. At rest it should read ~0; in motion the
+    // error is the setpoint's angular speed times at most one sim tick. D is desired_angles vs that unit
+    // aim: the record against what the sim made of it. 1 Hz summary; one master read per engine tick.
+    static void ReachDriveTrack(ULONGLONG now)
+    {
+        constexpr float kDeg = 57.2957795f;
+        static float s_err[256];
+        static int s_n = 0, s_reads = 0;
+        static float s_dMax = 0.0f, s_aim[2] = {}, s_set[2] = {};
+        static ULONGLONG s_next = 0;
+        uintptr_t pc = 0;
+        float pair[2] = {}, aim[2] = {};
+        if (ReachDriveReadMaster(pc, pair, aim) == ReachDriveRead::Ok)
+        {
+            ++s_reads;
+            const float dy = ReachAngDist(pair[0], aim[0]), dp = pair[1] - aim[1];
+            const float d = sqrtf(dy * dy + dp * dp) * kDeg;
+            if (d > s_dMax) s_dMax = d;
+            s_aim[0] = aim[0]; s_aim[1] = aim[1];
+            if (g_reachDriveValid.load(std::memory_order_acquire) &&
+                now - g_reachDriveMs.load(std::memory_order_acquire) <= 200)
+            {
+                const float sy = g_reachDriveYaw.load(std::memory_order_relaxed);
+                const float sp = aim_write::clamp_pitch(g_reachDrivePitch.load(std::memory_order_relaxed), 1.45f);
+                const float ey = ReachAngDist(sy, aim[0]), ep = sp - aim[1];
+                if (s_n < 256) s_err[s_n++] = sqrtf(ey * ey + ep * ep) * kDeg;
+                s_set[0] = sy; s_set[1] = sp;
+            }
+        }
+        if (now < s_next) return;
+        s_next = now + 1000;
+        float mean = 0.0f, p95 = 0.0f, mx = 0.0f;
+        if (s_n)
+        {
+            std::sort(s_err, s_err + s_n);
+            for (int i = 0; i < s_n; ++i) mean += s_err[i];
+            mean /= static_cast<float>(s_n);
+            p95 = s_err[(s_n * 95) / 100 < s_n ? (s_n * 95) / 100 : s_n - 1];
+            mx = s_err[s_n - 1];
+        }
+        LOG("REACHDRIVE track: game=(%.2f,%.2f)deg set=(%.2f,%.2f)deg |game-set| mean=%.3f p95=%.3f max=%.3f deg "
+            "over %d writing ticks (%d reads); D(record-aim) max=%.3f deg",
+            s_aim[0] * kDeg, s_aim[1] * kDeg, s_set[0] * kDeg, s_set[1] * kDeg, mean, p95, mx, s_n, s_reads, s_dMax);
+        s_n = 0; s_reads = 0; s_dMax = 0.0f;
     }
 
     static void ReachDriveArmGate_Tick()
@@ -26598,6 +26671,11 @@ namespace
         switch (gate.step(agree, masterPc, g_reachPcMismatch.load(std::memory_order_relaxed), now))
         {
         case Ev::Armed:
+            if (g_reachDriveTearingDown.load(std::memory_order_acquire))
+            {
+                gate.release();   // lost a race with teardown: never publish an arm while hooks come down
+                break;
+            }
             g_reachPcExpected.store(static_cast<uintptr_t>(gate.record), std::memory_order_release);
             g_reachPcArmed.store(true, std::memory_order_release);
             LOG("REACHDRIVE: ARMED -- player_control 0x%llX (ring A master +0x%llX) agrees with the master unit aim "
@@ -26618,6 +26696,8 @@ namespace
         case Ev::None:
             break;
         }
+        if (gate.armed)
+            ReachDriveTrack(now);
     }
 
     // Engine-thread entry for mode 3. Switching the mode away disarms at once (the hook stays installed
@@ -26625,6 +26705,14 @@ namespace
     static void ReachDriveArmGate_OnEngineTick(bool active)
     {
         static bool s_faulted = false;
+        static unsigned s_seenReset = 0;
+        // Teardown / reinstall resets arrive here, on the thread that owns the gate object.
+        const unsigned reset = g_reachDriveResetSeq.load(std::memory_order_acquire);
+        if (reset != s_seenReset)
+        {
+            s_seenReset = reset;
+            g_reachDriveGate.release();
+        }
         if (!active)
         {
             if (g_reachPcArmed.load(std::memory_order_acquire))
@@ -26635,6 +26723,7 @@ namespace
             g_reachDriveGate.release();
             return;
         }
+        if (g_reachDriveTearingDown.load(std::memory_order_acquire)) return;
         if (s_faulted || !g_reachPcTarget) return;
         if (!g_reachCamera.base || !g_reachCamera.playerUnitByOutputUser) return;
         if (!ReachWpResolveModule()) return;
@@ -29365,10 +29454,13 @@ namespace
         // Direct drive: make the control-update detour a pass-through first (no setpoint, not armed),
         // and forget the proven address -- the next title session must prove its own. Without this the
         // gate stayed armed across a module reload while the new module had no hook, so the provider
-        // chose WriteState and held the stick neutral with nothing writing: dead VR aim.
+        // chose WriteState and held the stick neutral with nothing writing: dead VR aim. TearingDown
+        // stops the engine-thread gate re-arming during the quiescence wait below; the reset sequence
+        // releases its gate object on that thread (it is not ours to touch from here).
+        g_reachDriveTearingDown.store(true, std::memory_order_release);
         g_reachDriveValid.store(false, std::memory_order_release);
         ReachDriveDisarm();
-        g_reachDriveGate.release();
+        g_reachDriveResetSeq.fetch_add(1, std::memory_order_acq_rel);
         bool disabledAll = true;
         void* const targets[] = {
             g_reachPcTarget,
@@ -32055,7 +32147,11 @@ namespace
                 if (created == MH_OK && MH_EnableHook(target) == MH_OK)
                 {
                     g_reachPcTarget = target;
-                    g_reachPcArmed.store(false, std::memory_order_release);   // the arm-gate arms once validated
+                    // A fresh hook starts disarmed with a released gate (the reset is applied on the
+                    // engine thread), and only then may the gate run again.
+                    ReachDriveDisarm();
+                    g_reachDriveResetSeq.fetch_add(1, std::memory_order_acq_rel);
+                    g_reachDriveTearingDown.store(false, std::memory_order_release);
                     LOG("Reach direct-drive: control-update hook INSTALLED at haloreach.dll+0x6375C (disarmed "
                         "until the arm-gate validates player_control)");
                 }
@@ -33529,6 +33625,13 @@ namespace
             g_reachCineProbe.armed.store(false, std::memory_order_release);
             g_reachCineProbe.cutPrevValid = false;
             g_reachCineProbe.cutPrevPoseValid = false;
+            // Allow a re-arm when cold work is allowed again, exactly as ReachPauseColdPoll does. The
+            // caller passes soleReachTitle && levelRunning, and every death revert / checkpoint reload
+            // drops levelRunning for a few seconds. Without this reset the probe disarmed there and
+            // never re-armed for the rest of the module generation: cinematic state stayed Unknown, so
+            // everything gated on PlayerControlled (roomscale, direct drive) stayed off after the first
+            // death until a menu return. Measured 2026-09-27 (why=0x40 for minutes after a revert).
+            g_reachCineProbe.attemptedGeneration.store(0, std::memory_order_release);
             return;
         }
         if (g_reachCineProbe.attemptedGeneration.load(
@@ -47148,21 +47251,33 @@ bool Game_ReachDirectDriveReady()
 // camera trusts (vehicle-input snapshot + cinematic-control heartbeat, both within 100 ms, both of the
 // current title generation), so it is safe to read from the input thread. Vehicles and cinematics keep
 // the stick servo: the state write is proven on foot only.
-bool Game_ReachDirectDriveOnFoot()
+// Which on-foot condition fails, as bits (0 = on foot): 0x01 Reach not the active title, 0x02 runtime
+// mode not Gameplay, 0x04 vehicle-input sample older than 100 ms, 0x08 that sample is not OnFoot for
+// this generation, 0x10 cinematic publication from another generation, 0x20 cinematic heartbeat older
+// than 100 ms, 0x40 cinematic state not PlayerControlled. Logged by the provider, so "onfoot=0"
+// explains itself.
+uint32_t Game_ReachDirectDriveOnFootWhy()
 {
     const GameTitle title = GameTitle::HaloReach;
-    if (TitleAdapter_GetActiveTitle() != title ||
-        TitleAdapter_GetRuntimeMode() != RuntimeMode::Gameplay) return false;
+    uint32_t why = 0;
+    if (TitleAdapter_GetActiveTitle() != title) why |= 0x01;
+    if (TitleAdapter_GetRuntimeMode() != RuntimeMode::Gameplay) why |= 0x02;
     const auto now = GetTickCount64();
     const auto at = g_reachVehicleSampleMs.load(std::memory_order_acquire);
     const auto cine = TitleAdapter_GetCinematicControlPublication(title);
     const uint32_t gen = TitleAdapter_GetGeneration(title);
-    return at && now >= at && now - at <= 100 &&
-        g_reachVehicleInputSnapshot.load(std::memory_order_acquire) ==
-            ReachVehicleInputSnapshot(gen, ReachVehicleInputState::OnFoot) &&
-        cine.generation == gen &&
-        cine.heartbeatMs && now >= cine.heartbeatMs && now - cine.heartbeatMs <= 100 &&
-        cine.state == CinematicControlState::PlayerControlled;
+    if (!at || now < at || now - at > 100) why |= 0x04;
+    if (g_reachVehicleInputSnapshot.load(std::memory_order_acquire) !=
+        ReachVehicleInputSnapshot(gen, ReachVehicleInputState::OnFoot)) why |= 0x08;
+    if (cine.generation != gen) why |= 0x10;
+    if (!cine.heartbeatMs || now < cine.heartbeatMs || now - cine.heartbeatMs > 100) why |= 0x20;
+    if (cine.state != CinematicControlState::PlayerControlled) why |= 0x40;
+    return why;
+}
+
+bool Game_ReachDirectDriveOnFoot()
+{
+    return Game_ReachDirectDriveOnFootWhy() == 0;
 }
 
 // The provider's WriteState actuation: the setpoint the sim-thread hook writes on its next tick.
