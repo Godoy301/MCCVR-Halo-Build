@@ -17,6 +17,13 @@ int16_t perspective{};
 bool gameplayAvailable=true,contextCurrent=true,raiseTurn{};
 halo_ce::RenderContext gameplay{};
 unsigned failures{},turnCalls{},unwindChecks{},unwindFailures{};
+static uint8_t crouchDefinition[0x600]{};
+static float renderedCrouch=.75f;
+static bool interpolationAvailable=true;
+static const uint8_t* __fastcall CrouchTagService(uint32_t) {return crouchDefinition;}
+static int __fastcall CrouchUserService(uint32_t unit) {return unit==unitId?0:-1;}
+static bool __fastcall CrouchInterpolationService(int user,float* value)
+{if(user!=0||!interpolationAvailable)return false;*value=renderedCrouch;return true;}
 int32_t lastUser=-1;
 float lastYaw{},lastPitch{};
 void Check(bool result,const char* message)
@@ -82,7 +89,7 @@ bool WaitForNativeDetourQuiescence(const void* const* functions,const void* cons
     // Exercise production's real Windows unwind admission for EVERY range.
     // This fixture owns no concurrent native workers, so it only replaces the
     // subsequent thread-freeze/drain phase; a leaf wrapper cannot pass here.
-    if (!functions||!trampolines||!count||count>8) return false;
+    if (!functions||!trampolines||!count||count>9) return false;
     bool valid=true;
     for (size_t i=0;i<count;++i)
     {
@@ -141,6 +148,28 @@ int main()
 
     HaloCELocalPlayerState player{};halo_ce::RenderContext frame{};
     bool nativePaused=true;
+    const auto readSuppression=[](bool& suppressed) {
+        bool paused{},known{};
+        HaloCEControls_GetNativePaused(paused,&suppressed,&known);
+        return known;
+    };
+    bool suppressed=true;
+    Check(readSuppression(suppressed)&&!suppressed,
+        "menu suppression reader resolves the complete local player identity");
+    Put(director+0x59,uint8_t(1));Put(control+0x170,UINT32_MAX);
+    Check(readSuppression(suppressed)&&suppressed,
+        "menu suppression survives unavailable controlled unit");
+    Put(director+0x59,uint8_t(0));Put(control+0x170,unitId);
+    Put(moduleBase+0x1b85760,int32_t(0));
+    Check(readSuppression(suppressed)&&suppressed,
+        "global native suppression path is also observed");
+    Put(moduleBase+0x1b85760,int32_t(-1));Put(mapping+4,playerId);
+    Check(!readSuppression(suppressed),
+        "ambiguous local input mapping is unknown, not resume");
+    Put(mapping+4,uint32_t(0));Put(moduleBase+0x2ea2d90,uintptr_t(1));
+    Check(!readSuppression(suppressed)&&suppressed&&!callbacks.load(),
+        "bad menu mapping isolates failure and preserves prior output");
+    Put(moduleBase+0x2ea2d90,mapping);
     Check(HaloCEControls_GetNativePaused(nativePaused)&&!nativePaused,
         "production pause reader uses the verified initialized native clock");
     Put(clock+2,uint8_t(1));Put(moduleBase+0x2ea2d90,uintptr_t(0));
@@ -168,6 +197,34 @@ int main()
     Check(HaloCEControls_GetNativePaused(nativePaused)&&!nativePaused,
         "optional turn failure does not disable native pause presentation");
     turnReady=true;
+    Check(InstallService(0xA9B648,&CrouchTagService)&&InstallService(0xAE48C8,&CrouchUserService)&&
+        InstallService(0xBA834C,&CrouchInterpolationService),"native crouch fixture endpoints");
+    Put(reinterpret_cast<uintptr_t>(crouchDefinition)+0x400,1.f);
+    Put(reinterpret_cast<uintptr_t>(crouchDefinition)+0x404,.6f);
+    Put(reinterpret_cast<uintptr_t>(crouchDefinition)+0x4CC,.1f);
+    Put(unitAddress+0x518,.25f);Put(unitAddress+0x4D8,uint8_t(1));
+    Put(moduleBase+0x194F150,1.f/30.f);
+    crouchCameraReady=true;
+    const auto refreshCrouch=[] {PhysicalCrouchCamera_Publish(GameTitle::HaloCE,3,9,GetTickCount64(),true,true);};
+    refreshCrouch();
+    Check(Near(HaloCEControls_PhysicalCrouchCorrection(3,9,1.f,true),.3f),
+        "CE camera uses rendered crouch fraction instead of raw simulation fraction");
+    Put(unitAddress+0x4D8,uint8_t(0));Put(unitAddress+0x287,uint8_t(3));Put(clock+0x1C,1.f/60.f);
+    refreshCrouch();
+    Check(Near(HaloCEControls_PhysicalCrouchCorrection(3,9,1.f,true),.32f),
+        "CE native partial-tick crouch direction retained");
+    Put(unitAddress+0x287,uint8_t(0));refreshCrouch();
+    Check(Near(HaloCEControls_PhysicalCrouchCorrection(3,9,1.f,true),.28f),
+        "CE native partial-tick standing direction retained");
+    refreshCrouch();Check(Near(HaloCEControls_PhysicalCrouchCorrection(3,9,.1f,true),.1f),
+        "correction never lifts the final eye above the native camera");
+    Check(HaloCEControls_PhysicalCrouchCorrection(4,9,1.f,true)==0,
+        "CE generation mismatch cannot retain crouch correction");
+    PhysicalCrouchCamera_Invalidate();
+    Check(HaloCEControls_PhysicalCrouchCorrection(3,9,1.f,true)==0,
+        "CE invalidated input cannot retain crouch correction");
+    Put(unitAddress+0x4D8,uint8_t(1));Put(unitAddress+0x287,uint8_t(0));Put(clock+0x1C,0.f);
+    crouchCameraReady=false;
     Check(HaloCEControls_GetLocalPlayerState(player)&&player.player==playerId&&
         player.unit==unitId&&player.inputUser==1&&player.hasControlledUnit&&player.onFoot&&
         player.nativePreparesFirstPerson&&player.firstPersonVisible&&player.weapon==weaponId,
@@ -333,7 +390,7 @@ int main()
     callbacks=0;
     Check(Remove()&&!moduleBase&&!retiring.load()&&!stateReady.load()&&!turnReady.load(),
         "all eight actual compiled retirement ranges resolve and controls finish cleanup after draining");
-    Check(unwindChecks==16&&!unwindFailures,
+    Check(unwindChecks==18&&!unwindFailures,
         "both complete retirement attempts validate every production function's actual unwind metadata");
     // A same-generation camera re-entry can now publish native state again.
     // Contract installation remains covered separately by the pinned binding suite.

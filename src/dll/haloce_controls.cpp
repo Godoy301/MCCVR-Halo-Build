@@ -1,4 +1,7 @@
 #include "haloce_controls.h"
+#include "physical_crouch_camera.h"
+#include "../common/physical_crouch_native_read.h"
+#include "../common/haloce_crouch_contract.h"
 #include "native_vehicle_first_person.h"
 #include "haloce_stereo_core.h"
 #include "haloce_native_bindings.h"
@@ -62,6 +65,34 @@ static bool ReadNativePaused(bool& paused) noexcept
     { exceptions.fetch_add(1,std::memory_order_relaxed);return false; }
     if (value>1||!StateCurrent()||before!=generation.load(std::memory_order_acquire)) return false;
     paused=value!=0;return true;
+}
+
+static bool ReadInputSuppressed(bool& suppressed) noexcept
+{
+    if (!StateCurrent()) return false;
+    const auto before=generation.load(std::memory_order_acquire);
+    bool candidate{};
+    __try
+    {
+        const uintptr_t mapping=*reinterpret_cast<const uintptr_t*>(moduleBase+0x2ea2d90);
+        if (!mapping) return false;
+        const uint32_t player=*reinterpret_cast<const uint32_t*>(mapping+0xb8);
+        if (player==UINT32_MAX||!(player>>16)) return false;
+        int input=-1;
+        for (int i=0;i<4;++i)
+            if (*reinterpret_cast<const uint32_t*>(mapping+4+i*4)==player)
+            { if (input!=-1) return false;input=i; }
+        if (input<0) return false;
+        // Same E-CE-FP3 predicates consumed by A9915C; no unit lookup and no
+        // stronger claim about why the native engine suppresses input.
+        candidate=*reinterpret_cast<const uint8_t*>(moduleBase+0x2d9b960+input*0xf8+0x59)!=0||
+            (*reinterpret_cast<const int32_t*>(moduleBase+0x1c34fc8)==0&&
+             *reinterpret_cast<const int32_t*>(moduleBase+0x1b85760)!=-1);
+    }
+    __except(EXCEPTION_EXECUTE_HANDLER)
+    { exceptions.fetch_add(1,std::memory_order_relaxed);return false; }
+    if (!StateCurrent()||before!=generation.load(std::memory_order_acquire)) return false;
+    suppressed=candidate;return true;
 }
 
 static bool ReadLocalPlayerState(HaloCELocalPlayerState& state) noexcept
@@ -266,14 +297,17 @@ bool Remove() noexcept
         reinterpret_cast<const void*>(&HaloCEControls_OwnsLookStick),
         reinterpret_cast<const void*>(&HaloCEControls_MapMoveStick),
         reinterpret_cast<const void*>(&HaloCEControls_GetLocomotionFrame),
-        reinterpret_cast<const void*>(&HaloCEControls_GetNativePaused)};
-    const void* trampolines[]{turnOriginal,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr};
-    if (!WaitForNativeDetourQuiescence(functions,trampolines,8,callbacks)) return false;
+        reinterpret_cast<const void*>(&HaloCEControls_GetNativePaused),
+        reinterpret_cast<const void*>(&HaloCEControls_PhysicalCrouchCorrection)};
+    const void* trampolines[]{turnOriginal,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr};
+    if (!WaitForNativeDetourQuiescence(functions,trampolines,9,callbacks)) return false;
     if (turnTarget&&MH_RemoveHook(turnTarget)!=MH_OK) return false;
     turnTarget=turnOriginal=nullptr;
     if (retainedModule) { FreeLibrary(retainedModule);retainedModule=nullptr; }
     moduleBase=0;generation=0;retiring=false;return true;
 }
+#include "haloce_physical_crouch.inl"
+
 bool InstallState(uintptr_t base,size_t size,uint32_t gen) noexcept
 {
     const char* failure{};
@@ -286,6 +320,7 @@ bool InstallState(uintptr_t base,size_t size,uint32_t gen) noexcept
     LARGE_INTEGER frequency{};QueryPerformanceFrequency(&frequency);
     if (frequency.QuadPart<=0) { FreeLibrary(retainedModule);retainedModule=nullptr;return false; }
     qpcSeconds=1.0/static_cast<double>(frequency.QuadPart);
+    PrepareCrouchCamera(base,size,gen);
     moduleBase=base;generation=gen;active=true;retiring=false;stateReady=true;
     LOG("CE native control state verified independently: player/input/output ownership and native admission flags");
     return true;
@@ -363,8 +398,16 @@ static bool ReadVehicleCameraOwnerBody(NativeVehicleCameraOwner& owner) noexcept
 }
 bool HaloCEControls_ReadVehicleCameraOwner(NativeVehicleCameraOwner& owner) noexcept
 { Callback callback;return ReadVehicleCameraOwnerBody(owner); }
-bool HaloCEControls_GetNativePaused(bool& paused) noexcept
-{ Callback callback;return ReadNativePaused(paused); }
+float HaloCEControls_PhysicalCrouchCorrection(uint32_t expectedGeneration,uint64_t epoch,
+    float physicalDown,bool allowed) noexcept
+{ Callback callback;return CrouchCameraBody(expectedGeneration,epoch,physicalDown,allowed); }
+
+bool HaloCEControls_GetNativePaused(bool& paused,bool* suppressed,bool* inputKnown) noexcept
+{
+    Callback callback;
+    if (inputKnown) *inputKnown=suppressed&&ReadInputSuppressed(*suppressed);
+    return ReadNativePaused(paused);
+}
 bool HaloCEControls_OwnsLookStick() noexcept
 {
     Callback callback;

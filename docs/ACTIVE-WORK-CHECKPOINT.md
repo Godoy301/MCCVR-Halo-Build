@@ -1,3 +1,178 @@
+## September 23 final packaging handoff (supersedes historical priorities below)
+
+Latest user priority: finish active integration, conserve remaining credits and
+deliver matching build/source ZIPs now. Do not restart the Discord audit or expand
+research. Physical crouch remains implemented across all six titles; do not
+disable it. The final implementation ledger and release notes dated September 23
+are the delivery inventory, including unresolved and not-started work.
+
+CE subtitles and CE persistent per-vehicle identity remain research-only WIP;
+CE per-game vehicle offsets work. H2/H4 stable vehicle readers are integrated.
+Native action independence, simultaneous roomscale following, unproven co-op
+crashes and remaining visual reports are explicitly unresolved. Resume those
+only on the user's next-build instruction. CE subtitle research is preserved
+under out/coop-stability-20260923/root-ce-subtitle-*; no subtitle hook was added.
+All offline validation is distinct from headset acceptance. Do not advance
+CURRENT-STATE.md, install, launch MCC or publish. Package without -Install.
+
+## Historical September 23 implementation priorities
+
+LATEST USER CORRECTION: FINISH every implementation already started, including
+physical crouch, then package matching build/source ZIPs. Do not disable or
+omit started features to save usage. Only work not yet started may be held for
+explicit resume. New explicit addition: verify/fix first-person vehicles across
+all six games, including Halo 2 stutter, and provide saved per-game AND
+per-vehicle camera adjustments. Root owns crouch input/config and packaging;
+coop owns native crouch camera integration; installer owns vehicle review and
+offsets; renderer finishes started subtitle/render integration. No game install,
+launch or publication. Runtime acceptance still requires the user's headset.
+
+Latest reinforcement: finish required work before packaging; all-title feature
+parity expressly includes gameplay and theatre subtitle controls. Hiding inert
+controls is only honest UI, not completion. Renderer owns verified native feeds
+for CE/H2/H4 and H3/ODST theatre after CE DLSS integration; no premature ZIP.
+Installer reminder: selected/detected destination is the base MCC root (for
+example C:\Program Files (x86)\Steam\steamapps\common\Halo The Master Chief
+Collection); create Halo_MCC_VR directly inside it. Verify detection, browse,
+updates and self-update use this same hierarchy; never nested under binaries.
+
+Latest user addition: retain a **per-game muzzle-flash hide toggle**, especially
+Halo 2 Original and Halo 4 if flash alignment cannot be verified. Projectile
+origin correction is not proof of flash alignment. Preserve the fallback while
+checking existing weapon calibration and first-person vehicle features.
+Additional explicit requirement: show two independent crosshairs while dual
+wielding in Halo 2 (both renderers) and Halo 3, one following each weapon,
+including left-handed routing. Renderer agent owns this integration.
+Further additions: optional physical crouch with adjustable activation depth;
+roomscale must follow physical movement while using in-game movement without
+body drift; DLSS must be investigated for **all six titles**, including CE
+Original/Anniversary (currently deliberately ordinary-render fallback, which
+is not fulfillment of the latest request). Root/installer own crouch, coop owns
+roomscale, renderer owns CE DLSS after dual crosshairs.
+
+User now explicitly requests implementing the audited backlog, refining existing
+features (especially first-person vehicles and per-weapon alignment), a styled
+installer/launcher, and matching build/source ZIPs. Do not repeat the Discord
+audit. Every backlog item must have an honest implementation/validation status.
+The launcher must detect MCC, install to Halo_MCC_VR, preserve and extend cfg on
+request, offer launch after installation, and check/install updates from the
+user's GitHub release repository moistman42069/MCCVR-Halo-Build. Keep ModFiles
+for manual installation. Local source/build/test/commits are authorized; actual
+MCC installation, game launch and publication remain prohibited for this task.
+
+Hard work is underway; user was told to stay on Ultra. Explicitly notify when
+the complex input/co-op/rendering investigations are done enough for High, then
+when only routine packaging remains for Medium. Do not claim that stage early.
+
+Active parallel ownership: root input/config/menu/build/package; coop_stability
+native ownership/lifetime and CE mapping evidence; render_contributions optional
+DLSS, contributor rendering/subtitles; installer_launcher isolated installer/UI/
+GitHub updater. All share the tree. Root input sections in vr.cpp must survive
+renderer edits. No commits or candidate have been produced yet. In-flight input
+mapping code is incomplete and must be tested before packaging. Accepted pointer
+in CURRENT-STATE.md stays unchanged pending explicit headset acceptance.
+
+## September 23 community audit and major QoL planning
+
+Latest user priority was exhaustive review of recent Discord main chats, playtest
+DMs, proposed fixes and attachments before implementation. Release-period text
+review and evidence triage are recorded in COMMUNITY-AUDIT-COVERAGE-2026-09-23.md,
+with reproduction/source details in COMMUNITY-REPORT-AUDIT-2026-09-23.md and the
+consolidated QOL-IMPLEMENTATION-BACKLOG-2026-09-23.md. Read all three on resume.
+Do not re-start the DM traversal or lose corrected/resolved report outcomes.
+
+Preserved pancreations DLSS build/source3f86346, martysl1 custom subtitle/UI/bloom
+and separate Reach DLSS archives, UnsealedWings August19 source ZIP, Gab_dC
+virtual-stock source, LivingFray PR153 evidence and playtest logs under ignored
+out/community-audit-20260923. Artifact hashes, runtime triage and fault index are
+there. No contributor binary executed; no game code/build/install/PR/publication
+or accepted-pointer change during audit. Contributions are not accepted fixes.
+
+New binding requirements: automatic controller-profile detection and consistent
+VR semantic defaults independent of native MCC layouts, optional per-game saved
+overrides with explicit Unbound, dedicated VR Mappings section, less menu clutter.
+Flashlight disable/gesture must not interfere with two-hand grab/release. Plan
+the major QoL release around all preserved prior scope plus the audited backlog.
+Martysl1 supplies subtitle/UI/bloom fixes; pancreations supplied the DLSS base.
+Martysl1 DLSS delta references a missing helper; Unsealed's old thread cleanup
+is weaker than current code. Adapt verified changes, never replace files blindly.
+
+Package-only delivery restrictions remain: no install, game launch, PR or
+publication without new explicit request. Keep source f53f0bd and accepted
+pointer distinctions from the earlier work below.
+
+## September 19 requested follow-up: CE multiplayer tracking
+
+User explicitly requests fixing grenade/general multiplayer tracking and new
+build/source ZIPs. Prior diagnostic candidate ef4bf9a was delivered and remains
+unaccepted. Added independent CE outgoing action adapter at verified A9A8A4,
+admitting only local source identity at A9988D in connection modes 1/2. It
+serializes the primary controller direction before native client/host action
+submission. On-foot throttle is rebased between action bearings; seated input
+inverts the actual native seat direction transform and retains drive throttle.
+Network sessions bypass the later campaign-only unit/movement rewrites so
+native prediction and host consume the same action. Native body interpolation,
+grenade release, actions, assist, inventory and remote inputs remain native.
+CE's network protocol carries one shared facing/aim/look direction; the visible
+network body therefore follows aim instead of independent HMD facing. Native
+camera angle records remain untouched. Local campaign adapters are preserved.
+
+Release build and all 62 CTest suites pass. New production tests and 125
+production-generated native action cases pass; 250 native submissions/angle
+conversions pass. Pinned loaded-image contracts and actual MinHook prologue
+relocation pass, as do downstream native grenade/vehicle checks and Reach gate.
+Next: commit, package without -Install, verify build/source ZIPs, deliver and
+wait for the user's headset result. Both editions supported.
+No install, launch, publication or accepted-pointer change. Report this as a
+tracking candidate requiring two-peer headset testing, not as proof that the
+separate co-op firing crash root is fixed. See CE-MULTIPLAYER-AUDIT-2026-09-19.md.
+
+## Previous diagnostic candidate: CE multiplayer before packaging
+
+User clarified the invisible menu is PAUSE/SETTINGS DURING THE MATCH. Added
+explicit controller Menu/Start presentation retention using the already verified
+native input-suppression predicates; running multiplayer clock no longer alone
+cancels that request. Suppression by itself never opens a menu. Unknown input,
+ownership loss, native SP pause, resume and failed-request grace are covered.
+Headset result and keyboard-only menu entry remain unverified.
+
+Grenade gap confirmed but NOT FIXED: network-client AD102C calls AFE098 from
+AD14D3, bypassing campaign-only AD0D5B admission. Merely admitting it would
+leave the outgoing action unchanged. A9A8A4 forms that action before B7CF44
+submission; its one yaw/pitch drives native facing/aim/look. A safe network
+correction must preserve movement and prediction/host agreement together.
+No guessed outgoing packet change shipped. Full evidence and unfinished status
+in CE-MULTIPLAYER-AUDIT-2026-09-19.md. Preserve this next-pass priority.
+
+Co-op firing investigation preserved: user confirms all optional settings off
+still fails, and firing in ANY direction fails (impact is not required).
+Implemented one proven defect correction: H3 collision wrapper no longer
+swallows native exceptions as misses; only added contact work fails open.
+Added process-wide observe-only hardware-fault evidence (separate write-through
+file + worker mirror) and H3 native firing counters. Root of reported failure
+still UNPROVEN; never label this a confirmed co-op fix. Release build + all 61
+CTest suites and Reach consistency gate pass. Pinned contact bindings all
+five later titles, world collision and all seven firing/muzzle binding verifiers
+pass. See COOP-FIRING-AUDIT-2026-09-19.md. CE menu follow-up is undergoing final
+build/test and packaging. Release notes/manifest explicitly retain unresolved
+firing root cause and multiplayer grenades. Deliver matching diagnostic build
+and source ZIPs without -Install, then wait for the user's runtime result.
+No publication, launch, installation or accepted-pointer change.
+
+## September 19 current priority: all-title co-op stability
+
+User reports firing-related co-op failures on two d088171 setups and requests
+an all-title audit of firing, ownership, checkpoint/vehicle lifetime, physical
+interactions and network simulation. Proceed through a verified build/source
+ZIP pair. Do not publish this follow-up, install it or launch MCC. Preserve
+existing features and accepted pointer; no claim of live co-op acceptance.
+Both new logs show Halo 3, Steam: VDXR 1.0.10 / Quest 3 / 72 Hz and SteamVR
+2.17.10 / Oculus family / 90 Hz. Preserved under out/coop-audit-20260919.
+Neither contains an exception address/stack; both continue through native
+level retirement. The earlier H2 Cairo/Outskirts log remains relevant but does
+not establish the same cause. Audit in progress, no fix attribution yet.
+Alpha 0.5.0 was published from d088171; main's later commits are documentation.
+
 ## September 18 latest request: missing first-person vehicles, then ZIPs
 
 User requests first-person vehicles in every title lacking them, using existing
