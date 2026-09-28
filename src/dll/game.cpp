@@ -24774,6 +24774,7 @@ namespace
     // gate on -- proving the offset here, solo in headset, is the precondition for ever writing it.
     void ReachAimProbe_OnEngineTick()
     {
+#if HALOMCCVR_DEV_DIAGNOSTICS   // research tool: compiled out of player builds, whatever the cfg says
         if (!g_config.reach_aim_probe) return;
         if (!g_reachCamera.base || !g_reachCamera.playerUnitByOutputUser) return;
         static uint64_t lastMs = 0;
@@ -24831,6 +24832,7 @@ namespace
         LOG("REACHAIMPROBE off=0x%X cur=(%.3f %.3f %.3f)|%.3f des=(%.3f %.3f %.3f)|%.3f dot=%.4f ang=%.2f%s",
             candOff, cur[0], cur[1], cur[2], lc, des[0], des[1], des[2], ld, dot, ang,
             plausible ? "" : "  <-- desired not a unit vector: offset likely wrong");
+#endif
     }
 
     // EXPERIMENTAL direct-drive MECHANISM TEST (reach_direct_drive=1, default off). Engine thread, on
@@ -24850,8 +24852,13 @@ namespace
     void ReachDirectDrive_OnEngineTick()
     {
         const int mode = g_config.reach_direct_drive;
+#if HALOMCCVR_DEV_DIAGNOSTICS
         ReachDdp_OnEngineTick(mode == 4);   // mode 4: MASTER desired_angles persistence test (one-shot)
+#endif
         ReachDriveArmGate_OnEngineTick(mode == 3);   // mode 3: validate player_control, then arm the hook
+        // Modes 1, 2 and 4 are research tools that write aim state blind: dev builds only (a player
+        // build clamps reach_direct_drive to 0 or 3 at load, and compiles none of them in).
+#if HALOMCCVR_DEV_DIAGNOSTICS
         if (mode == 4 || mode == 3) return;
         static int s_active = 0;
         static float s_tgt[3] = {0.0f, 0.0f, 0.0f};
@@ -24948,6 +24955,7 @@ namespace
                     candOff);
             }
         }
+#endif
     }
 
     // ========================================================================
@@ -26741,9 +26749,12 @@ namespace
         }
     }
 
-    // Runs on the engine thread from the same host as the other Reach probes. DEV, default off.
+    // Runs on the engine thread from the same host as the other Reach probes. DEV BUILDS ONLY: it installs
+    // a vectored exception handler, suspends threads to program debug registers and runs a value scan,
+    // none of which a player build may carry (the empty stub below keeps the call site).
     void ReachWatchpoint_OnEngineTick()
     {
+#if HALOMCCVR_DEV_DIAGNOSTICS
         if (!g_config.reach_dd_watchpoint)
         {
             if (g_reachWpArmed.load(std::memory_order_acquire))
@@ -26902,6 +26913,7 @@ namespace
             }
             __except (EXCEPTION_EXECUTE_HANDLER) { }
         }
+#endif
     }
 #endif
 

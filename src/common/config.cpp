@@ -957,12 +957,21 @@ void ConfigLoad(const wchar_t* path)
         if (!strcmp(key, "independent_dual_aim")) { g_config.independent_dual_aim=atoi(val)!=0; continue; }
         if (!strcmp(key, "gun_barrel_aim")) { g_config.gun_barrel_aim=atoi(val)!=0; continue; }
         if (!strcmp(key, "aim_provider")) { g_config.aim_provider=atoi(val); continue; }
+        if (!strcmp(key, "reach_direct_drive"))
+        {
+            g_config.reach_direct_drive=atoi(val);
+#if !HALOMCCVR_DEV_DIAGNOSTICS
+            // A player build takes 0 (off) or 3 (direct drive) only: modes 1, 2 and 4 are research
+            // tools that write aim state blind, and they are compiled into dev builds only.
+            if (g_config.reach_direct_drive != 3) g_config.reach_direct_drive = 0;
+#endif
+            continue;
+        }
+#if HALOMCCVR_DEV_DIAGNOSTICS   // research tools and dev overrides: a player build never reads them
         if (!strcmp(key, "reach_aim_probe")) { g_config.reach_aim_probe=atoi(val); continue; }
         if (!strcmp(key, "reach_desired_aim_offset")) { g_config.reach_desired_aim_offset=(int)strtol(val,nullptr,0); continue; }
-        if (!strcmp(key, "reach_direct_drive")) { g_config.reach_direct_drive=atoi(val); continue; }
         if (!strcmp(key, "reach_dd_test_deg")) { g_config.reach_dd_test_deg=atoi(val); continue; }
         if (!strcmp(key, "reach_dd_watchpoint")) { g_config.reach_dd_watchpoint=atoi(val); continue; }
-#if HALOMCCVR_DEV_DIAGNOSTICS   // dev overrides: a player build uses the compiled flags and no census
         if (!strcmp(key, "reach_sight_trace_flags")) { g_config.reach_sight_trace_flags=strtoull(val,nullptr,0); continue; }
         if (!strcmp(key, "reach_sight_trace_mode")) { g_config.reach_sight_trace_mode=(int)strtol(val,nullptr,0); continue; }
         if (!strcmp(key, "reach_collision_census")) { g_config.reach_collision_census=atoi(val); continue; }
@@ -1693,7 +1702,15 @@ void ConfigSave()
     fprintf(f, "# it is reach_direct_drive = 3. Leave it at 0. (default %d)\n",
             d.aim_provider);
     fprintf(f, "aim_provider = %d\n\n", g_config.aim_provider);
-    fprintf(f, "# EXPERIMENTAL / diagnostic, Halo Reach only, READ-ONLY. Confirms the desired-aim\n");
+#if !HALOMCCVR_DEV_DIAGNOSTICS
+    fprintf(f, "# EXPERIMENTAL, Halo Reach only. 3 = DIRECT DRIVE: your aim writes the game's own control\n");
+    fprintf(f, "# angles directly (crisp; co-op replication not yet verified); needs a relaunch to install,\n");
+    fprintf(f, "# then arms itself once it has validated the address (log: REACHDRIVE ARMED). On foot only:\n");
+    fprintf(f, "# vehicles, cutscenes and menus keep the normal stick aim. 0 = off. (default %d)\n",
+            d.reach_direct_drive);
+    fprintf(f, "reach_direct_drive = %d\n\n", g_config.reach_direct_drive);
+#else
+    fprintf(f, "# DEV BUILD ONLY (the research keys below). EXPERIMENTAL / diagnostic, Halo Reach only, READ-ONLY. Confirms the desired-aim\n");
     fprintf(f, "# struct offset for a future direct-drive aim: it logs the candidate desired-aim\n");
     fprintf(f, "# vector against the known current aim (they match at rest, the desired leads when\n");
     fprintf(f, "# you turn). It does NOT change your aim. Leave at 0. (default %d)\n", d.reach_aim_probe);
@@ -1724,7 +1741,6 @@ void ConfigSave()
     fprintf(f, "# refuted). Read-only (never changes aim). Leave at 0. (default %d)\n",
             d.reach_dd_watchpoint);
     fprintf(f, "reach_dd_watchpoint = %d\n\n", g_config.reach_dd_watchpoint);
-#if HALOMCCVR_DEV_DIAGNOSTICS
     fprintf(f, "# DEV BUILD ONLY. Halo Reach on foot, direct drive: replaces the resolved crosshair-trace\n");
     fprintf(f, "# flags of the trace-and-reaim aim for an experiment (0 = use the resolved ones). (default 0x%llX)\n",
             d.reach_sight_trace_flags);

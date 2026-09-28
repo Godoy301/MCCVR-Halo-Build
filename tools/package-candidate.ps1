@@ -526,6 +526,17 @@ try {
         }
     }
 
+    # Dev tooling must be compiled OUT, not switched off. The cache check above proves the option;
+    # this proves the artifact: no dev-only log tag may appear anywhere in the packaged DLL.
+    $dllText = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($dllPath))
+    foreach ($devTag in @('REACHWP', 'REACHVS', 'REACHDDP', 'REACHAIMPROBE', 'REACHDIRECTDRIVE',
+            'REACHCROUCHCAM', 'DEV BUILD', 'CENSUS collision_test_vector', 'Roomscale trace',
+            'DEV TEST OVERRIDE', 'DEV fault injection')) {
+        if ($dllText.Contains($devTag)) {
+            throw "Refusing to package: dev-only tag '$devTag' is compiled into HaloMCCVR.dll."
+        }
+    }
+
     $dll = Get-Item -LiteralPath $dllPath
     $launcher = Get-Item -LiteralPath $launcherPath
     $config = Get-Item -LiteralPath $configPath

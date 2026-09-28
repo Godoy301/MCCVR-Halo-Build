@@ -568,22 +568,25 @@ namespace
         float rx = 0, ry = 0;
         bool haveStick;
 #if HALOMCCVR_EXPERIMENTAL_REACH_RENDER_CANDIDATE
+#if HALOMCCVR_DEV_DIAGNOSTICS
         if ((g_config.reach_direct_drive == 1 || Game_ReachDdTestOwnsAim()) &&
             TitleAdapter_GetActiveTitle() == GameTitle::HaloReach)
         {
-            // Mode 1 (swing-and-hold) and the mode-4 persistence test (while it runs) own aim via an
-            // engine-thread state write; keep the stick neutral so the two do not fight. Mode 2 (live
-            // offset) deliberately does NOT suppress -- you aim normally and we watch for shots
-            // landing off the reticle.
+            // Dev research modes: mode 1 (swing-and-hold) and the mode-4 persistence test (while it
+            // runs) own aim via an engine-thread state write; keep the stick neutral so the two do not
+            // fight. Mode 2 (live offset) deliberately does NOT suppress -- you aim normally and we
+            // watch for shots landing off the reticle.
             rx = 0; ry = 0; haveStick = true;
         }
+        else
+#endif
         // Experimental: the per-game aim provider owns Reach's aim stick when enabled, and always for
         // direct drive (mode 3), whose WriteState rung only the provider actuates (it then returns a
         // neutral stick, so the state write is the only driver). Its StickLoop rung IS
         // Game_ComputeAimStick, so whatever it does not take over aims exactly as the shipped path.
         // Both off (the default) leaves the call untouched.
-        else if ((g_config.aim_provider || g_config.reach_direct_drive == 3) &&
-                 TitleAdapter_GetActiveTitle() == GameTitle::HaloReach)
+        if ((g_config.aim_provider || g_config.reach_direct_drive == 3) &&
+            TitleAdapter_GetActiveTitle() == GameTitle::HaloReach)
             haveStick = ReachAimProvider_ProduceStick(rx, ry);
         else
 #endif

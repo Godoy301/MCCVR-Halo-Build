@@ -612,6 +612,9 @@ struct Config
     // Reach through the provider by itself).
     int aim_provider = 0;
 
+    // DEV BUILDS ONLY (not parsed, saved or compiled into a player build): the Reach direct-drive
+    // research tools below -- the aim probe, the write tests (reach_direct_drive 1, 2 and 4) and the
+    // watchpoint locator. A player build accepts reach_direct_drive 0 or 3 and nothing else.
     // EXPERIMENTAL (Halo Reach, READ-ONLY diagnostic): confirm the desired-aiming struct offset for
     // the future direct-drive rung, WITHOUT writing anything and WITHOUT needing co-op. When on, a
     // value-agreement probe logs the candidate DESIRED aim vector (unit+reach_desired_aim_offset)
