@@ -76,6 +76,7 @@
 #endif
 #if HALOMCCVR_EXPERIMENTAL_REACH_RENDER_CANDIDATE
 #include "reach_render_candidate.h"
+#include "reach_aim_provider.h"
 #include "../common/reach_observer_logic.h"
 #endif
 #if HALOMCCVR_EXPERIMENTAL_REACH_RENDER_CANDIDATE
@@ -94,6 +95,16 @@ static std::atomic<float>              g_reachDriveYaw{0.0f};
 static std::atomic<float>              g_reachDrivePitch{0.0f};
 static std::atomic<unsigned long long> g_reachDriveMs{0};
 static std::atomic<bool>               g_reachDriveValid{false};
+// Trace-and-reaim: whether the published setpoint is a converged one, and -- recorded by the SIM-thread
+// hook as it writes desired_angles -- when a converged setpoint was last actually written (0 = the last
+// write was not converged, or nothing was written). The firing site reads the latter, so the hand shot
+// ray stands down exactly while the angles in effect are converged.
+static std::atomic<bool>               g_reachDriveConverged{false};
+static std::atomic<unsigned long long> g_reachWrittenConvergedMs{0};
+// The hook's status, counted on the sim thread and logged by the cold worker.
+static std::atomic<unsigned>           g_reachApplyCalls{0}, g_reachApplyWrites{0}, g_reachApplyLast{0};
+static std::atomic<uint32_t>           g_reachApplyAgeMs{0};
+static std::atomic<float>              g_reachApplyYaw{0.0f}, g_reachApplyPitch{0.0f};
 // The game-basis aim Game_ComputeAimStick computed during the current input poll (the same target its
 // stick servo chases). The provider TAKES it once as its intent; a measurement, never written to the game.
 static std::atomic<float>              g_reachDesiredYaw{0.0f};
@@ -1327,6 +1338,10 @@ namespace
         void* original = nullptr;
         void* resolver = nullptr;
         bool fourArgumentResolver = false;
+        // True when `original` is the trampoline of the 8-argument collision_test_vector (the
+        // scheduler entry), which is what the Reach sight trace calls. `fourArgumentResolver`
+        // describes `resolver`, not `original`.
+        bool originalIsVectorTest = false;
         uint32_t generation = 0;
         std::atomic<bool> installed{false};
         std::atomic<uint32_t> callbacks{0};
@@ -1424,7 +1439,6 @@ namespace
     void ReachSightTraceTick(uint32_t unit);
     void ReachNoteCollisionCensus(uintptr_t caller, uint64_t flags, int32_t mode,
         const float* vector, int32_t ignoredA);
-    void ReachNoteSightFlagsWitness(uint64_t flags, int32_t ignoredA);
     bool ReachConvergedShotLive(uint64_t nowMs);
     void ReachSightMeasureShot(int32_t unitIndex, const float* origin, const float* direction);
     void ReportReachSightTrace();
@@ -5055,10 +5069,7 @@ namespace
         const uintptr_t caller=reinterpret_cast<uintptr_t>(_ReturnAddress());
         __try {
             if (!g_legacyCollisionOwnedQuery)
-            {
-                ReachNoteSightFlagsWitness(flags,ignoredObjectA);
                 ReachNoteCollisionCensus(caller,flags,mode,vector,ignoredObjectA);
-            }
             if (!ReachRedirectContactVector(caller,flags,mode,ignoredObjectA,
                     ignoredObjectB,ignoredObjectC,result,nativeResult))
                 nativeResult=LegacyCollisionSchedulerDetourBody(
@@ -23383,6 +23394,7 @@ namespace
             "and physical melee samples; catalog/hand fallback is feature-local",titleName,
             runtimeBounds ? "proven" : "StockFallback (missing/moved/ambiguous native proof)");
         feature.fourArgumentResolver=fourArgumentResolver;
+        feature.originalIsVectorTest=false;
         feature.installed.store(false,std::memory_order_release);
         feature.target=nullptr;
         feature.original=nullptr;
@@ -23460,12 +23472,14 @@ namespace
         feature.original=trampoline;
         feature.resolver=schedulerRva
             ? reinterpret_cast<void*>(hit):trampoline;
+        feature.originalIsVectorTest=schedulerRva!=0;
         if(MH_EnableHook(target)!=MH_OK)
         {
             MH_RemoveHook(target);
             feature.target=nullptr;
             feature.original=nullptr;
             feature.resolver=nullptr;
+            feature.originalIsVectorTest=false;
             LOG("%s world collision StockFallback: optional resolver hook "
                 "enable failed",titleName);
             return false;
@@ -29431,6 +29445,8 @@ namespace
         // releases its gate object on that thread (it is not ours to touch from here).
         g_reachDriveTearingDown.store(true, std::memory_order_release);
         g_reachDriveValid.store(false, std::memory_order_release);
+        g_reachDriveConverged.store(false, std::memory_order_release);
+        g_reachWrittenConvergedMs.store(0, std::memory_order_release);
         ReachDriveDisarm();
         g_reachDriveResetSeq.fetch_add(1, std::memory_order_acq_rel);
         bool disabledAll = true;
@@ -29993,7 +30009,9 @@ namespace
         g_reachWorldCollision.title = GameTitle::None;
         g_reachWorldCollision.generation = 0;
         g_reachWorldCollision.fourArgumentResolver = false;
+        g_reachWorldCollision.originalIsVectorTest = false;
         g_reachWorldCollision.resolver = nullptr;
+        ReachClearSightFlags("Reach is not installed");
         g_reachWorldCollision.nextQueryAtMs.store(
             0, std::memory_order_release);
         g_reachWorldCollision.worker[0] = LegacyCollisionWorkerHand{};
@@ -32441,6 +32459,9 @@ namespace
             reinterpret_cast<void*>(&ReachCollisionVectorDetour),
             0x0012C5D4, kReachCollisionResolveSignature, true,
             0x0012969C, kReachCollisionVectorSignature);
+        // Trace-and-reaim: resolve and value-check the engine's own crosshair-trace flags against this
+        // build (fails closed; see reach_sight_trace.inl).
+        ReachResolveSightFlags(base, size);
         InstallReachContactMelee(base,size,generation);
         (void)InstallReachMuzzle(base,size,generation);
         LOG("Reach camera core installed: outer/inner stereo + FP "
@@ -43191,6 +43212,11 @@ namespace
             const uint64_t pollNow = GetTickCount64();
             NativeFaultProbe_Poll();
             Roomscale_Report();
+#if HALOMCCVR_EXPERIMENTAL_REACH_RENDER_CANDIDATE
+            // Status the aim provider and the direct-drive hook only count into atomics; logged here.
+            ReachAimProvider_Report();
+            Game_ReachDirectDriveReport();
+#endif
             D3D_ReportSamplerCache();
             const GameTitle bloomTitle=TitleAdapter_GetActiveTitle();
             Bloom_ColdTick(bloomTitle,TitleAdapter_GetGeneration(bloomTitle));
@@ -47257,10 +47283,11 @@ bool Game_ReachDirectDriveOnFoot()
 }
 
 // The provider's WriteState actuation: the setpoint the sim-thread hook writes on its next tick.
-void Game_ReachDirectDrivePublish(float gameYaw, float gamePitch)
+void Game_ReachDirectDrivePublish(float gameYaw, float gamePitch, bool converged)
 {
     g_reachDriveYaw.store(gameYaw, std::memory_order_relaxed);
     g_reachDrivePitch.store(gamePitch, std::memory_order_relaxed);
+    g_reachDriveConverged.store(converged, std::memory_order_relaxed);
     g_reachDriveMs.store(GetTickCount64(), std::memory_order_release);
     g_reachDriveValid.store(true, std::memory_order_release);
 }
@@ -47269,6 +47296,7 @@ void Game_ReachDirectDrivePublish(float gameYaw, float gamePitch)
 // (rather than for up to its 200 ms staleness window, where it would fight the stick servo).
 void Game_ReachDirectDriveRelease()
 {
+    g_reachDriveConverged.store(false, std::memory_order_relaxed);
     g_reachDriveValid.store(false, std::memory_order_release);
 }
 
@@ -47277,9 +47305,14 @@ void Game_ReachDirectDriveRelease()
 bool Game_ReachSightSample(ReachSightSample& out)
 {
     out = {};
-    if (!g_config.reach_sight_trace_flags || g_reachSightTrace.faulted.load(std::memory_order_acquire))
+    // Only direct drive (mode 3) can actuate a converged aim; nothing else asks the sim thread to trace.
+    if (g_config.reach_direct_drive != 3)
         return false;
     const uint64_t now = GetTickCount64();
+    g_reachSightDemandMs.store(now, std::memory_order_relaxed);
+    int32_t mode = 0;
+    if (!ReachSightActiveFlags(mode) || g_reachSightTrace.faulted.load(std::memory_order_acquire))
+        return false;
     const uint32_t generation = g_reachCamera.generation.load(std::memory_order_acquire);
     ReachCompletedReticleTargetSnapshot ray{};
     if (!generation || !ReachReadCompletedReticleTarget(ray, g_reachOnFootShotRay) ||
@@ -47322,9 +47355,26 @@ bool Game_ReachSightSample(ReachSightSample& out)
     return out.traceSampleMs != 0;
 }
 
-void Game_ReachNoteConvergedShot()
+void Game_ReachNoteConvergedSample(const ReachSightSample& sample, float smoothedRangeWu)
 {
-    g_reachConvergedShotMs.store(GetTickCount64(), std::memory_order_release);
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    auto& a = g_reachSightActuated;
+    a.sequence.fetch_add(1, std::memory_order_acq_rel);
+    a.ox.store(sample.origin[0], std::memory_order_relaxed);
+    a.oy.store(sample.origin[1], std::memory_order_relaxed);
+    a.oz.store(sample.origin[2], std::memory_order_relaxed);
+    a.dx.store(sample.dir[0], std::memory_order_relaxed);
+    a.dy.store(sample.dir[1], std::memory_order_relaxed);
+    a.dz.store(sample.dir[2], std::memory_order_relaxed);
+    a.ex.store(sample.eye[0], std::memory_order_relaxed);
+    a.ey.store(sample.eye[1], std::memory_order_relaxed);
+    a.ez.store(sample.eye[2], std::memory_order_relaxed);
+    a.rangeWu.store(smoothedRangeWu, std::memory_order_relaxed);
+    a.atMs.store(GetTickCount64(), std::memory_order_relaxed);
+    a.sequence.fetch_add(1, std::memory_order_release);
+#else
+    (void)sample; (void)smoothedRangeWu;
+#endif
 }
 
 // Runs on the SIM thread from the naked detour, AFTER native 0x6375C updated desired_angles (stick
@@ -47372,15 +47422,43 @@ extern "C" void ReachPcApplyForUser(int user)
                 wrote = 1;
             }
         }
+        // Trace-and-reaim: record whether the angles now in effect are converged ones (first local
+        // player only -- the other slots' calls must not clear it). The firing site reads this on this
+        // same thread, so its stand-down tracks the write, not a publish.
+        if (user == 0)
+            g_reachWrittenConvergedMs.store(
+                (wrote && g_reachDriveConverged.load(std::memory_order_relaxed)) ? tick : 0,
+                std::memory_order_release);
     }
     __except (EXCEPTION_EXECUTE_HANDLER) {}
-    static unsigned long long s_last = 0, s_n = 0, s_w = 0; s_n++; s_w += wrote;
+    // Counted here, logged by the cold worker (Game_ReachDirectDriveReport): no file I/O or log lock on
+    // the simulation thread.
+    if (user == 0)
+    {
+        g_reachApplyCalls.fetch_add(1, std::memory_order_relaxed);
+        g_reachApplyWrites.fetch_add(static_cast<unsigned>(wrote), std::memory_order_relaxed);
+        g_reachApplyLast.store((armed ? 1u : 0u) | (same ? 2u : 0u) | (valid ? 4u : 0u), std::memory_order_relaxed);
+        g_reachApplyAgeMs.store(static_cast<uint32_t>(age > 0xFFFFFFFFull ? 0xFFFFFFFFull : age), std::memory_order_relaxed);
+        g_reachApplyYaw.store(yaw, std::memory_order_relaxed);
+        g_reachApplyPitch.store(pitch, std::memory_order_relaxed);
+    }
+}
+
+// The direct-drive hook's once-a-second status, logged from the cold worker.
+void Game_ReachDirectDriveReport()
+{
+    static unsigned long long s_last = 0;
     const unsigned long long now = GetTickCount64();
-    if (now - s_last >= 1000) { s_last = now;
-        LOG("REACHDRIVE apply user=%d armed=%d pcMatch=%d valid=%d age=%llu yaw=%.3f pitch=%.3f wrote %llu/%llu per s "
-            "(mismatches %u)", user, armed, same, valid, age, yaw, pitch, s_w, s_n,
-            g_reachPcMismatch.load(std::memory_order_relaxed));
-        s_n = 0; s_w = 0; }
+    if (now - s_last < 1000) return;
+    s_last = now;
+    const unsigned calls = g_reachApplyCalls.exchange(0, std::memory_order_relaxed);
+    if (!calls) return;
+    const unsigned last = g_reachApplyLast.load(std::memory_order_relaxed);
+    LOG("REACHDRIVE apply user=0 armed=%d pcMatch=%d valid=%d age=%u yaw=%.3f pitch=%.3f wrote %u/%u per s "
+        "(mismatches %u)", (last & 1u) ? 1 : 0, (last & 2u) ? 1 : 0, (last & 4u) ? 1 : 0,
+        g_reachApplyAgeMs.load(std::memory_order_relaxed), g_reachApplyYaw.load(std::memory_order_relaxed),
+        g_reachApplyPitch.load(std::memory_order_relaxed), g_reachApplyWrites.exchange(0, std::memory_order_relaxed),
+        calls, g_reachPcMismatch.load(std::memory_order_relaxed));
 }
 
 // True while the reach_direct_drive=4 persistence test owns Reach's aim: input.cpp then holds the

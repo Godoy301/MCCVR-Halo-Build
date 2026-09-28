@@ -99,6 +99,16 @@ inline float ema_range(float cur_cm, float sample_cm, float alpha) {
     if (!(cur_cm > 0.0f)) return sample_cm;
     return cur_cm + (sample_cm - cur_cm) * alpha;
 }
+// Smooth the INVERSE range (what the correction is proportional to), not the range. Smoothing range
+// makes far->near slow: moving from a 30 m wall to an enemy at 2 m, a range EMA is still ~14 m after
+// one time constant and the shot misses by most of the eye offset; the inverse is half-way there.
+// cur_inv 0 = no range yet (the first sample is taken as-is).
+inline float ema_inverse_range(float cur_inv_per_cm, float sample_cm, float alpha) {
+    if (!(sample_cm > 0.0f) || !std::isfinite(sample_cm)) return cur_inv_per_cm;
+    const float sample_inv = 1.0f / sample_cm;
+    if (!(cur_inv_per_cm > 0.0f)) return sample_inv;
+    return cur_inv_per_cm + (sample_inv - cur_inv_per_cm) * alpha;
+}
 // Standard time-constant EMA weight for a per-tick feed (tau in ms, dt in seconds).
 inline float ema_alpha(float tau_ms, float dt_s) {
     if (!(tau_ms > 0.0f) || !(dt_s > 0.0f)) return 1.0f;
@@ -149,11 +159,12 @@ inline bool converge_trace_reaim(float& yaw_deg, float& pitch_deg,
     if (!std::isfinite(ny) || !std::isfinite(np)) return false;
 
     // Sanity rail: a large correction means the range or the delta is wrong (a wrong big correction in
-    // VR is a weapon that fires sideways), so decline rather than swing the aim.
-    float dy = ny - yaw_deg;
-    while (dy > 180.0f)  dy -= 360.0f;
-    while (dy < -180.0f) dy += 360.0f;
-    if (std::fabs(dy) > r.max_correction_deg || std::fabs(np - pitch_deg) > r.max_correction_deg)
+    // VR is a weapon that fires sideways), so decline rather than swing the aim. Measured as the TRUE
+    // angle between the two directions: separate yaw/pitch deltas blow up near vertical (a 7.6 deg
+    // lateral correction at -70 deg pitch is ~22 deg of yaw) and would decline a correct correction.
+    float cosang = (ux * tx + uy * ty + uz * tz) / len;
+    if (cosang < -1.0f) cosang = -1.0f; else if (cosang > 1.0f) cosang = 1.0f;
+    if (std::acos(cosang) * R2D > r.max_correction_deg)
         return false;
 
     yaw_deg = ny;

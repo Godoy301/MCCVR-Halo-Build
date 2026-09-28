@@ -157,16 +157,20 @@ bool Game_ReachDirectDriveReady();
 bool Game_ReachDirectDriveOnFoot();
 uint32_t Game_ReachDirectDriveOnFootWhy();   // failing on-foot conditions as bits (0 = on foot)
 int Game_ReachUnitCrouchState();             // native crouch state 0/1, -1 unknown/stale (diagnostics)
-void Game_ReachDirectDrivePublish(float gameYaw, float gamePitch);
+// `converged` = the core bent this setpoint through a freshly traced point. The sim-thread hook records
+// it with every write, and the firing site stands the hand shot ray down only while the angles
+// actually in desired_angles are converged ones.
+void Game_ReachDirectDrivePublish(float gameYaw, float gamePitch, bool converged);
 void Game_ReachDirectDriveRelease();
+void Game_ReachDirectDriveReport();   // cold worker: the hook's once-a-second status line
 // Reach on foot, trace-and-reaim (reach_sight_trace.inl). Defined only in experimental Reach builds.
 //   SightSample -- the latest rendered intent (reticle) ray and the engine eye the shot leaves from,
 //                  all in world units, plus the latest range the sim-thread trace measured along that
-//                  ray (rangeWu, hit=false on a miss). False while the ray or the trace is stale, the
-//                  trace is off (reach_sight_trace_flags = 0) or it faulted.
-//   NoteConvergedShot -- the provider actuated a converged setpoint: while that stays fresh the older
-//                  on-foot hand shot ray (which moved the projectile origin) stands down at the
-//                  firing site, so the native shot and the converged aim are not corrected twice.
+//                  ray (rangeWu, hit=false on a miss). Only direct drive (reach_direct_drive=3) asks;
+//                  asking is what keeps the sim-thread trace running. False while the ray or the trace
+//                  is stale, the crosshair-trace flags did not resolve on this build, or it faulted.
+//   NoteConvergedSample -- DEV builds: the exact sample and smoothed range the provider actuated, so
+//                  the shot check measures against what was aimed rather than a later sample.
 struct ReachSightSample
 {
     float origin[3]{};   // where the intent ray starts (the rendered hand/reticle ray)
@@ -177,7 +181,7 @@ struct ReachSightSample
     uint64_t raySampleMs = 0, traceSampleMs = 0;
 };
 bool Game_ReachSightSample(ReachSightSample& out);
-void Game_ReachNoteConvergedShot();
+void Game_ReachNoteConvergedSample(const ReachSightSample& sample, float smoothedRangeWu);
 // C-H2-41. True only while Halo 2's controller-owned aim/weapon feature is
 // requested; tracking loss still makes each call fail open independently.
 bool Game_Halo2ControllerAimActive();

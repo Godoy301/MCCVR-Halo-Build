@@ -4,6 +4,7 @@
 
 #include "../src/common/aim_provider.h"
 #include "../src/common/aim_write_logic.h"
+#include "../src/common/reach_aim_basis.h"
 
 #include <cmath>
 #include <cstdio>
@@ -89,6 +90,28 @@ static void test_converge() {
         float y = 0, p = 0;
         CHECK(!converge_trace_reaim(y, p, Vec3{0, 10000, 0}, 1000.0f, r) && near(y, 0));
     }
+    // The rail measures the TRUE angle: a 20 cm lateral offset at 1.5 m while aiming 70 deg down is a
+    // ~7.6 deg correction (accepted), although its yaw component alone is ~22 deg.
+    {
+        float y = 0, p = -70.0f;
+        const Vec3 delta{0, 20, 0};
+        const float range = 150.0f;
+        CHECK(converge_trace_reaim(y, p, delta, range, r));
+        // ...and the corrected direction passes through the target point delta + range * u.
+        const float u[3]{std::cos(-70.0f / 57.29578f), 0.0f, std::sin(-70.0f / 57.29578f)};
+        const float t[3]{delta.x + u[0] * range, delta.y + u[1] * range, delta.z + u[2] * range};
+        const float tl = std::sqrt(t[0] * t[0] + t[1] * t[1] + t[2] * t[2]);
+        const float cp = std::cos(p / 57.29578f);
+        const float d[3]{cp * std::cos(y / 57.29578f), cp * std::sin(y / 57.29578f), std::sin(p / 57.29578f)};
+        CHECK(near(d[0], t[0] / tl, 1e-4f) && near(d[1], t[1] / tl, 1e-4f) && near(d[2], t[2] / tl, 1e-4f));
+    }
+    // Inverse-range smoothing: from 30 m toward 2 m at alpha 0.5 lands near 3.75 m, not 16 m.
+    {
+        const float inv = ema_inverse_range(1.0f / 3000.0f, 200.0f, 0.5f);
+        CHECK(near(1.0f / inv, 375.0f, 1.0f));
+        CHECK(near(ema_inverse_range(0.0f, 200.0f, 0.5f), 1.0f / 200.0f, 1e-7f));   // first sample taken as-is
+        CHECK(ema_inverse_range(0.01f, -5.0f, 0.5f) == 0.01f);                      // a bad sample changes nothing
+    }
 }
 
 static void test_orchestrator() {
@@ -128,6 +151,11 @@ static void test_orchestrator() {
         ActuateResult res = solve_and_actuate(m, st, ConvergeRails{}, 1.0f, 1.0f); // alpha~1: range=trace
         CHECK(res.applied && m.trace_calls == 1 && !m.engine_conv);
         CHECK(near(m.last_angles.yaw_deg, std::atan2(10.0f, 1000.0f) * 57.29578f));
+        CHECK(st.converged);                                  // the core reports that it actually bent it
+        // A leashed (sub-threshold) offset: the same path, but nothing bent and converged says so.
+        m.delta = Vec3{0, 1, 0};
+        res = solve_and_actuate(m, st, ConvergeRails{}, 1.0f, 1.0f);
+        CHECK(res.applied && !st.converged && near(m.last_angles.yaw_deg, 0));
     }
     // No intent this tick -> fail closed.
     {
@@ -226,6 +254,43 @@ static void test_arm_gate() {
     }
 }
 
+// Reach's mapping into the core (src/common/reach_aim_basis.h): the frame the core cannot check itself.
+static void test_reach_basis() {
+    using namespace reach_aim_basis;
+    CHECK(near(kCmPerWorldUnit, 304.8f, 1.0e-3f));   // a Reach world unit is 10 ft
+
+    // A Reach yaw/pitch pair survives the trip into the core's basis and back, across the yaw wrap and
+    // near vertical.
+    for (float yaw : {-179.0f, -90.0f, 0.0f, 45.0f, 179.0f})
+        for (float pitch : {-85.0f, -45.0f, 0.0f, 30.0f, 85.0f}) {
+            float y = 0.0f, p = 0.0f;
+            CHECK(angles_from_dir(DirFromGameAngles(yaw * kDegToRad, pitch * kDegToRad), y, p));
+            CHECK(near(y, yaw, 1.0e-3f) && near(p, pitch, 1.0e-3f));
+        }
+
+    // End to end in Reach's own units: the engine eye E, the intent ray from the hand H along u, a hit
+    // at d. The converged angles, read back as the radians desired_angles holds, must aim a ray from E
+    // through the hit point H + u*d -- to well under a millimetre.
+    for (float yaw : {-120.0f, 0.0f, 75.0f})
+        for (float pitch : {-60.0f, 0.0f, 40.0f})
+            for (float d : {0.5f, 3.0f, 20.0f}) {   // world units: 1.5 m, 9 m, 61 m
+                const float E[3]{10.0f, -4.0f, 2.0f};
+                const float H[3]{E[0] + 0.05f, E[1] - 0.06f, E[2] - 0.05f};   // a hand ~0.28 m off the eye
+                const Vec3 u = DirFromGameAngles(yaw * kDegToRad, pitch * kDegToRad);
+                float y = yaw, p = pitch;
+                CHECK(converge_trace_reaim(y, p, DeltaCm(H, E), d * kCmPerWorldUnit, ConvergeRails{}));
+                float yawRad = 0.0f, pitchRad = 0.0f;
+                GameAnglesFromCore(Angles{y, p}, yawRad, pitchRad);
+                const Vec3 a = DirFromGameAngles(yawRad, pitchRad);
+                const float T[3]{H[0] + u.x * d, H[1] + u.y * d, H[2] + u.z * d};
+                const float w[3]{T[0] - E[0], T[1] - E[1], T[2] - E[2]};
+                const float c[3]{w[1] * a.z - w[2] * a.y, w[2] * a.x - w[0] * a.z, w[0] * a.y - w[1] * a.x};
+                const float missCm = std::sqrt(c[0] * c[0] + c[1] * c[1] + c[2] * c[2]) * kCmPerWorldUnit;
+                CHECK(missCm < 0.1f);
+                CHECK(w[0] * a.x + w[1] * a.y + w[2] * a.z > 0.0f);   // in front of the eye, not behind
+            }
+}
+
 int main() {
     test_selectors();
     test_angles_from_dir();
@@ -234,6 +299,7 @@ int main() {
     test_unwrap_to_branch();
     test_clamp_pitch();
     test_arm_gate();
+    test_reach_basis();
     if (g_fail == 0) std::printf("aim_solve_tests: OK\n");
     return g_fail == 0 ? 0 : 1;
 }

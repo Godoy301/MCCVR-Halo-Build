@@ -23,3 +23,7 @@
 // outRx/outRy when the stick is driven (zeros while the state write owns aim), false when aim is not
 // steering (matches Game_ComputeAimStick's contract).
 bool ReachAimProvider_ProduceStick(float& outRx, float& outRy);
+
+// The provider's 2 s status line. Called from the cold worker, never the input hook (the provider only
+// counts into atomics there, keeping file I/O and the log lock out of the game's XInput path).
+void ReachAimProvider_Report();

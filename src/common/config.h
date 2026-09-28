@@ -668,13 +668,15 @@ struct Config
     int reach_dd_watchpoint = 0;
 
     // Halo Reach, ON FOOT, direct drive (reach_direct_drive = 3): TRACE-AND-REAIM CONVERGENCE, the
-    // Halo: Campaign Evolved aim. The shot keeps leaving from where Reach fires it (its own camera);
-    // the intent ray (the controller/reticle ray the player points) is traced into the world with the
-    // game's own collision_test_vector, and the aim is bent so the native shot passes through the
-    // point that ray hits: aim = normalize((ray origin - shot origin) + range * ray direction). Range
-    // is smoothed and held on a miss; the old fixed-distance steer is the fallback. While it is live
-    // the older on-foot hand shot ray (which MOVED the projectile origin to the hand) stands down.
-    // The trace flags are the engine's own collision-test flags; 0 = trace off (old behaviour).
+    // Halo: Campaign Evolved aim. The shot keeps leaving from where Reach fires it; the intent ray (the
+    // controller/reticle ray the player points) is traced into the world with the game's own
+    // collision_test_vector and the game's own crosshair-trace flags (resolved from the build and
+    // value-checked against HREK at install; see src/dll/reach_sight_trace.inl), and the aim is bent so
+    // the engine's crosshair ray passes through the point the intent ray hits:
+    // aim = normalize((ray origin - engine eye) + range * ray direction). Range is smoothed; the old
+    // fixed-distance steer is the fallback. While it is live the older on-foot hand shot ray (which
+    // MOVED the projectile origin to the hand) stands down. No key enables it: it follows direct drive.
+    // DEV BUILDS ONLY (not parsed otherwise): replace the resolved flags for an experiment. 0 = use them.
     unsigned long long reach_sight_trace_flags = 0;
     int reach_sight_trace_mode = 0;
     // DEV BUILDS ONLY (compiled out otherwise): fault injection proving the trace's fallbacks run.

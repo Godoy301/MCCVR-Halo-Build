@@ -84,10 +84,12 @@ public:
 //   4. actuate the CONVERGED setpoint (== intent when convergence is engine-owned).
 // Pure and engine-free: it drives the game only through the provider, so it is unit-testable with a
 // mock provider. `st` holds the smoothed range across ticks.
-struct SolveState { float range_cm = 0.0f; };
+// The smoothed range is kept as its INVERSE (see ema_inverse_range); range_cm is the derived value.
+struct SolveState { float range_cm = 0.0f; float inv_range_per_cm = 0.0f; bool converged = false; };
 
 inline ActuateResult solve_and_actuate(IAimProvider& p, SolveState& st,
                                        const ConvergeRails& rails, float dt_s, float range_tau_ms) {
+    st.converged = false;
     const AimCaps caps = p.caps();
     const Actuation act = select_actuation(caps);
     if (act == Actuation::None) return {};        // fail closed: no way to drive this title's aim
@@ -101,11 +103,13 @@ inline ActuateResult solve_and_actuate(IAimProvider& p, SolveState& st,
     const Converge cv = select_converge(caps);
     if (cv == Converge::TraceReaim) {
         float hit_cm = 0.0f;
-        if (p.trace_impact_cm(intent, &hit_cm))    // miss -> hold st.range_cm (sky has no range)
-            st.range_cm = ema_range(st.range_cm, hit_cm, ema_alpha(range_tau_ms, dt_s));
+        if (p.trace_impact_cm(intent, &hit_cm)) {  // miss -> hold the last range (sky has no range)
+            st.inv_range_per_cm = ema_inverse_range(st.inv_range_per_cm, hit_cm, ema_alpha(range_tau_ms, dt_s));
+            st.range_cm = st.inv_range_per_cm > 0.0f ? 1.0f / st.inv_range_per_cm : 0.0f;
+        }
         Vec3 delta;
         if (st.range_cm > 0.0f && p.origin_delta(&delta))
-            converge_trace_reaim(a.yaw_deg, a.pitch_deg, delta, st.range_cm, rails); // no-op if not live
+            st.converged = converge_trace_reaim(a.yaw_deg, a.pitch_deg, delta, st.range_cm, rails); // no-op if not live
     } else {
         p.apply_engine_convergence(cv, intent);    // origin stays engine-owned; angles = intent
     }
