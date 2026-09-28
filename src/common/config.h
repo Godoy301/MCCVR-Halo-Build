@@ -435,6 +435,11 @@ struct Config
     bool roomscale_movement = false; // physical horizontal steps drive native walking
     bool physical_crouch = false;
     float physical_crouch_depth_m = 0.22f;
+    // FA TESTING ONLY (default 0): let roomscale and physical crouch accept a head pose OpenXR reports
+    // VALID but not TRACKED. The Meta XR Simulator's Operator reports an overridden head exactly that
+    // way, so without this the headless lane cannot exercise either feature. Never enable it in a
+    // headset: an untracked (inertial) head is precisely what both features must ignore.
+    bool test_accept_untracked_head = false;
     bool turn_smooth = true;           // false = snap turn, true = smooth turn
     bool vehicle_smooth_turn = false; // temporary smooth VR turning while seated
     float turn_snap_deg = 30.0f;       // degrees per snap

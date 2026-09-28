@@ -796,6 +796,7 @@ void ConfigLoad(const wchar_t* path)
             }
         if(vrBindingKey) continue;
         if(!strcmp(key,"physical_crouch")) {g_config.physical_crouch=atoi(val)!=0;continue;}
+        if(!strcmp(key,"test_accept_untracked_head")) {g_config.test_accept_untracked_head=atoi(val)!=0;continue;}
         if(!strcmp(key,"physical_crouch_depth_m"))
         {
             ParseFloatSetting(key,val,g_config.physical_crouch_depth_m);
@@ -2176,6 +2177,9 @@ void ConfigSave()
     fprintf(f,"\n# VR action bindings: 0=automatic, 1=unbound. Edited in VR Mappings.\n");
     fprintf(f,"physical_crouch = %d\nphysical_crouch_depth_m = %.3f\n",
         g_config.physical_crouch?1:0,g_config.physical_crouch_depth_m);
+    fprintf(f,"# Automated-testing only: accept an untracked (valid) head for roomscale and physical\n"
+              "# crouch. Leave at 0 in a headset. (default 0)\n");
+    fprintf(f,"test_accept_untracked_head = %d\n",g_config.test_accept_untracked_head?1:0);
     fprintf(f,"vr_action_mapping = %d\nflashlight_suppress_on_two_hand = %d\n",
         g_config.vr_action_mapping?1:0,g_config.flashlight_suppress_on_two_hand?1:0);
     for(unsigned title=0;title<weapon_interaction::kTitleCount;++title)

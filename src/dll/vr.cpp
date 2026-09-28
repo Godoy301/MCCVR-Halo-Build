@@ -7723,10 +7723,13 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         g_stockHeadPoseTime = time;
         LeaveCriticalSection(&g_headCs);
 
+        // test_accept_untracked_head is for the headless lane only: the Meta XR Simulator reports an
+        // Operator-overridden head VALID but not TRACKED. The valid bits were already required above.
         constexpr XrSpaceLocationFlags physicalTracking =
             XR_SPACE_LOCATION_ORIENTATION_TRACKED_BIT | XR_SPACE_LOCATION_POSITION_TRACKED_BIT;
-        g_roomscaleHeadSampleMs.store(
-            (loc.locationFlags & physicalTracking) == physicalTracking ? GetTickCount64() : 0,
+        const bool physicallyTracked = (loc.locationFlags & physicalTracking) == physicalTracking ||
+            g_config.test_accept_untracked_head;
+        g_roomscaleHeadSampleMs.store(physicallyTracked ? GetTickCount64() : 0,
             std::memory_order_release);
 
         // Runtime proof for headset logs: successful pose sampling must equal
