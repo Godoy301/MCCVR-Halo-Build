@@ -6836,6 +6836,7 @@ namespace
     void OdstApplyPhysicalCrouchCamera(float* position,float physicalDown,bool playerControlled);
     void PrepareCachedPhysicalCrouch(GameTitle title,uintptr_t base,size_t size,uint32_t generation);
     void ApplyCachedPhysicalCrouch(GameTitle title,float* position,float physicalDown,bool playerControlled);
+    void ReportReachCachedCrouch();
 
     bool ApplyHeadLook(void* src)
     {
@@ -26519,14 +26520,24 @@ namespace
         unsigned char* d = unit != -1 ? ReachVehicleObjectData(unit, kind) : nullptr;
         if (!d || kind == kReachObjectKindVehicle)
         {
+#if HALOMCCVR_DEV_DIAGNOSTICS
             g_reachUnitCrouchState.store(-1, std::memory_order_relaxed);
+#endif
             return ReachDriveRead::NoUnit;
         }
-        // Diagnostics: the unit's native crouch state (+0x1C4 bit 20, per docs/PHYSICAL-CROUCH-CAMERA),
-        // so the physical-crouch line can show what the character actually did.
-        g_reachUnitCrouchState.store(static_cast<int>((*reinterpret_cast<const uint32_t*>(d + 0x1C4) >> 20) & 1u),
-                                     std::memory_order_relaxed);
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        // Diagnostics: the unit's native crouch state, so the dev CROUCH line can show what the character
+        // actually did. Nothing acts on it.
+        // ADDR-HYGIENE: dev-only. +0x1C4 bit 20 is a measurement of this build (docs/PHYSICAL-CROUCH-CAMERA),
+        // unguarded because a wrong value only mislabels a log field; it is compiled out of player builds.
+        constexpr size_t kReachUnitCrouchFlagsOffset = 0x1C4;
+        constexpr unsigned kReachUnitCrouchFlagBit = 20;
+        g_reachUnitCrouchState.store(
+            static_cast<int>((*reinterpret_cast<const uint32_t*>(d + kReachUnitCrouchFlagsOffset) >>
+                              kReachUnitCrouchFlagBit) & 1u),
+            std::memory_order_relaxed);
         g_reachUnitCrouchMs.store(GetTickCount64(), std::memory_order_relaxed);
+#endif
         const uintptr_t snapAim = reinterpret_cast<uintptr_t>(d + kReachUnitAimingVectorOffset);
         if (snapAimOut) *snapAimOut = snapAim;
         if (!g_reachRing[0].ok && !ReachVsReadRing(0)) return ReachDriveRead::RingInvalid;
@@ -43509,6 +43520,7 @@ namespace
             }
             RefreshGestureMeleeBinding(activeTitle,activeLevelRunning,pollNow);
             Input_PollMccCrouchLock(pollNow);
+            Input_ReportPhysicalCrouch(pollNow);
             VR_ReportWeaponInteractions(pollNow);
             NativeReloadPolicy_Poll();
             NativeSubtitles_Poll(activeLevelRunning);

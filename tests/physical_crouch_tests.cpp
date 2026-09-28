@@ -76,11 +76,37 @@ int main()
     {
         PhysicalCrouch c;uint64_t now=5000;const float normal=1.7f,depth=.22f;
         auto step=[&](float h){now+=20;return c.Update(h,9,now,true,depth);};
-        Check(!step(normal-.15f),"calibration taken slouched");
+        Check(!step(normal-.10f),"calibration taken slouched");
         for(int i=0;i<60;++i) step(normal);   // stand tall for 1.2 s
         Check(std::fabs(c.Baseline()-normal)<.001f,"standing tall for a second raises the baseline");
         Check(step(normal-depth*1.1f),"a crouch is measured from the learned standing height");
         Check(!step(normal),"and releases on standing");
+    }
+    // The learned rise is capped below the release margin (0.7 x depth - 2 cm = 13.4 cm here), so the
+    // posture the player calibrated in never reads as a crouch afterwards.
+    {
+        PhysicalCrouch c;uint64_t now=5000;const float normal=1.7f,depth=.22f;
+        auto step=[&](float h){now+=20;return c.Update(h,9,now,true,depth);};
+        const float cap=depth*.70f-.02f;
+        Check(!step(normal-.20f),"calibration taken deeply slouched");
+        for(int i=0;i<60;++i) step(normal);
+        Check(std::fabs(c.Baseline()-(normal-.20f+cap))<.001f,"a rise beyond the cap is learned only up to the cap");
+        Check(!step(normal-.20f),"the calibrated posture still reads standing");
+    }
+    // Seated play: calibrate seated, stand up, half-rise, sit back down -- never a crouch while seated.
+    {
+        PhysicalCrouch c;uint64_t now=5000;const float seated=1.2f,depth=.22f;
+        auto step=[&](float h){now+=20;return c.Update(h,9,now,true,depth);};
+        Check(!step(seated),"calibrated seated");
+        for(int i=0;i<100;++i) step(seated+.5f);   // stands up for 2 s: beyond kMaxRise, not learned
+        Check(std::fabs(c.Baseline()-seated)<.001f,"standing up from a seated calibration is not learned");
+        Check(!step(seated),"sitting back down is not a crouch");
+        for(int i=0;i<60;++i) step(seated+.20f);   // a half-rise held for 1.2 s
+        Check(c.Baseline()>seated+.1f&&c.Baseline()<seated+depth*.70f,"a half-rise is learned, capped below release");
+        bool seatedCrouch=false;
+        for(int i=0;i<60;++i) seatedCrouch|=step(seated);
+        Check(!seatedCrouch,"sitting back down after a half-rise is still not a crouch");
+        Check(step(c.Baseline()-depth*1.1f),"a real crouch below the learned line still works");
     }
     {
         PhysicalCrouch c;uint64_t now=5000;const float normal=1.7f,depth=.22f;

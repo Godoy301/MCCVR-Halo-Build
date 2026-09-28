@@ -8,9 +8,13 @@
 class PhysicalCrouch
 {
 public:
-    // The learned standing height may rise at most this far above the calibration sample: a headset
-    // lifted off the head, or set down on a shelf, must never become "standing".
+    // A height more than this far above the calibration sample is not a head at all (a headset lifted
+    // off, or set down on a shelf, or a seated player standing up) and is never learned.
     static constexpr float kMaxRise = .30f;
+    // What IS learned is capped below the release margin, so the posture the player calibrated in can
+    // never read as a crouch afterwards: a seated player who half-rises for a second and sits back down
+    // stays standing. (The cap is re-derived from the depth, which recalibrates when it changes.)
+    float MaxLearnedRise() const noexcept {return std::min(kMaxRise,threshold_*.70f-.02f);}
     // A rise must be held this steady (metres) for this long (ms) before it counts.
     static constexpr float kRiseSteady = .02f;
     static constexpr uint64_t kRiseHoldMs = 1000;
@@ -51,8 +55,9 @@ private:
     // adapted to tracking space (no floor here). A calibration taken while slouched or half-crouched
     // (enable, recenter, the Calibrate button) set the line too low: every later crouch then read short,
     // or never triggered at all. Raise the baseline to a height held steady for a second, never above
-    // the calibration + kMaxRise, never while crouched. It never falls: a long crouch cannot drag the
-    // line down after it, and only a new calibration (epoch) resets it.
+    // the calibration + MaxLearnedRise(), never while crouched, and ignore heights beyond kMaxRise. It
+    // never falls: a long crouch cannot drag the line down after it, and only a new calibration (epoch)
+    // resets it.
     void LearnStanding(float height,uint64_t now) noexcept
     {
         if(active_||height<=baseline_+kRiseSteady||height>calibrated_+kMaxRise)
@@ -60,7 +65,10 @@ private:
         if(!riseSince_||std::fabs(height-riseValue_)>kRiseSteady)
         {riseSince_=now;riseValue_=height;return;}
         if(now>=riseSince_&&now-riseSince_>=kRiseHoldMs)
-        {baseline_=std::max(baseline_,std::min(riseValue_,height));riseSince_=0;}
+        {
+            baseline_=std::max(baseline_,std::min(std::min(riseValue_,height),calibrated_+MaxLearnedRise()));
+            riseSince_=0;
+        }
     }
 
     uint64_t epoch_{},last_{},riseSince_{};

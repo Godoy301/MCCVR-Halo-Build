@@ -313,7 +313,11 @@ void Input_RequestPauseToggle();
 // MCC's crouch-lock (toggle crouch) settings, read from its GameUserSettings.ini by the cold worker
 // (a timestamp check every 2 s, a parse only when MCC rewrites the file) for the CROUCH log line.
 // Diagnostic only: the file did not predict Reach's crouch behaviour in FA (see input.cpp).
+// Dev builds only (HALOMCCVR_DEV_DIAGNOSTICS); an empty stub otherwise.
 void Input_PollMccCrouchLock(uint64_t nowMs);
+// Cold worker, 1 Hz: the dev CROUCH line from the snapshot the XInput hook stores (gameplay only).
+// Dev builds only; an empty stub otherwise, so the hook never formats or logs on the input thread.
+void Input_ReportPhysicalCrouch(uint64_t nowMs);
 // E-H2-13: every button mask the virtual gamepad fed the game in the last
 // `sinceMs` milliseconds, newest first, as "0x1234@-37ms ..." (buffer-bounded).
 // The game sees no other pad, so this is the whole input story behind an

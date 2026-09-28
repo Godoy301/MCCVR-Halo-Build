@@ -53,6 +53,20 @@ const uint8_t* CachedCrouchLocalUnit(GameTitle title,uint32_t& owner)
     return tls?Halo4VehicleObject(Halo4VehicleRead<const uint8_t*>(tls,0x18),owner,1):nullptr;
 }
 
+#if HALOMCCVR_DEV_DIAGNOSTICS
+// Why Reach's last correction was not applied, as bits (0 = applied), with the native reduction and
+// the physical depth it saw, so a correction that stays 0 names its gate (dev builds only):
+// 0x001 not player-controlled   0x002 physical crouch off   0x004 positional off
+// 0x008 binding not proven for this generation   0x010 not the active title
+// 0x020 no fresh crouch request from the input hook   0x040 cinematic not player-controlled / stale
+// 0x080 unit or crouch-height reduction unreadable   0x100 lease gave no correction (not requested,
+// not engaged, an identity/epoch mismatch, or no physical depth)   0x200 identity changed before the
+// write   0x400 fault
+std::atomic<uint32_t> g_reachCachedCrouchWhy{0};
+std::atomic<float> g_reachCachedCrouchReduction{0.0f}, g_reachCachedCrouchDown{0.0f},
+    g_reachCachedCrouchApplied{0.0f};
+#endif
+
 void ApplyCachedPhysicalCrouch(GameTitle title,float* position,float physicalDown,bool playerControlled)
 {
     static thread_local PhysicalCrouchCameraLease leases[2];
@@ -62,34 +76,85 @@ void ApplyCachedPhysicalCrouch(GameTitle title,float* position,float physicalDow
     const auto& layout=reach?physical_crouch_cached::reach:physical_crouch_cached::halo4;
     const auto generation=TitleAdapter_GetGeneration(title);
     PhysicalCrouchCameraRequest request{};
-    if(!playerControlled||!g_config.physical_crouch||!g_positional.load()||
-        !generation||binding.generation.load(std::memory_order_acquire)!=generation||
-        TitleAdapter_GetActiveTitle()!=title||!PhysicalCrouchCamera_Read(request))
-    {lease.Reset();return;}
-    __try
+    // Every gate is a plain load, so evaluating them all (for the dev reason bits) changes nothing.
+    uint32_t why=(!playerControlled?0x001u:0u)|(!g_config.physical_crouch?0x002u:0u)|
+        (!g_positional.load()?0x004u:0u)|
+        (!generation||binding.generation.load(std::memory_order_acquire)!=generation?0x008u:0u)|
+        (TitleAdapter_GetActiveTitle()!=title?0x010u:0u);
+    if(!why&&!PhysicalCrouchCamera_Read(request)) why|=0x020u;
+    float reduction=0,correction=0;
+    if(why) lease.Reset();
+    else
     {
-        const auto cine=TitleAdapter_GetCinematicControlPublication(title);
-        const auto now=GetTickCount64();
-        if(cine.generation!=generation||cine.state!=CinematicControlState::PlayerControlled||
-            !cine.heartbeatMs||now<cine.heartbeatMs||now-cine.heartbeatMs>100)
-        {lease.Reset();return;}
-        uint32_t owner=UINT32_MAX;
-        const auto* unit=CachedCrouchLocalUnit(title,owner);
-        const auto* table=binding.tagTable?*binding.tagTable:nullptr;
-        const uint8_t* definition=nullptr;
-        float reduction=0;
-        if(!physical_crouch_cached::Reduction(layout,unit,table,binding.pages,reduction,definition))
-        {lease.Reset();return;}
-        const auto tag=physical_crouch_cached::Read<uint32_t>(unit,layout.tag);
-        const float correction=lease.Update(request,title,generation,VR_PhysicalCrouchEpoch(),now,
-            owner,reinterpret_cast<uintptr_t>(unit),reduction,physicalDown);
-        uint32_t currentOwner=UINT32_MAX;
-        if(correction>0&&CachedCrouchLocalUnit(title,currentOwner)==unit&&currentOwner==owner&&
-            physical_crouch_cached::Read<uint32_t>(unit,layout.tag)==tag&&*binding.tagTable==table&&
-            physical_crouch_cached::Decode(binding.pages,
-                physical_crouch_cached::Read<uint32_t>(table,(tag&0xffff)*8+4))==definition&&
-            TitleAdapter_GetGeneration(title)==generation)
-            position[2]+=correction;
+        __try
+        {
+            const auto cine=TitleAdapter_GetCinematicControlPublication(title);
+            const auto now=GetTickCount64();
+            uint32_t owner=UINT32_MAX;
+            const uint8_t* unit=nullptr;
+            const uint8_t* table=nullptr;
+            const uint8_t* definition=nullptr;
+            if(cine.generation!=generation||cine.state!=CinematicControlState::PlayerControlled||
+                !cine.heartbeatMs||now<cine.heartbeatMs||now-cine.heartbeatMs>100)
+                why|=0x040u;
+            else
+            {
+                unit=CachedCrouchLocalUnit(title,owner);
+                table=binding.tagTable?*binding.tagTable:nullptr;
+                if(!physical_crouch_cached::Reduction(layout,unit,table,binding.pages,reduction,definition))
+                    why|=0x080u;
+            }
+            if(why)
+                lease.Reset();
+            else
+            {
+                const auto tag=physical_crouch_cached::Read<uint32_t>(unit,layout.tag);
+                correction=lease.Update(request,title,generation,VR_PhysicalCrouchEpoch(),now,
+                    owner,reinterpret_cast<uintptr_t>(unit),reduction,physicalDown);
+                uint32_t currentOwner=UINT32_MAX;
+                if(!(correction>0)) why|=0x100u;
+                else if(CachedCrouchLocalUnit(title,currentOwner)==unit&&currentOwner==owner&&
+                    physical_crouch_cached::Read<uint32_t>(unit,layout.tag)==tag&&*binding.tagTable==table&&
+                    physical_crouch_cached::Decode(binding.pages,
+                        physical_crouch_cached::Read<uint32_t>(table,(tag&0xffff)*8+4))==definition&&
+                    TitleAdapter_GetGeneration(title)==generation)
+                    position[2]+=correction;
+                else why|=0x200u;
+            }
+        }
+        __except(EXCEPTION_EXECUTE_HANDLER) {lease.Reset();why|=0x400u;}
     }
-    __except(EXCEPTION_EXECUTE_HANDLER) {lease.Reset();}
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    if(reach)
+    {
+        g_reachCachedCrouchWhy.store(why,std::memory_order_relaxed);
+        g_reachCachedCrouchReduction.store(reduction,std::memory_order_relaxed);
+        g_reachCachedCrouchDown.store(physicalDown,std::memory_order_relaxed);
+        g_reachCachedCrouchApplied.store(why?0.0f:correction,std::memory_order_relaxed);
+    }
+#else
+    (void)reduction;
+#endif
+}
+
+// Cold worker (dev builds only): the Reach correction's gate, logged when it changes and once a second
+// while a correction is being applied.
+void ReportReachCachedCrouch()
+{
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    if(!g_config.physical_crouch) return;
+    static uint64_t s_last=0;
+    static uint32_t s_lastWhy=UINT32_MAX;
+    const auto now=GetTickCount64();
+    const uint32_t why=g_reachCachedCrouchWhy.load(std::memory_order_relaxed);
+    const float applied=g_reachCachedCrouchApplied.load(std::memory_order_relaxed);
+    if(why==s_lastWhy&&!(applied>0.0f)) return;
+    if(why==s_lastWhy&&s_last&&now>=s_last&&now-s_last<1000) return;
+    s_last=now;
+    s_lastWhy=why;
+    const auto mm=[](float wu){return double(wu/kReachWorldUnitsPerMeter*1000.0f);};
+    LOG("REACHCROUCHCAM why=0x%03X native crouch drop %.0f mm, physical depth %.0f mm, applied %.0f mm",
+        why,mm(g_reachCachedCrouchReduction.load(std::memory_order_relaxed)),
+        mm(g_reachCachedCrouchDown.load(std::memory_order_relaxed)),mm(applied));
+#endif
 }

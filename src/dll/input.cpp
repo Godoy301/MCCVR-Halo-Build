@@ -4,6 +4,7 @@
 #include <atomic>
 #include <cstdio>
 #include <cstring>
+#include <share.h>
 #include <MinHook.h>
 #include "game.h"
 #include "roomscale.h"
@@ -55,39 +56,43 @@ namespace
     thread_local vr_mapping::Mapper g_vrActionMapper;
     std::atomic<uint64_t> g_startPulseUntilMs{0};
 
+#if HALOMCCVR_DEV_DIAGNOSTICS
     // MCC's crouch-lock (toggle crouch) preference as saved in GameUserSettings.ini
     // (CrouchLockEnabled[0..6] / MKCrouchLockEnabled[0..6]), bitmasks (bit n = slot n), -1 = not read.
     // LOGGED ONLY, never acted on: FA 2026-09-28, Reach kept HOLD behaviour for the crouch press with
     // slot 6, slot 5, and finally every slot of both arrays set, so the file cannot predict how Reach
     // treats the button and a stand-down keyed on it would disable a crouch that works. If a toggle
     // ever does invert physical crouch, the CROUCH line shows it directly: active=0 pressed=0x0 with
-    // unitCrouched=1 persisting after standing. Written by the cold worker; the hook only loads them.
+    // unitCrouched=1 persisting after standing. Dev builds only; written by the cold worker.
     std::atomic<int> g_mccCrouchLockPad{-1}, g_mccCrouchLockMk{-1};
 
-    // 1 Hz physical-crouch line, so a crouch that does or does not happen explains itself: every gate,
-    // the tracked head height against the learned baseline, what we pressed, and (Reach) what the
-    // character actually did (native crouch state, unit +0x1C4 bit 20; -1 = not read).
-    void LogPhysicalCrouch(uint64_t now, GameTitle title, bool tracking, bool nativeReady, bool onFoot,
-                           float head, const PhysicalCrouch& g, uint32_t pressed,
-                           uint32_t transport, uint64_t epoch, uint32_t generation)
+    // The physical-crouch diagnostic snapshot. The XInput hook only STORES it (no file I/O, no log lock
+    // on the game's input thread); the cold worker prints it once a second in gameplay. Dev builds only.
+    struct PhysicalCrouchStatus
     {
-        static uint64_t s_last = 0;
-        if (now - s_last < 1000) return;
-        s_last = now;
-        int unit = -1;
-#if HALOMCCVR_EXPERIMENTAL_REACH_RENDER_CANDIDATE
-        if (title == GameTitle::HaloReach) unit = Game_ReachUnitCrouchState();
-#endif
-        // epoch = calibration count : tracking-space count; either changing re-samples the baseline.
-        LOG("CROUCH: title=%u gate(tracking=%d native=%d onfoot=%d) head=%.3f base=%.3f down=%.3f "
-            "init=%d active=%d suspended=%d pressed=0x%X transport=0x%X unitCrouched=%d mccCrouchLock(pad=0x%X mk=0x%X) "
-            "epoch=%u:%u gen=%u",
-            unsigned(title), tracking ? 1 : 0, nativeReady ? 1 : 0, onFoot ? 1 : 0, head,
-            g.Baseline(), g.Baseline() - head, g.Initialized() ? 1 : 0, g.Active() ? 1 : 0,
-            g.Suspended() ? 1 : 0, pressed, transport, unit,
-            g_mccCrouchLockPad.load(std::memory_order_relaxed), g_mccCrouchLockMk.load(std::memory_order_relaxed),
-            unsigned(epoch >> 32), unsigned(epoch), generation);
+        std::atomic<uint64_t> atMs{0}, epoch{0};
+        std::atomic<uint32_t> title{0}, gates{0}, pressed{0}, transport{0}, generation{0}, onFootWhy{0};
+        std::atomic<float> head{0.0f}, base{0.0f};
+    } g_crouchStatus;
+
+    void PublishPhysicalCrouch(uint64_t now, GameTitle title, bool tracking, bool nativeReady, bool onFoot,
+                               uint32_t onFootWhy, float head, const PhysicalCrouch& g, uint32_t pressed,
+                               uint32_t transport, uint64_t epoch, uint32_t generation)
+    {
+        g_crouchStatus.title.store(static_cast<uint32_t>(title), std::memory_order_relaxed);
+        g_crouchStatus.gates.store((tracking ? 1u : 0u) | (nativeReady ? 2u : 0u) | (onFoot ? 4u : 0u) |
+            (g.Initialized() ? 8u : 0u) | (g.Active() ? 16u : 0u) | (g.Suspended() ? 32u : 0u),
+            std::memory_order_relaxed);
+        g_crouchStatus.onFootWhy.store(onFootWhy, std::memory_order_relaxed);
+        g_crouchStatus.pressed.store(pressed, std::memory_order_relaxed);
+        g_crouchStatus.transport.store(transport, std::memory_order_relaxed);
+        g_crouchStatus.generation.store(generation, std::memory_order_relaxed);
+        g_crouchStatus.epoch.store(epoch, std::memory_order_relaxed);
+        g_crouchStatus.head.store(head, std::memory_order_relaxed);
+        g_crouchStatus.base.store(g.Baseline(), std::memory_order_relaxed);
+        g_crouchStatus.atMs.store(now, std::memory_order_release);
     }
+#endif
 
     // E-H2-13: the last button masks fed to the game, newest at g_fedHead-1.
     // One slot per CHANGE of mask (a held button is one entry), so a 600 ms
@@ -340,23 +345,46 @@ namespace
         // physical duck press crouch while seated. Require Reach's own on-foot, player-controlled proof
         // there -- the predicate direct drive and the roomscale camera already use.
         bool crouchOnFoot=true;
+        uint32_t crouchOnFootWhy=0;
 #if HALOMCCVR_EXPERIMENTAL_REACH_RENDER_CANDIDATE
-        if(currentTitle==GameTitle::HaloReach) crouchOnFoot=Game_ReachDirectDriveOnFootWhy()==0;
+        if(currentTitle==GameTitle::HaloReach)
+        {crouchOnFootWhy=Game_ReachDirectDriveOnFootWhy();crouchOnFoot=crouchOnFootWhy==0;}
 #endif
         const bool crouchTracking=physicalCrouchEnabled&&inputMode==RuntimeMode::Gameplay&&
             gameplayMode&&crouchOnFoot&&Game_IsHeadTracking()&&Game_IsPositionalTracking()&&
             VR_IsStereoEnabled()&&VR_RoomscaleTrackingFresh()&&
             VR_GetHeadPose(crouchHeadQuat,crouchHeadPos);
+        // A new calibration or tracking-space epoch re-samples the standing height. A runtime recenter
+        // announces its new space before poses arrive in it, so sampling on the next poll can take the
+        // height from the OLD space -- and a baseline sampled too high never heals (it only rises).
+        // Hand the gesture a new epoch only once the head has held its height (2 cm) for 300 ms; until
+        // then the gesture is unavailable (released, then re-armed standing).
+        static thread_local uint64_t s_epochSeen=0,s_epochGiven=0,s_steadySince=0;
+        static thread_local float s_steadyHeight=0.0f;
+        const uint64_t epochNow=VR_PhysicalCrouchEpoch();
+        const float crouchHeadY=crouchHeadPos[1];
+        if(epochNow!=s_epochSeen){s_epochSeen=epochNow;s_steadySince=inputNow;s_steadyHeight=crouchHeadY;}
+        else if(!crouchTracking||!std::isfinite(crouchHeadY)||std::fabs(crouchHeadY-s_steadyHeight)>0.02f)
+        {s_steadySince=inputNow;s_steadyHeight=crouchHeadY;}
+        const bool crouchEpochSettled=s_epochGiven==epochNow||
+            (crouchTracking&&inputNow>=s_steadySince&&inputNow-s_steadySince>=300);
+        if(crouchEpochSettled) s_epochGiven=epochNow;
+        const uint64_t crouchEpoch=s_epochGiven;
         const uint32_t crouchButtons=g_physicalCrouchInput.Update(currentTitle,
-            TitleAdapter_GetGeneration(currentTitle),crouchHeadPos[1],VR_PhysicalCrouchEpoch(),inputNow,
-            physicalCrouchEnabled,crouchTracking&&nativeReady,g_config.physical_crouch_depth_m,
+            TitleAdapter_GetGeneration(currentTitle),crouchHeadY,crouchEpoch,inputNow,
+            physicalCrouchEnabled,crouchTracking&&nativeReady&&crouchEpochSettled,g_config.physical_crouch_depth_m,
             nativeActions[vr_mapping::Crouch]);
         PhysicalCrouchCamera_Publish(currentTitle,TitleAdapter_GetGeneration(currentTitle),
-            VR_PhysicalCrouchEpoch(),inputNow,physicalCrouchEnabled&&crouchTracking&&nativeReady,crouchButtons!=0);
-        if(physicalCrouchEnabled)
-            LogPhysicalCrouch(inputNow,currentTitle,crouchTracking,nativeReady,crouchOnFoot,crouchHeadPos[1],
-                g_physicalCrouchInput.Gesture(),crouchButtons,nativeActions[vr_mapping::Crouch],
-                VR_PhysicalCrouchEpoch(),TitleAdapter_GetGeneration(currentTitle));
+            crouchEpoch,inputNow,physicalCrouchEnabled&&crouchTracking&&nativeReady&&crouchEpochSettled,
+            crouchButtons!=0);
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        if(physicalCrouchEnabled&&inputMode==RuntimeMode::Gameplay&&gameplayMode)
+            PublishPhysicalCrouch(inputNow,currentTitle,crouchTracking,nativeReady,crouchOnFoot,crouchOnFootWhy,
+                crouchHeadY,g_physicalCrouchInput.Gesture(),crouchButtons,nativeActions[vr_mapping::Crouch],
+                crouchEpoch,TitleAdapter_GetGeneration(currentTitle));
+#else
+        (void)crouchOnFootWhy;
+#endif
         uint32_t actionSources=collectedSources;
         if(pauseChord.consumeClicks) actionSources&=~(vr_mapping::Bit(vr_mapping::B)|vr_mapping::Bit(vr_mapping::Y));
         if(chord.consumeClicks) actionSources&=~(vr_mapping::Bit(vr_mapping::LeftClick)|vr_mapping::Bit(vr_mapping::RightClick));
@@ -960,6 +988,7 @@ void Input_RequestPauseToggle()
 
 void Input_PollMccCrouchLock(uint64_t now)
 {
+#if HALOMCCVR_DEV_DIAGNOSTICS
     // Cold worker only. A timestamp check every 2 s; the file is parsed only when MCC rewrites it
     // (it does so when its settings menu applies a change), so an in-session change is picked up.
     static uint64_t s_checked = 0;
@@ -984,8 +1013,9 @@ void Input_PollMccCrouchLock(uint64_t now)
     if (CompareFileTime(&attributes.ftLastWriteTime, &s_stamp) == 0)
         return;
     int pad = -1, mk = -1;
-    FILE* file = nullptr;
-    if (fopen_s(&file, path, "rb") == 0 && file)
+    // Shared read (_SH_DENYNO): MCC must never find its own settings file locked because we are reading it.
+    FILE* file = _fsopen(path, "rb", _SH_DENYNO);
+    if (file)
     {
         s_stamp = attributes.ftLastWriteTime;
         pad = mk = 0;
@@ -1005,6 +1035,55 @@ void Input_PollMccCrouchLock(uint64_t now)
     if (pad != oldPad || mk != oldMk)
         LOG("MCC crouch lock settings (GameUserSettings.ini, bit n = slot n; logged only, the slot-to-game "
             "mapping is unverified): controller=0x%X keyboard=0x%X", pad, mk);
+#else
+    (void)now;
+#endif
+}
+
+void Input_ReportPhysicalCrouch(uint64_t now)
+{
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    // Cold worker, 1 Hz: print the snapshot the XInput hook stored, so a crouch that does or does not happen
+    // explains itself -- every gate, the tracked head height against the learned baseline, what we pressed,
+    // and (Reach) what the character actually did. Only while the snapshot is fresh: the hook publishes in
+    // gameplay only, so menus and a disabled gesture stay quiet.
+    static uint64_t s_last = 0;
+    if (s_last && now >= s_last && now - s_last < 1000)
+        return;
+    const uint64_t at = g_crouchStatus.atMs.load(std::memory_order_acquire);
+    if (!at || now < at || now - at > 1500)
+        return;
+    s_last = now;
+    const uint32_t title = g_crouchStatus.title.load(std::memory_order_relaxed);
+    const uint32_t gates = g_crouchStatus.gates.load(std::memory_order_relaxed);
+    const float head = g_crouchStatus.head.load(std::memory_order_relaxed);
+    const float base = g_crouchStatus.base.load(std::memory_order_relaxed);
+    const uint64_t epoch = g_crouchStatus.epoch.load(std::memory_order_relaxed);
+    int unit = -1;
+#if HALOMCCVR_EXPERIMENTAL_REACH_RENDER_CANDIDATE
+    if (static_cast<GameTitle>(title) == GameTitle::HaloReach)
+        unit = Game_ReachUnitCrouchState();
+#endif
+    // The crouch-lock masks print as -1 when the settings file was not read, never as 0xFFFFFFFF.
+    char lockPad[16], lockMk[16];
+    const int pad = g_mccCrouchLockPad.load(std::memory_order_relaxed);
+    const int mk = g_mccCrouchLockMk.load(std::memory_order_relaxed);
+    if (pad < 0) strcpy_s(lockPad, "-1"); else sprintf_s(lockPad, "0x%X", unsigned(pad));
+    if (mk < 0) strcpy_s(lockMk, "-1"); else sprintf_s(lockMk, "0x%X", unsigned(mk));
+    // epoch = calibration count : tracking-space count, as handed to the gesture (a new one is held back
+    // until the head is steady). why = the on-foot predicate's failing bits (Reach; 0 = on foot).
+    LOG("CROUCH: title=%u gate(tracking=%d native=%d onfoot=%d why=0x%X) head=%.3f base=%.3f down=%.3f "
+        "init=%d active=%d suspended=%d pressed=0x%X transport=0x%X unitCrouched=%d mccCrouchLock(pad=%s mk=%s) "
+        "epoch=%u:%u gen=%u",
+        title, (gates & 1u) ? 1 : 0, (gates & 2u) ? 1 : 0, (gates & 4u) ? 1 : 0,
+        g_crouchStatus.onFootWhy.load(std::memory_order_relaxed), head, base, base - head,
+        (gates & 8u) ? 1 : 0, (gates & 16u) ? 1 : 0, (gates & 32u) ? 1 : 0,
+        g_crouchStatus.pressed.load(std::memory_order_relaxed),
+        g_crouchStatus.transport.load(std::memory_order_relaxed), unit, lockPad, lockMk,
+        unsigned(epoch >> 32), unsigned(epoch), g_crouchStatus.generation.load(std::memory_order_relaxed));
+#else
+    (void)now;
+#endif
 }
 
 int Input_ClaimXInputIat()
