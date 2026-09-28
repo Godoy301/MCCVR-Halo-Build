@@ -1424,6 +1424,7 @@ namespace
     void ReachSightTraceTick(uint32_t unit);
     void ReachNoteCollisionCensus(uintptr_t caller, uint64_t flags, int32_t mode,
         const float* vector, int32_t ignoredA);
+    void ReachNoteSightFlagsWitness(uint64_t flags, int32_t ignoredA);
     bool ReachConvergedShotLive(uint64_t nowMs);
     void ReachSightMeasureShot(int32_t unitIndex, const float* origin, const float* direction);
     void ReportReachSightTrace();
@@ -5054,7 +5055,10 @@ namespace
         const uintptr_t caller=reinterpret_cast<uintptr_t>(_ReturnAddress());
         __try {
             if (!g_legacyCollisionOwnedQuery)
+            {
+                ReachNoteSightFlagsWitness(flags,ignoredObjectA);
                 ReachNoteCollisionCensus(caller,flags,mode,vector,ignoredObjectA);
+            }
             if (!ReachRedirectContactVector(caller,flags,mode,ignoredObjectA,
                     ignoredObjectB,ignoredObjectC,result,nativeResult))
                 nativeResult=LegacyCollisionSchedulerDetourBody(

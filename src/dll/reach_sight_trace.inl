@@ -47,17 +47,50 @@ bool ReachConvergedShotLive(uint64_t nowMs)
     return at && nowMs >= at && nowMs - at <= 250;
 }
 
+// VALUE AGREEMENT for the flags constant (the address-cascade rule for a baked value). The flags are
+// an engine enum compiled into Reach, so a patch could re-mean them without moving a single address,
+// and a trace with the wrong flags passes every sanity check while measuring the wrong thing. So the
+// trace runs only while the GAME ITSELF is seen using exactly these flags with the local player as
+// the ignored object (its own line-of-sight tests do, ~100 times a second). Unwitnessed = off, and the
+// provider falls back to the old aim. Checked on the collision detour, cheaply: a compare first, the
+// local-unit lookup only on a match, and at most once a second.
+std::atomic<uint64_t> g_reachSightFlagsWitnessMs{0};
+std::atomic<uint64_t> g_reachSightUnwitnessed{0};
+inline constexpr uint64_t kReachSightWitnessFreshMs = 5000;
+
+void ReachNoteSightFlagsWitness(uint64_t flags, int32_t ignoredA)
+{
+    const uint64_t wanted = g_config.reach_sight_trace_flags;
+    if (!wanted || flags != wanted || ignoredA == -1)
+        return;
+    const uint64_t now = GetTickCount64();
+    const uint64_t last = g_reachSightFlagsWitnessMs.load(std::memory_order_relaxed);
+    if (last && now >= last && now - last < 1000)
+        return;
+    const int32_t localUnit = LegacyCollisionIgnoredObject(GameTitle::HaloReach);
+    if (localUnit != -1 && ignoredA == localUnit)
+        g_reachSightFlagsWitnessMs.store(now, std::memory_order_relaxed);
+}
+
 void ReachSightTraceTick(uint32_t unit)
 {
     const uint64_t flags = g_config.reach_sight_trace_flags;
     auto& trace = g_reachSightTrace;
+    // original is the collision_test_vector trampoline: contact melee installs only on top of that
+    // hooked entry (and casts it the same way), so its readiness is the proof of the signature.
     if (!flags || trace.faulted.load(std::memory_order_acquire) ||
-        !g_reachCamera.armed.load(std::memory_order_acquire) ||
-        g_reachWorldCollision.fourArgumentResolver || !ReachContactMeleeReady())
+        !g_reachCamera.armed.load(std::memory_order_acquire) || !ReachContactMeleeReady())
         return;
     const int32_t localUnit = LegacyCollisionIgnoredObject(GameTitle::HaloReach);
     if (localUnit == -1 || unit != static_cast<uint32_t>(localUnit))
         return;
+    const uint64_t witnessed = g_reachSightFlagsWitnessMs.load(std::memory_order_relaxed);
+    const uint64_t nowWitness = GetTickCount64();
+    if (!witnessed || nowWitness < witnessed || nowWitness - witnessed > kReachSightWitnessFreshMs)
+    {
+        g_reachSightUnwitnessed.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
     const auto original = reinterpret_cast<LegacyCollisionTestVectorFn>(g_reachWorldCollision.original);
     if (!original)
         return;
@@ -184,6 +217,7 @@ void ReachSightMeasureShot(int32_t unitIndex, const float* origin, const float* 
 }
 
 // ---- census (diagnostic): which flags do Reach's own collision_test_vector callers use? ------------
+#if HALOMCCVR_REACH_COLLISION_CENSUS
 struct ReachCollisionCensusEntry
 {
     uint32_t rva = 0;
@@ -202,9 +236,13 @@ struct ReachCollisionCensus
     uint32_t used = 0;
     uint32_t dropped = 0;
 } g_reachCollisionCensus;
+#endif
 
+// Diagnostic only: compiled in with -DHALOMCCVR_REACH_COLLISION_CENSUS=ON, otherwise an empty stub, so a
+// player build carries none of it whatever its config says (the Halo: Campaign Evolved dev-tool rule).
 void ReachNoteCollisionCensus(uintptr_t caller, uint64_t flags, int32_t mode, const float* vector, int32_t ignoredA)
 {
+#if HALOMCCVR_REACH_COLLISION_CENSUS
     if (!g_config.reach_collision_census)
         return;
     const uintptr_t base = g_reachCamera.base;
@@ -240,6 +278,9 @@ void ReachNoteCollisionCensus(uintptr_t caller, uint64_t flags, int32_t mode, co
     else
         ++census.dropped;
     census.lock.clear(std::memory_order_release);
+#else
+    (void)caller; (void)flags; (void)mode; (void)vector; (void)ignoredA;
+#endif
 }
 
 void ReportReachSightTrace()
@@ -256,6 +297,13 @@ void ReportReachSightTrace()
         const uint32_t nearest = trace.nearestMm.exchange(UINT32_MAX, std::memory_order_relaxed);
         const uint32_t measured = shots.measured.exchange(0, std::memory_order_relaxed);
         const uint32_t missSum = shots.missSumMm.exchange(0, std::memory_order_relaxed);
+        const uint64_t witnessedAt = g_reachSightFlagsWitnessMs.load(std::memory_order_relaxed);
+        const uint64_t nowReport = GetTickCount64();
+        LOG("REACHSIGHT flags witness: %s (%llu ticks held off unwitnessed)",
+            witnessedAt && nowReport >= witnessedAt && nowReport - witnessedAt <= kReachSightWitnessFreshMs
+                ? "the game uses these flags for the local player (agreed)"
+                : "NOT seen in the game's own calls -- trace off, old aim",
+            (unsigned long long)g_reachSightUnwitnessed.exchange(0, std::memory_order_relaxed));
         LOG("REACHSIGHT trace: flags=0x%llX mode=%d %s; %llu traces, %llu hits / %llu misses, %llu skipped; "
             "range last %.2f m (nearest %.2f / farthest %.2f m), type %u; converged-shot live=%d; "
             "shots %u (%u measured): miss at the traced point avg %u / max %u mm, last %u mm at %.2f m; "
@@ -277,6 +325,7 @@ void ReportReachSightTrace()
             shots.lastRangeMm.load(std::memory_order_relaxed) / 1000.0,
             shots.originOffsetMaxMm.exchange(0, std::memory_order_relaxed));
     }
+#if HALOMCCVR_REACH_COLLISION_CENSUS
     if (!g_config.reach_collision_census)
         return;
     auto& census = g_reachCollisionCensus;
@@ -295,4 +344,5 @@ void ReportReachSightTrace()
             copy[i].ownerIgnored, double(copy[i].maxLengthWu), copy[i].reported ? "" : " (NEW)");
     if (dropped)
         LOG("CENSUS collision_test_vector: %u calls not recorded (table full)", dropped);
+#endif
 }
