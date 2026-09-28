@@ -677,6 +677,9 @@ struct Config
     // The trace flags are the engine's own collision-test flags; 0 = trace off (old behaviour).
     unsigned long long reach_sight_trace_flags = 0;
     int reach_sight_trace_mode = 0;
+    // DEV BUILDS ONLY (compiled out otherwise): fault injection proving the trace's fallbacks run.
+    // Bit 0 = behave as if the native trace faulted; bit 1 = as if the flags never resolved.
+    int reach_sight_fault = 0;
     // Diagnostic: log the distinct (caller, flags, mode) of Reach's own collision_test_vector calls,
     // to identify the flags a bullet's flight test uses. Leave at 0 for play.
     int reach_collision_census = 0;

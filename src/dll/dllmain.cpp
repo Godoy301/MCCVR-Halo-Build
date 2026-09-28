@@ -86,6 +86,17 @@ static DWORD WINAPI InitThread(LPVOID)
     const std::wstring primaryConfig = dir + L"halomccvr.cfg";
     const std::wstring legacyConfig = dir + L"halo3xr.cfg";
     ConfigLoadMigrating(primaryConfig.c_str(), legacyConfig.c_str());
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    // A dev build carries test hooks a player build does not; say so, and say loudly which are live.
+    LOG("DEV BUILD: development diagnostics and headless-test hooks are compiled in (never packaged)");
+    if (g_config.test_accept_untracked_head)
+        LOG("DEV TEST OVERRIDE ACTIVE: test_accept_untracked_head = 1 -- roomscale and physical crouch accept "
+            "an UNTRACKED head. For the headless simulator only; set it to 0 before playing in a headset.");
+    if (g_config.reach_sight_trace_flags)
+        LOG("DEV OVERRIDE: reach_sight_trace_flags = 0x%llX mode %d replaces the resolved crosshair-trace "
+            "flags (Reach aim trace)",
+            g_config.reach_sight_trace_flags, g_config.reach_sight_trace_mode);
+#endif
 
     if (MH_Initialize() != MH_OK)
     {

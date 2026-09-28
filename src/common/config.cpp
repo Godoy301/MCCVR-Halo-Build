@@ -796,7 +796,9 @@ void ConfigLoad(const wchar_t* path)
             }
         if(vrBindingKey) continue;
         if(!strcmp(key,"physical_crouch")) {g_config.physical_crouch=atoi(val)!=0;continue;}
+#if HALOMCCVR_DEV_DIAGNOSTICS   // headless-test hook: a player build never reads it
         if(!strcmp(key,"test_accept_untracked_head")) {g_config.test_accept_untracked_head=atoi(val)!=0;continue;}
+#endif
         if(!strcmp(key,"head_leash_below_eye_m")) {g_config.head_leash_below_eye_m=static_cast<float>(atof(val));continue;}
         if(!strcmp(key,"physical_crouch_depth_m"))
         {
@@ -960,9 +962,12 @@ void ConfigLoad(const wchar_t* path)
         if (!strcmp(key, "reach_direct_drive")) { g_config.reach_direct_drive=atoi(val); continue; }
         if (!strcmp(key, "reach_dd_test_deg")) { g_config.reach_dd_test_deg=atoi(val); continue; }
         if (!strcmp(key, "reach_dd_watchpoint")) { g_config.reach_dd_watchpoint=atoi(val); continue; }
+#if HALOMCCVR_DEV_DIAGNOSTICS   // dev overrides: a player build uses the compiled flags and no census
         if (!strcmp(key, "reach_sight_trace_flags")) { g_config.reach_sight_trace_flags=strtoull(val,nullptr,0); continue; }
         if (!strcmp(key, "reach_sight_trace_mode")) { g_config.reach_sight_trace_mode=(int)strtol(val,nullptr,0); continue; }
         if (!strcmp(key, "reach_collision_census")) { g_config.reach_collision_census=atoi(val); continue; }
+        if (!strcmp(key, "reach_sight_fault")) { g_config.reach_sight_fault=(int)strtol(val,nullptr,0); continue; }
+#endif
         if (!strcmp(key, "honest_reticle_onfoot")) { g_config.honest_reticle_onfoot=atoi(val)!=0; continue; }
         if (!strcmp(key, "halo4_helmet"))
         {
@@ -1719,14 +1724,15 @@ void ConfigSave()
     fprintf(f, "# refuted). Read-only (never changes aim). Leave at 0. (default %d)\n",
             d.reach_dd_watchpoint);
     fprintf(f, "reach_dd_watchpoint = %d\n\n", g_config.reach_dd_watchpoint);
-    fprintf(f, "# Halo Reach on foot, direct drive: trace-and-reaim convergence. The shot keeps leaving\n");
-    fprintf(f, "# from where Reach fires it; the aim is bent so it lands where your reticle ray hits.\n");
-    fprintf(f, "# These are the engine's own collision-test flags for that trace; 0 = off. (default 0x%llX)\n",
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    fprintf(f, "# DEV BUILD ONLY. Halo Reach on foot, direct drive: replaces the resolved crosshair-trace\n");
+    fprintf(f, "# flags of the trace-and-reaim aim for an experiment (0 = use the resolved ones). (default 0x%llX)\n",
             d.reach_sight_trace_flags);
     fprintf(f, "reach_sight_trace_flags = 0x%llX\n", g_config.reach_sight_trace_flags);
     fprintf(f, "reach_sight_trace_mode = %d\n", g_config.reach_sight_trace_mode);
-    fprintf(f, "# Diagnostic: log Reach's own collision-test calls (caller, flags, mode). Leave at 0.\n");
+    fprintf(f, "# DEV BUILD ONLY. Log Reach's own collision-test calls (caller, flags, mode). Leave at 0.\n");
     fprintf(f, "reach_collision_census = %d\n\n", g_config.reach_collision_census);
+#endif
     fprintf(f, "# -------------------------------------------------------------------\n");
     fprintf(f, "#  WEAPON CALIBRATION\n");
     fprintf(f, "#  Personal trims applied over the active title's verified base pose.\n");
@@ -2189,9 +2195,11 @@ void ConfigSave()
     fprintf(f,"\n# VR action bindings: 0=automatic, 1=unbound. Edited in VR Mappings.\n");
     fprintf(f,"physical_crouch = %d\nphysical_crouch_depth_m = %.3f\n",
         g_config.physical_crouch?1:0,g_config.physical_crouch_depth_m);
-    fprintf(f,"# Automated-testing only: accept an untracked (valid) head for roomscale and physical\n"
-              "# crouch. Leave at 0 in a headset. (default 0)\n");
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    fprintf(f,"# DEV BUILD ONLY, automated testing: accept an untracked (valid) head for roomscale and\n"
+              "# physical crouch. Leave at 0 in a headset. (default 0)\n");
     fprintf(f,"test_accept_untracked_head = %d\n",g_config.test_accept_untracked_head?1:0);
+#endif
     fprintf(f,"# Halo Reach on foot: the most the view may drop below the character's own eye (game metres),\n"
               "# so a deep physical duck cannot put it inside his body. Rides his crouch. -1 = off. (default 0.10)\n");
     fprintf(f,"head_leash_below_eye_m = %.3f\n",g_config.head_leash_below_eye_m);

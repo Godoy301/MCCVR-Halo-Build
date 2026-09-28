@@ -103,8 +103,11 @@ option(HALOMCCVR_HALO2_ANNIVERSARY_STEREO
     "Enable Halo 2 Anniversary per-eye stereo (C-H2-10)" ON)
 option(HALOMCCVR_HALO2_RENDER_PROBE
     "Enable the Halo 2 read-only render-topology census (D-H2-1, diagnostic)" OFF)
-option(HALOMCCVR_REACH_COLLISION_CENSUS
-    "Compile in the Reach collision_test_vector caller census (reach_collision_census, diagnostic)" OFF)
+# Development diagnostics and headless-test hooks (the Halo: Campaign Evolved rule: a config flag is
+# not a sufficient guard, so anything that answers a question rather than playing the game is compiled
+# out of a player build). OFF = shipping; the "dev" preset turns it on; package-candidate.ps1 refuses it.
+option(HALOMCCVR_DEV_DIAGNOSTICS
+    "Compile in development diagnostics and headless-test hooks (never packaged)" OFF)
 if(HALOMCCVR_EXPERIMENTAL_HALO2_TEMPORAL_STEREO AND
    NOT HALOMCCVR_EXPERIMENTAL_HALO2_COLD_OBSERVATION)
     message(FATAL_ERROR
@@ -331,7 +334,7 @@ target_compile_definitions(halo3xr PRIVATE
     HALOMCCVR_HALO2_STEREO6DOF=$<BOOL:${HALOMCCVR_HALO2_STEREO6DOF}>
     HALOMCCVR_HALO2_OBSERVER_6DOF=$<BOOL:${HALOMCCVR_HALO2_OBSERVER_6DOF}>
     HALOMCCVR_HALO2_RENDER_PROBE=$<BOOL:${HALOMCCVR_HALO2_RENDER_PROBE}>
-    HALOMCCVR_REACH_COLLISION_CENSUS=$<BOOL:${HALOMCCVR_REACH_COLLISION_CENSUS}>
+    HALOMCCVR_DEV_DIAGNOSTICS=$<BOOL:${HALOMCCVR_DEV_DIAGNOSTICS}>
     HALOMCCVR_HALO2_ANNIVERSARY_STEREO=$<BOOL:${HALOMCCVR_HALO2_ANNIVERSARY_STEREO}>
     HALOMCCVR_BUILD_COMMIT="${HALOMCCVR_BUILD_COMMIT}"
     HALOMCCVR_BUILD_ODST="${HALOMCCVR_BUILD_ODST}"

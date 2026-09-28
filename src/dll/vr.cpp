@@ -7727,8 +7727,10 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         // Operator-overridden head VALID but not TRACKED. The valid bits were already required above.
         constexpr XrSpaceLocationFlags physicalTracking =
             XR_SPACE_LOCATION_ORIENTATION_TRACKED_BIT | XR_SPACE_LOCATION_POSITION_TRACKED_BIT;
-        const bool physicallyTracked = (loc.locationFlags & physicalTracking) == physicalTracking ||
-            g_config.test_accept_untracked_head;
+        bool physicallyTracked = (loc.locationFlags & physicalTracking) == physicalTracking;
+#if HALOMCCVR_DEV_DIAGNOSTICS   // compiled out of a player build: an inertial head must never pass here
+        physicallyTracked = physicallyTracked || g_config.test_accept_untracked_head;
+#endif
         g_roomscaleHeadSampleMs.store(physicallyTracked ? GetTickCount64() : 0,
             std::memory_order_release);
 

@@ -444,6 +444,11 @@ try {
     if ($cache -notmatch '(?m)^BUILD_TESTING:BOOL=ON\r?$') {
         throw 'Refusing to package: BUILD_TESTING is not ON.'
     }
+    # Development diagnostics and headless-test hooks must never ship (a config flag is not a guard).
+    # The persistent incremental cache would otherwise carry a -D...=ON silently into a package.
+    if ($cache -notmatch '(?m)^HALOMCCVR_DEV_DIAGNOSTICS:BOOL=OFF\r?$') {
+        throw 'Refusing to package: HALOMCCVR_DEV_DIAGNOSTICS is not OFF (dev tooling / test hooks compiled in).'
+    }
 
     # Incremental. A clean rebuild was recompiling the whole tree for every
     # candidate, which is minutes per iteration for no safety: the packaged
