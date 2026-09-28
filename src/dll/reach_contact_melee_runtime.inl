@@ -264,6 +264,8 @@ __declspec(noinline) uint8_t __fastcall ReachContactUpdateDetour(uint32_t unit)
     {
         if(g_reachContact.original) result=g_reachContact.original(unit);
         ReachContactTick(unit);
+        // Same native per-unit context: trace the local player's intent ray for trace-and-reaim.
+        ReachSightTraceTick(unit);
     }
     __finally { g_reachCamera.activeCallbacks.fetch_sub(1,std::memory_order_acq_rel); }
     return result;

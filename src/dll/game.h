@@ -159,6 +159,25 @@ uint32_t Game_ReachDirectDriveOnFootWhy();   // failing on-foot conditions as bi
 int Game_ReachUnitCrouchState();             // native crouch state 0/1, -1 unknown/stale (diagnostics)
 void Game_ReachDirectDrivePublish(float gameYaw, float gamePitch);
 void Game_ReachDirectDriveRelease();
+// Reach on foot, trace-and-reaim (reach_sight_trace.inl). Defined only in experimental Reach builds.
+//   SightSample -- the latest rendered intent (reticle) ray and the engine eye the shot leaves from,
+//                  all in world units, plus the latest range the sim-thread trace measured along that
+//                  ray (rangeWu, hit=false on a miss). False while the ray or the trace is stale, the
+//                  trace is off (reach_sight_trace_flags = 0) or it faulted.
+//   NoteConvergedShot -- the provider actuated a converged setpoint: while that stays fresh the older
+//                  on-foot hand shot ray (which moved the projectile origin) stands down at the
+//                  firing site, so the native shot and the converged aim are not corrected twice.
+struct ReachSightSample
+{
+    float origin[3]{};   // where the intent ray starts (the rendered hand/reticle ray)
+    float dir[3]{};      // its unit direction
+    float eye[3]{};      // the engine's own eye: Reach's first-person shot origin
+    float rangeWu = 0.0f;
+    bool hit = false;
+    uint64_t raySampleMs = 0, traceSampleMs = 0;
+};
+bool Game_ReachSightSample(ReachSightSample& out);
+void Game_ReachNoteConvergedShot();
 // C-H2-41. True only while Halo 2's controller-owned aim/weapon feature is
 // requested; tracking loss still makes each call fail open independently.
 bool Game_Halo2ControllerAimActive();

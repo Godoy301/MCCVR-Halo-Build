@@ -440,6 +440,12 @@ struct Config
     // way, so without this the headless lane cannot exercise either feature. Never enable it in a
     // headset: an untracked (inertial) head is precisely what both features must ignore.
     bool test_accept_untracked_head = false;
+    // THE LEASH BELOW THE CHARACTER'S EYE (Halo: Campaign Evolved's heightleash, Reach on foot): the
+    // most the view may drop below the game camera -- the character's own eye -- so a deep physical
+    // duck cannot take it inside his chest and legs. Game-space metres. It rides the camera: when the
+    // character crouches his eye drops, and the limit drops with him. The hands and the reticle ray are
+    // lifted with the view, so holding the view does not make them sink away from your eyes. <0 = off.
+    float head_leash_below_eye_m = 0.10f;
     bool turn_smooth = true;           // false = snap turn, true = smooth turn
     bool vehicle_smooth_turn = false; // temporary smooth VR turning while seated
     float turn_snap_deg = 30.0f;       // degrees per snap
@@ -660,6 +666,20 @@ struct Config
     //       with DR0-DR3 in batches and logs each one's writer -- the direct-drive hook target.
     // Leave at 0 for play.
     int reach_dd_watchpoint = 0;
+
+    // Halo Reach, ON FOOT, direct drive (reach_direct_drive = 3): TRACE-AND-REAIM CONVERGENCE, the
+    // Halo: Campaign Evolved aim. The shot keeps leaving from where Reach fires it (its own camera);
+    // the intent ray (the controller/reticle ray the player points) is traced into the world with the
+    // game's own collision_test_vector, and the aim is bent so the native shot passes through the
+    // point that ray hits: aim = normalize((ray origin - shot origin) + range * ray direction). Range
+    // is smoothed and held on a miss; the old fixed-distance steer is the fallback. While it is live
+    // the older on-foot hand shot ray (which MOVED the projectile origin to the hand) stands down.
+    // The trace flags are the engine's own collision-test flags; 0 = trace off (old behaviour).
+    unsigned long long reach_sight_trace_flags = 0;
+    int reach_sight_trace_mode = 0;
+    // Diagnostic: log the distinct (caller, flags, mode) of Reach's own collision_test_vector calls,
+    // to identify the flags a bullet's flight test uses. Leave at 0 for play.
+    int reach_collision_census = 0;
 
     // rendering. The game's own HUD reticle sits at head-center and is wrong
     // whenever hand aim is on; this one is the truth.

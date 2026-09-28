@@ -1420,6 +1420,13 @@ namespace
         int32_t ignoredA,int32_t ignoredB,int32_t ignoredC,void* result,uint8_t& returned);
     bool ReachContactMeleeReady();
     void ReportReachContactMelee();
+    // Reach trace-and-reaim (reach_sight_trace.inl).
+    void ReachSightTraceTick(uint32_t unit);
+    void ReachNoteCollisionCensus(uintptr_t caller, uint64_t flags, int32_t mode,
+        const float* vector, int32_t ignoredA);
+    bool ReachConvergedShotLive(uint64_t nowMs);
+    void ReachSightMeasureShot(int32_t unitIndex, const float* origin, const float* direction);
+    void ReportReachSightTrace();
     void ReachPublishContactHand(int hand, const FpExplicitPoseTargets& targets,
         const FpInterpolationContext& context, const BoneMatrix& root,
         const BoneMatrix* solved, const float points[][3], int count,
@@ -5046,6 +5053,8 @@ namespace
         uint8_t nativeResult=0;
         const uintptr_t caller=reinterpret_cast<uintptr_t>(_ReturnAddress());
         __try {
+            if (!g_legacyCollisionOwnedQuery)
+                ReachNoteCollisionCensus(caller,flags,mode,vector,ignoredObjectA);
             if (!ReachRedirectContactVector(caller,flags,mode,ignoredObjectA,
                     ignoredObjectB,ignoredObjectC,result,nativeResult))
                 nativeResult=LegacyCollisionSchedulerDetourBody(
@@ -17829,6 +17838,10 @@ namespace
         ReachVrRenderAccess* renderAccess = nullptr;
         float gameplayBasePosition[3]{};
         float presentedCameraBasePosition[3]{};
+        // World-unit lift the leash below the character's eye gave the view this frame (on foot).
+        // Added to the hands' and the reticle ray's base so they rise with the view; the stock
+        // presentedCameraBasePosition itself stays the engine's own eye, the native shot origin.
+        float leashLiftWu = 0.0f;
         ReachVehicleFrame vehicle{};
         bool vehicleViewApplied = false;
         ReachPendingSeatRecenter pendingSeatRecenter{};
@@ -18097,6 +18110,12 @@ namespace
         std::atomic<float> originX{0.0f};
         std::atomic<float> originY{0.0f};
         std::atomic<float> originZ{0.0f};
+        // On-foot ray only: the engine's own eye this frame (the stock camera base, never lifted by
+        // the leash), which is where Reach fires first-person shots from. Trace-and-reaim needs the
+        // offset from here to the ray's origin.
+        std::atomic<float> baseX{0.0f};
+        std::atomic<float> baseY{0.0f};
+        std::atomic<float> baseZ{0.0f};
     };
     ReachCompletedReticleTargetPublication g_reachCompletedReticleTarget;
     ReachCompletedReticleTargetPublication g_reachOnFootShotRay;
@@ -18433,6 +18452,7 @@ namespace
         ReachSeatLeaseKey key{};
         float target[3]{};
         float origin[3]{};
+        float base[3]{};
     };
 
     bool ReachReadShotOccupation(ReachShotOccupationSnapshot& out)
@@ -18535,6 +18555,9 @@ namespace
                 published.originY.load(std::memory_order_relaxed);
             sample.origin[2] =
                 published.originZ.load(std::memory_order_relaxed);
+            sample.base[0] = published.baseX.load(std::memory_order_relaxed);
+            sample.base[1] = published.baseY.load(std::memory_order_relaxed);
+            sample.base[2] = published.baseZ.load(std::memory_order_relaxed);
             if (published.sequence.load(std::memory_order_acquire) != before)
                 continue;
             out = sample;
@@ -18823,6 +18846,15 @@ namespace
             {
                 __try { nativeOnFoot=!g_reachCamera.unitInVehicle(currentUnit); }
                 __except(EXCEPTION_EXECUTE_HANDLER) { nativeOnFoot=false; }
+            }
+            // TRACE-AND-REAIM live (reach_sight_trace.inl): the direct-drive aim already points the
+            // native shot through the traced point, so the shot leaves exactly where Reach fires it.
+            // Moving its origin to the hand as well would correct it twice. Measure and stand down.
+            if(onFootNow && nativeOnFoot && currentUnit!=-1 && unitIndex==currentUnit &&
+                ReachConvergedShotLive(GetTickCount64()))
+            {
+                ReachSightMeasureShot(unitIndex,origin,direction);
+                return;
             }
             float handDirection[3]{};
             const bool owned=onFootNow && nativeOnFoot &&
@@ -21122,6 +21154,13 @@ namespace
     constexpr float kReachCineCutJumpUnitsSq = 4.0f;        // 2 world units
 
 
+    // The vertical lift the leash below the character's eye applied to the last head-look camera
+    // on this (render) thread, in world units. Read by ReachMainRenderView right after the head-centre
+    // build, the only caller, so the hands and the reticle ray can rise with the view.
+    thread_local float g_reachHeadLookLeashLiftWu = 0.0f;
+    std::atomic<uint32_t> g_reachLeashHeldFrames{0};
+    std::atomic<uint32_t> g_reachLeashMaxLiftMm{0};
+
     bool ReachApplyHeadLook(
         unsigned char* cam, const ReachVrRenderSnapshot& tracking,
         const ReachVehicleFrame* vehicle,
@@ -21129,6 +21168,7 @@ namespace
         ReachPendingSeatRecenter& pendingSeatRecenter)
     {
         pendingSeatRecenter={};
+        g_reachHeadLookLeashLiftWu = 0.0f;
         float q[4] = {
             tracking.headOrientation[0], tracking.headOrientation[1],
             tracking.headOrientation[2], tracking.headOrientation[3]};
@@ -21270,6 +21310,9 @@ namespace
                 up[2] = cgp * cr;
             }
         }
+        // The character's own eye this frame, before any correction of ours. The leash below is
+        // held against it, so it rides his crouch.
+        const float characterEyeZ = pos[2];
         ApplyCachedPhysicalCrouch(GameTitle::HaloReach,pos,
             -Clamp((hpos[1]-effectiveHeadPosRef[1])*kReachWorldUnitsPerMeter,-1.5f,1.5f),!vehicleEntryRecenter);
         Roomscale_Camera(GameTitle::HaloReach, !vehicleEntryRecenter &&
@@ -21314,6 +21357,25 @@ namespace
             ox = Clamp(ox, -1.5f, 1.5f); oy = Clamp(oy, -1.5f, 1.5f);
             oz = Clamp(oz, -1.5f, 1.5f);
             pos[0] += ox; pos[1] += oy; pos[2] += oz;
+            // THE LEASH BELOW THE CHARACTER'S EYE (Halo: Campaign Evolved's heightleash). A physical
+            // duck deeper than the character's own crouch took the view inside his chest and legs:
+            // the crouch correction above cancels his native camera drop, so the view follows your
+            // real head all the way down. Hold it at most head_leash_below_eye_m below his CURRENT
+            // eye; because that is measured from his camera, the limit drops with him when he
+            // crouches. On foot only (a seat composes its own view). The lift is recorded so the
+            // hands and the reticle ray, which are built from the stock camera, rise with the view
+            // instead of sinking away from the eyes (ReachMainRenderView applies it).
+            const float leash = g_config.head_leash_below_eye_m;
+            if (!(vehicle && vehicle->active) && std::isfinite(leash) && leash >= 0.0f &&
+                std::isfinite(characterEyeZ))
+            {
+                const float floorZ = characterEyeZ - leash * kReachWorldUnitsPerMeter;
+                if (pos[2] < floorZ)
+                {
+                    g_reachHeadLookLeashLiftWu = floorZ - pos[2];
+                    pos[2] = floorZ;
+                }
+            }
         }
         return true;
     }
@@ -22184,8 +22246,11 @@ namespace
                 // camera base. gameplayBasePosition may deliberately select the
                 // rigid hands base and would offset the sight when
                 // body-following hands are enabled.
+                // On foot the leash lift (0 unless the view is being held) rides along, so the
+                // reticle ray stays where the lifted hands and view are.
                 const float base=owner.vehicleViewApplied && owner.vehicle.active
-                    ? owner.vehicle.cameraBase[axis] : owner.presentedCameraBasePosition[axis];
+                    ? owner.vehicle.cameraBase[axis]
+                    : owner.presentedCameraBasePosition[axis]+(axis==2?owner.leashLiftWu:0.0f);
                 out[axis] = base +
                     offset[axis] * kReachWorldUnitsPerMeter;
                 if (!std::isfinite(out[axis]))
@@ -22301,6 +22366,9 @@ namespace
             published.originX.store(presentedOrigin[0],std::memory_order_relaxed);
             published.originY.store(presentedOrigin[1],std::memory_order_relaxed);
             published.originZ.store(presentedOrigin[2],std::memory_order_relaxed);
+            published.baseX.store(owner.presentedCameraBasePosition[0],std::memory_order_relaxed);
+            published.baseY.store(owner.presentedCameraBasePosition[1],std::memory_order_relaxed);
+            published.baseZ.store(owner.presentedCameraBasePosition[2],std::memory_order_relaxed);
             published.sequence.fetch_add(1,std::memory_order_release);
         }
         const bool targetValid = seated &&
@@ -23441,7 +23509,7 @@ namespace
         const uint64_t now=GetTickCount64();
         if(now-lastLogMs<2000) return;
         lastLogMs=now;
-        if(title==GameTitle::HaloReach){ReportReachContactMelee();ReportReachMuzzle();}
+        if(title==GameTitle::HaloReach){ReportReachContactMelee();ReportReachMuzzle();ReportReachSightTrace();}
         if(title==GameTitle::Halo3) ReportHalo3ContactMelee();
         if(title==GameTitle::Halo3ODST){ReportOdstContactMelee();ReportOdstMuzzle();}
         if(auto* melee=SharedMeleeForTitle(title))
@@ -24614,6 +24682,7 @@ namespace
             entry + kReachObjectEntryDataOffset);
     }
 
+    #include "reach_sight_trace.inl"
     #include "reach_contact_melee_runtime.inl"
     #include "halo3_contact_melee_runtime.inl"
     #include "halo3_physical_crouch.inl"
@@ -28684,6 +28753,19 @@ namespace
                 : candidate.vehicle.cameraBase;
             memcpy(candidate.gameplayBasePosition, handOrigin,
                    sizeof(candidate.gameplayBasePosition));
+        }
+        else if (std::isfinite(g_reachHeadLookLeashLiftWu) && g_reachHeadLookLeashLiftWu > 0.0f &&
+                 g_reachHeadLookLeashLiftWu < 1.5f)
+        {
+            // The leash held the view up this frame: lift the hands' base by the same amount so the
+            // controllers keep their real relation to the eyes (Campaign Evolved moves its standing
+            // origin, which carries every hand placement; this is the same move in this frame).
+            candidate.leashLiftWu = g_reachHeadLookLeashLiftWu;
+            candidate.gameplayBasePosition[2] += candidate.leashLiftWu;
+            g_reachLeashHeldFrames.fetch_add(1, std::memory_order_relaxed);
+            const uint32_t mm = static_cast<uint32_t>(candidate.leashLiftWu / kReachWorldUnitsPerMeter * 1000.0f);
+            uint32_t prior = g_reachLeashMaxLiftMm.load(std::memory_order_relaxed);
+            while (mm > prior && !g_reachLeashMaxLiftMm.compare_exchange_weak(prior, mm, std::memory_order_relaxed)) {}
         }
         alignas(16) unsigned char savedWorkspace[kReachCameraPairDataSize];
         alignas(16) unsigned char savedPv[kReachPvSnapshotBytes];
@@ -47184,6 +47266,61 @@ void Game_ReachDirectDrivePublish(float gameYaw, float gamePitch)
 void Game_ReachDirectDriveRelease()
 {
     g_reachDriveValid.store(false, std::memory_order_release);
+}
+
+// Trace-and-reaim inputs for the aim provider (see reach_sight_trace.inl). The ray and the engine eye
+// come from the latest rendered frame; the range from the latest sim-thread trace along that ray.
+bool Game_ReachSightSample(ReachSightSample& out)
+{
+    out = {};
+    if (!g_config.reach_sight_trace_flags || g_reachSightTrace.faulted.load(std::memory_order_acquire))
+        return false;
+    const uint64_t now = GetTickCount64();
+    const uint32_t generation = g_reachCamera.generation.load(std::memory_order_acquire);
+    ReachCompletedReticleTargetSnapshot ray{};
+    if (!generation || !ReachReadCompletedReticleTarget(ray, g_reachOnFootShotRay) ||
+        ray.generation != generation || !ray.sampleMs || now < ray.sampleMs || now - ray.sampleMs > 100)
+        return false;
+    float u[3]{ray.target[0] - ray.origin[0], ray.target[1] - ray.origin[1], ray.target[2] - ray.origin[2]};
+    const float length = sqrtf(u[0] * u[0] + u[1] * u[1] + u[2] * u[2]);
+    if (!std::isfinite(length) || length < 1.0e-3f)
+        return false;
+    for (int axis = 0; axis < 3; ++axis)
+    {
+        out.origin[axis] = ray.origin[axis];
+        out.dir[axis] = u[axis] / length;
+        out.eye[axis] = ray.base[axis];
+        if (!std::isfinite(out.origin[axis]) || !std::isfinite(out.eye[axis]))
+            return false;
+    }
+    out.raySampleMs = ray.sampleMs;
+    // The trace result: a torn read retries once, then reports "no range" (the provider holds).
+    auto& trace = g_reachSightTrace;
+    for (int attempt = 0; attempt < 2; ++attempt)
+    {
+        const uint32_t before = trace.sequence.load(std::memory_order_acquire);
+        if (!before || (before & 1u))
+            continue;
+        const uint32_t traceGeneration = trace.generation.load(std::memory_order_relaxed);
+        const uint64_t at = trace.sampleMs.load(std::memory_order_relaxed);
+        const bool hit = trace.hit.load(std::memory_order_relaxed) != 0;
+        const float range = trace.rangeWu.load(std::memory_order_relaxed);
+        if (trace.sequence.load(std::memory_order_acquire) != before)
+            continue;
+        if (traceGeneration == generation && at && now >= at && now - at <= 150)
+        {
+            out.traceSampleMs = at;
+            out.hit = hit && std::isfinite(range) && range > 0.0f;
+            out.rangeWu = out.hit ? range : 0.0f;
+        }
+        break;
+    }
+    return out.traceSampleMs != 0;
+}
+
+void Game_ReachNoteConvergedShot()
+{
+    g_reachConvergedShotMs.store(GetTickCount64(), std::memory_order_release);
 }
 
 // Runs on the SIM thread from the naked detour, AFTER native 0x6375C updated desired_angles (stick
