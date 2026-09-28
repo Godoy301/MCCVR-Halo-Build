@@ -27581,6 +27581,12 @@ namespace
         g_reachVehicleInputSnapshot.store(
             ReachVehicleInputSnapshot(generation, state),
             std::memory_order_release);
+        // The freshness stamp every "on foot now" reader checks (direct drive, roomscale, physical
+        // crouch, the leash). The camera-info sampler stamps it in ReachUpdateVehicleTransition; as
+        // the sole publisher here, this fallback must too, or those readers see a stale sample forever.
+        // (The two readers that trust the stamp for the camera-info sampler's own state check that it
+        // is installed first, so this cannot vouch for it.)
+        g_reachVehicleSampleMs.store(GetTickCount64(), std::memory_order_release);
     }
 
     void ReachUpdateVehicleTransition(
