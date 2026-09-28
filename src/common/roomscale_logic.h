@@ -37,6 +37,9 @@ struct RoomscaleFollow
     uint64_t manualQuietSince=0;
     float body[2]{}, expectedReference[2]{}, initialLean[2]{};
     float headForward[2]{}, worldForward[2]{}, error[2]{}, velocity[2]{};
+    // Tracking-space direction of the last nonzero command: the way the stopping tail must keep moving
+    // to be claimed as ours.
+    float tailDir[2]{};
 
     void SuspendForManual(uint64_t now) noexcept
     {
@@ -98,15 +101,25 @@ struct RoomscaleFollow
             // tail in the SAME tracking frame instead of adding it to the view.
             // Epoch/recenter/teleport/manual-input guards above still abandon
             // authority. Never consume a requested distance before it occurred.
-            reference[0]+=tx; reference[2]+=tz;
-            const float elapsed=now>time?float(now-time)*.001f:0;
-            if(elapsed>0)
+            // The tail (no command on the last update) is ours only while it keeps moving the way we
+            // walked: travel across or against that direction is a platform, a knockback or other
+            // physics, and it ends the tail unclaimed (the view then carries it, as it should).
+            if (!commanded && (tx!=0 || tz!=0) && tx*tailDir[0]+tz*tailDir[1]<=0)
             {
-                const float blend=1-std::exp(-elapsed/.06f);
-                velocity[0]+=(tx/elapsed-velocity[0])*blend;
-                velocity[1]+=(tz/elapsed-velocity[1])*blend;
+                settling=false; velocity[0]=velocity[1]=0;
             }
-            if(tx!=0 || tz!=0)lastMotion=now;
+            else
+            {
+                reference[0]+=tx; reference[2]+=tz;
+                const float elapsed=now>time?float(now-time)*.001f:0;
+                if(elapsed>0)
+                {
+                    const float blend=1-std::exp(-elapsed/.06f);
+                    velocity[0]+=(tx/elapsed-velocity[0])*blend;
+                    velocity[1]+=(tz/elapsed-velocity[1])*blend;
+                }
+                if(tx!=0 || tz!=0)lastMotion=now;
+            }
         }
         else velocity[0]=velocity[1]=0;
         error[0]=head[0]-reference[0]-initialLean[0];
@@ -143,6 +156,7 @@ struct RoomscaleFollow
                 // because the error itself has flipped and the command again points along it.
                 if(cx*error[0]+cz*error[1]<=0){cx=cz=0;}
                 const float magnitude=std::hypot(cx,cz);
+                if(magnitude>0){tailDir[0]=cx/magnitude;tailDir[1]=cz/magnitude;}
                 if(magnitude>.8f){cx*=.8f/magnitude;cz*=.8f/magnitude;}
                 moveX=-cx*hz+cz*hx;
                 moveY=cx*hx+cz*hz;

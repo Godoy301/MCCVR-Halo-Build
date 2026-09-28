@@ -17898,6 +17898,45 @@ int main()
         head[0]=0.045f; step(false);
         Check(follow.following && (mx!=0 || my!=0), "a lean past the start band still starts a new follow");
     }
+    // The stopping tail is claimed only while the body keeps moving the way the follow walked: travel
+    // against that direction (a platform, a knockback) ends the tail unclaimed.
+    {
+        RoomscaleFollow follow;
+        float body[3]{}, head[3]{0,1.7f,0}, reference[3]{0,1.7f,0};
+        float mx=0,my=0; uint64_t now=100;
+        auto step=[&]{now+=11;return follow.Update(3,now,true,false,body,head,reference,0,-1,1,0,1.0f,mx,my);};
+        step();
+        head[0]=0.10f; step();
+        for (int i=0;i<40 && follow.following;++i) { body[1]-=0.01f; step(); }
+        Check(!follow.following && follow.settling, "fixture: the follow has ended and the tail is settling");
+        const float kept=reference[0];
+        body[1]+=0.004f; step();   // the body is pushed back, against the walk
+        Check(reference[0]==kept && !follow.settling, "travel against the walked direction ends the tail unclaimed");
+    }
+    // And the tail is bounded: however steadily the body keeps drifting the walked way, nothing is claimed
+    // more than kSettleMaxMs after the last command.
+    {
+        RoomscaleFollow follow;
+        float body[3]{}, head[3]{0,1.7f,0}, reference[3]{0,1.7f,0};
+        float mx=0,my=0; uint64_t now=100;
+        auto step=[&]{now+=11;return follow.Update(3,now,true,false,body,head,reference,0,-1,1,0,1.0f,mx,my);};
+        step();
+        head[0]=0.10f; step();
+        for (int i=0;i<40 && follow.following;++i) { body[1]-=0.01f; step(); }
+        const uint64_t lastCommand=follow.lastCommand;
+        bool claimedLate=false, claimedEarly=false;
+        for (int i=0;i<90;++i)
+        {
+            const float before=reference[0];
+            body[1]-=0.0002f; step();   // a slow, steady drift the walked way
+            if (reference[0]!=before)
+            {
+                if (now-lastCommand>RoomscaleFollow::kSettleMaxMs) claimedLate=true;
+                else claimedEarly=true;
+            }
+        }
+        Check(claimedEarly && !claimedLate, "the tail is claimed up to kSettleMaxMs after the last command, never after");
+    }
     Check(!Config{}.roomscale_movement, "roomscale is opt-in for existing and new configurations");
 
     g_failures += RunRoomscaleInputTests();

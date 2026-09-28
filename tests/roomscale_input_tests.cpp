@@ -264,14 +264,31 @@ int RunRoomscaleInputTests()
         auto sample=[&]{Roomscale_Camera(testTitle,true,body,head,q,forward,ref,1);};
         sample();testNow+=16;head[2]=-.2f;Roomscale_Input(true,0,0);sample();
         float x=0,y=0;check(Roomscale_Move(x,y),"coasting fixture begins with a delivered command");
-        for(float nativePosition:{.19f,.21f,.23f})
+        for(float nativePosition:{.19f,.21f,.25f})
         {
             testNow+=16;body[0]=nativePosition;Roomscale_Input(true,0,0);sample();
             check(std::fabs(body[0]-head[2]+ref[2]-.2f)<1e-5f,
                 "native stopping travel cannot slide the view away from the physical head");
             x=y=0;Roomscale_Move(x,y);
         }
-        check(y<0,"overshoot requests correction instead of accepting body drift");
+        check(y<0,"an overshoot past the start band (5 cm) requests a correction");
+    }
+    // ...but one inside the start band (2.5 cm) is left alone, like any residual under kFollowStart.
+    {
+        testTitle=GameTitle::Halo3;++testGeneration;testNow+=1000;
+        const float q[4]{0,0,0,1},forward[3]{1,0,0};
+        float body[3]{},head[3]{0,1.7f,0},ref[3]{0,1.7f,0};
+        Roomscale_Input(false,0,0);Roomscale_Input(true,0,0);
+        auto sample=[&]{Roomscale_Camera(testTitle,true,body,head,q,forward,ref,1);};
+        sample();testNow+=16;head[2]=-.2f;Roomscale_Input(true,0,0);sample();
+        float x=0,y=0;check(Roomscale_Move(x,y),"small-overshoot fixture begins with a delivered command");
+        for(float nativePosition:{.19f,.21f,.225f})
+        {
+            testNow+=16;body[0]=nativePosition;Roomscale_Input(true,0,0);sample();
+            x=y=0;Roomscale_Move(x,y);
+        }
+        check(std::fabs(body[0]-head[2]+ref[2]-.2f)<1e-5f && x==0 && y==0,
+            "a 2.5 cm overshoot is consumed and left uncommanded");
     }
     // The same title's engine callbacks can migrate threads. A global tracking
     // reference must not be paired with separate per-thread feedback histories.
