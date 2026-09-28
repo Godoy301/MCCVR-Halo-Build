@@ -287,6 +287,11 @@ int Input_ClaimXInputIat();
 // Injects a real XINPUT_GAMEPAD_START pulse and requests the matching
 // stereo/flat pause presentation. Used when a runtime reserves its system key.
 void Input_RequestPauseToggle();
+// MCC's crouch-lock (toggle crouch) preference, read from its GameUserSettings.ini by the cold
+// worker (poll is cheap: a timestamp check every 2 s, a parse only when MCC rewrites the file).
+// ForTitle: 1 = crouch lock on for that game's controller slot, 0 = hold-to-crouch, -1 = unknown.
+void Input_PollMccCrouchLock(uint64_t nowMs);
+int Input_MccCrouchLockForTitle(GameTitle title);
 // E-H2-13: every button mask the virtual gamepad fed the game in the last
 // `sinceMs` milliseconds, newest first, as "0x1234@-37ms ..." (buffer-bounded).
 // The game sees no other pad, so this is the whole input story behind an

@@ -43396,6 +43396,7 @@ namespace
                 }
             }
             RefreshGestureMeleeBinding(activeTitle,activeLevelRunning,pollNow);
+            Input_PollMccCrouchLock(pollNow);
             VR_ReportWeaponInteractions(pollNow);
             NativeReloadPolicy_Poll();
             NativeSubtitles_Poll(activeLevelRunning);
