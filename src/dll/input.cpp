@@ -82,7 +82,7 @@ namespace
     // character actually did (native crouch state, unit +0x1C4 bit 20; -1 = not read).
     void LogPhysicalCrouch(uint64_t now, GameTitle title, bool tracking, bool nativeReady, bool onFoot,
                            bool lockedOut, float head, const PhysicalCrouch& g, uint32_t pressed,
-                           uint32_t transport)
+                           uint32_t transport, uint64_t epoch, uint32_t generation)
     {
         static uint64_t s_last = 0;
         if (now - s_last < 1000) return;
@@ -91,12 +91,15 @@ namespace
 #if HALOMCCVR_EXPERIMENTAL_REACH_RENDER_CANDIDATE
         if (title == GameTitle::HaloReach) unit = Game_ReachUnitCrouchState();
 #endif
+        // epoch = calibration count : tracking-space count; either changing re-samples the baseline.
         LOG("CROUCH: title=%u gate(tracking=%d native=%d onfoot=%d crouchlock=%d) head=%.3f base=%.3f down=%.3f "
-            "init=%d active=%d suspended=%d pressed=0x%X transport=0x%X unitCrouched=%d mccCrouchLock(pad=0x%X mk=0x%X)",
+            "init=%d active=%d suspended=%d pressed=0x%X transport=0x%X unitCrouched=%d mccCrouchLock(pad=0x%X mk=0x%X) "
+            "epoch=%u:%u gen=%u",
             unsigned(title), tracking ? 1 : 0, nativeReady ? 1 : 0, onFoot ? 1 : 0, lockedOut ? 1 : 0, head,
             g.Baseline(), g.Baseline() - head, g.Initialized() ? 1 : 0, g.Active() ? 1 : 0,
             g.Suspended() ? 1 : 0, pressed, transport, unit,
-            g_mccCrouchLockPad.load(std::memory_order_relaxed), g_mccCrouchLockMk.load(std::memory_order_relaxed));
+            g_mccCrouchLockPad.load(std::memory_order_relaxed), g_mccCrouchLockMk.load(std::memory_order_relaxed),
+            unsigned(epoch >> 32), unsigned(epoch), generation);
     }
 
     // E-H2-13: the last button masks fed to the game, newest at g_fedHead-1.
@@ -368,7 +371,8 @@ namespace
             VR_PhysicalCrouchEpoch(),inputNow,physicalCrouchEnabled&&crouchTracking&&nativeReady,crouchButtons!=0);
         if(physicalCrouchEnabled)
             LogPhysicalCrouch(inputNow,currentTitle,crouchTracking,nativeReady,crouchOnFoot,crouchLockedOut,crouchHeadPos[1],
-                g_physicalCrouchInput.Gesture(),crouchButtons,nativeActions[vr_mapping::Crouch]);
+                g_physicalCrouchInput.Gesture(),crouchButtons,nativeActions[vr_mapping::Crouch],
+                VR_PhysicalCrouchEpoch(),TitleAdapter_GetGeneration(currentTitle));
         uint32_t actionSources=collectedSources;
         if(pauseChord.consumeClicks) actionSources&=~(vr_mapping::Bit(vr_mapping::B)|vr_mapping::Bit(vr_mapping::Y));
         if(chord.consumeClicks) actionSources&=~(vr_mapping::Bit(vr_mapping::LeftClick)|vr_mapping::Bit(vr_mapping::RightClick));
