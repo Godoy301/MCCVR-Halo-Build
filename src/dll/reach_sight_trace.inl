@@ -37,6 +37,7 @@ struct ReachSightTracePublication
 #if HALOMCCVR_DEV_DIAGNOSTICS
     std::atomic<uint64_t> traceTicksSum{0}, traceTicksMax{0}, timed{0};
     std::atomic<uint32_t> objectHits{0};   // type 4: bipeds, vehicles, crates, scenery ...
+    std::atomic<uint32_t> bipedHits{0};    // ...of which the hit object's kind is 0 (a biped)
 #endif
 } g_reachSightTrace;
 
@@ -112,6 +113,25 @@ struct ReachSightFlagsState
 // traces only while someone is asking, so a trace nobody consumes never costs the sim thread anything.
 std::atomic<uint64_t> g_reachSightDemandMs{0};
 inline constexpr uint64_t kReachSightDemandFreshMs = 250;
+
+#if HALOMCCVR_DEV_DIAGNOSTICS
+// The kind of the object a trace hit (result +0x40 = object index, HREK collisions.cpp), 0 = biped,
+// -1 = unknown. Sim thread, SEH-guarded (dev builds only).
+int ReachSightHitObjectKind(const uint8_t* result)
+{
+    __try
+    {
+        int32_t object = -1;
+        memcpy(&object, result + 0x40, sizeof(object));
+        uint8_t kind = 255;
+        return object != -1 && ReachVehicleObjectData(object, kind) ? kind : -1;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return -1;
+    }
+}
+#endif
 
 // Guarded qword read (kept free of C++ objects so __try is legal).
 bool ReachGuardedReadQword(uintptr_t address, uint64_t& value)
@@ -393,7 +413,11 @@ void ReachSightTraceTick(uint32_t unit)
     (hit ? trace.hits : trace.misses).fetch_add(1, std::memory_order_relaxed);
 #if HALOMCCVR_DEV_DIAGNOSTICS
     if (hit && type == 4)
+    {
         trace.objectHits.fetch_add(1, std::memory_order_relaxed);
+        if (ReachSightHitObjectKind(result) == 0)
+            trace.bipedHits.fetch_add(1, std::memory_order_relaxed);
+    }
 #endif
     if (hit)
     {
@@ -592,6 +616,14 @@ void ReportReachSightTrace()
     const uint64_t unarmed = trace.blockedUnarmed.exchange(0, std::memory_order_relaxed);
     (void)trace.blockedRate.exchange(0, std::memory_order_relaxed);
     const char* state =
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        // A fault-injected OFF must never read like a genuine one.
+        (g_config.reach_sight_fault & 2) ? "OFF: DEV fault injection (reach_sight_fault bit 1) withholds the "
+                                           "resolved flags; aim keeps the fixed-distance steer" :
+        (g_config.reach_sight_fault & 1) && trace.faulted.load(std::memory_order_acquire)
+            ? "OFF: DEV fault injection (reach_sight_fault bit 0) faulted the trace; aim keeps the "
+              "fixed-distance steer" :
+#endif
         !flags ? "OFF: the engine's crosshair-trace flags are not resolved on this build; aim keeps the "
                  "fixed-distance steer" :
         trace.faulted.load(std::memory_order_acquire) ? "OFF: the native trace faulted; aim keeps the "
@@ -609,7 +641,7 @@ void ReportReachSightTrace()
         s_lastState = state;
     }
 #if HALOMCCVR_DEV_DIAGNOSTICS
-    if (flags || trace.faulted.load(std::memory_order_acquire))
+    if (flags || trace.faulted.load(std::memory_order_acquire) || g_config.reach_sight_fault)
     {
         auto& shots = g_reachSightShots;
         const uint32_t nearest = trace.nearestMm.exchange(UINT32_MAX, std::memory_order_relaxed);
@@ -622,13 +654,14 @@ void ReportReachSightTrace()
         QueryPerformanceFrequency(&freq);
         const double usPerTick = freq.QuadPart ? 1.0e6 / double(freq.QuadPart) : 0.0;
         const uint64_t now = GetTickCount64();
-        LOG("REACHSIGHT trace: %llu traces (%llu hits, %u on objects / %llu misses, %llu skipped; blocked "
+        LOG("REACHSIGHT trace: %llu traces (%llu hits, %u on objects, %u bipeds / %llu misses, %llu skipped; blocked "
             "unresolved %llu faulted %llu idle %llu unhooked %llu unarmed %llu); cost avg %.1f / max %.1f us; "
             "range last %.2f m (nearest %.2f / farthest %.2f m), type %u; converged-shot live=%d; shots %u "
             "(%u measured): miss at the traced point avg %u / max %u mm, last %u mm at %.2f m; native origin "
             "vs engine eye max %u mm",
             (unsigned long long)traces, (unsigned long long)hits,
-            trace.objectHits.exchange(0, std::memory_order_relaxed), (unsigned long long)misses,
+            trace.objectHits.exchange(0, std::memory_order_relaxed),
+            trace.bipedHits.exchange(0, std::memory_order_relaxed), (unsigned long long)misses,
             (unsigned long long)skips, (unsigned long long)unresolved, (unsigned long long)faulted,
             (unsigned long long)idle, (unsigned long long)unhooked, (unsigned long long)unarmed,
             timed ? double(sumTicks) / double(timed) * usPerTick : 0.0, double(maxTicks) * usPerTick,
