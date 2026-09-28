@@ -122,6 +122,13 @@ struct RoomscaleFollow
                 // updates under higher-frequency camera callbacks.
                 float cx=error[0]*3.5f-velocity[0]*.18f;
                 float cz=error[1]*3.5f-velocity[1]*.18f;
+                // Brake by RELEASING, never by reversing. Near the target the velocity term turns
+                // the command against the error, and MCC's move-stick floor (any nonzero command
+                // is sent as >=27% stick) makes that a real walk the other way: measured in Reach
+                // FA, a 0.3 m step braked from 4 mm into an 18 mm reverse residual. Releasing lets
+                // the game's own deceleration stop the unit. A genuine overshoot still corrects,
+                // because the error itself has flipped and the command again points along it.
+                if(cx*error[0]+cz*error[1]<=0){cx=cz=0;}
                 const float magnitude=std::hypot(cx,cz);
                 if(magnitude>.8f){cx*=.8f/magnitude;cz*=.8f/magnitude;}
                 moveX=-cx*hz+cz*hx;

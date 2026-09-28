@@ -17842,6 +17842,26 @@ int main()
         head[0]+=0.015f; step();
         Check(mx==0 && my==0 && !follow.following, "after it ends, sway back to 2.5 cm does not restart it");
     }
+    // Brake by releasing: closing fast on the target, the command drops to zero instead of pointing
+    // back against the error (MCC's stick floor would make any reverse command a real walk back).
+    {
+        RoomscaleFollow follow;
+        float body[3]{}, head[3]{0,1.7f,0}, reference[3]{0,1.7f,0};
+        float mx=0,my=0; uint64_t now=100;
+        auto step=[&]{now+=11;return follow.Update(3,now,true,false,body,head,reference,0,-1,1,0,1.0f,mx,my);};
+        step();
+        head[0]=0.3f; step();
+        bool neverReversed=mx>0, released=false;
+        // Stop short of the target: this walker ignores the command, so past the head it would be a
+        // genuine overshoot, which the follow rightly corrects.
+        for (int i=0;i<40 && head[0]-reference[0]>0.02f;++i)
+        {
+            body[1]-=0.011f; step();   // 1 m/s toward the head
+            neverReversed&=mx>=0;
+            released|=(mx==0 && my==0);
+        }
+        Check(neverReversed && released, "approaching fast, the follow releases the stick instead of reversing it");
+    }
     Check(!Config{}.roomscale_movement, "roomscale is opt-in for existing and new configurations");
 
     g_failures += RunRoomscaleInputTests();
