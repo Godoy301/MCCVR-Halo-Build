@@ -315,6 +315,9 @@ void Input_RequestPauseToggle();
 // Diagnostic only: the file did not predict Reach's crouch behaviour in FA (see input.cpp).
 // Dev builds only (HALOMCCVR_DEV_DIAGNOSTICS); an empty stub otherwise.
 void Input_PollMccCrouchLock(uint64_t nowMs);
+// True when physical crouch learned the player's standing height only up to its cap (see
+// PhysicalCrouch::RiseCapped): the menu then suggests calibrating again while standing tall.
+bool Input_PhysicalCrouchRiseCapped();
 // Cold worker, 1 Hz: the dev CROUCH line from the snapshot the XInput hook stores (gameplay only).
 // Dev builds only; an empty stub otherwise, so the hook never formats or logs on the input thread.
 void Input_ReportPhysicalCrouch(uint64_t nowMs);

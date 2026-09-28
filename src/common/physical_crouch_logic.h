@@ -26,7 +26,7 @@ public:
         {active_=false;suspended_=true;last_=0;riseSince_=0;return false;}
         if(!initialized_||epoch_!=epoch||threshold_!=threshold)
         {
-            initialized_=true;epoch_=epoch;threshold_=threshold;baseline_=calibrated_=height;
+            initialized_=true;epoch_=epoch;threshold_=threshold;baseline_=calibrated_=height;riseCapped_=false;
             active_=false;suspended_=false;last_=now;riseSince_=0;return false;
         }
         if(last_&&(now<last_||now-last_>250)) {active_=false;suspended_=true;riseSince_=0;}
@@ -50,6 +50,10 @@ public:
     bool Active() const noexcept {return active_;}
     bool Suspended() const noexcept {return suspended_;}
     bool Initialized() const noexcept {return initialized_;}
+    // True once this calibration saw a steady height above what may be learned (the rise was capped):
+    // the reference then sits below the player's standing height, and calibrating again while standing
+    // tall gives them the full depth back. The menu shows it.
+    bool RiseCapped() const noexcept {return riseCapped_;}
 private:
     // Learn the standing height UPWARD only -- the rule Halo: Campaign Evolved's physical crouch uses,
     // adapted to tracking space (no floor here). A calibration taken while slouched or half-crouched
@@ -66,12 +70,40 @@ private:
         {riseSince_=now;riseValue_=height;return;}
         if(now>=riseSince_&&now-riseSince_>=kRiseHoldMs)
         {
-            baseline_=std::max(baseline_,std::min(std::min(riseValue_,height),calibrated_+MaxLearnedRise()));
+            const float learned=std::min(riseValue_,height),cap=calibrated_+MaxLearnedRise();
+            if(learned>cap) riseCapped_=true;
+            baseline_=std::max(baseline_,std::min(learned,cap));
             riseSince_=0;
         }
     }
 
     uint64_t epoch_{},last_{},riseSince_{};
     float baseline_{},calibrated_{},threshold_{},riseValue_{};
-    bool initialized_{},active_{},suspended_{};
+    bool initialized_{},active_{},suspended_{},riseCapped_{};
+};
+
+// A new calibration or tracking-space epoch re-samples the standing height. A runtime recenter announces
+// its new space before poses arrive in it, so sampling on the next poll can take the height from the OLD
+// space -- and a baseline sampled too high never heals (it only rises). Hand the gesture a new epoch
+// only once the head has held its height (kSteady) for kSettleMs; until then Epoch() keeps the last
+// settled one and Settled() is false, and the caller keeps the gesture unavailable (released, then
+// re-armed standing).
+class CrouchEpochSettle
+{
+public:
+    static constexpr float kSteady=.02f;
+    static constexpr uint64_t kSettleMs=300;
+    void Update(uint64_t epochNow,bool tracking,float height,uint64_t now) noexcept
+    {
+        if(epochNow!=seen_) {seen_=epochNow;since_=now;height_=height;}
+        else if(!tracking||!std::isfinite(height)||std::fabs(height-height_)>kSteady) {since_=now;height_=height;}
+        settled_=given_==epochNow||(tracking&&now>=since_&&now-since_>=kSettleMs);
+        if(settled_) given_=epochNow;
+    }
+    bool Settled() const noexcept {return settled_;}
+    uint64_t Epoch() const noexcept {return given_;}
+private:
+    uint64_t seen_{},given_{},since_{};
+    float height_{};
+    bool settled_{};
 };

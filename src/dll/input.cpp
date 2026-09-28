@@ -53,6 +53,7 @@ namespace
     MenuChordDetector g_pauseChord;
     thread_local ScopeActionInput g_scopeInput;
     thread_local PhysicalCrouchInput g_physicalCrouchInput;
+    std::atomic<bool> g_physicalCrouchRiseCapped{false};   // the menu's recalibrate hint
     thread_local vr_mapping::Mapper g_vrActionMapper;
     std::atomic<uint64_t> g_startPulseUntilMs{0};
 
@@ -354,22 +355,13 @@ namespace
             gameplayMode&&crouchOnFoot&&Game_IsHeadTracking()&&Game_IsPositionalTracking()&&
             VR_IsStereoEnabled()&&VR_RoomscaleTrackingFresh()&&
             VR_GetHeadPose(crouchHeadQuat,crouchHeadPos);
-        // A new calibration or tracking-space epoch re-samples the standing height. A runtime recenter
-        // announces its new space before poses arrive in it, so sampling on the next poll can take the
-        // height from the OLD space -- and a baseline sampled too high never heals (it only rises).
-        // Hand the gesture a new epoch only once the head has held its height (2 cm) for 300 ms; until
-        // then the gesture is unavailable (released, then re-armed standing).
-        static thread_local uint64_t s_epochSeen=0,s_epochGiven=0,s_steadySince=0;
-        static thread_local float s_steadyHeight=0.0f;
-        const uint64_t epochNow=VR_PhysicalCrouchEpoch();
+        // A new calibration/tracking-space epoch reaches the gesture only once the head is steady
+        // (CrouchEpochSettle, physical_crouch_logic.h); until then the gesture is unavailable.
+        static thread_local CrouchEpochSettle s_crouchEpochSettle;
         const float crouchHeadY=crouchHeadPos[1];
-        if(epochNow!=s_epochSeen){s_epochSeen=epochNow;s_steadySince=inputNow;s_steadyHeight=crouchHeadY;}
-        else if(!crouchTracking||!std::isfinite(crouchHeadY)||std::fabs(crouchHeadY-s_steadyHeight)>0.02f)
-        {s_steadySince=inputNow;s_steadyHeight=crouchHeadY;}
-        const bool crouchEpochSettled=s_epochGiven==epochNow||
-            (crouchTracking&&inputNow>=s_steadySince&&inputNow-s_steadySince>=300);
-        if(crouchEpochSettled) s_epochGiven=epochNow;
-        const uint64_t crouchEpoch=s_epochGiven;
+        s_crouchEpochSettle.Update(VR_PhysicalCrouchEpoch(),crouchTracking,crouchHeadY,inputNow);
+        const bool crouchEpochSettled=s_crouchEpochSettle.Settled();
+        const uint64_t crouchEpoch=s_crouchEpochSettle.Epoch();
         const uint32_t crouchButtons=g_physicalCrouchInput.Update(currentTitle,
             TitleAdapter_GetGeneration(currentTitle),crouchHeadY,crouchEpoch,inputNow,
             physicalCrouchEnabled,crouchTracking&&nativeReady&&crouchEpochSettled,g_config.physical_crouch_depth_m,
@@ -377,6 +369,8 @@ namespace
         PhysicalCrouchCamera_Publish(currentTitle,TitleAdapter_GetGeneration(currentTitle),
             crouchEpoch,inputNow,physicalCrouchEnabled&&crouchTracking&&nativeReady&&crouchEpochSettled,
             crouchButtons!=0);
+        g_physicalCrouchRiseCapped.store(physicalCrouchEnabled&&g_physicalCrouchInput.Gesture().RiseCapped(),
+            std::memory_order_relaxed);
 #if HALOMCCVR_DEV_DIAGNOSTICS
         if(physicalCrouchEnabled&&inputMode==RuntimeMode::Gameplay&&gameplayMode)
             PublishPhysicalCrouch(inputNow,currentTitle,crouchTracking,nativeReady,crouchOnFoot,crouchOnFootWhy,
@@ -987,6 +981,11 @@ void Input_RequestPauseToggle()
     LOG("pause fallback: injecting Start, presentation control=%s%s",
         authoritative ? "native engine flag" : "edge fallback, target=",
         authoritative ? "" : (paused ? "head-locked 2D" : "stereo 3D"));
+}
+
+bool Input_PhysicalCrouchRiseCapped()
+{
+    return g_physicalCrouchRiseCapped.load(std::memory_order_relaxed);
 }
 
 void Input_PollMccCrouchLock(uint64_t now)

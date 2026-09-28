@@ -89,11 +89,15 @@ int main()
         auto step=[&](float h){now+=20;return c.Update(h,9,now,true,depth);};
         const float cap=depth*.70f-.02f;
         Check(!step(normal-.20f),"calibration taken deeply slouched");
+        Check(!c.RiseCapped(),"nothing capped yet");
         for(int i=0;i<60;++i) step(normal);
         Check(std::fabs(c.Baseline()-(normal-.20f+cap))<.001f,"a rise beyond the cap is learned only up to the cap");
+        Check(c.RiseCapped(),"a capped rise is reported, so the menu can suggest recalibrating standing");
         Check(!step(normal-.20f),"the calibrated posture still reads standing");
     }
     // Seated play: calibrate seated, stand up, half-rise, sit back down -- never a crouch while seated.
+    // The half-rise (25 cm) is deeper than the activation depth (22 cm), so without the cap sitting back
+    // down would read as a crouch.
     {
         PhysicalCrouch c;uint64_t now=5000;const float seated=1.2f,depth=.22f;
         auto step=[&](float h){now+=20;return c.Update(h,9,now,true,depth);};
@@ -101,12 +105,36 @@ int main()
         for(int i=0;i<100;++i) step(seated+.5f);   // stands up for 2 s: beyond kMaxRise, not learned
         Check(std::fabs(c.Baseline()-seated)<.001f,"standing up from a seated calibration is not learned");
         Check(!step(seated),"sitting back down is not a crouch");
-        for(int i=0;i<60;++i) step(seated+.20f);   // a half-rise held for 1.2 s
+        for(int i=0;i<60;++i) step(seated+.25f);   // a half-rise held for 1.2 s
         Check(c.Baseline()>seated+.1f&&c.Baseline()<seated+depth*.70f,"a half-rise is learned, capped below release");
         bool seatedCrouch=false;
         for(int i=0;i<60;++i) seatedCrouch|=step(seated);
-        Check(!seatedCrouch,"sitting back down after a half-rise is still not a crouch");
+        Check(!seatedCrouch,"sitting back down after a half-rise deeper than the depth is still not a crouch");
         Check(step(c.Baseline()-depth*1.1f),"a real crouch below the learned line still works");
+    }
+    // A new epoch reaches the gesture only once the head has held its height for 300 ms.
+    {
+        CrouchEpochSettle s;
+        s.Update(0,true,1.7f,1000);
+        Check(s.Settled()&&s.Epoch()==0,"the initial epoch (0) is settled as it is");
+        s.Update(7,true,1.7f,1020);
+        Check(!s.Settled()&&s.Epoch()==0,"a new epoch is held back at first");
+        s.Update(7,true,1.71f,1200);
+        Check(!s.Settled()&&s.Epoch()==0,"still held within the settle window");
+        s.Update(7,true,1.71f,1321);
+        Check(s.Settled()&&s.Epoch()==7,"a head steady within 2 cm for 300 ms settles it");
+        s.Update(7,false,0.f,1400);
+        Check(s.Settled()&&s.Epoch()==7,"a later tracking gap does not unsettle a settled epoch");
+        s.Update(8,true,1.7f,1500);
+        s.Update(8,true,1.6f,1700);   // still moving: 10 cm since the epoch changed
+        s.Update(8,true,1.6f,1950);
+        Check(!s.Settled()&&s.Epoch()==7,"a head still moving restarts the window");
+        s.Update(8,false,0.f,2000);
+        s.Update(8,true,1.6f,2100);
+        s.Update(8,true,1.6f,2350);
+        Check(!s.Settled()&&s.Epoch()==7,"a tracking gap restarts the window too");
+        s.Update(8,true,1.6f,2400);
+        Check(s.Settled()&&s.Epoch()==8,"then it settles 300 ms after the head stopped");
     }
     {
         PhysicalCrouch c;uint64_t now=5000;const float normal=1.7f,depth=.22f;

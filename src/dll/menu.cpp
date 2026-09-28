@@ -778,9 +778,13 @@ namespace
             {g_config.physical_crouch_depth_m=crouchCm*.01f;changed=true;VR_RecalibratePhysicalCrouch();}
             if(ImGui::Button("Calibrate crouch at my current height")) VR_RecalibratePhysicalCrouch();
             ImGui::TextWrapped("Calibrate at your normal standing or seated height, then lower your head to crouch. "
-                "Standing taller for a second later raises the reference automatically. "
+                "Standing taller for a second later raises the reference automatically, by up to a little under "
+                "two thirds of the activation depth, so a seated player is never left crouched. "
                 "Smaller depths activate sooner. On foot only; button crouch remains separate. "
                 "Use MCC's hold-to-crouch setting; native toggle crouch is not overridden.");
+            if(Input_PhysicalCrouchRiseCapped())
+                ImGui::TextColored(ImVec4(1.f,.8f,.3f,1.f),"You stood taller than the reference learns on its own: "
+                    "press Calibrate while standing tall for the full crouch depth.");
         }
         ImGui::Spacing();
         ImGui::Text("VR turning (right controller stick)");
