@@ -17820,6 +17820,28 @@ int main()
         Check(!follow.Update(8,772,true,false,body,head,reference,0,-1,wx,wy,scale,mx,my) && mx==0 && my==0,
             "nonfinite tracking cannot produce locomotion");
     }
+    // Follow hysteresis: head sway inside kFollowStart never walks; once a follow starts it runs
+    // until the error is inside kFollowStop. (Head right = tracking +x; body right = world -y here.)
+    for (float scale : {0.328084f, 1.0f})
+    {
+        RoomscaleFollow follow;
+        float body[3]{}, head[3]{0,1.7f,0}, reference[3]{0,1.7f,0};
+        float mx=0,my=0; uint64_t now=100;
+        auto step=[&]{now+=11;return follow.Update(3,now,true,false,body,head,reference,0,-1,1,0,scale,mx,my);};
+        step();
+        head[0]=0.025f; step();
+        Check(mx==0 && my==0 && !follow.following, "a 2.5 cm lean (ordinary head sway) does not start a follow");
+        head[0]=0.035f; step();
+        Check((mx!=0 || my!=0) && follow.following, "a 3.5 cm lean starts a follow");
+        body[1]-=0.015f*scale; step();
+        Check(std::fabs(reference[0]-0.015f)<1e-5f && follow.following && (mx!=0 || my!=0),
+            "inside the start band but outside the stop band, an active follow keeps going");
+        body[1]-=0.01f*scale; step();
+        Check(!follow.following, "inside 1.5 cm the follow ends");
+        for (int i=0;i<6;++i) { now+=89; step(); }
+        head[0]+=0.015f; step();
+        Check(mx==0 && my==0 && !follow.following, "after it ends, sway back to 2.5 cm does not restart it");
+    }
     Check(!Config{}.roomscale_movement, "roomscale is opt-in for existing and new configurations");
 
     g_failures += RunRoomscaleInputTests();

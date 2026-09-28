@@ -19,8 +19,14 @@ inline bool RoomscaleGameplayEligible(GameTitle title, RuntimeMode mode) noexcep
 // body position + remaining tracked lean then represents one physical step.
 struct RoomscaleFollow
 {
+    // Follow hysteresis (Halo: Campaign Evolved's rule): a catch-up starts only once the head is
+    // kFollowStart from the body and, once started, runs until it is inside kFollowStop. With a
+    // single 1.5 cm threshold, ordinary head sway fired a stream of ~1 cm body steps (measured in
+    // Reach: a 2.5 cm lean moved the body 13 mm in one burst), each a walk-cycle blip. The view is
+    // head-locked either way; only the collision body lags, by at most kFollowStart.
+    static constexpr float kFollowStart=0.03f, kFollowStop=0.015f;
     bool seeded=false, commanded=false, settling=false;
-    bool manualPaused=false;
+    bool manualPaused=false, following=false;
     uint32_t generation=0;
     uint64_t time=0, lastCommand=0, lastMotion=0;
     uint64_t manualQuietSince=0;
@@ -42,10 +48,10 @@ struct RoomscaleFollow
         moveX=moveY=0;
         const float values[]{position[0],position[1],head[0],head[2],reference[0],
             reference[2],hx,hz,wx,wy,scale};
-        for (float v:values) if (!std::isfinite(v)) { seeded=false; commanded=settling=manualPaused=false; return false; }
+        for (float v:values) if (!std::isfinite(v)) { seeded=false; commanded=settling=manualPaused=following=false; return false; }
         const float hl=std::hypot(hx,hz),wl=std::hypot(wx,wy);
         if (!enabled || !epoch || !now || scale<=0 || hl<0.001f || wl<0.001f)
-        { seeded=false; commanded=settling=manualPaused=false; return false; }
+        { seeded=false; commanded=settling=manualPaused=following=false; return false; }
         hx/=hl; hz/=hl; wx/=wl; wy/=wl;
         const bool reset=!seeded || generation!=epoch || now<time || now-time>250 ||
             std::fabs(reference[0]-expectedReference[0])>0.0001f ||
@@ -55,7 +61,7 @@ struct RoomscaleFollow
         {
             initialLean[0]=head[0]-reference[0];
             initialLean[1]=head[2]-reference[2];
-            commanded=settling=false; velocity[0]=velocity[1]=0;
+            commanded=settling=following=false; velocity[0]=velocity[1]=0;
             lastCommand=lastMotion=now; seeded=true;
             manualPaused=false;
         }
@@ -103,20 +109,24 @@ struct RoomscaleFollow
             // A tracking jump must not become a long unattended walk.
             initialLean[0]=head[0]-reference[0];
             initialLean[1]=head[2]-reference[2];
-            error[0]=error[1]=0;velocity[0]=velocity[1]=0;settling=false;
+            error[0]=error[1]=0;velocity[0]=velocity[1]=0;settling=following=false;
         }
-        else if (!manualMove && !manualPaused && (distance>0.015f ||
-            (settling && std::hypot(velocity[0],velocity[1])>.05f)))
+        else
         {
-            // Position feedback follows promptly; measured native velocity
-            // brakes before overshoot. A short filter tolerates 30 Hz body
-            // updates under higher-frequency camera callbacks.
-            float cx=error[0]*3.5f-velocity[0]*.18f;
-            float cz=error[1]*3.5f-velocity[1]*.18f;
-            const float magnitude=std::hypot(cx,cz);
-            if(magnitude>.8f){cx*=.8f/magnitude;cz*=.8f/magnitude;}
-            moveX=-cx*hz+cz*hx;
-            moveY=cx*hx+cz*hz;
+            following=distance>kFollowStart || (following && distance>kFollowStop);
+            if (!manualMove && !manualPaused && (following ||
+                (settling && std::hypot(velocity[0],velocity[1])>.05f)))
+            {
+                // Position feedback follows promptly; measured native velocity
+                // brakes before overshoot. A short filter tolerates 30 Hz body
+                // updates under higher-frequency camera callbacks.
+                float cx=error[0]*3.5f-velocity[0]*.18f;
+                float cz=error[1]*3.5f-velocity[1]*.18f;
+                const float magnitude=std::hypot(cx,cz);
+                if(magnitude>.8f){cx*=.8f/magnitude;cz*=.8f/magnitude;}
+                moveX=-cx*hz+cz*hx;
+                moveY=cx*hx+cz*hz;
+            }
         }
         commanded=moveX!=0 || moveY!=0;
         if(commanded)lastCommand=now;
