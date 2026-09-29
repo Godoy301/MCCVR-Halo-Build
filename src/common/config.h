@@ -701,9 +701,10 @@ struct Config
     // Diagnostic: log the distinct (caller, flags, mode) of Reach's own collision_test_vector calls,
     // to identify the flags a bullet's flight test uses. Leave at 0 for play.
     int reach_collision_census = 0;
-    // Diagnostic: bin Halo 4's own PhysicsRayCast calls by caller and flag the ones that start at the engine
-    // eye and run along the converged aim (the crosshair query candidates). Leave at 0 for play.
-    int halo4_ray_census = 0;
+    // Diagnostic: bin the active title's own collision queries by caller and flag the ones that start at the
+    // engine eye and run along the converged aim (the crosshair / shot query candidates; Halo 4 and Halo 2).
+    // Leave at 0 for play.
+    int sight_ray_census = 0;
 
     // Halo Reach, SEATED, direct drive (reach_direct_drive = 3): the same trace-and-reaim aim in vehicles.
     // The write drives the seat's look (desired_angles), and Reach aims every seat's weapon from it: it

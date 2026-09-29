@@ -215,7 +215,7 @@ void Halo4ContactTick(uint32_t unit,void* instance)
 }
 
 // THE SHOT'S OWN QUERY. A census of Halo 4's PhysicsRayCast callers on the fire tick (dev
-// halo4_ray_census, 2026-09-29, Forge) found a shot's aim-assist query: caller +0x1DC6FA (function
+// sight_ray_census, 2026-09-29, Forge) found a shot's aim-assist query: caller +0x1DC6FA (function
 // 0x1DC2F4), profile 0x1A, 128 wu from the engine eye along the aim, flags 0x...44D409. It builds them
 // the way Reach and Halo 3 build their crosshair query (global | 0x202000 there):
 //      mov rax,[rip+global]; mov ecx,0x404400; mov edi,eax; ...; or edi,ecx; shr rax,32; ... call PhysicsRayCast

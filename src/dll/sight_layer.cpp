@@ -261,6 +261,125 @@ bool Game_SightReticleRange(float& outRangeM, bool& outHit)
     return true;
 }
 
+#if HALOMCCVR_DEV_DIAGNOSTICS
+namespace
+{
+struct EngineRayEntry
+{
+    std::atomic<uint32_t> rva{0}, profile{0};
+    std::atomic<uint64_t> flags{0};
+    std::atomic<uint32_t> count{0}, aligned{0};
+    std::atomic<float> lengthM{0.0f}, startMm{0.0f}, angleDeg{0.0f}, missMm{0.0f}, rangeM{0.0f};
+};
+constexpr size_t kEngineRaySlots = 48;
+EngineRayEntry g_engineRays[kTitleSlots][kEngineRaySlots];
+std::atomic<uint32_t> g_engineRayTitles{0};
+constexpr float kMetresPerWu = 3.048f;
+} // namespace
+#endif
+
+void Sight_NoteEngineRay(GameTitle title, uint32_t generation, uint32_t callerRva, uint32_t profile,
+                         uint64_t flags, const float start[3], const float end[3])
+{
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    if (!callerRva || !start || !end)
+        return;
+    const size_t slot = Slot(title);
+    g_engineRayTitles.fetch_or(1u << slot, std::memory_order_relaxed);
+    EngineRayEntry* entry = nullptr;
+    for (auto& candidate : g_engineRays[slot])
+    {
+        uint32_t expected = 0;
+        if (candidate.rva.load(std::memory_order_acquire) == callerRva ||
+            candidate.rva.compare_exchange_strong(expected, callerRva, std::memory_order_acq_rel) ||
+            expected == callerRva)
+        {
+            entry = &candidate;
+            break;
+        }
+    }
+    if (!entry)
+        return;
+    entry->count.fetch_add(1, std::memory_order_relaxed);
+    entry->profile.store(profile, std::memory_order_relaxed);
+    entry->flags.store(flags, std::memory_order_relaxed);
+    const float v[3]{end[0] - start[0], end[1] - start[1], end[2] - start[2]};
+    const float length = std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+    if (!std::isfinite(length) || length < 1.0e-6f)
+        return;
+    entry->lengthM.store(length * kMetresPerWu, std::memory_order_relaxed);
+    SightRay ray{};
+    SightTrace trace{};
+    if (!Sight_ReadRay(title, generation, kSightRayFreshMs, ray) ||
+        !Sight_ReadTrace(title, generation, kSightFreshMs, trace))
+        return;
+    const float p[3]{ray.head[0] + ray.dir[0] * trace.rangeWu, ray.head[1] + ray.dir[1] * trace.rangeWu,
+                     ray.head[2] + ray.dir[2] * trace.rangeWu};
+    const float a[3]{p[0] - ray.eye[0], p[1] - ray.eye[1], p[2] - ray.eye[2]};
+    const float al = std::sqrt(a[0] * a[0] + a[1] * a[1] + a[2] * a[2]);
+    if (!(al > 1.0e-6f))
+        return;
+    float dot = (a[0] * v[0] + a[1] * v[1] + a[2] * v[2]) / (al * length);
+    dot = dot > 1.0f ? 1.0f : (dot < -1.0f ? -1.0f : dot);
+    const float angle = std::acos(dot) * 57.29578f;
+    const float s[3]{start[0] - ray.eye[0], start[1] - ray.eye[1], start[2] - ray.eye[2]};
+    const float startMm = std::sqrt(s[0] * s[0] + s[1] * s[1] + s[2] * s[2]) * kMetresPerWu * 1000.0f;
+    if (startMm >= 300.0f || angle >= 2.0f)
+        return;
+    const float d[3]{v[0] / length, v[1] / length, v[2] / length};
+    const float w[3]{p[0] - start[0], p[1] - start[1], p[2] - start[2]};
+    const float c[3]{w[1] * d[2] - w[2] * d[1], w[2] * d[0] - w[0] * d[2], w[0] * d[1] - w[1] * d[0]};
+    entry->aligned.fetch_add(1, std::memory_order_relaxed);
+    entry->startMm.store(startMm, std::memory_order_relaxed);
+    entry->angleDeg.store(angle, std::memory_order_relaxed);
+    entry->missMm.store(std::sqrt(c[0] * c[0] + c[1] * c[1] + c[2] * c[2]) * kMetresPerWu * 1000.0f,
+                        std::memory_order_relaxed);
+    entry->rangeM.store(std::sqrt(w[0] * w[0] + w[1] * w[1] + w[2] * w[2]) * kMetresPerWu,
+                        std::memory_order_relaxed);
+#else
+    (void)title; (void)generation; (void)callerRva; (void)profile; (void)flags; (void)start; (void)end;
+#endif
+}
+
+void Sight_ReportEngineRays()
+{
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    static uint64_t s_last = 0;
+    const uint64_t now = GetTickCount64();
+    if (now - s_last < 5000)
+        return;
+    s_last = now;
+    const uint32_t titles = g_engineRayTitles.load(std::memory_order_relaxed);
+    for (size_t slot = 0; slot < kTitleSlots; ++slot)
+    {
+        if (!(titles & (1u << slot)))
+            continue;
+        const auto title = static_cast<GameTitle>(slot);
+        uint32_t callers = 0, queries = 0;
+        for (auto& entry : g_engineRays[slot])
+        {
+            const uint32_t rva = entry.rva.load(std::memory_order_acquire);
+            if (!rva)
+                continue;
+            const uint32_t count = entry.count.exchange(0, std::memory_order_relaxed);
+            const uint32_t aligned = entry.aligned.exchange(0, std::memory_order_relaxed);
+            if (count)
+            {
+                ++callers;
+                queries += count;
+            }
+            if (aligned)
+                LOG("SIGHT RAYS %s +0x%X profile 0x%X flags 0x%llX: %u queries, %u ALIGNED (start %.0f mm from the "
+                    "eye, %.2f deg from eye->point; the traced point %.0f mm off this line at %.2f m), %.1f m long",
+                    TitleName(title), rva, entry.profile.load(), (unsigned long long)entry.flags.load(), count,
+                    aligned, double(entry.startMm.load()), double(entry.angleDeg.load()),
+                    double(entry.missMm.load()), double(entry.rangeM.load()), double(entry.lengthM.load()));
+        }
+        LOG("SIGHT RAYS %s: %u callers, %u queries in 5 s", TitleName(title), callers, queries);
+    }
+#endif
+}
+
 void Sight_Report()
 {
     static uint64_t s_last = 0;

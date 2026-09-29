@@ -1466,9 +1466,6 @@ namespace
     // Halo 3 / ODST trace-and-reaim, the engine-crosshair check (dev; legacy_sight_trace.inl).
     void LegacySightNoteEngineTrace(GameTitle title, uint64_t flags, const float* start, const float* vector,
         uintptr_t caller);
-    // Halo 4 raycast census (dev, halo4_ray_census; legacy_sight_trace.inl).
-    void LegacySightNoteHalo4Ray(uintptr_t caller, uintptr_t base, size_t size, uint32_t profile,
-        uint32_t flags, const float* start, const float* end);
     bool ReachConvergedShotLive(uint64_t nowMs);
     void ReachSightMeasureShot(int32_t unitIndex, const float* origin, const float* direction,
                                const float* cameraPoint, uint8_t firesFromCamera, uint8_t useUnitAim);
@@ -36190,9 +36187,19 @@ namespace
         __try
         {
 #if HALOMCCVR_DEV_DIAGNOSTICS
-            if (input && !g_halo4MuzzleOwnedQuery && g_config.halo4_ray_census)
-                LegacySightNoteHalo4Ray(reinterpret_cast<uintptr_t>(_ReturnAddress()), g_halo4Camera.base,
-                    g_halo4Camera.size, input->profile, input->collisionFlags, input->start, input->end);
+            // The engine-ray census (sight_layer.h), dev key sight_ray_census.
+            if (input && !g_halo4MuzzleOwnedQuery && g_config.sight_ray_census)
+            {
+                const uintptr_t caller = reinterpret_cast<uintptr_t>(_ReturnAddress());
+                const uintptr_t base = g_halo4Camera.base;
+                if (base && caller > base && caller < base + g_halo4Camera.size)
+                {
+                    uint64_t flags = 0;
+                    memcpy(&flags, &input->collisionFlags, sizeof(flags));
+                    Sight_NoteEngineRay(GameTitle::Halo4, TitleAdapter_GetGeneration(GameTitle::Halo4),
+                        static_cast<uint32_t>(caller - base), input->profile, flags, input->start, input->end);
+                }
+            }
 #endif
             if(g_halo4MuzzleOwnedQuery||!Halo4RedirectContactRay(reinterpret_cast<uintptr_t>(_ReturnAddress()),input,output,result))
                 result = Halo4PhysicsRayCastDetourBody(input, output);
@@ -43480,6 +43487,7 @@ namespace
             // Trace-and-reaim outside Reach (sight_layer.h): traces, cost and converged polls, per title.
             Sight_Report();
             LegacySightReport();
+            Sight_ReportEngineRays();
             LegacyDriveReport();
 #if HALOMCCVR_EXPERIMENTAL_REACH_RENDER_CANDIDATE
             // Status the aim provider and the direct-drive hook only count into atomics; logged here.

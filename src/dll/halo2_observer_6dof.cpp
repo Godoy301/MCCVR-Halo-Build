@@ -99,6 +99,7 @@ namespace
     std::atomic<uint32_t> g_generation{0};
     std::atomic<uint32_t> g_vrFailureGeneration{0};
     std::atomic<uintptr_t> g_moduleBase{0};
+    std::atomic<size_t> g_moduleSize{0};
     std::atomic<uintptr_t> g_originalAddress{0};
     std::atomic<uintptr_t> g_observerResult{0};
     std::atomic<uint32_t> g_activeCallbacks{0};
@@ -2038,6 +2039,20 @@ namespace
             const bool redirected=Halo2RedirectContactVector(
                 reinterpret_cast<uintptr_t>(_ReturnAddress()),flags,
                 ignoredObject1,ignoredObject2,result,hit);
+#if HALOMCCVR_DEV_DIAGNOSTICS
+            // The engine-ray census (sight_layer.h), dev key sight_ray_census.
+            if (g_config.sight_ray_census && !g_halo2CollisionOwnQuery && start && delta)
+            {
+                const uintptr_t caller = reinterpret_cast<uintptr_t>(_ReturnAddress());
+                const uintptr_t base = g_moduleBase.load(std::memory_order_acquire);
+                if (base && caller > base && caller < base + g_moduleSize.load(std::memory_order_acquire))
+                {
+                    const float end[3]{start[0] + delta[0], start[1] + delta[1], start[2] + delta[2]};
+                    Sight_NoteEngineRay(GameTitle::Halo2, g_generation.load(std::memory_order_acquire),
+                        static_cast<uint32_t>(caller - base), 0, flags, start, end);
+                }
+            }
+#endif
             if (original && !redirected)
             {
                 hit = original(flags, start, delta, ignoredObject1,
@@ -3279,6 +3294,23 @@ namespace
         if (weaponAtMs && now >= weaponAtMs && now - weaponAtMs <= 250)
             weapon = static_cast<int32_t>(
                 g_sightWeaponObject.load(std::memory_order_relaxed));
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        // The ray this trace measures, for the engine-ray census (the aim path does not publish one).
+        if (g_config.sight_ray_census)
+        {
+            SightRay ray{};
+            ray.generation = generation;
+            ray.sampleMs = now;
+            ray.unit = static_cast<int32_t>(unit);
+            for (int axis = 0; axis < 3; ++axis)
+            {
+                ray.head[axis] = head[axis];
+                ray.dir[axis] = dir[axis];
+                ray.eye[axis] = eye[axis];
+            }
+            Sight_PublishRay(kTitle, ray);
+        }
+#endif
         const float length = kSightTraceLengthWu;
         const float start[3]{head[0] + dir[0] * kSightTraceSkipWu,
             head[1] + dir[1] * kSightTraceSkipWu, head[2] + dir[2] * kSightTraceSkipWu};
@@ -4547,6 +4579,7 @@ namespace
         g_originalAddress.store(0, std::memory_order_release);
         g_observerResult.store(0, std::memory_order_release);
         g_moduleBase.store(0, std::memory_order_release);
+        g_moduleSize.store(0, std::memory_order_release);
         g_generation.store(0, std::memory_order_release);
         g_installed.store(false, std::memory_order_release);
         g_referenceValid.store(false, std::memory_order_release);
@@ -4647,6 +4680,7 @@ namespace
         g_observerResult.store(
             observerResultArray, std::memory_order_release);
         g_moduleBase.store(base, std::memory_order_release);
+        g_moduleSize.store(size, std::memory_order_release);
         g_generation.store(generation, std::memory_order_release);
         Halo2PreparePhysicalCrouchCamera(base,size);
         g_teardownRequested.store(false, std::memory_order_release);

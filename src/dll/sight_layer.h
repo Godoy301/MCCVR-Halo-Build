@@ -81,3 +81,14 @@ bool Game_SightReticleRange(float& outRangeM, bool& outHit);
 
 // Cold worker: one status line per title that is tracing, every 2 s.
 void Sight_Report();
+
+// ENGINE-RAY CENSUS (dev; the callers gate it with the dev key sight_ray_census): which of the title's own
+// collision queries is its crosshair / shot query? A title's collision hook reports each query the game
+// makes with its caller's RVA. One that starts within 0.3 m of the solve's engine eye and runs within 2 deg
+// of the eye -> traced-point direction counts as ALIGNED, with how far the traced point sits off its line.
+// Needs the title's ray and trace published. Compare windows with and without shots: a caller that
+// appears only on shots is the shot's own query. Compiled out of player builds (empty stubs).
+void Sight_NoteEngineRay(GameTitle title, uint32_t generation, uint32_t callerRva, uint32_t profile,
+                         uint64_t flags, const float start[3], const float end[3]);
+// Cold worker, every 5 s: the census lines of every title that fed it.
+void Sight_ReportEngineRays();
