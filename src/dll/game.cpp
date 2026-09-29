@@ -34398,6 +34398,10 @@ namespace
 #endif
 
 #if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA
+    // Halo 4's on-foot verdict for the physical crouch, stamped by the camera hook (an engine thread, where
+    // Halo 4's per-thread TLS is readable) and read from the XInput poll (Game_Halo4OnFoot).
+    std::atomic<uint64_t> g_halo4OnFootMs{0};
+
     // =======================================================================
     // C-H4-7: Halo 4 stock-projection stereo geometry on C-H4-5's wrapper.
     //
@@ -40713,6 +40717,11 @@ namespace
                 const Halo4CameraBasis beforeHead = stock;
                 if (Halo4ApplyHeadPose(stock, headInput))
                 {
+                    {
+                        Halo4VehicleInputState seat{};
+                        g_halo4OnFootMs.store(Halo4ReadVehicleInput(seat) && !seat.seated &&
+                            seat.parent == UINT32_MAX ? GetTickCount64() : 0, std::memory_order_release);
+                    }
                     ApplyCachedPhysicalCrouch(GameTitle::Halo4,stock.position,
                         -Clamp((snapshot.headPosition[1]-headInput.headPositionReference[1])*worldScale,-1.5f,1.5f),true);
                     headTracked = true;
@@ -49129,12 +49138,14 @@ void* Game_ReloadPolicyWeapon(GameTitle title, uint32_t weapon)
 }
 
 // Halo 4 publishes Gameplay in a seat too; the physical crouch needs its own on-foot state. Called from the
-// XInput poll, which runs on an engine thread (Game_MapMoveStick reads the same seat state from there).
+// XInput poll, which is NOT always the engine thread: reading Halo 4's per-thread TLS from there passed only
+// when the poll happened to land on it, so the gate flickered about once a second and let go of every duck
+// (FA, Forge, 2026-09-29). The camera hook stamps the verdict instead; a stale stamp is "not on foot".
 bool Game_Halo4OnFoot()
 {
 #if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA
-    Halo4VehicleInputState seat{};
-    return Halo4ReadVehicleInput(seat) && !seat.seated && seat.parent==UINT32_MAX;
+    const auto at = g_halo4OnFootMs.load(std::memory_order_acquire), now = GetTickCount64();
+    return at && now >= at && now - at <= 250;
 #else
     return false;
 #endif
