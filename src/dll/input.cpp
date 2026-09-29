@@ -535,8 +535,11 @@ namespace
             state->Gamepad.sThumbLX = 0;
             state->Gamepad.sThumbLY = 0;
             static std::atomic<bool> gestureLogged{false};
+            // Name the hand that did it: dpad_hand (default 0, the LEFT controller; CE always left). This
+            // line said "right" whatever the setting, which sent one diagnosis to the wrong controller.
             if (!gestureLogged.exchange(true))
-                LOG("M3: D-pad gesture active (right controller held at head)");
+                LOG("M3: D-pad gesture active (%s controller held at head)",
+                    TitleAdapter_GetActiveTitle() == GameTitle::HaloCE || g_config.dpad_hand == 0 ? "left" : "right");
         }
         else if (Game_MoveStickIsLocomotion())
         {
