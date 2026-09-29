@@ -15,12 +15,17 @@ float CrouchCameraBody(uint32_t expectedGeneration,uint64_t epoch,float physical
 {
     PhysicalCrouchCameraRequest request{};
     HaloCELocalPlayerState state{};
-    if(!allowed||!crouchCameraReady.load(std::memory_order_acquire)||!StateCurrent()||
-       !PhysicalCrouchCamera_Read(request)||!ReadLocalPlayerState(state)||
+    const uint32_t gateWhy=(!allowed?0x1u:0u)|(!crouchCameraReady.load(std::memory_order_acquire)?0x4u:0u)|
+        (!StateCurrent()?0x8u:0u);
+    const bool requested=!gateWhy&&PhysicalCrouchCamera_Read(request);
+    if(gateWhy||!requested||!ReadLocalPlayerState(state)||
        !state.hasControlledUnit||!state.onFoot||!state.nativePreparesFirstPerson||
        state.nativeInputBlocked||state.nativeLookBlocked||state.nativePaused||state.nativeCinematicFlag||
        state.generation!=expectedGeneration)
-    {crouchCameraLease.Reset();return 0;}
+    {
+        PhysicalCrouchCamera_NoteNativeMiss(GameTitle::HaloCE,gateWhy?gateWhy:(!requested?0x40u:0x10u));
+        crouchCameraLease.Reset();return 0;
+    }
     __try
     {
         const auto get=reinterpret_cast<ObjectGetFn>(moduleBase+contract::player_state::state_object_try_get);

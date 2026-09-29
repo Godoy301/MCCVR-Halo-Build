@@ -32,10 +32,12 @@ void Halo3ApplyPhysicalCrouchCamera(float* position,float physicalDown,bool play
     static thread_local PhysicalCrouchCameraLease lease;
     PhysicalCrouchCameraRequest request{};
     const auto generation=g_halo3RuntimeGeneration.load(std::memory_order_acquire);
-    if(!playerControlled||!g_config.physical_crouch||!g_positional.load()||
-        !generation||g_halo3CrouchCameraGeneration.load(std::memory_order_acquire)!=generation||
-        !g_halo3PlayerUnitGetter||!PhysicalCrouchCamera_Read(request))
-    {lease.Reset();return;}
+    const uint32_t gateWhy=(!playerControlled?0x1u:0u)|(!g_config.physical_crouch?0x2u:0u)|
+        (!g_positional.load()?0x4u:0u)|(!generation?0x8u:0u)|
+        (g_halo3CrouchCameraGeneration.load(std::memory_order_acquire)!=generation?0x10u:0u)|
+        (!g_halo3PlayerUnitGetter?0x20u:0u);
+    if(gateWhy||!PhysicalCrouchCamera_Read(request))
+    {PhysicalCrouchCamera_NoteNativeMiss(GameTitle::Halo3,gateWhy?gateWhy:0x40u);lease.Reset();return;}
     __try
     {
         const uint32_t owner=static_cast<uint32_t>(g_halo3PlayerUnitGetter(0));
@@ -43,8 +45,9 @@ void Halo3ApplyPhysicalCrouchCamera(float* position,float physicalDown,bool play
         const auto tag=unit?*reinterpret_cast<const uint32_t*>(unit):UINT32_MAX;
         const auto* definition=Halo3LoadedTagDefinition(tag);
         float reduction=0.f;
-        if(!Halo3PhysicalCrouchReduction(unit,definition,reduction))
-        {lease.Reset();return;}
+        uint32_t readWhy=0;
+        if(!Halo3PhysicalCrouchReduction(unit,definition,reduction,&readWhy))
+        {PhysicalCrouchCamera_NoteNativeMiss(GameTitle::Halo3,0x80u|(readWhy<<8));lease.Reset();return;}
         PhysicalCrouchCamera_NoteNativeDrop(GameTitle::Halo3,reduction);   // dev: the game's own crouch
         const float correction=lease.Update(request,GameTitle::Halo3,generation,
             VR_PhysicalCrouchEpoch(),GetTickCount64(),owner,reinterpret_cast<uintptr_t>(unit),

@@ -53,6 +53,20 @@ namespace {
 constexpr size_t kWitnessSlots=8;
 std::atomic<float> witnessDrop[kWitnessSlots]{};
 std::atomic<uint64_t> witnessAt[kWitnessSlots]{};
+std::atomic<uint32_t> missWhy[kWitnessSlots]{};
+std::atomic<uint64_t> missAt[kWitnessSlots]{};
+}
+void PhysicalCrouchCamera_NoteNativeMiss(GameTitle title,uint32_t why) noexcept
+{
+    const size_t slot=static_cast<size_t>(title)%kWitnessSlots;
+    missWhy[slot].store(why,std::memory_order_relaxed);
+    missAt[slot].store(GetTickCount64(),std::memory_order_release);
+}
+uint32_t PhysicalCrouchCamera_NativeMiss(GameTitle title,uint64_t maxAgeMs) noexcept
+{
+    const size_t slot=static_cast<size_t>(title)%kWitnessSlots;
+    const uint64_t at=missAt[slot].load(std::memory_order_acquire),now=GetTickCount64();
+    return at&&now>=at&&now-at<=maxAgeMs ? missWhy[slot].load(std::memory_order_relaxed) : 0u;
 }
 void PhysicalCrouchCamera_NoteNativeDrop(GameTitle title,float dropWu) noexcept
 {
