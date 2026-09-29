@@ -4,6 +4,7 @@
 #include "haloce_stereo_core.h"
 #include "haloce_native_bindings.h"
 #include "hook_quiescence.h"
+#include "sight_layer.h"
 #include "title_adapter.h"
 #include "../common/haloce_controls_logic.h"
 #include "../common/haloce_unit_control_logic.h"
@@ -56,6 +57,24 @@ bool Owner(uint32_t unit,HaloCELocalPlayerState& state,RenderContext& context) n
             state.nativeCinematicFlag,context.tracking.controllers.controlsPresentationBlocked})&&
         Current()&&HaloCE_RenderContextCurrent(context);
 }
+// Trace-and-reaim (sight_layer.h): the aiming direction through the point the eye-anchored intent ray
+// hits, as seen from CE's engine eye -- the record CE replicates and integrates into the unit's aim, so the
+// engine's own crosshair trace lands where the controller points. nullptr without a fresh trace result:
+// the controller's own forward is written then, as before.
+std::atomic<uint64_t> convergedPackets{};
+const Vec3* ConvergedAim(const RenderContext& context,Vec3& storage) noexcept
+{
+    Vec3 head{},dir{},eye{};
+    if (!BuildSightGeometry(context.camera,context.tracking,context.reference,
+        context.tracking.controllers.primaryAim,context.unitsPerMeter,context.positional,head,dir,eye))
+        return nullptr;
+    const float h[3]{head.x,head.y,head.z},d[3]{dir.x,dir.y,dir.z},e[3]{eye.x,eye.y,eye.z};
+    float bent[3]{};
+    if (!Sight_ConvergedDirection(GameTitle::HaloCE,TitleAdapter_GetGeneration(GameTitle::HaloCE),h,d,e,bent))
+        return nullptr;
+    storage={bent[0],bent[1],bent[2]};
+    return &storage;
+}
 bool CopyPacket(const UnitControlPacket* source,UnitControlPacket& output) noexcept
 {
     if (!source) return false;
@@ -101,9 +120,11 @@ void UnitControlBody(uint32_t unit,const UnitControlPacket* source,int32_t clien
     UnitControlPacket packet{},candidate{};
     HaloCELocalPlayerState state{},latest{};RenderContext context{},latestContext{};
     bool aim{};
+    Vec3 convergedStorage{};const Vec3* converged=nullptr;
     if (caller==moduleBase+0xad0d5b&&ready.load(std::memory_order_acquire)&&
         Owner(unit,state,context)&&CopyPacket(source,packet)&&
-        BuildTrackedUnitControl(context,packet,candidate,aim)&&Owner(unit,latest,latestContext)&&
+        ((converged=ConvergedAim(context,convergedStorage)),true)&&
+        BuildTrackedUnitControl(context,packet,candidate,aim,converged)&&Owner(unit,latest,latestContext)&&
         state.player==latest.player&&state.inputUser==latest.inputUser&&
         state.unit==latest.unit&&
         context.referenceRevision==latestContext.referenceRevision&&
@@ -117,6 +138,12 @@ void UnitControlBody(uint32_t unit,const UnitControlPacket* source,int32_t clien
         bodies.fetch_add(1,std::memory_order_relaxed);
         if (aim) aims.fetch_add(1,std::memory_order_relaxed);
         else declined.fetch_add(1,std::memory_order_relaxed);
+        // The aim now in effect is the converged one: the compositor draws the traced reticle.
+        if (aim&&converged)
+        {
+            convergedPackets.fetch_add(1,std::memory_order_relaxed);
+            Sight_MarkConverged(GameTitle::HaloCE,context.unitsPerMeter);
+        }
         return;
     }
     int16_t seat=-1,latestSeat=-1;
@@ -331,8 +358,8 @@ bool HaloCEUnitControl_Poll(uintptr_t base,size_t size,uint32_t gen,bool isActiv
     if (now-lastReport>=2000)
     {
         lastReport=now;
-        LOG("CE unit control gen=%u ready=%d bodies=%llu aims=%llu stock=%llu aimDeclined=%llu movement=%llu movementStock=%llu movementDeclined=%llu exceptions=%llu vehicleReady=%d vehicles=%llu vehicleDeclined=%llu",
-            gen,ready.load(),bodies.load(),aims.load(),stock.load(),declined.load(),movements.load(),movementStock.load(),movementDeclined.load(),exceptions.load(),vehicleReady.load(),vehicles.load(),vehicleDeclined.load());
+        LOG("CE unit control gen=%u ready=%d bodies=%llu aims=%llu (converged on the traced point %llu) stock=%llu aimDeclined=%llu movement=%llu movementStock=%llu movementDeclined=%llu exceptions=%llu vehicleReady=%d vehicles=%llu vehicleDeclined=%llu",
+            gen,ready.load(),bodies.load(),aims.load(),convergedPackets.load(),stock.load(),declined.load(),movements.load(),movementStock.load(),movementDeclined.load(),exceptions.load(),vehicleReady.load(),vehicles.load(),vehicleDeclined.load());
     }
     return Current()&&ready.load();
 }

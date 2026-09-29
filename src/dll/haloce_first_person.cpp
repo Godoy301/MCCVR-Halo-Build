@@ -8,6 +8,7 @@
 #include "haloce_stereo_core.h"
 #include "haloce_native_bindings.h"
 #include "hook_quiescence.h"
+#include "sight_layer.h"
 #include "title_adapter.h"
 #include "../common/haloce_first_person_logic.h"
 #include "../common/haloce_snapshot.h"
@@ -69,6 +70,7 @@ std::atomic<uint64_t> observed{},applied{},refused{},exceptions{},lastApplied{};
 std::atomic<uint64_t> alignmentKnownGraph{},alignmentUnknownGraph{};
 std::atomic<uint64_t> aimObserved{},aimApplied{},aimRefused{};
 std::atomic<uint64_t> assistApplied{};
+std::atomic<uint64_t> convergedAims{},parallelAims{};
 std::atomic<uint64_t> skinApplied{},skinRefused{};
 std::atomic<uint64_t> projectionApplied{},projectionRefused{};
 std::atomic<uint64_t> projectionPolicyRefused{},projectionSelectorRefused{},projectionChangedRefused{};
@@ -155,16 +157,32 @@ bool LocalOnFootShooter(uint32_t shooter) noexcept
         !state.nativeInputBlocked&&!state.nativeLookBlocked&&!state.nativePaused&&
         !state.nativeCinematicFlag;
 }
-bool ControllerShotDirection(uint32_t shooter,Vec3& direction) noexcept
+// The direction CE's player shots are aimed along. TRACE-AND-REAIM whenever it can resolve (sight_layer.h):
+// the line from the engine eye through the point the eye-anchored intent ray hits, so the shot converges
+// on what the controller points at, at any range and however far the head is from the character. The
+// engine eye is CE's own director eye when the caller has it (`engineEye`), else the stock centre camera.
+// Only when there is no fresh trace does it fall back to the controller's own direction, which runs
+// parallel to the hand ray from the engine eye (the aim before this).
+bool ControllerShotDirection(uint32_t shooter,Vec3& direction,const Vec3* engineEye=nullptr) noexcept
 {
-    RenderContext context{};NodeMatrix aim{};
+    RenderContext context{};Vec3 head{},dir{},eye{};
     if (!AimCurrent()||!LocalOnFootShooter(shooter)||
         !HaloCE_GetGameplayContext(context)||
         context.tracking.controllers.controlsPresentationBlocked||
-        !BuildControllerMatrix(context.camera,context.tracking,context.reference,
-            context.tracking.controllers.primaryAim,context.unitsPerMeter,context.positional,aim)||
+        !BuildSightGeometry(context.camera,context.tracking,context.reference,
+            context.tracking.controllers.primaryAim,context.unitsPerMeter,context.positional,head,dir,eye)||
         !HaloCE_RenderContextCurrent(context)||!AimCurrent()) return false;
-    direction=aim.forward;
+    if (engineEye&&Finite(*engineEye)) eye=*engineEye;
+    const float h[3]{head.x,head.y,head.z},d[3]{dir.x,dir.y,dir.z},e[3]{eye.x,eye.y,eye.z};
+    float bent[3]{};
+    if (Sight_ConvergedDirection(GameTitle::HaloCE,TitleAdapter_GetGeneration(GameTitle::HaloCE),h,d,e,bent))
+    {
+        direction={bent[0],bent[1],bent[2]};
+        convergedAims.fetch_add(1,std::memory_order_relaxed);
+        return true;
+    }
+    direction=dir;
+    parallelAims.fetch_add(1,std::memory_order_relaxed);
     return true;
 }
 bool WriteDirection(Vec3* destination,const Vec3& value) noexcept
@@ -251,8 +269,10 @@ int16_t AssistRayBody(uint32_t unit,Vec3* position,Vec3* direction,uintptr_t cal
     Vec3 controller{};
     // This is the downstream PLAYER aim-assist ray, after shot adjustment.
     // Other uses of the director ray (camera, AI, scopes) remain untouched.
+    // CE traces its crosshair from this ray's own position (its director eye), so converge from THAT eye:
+    // the engine's trace then finds the point the intent ray hit, and the muzzle is aimed at it.
     if (caller==moduleBase+0xb67be4&&
-        ControllerShotDirection(unit,controller)&&WriteDirection(direction,controller))
+        ControllerShotDirection(unit,controller,position)&&WriteDirection(direction,controller))
         assistApplied.fetch_add(1,std::memory_order_relaxed);
     return perspective;
 }
@@ -1059,8 +1079,10 @@ bool HaloCEFirstPerson_Poll(uintptr_t base,size_t size,uint32_t gen,bool isActiv
         if (alignmentKnownGraph.load() || alignmentUnknownGraph.load())
             LOG("CE hand alignment gen=%u verifiedGripGraph=%llu unknownGraphPriorMount=%llu; unknown graphs retain prior hand placement",
                 gen,alignmentKnownGraph.load(),alignmentUnknownGraph.load());
-        LOG("CE aim gen=%u installed=%d observed=%llu applied=%llu stock=%llu assist=%llu",
-            gen,aimInstalled.load(),aimObserved.load(),aimApplied.load(),aimRefused.load(),assistApplied.load());
+        LOG("CE aim gen=%u installed=%d observed=%llu applied=%llu stock=%llu assist=%llu; shot directions "
+            "converged on the traced point %llu / parallel to the hand ray (no fresh trace) %llu",
+            gen,aimInstalled.load(),aimObserved.load(),aimApplied.load(),aimRefused.load(),assistApplied.load(),
+            convergedAims.load(),parallelAims.load());
         LOG("CE continuous targeting gen=%u installed=%d observed=%llu controller=%llu stock=%llu",
             gen,targetInstalled.load(),targetObserved.load(),targetApplied.load(),targetRefused.load());
         LOG("CE Anniversary hand scale gen=%u installed=%d applied=%llu stock=%llu",

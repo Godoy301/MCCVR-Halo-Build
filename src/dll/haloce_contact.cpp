@@ -5,6 +5,7 @@
 #include "haloce_native_bindings.h"
 #include "contact_melee_queue.h"
 #include "hook_quiescence.h"
+#include "sight_layer.h"
 #include "title_adapter.h"
 #include "vr.h"
 #include "../common/haloce_contact_logic.h"
@@ -294,6 +295,53 @@ void ContactTick(uint32_t unit)
     }
     __finally { processing.store(false,std::memory_order_release); }
 }
+// SIGHT (trace-and-reaim, sight_layer.h). The local player's intent ray -- from the rendered centre eye
+// along the controller -- traced with CE's OWN crosshair flags: player_aim_projectile traces its director
+// ray with 0x1000E9 (HCEEK collisions.h: _collision_test_for_projectiles_flags -- structure, media, front
+// faces, ignore invisible, and objects of every type), ignoring the player's unit. It is the query and the
+// thread the physical-melee backend above already uses. The aim path bends its aim through the point.
+uint8_t GuardedSightTrace(const float* start,const float* displacement,uint32_t unit,
+    CollisionResult& result,bool& faulted) noexcept
+{
+    faulted=false;
+    __try
+    {
+        return reinterpret_cast<CollisionFn>(moduleBase+contract::contact::contact_collision)(
+            0x1000e9,start,displacement,unit,&result);
+    }
+    __except(EXCEPTION_EXECUTE_HANDLER) { faulted=true;return 0; }
+}
+void SightTick(uint32_t unit) noexcept
+{
+    constexpr GameTitle kTitle=GameTitle::HaloCE;
+    if (!Current()||Sight_TraceFaulted(kTitle)) return;
+    // Every biped comes through this hook every tick: find the local one through a 100 ms cache.
+    static uint64_t s_localAtMs=0;static uint32_t s_local=UINT32_MAX;
+    const uint64_t now=GetTickCount64();
+    if (!s_localAtMs||now<s_localAtMs||now-s_localAtMs>100)
+    {
+        HaloCELocalPlayerState local{};
+        s_local=HaloCEControls_GetLocalPlayerState(local)&&local.hasControlledUnit?local.unit:UINT32_MAX;
+        s_localAtMs=now;
+    }
+    if (unit==UINT32_MAX||unit!=s_local||!Sight_TraceDue(kTitle,now)) return;
+    HaloCELocalPlayerState state{};RenderContext context{};
+    if (!Admitted(unit,state,context)) return;
+    Vec3 head{},dir{},eye{};
+    if (!BuildSightGeometry(context.camera,context.tracking,context.reference,
+        context.tracking.controllers.primaryAim,context.unitsPerMeter,context.positional,head,dir,eye)) return;
+    const float length=kSightTraceLengthWu;
+    const float start[3]{head.x+dir.x*kSightTraceSkipWu,head.y+dir.y*kSightTraceSkipWu,head.z+dir.z*kSightTraceSkipWu};
+    const float displacement[3]{dir.x*length,dir.y*length,dir.z*length};
+    CollisionResult result{};bool faulted=false;
+    LARGE_INTEGER q0{},q1{};QueryPerformanceCounter(&q0);
+    const uint8_t returned=GuardedSightTrace(start,displacement,unit,result,faulted);
+    QueryPerformanceCounter(&q1);
+    if (faulted) { Sight_NoteTraceFault(kTitle);exceptions.fetch_add(1,std::memory_order_relaxed);return; }
+    const bool hit=returned&&std::isfinite(result.fraction)&&result.fraction>=0&&result.fraction<=1;
+    Sight_PublishTrace(kTitle,generation.load(std::memory_order_acquire),hit,
+        hit?kSightTraceSkipWu+result.fraction*length:0.0f,static_cast<uint64_t>(q1.QuadPart-q0.QuadPart));
+}
 __declspec(noinline) uint8_t __fastcall TickHook(uint32_t unit)
 {
     callbacks.fetch_add(1,std::memory_order_acq_rel);uint8_t result{};
@@ -301,7 +349,7 @@ __declspec(noinline) uint8_t __fastcall TickHook(uint32_t unit)
     {
         const auto original=reinterpret_cast<TickFn>(tickHook.original);
         if (original) result=original(unit);
-        if (result) ContactTick(unit);
+        if (result) { ContactTick(unit);SightTick(unit); }
     }
     __finally { callbacks.fetch_sub(1,std::memory_order_release); }
     return result;

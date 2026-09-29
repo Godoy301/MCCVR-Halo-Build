@@ -365,6 +365,28 @@ inline bool BuildControllerMatrix(const Camera& native,const Tracking& tracking,
     return true;
 }
 
+// TRACE-AND-REAIM geometry (src/dll/sight_layer.h) in CE native units: the intent ray starts at the
+// rendered CENTRE eye (BuildEye's head, without a per-eye offset) and runs along the controller's aim; the
+// engine eye is the stock centre camera, which is where CE's director ray -- the one its crosshair trace
+// starts from -- sits. Same receipt as BuildControllerMatrix, so the ray and the controller never disagree.
+inline bool BuildSightGeometry(const Camera& native,const Tracking& tracking,const Reference& reference,
+    const ControllerPose& controller,float unitsPerMeter,bool positional,
+    Vec3& head,Vec3& direction,Vec3& eye) noexcept
+{
+    NodeMatrix aim{};
+    if (!BuildControllerMatrix(native,tracking,reference,controller,unitsPerMeter,positional,aim)) return false;
+    Camera frame{};Quat inverse{};
+    if (!BuildTrackingFrame(native,reference,frame,inverse)) return false;
+    Vec3 delta=tracking.headPosition-reference.position;
+    if (!Finite(delta)) return false;
+    delta={std::clamp(delta.x,-4.0f,4.0f),std::clamp(delta.y,-4.0f,4.0f),std::clamp(delta.z,-4.0f,4.0f)};
+    if (!positional) delta={};
+    const Vec3 candidate=native.position+ToNative(frame,Rotate(inverse,delta))*unitsPerMeter;
+    if (!Finite(candidate)||!Finite(aim.forward)) return false;
+    head=candidate;direction=aim.forward;eye=native.position;
+    return true;
+}
+
 inline bool BuildGripCarriers(const FirstPersonBinding& binding,const NodeMatrix* source,
     size_t count,const NodeMatrix& primaryAim,const NodeMatrix& supportAim,
     NodeMatrix& primary,NodeMatrix& support) noexcept
