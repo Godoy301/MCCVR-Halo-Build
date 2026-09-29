@@ -52,11 +52,12 @@ void OdstApplyPhysicalCrouchCamera(float* position,float physicalDown,bool playe
         const float correction=lease.Update(request,GameTitle::Halo3ODST,generation,
             VR_PhysicalCrouchEpoch(),GetTickCount64(),owner,reinterpret_cast<uintptr_t>(unit),
             reduction,physicalDown);
-        if(correction>0.f&&static_cast<uint32_t>(g_odstPlayerUnitGetter(0))==owner&&
+        const bool apply=correction>0.f&&static_cast<uint32_t>(g_odstPlayerUnitGetter(0))==owner&&
             OdstPhysicalCrouchUnit(owner)==unit&&*reinterpret_cast<const uint32_t*>(unit)==tag&&
             OdstLoadedTagDefinition(tag)==definition&&
-            g_odstRuntimeGeneration.load(std::memory_order_acquire)==generation)
-            position[2]+=correction;
+            g_odstRuntimeGeneration.load(std::memory_order_acquire)==generation;
+        if(apply) position[2]+=correction;
+        PhysicalCrouchCamera_NoteApplied(GameTitle::Halo3ODST,apply?correction:0.f);   // dev
     }
     __except(EXCEPTION_EXECUTE_HANDLER) {lease.Reset();}
 }

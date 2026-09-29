@@ -55,6 +55,21 @@ std::atomic<float> witnessDrop[kWitnessSlots]{};
 std::atomic<uint64_t> witnessAt[kWitnessSlots]{};
 std::atomic<uint32_t> missWhy[kWitnessSlots]{};
 std::atomic<uint64_t> missAt[kWitnessSlots]{};
+std::atomic<float> appliedWu[kWitnessSlots]{};
+std::atomic<uint64_t> appliedAt[kWitnessSlots]{};
+}
+void PhysicalCrouchCamera_NoteApplied(GameTitle title,float correctionWu) noexcept
+{
+    const size_t slot=static_cast<size_t>(title)%kWitnessSlots;
+    appliedWu[slot].store(correctionWu,std::memory_order_relaxed);
+    appliedAt[slot].store(GetTickCount64(),std::memory_order_release);
+}
+bool PhysicalCrouchCamera_Applied(GameTitle title,uint64_t maxAgeMs,float& correctionWu) noexcept
+{
+    const size_t slot=static_cast<size_t>(title)%kWitnessSlots;
+    const uint64_t at=appliedAt[slot].load(std::memory_order_acquire),now=GetTickCount64();
+    correctionWu=appliedWu[slot].load(std::memory_order_relaxed);
+    return at&&now>=at&&now-at<=maxAgeMs;
 }
 void PhysicalCrouchCamera_NoteNativeMiss(GameTitle title,uint32_t why) noexcept
 {

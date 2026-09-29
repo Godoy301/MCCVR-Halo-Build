@@ -1085,6 +1085,9 @@ void Input_ReportPhysicalCrouch(uint64_t now)
         PhysicalCrouchCamera_NativeDrop(static_cast<GameTitle>(title), 500, nativeDropWu);
     if (nativeDropFresh)
         unit = nativeDropWu * 3.048f > 0.10f ? 1 : 0;
+    // ...and what its camera added back to the view this frame (the end of the chain).
+    float appliedWu = 0.0f;
+    const bool appliedFresh = PhysicalCrouchCamera_Applied(static_cast<GameTitle>(title), 500, appliedWu);
 #if HALOMCCVR_EXPERIMENTAL_REACH_RENDER_CANDIDATE
     if (static_cast<GameTitle>(title) == GameTitle::HaloReach)
         unit = Game_ReachUnitCrouchState();
@@ -1099,14 +1102,14 @@ void Input_ReportPhysicalCrouch(uint64_t now)
     // until the head is steady). why = the on-foot predicate's failing bits (Reach; 0 = on foot).
     LOG("CROUCH: title=%u gate(tracking=%d native=%d onfoot=%d why=0x%X) head=%.3f base=%.3f down=%.3f "
         "init=%d active=%d suspended=%d pressed=0x%X transport=0x%X unitCrouched=%d nativeDrop=%s%.0fmm "
-        "(miss 0x%X) mccCrouchLock(pad=%s mk=%s) epoch=%u:%u gen=%u",
+        "(miss 0x%X) applied=%s%.0fmm mccCrouchLock(pad=%s mk=%s) epoch=%u:%u gen=%u",
         title, (gates & 1u) ? 1 : 0, (gates & 2u) ? 1 : 0, (gates & 4u) ? 1 : 0,
         g_crouchStatus.onFootWhy.load(std::memory_order_relaxed), head, base, base - head,
         (gates & 8u) ? 1 : 0, (gates & 16u) ? 1 : 0, (gates & 32u) ? 1 : 0,
         g_crouchStatus.pressed.load(std::memory_order_relaxed),
         g_crouchStatus.transport.load(std::memory_order_relaxed), unit, nativeDropFresh ? "" : "stale:",
         double(nativeDropWu) * 3048.0, PhysicalCrouchCamera_NativeMiss(static_cast<GameTitle>(title), 1500),
-        lockPad, lockMk,
+        appliedFresh ? "" : "stale:", double(appliedWu) * 3048.0, lockPad, lockMk,
         unsigned(epoch >> 32), unsigned(epoch), g_crouchStatus.generation.load(std::memory_order_relaxed));
 #else
     (void)now;
