@@ -687,6 +687,9 @@ struct Config
     // bit 1 = withhold the resolved flags; bit 2 = the resolver's value check refuses at install;
     // bit 3 = the cold worker's periodic re-check withdraws the flags.
     int reach_sight_fault = 0;
+    // DEV BUILDS ONLY, test-only (never saved): which eye trace-and-reaim solves from. 0 = the stock
+    // camera base (the shipped behaviour), 1 = the rendered head. An A/B for the native shot origin.
+    int reach_sight_eye = 0;
     // Diagnostic: log the distinct (caller, flags, mode) of Reach's own collision_test_vector calls,
     // to identify the flags a bullet's flight test uses. Leave at 0 for play.
     int reach_collision_census = 0;

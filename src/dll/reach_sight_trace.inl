@@ -75,8 +75,63 @@ struct ReachSightActuatedPublication
 {
     std::atomic<uint32_t> sequence{0};
     std::atomic<uint64_t> atMs{0};
-    std::atomic<float> ox{0}, oy{0}, oz{0}, dx{0}, dy{0}, dz{0}, ex{0}, ey{0}, ez{0}, rangeWu{0};
+    std::atomic<float> ox{0}, oy{0}, oz{0}, dx{0}, dy{0}, dz{0}, ex{0}, ey{0}, ez{0}, hx{0}, hy{0}, hz{0}, rangeWu{0};
 } g_reachSightActuated;
+
+// Set while a render transaction has the HEAD camera committed into the game's own camera state
+// (between ReachMainRenderView's commit and its restore), with that thread's id. The shot check
+// records both, so a shot that leaves from the head can be told apart from a render/sim race.
+std::atomic<uint32_t> g_reachDevHeadCommitted{0};
+std::atomic<uint32_t> g_reachDevRenderTid{0};
+
+// One record per measured converged shot: where the native origin N sits relative to every candidate
+// eye, in the shot's own frame (along the shot, horizontal right, up; mm). The cold worker prints them.
+struct ReachSightShotRecord
+{
+    uint64_t atMs = 0;
+    float missMm = 0.0f, rangeM = 0.0f;
+    float fromEye[3]{}, fromHead[3]{}, fromHand[3]{}, fromUnit[3]{}, fromCamera[3]{};
+    uint8_t unitValid = 0, cameraValid = 0, firesFromCamera = 0, useUnitAim = 0, headCommitted = 0;
+    uint32_t fireTid = 0, renderTid = 0;
+};
+inline constexpr uint32_t kReachSightShotRingSize = 32;
+struct ReachSightShotRing
+{
+    std::atomic<uint32_t> written{0};
+    ReachSightShotRecord records[kReachSightShotRingSize];
+    uint32_t printed = 0;   // cold worker only
+} g_reachSightShotRing;
+
+// The stock unit camera-position evaluator for this unit (the trampoline, never our hook), and a
+// guarded vector read. Kept free of C++ objects so __try is legal.
+bool ReachDevUnitCameraPosition(int32_t unit, float* out)
+{
+    if (!g_origReachUnitCameraPosition || !out)
+        return false;
+    __try
+    {
+        g_origReachUnitCameraPosition(unit, out);
+        return std::isfinite(out[0]) && std::isfinite(out[1]) && std::isfinite(out[2]);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return false;
+    }
+}
+bool ReachDevReadVec3(const float* source, float* out)
+{
+    if (!source || !out)
+        return false;
+    __try
+    {
+        out[0] = source[0]; out[1] = source[1]; out[2] = source[2];
+        return std::isfinite(out[0]) && std::isfinite(out[1]) && std::isfinite(out[2]);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return false;
+    }
+}
 #endif
 
 // ---- the trace flags: RESOLVED from this build and VALUE-CHECKED, never baked in ------------------
@@ -461,18 +516,18 @@ struct ReachSightShotStats
 } g_reachSightShots;
 #endif
 
-void ReachSightMeasureShot(int32_t unitIndex, const float* origin, const float* direction)
+void ReachSightMeasureShot(int32_t unitIndex, const float* origin, const float* direction,
+                           const float* cameraPoint, uint8_t firesFromCamera, uint8_t useUnitAim)
 {
 #if HALOMCCVR_DEV_DIAGNOSTICS
     auto& stats = g_reachSightShots;
     stats.shots.fetch_add(1, std::memory_order_relaxed);
-    (void)unitIndex;
     if (!origin || !direction)
         return;
     // What the provider AIMED at: the ray, eye and smoothed range it actuated (not a later sample).
     auto& a = g_reachSightActuated;
     const uint64_t now = GetTickCount64();
-    float o[3]{}, u[3]{}, e[3]{}, rangeWu = 0.0f;
+    float o[3]{}, u[3]{}, e[3]{}, h[3]{}, rangeWu = 0.0f;
     uint64_t atMs = 0;
     bool coherent = false;
     for (int attempt = 0; attempt < 2 && !coherent; ++attempt)
@@ -483,6 +538,7 @@ void ReachSightMeasureShot(int32_t unitIndex, const float* origin, const float* 
         o[0] = a.ox.load(std::memory_order_relaxed); o[1] = a.oy.load(std::memory_order_relaxed); o[2] = a.oz.load(std::memory_order_relaxed);
         u[0] = a.dx.load(std::memory_order_relaxed); u[1] = a.dy.load(std::memory_order_relaxed); u[2] = a.dz.load(std::memory_order_relaxed);
         e[0] = a.ex.load(std::memory_order_relaxed); e[1] = a.ey.load(std::memory_order_relaxed); e[2] = a.ez.load(std::memory_order_relaxed);
+        h[0] = a.hx.load(std::memory_order_relaxed); h[1] = a.hy.load(std::memory_order_relaxed); h[2] = a.hz.load(std::memory_order_relaxed);
         rangeWu = a.rangeWu.load(std::memory_order_relaxed);
         coherent = a.sequence.load(std::memory_order_acquire) == before;
     }
@@ -516,8 +572,45 @@ void ReachSightMeasureShot(int32_t unitIndex, const float* origin, const float* 
     while (missMm > prior && !stats.missMaxMm.compare_exchange_weak(prior, missMm, std::memory_order_relaxed)) {}
     prior = stats.originOffsetMaxMm.load(std::memory_order_relaxed);
     while (offMm > prior && !stats.originOffsetMaxMm.compare_exchange_weak(prior, offMm, std::memory_order_relaxed)) {}
+
+    // WHERE DOES THE NATIVE SHOT LEAVE FROM? N relative to each candidate eye, in the shot's frame:
+    // along the shot, horizontal right (d x world up), up. The candidate it sits on is the answer.
+    float right[3]{d[1] * 1.0f - d[2] * 0.0f, d[2] * 0.0f - d[0] * 1.0f, d[0] * 0.0f - d[1] * 0.0f};
+    float rl = std::sqrt(right[0] * right[0] + right[1] * right[1] + right[2] * right[2]);
+    if (!(rl > 1.0e-4f)) { right[0] = 1.0f; right[1] = 0.0f; right[2] = 0.0f; rl = 1.0f; }
+    for (float& c2 : right) c2 /= rl;
+    const float up[3]{right[1] * d[2] - right[2] * d[1], right[2] * d[0] - right[0] * d[2], right[0] * d[1] - right[1] * d[0]};
+    const float toMm = 1000.0f / kReachWorldUnitsPerMeter;
+    const auto frame = [&](const float* from, float* outMm)
+    {
+        const float v[3]{origin[0] - from[0], origin[1] - from[1], origin[2] - from[2]};
+        outMm[0] = (v[0] * d[0] + v[1] * d[1] + v[2] * d[2]) * toMm;
+        outMm[1] = (v[0] * right[0] + v[1] * right[1] + v[2] * right[2]) * toMm;
+        outMm[2] = (v[0] * up[0] + v[1] * up[1] + v[2] * up[2]) * toMm;
+    };
+    auto& ring = g_reachSightShotRing;
+    const uint32_t slot = ring.written.load(std::memory_order_relaxed) % kReachSightShotRingSize;
+    ReachSightShotRecord& r = ring.records[slot];
+    r = {};
+    r.atMs = now;
+    r.missMm = missWu * toMm;
+    r.rangeM = rangeWu / kReachWorldUnitsPerMeter;
+    frame(e, r.fromEye);
+    frame(h, r.fromHead);
+    frame(o, r.fromHand);
+    float unitEye[3]{}, camera[3]{};
+    r.unitValid = ReachDevUnitCameraPosition(unitIndex, unitEye) ? 1 : 0;
+    if (r.unitValid) frame(unitEye, r.fromUnit);
+    r.cameraValid = ReachDevReadVec3(cameraPoint, camera) ? 1 : 0;
+    if (r.cameraValid) frame(camera, r.fromCamera);
+    r.firesFromCamera = firesFromCamera;
+    r.useUnitAim = useUnitAim;
+    r.headCommitted = static_cast<uint8_t>(g_reachDevHeadCommitted.load(std::memory_order_acquire));
+    r.fireTid = GetCurrentThreadId();
+    r.renderTid = g_reachDevRenderTid.load(std::memory_order_relaxed);
+    ring.written.fetch_add(1, std::memory_order_release);
 #else
-    (void)unitIndex; (void)origin; (void)direction;
+    (void)unitIndex; (void)origin; (void)direction; (void)cameraPoint; (void)firesFromCamera; (void)useUnitAim;
 #endif
 }
 
@@ -696,6 +789,32 @@ void ReportReachSightTrace()
             shots.lastRangeMm.load(std::memory_order_relaxed) / 1000.0,
             shots.originOffsetMaxMm.exchange(0, std::memory_order_relaxed));
         (void)trace.blockedRate.exchange(0, std::memory_order_relaxed);
+    }
+    // One line per measured shot (at most 8 per report): the native origin N relative to each
+    // candidate eye, as (along the shot, right, up) mm. The candidate N sits on reads (~0, ~0, ~0).
+    {
+        auto& ring = g_reachSightShotRing;
+        const uint32_t written = ring.written.load(std::memory_order_acquire);
+        if (written - ring.printed > kReachSightShotRingSize)
+            ring.printed = written - kReachSightShotRingSize;
+        uint32_t shown = 0;
+        for (; ring.printed != written && shown < 8; ++ring.printed, ++shown)
+        {
+            const ReachSightShotRecord r = ring.records[ring.printed % kReachSightShotRingSize];
+            LOG("REACHSIGHT shot %u: miss %.0f mm at %.2f m; N minus [along,right,up mm] eye(solve) %.0f,%.0f,%.0f "
+                "| head %.0f,%.0f,%.0f | hand-ray %.0f,%.0f,%.0f | unit-eval%s %.0f,%.0f,%.0f | camera-arg%s "
+                "%.0f,%.0f,%.0f; firesFromCamera=%u useUnitAim=%u; head-committed=%u fire-tid=%u render-tid=%u",
+                ring.printed, double(r.missMm), double(r.rangeM),
+                double(r.fromEye[0]), double(r.fromEye[1]), double(r.fromEye[2]),
+                double(r.fromHead[0]), double(r.fromHead[1]), double(r.fromHead[2]),
+                double(r.fromHand[0]), double(r.fromHand[1]), double(r.fromHand[2]),
+                r.unitValid ? "" : "(n/a)", double(r.fromUnit[0]), double(r.fromUnit[1]), double(r.fromUnit[2]),
+                r.cameraValid ? "" : "(n/a)", double(r.fromCamera[0]), double(r.fromCamera[1]), double(r.fromCamera[2]),
+                unsigned(r.firesFromCamera), unsigned(r.useUnitAim), unsigned(r.headCommitted),
+                unsigned(r.fireTid), unsigned(r.renderTid));
+        }
+        if (ring.printed != written)
+            ring.printed = written;   // more than 8 this window: the rest are summarized above
     }
     if (!g_config.reach_collision_census)
         return;

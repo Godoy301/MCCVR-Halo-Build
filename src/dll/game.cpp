@@ -1444,7 +1444,8 @@ namespace
     void ReachNoteCollisionCensus(uintptr_t caller, uint64_t flags, int32_t mode,
         const float* vector, int32_t ignoredA);
     bool ReachConvergedShotLive(uint64_t nowMs);
-    void ReachSightMeasureShot(int32_t unitIndex, const float* origin, const float* direction);
+    void ReachSightMeasureShot(int32_t unitIndex, const float* origin, const float* direction,
+                               const float* cameraPoint, uint8_t firesFromCamera, uint8_t useUnitAim);
     void ReportReachSightTrace();
     void ReachPublishContactHand(int hand, const FpExplicitPoseTargets& targets,
         const FpInterpolationContext& context, const BoneMatrix& root,
@@ -18137,6 +18138,11 @@ namespace
         std::atomic<float> baseX{0.0f};
         std::atomic<float> baseY{0.0f};
         std::atomic<float> baseZ{0.0f};
+        // On-foot ray only: the rendered head (centre eye) of the same frame, which follows the
+        // headset. Trace-and-reaim's DEV shot check compares the native shot origin against it.
+        std::atomic<float> headX{0.0f};
+        std::atomic<float> headY{0.0f};
+        std::atomic<float> headZ{0.0f};
     };
     ReachCompletedReticleTargetPublication g_reachCompletedReticleTarget;
     ReachCompletedReticleTargetPublication g_reachOnFootShotRay;
@@ -18474,6 +18480,7 @@ namespace
         float target[3]{};
         float origin[3]{};
         float base[3]{};
+        float head[3]{};
     };
 
     bool ReachReadShotOccupation(ReachShotOccupationSnapshot& out)
@@ -18579,6 +18586,9 @@ namespace
             sample.base[0] = published.baseX.load(std::memory_order_relaxed);
             sample.base[1] = published.baseY.load(std::memory_order_relaxed);
             sample.base[2] = published.baseZ.load(std::memory_order_relaxed);
+            sample.head[0] = published.headX.load(std::memory_order_relaxed);
+            sample.head[1] = published.headY.load(std::memory_order_relaxed);
+            sample.head[2] = published.headZ.load(std::memory_order_relaxed);
             if (published.sequence.load(std::memory_order_acquire) != before)
                 continue;
             out = sample;
@@ -18874,7 +18884,7 @@ namespace
             if(onFootNow && nativeOnFoot && currentUnit!=-1 && unitIndex==currentUnit &&
                 ReachConvergedShotLive(GetTickCount64()))
             {
-                ReachSightMeasureShot(unitIndex,origin,direction);
+                ReachSightMeasureShot(unitIndex,origin,direction,optionalCameraPoint,firesFromCamera,useUnitAim);
                 return;
             }
             float handDirection[3]{};
@@ -22404,6 +22414,12 @@ namespace
             published.baseX.store(owner.presentedCameraBasePosition[0],std::memory_order_relaxed);
             published.baseY.store(owner.presentedCameraBasePosition[1],std::memory_order_relaxed);
             published.baseZ.store(owner.presentedCameraBasePosition[2],std::memory_order_relaxed);
+            {
+                const float* head=reinterpret_cast<const float*>(owner.headCenter+0x00);
+                published.headX.store(head[0],std::memory_order_relaxed);
+                published.headY.store(head[1],std::memory_order_relaxed);
+                published.headZ.store(head[2],std::memory_order_relaxed);
+            }
             published.sequence.fetch_add(1,std::memory_order_release);
         }
         const bool targetValid = seated &&
@@ -28893,6 +28909,10 @@ namespace
             *reinterpret_cast<uintptr_t*>(
                 epoch.moduleBase + kReachRenderCameraOwnerRva) = expectedOwner;
             headCommitReady = true;
+#if HALOMCCVR_DEV_DIAGNOSTICS
+            g_reachDevRenderTid.store(GetCurrentThreadId(), std::memory_order_relaxed);
+            g_reachDevHeadCommitted.store(1, std::memory_order_release);
+#endif
         }
         __except (EXCEPTION_EXECUTE_HANDLER)
         {
@@ -29012,6 +29032,9 @@ namespace
                    savedPv, kReachPvSnapshotBytes);
             *reinterpret_cast<uint8_t*>(
                 playerView + kReachLastWindowFlagOffset) = finalLastWindow;
+#if HALOMCCVR_DEV_DIAGNOSTICS
+            g_reachDevHeadCommitted.store(0, std::memory_order_release);
+#endif
             g_reachOwnerScope = previous;
             VR_ReachEndRenderAccess(access);
         }
@@ -47400,9 +47423,17 @@ bool Game_ReachSightSample(ReachSightSample& out)
         out.origin[axis] = ray.origin[axis];
         out.dir[axis] = u[axis] / length;
         out.eye[axis] = ray.base[axis];
+        out.head[axis] = ray.head[axis];
         if (!std::isfinite(out.origin[axis]) || !std::isfinite(out.eye[axis]))
             return false;
     }
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    // DEV experiment (reach_sight_eye, test-only, never saved): 1 = solve from the rendered head
+    // instead of the stock camera base, to A/B which eye the native shot really leaves from.
+    if (g_config.reach_sight_eye == 1 && std::isfinite(out.head[0]) && std::isfinite(out.head[1]) &&
+        std::isfinite(out.head[2]))
+        memcpy(out.eye, out.head, sizeof(out.eye));
+#endif
     out.raySampleMs = ray.sampleMs;
     // The trace result: a torn read retries once, then reports "no range" (the provider holds).
     auto& trace = g_reachSightTrace;
@@ -47442,6 +47473,9 @@ void Game_ReachNoteConvergedSample(const ReachSightSample& sample, float smoothe
     a.ex.store(sample.eye[0], std::memory_order_relaxed);
     a.ey.store(sample.eye[1], std::memory_order_relaxed);
     a.ez.store(sample.eye[2], std::memory_order_relaxed);
+    a.hx.store(sample.head[0], std::memory_order_relaxed);
+    a.hy.store(sample.head[1], std::memory_order_relaxed);
+    a.hz.store(sample.head[2], std::memory_order_relaxed);
     a.rangeWu.store(smoothedRangeWu, std::memory_order_relaxed);
     a.atMs.store(GetTickCount64(), std::memory_order_relaxed);
     a.sequence.fetch_add(1, std::memory_order_release);

@@ -176,6 +176,7 @@ struct ReachSightSample
     float origin[3]{};   // where the intent ray starts (the rendered hand/reticle ray)
     float dir[3]{};      // its unit direction
     float eye[3]{};      // the engine's own eye: Reach's first-person shot origin
+    float head[3]{};     // the rendered head (centre eye) of the same frame; DEV diagnostics
     float rangeWu = 0.0f;
     bool hit = false;
     uint64_t raySampleMs = 0, traceSampleMs = 0;
