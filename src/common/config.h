@@ -711,6 +711,10 @@ struct Config
     // engine eye and run along the converged aim (the crosshair / shot query candidates; Halo 4 and Halo 2).
     // Leave at 0 for play.
     int sight_ray_census = 0;
+    // DEV BUILD ONLY, headless tests: 1 = the synthetic gamepad. Scripts dropped as halomccvr_pad.txt in the
+    // mod folder press its buttons (tools/Send-MccPad.ps1; the language is src/common/dev_pad_script.h).
+    // Read once at startup. Leave at 0 to play.
+    int dev_synthetic_pad = 0;
 
     // Halo Reach, SEATED, direct drive (reach_direct_drive = 3): the same trace-and-reaim aim in vehicles.
     // The write drives the seat's look (desired_angles), and Reach aims every seat's weapon from it: it

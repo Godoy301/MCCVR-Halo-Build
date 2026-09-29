@@ -281,6 +281,7 @@ add_library(halo3xr SHARED
     src/dll/input.cpp
     src/dll/roomscale.cpp
     src/dll/sight_layer.cpp
+    src/dll/dev_pad.cpp
     src/dll/title_adapter.cpp
     src/dll/title_reentry_probe.cpp
     src/dll/reach_adapter.cpp
@@ -561,6 +562,9 @@ if(BUILD_TESTING)
     add_executable(halomccvr_aim_solve_tests tests/aim_solve_tests.cpp)
     target_include_directories(halomccvr_aim_solve_tests PRIVATE src/common)
     add_test(NAME halomccvr_aim_solve_tests COMMAND halomccvr_aim_solve_tests)
+    add_executable(halomccvr_dev_pad_script_tests tests/dev_pad_script_tests.cpp)
+    target_include_directories(halomccvr_dev_pad_script_tests PRIVATE src/common)
+    add_test(NAME halomccvr_dev_pad_script_tests COMMAND halomccvr_dev_pad_script_tests)
     add_executable(halomccvr_ce_render_tests tests/haloce_render_tests.cpp)
     target_include_directories(halomccvr_ce_render_tests PRIVATE src/common)
     add_test(NAME halomccvr_ce_render_tests COMMAND halomccvr_ce_render_tests)

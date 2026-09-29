@@ -8,6 +8,7 @@
 #include "vr.h"
 #include "game.h"
 #include "native_fault_probe.h"
+#include "dev_pad.h"
 
 #ifndef HALOMCCVR_BUILD_COMMIT
 #define HALOMCCVR_BUILD_COMMIT "unknown"
@@ -102,6 +103,8 @@ static DWORD WINAPI InitThread(LPVOID)
         LOG("DEV OVERRIDE: reach_sight_trace_flags = 0x%llX mode %d replaces the resolved crosshair-trace "
             "flags (Reach aim trace)",
             g_config.reach_sight_trace_flags, g_config.reach_sight_trace_mode);
+    if (g_config.dev_synthetic_pad)
+        DevPad_Start(dir.c_str());
 #endif
 
     if (MH_Initialize() != MH_OK)

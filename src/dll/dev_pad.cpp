@@ -1,0 +1,179 @@
+// DEV BUILD ONLY: the synthetic gamepad (src/common/dev_pad_script.h has the command language).
+//
+// Files in the mod folder, all written whole (the harness writes a temp file and renames it):
+//   halomccvr_pad.txt         a script to run; the worker deletes it as it takes it
+//   halomccvr_pad_abort.txt   stop the running script now and leave the pad neutral
+//   halomccvr_pad_status.txt  written by the worker: "ready", "seq <n>", "aborted" or "error <why>"
+// Scripts run one at a time, in the order they arrive. MCC reads the pad only while it is the foreground
+// window, which is why the harness holds the foreground (through the polite gate) while a script runs.
+
+#include "dev_pad.h"
+
+#if HALOMCCVR_DEV_DIAGNOSTICS
+#include "../common/dev_pad_script.h"
+#include "../common/log.h"
+
+#include <algorithm>
+#include <atomic>
+#include <cstdio>
+#include <string>
+#include <vector>
+
+namespace
+{
+std::atomic<uint16_t> g_buttons{0};
+std::atomic<int16_t> g_lx{0}, g_ly{0}, g_rx{0}, g_ry{0};
+std::atomic<uint8_t> g_lt{0}, g_rt{0};
+std::wstring g_dir;   // set once before the worker starts
+
+void Neutral()
+{
+    g_buttons.store(0, std::memory_order_relaxed);
+    g_lx.store(0, std::memory_order_relaxed);
+    g_ly.store(0, std::memory_order_relaxed);
+    g_rx.store(0, std::memory_order_relaxed);
+    g_ry.store(0, std::memory_order_relaxed);
+    g_lt.store(0, std::memory_order_relaxed);
+    g_rt.store(0, std::memory_order_relaxed);
+}
+
+bool ReadScript(const std::wstring& path, std::string& out)
+{
+    FILE* f = nullptr;
+    if (_wfopen_s(&f, path.c_str(), L"rb") != 0 || !f)
+        return false;
+    char buffer[4096];
+    size_t n = 0;
+    while ((n = fread(buffer, 1, sizeof(buffer), f)) > 0 && out.size() < 65536)
+        out.append(buffer, n);
+    fclose(f);
+    return true;
+}
+
+void WriteStatus(const std::string& text)
+{
+    const std::wstring tmp = g_dir + L"halomccvr_pad_status.tmp";
+    const std::wstring dst = g_dir + L"halomccvr_pad_status.txt";
+    FILE* f = nullptr;
+    if (_wfopen_s(&f, tmp.c_str(), L"wb") != 0 || !f)
+        return;
+    fwrite(text.data(), 1, text.size(), f);
+    fclose(f);
+    MoveFileExW(tmp.c_str(), dst.c_str(), MOVEFILE_REPLACE_EXISTING);
+}
+
+// Sleep in slices an abort file can cut short. True = aborted.
+bool Pause(uint32_t ms)
+{
+    const std::wstring abortPath = g_dir + L"halomccvr_pad_abort.txt";
+    const uint64_t end = GetTickCount64() + ms;
+    for (;;)
+    {
+        if (GetFileAttributesW(abortPath.c_str()) != INVALID_FILE_ATTRIBUTES)
+        {
+            DeleteFileW(abortPath.c_str());
+            return true;
+        }
+        const uint64_t now = GetTickCount64();
+        if (now >= end)
+            return false;
+        Sleep(static_cast<DWORD>(std::min<uint64_t>(20, end - now)));
+    }
+}
+
+bool Run(const std::vector<dev_pad::Step>& steps)
+{
+    using dev_pad::Op;
+    for (const dev_pad::Step& s : steps)
+    {
+        bool aborted = false;
+        switch (s.op)
+        {
+        case Op::Hold: g_buttons.fetch_or(s.buttons, std::memory_order_relaxed); break;
+        case Op::Release: g_buttons.fetch_and(static_cast<uint16_t>(~s.buttons), std::memory_order_relaxed); break;
+        case Op::ReleaseAll: g_buttons.store(0, std::memory_order_relaxed); break;
+        case Op::Press:
+            g_buttons.fetch_or(s.buttons, std::memory_order_relaxed);
+            aborted = Pause(s.ms);
+            g_buttons.fetch_and(static_cast<uint16_t>(~s.buttons), std::memory_order_relaxed);
+            break;
+        case Op::Stick:
+            (s.side ? g_rx : g_lx).store(dev_pad::StickRaw(s.x), std::memory_order_relaxed);
+            (s.side ? g_ry : g_ly).store(dev_pad::StickRaw(s.y), std::memory_order_relaxed);
+            break;
+        case Op::Trigger: (s.side ? g_rt : g_lt).store(dev_pad::TriggerRaw(s.x), std::memory_order_relaxed); break;
+        case Op::Wait: aborted = Pause(s.ms); break;
+        case Op::Clear: Neutral(); break;
+        case Op::Seq: WriteStatus("seq " + std::to_string(s.seq) + "\n"); break;
+        }
+        if (aborted)
+            return false;
+    }
+    return true;
+}
+
+DWORD WINAPI Worker(LPVOID)
+{
+    const std::wstring scriptPath = g_dir + L"halomccvr_pad.txt";
+    for (;;)
+    {
+        Sleep(50);
+        if (GetFileAttributesW(scriptPath.c_str()) == INVALID_FILE_ATTRIBUTES)
+            continue;
+        std::string text;
+        const bool read = ReadScript(scriptPath, text);
+        DeleteFileW(scriptPath.c_str());
+        if (!read)
+            continue;
+        std::vector<dev_pad::Step> steps;
+        std::string error;
+        if (!dev_pad::Parse(text, steps, error))
+        {
+            LOG("DEVPAD: refused a script (%s); the pad is unchanged", error.c_str());
+            WriteStatus("error " + error + "\n");
+            continue;
+        }
+        LOG("DEVPAD: running a %zu-step script", steps.size());
+        if (!Run(steps))
+        {
+            Neutral();
+            LOG("DEVPAD: aborted; the pad is neutral");
+            WriteStatus("aborted\n");
+        }
+    }
+}
+} // namespace
+
+void DevPad_Start(const wchar_t* modDir)
+{
+    static std::atomic<bool> started{false};
+    if (!modDir || started.exchange(true))
+        return;
+    g_dir = modDir;
+    // Nothing left over from an earlier session replays.
+    DeleteFileW((g_dir + L"halomccvr_pad.txt").c_str());
+    DeleteFileW((g_dir + L"halomccvr_pad_abort.txt").c_str());
+    WriteStatus("ready\n");
+    HANDLE thread = CreateThread(nullptr, 0, Worker, nullptr, 0, nullptr);
+    if (!thread)
+    {
+        LOG("DEVPAD: the worker thread could not start (%lu); the synthetic pad is off", GetLastError());
+        return;
+    }
+    CloseHandle(thread);
+    LOG("DEV TEST HOOK ACTIVE: dev_synthetic_pad = 1 -- scripts dropped as halomccvr_pad.txt in the mod folder "
+        "press this pad's buttons (tools/Send-MccPad.ps1). Headless tests only; set it to 0 to play.");
+}
+
+void DevPad_Apply(XINPUT_GAMEPAD& pad)
+{
+    pad.wButtons = static_cast<WORD>(pad.wButtons | g_buttons.load(std::memory_order_relaxed));
+    const uint8_t lt = g_lt.load(std::memory_order_relaxed), rt = g_rt.load(std::memory_order_relaxed);
+    if (lt > pad.bLeftTrigger) pad.bLeftTrigger = lt;
+    if (rt > pad.bRightTrigger) pad.bRightTrigger = rt;
+    const int16_t lx = g_lx.load(std::memory_order_relaxed), ly = g_ly.load(std::memory_order_relaxed);
+    if (lx || ly) { pad.sThumbLX = lx; pad.sThumbLY = ly; }
+    const int16_t rx = g_rx.load(std::memory_order_relaxed), ry = g_ry.load(std::memory_order_relaxed);
+    if (rx || ry) { pad.sThumbRX = rx; pad.sThumbRY = ry; }
+}
+#endif

@@ -24,6 +24,7 @@
 #include "../common/scope_action_input.h"
 #include "../common/physical_crouch_input.h"
 #include "physical_crouch_camera.h"
+#include "dev_pad.h"
 
 // M3 VR input. MCC reads gamepads through XInputGetState; hooking it lets the
 // mod present the Sense controllers as a gamepad the game already understands
@@ -702,6 +703,10 @@ namespace
             *state = {};
             r = ERROR_SUCCESS;
         }
+        // DEV BUILD ONLY (dev_synthetic_pad): the headless harness's synthetic controller, merged here the
+        // way a physical pad's state arrives, before any gate, so it reaches menus as well as gameplay. A
+        // player build compiles this to nothing.
+        DevPad_Apply(state->Gamepad);
         // Controller admission is separate from shared gameplay ownership.
         // Private ODST camera-only and Reach controller-only stages may expose
         // ordinary gamepad input while motion aim and every title-runtime
