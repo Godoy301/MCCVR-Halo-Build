@@ -44,9 +44,10 @@ constexpr bool kCeIntegratedBaseVrEnabled=false;
 // with Classic source/bootstrap and isolated HUD/mirror corrections retained.
 // Pinned native refresh/admission and production fixtures pass; headset pending.
 constexpr bool kCeSceneVisibilityBaseVrEnabled=true;
-// Preserve the unfinished body-following adapter, but keep experimental CE
-// locomotion out of the core VR candidate (September 15 user priority).
-constexpr bool kCeExperimentalRoomscaleEnabled=false;
+// CE's body following (roomscale). Held out of the core VR candidate on September 15 (user priority);
+// enabled 2026-09-29 at the user's request that every title have roomscale. It is still gated at run time
+// by roomscale_movement (the rig's roomscaleEnabled) exactly like the other titles.
+constexpr bool kCeExperimentalRoomscaleEnabled=true;
 using PrepareFn=void(__fastcall*)(uintptr_t);
 using BuilderFn=uintptr_t(__fastcall*)(uintptr_t,SaberViewPair*,uint8_t,float*);
 // The first four append arguments are integer/pointer registers. Preserve all
@@ -375,6 +376,17 @@ uintptr_t __fastcall BuilderHook(uintptr_t arg,SaberViewPair* list,uint8_t secon
     {
         if (recenter.exchange(false)||reference.generation!=gen||reference.spaceEpoch!=tracking.spaceEpoch)
             reference={tracking.headPosition,tracking.headOrientation,tracking.spaceEpoch,gen};
+        // Roomscale (body following) in the Anniversary renderer. The native camera for THIS frame is
+        // built inside ConstructViews, after the reference is fixed, so follow from the engine's centre
+        // camera the previous frame published (at most one frame old; the body moves at the sim's rate).
+        {
+            GameplayCameraSample last{};
+            const uint64_t nowMs=GetTickCount64();
+            if (gameplayCamera.Read(last)&&last.capturedAtMs&&nowMs>=last.capturedAtMs&&
+                nowMs-last.capturedAtMs<=100&&Valid(last.context.camera))
+                FollowRoomscale(last.context.camera,tracking,reference,Game_GetWorldScale(),
+                    Game_IsPositionalTracking(),referenceRevision.load(std::memory_order_acquire));
+        }
         Wanted raster{};
         construction.list=address;
         construction.enabled=allocated.Read(raster)&&raster.generation==gen;

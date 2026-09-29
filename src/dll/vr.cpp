@@ -11495,9 +11495,8 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                 rig.turnSmoothDegS=g_config.turn_smooth_deg_s;
                 rig.vehicleMotion=g_config.vehicle_motion;
                 rig.vehicleViewFollow=g_config.vehicle_view_follow;
-                // CE bring-up: physical body following is deferred until the
-                // basic VR implementation has passed the user's headset test.
-                rig.roomscaleEnabled=false;
+                // CE body following (roomscale) follows the same player key as every other title.
+                rig.roomscaleEnabled=g_config.roomscale_movement;
                 rig.controlsPresentationBlocked=!Game_CeControllerFeaturesRequested()||
                     Menu_IsOpen()||VR_IsPausePresentation()||VR_IsPausePresentationTarget()||
                     VR_IsCutsceneTheaterActive();
