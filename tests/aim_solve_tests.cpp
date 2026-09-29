@@ -69,15 +69,17 @@ static void test_angles_from_dir() {
 
 static void test_converge() {
     ConvergeRails r{};
-    // Leashed: a sub-threshold delta must be an exact no-op (angles untouched, returns false).
+    // Below min_divergence the unbent aim is ALREADY converged: true, and the angles are untouched.
     {
         float y = 3.0f, p = -2.0f;
-        CHECK(!converge_trace_reaim(y, p, Vec3{1, 0, 0}, 1000.0f, r) && near(y, 3.0f) && near(p, -2.0f));
+        CHECK(converge_trace_reaim(y, p, Vec3{1, 0, 0}, 1000.0f, r) && near(y, 3.0f) && near(p, -2.0f));
     }
-    // Below the range floor: decline.
+    // Only a degenerate range cannot resolve (the trace never reports under its 5 cm start); near
+    // contact resolves: a 10 cm offset at 10 cm is a 45 deg bend onto the point the gun touches.
     {
         float y = 0, p = 0;
-        CHECK(!converge_trace_reaim(y, p, Vec3{0, 10, 0}, 10.0f, r) && near(y, 0) && near(p, 0));
+        CHECK(!converge_trace_reaim(y, p, Vec3{0, 10, 0}, 0.5f, r) && near(y, 0) && near(p, 0));
+        CHECK(converge_trace_reaim(y, p, Vec3{0, 10, 0}, 10.0f, r) && near(y, 45.0f, 1e-3f));
     }
     // A known correction: aim +x, eye 10 cm off in +y, target 1000 cm out -> ~0.573 deg of +yaw.
     {
@@ -85,38 +87,32 @@ static void test_converge() {
         CHECK(converge_trace_reaim(y, p, Vec3{0, 10, 0}, 1000.0f, r));
         CHECK(near(y, std::atan2(10.0f, 1000.0f) * 57.29578f) && near(p, 0));
     }
-    // Sanity rail: an implausibly large correction is declined, not applied.
+    // NO correction-size rail (the user's rule, 2026-09-28): a big bend is geometry, not an error.
+    // 4.2 m of offset at 7.7 m (29 deg) -- the case the old 20 deg rail handed to a fallback that left the
+    // shot parallel and 4.2 m off -- converges, onto the target point.
     {
         float y = 0, p = 0;
-        CHECK(!converge_trace_reaim(y, p, Vec3{0, 10000, 0}, 1000.0f, r) && near(y, 0));
-    }
-    // Within arm's reach the 20 deg rail stands: a 60 cm offset at 1 m (31 deg) still declines.
-    {
-        float y = 0, p = 0;
-        CHECK(!converge_trace_reaim(y, p, Vec3{0, 60, 0}, 100.0f, r) && near(y, 0));
-    }
-    // STANDING AWAY FROM THE CHARACTER (roomscale off): 4.2 m of offset at 7.7 m is a 28.6 deg correction.
-    // The plain rail declined it and the shot left parallel to the ray, 4.2 m off (FA 2026-09-28); the
-    // wide rail accepts it, and the corrected direction passes through the target point.
-    {
-        float y = 0, p = 0;
-        const Vec3 delta{0, 420, 0};
-        const float range = 770.0f;
-        CHECK(converge_trace_reaim(y, p, delta, range, r));
+        CHECK(converge_trace_reaim(y, p, Vec3{0, 420, 0}, 770.0f, r));
         CHECK(near(y, std::atan2(420.0f, 770.0f) * 57.29578f, 1e-3f) && near(p, 0));
-        ConvergeRails plain = r;
-        plain.wide_rail_offset_cm = 0.0f;   // the old rail everywhere: declined
-        float y2 = 0, p2 = 0;
-        CHECK(!converge_trace_reaim(y2, p2, delta, range, plain) && near(y2, 0));
     }
-    // ...but never past the cap: 4 m behind and 1 m beside the character, aiming 3 m ahead, he would
-    // have to fire backwards (135 deg): declined.
+    // ...and so does a bend the character must fire backwards to make: 4 m behind and 1 m beside him,
+    // aiming 3 m ahead, the target is behind him (135 deg).
     {
         float y = 0, p = 0;
-        CHECK(!converge_trace_reaim(y, p, Vec3{-400, 100, 0}, 300.0f, r) && near(y, 0));
+        CHECK(converge_trace_reaim(y, p, Vec3{-400, 100, 0}, 300.0f, r) && near(y, 135.0f, 1e-3f));
     }
-    // The rail measures the TRUE angle: a 20 cm lateral offset at 1.5 m while aiming 70 deg down is a
-    // ~7.6 deg correction (accepted), although its yaw component alone is ~22 deg.
+    // The one physical limit: an aim steeper than the control record accepts cannot resolve. A target
+    // almost straight below the shot origin needs -86.6 deg; with Reach's 1.45 rad (83 deg) limit it
+    // declines, and without one it converges.
+    {
+        const Vec3 delta{-290, 0, -170};   // the hand 2.9 m behind, 1.7 m below; aiming +x, 3 m out
+        ConvergeRails reach = r;
+        reach.max_pitch_deg = 1.45f * 57.29578f;
+        float y = 0, p = 0;
+        CHECK(!converge_trace_reaim(y, p, delta, 300.0f, reach) && near(y, 0) && near(p, 0));
+        CHECK(converge_trace_reaim(y, p, delta, 300.0f, r) && near(p, -std::atan2(170.0f, 10.0f) * 57.29578f, 1e-3f));
+    }
+    // Every bend lands on the target: a 20 cm lateral offset at 1.5 m while aiming 70 deg down.
     {
         float y = 0, p = -70.0f;
         const Vec3 delta{0, 20, 0};
@@ -177,10 +173,19 @@ static void test_orchestrator() {
         CHECK(res.applied && m.trace_calls == 1 && !m.engine_conv);
         CHECK(near(m.last_angles.yaw_deg, std::atan2(10.0f, 1000.0f) * 57.29578f));
         CHECK(st.converged);                                  // the core reports that it actually bent it
-        // A leashed (sub-threshold) offset: the same path, but nothing bent and converged says so.
+        // A sub-threshold offset: nothing to bend, and the aim is already converged (the firing site
+        // must stand down, not relocate the shot).
         m.delta = Vec3{0, 1, 0};
         res = solve_and_actuate(m, st, ConvergeRails{}, 1.0f, 1.0f);
-        CHECK(res.applied && !st.converged && near(m.last_angles.yaw_deg, 0));
+        CHECK(res.applied && st.converged && near(m.last_angles.yaw_deg, 0));
+        // The core's generic contract: a poll whose provider reports no new range keeps the smoothed one.
+        // (Reach never relies on it: it reports every fresh result, a miss as the trace's far end, and
+        // with no fresh result it does not offer the trace at all.)
+        m.delta = Vec3{0, 10, 0};
+        m.trace_ok = false;
+        res = solve_and_actuate(m, st, ConvergeRails{}, 1.0f, 1.0f);
+        CHECK(res.applied && st.converged && near(st.range_cm, 1000.0f, 0.5f));
+        CHECK(near(m.last_angles.yaw_deg, std::atan2(10.0f, 1000.0f) * 57.29578f));
     }
     // No intent this tick -> fail closed.
     {

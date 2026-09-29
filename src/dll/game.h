@@ -166,9 +166,10 @@ void Game_ReachDirectDriveReport();   // cold worker: the hook's once-a-second s
 // Reach on foot, trace-and-reaim (reach_sight_trace.inl). Defined only in experimental Reach builds.
 //   SightSample -- the latest rendered intent (reticle) ray and the engine eye the shot leaves from,
 //                  all in world units, plus the latest range the sim-thread trace measured along that
-//                  ray (rangeWu, hit=false on a miss). Only direct drive (reach_direct_drive=3) asks;
-//                  asking is what keeps the sim-thread trace running. False while the ray or the trace
-//                  is stale, the crosshair-trace flags did not resolve on this build, or it faulted.
+//                  ray: the hit, or on a miss (hit=false) the trace's far end, since the target is at
+//                  least that far. Only direct drive (reach_direct_drive=3) asks; asking is what keeps
+//                  the sim-thread trace running. False while the ray or the trace result is stale,
+//                  the crosshair-trace flags did not resolve on this build, or it faulted.
 //   NoteConvergedSample -- DEV builds: the exact sample and smoothed range the provider actuated, so
 //                  the shot check measures against what was aimed rather than a later sample.
 struct ReachSightSample

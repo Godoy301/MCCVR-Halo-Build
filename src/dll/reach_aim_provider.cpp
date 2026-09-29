@@ -5,9 +5,10 @@
 //                 (upstream of the derived aim vector and of replication); the aim stick is held
 //                 neutral so there is exactly one driver.
 //   StickLoop  -- the shipped closed loop, Game_ComputeAimStick, unchanged.
-// Convergence (reach_sight_trace.inl): TraceReaim while a FRESH traced hit exists -- the native shot
-// stays at Reach's own origin and the setpoint is bent through the traced point -- else
-// OriginRelocation, the older exact path (the firing site moves the shot onto the hand ray).
+// Convergence (reach_sight_trace.inl): TraceReaim is THE aim path -- the native shot stays at Reach's
+// own origin and the setpoint is bent through the point the intent ray hits -- whenever the trace has
+// a fresh result: a hit, or a miss (the far end of the 1 km trace). OriginRelocation (the firing site
+// moves the shot onto the hand ray) is only the worst-case fallback for when it cannot resolve.
 // Engine-bound (reads g_config and game.cpp's Reach state); the pure core it feeds is
 // src/common/aim_solve_logic.h + aim_provider.h, and the write guards the hook applies are
 // src/common/aim_write_logic.h.
@@ -28,10 +29,12 @@
 namespace {
 using namespace aim_solve;
 using reach_aim_basis::kCmPerWorldUnit;   // 304.8: a Reach world unit is 10 ft
-// Trace-and-reaim bends the aim only on a range measured this recently. A miss, a stale trace or a
-// gap never bends it on a held or assumed range: the older hand shot ray is exact at every range, so
-// it is the right fallback whenever the range is not known.
-constexpr uint64_t kFreshHitMs = 150;   // = Game_ReachSightSample's own trace freshness
+// The user's rule (2026-09-28): the fallback is only for when this path cannot resolve at all.
+// Game_ReachSightSample hands over only a FRESH trace result (a hit, or a miss's far end); with none,
+// the shot genuinely cannot be resolved.
+// The direct-drive hook clamps pitch to 1.45 rad (aim_write::clamp_pitch in ReachPcApplyForUser), so a
+// converged aim steeper than that could not be actuated exactly: the one physical limit on the solve.
+constexpr float kWriteStatePitchLimitDeg = 1.45f * 57.29578f;
 
 const char* rung_name(Actuation how) {
     switch (how) {
@@ -61,9 +64,10 @@ public:
         c.can_write_state       = g_config.reach_direct_drive == 3 && Game_ReachDirectDriveReady() &&
                                   Game_ReachDirectDriveOnFoot();
         c.has_stick_loop        = true;   // Reach steers via Game_ComputeAimStick, like Halo 3
-        // TRACE-AND-REAIM (reach_sight_trace.inl): only with a fresh traced HIT and only while direct
-        // drive can actuate the bent aim (a stick loop cannot hold an aim that bends with range).
-        c.has_sightline_trace   = fresh_hit && c.can_write_state;
+        // TRACE-AND-REAIM (reach_sight_trace.inl): whenever the trace has a fresh result (hit or miss)
+        // and direct drive can actuate the bent aim (a stick loop cannot hold an aim that bends with
+        // range).
+        c.has_sightline_trace   = trace_ok && c.can_write_state;
         c.has_origin_relocation = true;   // R-V10/R-V27 firing-site eye substitution, foot + vehicle
         c.has_fixed_range_reaim = true;   // ComputeAimStick steers through the crosshair-distance point
         c.has_barrel_marker     = g_config.gun_barrel_aim != 0;
@@ -91,7 +95,7 @@ public:
         return true;
     }
 
-    // The range the sim-thread trace measured along that ray, in cm (fresh hits only; see caps).
+    // The range to converge on, in cm: the hit, or on a miss the trace's far end (fresh results only).
     bool trace_impact_cm(const Ray&, float* out_cm) override {
         if (!out_cm || !snapshot.has_sightline_trace) return false;
         *out_cm = sight.rangeWu * kCmPerWorldUnit;
@@ -131,8 +135,8 @@ public:
 
     AimCaps   snapshot{};
     bool      servo_ok    = false;               // set by ProduceStick before each solve
-    bool      sight_ok    = false;               // ditto: a fresh trace-and-reaim sample this poll
-    bool      fresh_hit   = false;               // ...and it carries a hit measured within kFreshHitMs
+    bool      sight_ok    = false;               // ditto: a trace-and-reaim sample this poll
+    bool      trace_ok    = false;               // ...carrying a fresh trace result (hit or miss)
     ReachSightSample sight{};
     const SolveState* state = nullptr;
     Actuation last_how    = Actuation::None;
@@ -145,7 +149,7 @@ public:
 // Status for the cold worker (never logged from the input hook: file I/O and the log lock stay out of
 // the game's XInput path).
 struct ProviderStatus {
-    std::atomic<uint32_t> polls{0}, writes{0}, converged{0}, freshHits{0};
+    std::atomic<uint32_t> polls{0}, writes{0}, converged{0}, freshHits{0}, freshMisses{0};
     std::atomic<int> rung{0}, converge{0};
     std::atomic<float> yawDeg{0.0f}, pitchDeg{0.0f}, rangeM{0.0f}, deltaCm{0.0f};
 } g_status;
@@ -166,10 +170,8 @@ bool ReachAimProvider_ProduceStick(float& outRx, float& outRy) {
     provider.state = &state;
 
     // 2. This poll's trace-and-reaim sample and the caps snapshot the whole solve will see.
-    provider.sight_ok = Game_ReachSightSample(provider.sight);
-    const uint64_t now = GetTickCount64();
-    provider.fresh_hit = provider.sight_ok && provider.sight.hit && provider.sight.traceSampleMs &&
-                         now >= provider.sight.traceSampleMs && now - provider.sight.traceSampleMs <= kFreshHitMs;
+    provider.sight_ok = Game_ReachSightSample(provider.sight);   // true only with a fresh trace result
+    provider.trace_ok = provider.sight_ok && provider.sight.traceSampleMs != 0;
     provider.snapshot = provider.compute_caps();
     // A range smoothed before a gap describes some earlier view: start it afresh from the first hit.
     if (!provider.snapshot.has_sightline_trace || !traceReaimLastPoll)
@@ -189,7 +191,9 @@ bool ReachAimProvider_ProduceStick(float& outRx, float& outRy) {
     if (lastPoll.QuadPart && freq.QuadPart && qpc.QuadPart > lastPoll.QuadPart)
         dt = std::fmax(0.001f, std::fmin(0.1f, float(double(qpc.QuadPart - lastPoll.QuadPart) / double(freq.QuadPart))));
     lastPoll = qpc;
-    const ActuateResult res = solve_and_actuate(provider, state, ConvergeRails{}, dt, 120.0f);
+    ConvergeRails rails{};
+    rails.max_pitch_deg = kWriteStatePitchLimitDeg;
+    const ActuateResult res = solve_and_actuate(provider, state, rails, dt, 120.0f);
     const bool wroteState = res.applied && provider.last_how == Actuation::WriteState;
     if (!wroteState)
         Game_ReachDirectDriveRelease();   // no WriteState this poll: the hook must stop writing now
@@ -197,7 +201,8 @@ bool ReachAimProvider_ProduceStick(float& outRx, float& outRy) {
     g_status.polls.fetch_add(1, std::memory_order_relaxed);
     if (wroteState) g_status.writes.fetch_add(1, std::memory_order_relaxed);
     if (wroteState && provider.last_converged) g_status.converged.fetch_add(1, std::memory_order_relaxed);
-    if (provider.fresh_hit) g_status.freshHits.fetch_add(1, std::memory_order_relaxed);
+    if (provider.trace_ok)
+        (provider.sight.hit ? g_status.freshHits : g_status.freshMisses).fetch_add(1, std::memory_order_relaxed);
     g_status.rung.store(static_cast<int>(provider.last_how), std::memory_order_relaxed);
     g_status.converge.store(static_cast<int>(select_converge(provider.snapshot)), std::memory_order_relaxed);
     g_status.yawDeg.store(provider.last_angles.yaw_deg, std::memory_order_relaxed);
@@ -228,11 +233,13 @@ void ReachAimProvider_Report() {
     // ready = hook installed + arm-gate armed + hook heartbeat fresh (Game_ReachDirectDriveReady).
     // why = the failing on-foot conditions (Game_ReachDirectDriveOnFootWhy's bits; 0 = on foot).
     // converge: 0 trace-and-reaim, 1 origin relocation, 2 fixed range, 3 direction only.
-    LOG("AIMPROVIDER reach: rung=%s (WriteState %u/%u polls, converged %u, fresh hits %u) mode=%d ready=%d "
+    LOG("AIMPROVIDER reach: rung=%s (WriteState %u/%u polls, converged %u; trace hits %u, misses %u "
+        "[far end]) mode=%d ready=%d "
         "onfoot=%d why=0x%02X converge=%d range=%.2f m eye->ray %.1f cm yaw=%.1f pitch=%.1f",
         rung_name(static_cast<Actuation>(rung)), g_status.writes.exchange(0, std::memory_order_relaxed), polls,
         g_status.converged.exchange(0, std::memory_order_relaxed),
-        g_status.freshHits.exchange(0, std::memory_order_relaxed), g_config.reach_direct_drive,
+        g_status.freshHits.exchange(0, std::memory_order_relaxed),
+        g_status.freshMisses.exchange(0, std::memory_order_relaxed), g_config.reach_direct_drive,
         Game_ReachDirectDriveReady() ? 1 : 0, Game_ReachDirectDriveOnFoot() ? 1 : 0,
         static_cast<unsigned>(Game_ReachDirectDriveOnFootWhy()),
         g_status.converge.load(std::memory_order_relaxed), g_status.rangeM.load(std::memory_order_relaxed),

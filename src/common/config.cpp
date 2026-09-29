@@ -977,6 +977,7 @@ void ConfigLoad(const wchar_t* path)
         if (!strcmp(key, "reach_collision_census")) { g_config.reach_collision_census=atoi(val); continue; }
         if (!strcmp(key, "reach_sight_fault")) { g_config.reach_sight_fault=(int)strtol(val,nullptr,0); continue; }
         if (!strcmp(key, "reach_sight_eye")) { g_config.reach_sight_eye=(int)strtol(val,nullptr,0); continue; }
+        if (!strcmp(key, "reach_sight_trace_length_m")) { g_config.reach_sight_trace_length_m=(float)atof(val); continue; }
 #endif
         if (!strcmp(key, "honest_reticle_onfoot")) { g_config.honest_reticle_onfoot=atoi(val)!=0; continue; }
         if (!strcmp(key, "halo4_helmet"))

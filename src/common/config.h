@@ -676,9 +676,14 @@ struct Config
     // collision_test_vector and the game's own crosshair-trace flags (resolved from the build and
     // value-checked against HREK at install; see src/dll/reach_sight_trace.inl), and the aim is bent so
     // the engine's crosshair ray passes through the point the intent ray hits:
-    // aim = normalize((ray origin - engine eye) + range * ray direction). Range is smoothed; the old
-    // fixed-distance steer is the fallback. While it is live the older on-foot hand shot ray (which
-    // MOVED the projectile origin to the hand) stands down. No key enables it: it follows direct drive.
+    // aim = normalize((ray origin - engine eye) + range * ray direction). The ray is traced 1 km; a miss
+    // converges on its far end; range is smoothed. It converges whenever it can
+    // resolve; the older on-foot hand shot ray (which MOVED the projectile origin to the hand) is only
+    // the worst-case fallback and stands down while it is live. No key enables it: it follows direct
+    // drive.
+    // DEV BUILDS ONLY, test-only (never saved): trace length override in metres for a cost A/B.
+    // 0 = the shipped 1 km.
+    float reach_sight_trace_length_m = 0.0f;
     // DEV BUILDS ONLY (not parsed otherwise): replace the resolved flags for an experiment. 0 = use them.
     unsigned long long reach_sight_trace_flags = 0;
     int reach_sight_trace_mode = 0;

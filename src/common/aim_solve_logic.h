@@ -81,25 +81,30 @@ struct Vec3 { float x = 0.0f, y = 0.0f, z = 0.0f; };
 //   unit(yaw,pitch) = { cos(yaw)cos(pitch), sin(yaw)cos(pitch), sin(pitch) }   [yaw about +Z, x fwd]
 // `delta` handed to converge_trace_reaim MUST live in this same basis, and the yaw/pitch read back
 // are in it. Mapping the game's own frame into and out of this basis is the PROVIDER'S job. A delta
-// supplied in a different frame produces a plausible-but-wrong correction that the magnitude rail
-// below cannot catch -- the classic frame error whose tell is a value near a right angle, not a bad
-// hand pose. Nothing pure can validate the caller's basis, so this contract is enforced by the
-// provider (and its unit test), not here.
+// supplied in a different frame produces a plausible-but-wrong correction that nothing here can catch
+// -- the classic frame error whose tell is a value near a right angle, not a bad hand pose. Nothing
+// pure can validate the caller's basis, so this contract is enforced by the provider (and its unit
+// test, test_reach_basis), not here.
 
+// TRACE-AND-REAIM IS THE AIM PATH, NOT ONE OPTION AMONG SEVERAL. It declines ONLY when it cannot
+// resolve the shot: the geometry is degenerate, or the title cannot actuate the aim it needs. The older
+// reconciliations (origin relocation, fixed-range re-aim) are the worst-case fallback for exactly
+// those cases, never an alternative (the user's rule, 2026-09-28).
+//
+// There is deliberately NO correction-size rail. One used to decline any bend over 20 deg as "a wrong
+// range", which is true only while the ray starts within arm's reach of the shot origin. With the
+// player standing away from the character (roomscale off, or the body still catching up), a big bend
+// is the geometry itself -- 2.4 m of offset at 7 m is 19 deg -- and every decline handed the shot to a
+// fallback that could not reach (relocation refuses beyond 1.5 m), so it left stock, parallel to the
+// ray and off by the whole offset (measured in FA 2026-09-28). The range comes from the engine's own
+// crosshair-trace query and the offset from the frame both sides render, so a big bend is not evidence
+// that either is wrong.
 struct ConvergeRails {
-    float min_divergence_cm  = 3.0f;   // below this eye-vs-origin offset: do NOTHING (leashed no-op)
-    float max_correction_deg = 20.0f;  // above this: decline (wrong range/delta, not extreme aim)
-    float range_floor_cm     = 30.0f;  // near-contact: 1/range would blow up; nothing to aim at anyway
-    // THE PLAYER STANDING AWAY FROM THE CHARACTER. The 20 deg rail assumes the ray starts within arm's
-    // reach of the shot origin, where a big correction can only mean a wrong range. Once the offset
-    // passes wide_rail_offset_cm (roomscale off, or the body still catching up), a big correction is
-    // the geometry itself -- 2.4 m of offset at 7 m is 19 deg -- and declining hands the shot to
-    // fallbacks that cannot reach: relocating the origin onto the ray is refused beyond 1.5 m, so the
-    // shot leaves stock, PARALLEL to the ray and off by the whole offset (the user's report, measured
-    // in FA 2026-09-28). So the rail widens to wide_rail_cap_deg, beyond which the character would
-    // have to fire sideways or backwards. wide_rail_offset_cm = 0 keeps the plain rail everywhere.
-    float wide_rail_offset_cm = 100.0f;
-    float wide_rail_cap_deg   = 75.0f;
+    float min_divergence_cm = 3.0f;   // below this eye-vs-origin offset the unbent aim is ALREADY
+                                      // converged: nothing to bend, and it counts as converged
+    float range_floor_cm    = 1.0f;   // degenerate guard only: a hit this close defines no direction
+    float max_pitch_deg     = 90.0f;  // the steepest aim the title's control record accepts; a bend
+                                      // past it cannot be actuated exactly, so it declines
 };
 
 // Range smoothing. The correction goes as 1/range, so sweeping off a near wall onto a far one would
@@ -141,12 +146,14 @@ inline bool angles_from_dir(const Vec3& d, float& yaw_deg, float& pitch_deg) {
 // TRACE-AND-REAIM. Bend (yaw,pitch) [degrees] so a shot from the shot origin passes through the point
 // the sightline hits: aim = normalize(delta + range * sightline), delta = eye - shot_origin (cm, in
 // the basis above). The shot origin cancels, so nothing depends on two coordinate spaces agreeing.
-// Returns false and LEAVES THE ANGLES UNTOUCHED whenever the correction is not live or is implausible,
-// so every caller degrades to the uncorrected setpoint -- safe to apply unconditionally.
+// Returns true when the aim now converges (bent, or already converged because the offset is below
+// min_divergence_cm). Returns false and LEAVES THE ANGLES UNTOUCHED only when it cannot resolve (see
+// ConvergeRails), so the caller falls back to its worst-case path -- safe to apply unconditionally.
 inline bool converge_trace_reaim(float& yaw_deg, float& pitch_deg,
                                  const Vec3& delta, float range_cm, const ConvergeRails& r) {
     const float m2 = delta.x * delta.x + delta.y * delta.y + delta.z * delta.z;
-    if (!(m2 > r.min_divergence_cm * r.min_divergence_cm)) return false; // leashed: exact no-op
+    if (!std::isfinite(m2)) return false;
+    if (m2 <= r.min_divergence_cm * r.min_divergence_cm) return true;    // already converged: no bend
     if (!std::isfinite(range_cm) || !(range_cm > r.range_floor_cm))      return false;
 
     constexpr float D2R = 0.017453292519943295f;
@@ -167,19 +174,9 @@ inline bool converge_trace_reaim(float& yaw_deg, float& pitch_deg,
     if (c < -1.0f) c = -1.0f; else if (c > 1.0f) c = 1.0f;
     const float np = std::asin(c) * R2D;
     if (!std::isfinite(ny) || !std::isfinite(np)) return false;
-
-    // Sanity rail: a large correction means the range or the delta is wrong (a wrong big correction in
-    // VR is a weapon that fires sideways), so decline rather than swing the aim. Measured as the TRUE
-    // angle between the two directions: separate yaw/pitch deltas blow up near vertical (a 7.6 deg
-    // lateral correction at -70 deg pitch is ~22 deg of yaw) and would decline a correct correction.
-    float cosang = (ux * tx + uy * ty + uz * tz) / len;
-    if (cosang < -1.0f) cosang = -1.0f; else if (cosang > 1.0f) cosang = 1.0f;
-    float allowed_deg = r.max_correction_deg;
-    if (r.wide_rail_offset_cm > 0.0f && m2 > r.wide_rail_offset_cm * r.wide_rail_offset_cm &&
-        r.wide_rail_cap_deg > allowed_deg)
-        allowed_deg = r.wide_rail_cap_deg;   // standing away from the character: see ConvergeRails
-    if (std::acos(cosang) * R2D > allowed_deg)
-        return false;
+    // The one physical limit: an aim steeper than the control record accepts would be clamped on the
+    // way in and miss, so it cannot resolve here.
+    if (std::fabs(np) > r.max_pitch_deg) return false;
 
     yaw_deg = ny;
     pitch_deg = np;

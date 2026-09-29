@@ -47448,11 +47448,12 @@ bool Game_ReachSightSample(ReachSightSample& out)
         const float range = trace.rangeWu.load(std::memory_order_relaxed);
         if (trace.sequence.load(std::memory_order_acquire) != before)
             continue;
-        if (traceGeneration == generation && at && now >= at && now - at <= 150)
+        if (traceGeneration == generation && at && now >= at && now - at <= kReachSightFreshMs)
         {
             out.traceSampleMs = at;
             out.hit = hit && std::isfinite(range) && range > 0.0f;
-            out.rangeWu = out.hit ? range : 0.0f;
+            // A miss means the target is at least the whole trace away: converge on its far end.
+            out.rangeWu = out.hit ? range : ReachSightTraceLength();
         }
         break;
     }

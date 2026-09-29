@@ -17,8 +17,14 @@
 // melee lane already hooks (a native context in which the game itself runs collision queries). The
 // input-thread aim provider reads the published range, smooths it, and bends the direct-drive setpoint
 // (src/common/aim_solve_logic.h does the math). The engine's crosshair trace then finds T and the shot
-// leaves from exactly where the game fires it. While a converged setpoint is live, the older on-foot
-// hand shot ray -- which MOVED the projectile's origin to the hand -- stands down.
+// leaves from exactly where the game fires it.
+//
+// THIS IS THE AIM PATH, not one option among several: it converges whenever it can resolve -- on a
+// hit, on a miss (the far end of a 1 km trace), at any bend. The older on-foot hand shot ray -- which
+// MOVED the projectile's origin to the hand, local-only and refused beyond 1.5 m -- is only the
+// worst-case fallback for when it cannot: the trace is off, faulted or has no result within
+// kReachSightFreshMs, the geometry is degenerate, or the aim is steeper than the control record
+// accepts. While a converged setpoint is live, that fallback stands down.
 
 struct ReachSightTracePublication
 {
@@ -50,8 +56,24 @@ struct ReachSightTracePublication
 #define REACH_SIGHT_DEV_COUNT(counter) ((void)0)
 #endif
 
-// Beyond ~60 wu (~180 m) the convergence correction is a small fraction of a degree.
-inline constexpr float kReachSightTraceLengthWu = 60.0f;
+// The intent ray is traced 1 km out, like Halo: Campaign Evolved's vehicle intent ray (the user's call,
+// 2026-09-28). A miss therefore means the target is at least 1 km away, and the aim converges on the
+// ray's far end, where the eye-to-hand offset is a small fraction of a degree. (It was 60 wu, ~180 m,
+// and a miss went to the fallback.) Cost measured in FA: docs/REACH-AIM-CONVERGENCE-2026-09-28.md.
+inline constexpr float kReachSightTraceLengthWu = 1000.0f * kReachWorldUnitsPerMeter;
+// A trace result older than this is not used: the trace runs every ~30 ms, so no fresh result means
+// the simulation stalled or the trace is off, and the shot genuinely cannot be resolved (the
+// worst-case fallback). A miss is a fresh result: it converges on the far end.
+inline constexpr uint64_t kReachSightFreshMs = 150;
+// The effective length: 1 km, or in a dev build an A/B override (reach_sight_trace_length_m).
+float ReachSightTraceLength()
+{
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    if (g_config.reach_sight_trace_length_m > 0.0f)
+        return g_config.reach_sight_trace_length_m * kReachWorldUnitsPerMeter;
+#endif
+    return kReachSightTraceLengthWu;
+}
 // Start 5 cm down the ray so the trace clears the gun in the hand; the range reported is still
 // measured from the ray's origin.
 inline constexpr float kReachSightTraceSkipWu = 0.05f * kReachWorldUnitsPerMeter;
@@ -431,8 +453,8 @@ void ReachSightTraceTick(uint32_t unit)
     const float start[3]{ray.origin[0] + u[0] * kReachSightTraceSkipWu,
                          ray.origin[1] + u[1] * kReachSightTraceSkipWu,
                          ray.origin[2] + u[2] * kReachSightTraceSkipWu};
-    const float vector[3]{u[0] * kReachSightTraceLengthWu, u[1] * kReachSightTraceLengthWu,
-                          u[2] * kReachSightTraceLengthWu};
+    const float traceLengthWu = ReachSightTraceLength();
+    const float vector[3]{u[0] * traceLengthWu, u[1] * traceLengthWu, u[2] * traceLengthWu};
     // Result: type (int32 +0) and fraction (float +4), the layout HREK's collisions.cpp asserts name and
     // this repo's Reach contact-melee path already reads; the buffer is generously sized.
     alignas(16) uint8_t result[0x400]{};
@@ -471,7 +493,7 @@ void ReachSightTraceTick(uint32_t unit)
     memcpy(&type, result, sizeof(type));
     memcpy(&fraction, result + 4, sizeof(fraction));
     const bool hit = returned && std::isfinite(fraction) && fraction >= 0.0f && fraction <= 1.0f;
-    const float rangeWu = hit ? kReachSightTraceSkipWu + fraction * kReachSightTraceLengthWu : 0.0f;
+    const float rangeWu = hit ? kReachSightTraceSkipWu + fraction * traceLengthWu : 0.0f;
 #if HALOMCCVR_DEV_DIAGNOSTICS
     LARGE_INTEGER qpcEnd{};
     QueryPerformanceCounter(&qpcEnd);
