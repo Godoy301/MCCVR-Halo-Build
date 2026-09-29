@@ -30,11 +30,19 @@ struct RoomscaleFollow
     // covers a lagged native walker coasting in from there; it is still a hard cap, so later platform
     // or physics travel is never claimed.
     static constexpr uint64_t kSettleMaxMs=700;
+    // The longest a released stick keeps roomscale paused. The body's braking tail after a stick walk
+    // is a few hundred milliseconds; the quiet test below cannot tell it from motion that never stops.
+    // Measured 2026-09-28 (Reach, headset): after a stick walk the follow stayed admitted on every poll
+    // and never commanded for up to 10 s while the player walked a metre away from the body. The only
+    // gate left in that state is this quiet test, and Reach's body point is the character's EYE, which
+    // moves as the aim turns him (inferred, not measured: any sub-millimetre motion per frame holds the
+    // pause open). Past this, the pause ends anyway.
+    static constexpr uint64_t kManualPauseMaxMs=500;
     bool seeded=false, commanded=false, settling=false;
     bool manualPaused=false, following=false;
     uint32_t generation=0;
     uint64_t time=0, lastCommand=0, lastMotion=0;
-    uint64_t manualQuietSince=0;
+    uint64_t manualQuietSince=0, manualSince=0;
     float body[2]{}, expectedReference[2]{}, initialLean[2]{};
     float headForward[2]{}, worldForward[2]{}, error[2]{}, velocity[2]{};
     // Tracking-space direction of the last nonzero command: the way the stopping tail must keep moving
@@ -49,7 +57,7 @@ struct RoomscaleFollow
         // quiet again, a catch-up must re-cross kFollowStart like any other,
         // or a residual inside the start band would resume walking.
         commanded=settling=following=false;velocity[0]=velocity[1]=0;
-        manualPaused=true;manualQuietSince=now;
+        manualPaused=true;manualQuietSince=manualSince=now;
     }
 
     bool Update(uint32_t epoch,uint64_t now,bool enabled,bool manualMove,
@@ -81,10 +89,12 @@ struct RoomscaleFollow
         {
             // A released stick may still be braking. Wait for observed native
             // motion to remain quiet before creating a new follow receipt;
-            // continuing platform/camera movement extends this bounded wait.
+            // continuing platform/camera movement extends the wait, up to
+            // kManualPauseMaxMs after the stick let go.
             if (std::hypot(position[0]-body[0],position[1]-body[1])/scale>0.0001f)
                 manualQuietSince=now;
-            if (now>=manualQuietSince&&now-manualQuietSince>=150)
+            if ((now>=manualQuietSince&&now-manualQuietSince>=150) ||
+                (now>=manualSince&&now-manualSince>=kManualPauseMaxMs))
                 manualPaused=false;
         }
         else if (!reset && (commanded || (settling && now>=lastCommand && now-lastCommand<=kSettleMaxMs &&

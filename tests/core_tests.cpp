@@ -17898,6 +17898,28 @@ int main()
         head[0]=0.045f; step(false);
         Check(follow.following && (mx!=0 || my!=0), "a lean past the start band still starts a new follow");
     }
+    // A released stick pauses roomscale for a bounded time only: body motion that never stops (Reach's
+    // eye swinging as the aim turns the character) cannot hold the pause open while the player walks off.
+    {
+        RoomscaleFollow follow;
+        float body[3]{}, head[3]{0,1.7f,0}, reference[3]{0,1.7f,0};
+        float mx=0,my=0; uint64_t now=100;
+        auto step=[&](bool manual){now+=11;return follow.Update(3,now,true,manual,body,head,reference,0,-1,1,0,1.0f,mx,my);};
+        step(false);
+        step(true);                                     // the stick
+        const uint64_t released=now;
+        head[0]=0.3f;                                   // then a 30 cm step away, still aiming around
+        bool resumed=false; uint64_t resumedAt=0; float swing=0.0005f;
+        for (int i=0;i<100 && !resumed;++i)
+        {
+            body[0]+=swing; swing=-swing;               // the eye swings half a millimetre every frame
+            step(false);
+            if (mx!=0 || my!=0) { resumed=true; resumedAt=now; }
+        }
+        Check(resumed && resumedAt-released<=RoomscaleFollow::kManualPauseMaxMs+22,
+            "aim swing cannot hold the manual pause open: the follow resumes within kManualPauseMaxMs");
+        Check(resumed && resumedAt-released>=150, "the pause still covers the stick's braking tail");
+    }
     // The stopping tail is claimed only while the body keeps moving the way the follow walked: travel
     // against that direction (a platform, a knockback) ends the tail unclaimed.
     {
