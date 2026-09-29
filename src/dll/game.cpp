@@ -1463,6 +1463,9 @@ namespace
         const float* vector, int32_t ignoredA);
     void ReachSightNoteEngineTrace(uint64_t flags, const float* start, const float* vector,
         int32_t ignoredA, int32_t ignoredB, int32_t ignoredC);
+    // Halo 3 / ODST trace-and-reaim, the engine-crosshair check (dev; legacy_sight_trace.inl).
+    void LegacySightNoteEngineTrace(GameTitle title, uint64_t flags, const float* start, const float* vector,
+        uintptr_t caller);
     bool ReachConvergedShotLive(uint64_t nowMs);
     void ReachSightMeasureShot(int32_t unitIndex, const float* origin, const float* direction,
                                const float* cameraPoint, uint8_t firesFromCamera, uint8_t useUnitAim);
@@ -5042,6 +5045,9 @@ namespace
         uint8_t nativeResult=0;
         __try
         {
+            if(!g_legacyCollisionOwnedQuery)
+                LegacySightNoteEngineTrace(GameTitle::Halo3ODST,flags,start,desired,
+                    reinterpret_cast<uintptr_t>(_ReturnAddress()));
             if(!OdstRedirectContactVector(reinterpret_cast<uintptr_t>(_ReturnAddress()),
                 flags,mode,ignoredObjectA,ignoredObjectB,ignoredObjectC,result,nativeResult))
                 nativeResult=LegacyCollisionSchedulerDetourBody(

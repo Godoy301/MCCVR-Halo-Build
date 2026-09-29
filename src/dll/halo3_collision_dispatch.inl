@@ -35,6 +35,8 @@
         uint8_t nativeResult=0;
         const uintptr_t caller=reinterpret_cast<uintptr_t>(_ReturnAddress());
         __try {
+            if(!g_legacyCollisionOwnedQuery)
+                LegacySightNoteEngineTrace(GameTitle::Halo3,flags,start,desired,caller);
             if(!Halo3RedirectContactVector(caller,flags,mode,ignoredObjectA,
                     ignoredObjectB,ignoredObjectC,result,nativeResult))
                 nativeResult=LegacyCollisionSchedulerDetourBody(

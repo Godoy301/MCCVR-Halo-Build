@@ -37,6 +37,8 @@ struct LegacySightState
     std::atomic<const char*> why{"the title is not installed"};
     std::atomic<uint32_t> anchors{0}, globalRva{0};
     std::atomic<uint64_t> converged{0}, fallback{0};      // servo targets, counted on the input thread
+    // Dev: the return address of each crosshair trace's collision call (the engine-crosshair check).
+    std::atomic<uintptr_t> siteReturn[4]{};
 };
 // [0] Halo 3, [1] ODST, [2] Halo 4 (Halo 4's query is PhysicsRayCast with the contact lane's pinned melee
 // flags, see halo4_contact_melee_runtime.inl: Halo4SightTraceTick; its `flags` is only "available").
@@ -61,6 +63,8 @@ void LegacyResolveSightFlags(GameTitle title, uintptr_t base, size_t size,
     state.flags.store(0, std::memory_order_release);
     state.anchors.store(0, std::memory_order_relaxed);
     state.globalRva.store(0, std::memory_order_relaxed);
+    for (auto& site : state.siteReturn)
+        site.store(0, std::memory_order_relaxed);
     Sight_ResetTitle(title);
     static constexpr char kAnchor[] = "81 C9 00 20 20 00";   // or ecx, 0x202000
     const uintptr_t collisionTest = reinterpret_cast<uintptr_t>(collision.target);
@@ -86,6 +90,23 @@ void LegacyResolveSightFlags(GameTitle title, uintptr_t base, size_t size,
             if (global && named != global)
                 why = "two crosshair traces name different flags globals";
             global = named;
+            // The collision call the inspector matched: its return address identifies the site's queries.
+            if (anchors < 4)
+            {
+                const auto* code = reinterpret_cast<const uint8_t*>(at);
+                for (uintptr_t fwd = 6; fwd <= 0x100 && at + fwd + 5 <= textEnd; ++fwd)
+                {
+                    int32_t rel = 0;
+                    if (code[fwd] != 0xE8)
+                        continue;
+                    memcpy(&rel, code + fwd + 1, sizeof(rel));
+                    if (at + fwd + 5 + static_cast<intptr_t>(rel) == collisionTest)
+                    {
+                        state.siteReturn[anchors].store(at + fwd + 5, std::memory_order_relaxed);
+                        break;
+                    }
+                }
+            }
             if (++anchors > 4)
                 why = "more crosshair-trace anchors than any known build has";
         }
@@ -166,6 +187,93 @@ void LegacySightTraceTick(GameTitle title, uint32_t unit, int32_t localUnit, boo
                        static_cast<uint64_t>(after.QuadPart - before.QuadPart));
 }
 
+// ---- engine-crosshair check (dev): does the TITLE'S OWN crosshair trace pass through the traced point? ----
+// Halo 3 and ODST trace their crosshair with the resolved flags. Our own trace calls the ORIGINAL through
+// the trampoline, so every query the collision hook sees with those flags is the game's. While our aim is
+// converged each one is compared with the point the intent ray hit (H + u * range): how far that point sits
+// off the game's line, where the line starts relative to the engine eye we solved with, and its angle from
+// the eye -> point direction. Pass = the point ~0 mm off the line.
+#if HALOMCCVR_DEV_DIAGNOSTICS
+struct LegacyEngineTraceWindow
+{
+    std::atomic<uint32_t> siteCalls{0};
+    std::atomic<uint64_t> siteFlags{0};
+    std::atomic<uint32_t> seen{0}, compared{0};
+    std::atomic<float> missMm{0.0f}, maxMissMm{0.0f}, rangeM{0.0f}, angleDeg{0.0f};
+    std::atomic<float> startAlongMm{0.0f}, startRightMm{0.0f}, startUpMm{0.0f};
+};
+LegacyEngineTraceWindow g_legacyEngineTrace[2];   // [0] Halo 3, [1] ODST
+#endif
+
+void LegacySightNoteEngineTrace(GameTitle title, uint64_t flags, const float* start, const float* vector,
+                                uintptr_t caller)
+{
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    // Cheapest gate first: this runs for every collision query the game makes.
+    if (title != GameTitle::Halo3 && title != GameTitle::Halo3ODST)
+        return;
+    auto& state = LegacySight(title);
+    auto& window = g_legacyEngineTrace[title == GameTitle::Halo3ODST ? 1 : 0];
+    for (const auto& site : state.siteReturn)
+    {
+        const uintptr_t at = site.load(std::memory_order_relaxed);
+        if (at && at == caller)
+        {
+            window.siteCalls.fetch_add(1, std::memory_order_relaxed);
+            window.siteFlags.store(flags, std::memory_order_relaxed);
+            break;
+        }
+    }
+    const uint64_t resolved = state.flags.load(std::memory_order_acquire);
+    if (!resolved || flags != resolved || !start || !vector)
+        return;
+    window.seen.fetch_add(1, std::memory_order_relaxed);
+    if (TitleAdapter_GetActiveTitle() != title || !Sight_ConvergedLive(title))
+        return;
+    const uint32_t generation = TitleAdapter_GetGeneration(title);
+    SightRay ray{};
+    SightTrace trace{};
+    if (!Sight_ReadRay(title, generation, kSightRayFreshMs, ray) ||
+        !Sight_ReadTrace(title, generation, kSightFreshMs, trace))
+        return;
+    const float vl = std::sqrt(vector[0] * vector[0] + vector[1] * vector[1] + vector[2] * vector[2]);
+    if (!std::isfinite(vl) || vl < 1.0e-6f)
+        return;
+    const float d[3]{vector[0] / vl, vector[1] / vl, vector[2] / vl};
+    const float p[3]{ray.head[0] + ray.dir[0] * trace.rangeWu, ray.head[1] + ray.dir[1] * trace.rangeWu,
+                     ray.head[2] + ray.dir[2] * trace.rangeWu};
+    const float w[3]{p[0] - start[0], p[1] - start[1], p[2] - start[2]};
+    const float c[3]{w[1] * d[2] - w[2] * d[1], w[2] * d[0] - w[0] * d[2], w[0] * d[1] - w[1] * d[0]};
+    const float toMm = 3048.0f;   // 1 world unit = 3.048 m
+    // The eye -> point direction the solve aimed along, against the line the game traced.
+    const float a[3]{p[0] - ray.eye[0], p[1] - ray.eye[1], p[2] - ray.eye[2]};
+    const float al = std::sqrt(a[0] * a[0] + a[1] * a[1] + a[2] * a[2]);
+    float dot = al > 1.0e-6f ? (a[0] * d[0] + a[1] * d[1] + a[2] * d[2]) / al : 1.0f;
+    dot = dot > 1.0f ? 1.0f : (dot < -1.0f ? -1.0f : dot);
+    // The line's start relative to the solve's eye, in the line's frame (along, horizontal right, up).
+    float right[3]{d[1], -d[0], 0.0f};
+    float rl = std::sqrt(right[0] * right[0] + right[1] * right[1]);
+    if (!(rl > 1.0e-4f)) { right[0] = 1.0f; right[1] = 0.0f; rl = 1.0f; }
+    right[0] /= rl; right[1] /= rl;
+    const float up[3]{right[1] * d[2] - right[2] * d[1], right[2] * d[0] - right[0] * d[2],
+                      right[0] * d[1] - right[1] * d[0]};
+    const float se[3]{start[0] - ray.eye[0], start[1] - ray.eye[1], start[2] - ray.eye[2]};
+    const float miss = std::sqrt(c[0] * c[0] + c[1] * c[1] + c[2] * c[2]) * toMm;
+    window.missMm.store(miss, std::memory_order_relaxed);
+    if (miss > window.maxMissMm.load(std::memory_order_relaxed))
+        window.maxMissMm.store(miss, std::memory_order_relaxed);
+    window.rangeM.store(std::sqrt(w[0] * w[0] + w[1] * w[1] + w[2] * w[2]) * 3.048f, std::memory_order_relaxed);
+    window.angleDeg.store(std::acos(dot) * 57.29578f, std::memory_order_relaxed);
+    window.startAlongMm.store((se[0] * d[0] + se[1] * d[1] + se[2] * d[2]) * toMm, std::memory_order_relaxed);
+    window.startRightMm.store((se[0] * right[0] + se[1] * right[1] + se[2] * right[2]) * toMm,
+                              std::memory_order_relaxed);
+    window.startUpMm.store((se[0] * up[0] + se[1] * up[1] + se[2] * up[2]) * toMm, std::memory_order_relaxed);
+    window.compared.fetch_add(1, std::memory_order_release);
+#else
+    (void)title; (void)flags; (void)start; (void)vector; (void)caller;
+#endif
+}
+
 // Cold worker, every 5 s: how the servo target was chosen per title, and why a title does not trace.
 void LegacySightReport()
 {
@@ -186,4 +294,23 @@ void LegacySightReport()
             "(no fresh trace)%s%s", LegacySightTitleName(title), static_cast<unsigned long long>(converged),
             static_cast<unsigned long long>(fallback), why ? "; trace off: " : "", why ? why : "");
     }
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    for (int slot = 0; slot < 2; ++slot)
+    {
+        auto& window = g_legacyEngineTrace[slot];
+        const uint32_t sites = window.siteCalls.exchange(0, std::memory_order_relaxed);
+        const uint32_t seen = window.seen.exchange(0, std::memory_order_relaxed);
+        const uint32_t compared = window.compared.exchange(0, std::memory_order_acquire);
+        if (!seen && !sites)
+            continue;
+        LOG("SIGHT %s engine crosshair: %u queries from the crosshair call site(s) (last flags 0x%llX); %u "
+            "with the resolved flags, %u while converged; the point aimed at is %.0f mm off the game's line "
+            "(max %.0f) at %.2f m; line vs eye->point %.2f deg; its start minus the solve's eye "
+            "[along,right,up] %.0f,%.0f,%.0f mm", slot ? "ODST" : "Halo 3", sites,
+            static_cast<unsigned long long>(window.siteFlags.load()), seen, compared,
+            double(window.missMm.load()), double(window.maxMissMm.exchange(0.0f)), double(window.rangeM.load()),
+            double(window.angleDeg.load()), double(window.startAlongMm.load()),
+            double(window.startRightMm.load()), double(window.startUpMm.load()));
+    }
+#endif
 }
