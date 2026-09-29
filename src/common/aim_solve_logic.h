@@ -183,6 +183,25 @@ inline bool converge_trace_reaim(float& yaw_deg, float& pitch_deg,
     return true;
 }
 
+// A CHASE CAMERA'S CROSSHAIR LINE, as a shot origin. A title that aims vehicle weapons at the point under
+// a third-person camera's crosshair traces from that camera along its forward (Reach: HREK aim_assist ->
+// following-camera position and forward). That camera ORBITS a pivot as the aim turns, so its position
+// is not a fixed origin: bending the aim from it moves it, and from a camera several metres back a near
+// target never settles. The orbit keeps the camera's line passing close to the pivot, so the point to
+// converge from is the point of that line nearest the pivot, which barely moves as the aim turns. On foot
+// or in a first-person seat the pivot is the camera, and this returns the camera itself. A pivot behind
+// the camera also returns the camera. False (out untouched) on a degenerate forward.
+inline bool line_point_nearest(const Vec3& origin, const Vec3& forward, const Vec3& pivot, Vec3& out) {
+    const float len = std::sqrt(forward.x * forward.x + forward.y * forward.y + forward.z * forward.z);
+    if (!std::isfinite(len) || !(len > 1.0e-6f)) return false;
+    const Vec3 f{forward.x / len, forward.y / len, forward.z / len};
+    float t = (pivot.x - origin.x) * f.x + (pivot.y - origin.y) * f.y + (pivot.z - origin.z) * f.z;
+    if (!std::isfinite(t)) return false;
+    if (t < 0.0f) t = 0.0f;
+    out = Vec3{origin.x + f.x * t, origin.y + f.y * t, origin.z + f.z * t};
+    return true;
+}
+
 // HALO: CAMPAIGN EVOLVED'S RETICLE PLACEMENT (Plugin.cpp onfoot_reticule_tick), for a marker drawn on
 // an EYE-anchored intent ray -- the ray converge_trace_reaim bends the shot onto. On a hit the marker
 // sits on the surface, pulled back `surface_off_m` (never closer than 20 cm); past `cap_m`, and on a

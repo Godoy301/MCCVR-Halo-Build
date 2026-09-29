@@ -93,4 +93,80 @@ struct ArmGate {
     void release() { armed = false; streak = 0; record = 0; }
 };
 
+// SEAT LIMITS -- keep a state write inside the limits the game clamps the record to.
+//
+// The write lands AFTER the game's own update of the record, and that update is where a seat's limits
+// are applied (a turret's pitch stop, a passenger's cone). Written blindly, the aim goes straight past
+// them: a gun that cannot point below -20 deg is told to aim at -35. The game shows where the limit is
+// without being asked: while the write owns the aim the stick is neutral, so the game's update leaves
+// last tick's written value alone UNLESS a limit moved it. Per axis (yaw, pitch; radians):
+//   * last tick's write came back moved by more than `eps`: latch that value as the limit, on the side
+//     we were beyond, and restart the probe step;
+//   * latched, and the target is still past the limit: write the limit plus a probe step toward the
+//     target. A static limit clamps the probe straight back, so the aim sits one small step past it
+//     (never a flicker between the limit and the target). A probe that comes back unmoved means the
+//     limit has moved out (a cone turning with the vehicle), or the latch came from a one-off snap: the
+//     step doubles, so the aim catches up with the target in a few ticks;
+//   * the target comes back inside the limit: release.
+// apply() returns true while an axis is held short of its target by more than the probe step -- the aim
+// is limited, and a converged shot cannot be claimed. Yaw differences wrap.
+struct LimitLatch {
+    float eps      = 0.0044f;   // 0.25 deg: the game moving our value by less is not a clamp
+    float probe    = 0.0087f;   // 0.5 deg: the first step past a latched limit
+    float max_step = 1.0f;      // cap on the doubling probe
+
+    bool  have_last = false;
+    float last[2]{};
+    bool  latched[2]{};
+    float limit[2]{};
+    float side[2]{};            // +1: the limit is a maximum; -1: a minimum
+    float step[2]{};
+
+    // Nothing written last tick (the write stopped, or it is not a seat): forget everything.
+    void reset() {
+        have_last = false;
+        latched[0] = latched[1] = false;
+    }
+
+    // `native`: the record after the game's own update this tick. `target`: the aim to write. Writes the
+    // values to write into `out` (the caller still puts yaw on the game's branch and clamps pitch).
+    bool apply(const float native[2], const float target[2], float out[2]) {
+        bool limited = false;
+        for (int a = 0; a < 2; ++a) {
+            const auto wrap = [a](float v) { return a == 0 ? std::remainder(v, kTwoPi) : v; };
+            if (have_last && std::isfinite(native[a])) {
+                const float moved = wrap(native[a] - last[a]);
+                if (std::fabs(moved) > eps) {          // the game clamped last tick's write: that is the limit
+                    latched[a] = true;
+                    limit[a] = native[a];
+                    side[a] = moved < 0.0f ? 1.0f : -1.0f;
+                    step[a] = probe;
+                } else if (latched[a]) {               // the probe held: the limit is at least that far out
+                    limit[a] = last[a];
+                    step[a] = std::fmin(step[a] * 2.0f, max_step);
+                }
+            }
+            float t = target[a];
+            if (latched[a]) {
+                const float beyond = wrap(t - limit[a]) * side[a];
+                if (!(beyond > 0.0f)) {
+                    latched[a] = false;                // back inside: the target itself
+                } else {
+                    t = limit[a] + side[a] * std::fmin(beyond, step[a]);
+                    if (beyond > step[a]) limited = true;
+                }
+            }
+            out[a] = t;
+        }
+        return limited;
+    }
+
+    // What was actually written this tick (after the caller's branch and pitch handling).
+    void wrote(const float written[2]) {
+        last[0] = written[0];
+        last[1] = written[1];
+        have_last = true;
+    }
+};
+
 } // namespace aim_write

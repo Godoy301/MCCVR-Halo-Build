@@ -343,6 +343,123 @@ static void test_reach_basis() {
             }
 }
 
+// A chase camera's crosshair line as the shot origin (aim_solve::line_point_nearest), and why the point
+// nearest the pivot is the one to converge from: the camera orbits as the aim turns.
+static void test_chase_camera_line() {
+    {   // the point of the line nearest the pivot; a pivot behind the camera gives the camera
+        Vec3 o{};
+        CHECK(line_point_nearest(Vec3{-500, 0, 200}, Vec3{2, 0, 0}, Vec3{0, 30, 150}, o));
+        CHECK(near(o.x, 0.0f, 1e-3f) && near(o.y, 0.0f, 1e-3f) && near(o.z, 200.0f, 1e-3f));
+        CHECK(line_point_nearest(Vec3{-500, 0, 200}, Vec3{1, 0, 0}, Vec3{-900, 0, 150}, o));
+        CHECK(near(o.x, -500.0f, 1e-3f) && near(o.z, 200.0f, 1e-3f));
+        o = Vec3{7, 7, 7};
+        CHECK(!line_point_nearest(Vec3{}, Vec3{0, 0, 0}, Vec3{1, 1, 1}, o) && near(o.x, 7.0f, 1e-6f));   // untouched
+    }
+    // An orbiting chase camera: 500 cm behind a pivot along the aim, 120 cm above it. The eye rendering
+    // the intent ray sits in the seat, 60 cm left of and 40 cm above the pivot. Iterate the solve the way
+    // the game does it (each frame re-solves from the camera the last aim produced) and check that the
+    // camera's line ends up through the traced point -- including a target NEARER than the camera is
+    // behind the pivot.
+    const Vec3 pivot{1000, 2000, 300};
+    const Vec3 eye{pivot.x, pivot.y + 60, pivot.z + 40};
+    const auto cameraFor = [&](float yawDeg, float pitchDeg, Vec3& cam, Vec3& fwd) {
+        const float cy = std::cos(yawDeg * 0.0174533f), sy = std::sin(yawDeg * 0.0174533f);
+        const float cp = std::cos(pitchDeg * 0.0174533f), sp = std::sin(pitchDeg * 0.0174533f);
+        fwd = Vec3{cy * cp, sy * cp, sp};
+        cam = Vec3{pivot.x - fwd.x * 500, pivot.y - fwd.y * 500, pivot.z - fwd.z * 500 + 120};
+    };
+    const auto missCm = [&](float yawDeg, float pitchDeg, const Vec3& target) {
+        Vec3 cam{}, f{};
+        cameraFor(yawDeg, pitchDeg, cam, f);
+        const Vec3 w{target.x - cam.x, target.y - cam.y, target.z - cam.z};
+        const Vec3 c{w.y * f.z - w.z * f.y, w.z * f.x - w.x * f.z, w.x * f.y - w.y * f.x};
+        return std::sqrt(c.x * c.x + c.y * c.y + c.z * c.z);
+    };
+    for (float range : {300.0f, 800.0f, 4000.0f}) {    // 3 m (nearer than the camera is back), 8 m, 40 m
+        const Vec3 u{std::cos(0.3f), std::sin(0.3f), 0.0f};   // the hand points 17 deg left, level
+        const Vec3 target{eye.x + u.x * range, eye.y + u.y * range, eye.z + u.z * range};
+        float y = 0.0f, p = 0.0f;
+        for (int frame = 0; frame < 40; ++frame) {
+            Vec3 cam{}, f{}, anchor{};
+            cameraFor(y, p, cam, f);
+            CHECK(line_point_nearest(cam, f, pivot, anchor));
+            float ny = std::atan2(u.y, u.x) * 57.29578f, np = std::asin(u.z) * 57.29578f;
+            CHECK(converge_trace_reaim(ny, np, Vec3{eye.x - anchor.x, eye.y - anchor.y, eye.z - anchor.z},
+                                       range, ConvergeRails{}));
+            y = ny; p = np;
+        }
+        CHECK(missCm(y, p, target) < 1.0f);
+    }
+}
+
+// Seat limits: the state write keeps inside the clamp the game applies (aim_write::LimitLatch).
+static void test_limit_latch() {
+    using aim_write::LimitLatch;
+    constexpr float kD = 0.0174533f;
+    // A fake game: desired_angles clamped to pitch >= -20 deg (the Warthog chaingun), stick neutral.
+    const auto game = [&](const float wrote[2], float native[2]) {
+        native[0] = wrote[0];
+        native[1] = wrote[1] < -20.0f * kD ? -20.0f * kD : wrote[1];
+    };
+    {   // inside the limit: the target, untouched, and never limited
+        LimitLatch l; float pair[2]{0.1f, -0.1f}, out[2]{};
+        for (int t = 0; t < 10; ++t) {
+            const float target[2]{0.1f + 0.01f * t, -0.1f};
+            float native[2]; game(pair, native);
+            CHECK(!l.apply(native, target, out) && near(out[0], target[0], 1e-6f) && near(out[1], target[1], 1e-6f));
+            pair[0] = out[0]; pair[1] = out[1]; l.wrote(pair);
+        }
+    }
+    {   // past the pitch stop: the first write overshoots, then the latch holds within one probe of the stop
+        LimitLatch l; float pair[2]{0.0f, -0.1f}, out[2]{};
+        const float target[2]{0.2f, -35.0f * kD};
+        bool limited = false;
+        for (int t = 0; t < 20; ++t) {
+            float native[2]; game(pair, native);
+            limited = l.apply(native, target, out);
+            pair[0] = out[0]; pair[1] = out[1]; l.wrote(pair);
+        }
+        CHECK(limited && near(out[0], 0.2f, 1e-6f));                                // yaw is free
+        CHECK(out[1] < -20.0f * kD && out[1] >= -20.0f * kD - l.probe - 1e-6f);    // one probe past the stop
+        // the hand comes back above the stop: released at once, the target itself
+        const float back[2]{0.2f, -10.0f * kD};
+        float native[2]; game(pair, native);
+        CHECK(!l.apply(native, back, out) && near(out[1], back[1], 1e-6f) && !l.latched[1]);
+    }
+    {   // a snap that is not a limit (the game re-set the record once): the probe doubles and catches up
+        LimitLatch l; float out[2]{};
+        const float wrote[2]{0.0f, 0.0f};
+        l.wrote(wrote);
+        const float snapped[2]{0.0f, 0.3f};                              // the game moved it by 17 deg once
+        const float target[2]{0.0f, 0.0f};
+        CHECK(l.apply(snapped, target, out));                             // looks like a minimum at 0.3...
+        int ticks = 1;
+        for (float pair[2]{out[0], out[1]}; ticks < 20 && l.latched[1]; ++ticks) {
+            l.wrote(pair);
+            l.apply(pair, target, out);                                   // ...but every probe holds
+            pair[0] = out[0]; pair[1] = out[1];
+        }
+        CHECK(!l.latched[1] && near(out[1], 0.0f, 1e-6f) && ticks < 12);  // back on the target within a few ticks
+    }
+    {   // yaw wraps: a limit near +pi and a target just past it across the wrap
+        LimitLatch l; float out[2]{};
+        const float wrote[2]{-3.10f, 0.0f};                               // written just past +pi (wrapped)
+        l.wrote(wrote);
+        const float native[2]{3.10f, 0.0f};                               // the game clamped it back to 3.10
+        const float target[2]{-3.12f, 0.0f};                              // still past it, on the far side
+        CHECK(l.apply(native, target, out) && l.latched[0] && l.side[0] > 0.0f);
+        CHECK(std::fabs(std::remainder(out[0] - 3.10f, aim_write::kTwoPi)) <= l.probe + 1e-5f);
+    }
+    {   // reset forgets: the next tick is judged afresh
+        LimitLatch l; float out[2]{};
+        const float wrote[2]{0.0f, 0.0f};
+        l.wrote(wrote);
+        l.reset();
+        const float native[2]{0.0f, 0.5f}, target[2]{0.0f, 0.0f};
+        CHECK(!l.apply(native, target, out) && near(out[1], 0.0f, 1e-6f));
+    }
+}
+
 int main() {
     test_selectors();
     test_angles_from_dir();
@@ -353,6 +470,8 @@ int main() {
     test_clamp_pitch();
     test_arm_gate();
     test_reach_basis();
+    test_chase_camera_line();
+    test_limit_latch();
     if (g_fail == 0) std::printf("aim_solve_tests: OK\n");
     return g_fail == 0 ? 0 : 1;
 }
