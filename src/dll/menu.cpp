@@ -1447,6 +1447,26 @@ namespace
                                           0.3f, 20.0f, "%.1f");
             changed |= vr_menu::SliderFloat("Crosshair distance (m)", &g_config.crosshair_distance_m,
                                           2.0f, 50.0f, "%.0f");
+            ImGui::TextDisabled("Where the crosshair floats when it is not traced (other games, and\n"
+                                "Reach whenever the traced aim cannot resolve).");
+            ImGui::Spacing();
+            ImGui::Text("Halo: Reach traced crosshair");
+            ImGui::TextDisabled("While Reach converges your aim, the crosshair sits on the surface you aim\n"
+                                "at, on the line from your eye along the gun, as in Halo: Campaign Evolved.");
+            changed |= vr_menu::SliderFloat("Max crosshair distance (m)", &g_config.reticle_max_dist_m,
+                                          1.0f, 50.0f, "%.1f");
+            changed |= vr_menu::SliderFloat("Gap in front of surfaces (m)", &g_config.reticle_surface_offset_m,
+                                          0.0f, 2.0f, "%.2f");
+            changed |= vr_menu::SliderFloat("Shrink-away distance (m)", &g_config.reticle_min_scale_dist_m,
+                                          0.0f, std::max(0.1f, g_config.reticle_max_dist_m - 0.1f), "%.2f");
+            changed |= vr_menu::SliderFloat("Smallest size up close", &g_config.reticle_min_scale,
+                                          0.001f, 1.0f, "%.3f");
+            // Keep the pair ordered live, as the loader's clamp does.
+            if (g_config.reticle_min_scale_dist_m > g_config.reticle_max_dist_m - 0.1f)
+                g_config.reticle_min_scale_dist_m = std::max(0.0f, g_config.reticle_max_dist_m - 0.1f);
+            ImGui::TextDisabled("Beyond the max distance, and on sky, it parks there. Nearer than the\n"
+                                "shrink-away distance it scales down toward the smallest size, so it\n"
+                                "gets out of the way when the gun is against a wall.");
             // Halo 3's crosshair kicks on fire and turns red/green on a target.
             // Reading it back costs render time, so the rate is the player's
             // call: drag it live and keep whatever still feels smooth.
@@ -1474,7 +1494,9 @@ namespace
             ImGui::TextDisabled("On foot the crosshair normally shows where your HAND points, but the\n"
                                 "game's aim lags behind through its turn-rate loop, so shots trail the\n"
                                 "crosshair while you turn. This puts the crosshair on the REAL aim\n"
-                                "instead, so the gap is visible. For comparison capture; off by default.");
+                                "instead, so the gap is visible. For comparison capture; off by default.\n"
+                                "Ignored while Reach's traced aim converges (it would draw a line\n"
+                                "parallel to the real shot).");
         }
         ImGui::TextDisabled("Crosshair smoothing is visual only; bullets keep the current controller ray.\n"
                             "Set it to 0%% for exact raw tracking.");
