@@ -47725,7 +47725,19 @@ extern "C" void ReachPcApplyForUser(int user)
             g_reachPcMismatch.fetch_add(1, std::memory_order_relaxed);   // the gate disarms + re-validates
         const unsigned long long tick = GetTickCount64();
         if (armed && same)
+        {
             g_reachPcLiveMs.store(tick, std::memory_order_release);    // heartbeat: ready to write
+            // Reach's runtime liveness too (Stage 3U: "a REAL Reach callback, not the shared Present").
+            // Its only other source is the unit camera-position evaluator hook. Measured 2026-09-28
+            // (headset): with the seated state write on -- which holds the aim stick neutral -- that
+            // heartbeat went stale ~0.9 s after sitting in a Warthog turret; the runtime flapped
+            // gameplay/loading and the camera core tore down, dropping VR to the flat loading view,
+            // on every seat entry. (Inferred: in a third-person seat the game calls the evaluator
+            // only while the stick turns the look.) This hook is the sim's own per-user control update
+            // on the validated player_control: it runs every tick the level runs, seated or not, and
+            // stops with the level (Save & Quit, unload).
+            g_reachLastCamCopyMs.store(tick, std::memory_order_release);
+        }
         // One coherent setpoint (the seqlock in Game_ReachDirectDrivePublish): angles, publish time and
         // the converged bit all from the same publish. A torn read retries once; still torn, this tick
         // writes nothing and the game keeps last tick's angles.
