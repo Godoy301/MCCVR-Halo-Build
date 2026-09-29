@@ -134,6 +134,9 @@ DWORD WINAPI Worker(LPVOID)
             continue;
         }
         LOG("DEVPAD: running a %zu-step script", steps.size());
+        // An abort is for the script running when it was written: one left from an earlier script (it
+        // finished before the abort landed) must not stop this one at its first pause.
+        DeleteFileW((g_dir + L"halomccvr_pad_abort.txt").c_str());
         if (!Run(steps))
         {
             Neutral();
