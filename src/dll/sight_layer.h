@@ -7,13 +7,16 @@
 //      publishes the INTENT RAY: the rendered centre eye it starts at, the controller's direction, and
 //      the ENGINE EYE the title aims its shots from -- all in the title's own world units;
 //   2. the title's simulation-thread hook traces that ray with the title's own collision query and
-//      publishes the range (a miss is the far end of the trace);
-//   3. the aim path bends its aim so the engine's line from the engine eye passes through the traced
-//      point (aim_solve::converge_direction), actuates it, and marks the aim in effect as converged;
+//      publishes the range, which the layer also SMOOTHS for the aim: the bend goes as 1/range, so the
+//      inverse range is averaged over ~120 ms (a sweep off a near edge would otherwise snap the aim in
+//      one trace) and a miss holds the last range, as Reach's aim does (aim_solve::solve_and_actuate);
+//   3. the aim path bends its aim so the engine's line from the engine eye passes through the point at
+//      that range (aim_solve::converge_direction), actuates it, and marks the aim in effect as converged;
 //   4. the compositor draws the reticle on the eye-anchored ray at the traced depth while it is.
 //
 // A title that cannot trace simply never publishes a result, and its aim path keeps its old behaviour:
-// the fallback runs only when this cannot resolve.
+// the fallback runs only when this cannot resolve. The player key converged_aim = 0 turns the whole layer
+// off (no ray, no trace, no convergence): every title then aims as it did before it.
 
 #include "../common/runtime_types.h"
 #include <cstdint>
@@ -30,6 +33,8 @@ inline constexpr uint64_t kSightTraceIntervalMs = 30;
 inline constexpr uint64_t kSightRayFreshMs = 100;
 // Start 5 cm down the ray so the trace clears the head it starts in; ranges are still from the ray origin.
 inline constexpr float kSightTraceSkipWu = 0.05f * kSightWorldUnitsPerMetre;
+// The time constant of the inverse-range average the aim converges on (Reach's: reach_aim_provider.cpp).
+inline constexpr float kSightRangeTauMs = 120.0f;
 
 struct SightRay
 {
@@ -48,8 +53,14 @@ struct SightTrace
     uint32_t generation = 0;
     uint64_t sampleMs = 0;
     bool hit = false;
-    float rangeWu = 0.0f;   // on a miss: the trace length (the target is at least that far)
+    float rangeWu = 0.0f;         // this trace's own result; on a miss the trace length
+    float convergeRangeWu = 0.0f; // the smoothed range the aim converges on; 0 = no hit yet (cannot converge)
+    // The range the aim was bent through: what a shot check must measure against.
+    float AimRangeWu() const { return convergeRangeWu > 0.0f ? convergeRangeWu : rangeWu; }
 };
+
+// The player key converged_aim: false turns the layer off (no ray, no trace, no convergence).
+bool Sight_AimEnabled();
 
 void Sight_PublishRay(GameTitle title, const SightRay& ray);
 bool Sight_ReadRay(GameTitle title, uint32_t generation, uint64_t maxAgeMs, SightRay& out);
@@ -68,11 +79,13 @@ void Sight_MarkConverged(GameTitle title, float unitsPerVrMetre);
 bool Sight_ConvergedLive(GameTitle title);
 
 // One-shot convergence for a title that aims with a direction: bend `dir` (unit, world) from `head`
-// through the traced point, as seen from `eye`, using the latest fresh trace. False (out untouched) when
-// there is no fresh trace for this generation or the geometry cannot resolve.
+// through the point at the smoothed traced range, as seen from `eye`. False (out untouched) when there is
+// no fresh trace for this generation, no hit yet, or the geometry cannot resolve -- including a bent aim
+// steeper than `maxPitchDeg`, which must be the steepest pitch the caller's actuation can reach (a
+// clamped aim is not a converged one).
 bool Sight_ConvergedDirection(GameTitle title, uint32_t generation, const float head[3], const float dir[3],
-                              const float eye[3], float out[3], float* outRangeWu = nullptr,
-                              bool* outHit = nullptr);
+                              const float eye[3], float out[3], float maxPitchDeg = 90.0f,
+                              float* outRangeWu = nullptr, bool* outHit = nullptr);
 
 // For the compositor (any thread): the active title's traced range along its eye-anchored intent ray, in
 // VR METRES, and whether it hit -- only while that title's aim in effect is converged. Never Reach

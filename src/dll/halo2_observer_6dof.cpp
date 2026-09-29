@@ -5468,6 +5468,9 @@ namespace
         // Optional feature transaction: refusal here leaves the proven camera,
         // stereo, packets, input and aim paths installed. The detour runs the
         // H2EK-native probes only from a stock collision-call engine context.
+        // A new generation: forget the last one's trace fault and range (the collision hook itself may
+        // persist across generations, so this cannot live in its one-time install).
+        Sight_ResetTitle(GameTitle::Halo2);
         (void)InstallHalo2WorldCollision(base, size, generation);
         (void)InstallHalo2ContactMelee(base, size, generation);
         (void)InstallHalo2DualAim(base, size);

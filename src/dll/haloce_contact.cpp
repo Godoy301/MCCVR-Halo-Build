@@ -381,6 +381,8 @@ bool Remove() noexcept
 }
 bool Install(uintptr_t base,size_t size,uint32_t gen) noexcept
 {
+    // A new install: forget the last one's trace fault and range before the biped hook can trace.
+    Sight_ResetTitle(GameTitle::HaloCE);
     // Keep the shared simulation/query admission separate from each optional
     // consumer. A missing melee/damage hook must leave world contact usable;
     // a missing world resolver must leave physical melee usable.

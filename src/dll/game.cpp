@@ -48140,7 +48140,9 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
             memcpy(ray.eye, sightEye, sizeof(ray.eye));
             Sight_PublishRay(sightTitle, ray);
             float bent[3]{};
-            if (Sight_ConvergedDirection(sightTitle, ray.generation, ray.head, ray.dir, ray.eye, bent))
+            // 1.45 rad: the pitch clamp of this servo target and of the direct drive's write.
+            if (Sight_ConvergedDirection(sightTitle, ray.generation, ray.head, ray.dir, ray.eye, bent,
+                                         1.45f * 57.29578f))
             {
                 desiredYaw = atan2f(bent[1], bent[0]);
                 desiredPitch = Clamp(asinf(Clamp(bent[2], -1.0f, 1.0f)), -1.45f, 1.45f);
@@ -48207,6 +48209,9 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
             LegacyDrivePublish(driveTitle, desiredYaw, desiredPitch, aimYaw, aimPitch, !driveSeated);
             if (!driveSeated && LegacyDriveLive(driveTitle))
             {
+                // The honest-reticle block below is skipped: the game's aim IS the written target now, so
+                // the reticle is the target's, never a direction a seat left behind.
+                g_aimClampedValid.store(0, std::memory_order_release);
                 outRx = 0.0f;
                 outRy = 0.0f;
                 return true;

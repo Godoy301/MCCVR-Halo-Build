@@ -963,6 +963,7 @@ void ConfigLoad(const wchar_t* path)
         if (!strcmp(key, "gun_barrel_aim")) { g_config.gun_barrel_aim=atoi(val)!=0; continue; }
         if (!strcmp(key, "aim_provider")) { g_config.aim_provider=atoi(val); continue; }
         if (!strcmp(key, "legacy_direct_drive")) { g_config.legacy_direct_drive = atoi(val) != 0 ? 1 : 0; continue; }
+        if (!strcmp(key, "converged_aim")) { g_config.converged_aim = atoi(val) != 0 ? 1 : 0; continue; }
         if (!strcmp(key, "reach_direct_drive"))
         {
             g_config.reach_direct_drive=atoi(val);
@@ -1794,6 +1795,11 @@ void ConfigSave()
     fprintf(f, "# game's aim (log: DRIVE ... armed=1). Vehicles, cutscenes and menus keep the stick.\n");
     fprintf(f, "# 0 = off. (default %d)\n", d.legacy_direct_drive);
     fprintf(f, "legacy_direct_drive = %d\n\n", g_config.legacy_direct_drive);
+    fprintf(f, "# Every title but Reach, on foot. 1 = CONVERGED AIM: the game traces the ray from your eye\n");
+    fprintf(f, "# along the controller and bends the aim so the shot passes through the point it hits, at\n");
+    fprintf(f, "# any distance; the reticle sits on that point. 0 = the earlier aim, which converges on one\n");
+    fprintf(f, "# fixed distance (crosshair_distance_m) and runs no trace. (default %d)\n", d.converged_aim);
+    fprintf(f, "converged_aim = %d\n\n", g_config.converged_aim);
     fprintf(f, "# -------------------------------------------------------------------\n");
     fprintf(f, "#  WEAPON CALIBRATION\n");
     fprintf(f, "#  Personal trims applied over the active title's verified base pose.\n");

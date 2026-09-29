@@ -663,6 +663,12 @@ struct Config
     // arms itself once the angles it found agree with the game's aim (log: DRIVE ... armed=1). Vehicles,
     // cutscenes and menus keep the stick. 0 = off: the stick servo aims. (default 0)
     int legacy_direct_drive = 0;
+    // Every title but Reach (Reach's is reach_direct_drive = 3), ON FOOT: CONVERGED AIM (1). The game traces
+    // the ray from your eye along the controller and bends the aim so the shot, which leaves from the
+    // character's eye, passes through the point that ray hits; the reticle is drawn on that point. 0 = the
+    // earlier aim: the controller's ray converges on one fixed distance (crosshair_distance_m), and no trace
+    // runs. (default 1)
+    int converged_aim = 1;
     // Swing angle in degrees for the reach_direct_drive=1 test (about world-up). (default 45)
     int reach_dd_test_deg = 45;
     // DEV write-watchpoint locator (default 0 = off). Hardware write-watchpoints armed across all threads;

@@ -4,9 +4,11 @@
 #include "sight_layer.h"
 #include "title_adapter.h"
 #include "../common/aim_solve_logic.h"
+#include "../common/config.h"
 #include "../common/log.h"
 
 #include <windows.h>
+#include <algorithm>
 #include <atomic>
 #include <cmath>
 
@@ -32,8 +34,14 @@ struct TracePublication
     std::atomic<uint64_t> sampleMs{0};
     std::atomic<uint32_t> hit{0};
     std::atomic<float> rangeWu{0.0f};
+    std::atomic<float> convergeRangeWu{0.0f};
     std::atomic<bool> faulted{false};
     std::atomic<uint64_t> lastTraceMs{0};
+    // The inverse-range average, owned by the title's trace thread (Sight_ResetTitle runs at install,
+    // before that thread traces).
+    std::atomic<float> invRangePerWu{0.0f};
+    std::atomic<uint64_t> smoothMs{0};
+    std::atomic<uint32_t> smoothGeneration{0};
 };
 
 struct ConvergedStamp
@@ -73,8 +81,15 @@ const char* TitleName(GameTitle title)
 }
 } // namespace
 
+bool Sight_AimEnabled()
+{
+    return g_config.converged_aim != 0;
+}
+
 void Sight_PublishRay(GameTitle title, const SightRay& ray)
 {
+    if (!Sight_AimEnabled())
+        return;
     auto& p = g_rays[Slot(title)];
     p.sequence.fetch_add(1, std::memory_order_acq_rel);   // odd: a publish is in progress
     p.generation.store(ray.generation, std::memory_order_relaxed);
@@ -112,7 +127,8 @@ bool Sight_ReadRay(GameTitle title, uint32_t generation, uint64_t maxAgeMs, Sigh
         r.unit = p.unit.load(std::memory_order_relaxed);
         r.ignoreB = p.ignoreB.load(std::memory_order_relaxed);
         r.ignoreC = p.ignoreC.load(std::memory_order_relaxed);
-        if (p.sequence.load(std::memory_order_acquire) != before)
+        std::atomic_thread_fence(std::memory_order_acquire);
+        if (p.sequence.load(std::memory_order_relaxed) != before)
             continue;
         if (!generation || r.generation != generation || !Fresh(r.sampleMs, GetTickCount64(), maxAgeMs))
             return false;
@@ -127,6 +143,8 @@ bool Sight_ReadRay(GameTitle title, uint32_t generation, uint64_t maxAgeMs, Sigh
 
 bool Sight_TraceDue(GameTitle title, uint64_t nowMs)
 {
+    if (!Sight_AimEnabled())
+        return false;
     auto& t = g_traces[Slot(title)];
     const uint64_t last = t.lastTraceMs.load(std::memory_order_relaxed);
     if (last && nowMs >= last && nowMs - last < kSightTraceIntervalMs)
@@ -138,11 +156,32 @@ bool Sight_TraceDue(GameTitle title, uint64_t nowMs)
 void Sight_PublishTrace(GameTitle title, uint32_t generation, bool hit, float rangeWu, uint64_t costTicks)
 {
     auto& t = g_traces[Slot(title)];
+    const uint64_t now = GetTickCount64();
+    // The range the aim converges on: the bend goes as 1/range, so average the INVERSE range
+    // (aim_solve::ema_inverse_range) -- a sweep off a near edge onto a far wall would otherwise snap the aim
+    // in one trace. A miss holds the last range, as Reach's aim does; a new generation, or a gap in the
+    // traces (a seat, a menu, a stall), starts afresh from the next hit.
+    float inv = t.invRangePerWu.load(std::memory_order_relaxed);
+    const uint64_t lastMs = t.smoothMs.load(std::memory_order_relaxed);
+    const bool continuous = lastMs && now >= lastMs && now - lastMs <= kSightFreshMs &&
+        t.smoothGeneration.load(std::memory_order_relaxed) == generation;
+    if (!continuous)
+        inv = 0.0f;
+    if (hit && std::isfinite(rangeWu) && rangeWu > 0.0f)
+    {
+        const float dt = continuous ? float(now - lastMs) / 1000.0f : float(kSightTraceIntervalMs) / 1000.0f;
+        inv = aim_solve::ema_inverse_range(inv, rangeWu,
+            aim_solve::ema_alpha(kSightRangeTauMs, std::clamp(dt, 0.001f, 0.1f)));
+    }
+    t.invRangePerWu.store(inv, std::memory_order_relaxed);
+    t.smoothMs.store(now, std::memory_order_relaxed);
+    t.smoothGeneration.store(generation, std::memory_order_relaxed);
     t.sequence.fetch_add(1, std::memory_order_acq_rel);
     t.generation.store(generation, std::memory_order_relaxed);
-    t.sampleMs.store(GetTickCount64(), std::memory_order_relaxed);
+    t.sampleMs.store(now, std::memory_order_relaxed);
     t.hit.store(hit ? 1u : 0u, std::memory_order_relaxed);
     t.rangeWu.store(rangeWu, std::memory_order_relaxed);
+    t.convergeRangeWu.store(inv > 0.0f ? 1.0f / inv : 0.0f, std::memory_order_relaxed);
     t.sequence.fetch_add(1, std::memory_order_release);
     auto& s = g_stats[Slot(title)];
     s.traces.fetch_add(1, std::memory_order_relaxed);
@@ -167,14 +206,19 @@ bool Sight_ReadTrace(GameTitle title, uint32_t generation, uint64_t maxAgeMs, Si
         r.sampleMs = t.sampleMs.load(std::memory_order_relaxed);
         r.hit = t.hit.load(std::memory_order_relaxed) != 0;
         r.rangeWu = t.rangeWu.load(std::memory_order_relaxed);
-        if (t.sequence.load(std::memory_order_acquire) != before)
+        r.convergeRangeWu = t.convergeRangeWu.load(std::memory_order_relaxed);
+        std::atomic_thread_fence(std::memory_order_acquire);
+        if (t.sequence.load(std::memory_order_relaxed) != before)
             continue;
         if (!generation || r.generation != generation || !Fresh(r.sampleMs, GetTickCount64(), maxAgeMs))
             return false;
         r.hit = r.hit && std::isfinite(r.rangeWu) && r.rangeWu > 0.0f;
-        // A miss means the target is at least the whole trace away: converge on the trace's far end.
+        // A miss means the target is at least the whole trace away (the reticle parks); the aim keeps
+        // converging on the last range it had (convergeRangeWu).
         if (!r.hit)
             r.rangeWu = kSightTraceLengthWu;
+        if (!std::isfinite(r.convergeRangeWu) || !(r.convergeRangeWu > 0.0f))
+            r.convergeRangeWu = 0.0f;
         out = r;
         return true;
     }
@@ -197,6 +241,8 @@ void Sight_ResetTitle(GameTitle title)
     auto& t = g_traces[Slot(title)];
     t.faulted.store(false, std::memory_order_release);
     t.lastTraceMs.store(0, std::memory_order_relaxed);
+    t.invRangePerWu.store(0.0f, std::memory_order_relaxed);
+    t.smoothMs.store(0, std::memory_order_relaxed);
     g_converged[Slot(title)].atMs.store(0, std::memory_order_release);
 }
 
@@ -218,15 +264,23 @@ bool Sight_ConvergedLive(GameTitle title)
 }
 
 bool Sight_ConvergedDirection(GameTitle title, uint32_t generation, const float head[3], const float dir[3],
-                              const float eye[3], float out[3], float* outRangeWu, bool* outHit)
+                              const float eye[3], float out[3], float maxPitchDeg, float* outRangeWu,
+                              bool* outHit)
 {
     SightTrace trace{};
-    if (!head || !dir || !eye || !out || !Sight_ReadTrace(title, generation, kSightFreshMs, trace))
+    if (!Sight_AimEnabled() || !head || !dir || !eye || !out ||
+        !Sight_ReadTrace(title, generation, kSightFreshMs, trace))
         return false;
+    if (!(trace.convergeRangeWu > 0.0f))   // no hit yet since the traces (re)started: nothing to converge on
+    {
+        g_stats[Slot(title)].declined.fetch_add(1, std::memory_order_relaxed);
+        return false;
+    }
     aim_solve::ConvergeRails rails{};
+    rails.max_pitch_deg = maxPitchDeg;
     aim_solve::Vec3 bent{};
     if (!aim_solve::converge_direction(aim_solve::Vec3{head[0] - eye[0], head[1] - eye[1], head[2] - eye[2]},
-                                       aim_solve::Vec3{dir[0], dir[1], dir[2]}, trace.rangeWu,
+                                       aim_solve::Vec3{dir[0], dir[1], dir[2]}, trace.convergeRangeWu,
                                        kSightCmPerWorldUnit, rails, bent))
     {
         g_stats[Slot(title)].declined.fetch_add(1, std::memory_order_relaxed);
@@ -235,7 +289,7 @@ bool Sight_ConvergedDirection(GameTitle title, uint32_t generation, const float 
     out[0] = bent.x;
     out[1] = bent.y;
     out[2] = bent.z;
-    if (outRangeWu) *outRangeWu = trace.rangeWu;
+    if (outRangeWu) *outRangeWu = trace.convergeRangeWu;
     if (outHit) *outHit = trace.hit;
     return true;
 }
@@ -313,8 +367,9 @@ void Sight_NoteEngineRay(GameTitle title, uint32_t generation, uint32_t callerRv
     if (!Sight_ReadRay(title, generation, kSightRayFreshMs, ray) ||
         !Sight_ReadTrace(title, generation, kSightFreshMs, trace))
         return;
-    const float p[3]{ray.head[0] + ray.dir[0] * trace.rangeWu, ray.head[1] + ray.dir[1] * trace.rangeWu,
-                     ray.head[2] + ray.dir[2] * trace.rangeWu};
+    const float aimRange = trace.AimRangeWu();
+    const float p[3]{ray.head[0] + ray.dir[0] * aimRange, ray.head[1] + ray.dir[1] * aimRange,
+                     ray.head[2] + ray.dir[2] * aimRange};
     const float a[3]{p[0] - ray.eye[0], p[1] - ray.eye[1], p[2] - ray.eye[2]};
     const float al = std::sqrt(a[0] * a[0] + a[1] * a[1] + a[2] * a[2]);
     if (!(al > 1.0e-6f))
@@ -405,11 +460,13 @@ void Sight_Report()
         const uint64_t cost = s.costTicks.exchange(0, std::memory_order_relaxed);
         const uint64_t costMax = s.costMaxTicks.exchange(0, std::memory_order_relaxed);
         const auto title = static_cast<GameTitle>(i);
-        LOG("SIGHT %s: rays %llu, traces %llu (%llu hits, %llu misses [far end]), cost avg %.1f / max %.1f us; "
-            "converged aim %llu polls, declined %llu; faulted=%d%s",
+        const float convergeWu = g_traces[i].convergeRangeWu.load(std::memory_order_relaxed);
+        LOG("SIGHT %s: rays %llu, traces %llu (%llu hits, %llu misses [hold the last range]), cost avg %.1f / "
+            "max %.1f us; converged aim %llu polls, declined %llu; converging at %.2f m (smoothed); faulted=%d%s",
             TitleName(title), (unsigned long long)rays, (unsigned long long)traces, (unsigned long long)hits,
             (unsigned long long)misses, traces ? double(cost) / double(traces) * usPerTick : 0.0,
             double(costMax) * usPerTick, (unsigned long long)converged, (unsigned long long)declined,
-            Sight_TraceFaulted(title) ? 1 : 0, faults ? " (a native fault latched the trace off)" : "");
+            double(convergeWu) * double(kSightCmPerWorldUnit) * 0.01, Sight_TraceFaulted(title) ? 1 : 0,
+            faults ? " (a native fault latched the trace off)" : "");
     }
 }

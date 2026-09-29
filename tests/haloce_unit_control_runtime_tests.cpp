@@ -1,6 +1,7 @@
 #include <windows.h>
 #include <MinHook.h>
 #include "../src/dll/haloce_native_bindings.h"
+#include "../src/common/config.h"
 #include <cstdio>
 #include <limits>
 namespace
@@ -132,6 +133,8 @@ UnitControlPacket Packet()
 }
 }
 GameTitle TitleAdapter_GetActiveTitle() { return title; }
+Config::Config() {}
+Config g_config;   // the sight layer reads converged_aim (its default, on)
 bool HaloCENetworkInput_UsesNativeSimulation() noexcept { return networkSession; }
 uint32_t TitleAdapter_GetGeneration(GameTitle) { return currentGeneration; }
 bool HaloCEControls_GetLocomotionFrame(HaloCELocalPlayerState& state,RenderContext& context) noexcept

@@ -240,8 +240,9 @@ void LegacySightNoteEngineTrace(GameTitle title, uint64_t flags, const float* st
     if (!std::isfinite(vl) || vl < 1.0e-6f)
         return;
     const float d[3]{vector[0] / vl, vector[1] / vl, vector[2] / vl};
-    const float p[3]{ray.head[0] + ray.dir[0] * trace.rangeWu, ray.head[1] + ray.dir[1] * trace.rangeWu,
-                     ray.head[2] + ray.dir[2] * trace.rangeWu};
+    const float aimRange = trace.AimRangeWu();
+    const float p[3]{ray.head[0] + ray.dir[0] * aimRange, ray.head[1] + ray.dir[1] * aimRange,
+                     ray.head[2] + ray.dir[2] * aimRange};
     const float w[3]{p[0] - start[0], p[1] - start[1], p[2] - start[2]};
     const float c[3]{w[1] * d[2] - w[2] * d[1], w[2] * d[0] - w[0] * d[2], w[0] * d[1] - w[1] * d[0]};
     const float toMm = 3048.0f;   // 1 world unit = 3.048 m

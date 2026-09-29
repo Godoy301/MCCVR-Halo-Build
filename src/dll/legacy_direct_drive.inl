@@ -329,7 +329,8 @@ extern "C" void LegacyPcApplyForUser(int slot, int user)
                 aimPitch = st.aimPitch.load(std::memory_order_relaxed);
                 setMs = st.setMs.load(std::memory_order_relaxed);
                 valid = st.setValid.load(std::memory_order_relaxed);
-                coherent = st.seq.load(std::memory_order_acquire) == before;
+                std::atomic_thread_fence(std::memory_order_acquire);   // the loads above stay before the re-read
+                coherent = st.seq.load(std::memory_order_relaxed) == before;
             }
             const uint64_t now = GetTickCount64();
             const bool fresh = coherent && valid && setMs && now >= setMs && now - setMs <= 200;

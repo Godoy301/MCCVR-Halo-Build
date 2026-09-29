@@ -2,6 +2,7 @@
 // These verify palette receipt admission and unchanged-output fallback, not
 // game draw visibility. Actual native CPU/GPU consumers have a separate test.
 #include "../src/dll/haloce_first_person.cpp"
+#include "../src/common/config.h"
 #include <cstdio>
 #include <thread>
 #include <cstdlib>
@@ -65,6 +66,8 @@ uintptr_t __fastcall ContactGraphFixture(uint32_t graph)
 { return graph==25?contactGraphDefinition:0; }
 GameTitle TitleAdapter_GetActiveTitle() { return testTitle; }
 uint32_t TitleAdapter_GetGeneration(GameTitle) { return testGeneration; }
+Config::Config() {}
+Config g_config;   // the sight layer reads converged_aim (its default, on)
 bool HaloCE_Armed() noexcept { return testTitle==GameTitle::HaloCE; }
 bool HaloCE_GetRenderContext(const halo_ce::Camera&,halo_ce::RenderContext& result) noexcept
 { result=testContext;return contextValid&&renderContextValid; }
