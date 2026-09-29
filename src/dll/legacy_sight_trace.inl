@@ -1,0 +1,187 @@
+// Included in game.cpp (anonymous namespace) after odst_contact_melee_runtime.inl.
+//
+// TRACE-AND-REAIM for Halo 3 and ODST, on foot (sight_layer.h) -- Reach's aim (reach_sight_trace.inl) for
+// the two titles that aim with the right-stick servo instead of direct drive.
+//
+// The player points along the intent ray: from the rendered centre eye (g_cam*, the camera after head
+// look) along the controller. The engine fires from its own eye (g_baseCam*, the camera before head look:
+// the seat re-origin in Game_ComputeAimStick already treats it as the shot origin), so a servo that chases
+// the controller's direction leaves every shot parallel to the sight line, off by the head's offset. The
+// servo now chases the direction from the engine eye through the point the intent ray hits:
+//
+//      aim = normalize((H - E) + u * d)        H the rendered eye, u the controller, E the engine eye
+//
+// d is measured by tracing the intent ray with the title's own collision_test_vector and the engine's own
+// crosshair-trace flags, on the simulation thread, from inside the per-unit update the contact-melee lane
+// already hooks (a native context in which the game itself runs collision queries). The input thread
+// publishes the ray (Sight_PublishRay) and bends the servo target with the latest fresh range.
+//
+// THE FLAGS, resolved per build and value-checked (never baked in). Both titles trace their crosshair the
+// way Reach does (halo3 0x13BAD0, the firing-assist function the dual-aim lane hooks; odst 0x161488 and
+// 0x3A9128): `mov rax, [flags global]; mov ecx, eax; or ecx, 0x202000; shr rax, 32` feeding a call to
+// collision_test_vector, mode 0, ignoring the unit's root. The global is built by a CRT initializer from
+// 0x809 (| 0x24000, high | 1) -- exactly Reach's HREK value, 0x0000000100024809 (read statically from both
+// retail modules: halo3 0x5714 -> 0x5730 -> 0x5778, odst 0x5A38). The rungs, each failing CLOSED (no trace;
+// the servo keeps its old target):
+//   1. ANCHORS  every `or ecx, 0x202000` in .text passes ReachInspectAimTraceSite against the hooked
+//               collision_test_vector (Halo 3 has one; ODST two), and all of them name one global;
+//   2. PINNED   that global is the flags global the contact-melee install pinned independently, from its
+//               own call site (halo3 0x35B265, odst 0x39FE8E);
+//   3. VALUE    it holds 0x0000000100024809 (ValueAgreement).
+// ADDR-HYGIENE: resolved + guarded (the anchors and the value are the same HREK-derived facts Reach uses;
+// the retail offsets above are only where the anchors matched, recorded for the next reader).
+
+struct LegacySightState
+{
+    std::atomic<uint64_t> flags{0};                       // 0 = unresolved: the trace stays off
+    std::atomic<const char*> why{"the title is not installed"};
+    std::atomic<uint32_t> anchors{0}, globalRva{0};
+    std::atomic<uint64_t> converged{0}, fallback{0};      // servo targets, counted on the input thread
+};
+LegacySightState g_legacySight[2];   // [0] Halo 3, [1] ODST
+
+LegacySightState& LegacySight(GameTitle title)
+{
+    return g_legacySight[title == GameTitle::Halo3ODST ? 1 : 0];
+}
+
+const char* LegacySightTitleName(GameTitle title)
+{
+    return title == GameTitle::Halo3ODST ? "ODST" : "Halo 3";
+}
+
+// Install path (cold, once per title install, after the contact install). Clears first, so a failed resolve
+// on a new build never inherits an earlier answer.
+void LegacyResolveSightFlags(GameTitle title, uintptr_t base, size_t size,
+                             const LegacyWorldCollisionFeature& collision, const uint64_t* pinnedGlobal)
+{
+    auto& state = LegacySight(title);
+    state.flags.store(0, std::memory_order_release);
+    state.anchors.store(0, std::memory_order_relaxed);
+    state.globalRva.store(0, std::memory_order_relaxed);
+    Sight_ResetTitle(title);
+    static constexpr char kAnchor[] = "81 C9 00 20 20 00";   // or ecx, 0x202000
+    const uintptr_t collisionTest = reinterpret_cast<uintptr_t>(collision.target);
+    uintptr_t textBegin = 0, textEnd = 0, global = 0;
+    uint32_t stamp = 0, anchors = 0;
+    size_t imageSize = 0;
+    uint64_t value = 0;
+    const char* why = nullptr;
+    if (!collision.installed.load(std::memory_order_acquire) || !collision.originalIsVectorTest || !collisionTest)
+        why = "collision_test_vector is not hooked on this build";
+    else if (!pinnedGlobal)
+        why = "the contact-melee install did not pin a collision-flags global";
+    else if (!ResolveOdstTextRange(base, size, textBegin, textEnd, stamp, imageSize))
+        why = "the module has no .text section";
+    else
+    {
+        for (uintptr_t at = sig::Find(textBegin, textEnd - textBegin, kAnchor); at && !why;
+             at = at + 1 < textEnd ? sig::Find(at + 1, textEnd - at - 1, kAnchor) : 0)
+        {
+            uintptr_t named = 0;
+            if ((why = ReachInspectAimTraceSite(at, textBegin, textEnd, base, size, collisionTest, named)) != nullptr)
+                break;
+            if (global && named != global)
+                why = "two crosshair traces name different flags globals";
+            global = named;
+            if (++anchors > 4)
+                why = "more crosshair-trace anchors than any known build has";
+        }
+        if (!why && !anchors)
+            why = "the anchor `or ecx, 0x202000` is missing";
+        else if (!why && global != reinterpret_cast<uintptr_t>(pinnedGlobal))
+            why = "the crosshair trace's flags global is not the one the contact install pinned";
+        else if (!why && !ReachGuardedReadQword(global, value))
+            why = "the flags global is unreadable";
+        else if (!why && value != kReachCollisionTestFlagsInit)
+            why = "the flags global disagrees with the editing kit's initial value";
+    }
+    if (why)
+    {
+        state.why.store(why, std::memory_order_release);
+        LOG("SIGHT %s aim-trace flags NOT resolved: %s (%u anchors, global +0x%llX = 0x%llX, expected 0x%llX); "
+            "no trace, the aim servo keeps its old target",
+            LegacySightTitleName(title), why, anchors,
+            global ? static_cast<unsigned long long>(global - base) : 0ull, static_cast<unsigned long long>(value),
+            static_cast<unsigned long long>(kReachCollisionTestFlagsInit));
+        return;
+    }
+    const uint64_t flags = value | kReachAimTraceFlagsOr;
+    state.anchors.store(anchors, std::memory_order_relaxed);
+    state.globalRva.store(static_cast<uint32_t>(global - base), std::memory_order_relaxed);
+    state.why.store(nullptr, std::memory_order_release);
+    state.flags.store(flags, std::memory_order_release);
+    LOG("SIGHT %s aim-trace flags resolved: %u crosshair-trace anchor(s), global +0x%llX = 0x%llX (the editing "
+        "kit's value, and the global the contact install pinned); tracing with 0x%llX, mode %d",
+        LegacySightTitleName(title), anchors, static_cast<unsigned long long>(global - base),
+        static_cast<unsigned long long>(value), static_cast<unsigned long long>(flags), kReachAimTraceMode);
+}
+
+// Simulation thread, inside the title's per-unit contact update (counted by that hook's callbacks, whose
+// teardown drains before the collision trampoline is freed). Traces the local on-foot unit's published
+// intent ray at most every 30 ms.
+void LegacySightTraceTick(GameTitle title, uint32_t unit, int32_t localUnit, bool onFoot,
+                          const LegacyWorldCollisionFeature& collision)
+{
+    auto& state = LegacySight(title);
+    const uint64_t flags = state.flags.load(std::memory_order_acquire);
+    if (!flags || !onFoot || localUnit == -1 || unit != static_cast<uint32_t>(localUnit) ||
+        TitleAdapter_GetActiveTitle() != title)
+        return;
+    const uint64_t now = GetTickCount64();
+    if (Sight_TraceFaulted(title) || !Sight_TraceDue(title, now))
+        return;
+    const uint32_t generation = TitleAdapter_GetGeneration(title);
+    SightRay ray{};
+    if (!Sight_ReadRay(title, generation, kSightRayFreshMs, ray))
+        return;
+    const auto original = reinterpret_cast<LegacyCollisionTestVectorFn>(collision.original);
+    if (!original || !collision.originalIsVectorTest || !collision.installed.load(std::memory_order_acquire))
+        return;
+    const float length = kSightTraceLengthWu;
+    const float start[3]{ray.head[0] + ray.dir[0] * kSightTraceSkipWu, ray.head[1] + ray.dir[1] * kSightTraceSkipWu,
+                         ray.head[2] + ray.dir[2] * kSightTraceSkipWu};
+    const float vector[3]{ray.dir[0] * length, ray.dir[1] * length, ray.dir[2] * length};
+    // Native collision initializes fields through +63 (type +0, fraction +4, point +8, object +0x40).
+    alignas(16) uint8_t result[0x80]{};
+    uint8_t returned = 0;
+    LARGE_INTEGER before{}, after{};
+    QueryPerformanceCounter(&before);
+    const bool completed = ReachSightGuardedTrace(original, flags, kReachAimTraceMode, start, vector,
+                                                  static_cast<int32_t>(unit), -1, -1, result, returned, false);
+    QueryPerformanceCounter(&after);
+    if (!completed)
+    {
+        Sight_NoteTraceFault(title);
+        LOG("SIGHT %s: the aim trace raised a native fault; it stays off until the title reinstalls",
+            LegacySightTitleName(title));
+        return;
+    }
+    float fraction = 0.0f;
+    memcpy(&fraction, result + 4, sizeof(fraction));
+    const bool hit = returned && std::isfinite(fraction) && fraction >= 0.0f && fraction <= 1.0f;
+    Sight_PublishTrace(title, generation, hit, hit ? kSightTraceSkipWu + fraction * length : 0.0f,
+                       static_cast<uint64_t>(after.QuadPart - before.QuadPart));
+}
+
+// Cold worker, every 5 s: how the servo target was chosen per title, and why a title does not trace.
+void LegacySightReport()
+{
+    static uint64_t s_last = 0;
+    const uint64_t now = GetTickCount64();
+    if (now - s_last < 5000)
+        return;
+    s_last = now;
+    for (const GameTitle title : {GameTitle::Halo3, GameTitle::Halo3ODST})
+    {
+        auto& state = LegacySight(title);
+        const uint64_t converged = state.converged.exchange(0, std::memory_order_relaxed);
+        const uint64_t fallback = state.fallback.exchange(0, std::memory_order_relaxed);
+        if (!converged && !fallback)
+            continue;
+        const char* why = state.why.load(std::memory_order_acquire);
+        LOG("SIGHT %s aim servo: %llu targets converged on the traced point, %llu on the fixed-distance steer "
+            "(no fresh trace)%s%s", LegacySightTitleName(title), static_cast<unsigned long long>(converged),
+            static_cast<unsigned long long>(fallback), why ? "; trace off: " : "", why ? why : "");
+    }
+}

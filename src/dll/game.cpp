@@ -24829,6 +24829,7 @@ namespace
     }
 
     #include "reach_sight_trace.inl"
+    #include "legacy_sight_trace.inl"
     #include "reach_contact_melee_runtime.inl"
     #include "halo3_contact_melee_runtime.inl"
     #include "halo3_physical_crouch.inl"
@@ -29356,6 +29357,7 @@ namespace
 
     bool DisableAndRemoveHalo3ContactMelee()
     {
+        LegacySight(GameTitle::Halo3).flags.store(0,std::memory_order_release);
         g_halo3Contact.enabled.store(false,std::memory_order_release);
         if(!RemoveHalo3MeleeSelection()) return false;
         void* const targets[]{g_halo3Contact.updateTarget,g_halo3Contact.damageTarget};
@@ -29395,6 +29397,7 @@ namespace
 
     bool DisableAndRemoveOdstContactMelee()
     {
+        LegacySight(GameTitle::Halo3ODST).flags.store(0,std::memory_order_release);
         g_odstContact.enabled.store(false,std::memory_order_release);
         void* const targets[]{g_odstContact.updateTarget,g_odstContact.damageTarget};
         const void* functions[]{reinterpret_cast<const void*>(&OdstContactUpdateDetour),
@@ -43434,6 +43437,7 @@ namespace
             Roomscale_Report();
             // Trace-and-reaim outside Reach (sight_layer.h): traces, cost and converged polls, per title.
             Sight_Report();
+            LegacySightReport();
 #if HALOMCCVR_EXPERIMENTAL_REACH_RENDER_CANDIDATE
             // Status the aim provider and the direct-drive hook only count into atomics; logged here.
             ReachAimProvider_Report();
@@ -47953,6 +47957,7 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
     // title - and a stale seat would silently re-origin Halo 4's aim. Halo 4
     // has no vehicle work at all yet, so it takes the plain on-foot path.
     float hullYaw = 0.0f, hullPitch = 0.0f, followedAim[9];
+    bool followedVehicleFrame = false;
     if (!halo4Aim && Halo3ReadRollStableFollow(hullYaw, hullPitch) &&
         Halo3ComposeRollStableFollowBasis(
             hullYaw, hullPitch, gameYawReference,
@@ -47960,6 +47965,7 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
             Clamp(g_pitchSign.load() * cp, -1.45f, 1.45f), 0.0f,
             followedAim))
     {
+        followedVehicleFrame = true;
         // Controller ray, reticle and bullets share the same pitched vehicle
         // frame as the view and visible hands. Aircraft seats never publish
         // this frame, retaining their proven independent pitch loop.
@@ -48019,6 +48025,52 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
             desiredPitch = asinf(
                 Clamp(toReticleZ / reticleLength, -1.0f, 1.0f));
             g_halo3SeatAimReOrigins.fetch_add(1, std::memory_order_relaxed);
+        }
+    }
+    // TRACE-AND-REAIM, Halo 3 and ODST on foot (legacy_sight_trace.inl). Publish the intent ray -- the
+    // rendered eye along the controller, mapped into the game basis exactly as the steer above maps its
+    // target -- and, when the simulation thread has a fresh range for it, chase the engine eye's line
+    // through the point it hits instead of the fixed-distance steer: the steer aims the rendered eye
+    // through the hand ray at one distance, while the shot leaves from the engine eye, so it missed by the
+    // head's offset from the character. With no fresh range the steer above stands exactly as it was.
+    {
+        const GameTitle sightTitle = TitleAdapter_GetActiveTitle();
+        bool seated = followedVehicleFrame || Halo3VehicleFpActive();
+#if HALOMCCVR_EXPERIMENTAL_ODST_BRINGUP
+        seated = seated || OdstVehicleFpActive();
+#endif
+        if (!halo4Aim && !seated &&
+            (sightTitle == GameTitle::Halo3 || sightTitle == GameTitle::Halo3ODST) &&
+            LegacySight(sightTitle).flags.load(std::memory_order_acquire) &&
+            g_camValid.load(std::memory_order_acquire) &&
+            g_baseCamValid.load(std::memory_order_acquire))
+        {
+            const float controllerYaw =
+                gameYawReference + g_yawSign.load() * WrapPi(atan2f(fx, -fz) - headYawReference);
+            const float controllerPitch =
+                Clamp(g_pitchSign.load() * asinf(Clamp(fy, -1.0f, 1.0f)), -1.45f, 1.45f);
+            const float cosControllerPitch = cosf(controllerPitch);
+            SightRay ray{};
+            ray.generation = TitleAdapter_GetGeneration(sightTitle);
+            ray.sampleMs = GetTickCount64();
+            ray.head[0] = g_camX.load(); ray.head[1] = g_camY.load(); ray.head[2] = g_camZ.load();
+            ray.dir[0] = cosControllerPitch * cosf(controllerYaw);
+            ray.dir[1] = cosControllerPitch * sinf(controllerYaw);
+            ray.dir[2] = sinf(controllerPitch);
+            ray.eye[0] = g_baseCamX.load(); ray.eye[1] = g_baseCamY.load(); ray.eye[2] = g_baseCamZ.load();
+            Sight_PublishRay(sightTitle, ray);
+            float bent[3]{};
+            if (Sight_ConvergedDirection(sightTitle, ray.generation, ray.head, ray.dir, ray.eye, bent))
+            {
+                desiredYaw = atan2f(bent[1], bent[0]);
+                desiredPitch = Clamp(asinf(Clamp(bent[2], -1.0f, 1.0f)), -1.45f, 1.45f);
+                Sight_MarkConverged(sightTitle, g_worldScale.load(std::memory_order_relaxed));
+                LegacySight(sightTitle).converged.fetch_add(1, std::memory_order_relaxed);
+            }
+            else
+            {
+                LegacySight(sightTitle).fallback.fetch_add(1, std::memory_order_relaxed);
+            }
         }
     }
 #if HALOMCCVR_EXPERIMENTAL_REACH_RENDER_CANDIDATE

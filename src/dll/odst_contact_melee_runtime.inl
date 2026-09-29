@@ -227,6 +227,14 @@ __declspec(noinline) uint8_t __fastcall OdstContactUpdateDetour(uint32_t unit)
     {
         if(g_odstContact.updateOriginal) result=g_odstContact.updateOriginal(unit);
         OdstContactTick(unit);
+        // Trace-and-reaim (legacy_sight_trace.inl): the local on-foot unit's intent ray.
+        if(LegacySight(GameTitle::Halo3ODST).flags.load(std::memory_order_acquire) && g_odstPlayerUnitGetter)
+        {
+            const int32_t local=g_odstPlayerUnitGetter(0);
+            if(local!=-1 && unit==static_cast<uint32_t>(local))
+                LegacySightTraceTick(GameTitle::Halo3ODST,unit,local,
+                    g_odstUnitInVehicle && !g_odstUnitInVehicle(local),g_odstWorldCollision);
+        }
     }
     __finally { g_odstContact.callbacks.fetch_sub(1,std::memory_order_acq_rel); }
     return result;
@@ -249,6 +257,7 @@ bool InstallOdstContactMelee(uintptr_t base,size_t size,uint32_t generation)
         {0x39FE8B,"48 8B 0D 36 E5 DD 01 48 8D 85 A0 00 00 00 48 89 44 24 38 4C 8D 4D 20 44 89 5C 24 30 4C 8D 45 B8 44 89 5C 24 28 41 8A D7 44 89 6C 24 20 E8 4F F9 E8 FF"},
         {0x10B0A8,"48 83 EC 28 E8 9F FB FF FF 32 D2 84 C0 74 27 8B 0D 5F 4A 98 00 65 48 8B 04 25 58 00 00 00 41 B8 40 00 00 00 48 8B 04 C8 4A 8B 0C 00 38 91 60 01 00 00 74 02 B2 01 8A C2 48 83 C4 28 C3"}};
     g_odstContact.enabled.store(false,std::memory_order_release);
+    LegacySight(GameTitle::Halo3ODST).flags.store(0,std::memory_order_release);
     if(!g_odstWorldCollision.original || g_odstContact.updateTarget || g_odstContact.damageTarget) return false;
     for(const auto& binding:bindings)
     {
@@ -291,6 +300,8 @@ bool InstallOdstContactMelee(uintptr_t base,size_t size,uint32_t generation)
     { LOG("ODST contact melee unavailable: simulation hook enable failed; retained for cleanup"); return false; }
     g_odstContact.enabled.store(true,std::memory_order_release);
     LOG("ODST contact melee installed: physical hand/weapon contact, native exact-target damage; headset verification pending");
+    // The aim trace runs inside this lane's simulation hook, with the flags global pinned above.
+    LegacyResolveSightFlags(GameTitle::Halo3ODST,base,size,g_odstWorldCollision,g_odstContact.flags);
     return true;
 }
 

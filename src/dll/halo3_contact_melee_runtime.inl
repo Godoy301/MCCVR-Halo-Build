@@ -234,6 +234,14 @@ __declspec(noinline) uint8_t __fastcall Halo3ContactUpdateDetour(uint32_t unit)
     {
         if(g_halo3Contact.updateOriginal) result=g_halo3Contact.updateOriginal(unit);
         Halo3ContactTick(unit);
+        // Trace-and-reaim (legacy_sight_trace.inl): the local on-foot unit's intent ray.
+        if(LegacySight(GameTitle::Halo3).flags.load(std::memory_order_acquire) && g_halo3PlayerUnitGetter)
+        {
+            const int32_t local=g_halo3PlayerUnitGetter(0);
+            if(local!=-1 && unit==static_cast<uint32_t>(local))
+                LegacySightTraceTick(GameTitle::Halo3,unit,local,
+                    g_halo3UnitInVehicle && !g_halo3UnitInVehicle(local),g_halo3WorldCollision);
+        }
     }
     __finally { g_halo3Contact.callbacks.fetch_sub(1,std::memory_order_acq_rel); }
     return result;
@@ -256,6 +264,7 @@ bool InstallHalo3ContactMelee(uintptr_t base,size_t size,uint32_t generation)
         {0x35B265,"48 8B 0D ?? ?? ?? ?? 48 8D 85 B0 00 00 00 48 89 44 24 38 4C 8D 4D 30 44 89 5C 24 30 4C 8D 45 E0 44 89 5C 24 28 41 8A D4 44 89 7C 24 20 E8 ?? ?? ?? ??"},
         {0xF01A0,"48 83 EC 28 E8 ?? ?? ?? ?? 32 D2 84 C0 74 27 8B 0D ?? ?? ?? ?? 65 48 8B 04 25 58 00 00 00 41 B8 48 00 00 00 48 8B 04 C8 4A 8B 0C 00 38 91 60 01 00 00 74 02 B2 01 8A C2 48 83 C4 28 C3"}};
     g_halo3Contact.enabled.store(false,std::memory_order_release);
+    LegacySight(GameTitle::Halo3).flags.store(0,std::memory_order_release);
     if(!g_halo3WorldCollision.original || g_halo3Contact.updateTarget || g_halo3Contact.damageTarget) return false;
     for(const auto& binding:bindings)
     {
@@ -295,6 +304,8 @@ bool InstallHalo3ContactMelee(uintptr_t base,size_t size,uint32_t generation)
     if(MH_EnableHook(updateTarget)!=MH_OK)
     { LOG("Halo 3 contact melee unavailable: simulation hook enable failed; retained for cleanup"); return false; }
     g_halo3Contact.enabled.store(true,std::memory_order_release);
+    // The aim trace runs inside this lane's simulation hook, with the flags global pinned above.
+    LegacyResolveSightFlags(GameTitle::Halo3,base,size,g_halo3WorldCollision,g_halo3Contact.flags);
     (void)InstallHalo3MeleeSelection(base,size);
     LOG("Halo 3 contact melee installed: physical hand/weapon contact, native exact-target damage; headset verification pending");
     return true;
