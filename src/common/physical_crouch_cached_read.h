@@ -21,6 +21,23 @@ inline constexpr Layout halo4{GameTitle::Halo4,8,0x2c,0x16c,0xb2,0x47a,
     0x1e2,0x224,0xf74,0xa0,0x618,0x620,0x640,false};
 template<class T> T Read(const uint8_t* pointer,unsigned offset) noexcept
 {T value{};std::memcpy(&value,pointer+offset,sizeof(value));return value;}
+// The unit's physics and animation components are object block references, {size, offset} with the size
+// just before the offset: each block lives INSIDE the object, after its fixed fields. A reference is
+// judged by itself -- present, non-empty, past every fixed field this reader reads, and within the 16-bit
+// offset space -- never by a guessed ceiling. The live blocks sit far above one: Reach's physics at
+// 0x49B4, Halo 4's physics at 0x6628 (256 bytes) and animation at 0x4B98 (6320 bytes); the old 0x4000 cap
+// refused every biped in both titles, so neither crouch camera ever ran (measured 2026-09-28 / 09-29).
+inline constexpr unsigned UnitFixedEnd(const Layout& l) noexcept
+{
+    unsigned end=0;
+    for(unsigned at:{l.tag,l.seat,l.cameraFlags,l.kind,l.physics,l.animation,l.height,l.scale})
+        end=std::max(end,at+4u);
+    return end;
+}
+inline int Component(const Layout& layout,const uint8_t* unit,unsigned at) noexcept
+{ return layout.signedComponents?Read<int16_t>(unit,at):Read<uint16_t>(unit,at); }
+inline bool BlockPresent(int offset,int size,unsigned fixedEnd,int minimumSize) noexcept
+{ return offset>=int(fixedEnd)&&size>=minimumSize&&offset+size<=0x10000; }
 inline const uint8_t* Decode(const uintptr_t* pages,uint32_t encoded) noexcept
 {
     if(!pages||!encoded) return nullptr;
@@ -43,12 +60,14 @@ inline bool Reduction(const Layout& layout,const uint8_t* unit,const uint8_t* ta
     if(Read<int16_t>(unit,layout.seat)!=-1) return refuse(2);
     if(Read<uint32_t>(unit,layout.cameraFlags)&4) return refuse(3);
     if(unit[layout.kind]!=0) return refuse(4);
-    const int physics=layout.signedComponents?Read<int16_t>(unit,layout.physics):
-        Read<uint16_t>(unit,layout.physics);
-    const int animation=layout.signedComponents?Read<int16_t>(unit,layout.animation):
-        Read<uint16_t>(unit,layout.animation);
+    const int physics=Component(layout,unit,layout.physics);
+    const int animation=Component(layout,unit,layout.animation);
     if(diag) {diag->physics=physics;diag->animation=animation;}
-    if(physics<0||physics>0x4000||animation<=0||animation>0x4000) return refuse(5);
+    constexpr int kModeBytes=4;
+    if(!BlockPresent(physics,Component(layout,unit,layout.physics-2),UnitFixedEnd(layout),kModeBytes)||
+       !BlockPresent(animation,Component(layout,unit,layout.animation-2),UnitFixedEnd(layout),
+           int(layout.animationCamera)+4))
+        return refuse(5);
     const auto mode=Read<uint32_t>(unit,unsigned(physics));
     if(mode==7||mode==8) return refuse(6);
     const auto tag=Read<uint32_t>(unit,layout.tag);

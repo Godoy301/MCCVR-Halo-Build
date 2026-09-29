@@ -59,13 +59,19 @@ int main()
     }
     for(const auto& layout:{physical_crouch_cached::reach,physical_crouch_cached::halo4})
     {
-        std::array<uint8_t,0x6000> bytes{};
+        // The live Halo 4 layout (Forge biped, 2026-09-29): physics {256 bytes at 0x6628}, animation
+        // {6320 bytes at 0x4B98}. A fixture with both blocks under 16 KB hid a 0x4000 cap that refused
+        // every real biped in Reach and Halo 4.
+        constexpr unsigned kPhysicsAt=0x6628,kAnimationAt=0x4B98;
+        std::array<uint8_t,0x6800> bytes{};
         std::array<uint8_t,0x3000> tags{};
         std::array<uint8_t,32> table{};
         uintptr_t pages[16]{};pages[0]=reinterpret_cast<uintptr_t>(tags.data());
         Put(bytes,layout.tag,uint32_t(1));Put(table,12,uint32_t(0x100));
-        Put(bytes,layout.seat,int16_t(-1));Put(bytes,layout.physics,uint16_t(0x1800));
-        Put(bytes,layout.animation,uint16_t(0x2000));Put(bytes,layout.scale,1.f);
+        Put(bytes,layout.seat,int16_t(-1));
+        Put(bytes,layout.physics-2,uint16_t(256));Put(bytes,layout.physics,uint16_t(kPhysicsAt));
+        Put(bytes,layout.animation-2,uint16_t(6320));Put(bytes,layout.animation,uint16_t(kAnimationAt));
+        Put(bytes,layout.scale,1.f);
         Put(tags,0x400+layout.standing,1.f);Put(tags,0x400+layout.crouched,.4f);
         Put(bytes,layout.height,.7f);
         const uint8_t* definition=nullptr;float amount=-1;
@@ -76,18 +82,29 @@ int main()
         Put(tags,0x404+layout.overrides,uint32_t(0x400));
         Put(tags,0x1000,uint32_t(41));Put(tags,0x1004,.9f);Put(tags,0x1008,.3f);
         Put(tags,0x100c,uint32_t(42));Put(tags,0x1010,1.2f);Put(tags,0x1014,.6f);
-        Put(bytes,0x2000+layout.animationCamera,uint32_t(42));Put(bytes,layout.height,1.1f);
+        Put(bytes,kAnimationAt+layout.animationCamera,uint32_t(42));Put(bytes,layout.height,1.1f);
         Check(read()&&Near(amount,.1f),"native animation camera override chooses matching second record");
-        Put(bytes,0x2000+layout.animationCamera,uint32_t(99));
+        Put(bytes,kAnimationAt+layout.animationCamera,uint32_t(99));
         Check(!read(),"camera transition beyond selected native range refused");
         Put(bytes,layout.height,.7f);Check(read()&&Near(amount,.3f),"unknown camera SID preserves native base-height fallback");
         Put(tags,0x400+layout.overrides,int32_t(257));Check(!read(),"unbounded custom camera table refused");
         Put(tags,0x400+layout.overrides,int32_t(0));
-        Put(bytes,0x1800,uint32_t(7));Check(!read(),"native tilted-up cached camera refused");Put(bytes,0x1800,uint32_t(0));
+        Put(bytes,kPhysicsAt,uint32_t(7));Check(!read(),"native tilted-up cached camera refused");Put(bytes,kPhysicsAt,uint32_t(0));
         Put(bytes,layout.cameraFlags,uint32_t(4));Check(!read(),"native alternate camera selector refused");Put(bytes,layout.cameraFlags,uint32_t(0));
         Put(bytes,layout.seat,int16_t(0));Check(!read(),"seated cached camera refused");Put(bytes,layout.seat,int16_t(-1));
         Put(bytes,layout.height,std::numeric_limits<float>::quiet_NaN());Check(!read(),"nonfinite native cache refused");Put(bytes,layout.height,.7f);
-        Put(bytes,layout.animation,uint16_t(0));Check(!read(),"absent animation component refused");Put(bytes,layout.animation,uint16_t(0x2000));
+        Put(bytes,layout.animation,uint16_t(0));Check(!read(),"absent animation component refused");Put(bytes,layout.animation,uint16_t(kAnimationAt));
+        Put(bytes,layout.physics,uint16_t(0xFFFF));Put(bytes,layout.physics-2,uint16_t(0));
+        Check(!read(),"absent physics block (the -1 / 0xFFFF reference, size 0) refused");
+        Put(bytes,layout.physics-2,uint16_t(256));
+        Put(bytes,layout.physics,uint16_t(physical_crouch_cached::UnitFixedEnd(layout)-4));
+        Check(!read(),"physics block overlapping the unit's own fields refused");
+        Put(bytes,layout.physics,uint16_t(kPhysicsAt));Put(bytes,layout.physics-2,uint16_t(2));
+        Check(!read(),"physics block too small for its mode refused");Put(bytes,layout.physics-2,uint16_t(256));
+        Put(bytes,layout.animation-2,uint16_t(layout.animationCamera));
+        Check(!read(),"animation block too small for its camera selector refused");
+        Put(bytes,layout.animation-2,uint16_t(6320));
+        Check(read(),"both blocks past 16 KB (the live Halo 4 layout) are read");
         Put(table,12,uint32_t(0x10000100));pages[1]=reinterpret_cast<uintptr_t>(tags.data())-uintptr_t(0x10000000)*4;
         Check(read()&&Near(amount,.3f),"native encoded page high bits select bank and preserve full address arithmetic");
         pages[1]=0;Check(!read(),"unloaded tag page refused");
