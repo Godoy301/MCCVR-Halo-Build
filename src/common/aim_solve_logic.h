@@ -90,6 +90,16 @@ struct ConvergeRails {
     float min_divergence_cm  = 3.0f;   // below this eye-vs-origin offset: do NOTHING (leashed no-op)
     float max_correction_deg = 20.0f;  // above this: decline (wrong range/delta, not extreme aim)
     float range_floor_cm     = 30.0f;  // near-contact: 1/range would blow up; nothing to aim at anyway
+    // THE PLAYER STANDING AWAY FROM THE CHARACTER. The 20 deg rail assumes the ray starts within arm's
+    // reach of the shot origin, where a big correction can only mean a wrong range. Once the offset
+    // passes wide_rail_offset_cm (roomscale off, or the body still catching up), a big correction is
+    // the geometry itself -- 2.4 m of offset at 7 m is 19 deg -- and declining hands the shot to
+    // fallbacks that cannot reach: relocating the origin onto the ray is refused beyond 1.5 m, so the
+    // shot leaves stock, PARALLEL to the ray and off by the whole offset (the user's report, measured
+    // in FA 2026-09-28). So the rail widens to wide_rail_cap_deg, beyond which the character would
+    // have to fire sideways or backwards. wide_rail_offset_cm = 0 keeps the plain rail everywhere.
+    float wide_rail_offset_cm = 100.0f;
+    float wide_rail_cap_deg   = 75.0f;
 };
 
 // Range smoothing. The correction goes as 1/range, so sweeping off a near wall onto a far one would
@@ -164,7 +174,11 @@ inline bool converge_trace_reaim(float& yaw_deg, float& pitch_deg,
     // lateral correction at -70 deg pitch is ~22 deg of yaw) and would decline a correct correction.
     float cosang = (ux * tx + uy * ty + uz * tz) / len;
     if (cosang < -1.0f) cosang = -1.0f; else if (cosang > 1.0f) cosang = 1.0f;
-    if (std::acos(cosang) * R2D > r.max_correction_deg)
+    float allowed_deg = r.max_correction_deg;
+    if (r.wide_rail_offset_cm > 0.0f && m2 > r.wide_rail_offset_cm * r.wide_rail_offset_cm &&
+        r.wide_rail_cap_deg > allowed_deg)
+        allowed_deg = r.wide_rail_cap_deg;   // standing away from the character: see ConvergeRails
+    if (std::acos(cosang) * R2D > allowed_deg)
         return false;
 
     yaw_deg = ny;
