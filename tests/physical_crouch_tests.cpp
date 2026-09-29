@@ -37,6 +37,13 @@ int main()
             Put(unit,0x600,int32_t(7));Check(!read(unit,definition,reduction),"tilted ODST up-vector keeps native camera");
             Put(unit,0x600,int32_t(0));unit[0x516]=6;Put(unit,0x51C,uint32_t(0x10));
             Check(read(unit,definition,reduction)&&reduction==0,"ODST special standing state has no crouch reduction");
+            unit[0x516]=0;Put(unit,0x51C,uint32_t(0));
+            Put(unit,0x15A,int16_t(0x2310));Put(unit,0x2310,int32_t(0));
+            Check(read(unit,definition,reduction)&&reduction>0,"ODST physics block past 8 KB (the Halo 3 live layout) is read");
+            Put(unit,0x2310,int32_t(8));Check(!read(unit,definition,reduction),"ODST tilted mode found past 8 KB still refused");
+            Put(unit,0x15A,int16_t(-1));Check(!read(unit,definition,reduction),"absent ODST physics block refused");
+            Put(unit,0x15A,int16_t(0x400));Check(!read(unit,definition,reduction),"ODST physics block overlapping the unit's fields refused");
+            Put(unit,0x15A,int16_t(0x600));
         }
         else
         {

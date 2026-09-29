@@ -92,9 +92,12 @@ int main()
         Check(read()&&Near(amount,.3f),"native encoded page high bits select bank and preserve full address arithmetic");
         pages[1]=0;Check(!read(),"unloaded tag page refused");
     }
-    std::array<uint8_t,0x1800> unit{};
+    // The live layout (a Forge biped, 2026-09-29): the physics block is {240 bytes, at 0x2310} in a
+    // 0x2540-byte object. A fixture with the block under 4 KB hid a reader that refused every real biped.
+    std::array<uint8_t,0x2540> unit{};
     std::array<uint8_t,0x400> tag{};
-    Put(unit,0x10,int32_t(-1));Put(unit,0x162,int16_t(0x600));
+    constexpr int16_t kPhysics=0x2310;
+    Put(unit,0x10,int32_t(-1));Put(unit,0x160,int16_t(240));Put(unit,0x162,kPhysics);
     for(float scale:{.5f,1.f,2.f}) for(float standing:{.4f,.7f,1.4f})
         for(float fraction:{0.f,.01f,.25f,.5f,.75f,1.f})
     {
@@ -108,13 +111,17 @@ int main()
     Put(unit,0x10,int32_t(0x10004));Check(!valid(),"parented H3 owner refused");Put(unit,0x10,int32_t(-1));
     unit[0x96]=1;Check(!valid(),"non-biped refused");unit[0x96]=0;
     Put(unit,0x110,uint32_t(4));Check(!valid(),"native alternate camera branch refused");Put(unit,0x110,uint32_t(0));
-    for(uint32_t mode:{7,8}){Put(unit,0x600,mode);Check(!valid(),"alternate native up modes refused");}
-    Put(unit,0x600,uint32_t(0));
+    for(uint32_t mode:{7,8}){Put(unit,kPhysics,mode);Check(!valid(),"alternate native up modes refused");}
+    Put(unit,kPhysics,uint32_t(0));
     unit[0x4de]=6;Put(unit,0x4e4,uint32_t(0x10));float reduction=-1;
     Check(Halo3PhysicalCrouchReduction(unit.data(),tag.data(),reduction)&&reduction==0.f,"native special-state fraction suppression preserved");
     unit[0x4de]=0;Put(unit,0x384,1.01f);Check(!valid(),"fraction bounds enforced");
     Put(unit,0x384,.5f);Put(unit,0x8c,std::numeric_limits<float>::infinity());Check(!valid(),"nonfinite scale refused");
     Put(unit,0x8c,1.f);Put(tag,0x2ec,5.f);Check(!valid(),"inverted custom height range refused");
-    Put(unit,0x162,int16_t(-1));Check(!valid(),"invalid physics component rejected");
+    Put(unit,0x162,int16_t(-1));Check(!valid(),"absent physics block rejected");
+    Put(unit,0x162,int16_t(0x400));Check(!valid(),"physics block overlapping the unit's own fields rejected");
+    Put(unit,0x162,kPhysics);Put(unit,0x160,int16_t(0));Check(!valid(),"empty physics block rejected");
+    Put(unit,0x160,int16_t(240));Put(unit,0x8c,1.f);Put(tag,0x2e8,.62f);Put(tag,0x2ec,.45f);
+    Check(valid(),"a physics block past 4 KB (the live layout) is read");
     std::printf("Physical crouch camera: %u checks passed\n",checks);
 }
