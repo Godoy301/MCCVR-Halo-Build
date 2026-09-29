@@ -433,6 +433,10 @@ struct Config
 
     // M3 VR controller turning (right Sense stick).
     bool roomscale_movement = false; // physical horizontal steps drive native walking
+    // Roomscale A/B, live from F1: 1 = the refined follow law (hysteresis, brake by release, owed distance
+    // kept through interruptions; headset-confirmed in Reach 2026-09-28), 0 = the original Alpha 0.6.0 law,
+    // verbatim. (default 1)
+    int roomscale_follow_law = 1;
     bool physical_crouch = false;
     float physical_crouch_depth_m = 0.22f;
     // FA TESTING ONLY (default 0): let roomscale and physical crouch accept a head pose OpenXR reports

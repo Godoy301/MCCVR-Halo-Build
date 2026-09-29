@@ -769,6 +769,19 @@ namespace
             "Controller aiming is preserved. Enable head tracking and positional tracking.\n"
             "The movement stick takes priority. Physical steps are retained and the body catches up once movement settles. "
             "Recenter with F3 when needed.");
+        if (g_config.roomscale_movement)
+        {
+            // A/B: switches live; each switch starts the follow afresh from where you stand.
+            ImGui::Text("Follow:");
+            ImGui::SameLine();
+            changed |= ImGui::RadioButton("Refined (A)", &g_config.roomscale_follow_law, 1);
+            ImGui::SameLine();
+            changed |= ImGui::RadioButton("Original (B)", &g_config.roomscale_follow_law, 0);
+            ImGui::TextDisabled(g_config.roomscale_follow_law
+                ? "Refined: a lean under 3 cm never walks, the body brakes by letting go instead of backing up,\n"
+                  "and a distance you walked away during a tracking gap is still caught up."
+                : "Original (Alpha 0.6.0): walks from 1.5 cm and brakes by reversing. For comparison.");
+        }
         if(ImGui::Checkbox("Physical crouch",&g_config.physical_crouch))
         {changed=true;VR_RecalibratePhysicalCrouch();}
         if(g_config.physical_crouch)

@@ -1008,6 +1008,11 @@ void ConfigLoad(const wchar_t* path)
             g_config.roomscale_movement = atoi(val) != 0;
             continue;
         }
+        if (!strcmp(key, "roomscale_follow_law"))
+        {
+            g_config.roomscale_follow_law = atoi(val) != 0 ? 1 : 0;
+            continue;
+        }
         if (!strcmp(key, "experimental_hand_alignment"))
         {
             g_config.experimental_hand_alignment = atoi(val) != 0;
@@ -1617,6 +1622,10 @@ void ConfigSave()
     fprintf(f, "# Physical horizontal movement drives native walking while on foot.\n");
     fprintf(f, "# Default off. Controller aiming is preserved; walking stays head-relative.\n");
     fprintf(f, "roomscale_movement = %d\n\n", g_config.roomscale_movement ? 1 : 0);
+    fprintf(f, "# Roomscale A/B: 1 = the refined follow (a lean under 3 cm never walks, it brakes by letting\n");
+    fprintf(f, "# go of the stick, and a distance walked away during a tracking gap is still caught up),\n");
+    fprintf(f, "# 0 = the original follow from Alpha 0.6.0, exactly as it was. (default %d)\n", d.roomscale_follow_law);
+    fprintf(f, "roomscale_follow_law = %d\n\n", g_config.roomscale_follow_law);
     fprintf(f, "# Degrees per snap turn.\n");
     fprintf(f, "# (default %.0f, range 5 to 90)\n", d.turn_snap_deg);
     fprintf(f, "turn_snap_deg = %.0f\n\n", g_config.turn_snap_deg);

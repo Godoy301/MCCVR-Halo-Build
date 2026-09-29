@@ -24,6 +24,8 @@ std::atomic<uint64_t> manualSamples{0}, demandSamples{0}, travelMm{0};
 // Follow quality for the report: how far the head is from where the body will be (the controller's
 // error), the largest in the window, and the largest stick command issued.
 std::atomic<uint64_t> errorLastMm{0}, errorMaxMm{0}, commandMaxMilli{0};
+// The A/B switch (roomscale_follow_law): the law the camera hook last ran, for the report.
+std::atomic<int> lawInEffect{-1};
 #if HALOMCCVR_DEV_DIAGNOSTICS
 // Follow trace (dev builds only): one sample per ~100 ms while a follow is in progress (error past the
 // deadband, a command, or native travel still settling). Written only by the camera hook under
@@ -94,20 +96,35 @@ void Roomscale_Camera(GameTitle title,bool allowed,const float body[3],
     // The published tracking reference belongs to the title, not one engine
     // thread. The nonblocking publishing guard above protects this shared
     // history when native camera callbacks migrate between threads.
+    // Two follow laws for the A/B switch (roomscale_follow_law): the refined one (default) and the
+    // original Alpha 0.6.0 one, verbatim. Only the selected one runs; a switch starts both afresh, so
+    // each begins from where the player stands.
     static RoomscaleFollow state;
+    static RoomscaleFollowOriginal original;
+    static int priorLaw=-1;
+    const int law=g_config.roomscale_follow_law ? 1 : 0;
     static GameTitle prior=GameTitle::None;
     static uint32_t priorInputEpoch=0, priorHistoryEpoch=0;
     const auto epoch=inputEpoch.load(std::memory_order_acquire);
     const auto history=historyEpoch.load(std::memory_order_acquire);
     const auto now=GetTickCount64(),at=inputAt.load(std::memory_order_acquire);
+    if (law!=priorLaw)
+    { state={}; original={}; priorLaw=law; lawInEffect.store(law,std::memory_order_relaxed); }
     // A different title starts over. An admission change (priorHistoryEpoch) only ends the follow in
-    // progress: the distance the player is owed survives it (RoomscaleFollow::Rebase).
+    // progress: the distance the player is owed survives it (RoomscaleFollow::Rebase). The original
+    // law started over there too, as it shipped.
     if (prior!=title)
-    { state={}; prior=title; priorHistoryEpoch=history; }
+    { state={}; original={}; prior=title; priorHistoryEpoch=history; }
     else if (priorHistoryEpoch!=history)
-    { state.Rebase(); priorHistoryEpoch=history; }
-    else if (priorInputEpoch!=epoch && state.seeded)
-        state.SuspendForManual(now);
+    {
+        if (law) state.Rebase(); else original={};
+        priorHistoryEpoch=history;
+    }
+    else if (priorInputEpoch!=epoch)
+    {
+        if (law && state.seeded) state.SuspendForManual(now);
+        else if (!law && original.seeded) original.SuspendForManual(now);
+    }
     priorInputEpoch=epoch;
     const auto generation=TitleAdapter_GetGeneration(title);
     const bool tracking = VR_RoomscaleTrackingFresh();
@@ -125,8 +142,10 @@ void Roomscale_Camera(GameTitle title,bool allowed,const float body[3],
     float x=0,y=0;
     const float oldRefX=reference[0], oldRefZ=reference[2];
     const bool manual=manualMove.load(std::memory_order_acquire);
-    const bool valid=state.Update(generation,now,active,manual,
-        body,head,reference,hx,hz,forward[0],forward[1],scale,x,y);
+    const bool valid=law
+        ? state.Update(generation,now,active,manual,body,head,reference,hx,hz,forward[0],forward[1],scale,x,y)
+        : original.Update(generation,now,active,manual,body,head,reference,hx,hz,forward[0],forward[1],scale,x,y);
+    const float* followError=law ? state.error : original.error;
     if (g_config.roomscale_movement)
     {
         (valid ? admitted : refused).fetch_add(1,std::memory_order_relaxed);
@@ -137,7 +156,7 @@ void Roomscale_Camera(GameTitle title,bool allowed,const float body[3],
             travelMm.fetch_add(uint64_t(distance*1000.0f+0.5f),std::memory_order_relaxed);
         if (valid)
         {
-            const float err=std::hypot(state.error[0],state.error[1]);
+            const float err=std::hypot(followError[0],followError[1]);
             const float cmd=std::hypot(x,y);
             if (std::isfinite(err))
             {
@@ -155,13 +174,15 @@ void Roomscale_Camera(GameTitle title,bool allowed,const float body[3],
 #if HALOMCCVR_DEV_DIAGNOSTICS
             // Only while a follow is actually running: a steady lean inside the start band is the
             // normal idle state and must not log a line every report.
-            const float speed=std::hypot(state.velocity[0],state.velocity[1]);
+            const float* followVelocity=law ? state.velocity : original.velocity;
+            const float speed=std::hypot(followVelocity[0],followVelocity[1]);
+            const bool inProgress=law ? (state.following || state.settling) : original.settling;
             if (std::isfinite(err) && std::isfinite(cmd) && std::isfinite(speed) &&
-                (state.following || cmd>0 || state.settling) &&
+                (inProgress || cmd>0) &&
                 (now<followSampledAt || now-followSampledAt>=100))
             {
                 const unsigned slot=followHead.load(std::memory_order_relaxed);
-                followTrace[slot%kFollowTrace]={now,state.error[0],state.error[1],cmd,speed};
+                followTrace[slot%kFollowTrace]={now,followError[0],followError[1],cmd,speed};
                 followHead.store(slot+1,std::memory_order_release);
                 followSampledAt=now;
             }
@@ -192,6 +213,15 @@ void Roomscale_Report() noexcept
             enabled ? "ON" : "OFF");
         previous=enabled;
     }
+    static int previousLaw=-2;
+    const int law=g_config.roomscale_follow_law ? 1 : 0;
+    if (enabled && law!=previousLaw)
+    {
+        LOG("Roomscale follow: %s (A/B switch roomscale_follow_law = %d)",
+            law ? "REFINED (hysteresis 3/1.5 cm, brake by release, owed distance kept)"
+                : "ORIGINAL (Alpha 0.6.0: 1.5 cm threshold, reverse brake)", law);
+        previousLaw=law;
+    }
     if (now-last<2000) return;
     last=now;
     const auto good=admitted.exchange(0),bad=refused.exchange(0),moves=consumed.exchange(0);
@@ -202,12 +232,13 @@ void Roomscale_Report() noexcept
     if (enabled)
         LOG("Roomscale: title=%u admitted=%llu unavailable=%llu movement polls=%llu; "
             "blocked native=%llu tracking=%llu input=%llu manual=%llu demand=%llu consumed-mm=%llu; "
-            "follow error now=%llu max=%llu mm, stick cmd max=%.2f; %s",
+            "follow error now=%llu max=%llu mm, stick cmd max=%.2f; law=%s; %s",
             unsigned(TitleAdapter_GetActiveTitle()), (unsigned long long)good,
             (unsigned long long)bad,(unsigned long long)moves,
             (unsigned long long)native,(unsigned long long)tracking,(unsigned long long)input,
             (unsigned long long)manual,(unsigned long long)demand,(unsigned long long)travel,
             (unsigned long long)errLast,(unsigned long long)errMax,double(cmdMax)*0.001,
+            lawInEffect.load(std::memory_order_relaxed)==0 ? "original" : "refined",
             good ? "native body follow available" :
             "StockFallback: awaiting fresh on-foot camera, tracking and gameplay input; VR stays active");
 #if HALOMCCVR_DEV_DIAGNOSTICS

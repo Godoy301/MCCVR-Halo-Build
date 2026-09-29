@@ -17825,6 +17825,22 @@ int main()
         Check(!follow.Update(8,772,true,false,body,head,reference,0,-1,wx,wy,scale,mx,my) && mx==0 && my==0,
             "nonfinite tracking cannot produce locomotion");
     }
+    // The A/B switch's original law (RoomscaleFollowOriginal, upstream Alpha 0.6.0 verbatim) is the
+    // law the refinements changed: a 2.5 cm lean walks under it and not under the refined law.
+    {
+        RoomscaleFollowOriginal originalLaw;
+        RoomscaleFollow refinedLaw;
+        float bodyA[3]{}, headA[3]{0,1.7f,0}, referenceA[3]{0,1.7f,0};
+        float bodyB[3]{}, headB[3]{0,1.7f,0}, referenceB[3]{0,1.7f,0};
+        float ax=0,ay=0,bx=0,by=0; uint64_t now=100;
+        auto step=[&]{now+=11;
+            originalLaw.Update(3,now,true,false,bodyA,headA,referenceA,0,-1,1,0,1.0f,ax,ay);
+            refinedLaw.Update(3,now,true,false,bodyB,headB,referenceB,0,-1,1,0,1.0f,bx,by);};
+        step();
+        headA[0]=headB[0]=0.025f; step();
+        Check((ax!=0 || ay!=0) && bx==0 && by==0,
+            "A/B: a 2.5 cm lean walks under the original law and not under the refined one");
+    }
     // Follow hysteresis: head sway inside kFollowStart never walks; once a follow starts it runs
     // until the error is inside kFollowStop. (Head right = tracking +x; body right = world -y here.)
     for (float scale : {0.328084f, 1.0f})
