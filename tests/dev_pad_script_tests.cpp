@@ -45,6 +45,10 @@ int main()
 
     Check(Parse("PRESS X 100\r\nWait 5\r\n", steps, error) && steps.size() == 2 && steps[0].buttons == kX,
           "upper case and CRLF line ends parse");
+    Check(Parse("set converged_aim 0\nset aim_direct_drive 1\n", steps, error) && steps.size() == 2 &&
+              steps[0].op == Op::Set && steps[0].name == "converged_aim" && steps[0].value == 0 &&
+              steps[1].name == "aim_direct_drive" && steps[1].value == 1,
+          "set <setting> <int> parses");
 
     const char* bad[] = {
         "press up",            // no duration
@@ -60,6 +64,9 @@ int main()
         "jump",                // no such command
         "seq",                 // no number
         "clear now",           // extra words
+        "set converged_aim",   // no value
+        "set Converged-Aim 1", // not a setting name (after lower-casing, the dash)
+        "set converged_aim x", // not a number
     };
     for (const char* line : bad)
     {

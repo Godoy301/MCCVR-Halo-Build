@@ -16,6 +16,8 @@
 //   wait <ms>                   pause the script
 //   clear                       centre the sticks, zero the triggers, let go of every button
 //   seq <n>                     report n in the status file when the script reaches it
+//   set <setting> <int>         change a live setting exactly as F1 does (the DLL names which ones), so a
+//                               headless test can flip the A/B switches mid-session
 // Buttons: a b x y lb rb up down left right start back ls rs, several joined by '+' (e.g. "lb+rb").
 
 #include <cctype>
@@ -33,7 +35,7 @@ constexpr uint16_t kLeftShoulder = 0x0100, kRightShoulder = 0x0200;
 constexpr uint16_t kA = 0x1000, kB = 0x2000, kX = 0x4000, kY = 0x8000;
 constexpr uint32_t kMaxMs = 60000;  // one step never holds the pad longer than a minute
 
-enum class Op : uint8_t { Hold, Release, ReleaseAll, Press, Stick, Trigger, Wait, Clear, Seq };
+enum class Op : uint8_t { Hold, Release, ReleaseAll, Press, Stick, Trigger, Wait, Clear, Seq, Set };
 
 struct Step
 {
@@ -44,6 +46,8 @@ struct Step
     float y = 0.0f;        // Stick y
     uint32_t ms = 0;       // Press / Wait
     uint32_t seq = 0;      // Seq
+    std::string name;      // Set: the setting
+    int value = 0;         // Set: its new value
 };
 
 inline std::string Lower(std::string s)
@@ -167,6 +171,17 @@ inline bool Parse(const std::string& text, std::vector<Step>& steps, std::string
         else if (cmd == "wait" && w.size() == 2) { s.op = Op::Wait; ok = ParseUint(w[1], kMaxMs, s.ms); }
         else if (cmd == "clear" && w.size() == 1) { s.op = Op::Clear; ok = true; }
         else if (cmd == "seq" && w.size() == 2) { s.op = Op::Seq; ok = ParseUint(w[1], 0xFFFFFFFFu, s.seq); }
+        else if (cmd == "set" && w.size() == 3)
+        {
+            s.op = Op::Set;
+            s.name = w[1];
+            ok = !s.name.empty();
+            for (char c : s.name)
+                if (!((c >= 'a' && c <= 'z') || c == '_')) ok = false;
+            uint32_t v = 0;
+            ok = ok && ParseUint(w[2], 1000000, v);
+            s.value = static_cast<int>(v);
+        }
         if (!ok)
         {
             error = "line " + std::to_string(lineNo) + ": cannot read \"" + line + "\"";

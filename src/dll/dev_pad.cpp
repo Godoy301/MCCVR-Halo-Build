@@ -11,6 +11,7 @@
 
 #if HALOMCCVR_DEV_DIAGNOSTICS
 #include "../common/dev_pad_script.h"
+#include "../common/config.h"
 #include "../common/log.h"
 
 #include <algorithm>
@@ -81,6 +82,18 @@ bool Pause(uint32_t ms)
     }
 }
 
+// The live switches a script may flip, written exactly as F1 writes them.
+bool SetLive(const std::string& name, int value)
+{
+    if (name == "converged_aim") g_config.converged_aim = value ? 1 : 0;
+    else if (name == "aim_direct_drive") { g_config.aim_direct_drive = value ? 1 : 0; Config_ApplyAimModes(); }
+    else if (name == "roomscale_follow_law") g_config.roomscale_follow_law = value ? 1 : 0;
+    else if (name == "roomscale_movement") g_config.roomscale_movement = value != 0;
+    else if (name == "physical_crouch") g_config.physical_crouch = value != 0;
+    else return false;
+    return true;
+}
+
 bool Run(const std::vector<dev_pad::Step>& steps)
 {
     using dev_pad::Op;
@@ -105,6 +118,10 @@ bool Run(const std::vector<dev_pad::Step>& steps)
         case Op::Wait: aborted = Pause(s.ms); break;
         case Op::Clear: Neutral(); break;
         case Op::Seq: WriteStatus("seq " + std::to_string(s.seq) + "\n"); break;
+        case Op::Set:
+            if (SetLive(s.name, s.value)) LOG("DEVPAD: set %s = %d (live, as F1 does)", s.name.c_str(), s.value);
+            else LOG("DEVPAD: set %s refused: not a live switch this tool may change", s.name.c_str());
+            break;
         }
         if (aborted)
             return false;
