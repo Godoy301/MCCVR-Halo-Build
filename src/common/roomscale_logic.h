@@ -38,6 +38,24 @@ struct RoomscaleFollow
     // moves as the aim turns him (inferred, not measured: any sub-millimetre motion per frame holds the
     // pause open). Past this, the pause ends anyway.
     static constexpr uint64_t kManualPauseMaxMs=500;
+    // THE OWED DISTANCE SURVIVES INTERRUPTIONS. initialLean is the head-to-reference offset the follow
+    // treats as "the body is under me". It is captured only when the player is known to be over the
+    // body: the first seed of a title generation, and a recenter (the reference moved to the head).
+    // Every other re-seed -- a stale camera, an admission change, a tracking gap, a hitch, a teleport --
+    // keeps it, so a distance walked away while the follow could not act is still owed and the body
+    // catches up (Halo: Campaign Evolved's standing origin behaves the same way). Until 2026-09-28
+    // every re-seed captured the current offset, which made that distance the new "under me" -- the
+    // user, in the headset: "I got away from my legs, and they still respond when I walk around, but
+    // they are not under me."
+    bool neutralValid=false;
+    uint32_t neutralGeneration=0;
+    // What is NOT owed: a tracking fault. A head that moves further between two consecutive updates
+    // than a person can (a jump) is folded into the neutral lean, and a debt larger than any play space
+    // is dropped. Neither is a walk.
+    static constexpr float kHeadJumpM=0.5f, kHeadMaxSpeed=6.0f, kMaxDebtM=3.0f;
+    bool haveLastHead=false;
+    uint64_t lastHeadMs=0;
+    float lastHead[2]{};
     bool seeded=false, commanded=false, settling=false;
     bool manualPaused=false, following=false;
     uint32_t generation=0;
@@ -48,6 +66,21 @@ struct RoomscaleFollow
     // Tracking-space direction of the last nonzero command: the way the stopping tail must keep moving
     // to be claimed as ours.
     float tailDir[2]{};
+
+    // Forget the follow in progress -- after an admission change its movement receipts cannot be
+    // trusted -- but keep what is owed: the neutral lean, and the reference it was measured against
+    // (so a recenter during the interruption is still recognised).
+    void Rebase() noexcept
+    {
+        const float lean0=initialLean[0], lean1=initialLean[1];
+        const float ref0=expectedReference[0], ref1=expectedReference[1];
+        const bool keep=neutralValid;
+        const uint32_t keepGeneration=neutralGeneration;
+        *this=RoomscaleFollow{};
+        initialLean[0]=lean0; initialLean[1]=lean1;
+        expectedReference[0]=ref0; expectedReference[1]=ref1;
+        neutralValid=keep; neutralGeneration=keepGeneration;
+    }
 
     void SuspendForManual(uint64_t now) noexcept
     {
@@ -72,18 +105,38 @@ struct RoomscaleFollow
         if (!enabled || !epoch || !now || scale<=0 || hl<0.001f || wl<0.001f)
         { seeded=false; commanded=settling=manualPaused=following=false; return false; }
         hx/=hl; hz/=hl; wx/=wl; wy/=wl;
-        const bool reset=!seeded || generation!=epoch || now<time || now-time>250 ||
-            std::fabs(reference[0]-expectedReference[0])>0.0001f ||
-            std::fabs(reference[2]-expectedReference[1])>0.0001f ||
+        const bool newGeneration=!neutralValid || neutralGeneration!=epoch;
+        const bool recentered=neutralValid &&
+            (std::fabs(reference[0]-expectedReference[0])>0.0001f ||
+             std::fabs(reference[2]-expectedReference[1])>0.0001f);
+        const bool reset=!seeded || generation!=epoch || now<time || now-time>250 || recentered ||
             std::hypot(position[0]-body[0],position[1]-body[1])/scale>0.35f;
         if (reset)
         {
-            initialLean[0]=head[0]-reference[0];
-            initialLean[1]=head[2]-reference[2];
+            // Only a new title generation or a recenter says the player is over the body now.
+            if (newGeneration || recentered)
+            {
+                initialLean[0]=head[0]-reference[0];
+                initialLean[1]=head[2]-reference[2];
+                neutralValid=true; neutralGeneration=epoch;
+            }
             commanded=settling=following=false; velocity[0]=velocity[1]=0;
             lastCommand=lastMotion=now; seeded=true;
             manualPaused=false;
+            haveLastHead=false;   // no jump test across a re-seed: the head may really have moved
         }
+        else if (haveLastHead && now>=lastHeadMs)
+        {
+            const float jx=head[0]-lastHead[0], jz=head[2]-lastHead[1];
+            const float limit=std::max(kHeadJumpM, kHeadMaxSpeed*float(now-lastHeadMs)*0.001f);
+            if (std::hypot(jx,jz)>limit)
+            {
+                // A tracking jump: fold it into the neutral lean, so it is never walked.
+                initialLean[0]+=jx; initialLean[1]+=jz;
+                velocity[0]=velocity[1]=0; following=false;
+            }
+        }
+        lastHead[0]=head[0]; lastHead[1]=head[2]; lastHeadMs=now; haveLastHead=true;
         if (manualMove) SuspendForManual(now);
         else if (manualPaused)
         {
@@ -135,9 +188,9 @@ struct RoomscaleFollow
         error[0]=head[0]-reference[0]-initialLean[0];
         error[1]=head[2]-reference[2]-initialLean[1];
         const float distance=std::hypot(error[0],error[1]);
-        if (distance>1.2f)
+        if (distance>kMaxDebtM)
         {
-            // A tracking jump must not become a long unattended walk.
+            // More than any play space: a tracking fault, never a long unattended walk.
             initialLean[0]=head[0]-reference[0];
             initialLean[1]=head[2]-reference[2];
             error[0]=error[1]=0;velocity[0]=velocity[1]=0;settling=following=false;

@@ -51,8 +51,9 @@ void Roomscale_Input(bool allowed,float x,float y) noexcept
     // and must not replay a pre-stick body-follow packet after release.
     if (allowedChanged || manualChanged || expired)
         inputEpoch.fetch_add(1,std::memory_order_acq_rel);
-    // Admission loss drops physical debt. Manual movement only retires the
-    // packet; the camera can retain the tracked step until native travel stops.
+    // Admission loss ends the follow in progress (the camera rebases it, keeping what is owed).
+    // Manual movement only retires the packet; the camera can retain the tracked step until native
+    // travel stops.
     if (allowedChanged || expired) historyEpoch.fetch_add(1,std::memory_order_acq_rel);
     inputAt.store(now,std::memory_order_release);
 }
@@ -99,8 +100,12 @@ void Roomscale_Camera(GameTitle title,bool allowed,const float body[3],
     const auto epoch=inputEpoch.load(std::memory_order_acquire);
     const auto history=historyEpoch.load(std::memory_order_acquire);
     const auto now=GetTickCount64(),at=inputAt.load(std::memory_order_acquire);
-    if (prior!=title || priorHistoryEpoch!=history)
+    // A different title starts over. An admission change (priorHistoryEpoch) only ends the follow in
+    // progress: the distance the player is owed survives it (RoomscaleFollow::Rebase).
+    if (prior!=title)
     { state={}; prior=title; priorHistoryEpoch=history; }
+    else if (priorHistoryEpoch!=history)
+    { state.Rebase(); priorHistoryEpoch=history; }
     else if (priorInputEpoch!=epoch && state.seeded)
         state.SuspendForManual(now);
     priorInputEpoch=epoch;
