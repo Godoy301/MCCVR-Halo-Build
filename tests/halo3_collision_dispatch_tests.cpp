@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include "../src/common/runtime_types.h"
 
 static unsigned checks{},nativeCalls{},ticks{};
 static void Check(bool good,const char* label)
@@ -31,6 +32,10 @@ static void LegacyWorldCollisionTick(LegacyWorldCollisionFeature&)
 }
 static bool Halo3RedirectContactVector(uintptr_t,uint64_t,int32_t,int32_t,int32_t,int32_t,void*,uint8_t& result)
 {if(redirect){result=19;return true;}return false;}
+// The engine-crosshair check (dev) sees every query the GAME makes, never one the mod made itself.
+static unsigned engineNotes{};
+static void LegacySightNoteEngineTrace(GameTitle title,uint64_t f,const float* a,const float* b,uintptr_t caller)
+{++engineNotes;Check(title==GameTitle::Halo3&&f==flags&&a==start&&b==delta&&caller!=0,"engine-trace note gets the game's own query");}
 #include "../src/dll/halo3_collision_dispatch.inl"
 static uint8_t __fastcall Original(uint64_t f,int32_t m,const float* a,const float* b,int32_t x,int32_t y,int32_t z,void* out)
 {
@@ -48,7 +53,7 @@ static DWORD Invoke()
 }
 static void Reset()
 {
-    nativeCalls=ticks=0;output=0;returned=0xFF;
+    nativeCalls=ticks=engineNotes=0;output=0;returned=0xFF;
     option=nativeFault=extraFault=redirect=g_legacyCollisionOwnedQuery=false;
     g_halo3WorldCollision.original=reinterpret_cast<void*>(&Original);
     g_halo3WorldCollision.installed=true;g_halo3WorldCollision.failures=0;
@@ -60,6 +65,7 @@ int main()
     {
         Reset();option=enabled;
         Check(Invoke()==0&&returned==0xA7&&nativeCalls==1&&output==0xABCD1234,"stock result and output forwarded exactly once");
+        Check(engineNotes==1,"the game's own query is noted once for the engine-crosshair check");
         Check(g_halo3WorldCollision.callbacks==0&&ticks==1,"normal callback drained");
         Reset();option=enabled;nativeFault=true;
         Check(Invoke()==0xE0123401&&returned==0xFF&&nativeCalls==1,"native exception propagates without fabricated miss or retry");
@@ -71,6 +77,7 @@ int main()
     Check(!g_halo3WorldCollision.installed&&g_halo3WorldCollision.failures==1&&g_halo3WorldCollision.callbacks==0,"optional feature alone isolated");
     Reset();g_legacyCollisionOwnedQuery=true;
     Check(Invoke()==0&&returned==0xA7&&nativeCalls==1&&ticks==0,"owned query cannot recursively schedule");
+    Check(engineNotes==0,"the mod's own query is never noted as the game's");
     Reset();redirect=true;
     Check(Invoke()==0&&returned==19&&nativeCalls==0&&ticks==0&&g_halo3WorldCollision.callbacks==0,"owned physical contact redirect retained");
     std::printf("PASS: %u production collision dispatch checks\n",checks);
