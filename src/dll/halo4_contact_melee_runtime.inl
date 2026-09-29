@@ -214,6 +214,64 @@ void Halo4ContactTick(uint32_t unit,void* instance)
     g_halo4Contact.processing.store(false,std::memory_order_release);
 }
 
+// TRACE-AND-REAIM, Halo 4 on foot (sight_layer.h; the servo side is in Game_ComputeAimStick). Halo 4
+// queries collision with Havok PhysicsRayCast, which is only safe in a native simulation context: this
+// runs inside the per-unit update the contact lane hooks, after its own contact tick, with the query
+// the contact lane issues itself -- the native melee profile (0x1A) and the melee collision flags that
+// its install pinned from their own call site -- and ignores the unit. The engine's own crosshair query
+// is not identified on this build (no H4EK), so the range is measured with the melee query: structure
+// and objects, which is what a range for the aim needs. The unit is the one whose first-person body
+// the render thread last solved (g_halo4SightUnit), and a seated unit (parent != -1) is not traced.
+void Halo4SightTraceTick(uint32_t unit,void* instance)
+{
+    constexpr GameTitle kTitle=GameTitle::Halo4;
+    if(!LegacySight(kTitle).flags.load(std::memory_order_acquire) || !g_halo4Contact.flags ||
+        !g_halo4WorldCollision.originalRayCast || TitleAdapter_GetActiveTitle()!=kTitle) return;
+    const uint64_t now=GetTickCount64();
+    const uint64_t unitAt=g_halo4SightUnitAtMs.load(std::memory_order_acquire);
+    if(!unitAt || now<unitAt || now-unitAt>250 ||
+        unit!=static_cast<uint32_t>(g_halo4SightUnit.load(std::memory_order_relaxed))) return;
+    if(Sight_TraceFaulted(kTitle) || !Sight_TraceDue(kTitle,now)) return;
+    const uint32_t generation=TitleAdapter_GetGeneration(kTitle);
+    SightRay ray{};
+    if(!Sight_ReadRay(kTitle,generation,kSightRayFreshMs,ray)) return;
+    const float length=kSightTraceLengthWu;
+    Halo4PhysicsRayCastInput input{};
+    Halo4PhysicsRayCastResult output{};
+    input.profile=0x1A;
+    for(int axis=0;axis<3;++axis)
+    {
+        input.start[axis]=ray.head[axis]+ray.dir[axis]*kSightTraceSkipWu;
+        input.end[axis]=input.start[axis]+ray.dir[axis]*length;
+    }
+    input.ignoredObjects[0]=static_cast<int32_t>(unit);
+    input.ignoredObjectCount=1;
+    input.resultOptions[0]=1;
+    bool returned=false,onFoot=false;
+    LARGE_INTEGER before{},after{};
+    __try
+    {
+        const auto* biped=Halo4ContactBiped(unit);
+        onFoot=biped && biped==instance && *reinterpret_cast<const int32_t*>(biped+0x24)==-1;
+        if(onFoot)
+        {
+            memcpy(&input.collisionFlags,g_halo4Contact.flags,sizeof(uint64_t));
+            QueryPerformanceCounter(&before);
+            returned=g_halo4WorldCollision.originalRayCast(&input,&output);
+            QueryPerformanceCounter(&after);
+        }
+    }
+    __except(EXCEPTION_EXECUTE_HANDLER)
+    {
+        Sight_NoteTraceFault(kTitle);
+        return;
+    }
+    if(!onFoot) return;
+    const bool hit=returned && std::isfinite(output.fraction) && output.fraction>=0.0f && output.fraction<=1.0f;
+    Sight_PublishTrace(kTitle,generation,hit,hit ? kSightTraceSkipWu+output.fraction*length : 0.0f,
+        static_cast<uint64_t>(after.QuadPart-before.QuadPart));
+}
+
 __declspec(noinline) void __fastcall Halo4ContactUpdateDetour(void* instance)
 {
     g_halo4Contact.callbacks.fetch_add(1,std::memory_order_acq_rel);
@@ -230,6 +288,7 @@ __declspec(noinline) void __fastcall Halo4ContactUpdateDetour(void* instance)
         __except(EXCEPTION_EXECUTE_HANDLER) { unit=UINT32_MAX; }
         if(g_halo4Contact.updateOriginal) g_halo4Contact.updateOriginal(instance);
         if(unit!=UINT32_MAX) Halo4ContactTick(unit,instance);
+        if(unit!=UINT32_MAX) Halo4SightTraceTick(unit,instance);
     }
     __finally { g_halo4Contact.callbacks.fetch_sub(1,std::memory_order_acq_rel); }
 }
@@ -237,6 +296,7 @@ __declspec(noinline) void __fastcall Halo4ContactUpdateDetour(void* instance)
 bool RemoveHalo4ContactMelee()
 {
     g_halo4Contact.enabled.store(false,std::memory_order_release);
+    LegacySight(GameTitle::Halo4).flags.store(0,std::memory_order_release);
     if(!g_halo4Contact.updateTarget && !g_halo4Contact.damageTarget) return true;
     void** targets[]{&g_halo4Contact.updateTarget,&g_halo4Contact.damageTarget};
     for(auto target:targets) if(*target)
@@ -283,6 +343,7 @@ bool InstallHalo4ContactMelee(uintptr_t base,size_t size,uint32_t generation)
         {0x601EE4,"48 8B 05 AD 91 9F 02 41 BE FE FF FF FF F3 0F 10 25 63 35 79 00 F3 44 0F"},
     };
     g_halo4Contact.enabled.store(false,std::memory_order_release);
+    LegacySight(GameTitle::Halo4).flags.store(0,std::memory_order_release);
     if(!g_halo4WorldCollision.originalRayCast || !g_halo4EngineTlsIndex ||
         g_halo4Contact.updateTarget || g_halo4Contact.damageTarget) return false;
     for(const auto& binding:bindings)
@@ -336,6 +397,18 @@ bool InstallHalo4ContactMelee(uintptr_t base,size_t size,uint32_t generation)
     { LOG("Halo 4 contact melee unavailable: simulation hook enable failed; cleanup retained"); return false; }
     g_halo4Contact.enabled.store(true,std::memory_order_release);
     LOG("Halo 4 contact melee installed: independent physical hand/weapon sweeps, exact-target native damage; headset verification pending");
+    // Trace-and-reaim (Halo4SightTraceTick) measures its range with this lane's native melee query.
+    {
+        uint64_t meleeFlags=0;
+        memcpy(&meleeFlags,g_halo4Contact.flags,sizeof(meleeFlags));
+        auto& sight=LegacySight(GameTitle::Halo4);
+        Sight_ResetTitle(GameTitle::Halo4);
+        sight.why.store(meleeFlags ? nullptr : "the melee collision flags are zero",std::memory_order_release);
+        sight.flags.store(meleeFlags,std::memory_order_release);
+        LOG("SIGHT Halo 4 aim trace %s: PhysicsRayCast, native melee profile 0x1A, melee collision flags "
+            "0x%llX (global +0x2FFB098, pinned from its own call site); on foot, the unit ignored",
+            meleeFlags ? "armed" : "NOT armed",static_cast<unsigned long long>(meleeFlags));
+    }
     return true;
 }
 

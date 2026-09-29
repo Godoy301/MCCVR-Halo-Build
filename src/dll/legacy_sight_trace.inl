@@ -38,16 +38,18 @@ struct LegacySightState
     std::atomic<uint32_t> anchors{0}, globalRva{0};
     std::atomic<uint64_t> converged{0}, fallback{0};      // servo targets, counted on the input thread
 };
-LegacySightState g_legacySight[2];   // [0] Halo 3, [1] ODST
+// [0] Halo 3, [1] ODST, [2] Halo 4 (Halo 4's query is PhysicsRayCast with the contact lane's pinned melee
+// flags, see halo4_contact_melee_runtime.inl: Halo4SightTraceTick; its `flags` is only "available").
+LegacySightState g_legacySight[3];
 
 LegacySightState& LegacySight(GameTitle title)
 {
-    return g_legacySight[title == GameTitle::Halo3ODST ? 1 : 0];
+    return g_legacySight[title == GameTitle::Halo3ODST ? 1 : title == GameTitle::Halo4 ? 2 : 0];
 }
 
 const char* LegacySightTitleName(GameTitle title)
 {
-    return title == GameTitle::Halo3ODST ? "ODST" : "Halo 3";
+    return title == GameTitle::Halo3ODST ? "ODST" : title == GameTitle::Halo4 ? "Halo 4" : "Halo 3";
 }
 
 // Install path (cold, once per title install, after the contact install). Clears first, so a failed resolve
@@ -172,7 +174,7 @@ void LegacySightReport()
     if (now - s_last < 5000)
         return;
     s_last = now;
-    for (const GameTitle title : {GameTitle::Halo3, GameTitle::Halo3ODST})
+    for (const GameTitle title : {GameTitle::Halo3, GameTitle::Halo3ODST, GameTitle::Halo4})
     {
         auto& state = LegacySight(title);
         const uint64_t converged = state.converged.exchange(0, std::memory_order_relaxed);

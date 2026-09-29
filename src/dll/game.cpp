@@ -35497,6 +35497,11 @@ namespace
     constexpr uint32_t kHalo4CollisionFailureRayContract = 2;
     constexpr uint32_t kHalo4CollisionFailureObjectPushException = 3;
 
+    // Trace-and-reaim (Halo4SightTraceTick): the unit whose first-person body the render thread last
+    // solved -- the local player's -- so the per-unit simulation hook can find it without the physical-
+    // melee lane, which otherwise publishes it.
+    std::atomic<int32_t> g_halo4SightUnit{-1};
+    std::atomic<uint64_t> g_halo4SightUnitAtMs{0};
     #include "halo4_contact_melee_runtime.inl"
     #include "halo4_vehicle_input.inl"
     #include "cached_physical_crouch.inl"
@@ -38428,6 +38433,10 @@ namespace
                         1,std::memory_order_relaxed);
                 else if (fillFlag==kHalo4FirstPersonBodyFillFlag)
                 {
+                    // The body record is skinned for the unit the player controls: the sight
+                    // trace's local unit (Halo4SightTraceTick), with or without a hand solve.
+                    g_halo4SightUnit.store(objectIndex,std::memory_order_relaxed);
+                    g_halo4SightUnitAtMs.store(GetTickCount64(),std::memory_order_release);
                     g_halo4Camera.vrikLastBodyNodeCount.store(
                         identity.nodeCount,std::memory_order_relaxed);
                     g_halo4Camera.vrikLastBodyChecksum.store(
@@ -48035,15 +48044,43 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
     // head's offset from the character. With no fresh range the steer above stands exactly as it was.
     {
         const GameTitle sightTitle = TitleAdapter_GetActiveTitle();
-        bool seated = followedVehicleFrame || Halo3VehicleFpActive();
-#if HALOMCCVR_EXPERIMENTAL_ODST_BRINGUP
-        seated = seated || OdstVehicleFpActive();
+        float sightHead[3]{}, sightEye[3]{};
+        bool sightEyes = false;
+        if (halo4Aim)
+        {
+#if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA
+            // Halo 4: the rendered centre camera and the body/aim frame before the HMD pose is composed
+            // onto it (the frame the engine aims from). On foot only: the trace itself refuses a seated
+            // unit (Halo4SightTraceTick), so a seat never has a fresh range.
+            BoneMatrix center{}, body{};
+            sightEyes = sightTitle == GameTitle::Halo4 &&
+                LegacySight(sightTitle).flags.load(std::memory_order_acquire) &&
+                Halo4LoadCenterRoot(1.0f, center) && Halo4LoadControllerRoot(1.0f, body);
+            if (sightEyes)
+            {
+                memcpy(sightHead, center.translation, sizeof(sightHead));
+                memcpy(sightEye, body.translation, sizeof(sightEye));
+            }
 #endif
-        if (!halo4Aim && !seated &&
-            (sightTitle == GameTitle::Halo3 || sightTitle == GameTitle::Halo3ODST) &&
-            LegacySight(sightTitle).flags.load(std::memory_order_acquire) &&
-            g_camValid.load(std::memory_order_acquire) &&
-            g_baseCamValid.load(std::memory_order_acquire))
+        }
+        else
+        {
+            bool seated = followedVehicleFrame || Halo3VehicleFpActive();
+#if HALOMCCVR_EXPERIMENTAL_ODST_BRINGUP
+            seated = seated || OdstVehicleFpActive();
+#endif
+            sightEyes = !seated &&
+                (sightTitle == GameTitle::Halo3 || sightTitle == GameTitle::Halo3ODST) &&
+                LegacySight(sightTitle).flags.load(std::memory_order_acquire) &&
+                g_camValid.load(std::memory_order_acquire) &&
+                g_baseCamValid.load(std::memory_order_acquire);
+            if (sightEyes)
+            {
+                sightHead[0] = g_camX.load(); sightHead[1] = g_camY.load(); sightHead[2] = g_camZ.load();
+                sightEye[0] = g_baseCamX.load(); sightEye[1] = g_baseCamY.load(); sightEye[2] = g_baseCamZ.load();
+            }
+        }
+        if (sightEyes)
         {
             const float controllerYaw =
                 gameYawReference + g_yawSign.load() * WrapPi(atan2f(fx, -fz) - headYawReference);
@@ -48053,11 +48090,11 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
             SightRay ray{};
             ray.generation = TitleAdapter_GetGeneration(sightTitle);
             ray.sampleMs = GetTickCount64();
-            ray.head[0] = g_camX.load(); ray.head[1] = g_camY.load(); ray.head[2] = g_camZ.load();
+            memcpy(ray.head, sightHead, sizeof(ray.head));
             ray.dir[0] = cosControllerPitch * cosf(controllerYaw);
             ray.dir[1] = cosControllerPitch * sinf(controllerYaw);
             ray.dir[2] = sinf(controllerPitch);
-            ray.eye[0] = g_baseCamX.load(); ray.eye[1] = g_baseCamY.load(); ray.eye[2] = g_baseCamZ.load();
+            memcpy(ray.eye, sightEye, sizeof(ray.eye));
             Sight_PublishRay(sightTitle, ray);
             float bent[3]{};
             if (Sight_ConvergedDirection(sightTitle, ray.generation, ray.head, ray.dir, ray.eye, bent))
