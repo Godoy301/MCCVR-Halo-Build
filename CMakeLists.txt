@@ -311,6 +311,8 @@ add_library(halo3xr SHARED
 if(HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA)
     target_sources(halo3xr PRIVATE src/dll/halo4_restoration.asm)
 endif()
+# Halo 3 / ODST / Halo 4 direct drive (legacy_direct_drive): the control-update detours.
+target_sources(halo3xr PRIVATE src/dll/legacy_player_control_hook.asm)
 set_target_properties(halo3xr PROPERTIES OUTPUT_NAME "HaloMCCVR")
 target_include_directories(halo3xr PRIVATE
     ${HALOMCCVR_GENERATED_DIR}

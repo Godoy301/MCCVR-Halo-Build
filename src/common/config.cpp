@@ -962,6 +962,7 @@ void ConfigLoad(const wchar_t* path)
         if (!strcmp(key, "independent_dual_aim")) { g_config.independent_dual_aim=atoi(val)!=0; continue; }
         if (!strcmp(key, "gun_barrel_aim")) { g_config.gun_barrel_aim=atoi(val)!=0; continue; }
         if (!strcmp(key, "aim_provider")) { g_config.aim_provider=atoi(val); continue; }
+        if (!strcmp(key, "legacy_direct_drive")) { g_config.legacy_direct_drive = atoi(val) != 0 ? 1 : 0; continue; }
         if (!strcmp(key, "reach_direct_drive"))
         {
             g_config.reach_direct_drive=atoi(val);
@@ -1783,6 +1784,12 @@ void ConfigSave()
     fprintf(f, "# whose gun turns apart from the hull (a driver whose look steers keeps the stick),\n");
     fprintf(f, "# 2 = every seat you aim, drivers included. (default %d)\n", d.reach_vehicle_aim);
     fprintf(f, "reach_vehicle_aim = %d\n\n", g_config.reach_vehicle_aim);
+    fprintf(f, "# EXPERIMENTAL, Halo 3, ODST and Halo 4, on foot. 1 = DIRECT DRIVE: your aim writes the game's\n");
+    fprintf(f, "# own control angles directly instead of steering the right stick (which can only turn at the\n");
+    fprintf(f, "# game's turn rate). Installs when the game loads; arms once the angles it found agree with the\n");
+    fprintf(f, "# game's aim (log: DRIVE ... armed=1). Vehicles, cutscenes and menus keep the stick.\n");
+    fprintf(f, "# 0 = off. (default %d)\n", d.legacy_direct_drive);
+    fprintf(f, "legacy_direct_drive = %d\n\n", g_config.legacy_direct_drive);
     fprintf(f, "# -------------------------------------------------------------------\n");
     fprintf(f, "#  WEAPON CALIBRATION\n");
     fprintf(f, "#  Personal trims applied over the active title's verified base pose.\n");

@@ -657,6 +657,12 @@ struct Config
     //       pitch+-10deg ONCE, logs whether it persisted and steered the aim (REACHDDP ...), then
     //       writes the original back and releases the stick. One-shot per session.
     int reach_direct_drive = 0;
+    // Halo 3, ODST and Halo 4, ON FOOT: DIRECT DRIVE (1), the same as reach_direct_drive = 3 for the three
+    // sibling engines. Your aim writes the game's own control angles instead of steering the right stick
+    // (the stick can only turn the view at the game's turn rate). Installs on the next title load, then
+    // arms itself once the angles it found agree with the game's aim (log: DRIVE ... armed=1). Vehicles,
+    // cutscenes and menus keep the stick. 0 = off: the stick servo aims. (default 0)
+    int legacy_direct_drive = 0;
     // Swing angle in degrees for the reach_direct_drive=1 test (about world-up). (default 45)
     int reach_dd_test_deg = 45;
     // DEV write-watchpoint locator (default 0 = off). Hardware write-watchpoints armed across all threads;

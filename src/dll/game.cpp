@@ -150,6 +150,18 @@ extern "C" void ReachPcApplyForUser(int user);
 static constexpr size_t kReachPlayerControlTlsOffset = 0xD8;
 static constexpr size_t kReachPlayerControlStride    = 0x180;
 #endif
+// Halo 3 / ODST / Halo 4 direct drive (legacy_direct_drive; legacy_direct_drive.inl, the detours in
+// legacy_player_control_hook.asm).
+extern "C" void Halo3PcHook();
+extern "C" void OdstPcHook();
+extern "C" void Halo4PcHook();
+extern "C" { void* g_halo3PcOrig = nullptr; void* g_odstPcOrig = nullptr; void* g_halo4PcOrig = nullptr; }
+extern "C" void LegacyPcApplyForUser(int slot, int user);
+bool LegacyDriveInstall(GameTitle title, uintptr_t base, size_t size);
+bool LegacyDriveRemove(GameTitle title);
+void LegacyDrivePublish(GameTitle title, float yaw, float pitch, float aimYaw, float aimPitch, bool valid);
+bool LegacyDriveLive(GameTitle title);
+void LegacyDriveReport();
 #include "../common/aim_servo_logic.h"
 #include "../common/aim_solve_logic.h"
 #include "../common/aim_write_logic.h"
@@ -14444,6 +14456,7 @@ namespace
         // Optional publishers are now stopped too. Retire every old feature
         // before any new module can overwrite its target/original pair.
         if (!RemoveHalo3DualAim()) return false;
+        if (!LegacyDriveRemove(GameTitle::Halo3)) return false;
         if (!DisableAndRemoveHalo3ContactMelee()) return false;
         for (size_t i = g_installedGameHookCount; i > 0; --i)
         {
@@ -15354,6 +15367,7 @@ namespace
                 kHalo3CollisionVectorSignature))
             RememberInstalledGameHook(g_halo3WorldCollision.target);
         (void)InstallHalo3ContactMelee(base,size,runtimeGeneration);
+        (void)LegacyDriveInstall(GameTitle::Halo3,base,size);
         // The rejected early-helper-only detours remain inert. The new optional
         // path owns acquisition and downstream assist together, with its own
         // default-off setting and feature-only failure isolation.
@@ -17066,6 +17080,7 @@ namespace
     bool DisableAndRemoveOdstHooks()
     {
         if(!RemoveOdstMuzzle())return false;
+        if(!LegacyDriveRemove(GameTitle::Halo3ODST)) return false;
         if(!DisableAndRemoveOdstContactMelee()) return false;
         // Stop new outer stereo transactions first. Existing ones retain all FP
         // dependencies until their complete two-eye callback has returned.
@@ -17443,6 +17458,7 @@ namespace
         }
 
         (void)InstallOdstContactMelee(base,size,runtimeGeneration);
+        (void)LegacyDriveInstall(GameTitle::Halo3ODST,base,size);
         (void)InstallOdstMuzzle(base,size,runtimeGeneration);
 
         // The ownership block that used to sit here now runs the moment the
@@ -42154,6 +42170,8 @@ namespace
         g_halo4Camera.armed.store(false, std::memory_order_release);
         if(!RemoveHalo4VehicleInput())
         { LOG("Halo 4 teardown: vehicle input readers need cleanup retry; retaining native module"); return false; }
+        if(!LegacyDriveRemove(GameTitle::Halo4))
+        { LOG("Halo 4 teardown: direct-drive hook needs cleanup retry; retaining native module"); return false; }
         if(!RemoveHalo4ContactMelee())
         { LOG("Halo 4 teardown: contact hooks need cleanup retry; retaining native module/trampolines"); return false; }
         RemoveHalo4WorldCollision();
@@ -42544,6 +42562,7 @@ namespace
         // query leaves the already-installed floating hands entirely intact.
         (void)InstallHalo4WorldCollision(base, size, generation);
         (void)InstallHalo4ContactMelee(base,size,generation);
+        (void)LegacyDriveInstall(GameTitle::Halo4,base,size);
         (void)InstallHalo4VehicleInput(base,size,generation);
         (void)InstallHalo4Muzzle(base,size,generation);
         // C-H4-46: Halo 4 supplies authored pixels to the same shared VR
@@ -43447,6 +43466,7 @@ namespace
             // Trace-and-reaim outside Reach (sight_layer.h): traces, cost and converged polls, per title.
             Sight_Report();
             LegacySightReport();
+            LegacyDriveReport();
 #if HALOMCCVR_EXPERIMENTAL_REACH_RENDER_CANDIDATE
             // Status the aim provider and the direct-drive hook only count into atomics; logged here.
             ReachAimProvider_Report();
@@ -47843,6 +47863,7 @@ bool Game_ReachDdTestOwnsAim()
     return g_reachDdpOwnsAim.load(std::memory_order_acquire);
 }
 #endif
+#include "legacy_direct_drive.inl"
 bool Game_ComputeAimStick(float& outRx, float& outRy)
 {
     // Preserve C-H2-43's rejected ON-FOOT hand-driven turning. A newly verified
@@ -48148,6 +48169,28 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
     const float ax = aimForward[0], ay = aimForward[1], az = aimForward[2];
     const float aimYaw = atan2f(ay, ax);
     const float aimPitch = asinf(Clamp(az, -1.0f, 1.0f));
+    // DIRECT DRIVE, Halo 3 / ODST / Halo 4 on foot (legacy_direct_drive.inl): hand the hook the final
+    // target -- the converged aim when trace-and-reaim resolved it -- and the game's own aim for its arm
+    // gate. Once the hook is armed and writing, the stick stands neutral: the aim is written, not steered.
+    if (g_config.legacy_direct_drive)
+    {
+        const GameTitle driveTitle = TitleAdapter_GetActiveTitle();
+        if (driveTitle == GameTitle::Halo3 || driveTitle == GameTitle::Halo3ODST ||
+            driveTitle == GameTitle::Halo4)
+        {
+            bool driveSeated = followedVehicleFrame || Halo3VehicleFpActive();
+#if HALOMCCVR_EXPERIMENTAL_ODST_BRINGUP
+            driveSeated = driveSeated || OdstVehicleFpActive();
+#endif
+            LegacyDrivePublish(driveTitle, desiredYaw, desiredPitch, aimYaw, aimPitch, !driveSeated);
+            if (!driveSeated && LegacyDriveLive(driveTitle))
+            {
+                outRx = 0.0f;
+                outRy = 0.0f;
+                return true;
+            }
+        }
+    }
 
     const float errYaw = WrapPi(desiredYaw - aimYaw);
     const float errPitch = desiredPitch - aimPitch;
