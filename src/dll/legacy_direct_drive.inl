@@ -169,7 +169,9 @@ bool LegacyDriveLocalOnFoot(int slot)
 bool LegacyDriveInstall(GameTitle title, uintptr_t base, size_t size)
 {
     const int slot = LegacyDriveSlot(title);
-    if (slot < 0 || !g_config.legacy_direct_drive)
+    // Installed whatever the setting, so F1's Direct drive switches it live: the hook writes only while
+    // legacy_direct_drive is on, and disarms (to re-validate) whenever it is off.
+    if (slot < 0)
         return false;
     auto& st = g_legacyDrive[slot];
     const auto& site = kLegacyDriveSites[slot];
@@ -295,7 +297,15 @@ extern "C" void LegacyPcApplyForUser(int slot, int user)
     {
         do
         {
-            if (!g_config.legacy_direct_drive || !st.installed.load(std::memory_order_acquire) || !st.tlsIndexAddress)
+            if (!g_config.legacy_direct_drive)
+            {
+                // Switched off live: stop now, and make switching back on re-validate the record first.
+                if (st.armed.exchange(false, std::memory_order_acq_rel))
+                    st.disarms.fetch_add(1, std::memory_order_relaxed);
+                st.agree = 0;
+                break;
+            }
+            if (!st.installed.load(std::memory_order_acquire) || !st.tlsIndexAddress)
                 break;
             // This (sim) thread's TLS -> the record the native update just wrote.
             auto** slots = reinterpret_cast<void**>(__readgsqword(0x58));

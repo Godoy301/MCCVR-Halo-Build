@@ -32341,7 +32341,9 @@ namespace
         // said loudly; the stick servo keeps aiming. Installed DISARMED: the engine-thread arm-gate
         // (ReachDriveArmGate_OnEngineTick) validates the player_control address before the first write.
         // The old target 0x1E0834 installed but never ran on foot.
-        if (g_config.reach_direct_drive == 3 && !g_reachPcTarget)
+        // Installed whatever the mode, so F1's Direct drive switches it live: disarmed until the arm-gate
+        // validates the record in mode 3, and the gate disarms it again the moment the mode leaves 3.
+        if (!g_reachPcTarget)
         {
             // (The prologue alone also occurs at +0x6AA488; the frame size and the first xmm saves make it
             // unique -- verified offline against the mapped image.)
@@ -47644,7 +47646,8 @@ bool Game_ReachSightSample(ReachSightSample& out)
 {
     out = {};
     // Only direct drive (mode 3) can actuate a converged aim; nothing else asks the sim thread to trace.
-    if (g_config.reach_direct_drive != 3)
+    // Converged aim off (F1, every title): no trace, so the provider keeps Reach's own convergence.
+    if (g_config.reach_direct_drive != 3 || !g_config.converged_aim)
         return false;
     const uint64_t now = GetTickCount64();
     // And only while it can act on the result right now (the provider's can_write_state: hook armed with
@@ -47733,7 +47736,7 @@ bool Game_ReachSightReticleRange(float& outRangeM, bool& outHit)
 {
     outRangeM = 0.0f;
     outHit = false;
-    if (g_config.reach_direct_drive != 3)
+    if (g_config.reach_direct_drive != 3 || !g_config.converged_aim)
         return false;
     const uint64_t now = GetTickCount64();
     // Only while the angles in effect are converged ones: then the shot lands where this ray hits. On
@@ -48145,8 +48148,9 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
 #endif
             // SEATED: C20 keeps every Halo 3 / ODST seat in the game's own first-person camera, so the engine
             // eye is the same camera as on foot. The trace must pass through the vehicle and the one carrying
-            // it, which the vehicle sampler names; with the vehicle unknown the seat is not traced.
-            if (seated)
+            // it, which the vehicle sampler names; with the vehicle unknown the seat is not traced. F1's
+            // "Converged aim in seats" (reach_vehicle_aim, every title) Off keeps every seat's old aim.
+            if (seated && g_config.reach_vehicle_aim > 0)
             {
                 if (sightTitle == GameTitle::Halo3 && Halo3VehicleFpActive())
                 {

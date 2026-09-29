@@ -430,9 +430,9 @@ uint64_t ReachSightActiveFlags(int32_t& mode)
 
 void ReachSightTraceTick(uint32_t unit)
 {
-    // Every unit comes through this hook on every sim tick, so the cheapest gate comes first: one plain
-    // config load. Only direct drive (mode 3) consumes the trace.
-    if (g_config.reach_direct_drive != 3)
+    // Every unit comes through this hook on every sim tick, so the cheapest gate comes first: plain config
+    // loads. Only direct drive (mode 3) consumes the trace, and only with F1's Converged aim on.
+    if (g_config.reach_direct_drive != 3 || !g_config.converged_aim)
         return;
     auto& trace = g_reachSightTrace;
     const uint64_t now = GetTickCount64();

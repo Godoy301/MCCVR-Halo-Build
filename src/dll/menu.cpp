@@ -1142,7 +1142,7 @@ namespace
             "Left/right: negative moves left, positive moves right.");
         ImGui::Spacing();
         ImGui::Separator();
-        ImGui::Text("Halo: Reach vehicle aim");
+        ImGui::Text("Vehicle aim (every title with seat aiming)");
         {
             static const char* const kVehicleAimModes[] = {
                 "Off (old stick aim)", "Gunners and passengers", "Every seat I aim"};
@@ -1154,7 +1154,8 @@ namespace
             }
         }
         ImGui::TextDisabled(
-            "With direct drive on (reach_direct_drive = 3), seats get the on-foot\n"
+            "Halo 3 and ODST seats converge while Converged aim (Weapon & aim) is on;\n"
+            "Off here keeps their old seat aim. In Reach, with Direct drive on, seats get the on-foot\n"
             "aim: the shot lands on what you point at, at any distance. Reach fires\n"
             "a seat's weapon at what its own crosshair hits, and the aim is bent\n"
             "so that crosshair sits on your target. Turret and passenger limits\n"
@@ -1304,6 +1305,26 @@ namespace
 
         if (g_activeCategory == Cat_WeaponAim)
         {
+        ImGui::Text("Aim (every title)");
+        {
+            bool converged = g_config.converged_aim != 0;
+            if (ImGui::Checkbox("Converged aim", &converged))
+            { g_config.converged_aim = converged ? 1 : 0; changed = true; }
+            ImGui::TextDisabled("ON: the shot passes through what you point at, at any distance: the game traces the\n"
+                                "ray from your eye along the controller and bends the aim so its shot line crosses\n"
+                                "that point, and the reticle sits on it. OFF: the earlier aim, which meets your\n"
+                                "pointing line at one fixed distance. In Reach it needs Direct drive (below);\n"
+                                "without it Reach keeps its own convergence.");
+            bool drive = g_config.aim_direct_drive != 0;
+            if (ImGui::Checkbox("Direct drive", &drive))
+            { g_config.aim_direct_drive = drive ? 1 : 0; Config_ApplyAimModes(); changed = true; }
+            ImGui::TextDisabled("ON (Reach, Halo 3, ODST, Halo 4): your aim writes the game's own aim, so it follows the\n"
+                                "controller at once instead of at the game's turn rate. It arms itself a moment after\n"
+                                "you switch it on. OFF: the aim steers the game's look like a right stick.\n"
+                                "Halo CE and Halo 2 always write their aim directly. Both switches are live.");
+        }
+        ImGui::Spacing();
+        ImGui::Separator();
         ImGui::Text("Hand-held weapon");
         if(ImGui::Checkbox("Per-gun alignment",&g_config.per_gun_alignment))
         { Config_RefreshWeaponProfile();changed=true; }

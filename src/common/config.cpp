@@ -753,6 +753,7 @@ void ConfigLoad(const wchar_t* path)
     bool loadedScopeZoom = false;
     bool loadedHolsterRadius = false;
     bool flashlightMappingV2 = false;
+    bool aimDirectDriveSeen = false;
     while (fgets(line, sizeof(line), f))
     {
         if (char* hash = strchr(line, '#'))
@@ -964,6 +965,8 @@ void ConfigLoad(const wchar_t* path)
         if (!strcmp(key, "aim_provider")) { g_config.aim_provider=atoi(val); continue; }
         if (!strcmp(key, "legacy_direct_drive")) { g_config.legacy_direct_drive = atoi(val) != 0 ? 1 : 0; continue; }
         if (!strcmp(key, "converged_aim")) { g_config.converged_aim = atoi(val) != 0 ? 1 : 0; continue; }
+        if (!strcmp(key, "aim_direct_drive"))
+        { g_config.aim_direct_drive = atoi(val) != 0 ? 1 : 0; aimDirectDriveSeen = true; continue; }
         if (!strcmp(key, "reach_direct_drive"))
         {
             g_config.reach_direct_drive=atoi(val);
@@ -1445,9 +1448,24 @@ void ConfigLoad(const wchar_t* path)
         const float legacyDelta = g_config.hud_curvature * 0.1f;
         g_config.hud_curvature = (0.30f - legacyDelta) / 0.60f;
     }
+    // One direct-drive switch for every title (aim_direct_drive). A file from before it set each lane on its
+    // own (reach_direct_drive = 3, legacy_direct_drive = 1): either one turns it on.
+    if (!aimDirectDriveSeen)
+        g_config.aim_direct_drive = (g_config.legacy_direct_drive || g_config.reach_direct_drive == 3) ? 1 : 0;
+    Config_ApplyAimModes();
     Clamp();
     ResolveTitleProfiles();
     LOG("config: loaded (screen %.2fm wide at %.2fm)", g_config.screen_width_m, g_config.screen_distance_m);
+}
+
+void Config_ApplyAimModes()
+{
+    // Each lane reads its own field; the player's switch is aim_direct_drive. Both lanes' hooks are installed
+    // whenever the title loads and re-read these every tick, so a change here takes effect live.
+    g_config.legacy_direct_drive = g_config.aim_direct_drive ? 1 : 0;
+    // A dev build's Reach research modes (1, 2, 4) stay as set.
+    if (g_config.reach_direct_drive == 0 || g_config.reach_direct_drive == 3)
+        g_config.reach_direct_drive = g_config.aim_direct_drive ? 3 : 0;
 }
 
 void ConfigLoadMigrating(const wchar_t* primaryPath, const wchar_t* legacyPath)
@@ -1738,16 +1756,11 @@ void ConfigSave()
     fprintf(f, "# EXPERIMENTAL / diagnostic, Halo Reach only. Routes aiming through the\n");
     fprintf(f, "# game-agnostic aim-solve core. On its own it aims exactly like the built-in\n");
     fprintf(f, "# path (that path is its fallback) and logs its decisions; direct drive through\n");
-    fprintf(f, "# it is reach_direct_drive = 3. Leave it at 0. (default %d)\n",
+    fprintf(f, "# it is aim_direct_drive = 1. Leave it at 0. (default %d)\n",
             d.aim_provider);
     fprintf(f, "aim_provider = %d\n\n", g_config.aim_provider);
 #if !HALOMCCVR_DEV_DIAGNOSTICS
-    fprintf(f, "# EXPERIMENTAL, Halo Reach only. 3 = DIRECT DRIVE: your aim writes the game's own control\n");
-    fprintf(f, "# angles directly (crisp; co-op replication not yet verified); needs a relaunch to install,\n");
-    fprintf(f, "# then arms itself once it has validated the address (log: REACHDRIVE ARMED). On foot, and\n");
-    fprintf(f, "# in vehicles as reach_vehicle_aim says; cutscenes and menus keep the normal stick aim.\n");
-    fprintf(f, "# 0 = off. (default %d)\n", d.reach_direct_drive);
-    fprintf(f, "reach_direct_drive = %d\n\n", g_config.reach_direct_drive);
+    // reach_direct_drive is derived from aim_direct_drive in a player build (written below).
 #else
     fprintf(f, "# DEV BUILD ONLY (the research keys below). EXPERIMENTAL / diagnostic, Halo Reach only, READ-ONLY. Confirms the desired-aim\n");
     fprintf(f, "# struct offset for a future direct-drive aim: it logs the candidate desired-aim\n");
@@ -1794,7 +1807,8 @@ void ConfigSave()
     fprintf(f, "# mod folder (tools/Send-MccPad.ps1). Read at startup. Leave at 0.\n");
     fprintf(f, "dev_synthetic_pad = %d\n\n", g_config.dev_synthetic_pad);
 #endif
-    fprintf(f, "# Halo Reach vehicles, with reach_direct_drive = 3: the same converged aim as on foot. The\n");
+    fprintf(f, "# Vehicle seats. Reach, with aim_direct_drive = 1: the same converged aim as on foot. Halo 3 and\n");
+    fprintf(f, "# ODST seats converge whenever converged_aim is on; 0 here keeps their old seat aim too. The\n");
     fprintf(f, "# write drives the seat's look, and Reach fires the seat's weapon at what its own crosshair\n");
     fprintf(f, "# (traced from its own camera) hits, so the look is bent to put that on what you point at.\n");
     fprintf(f, "# A turret's or passenger seat's limits still hold. A seat whose stick steers keeps the\n");
@@ -1802,12 +1816,13 @@ void ConfigSave()
     fprintf(f, "# whose gun turns apart from the hull (a driver whose look steers keeps the stick),\n");
     fprintf(f, "# 2 = every seat you aim, drivers included. (default %d)\n", d.reach_vehicle_aim);
     fprintf(f, "reach_vehicle_aim = %d\n\n", g_config.reach_vehicle_aim);
-    fprintf(f, "# EXPERIMENTAL, Halo 3, ODST and Halo 4, on foot. 1 = DIRECT DRIVE: your aim writes the game's\n");
-    fprintf(f, "# own control angles directly instead of steering the right stick (which can only turn at the\n");
-    fprintf(f, "# game's turn rate). Installs when the game loads; arms once the angles it found agree with the\n");
-    fprintf(f, "# game's aim (log: DRIVE ... armed=1). Vehicles, cutscenes and menus keep the stick.\n");
-    fprintf(f, "# 0 = off. (default %d)\n", d.legacy_direct_drive);
-    fprintf(f, "legacy_direct_drive = %d\n\n", g_config.legacy_direct_drive);
+    fprintf(f, "# Reach, Halo 3, ODST and Halo 4 (switch it live in F1 > Weapon & aim). 1 = DIRECT DRIVE: your\n");
+    fprintf(f, "# aim writes the game's own aim instead of steering the right stick (which can only turn at the\n");
+    fprintf(f, "# game's turn rate). It arms itself a moment after it is switched on, once the aim it found\n");
+    fprintf(f, "# agrees with the game's (log: DRIVE ... armed=1, REACHDRIVE ARMED). Cutscenes and menus keep the\n");
+    fprintf(f, "# stick. Replaces reach_direct_drive = 3 and legacy_direct_drive = 1. 0 = off. (default %d)\n",
+            d.aim_direct_drive);
+    fprintf(f, "aim_direct_drive = %d\n\n", g_config.aim_direct_drive);
     fprintf(f, "# Every title but Reach, on foot. 1 = CONVERGED AIM: the game traces the ray from your eye\n");
     fprintf(f, "# along the controller and bends the aim so the shot passes through the point it hits, at\n");
     fprintf(f, "# any distance; the reticle sits on that point. 0 = the earlier aim, which converges on one\n");
