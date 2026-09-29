@@ -343,6 +343,48 @@ static void test_reach_basis() {
             }
 }
 
+// Trace-and-reaim as a direction (aim_solve::converge_direction): the same policy as the angle form, in a
+// title's own units, for titles whose aim record is a vector.
+static void test_converge_direction() {
+    const ConvergeRails r{};
+    constexpr float kCm = 304.8f;   // a Blam world unit is 10 ft
+    {   // agrees with the angle form on the same geometry (delta and range in world units)
+        const Vec3 delta{0.02f, -0.05f, 0.03f};   // eye 20 cm-ish off the engine eye
+        const float range = 2.5f;                  // 7.6 m
+        for (float yaw : {-150.0f, 0.0f, 60.0f})
+            for (float pitch : {-40.0f, 0.0f, 25.0f}) {
+                const float cp = std::cos(pitch * 0.0174532925f), sp = std::sin(pitch * 0.0174532925f);
+                const Vec3 u{cp * std::cos(yaw * 0.0174532925f), cp * std::sin(yaw * 0.0174532925f), sp};
+                Vec3 a{};
+                CHECK(converge_direction(delta, u, range, kCm, r, a));
+                float y = yaw, p = pitch;
+                CHECK(converge_trace_reaim(y, p, Vec3{delta.x * kCm, delta.y * kCm, delta.z * kCm}, range * kCm, r));
+                float ay = 0, ap = 0;
+                CHECK(angles_from_dir(a, ay, ap) && near(ay, y, 1e-3f) && near(ap, p, 1e-3f));
+                // and the line from the engine eye along it passes through the traced point, to well under 1 mm
+                const Vec3 T{delta.x + u.x * range, delta.y + u.y * range, delta.z + u.z * range};
+                const Vec3 c{T.y * a.z - T.z * a.y, T.z * a.x - T.x * a.z, T.x * a.y - T.y * a.x};
+                CHECK(std::sqrt(c.x * c.x + c.y * c.y + c.z * c.z) * kCm < 0.1f);
+            }
+    }
+    {   // an offset below the rail is already converged: the direction itself, normalized
+        Vec3 a{};
+        CHECK(converge_direction(Vec3{0.00005f, 0, 0}, Vec3{0, 2, 0}, 1.0f, kCm, r, a));
+        CHECK(near(a.x, 0.0f, 1e-6f) && near(a.y, 1.0f, 1e-6f) && near(a.z, 0.0f, 1e-6f));
+    }
+    {   // cannot resolve: a degenerate range, a degenerate direction, a bad scale -- out untouched
+        Vec3 a{9, 9, 9};
+        CHECK(!converge_direction(Vec3{0.1f, 0, 0}, Vec3{1, 0, 0}, 0.00001f, kCm, r, a) && near(a.x, 9.0f, 1e-6f));
+        CHECK(!converge_direction(Vec3{0.1f, 0, 0}, Vec3{0, 0, 0}, 1.0f, kCm, r, a) && near(a.x, 9.0f, 1e-6f));
+        CHECK(!converge_direction(Vec3{0.1f, 0, 0}, Vec3{1, 0, 0}, 1.0f, 0.0f, r, a) && near(a.x, 9.0f, 1e-6f));
+    }
+    {   // a bend steeper than the record accepts declines
+        ConvergeRails steep{}; steep.max_pitch_deg = 1.45f * 57.29578f;
+        Vec3 a{9, 9, 9};
+        CHECK(!converge_direction(Vec3{0.1f, 0, 0.9f}, Vec3{0, 0, 1}, 0.2f, kCm, steep, a) && near(a.x, 9.0f, 1e-6f));
+    }
+}
+
 // A chase camera's crosshair line as the shot origin (aim_solve::line_point_nearest), and why the point
 // nearest the pivot is the one to converge from: the camera orbits as the aim turns.
 static void test_chase_camera_line() {
@@ -470,6 +512,7 @@ int main() {
     test_clamp_pitch();
     test_arm_gate();
     test_reach_basis();
+    test_converge_direction();
     test_chase_camera_line();
     test_limit_latch();
     if (g_fail == 0) std::printf("aim_solve_tests: OK\n");

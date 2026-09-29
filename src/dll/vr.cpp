@@ -37,6 +37,7 @@
 #include "../common/exclusive_input.h"
 #include "../common/game_menu_pointer_xr.h"
 #include "game.h"
+#include "sight_layer.h"
 #include "haloce_stereo_core.h"
 #include "../common/haloce_pause_logic.h"
 #include "../common/haloce_reticle_logic.h"
@@ -13335,10 +13336,13 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
 #if HALOMCCVR_EXPERIMENTAL_REACH_RENDER_CANDIDATE
                             float tracedRangeM = 0.0f;
                             bool tracedHit = false;
-                            if (reachTitle && !reachNativeAim && !primaryBarrel &&
+                            // Every title that converges its aim through the sight layer
+                            // (sight_layer.h) draws the same reticle; Reach keeps its own lane.
+                            if (!reachNativeAim && !primaryBarrel &&
                                 projection.viewCount == 2 &&
                                 projectionViews.size() == 2 &&
-                                Game_ReachSightReticleRange(tracedRangeM, tracedHit))
+                                (reachTitle ? Game_ReachSightReticleRange(tracedRangeM, tracedHit)
+                                            : Game_SightReticleRange(tracedRangeM, tracedHit)))
                             {
                                 const XrPosef& left = projectionViews[0].pose;
                                 const XrPosef& right = projectionViews[1].pose;
@@ -13368,20 +13372,21 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                                 static bool loggedTraced = false;
                                 static uint64_t lastTracedLogMs = 0;
                                 const uint64_t nowMs = GetTickCount64();
-                                if (reachTitle && (tracedReticle != loggedTraced ||
-                                        (tracedReticle && nowMs - lastTracedLogMs >= 2000)))
+                                if (tracedReticle != loggedTraced ||
+                                        (tracedReticle && nowMs - lastTracedLogMs >= 2000))
                                 {
                                     loggedTraced = tracedReticle;
                                     lastTracedLogMs = nowMs;
+                                    const char* tag = reachTitle ? "REACHRETICLE" : "RETICLE";
                                     if (tracedReticle)
-                                        LOG("REACHRETICLE on the traced eye ray: %s %.2f m -> drawn at %.2f m, "
-                                            "width %.3f m (cap %.1f m)", tracedHit ? "hit" : "miss",
+                                        LOG("%s on the traced eye ray: %s %.2f m -> drawn at %.2f m, "
+                                            "width %.3f m (cap %.1f m)", tag, tracedHit ? "hit" : "miss",
                                             tracedRangeM, tracedPlacement.dist_m, tracedPlacement.width_m,
                                             g_config.reticle_max_dist_m);
                                     else
-                                        LOG("REACHRETICLE traced placement off: the crosshair is back on the "
+                                        LOG("%s traced placement off: the crosshair is back on the "
                                             "controller ray at %.1f m (the aim is not converging: off, a "
-                                            "seat limit, or no fresh trace)",
+                                            "seat limit, or no fresh trace)", tag,
                                             g_config.crosshair_distance_m);
                                 }
                             }

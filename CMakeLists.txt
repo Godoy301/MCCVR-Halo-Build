@@ -280,6 +280,7 @@ add_library(halo3xr SHARED
     src/dll/ik.cpp
     src/dll/input.cpp
     src/dll/roomscale.cpp
+    src/dll/sight_layer.cpp
     src/dll/title_adapter.cpp
     src/dll/title_reentry_probe.cpp
     src/dll/reach_adapter.cpp
@@ -574,7 +575,7 @@ if(BUILD_TESTING)
     target_include_directories(halomccvr_ce_contact_tests PRIVATE src/common)
     add_test(NAME halomccvr_ce_contact_tests COMMAND halomccvr_ce_contact_tests)
     add_executable(halomccvr_ce_contact_runtime_tests tests/haloce_contact_runtime_tests.cpp
-        src/dll/haloce_native_bindings.cpp src/dll/ik.cpp)
+        src/dll/haloce_native_bindings.cpp src/dll/ik.cpp src/dll/sight_layer.cpp)
     target_include_directories(halomccvr_ce_contact_runtime_tests PRIVATE src/common src/dll)
     target_compile_definitions(halomccvr_ce_contact_runtime_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
     target_link_libraries(halomccvr_ce_contact_runtime_tests PRIVATE minhook)
@@ -659,7 +660,8 @@ if(BUILD_TESTING)
     target_compile_definitions(halomccvr_ce_orientation_runtime_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
     target_link_libraries(halomccvr_ce_orientation_runtime_tests PRIVATE minhook)
     add_test(NAME halomccvr_ce_orientation_runtime_tests COMMAND halomccvr_ce_orientation_runtime_tests)
-    add_executable(halomccvr_ce_unit_control_runtime_tests tests/haloce_unit_control_runtime_tests.cpp)
+    add_executable(halomccvr_ce_unit_control_runtime_tests tests/haloce_unit_control_runtime_tests.cpp
+        src/dll/sight_layer.cpp)
     target_include_directories(halomccvr_ce_unit_control_runtime_tests PRIVATE src/common src/dll "${minhook_SOURCE_DIR}/include")
     target_compile_definitions(halomccvr_ce_unit_control_runtime_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
     add_test(NAME halomccvr_ce_unit_control_runtime_tests COMMAND halomccvr_ce_unit_control_runtime_tests)
@@ -668,7 +670,7 @@ if(BUILD_TESTING)
     target_compile_definitions(halomccvr_ce_network_input_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
     add_test(NAME halomccvr_ce_network_input_tests COMMAND halomccvr_ce_network_input_tests)
     add_executable(halomccvr_ce_first_person_runtime_tests tests/haloce_first_person_runtime_tests.cpp
-        src/dll/haloce_native_bindings.cpp src/dll/ik.cpp)
+        src/dll/haloce_native_bindings.cpp src/dll/ik.cpp src/dll/sight_layer.cpp)
     target_include_directories(halomccvr_ce_first_person_runtime_tests PRIVATE src/common src/dll)
     target_compile_definitions(halomccvr_ce_first_person_runtime_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
     target_link_libraries(halomccvr_ce_first_person_runtime_tests PRIVATE minhook)

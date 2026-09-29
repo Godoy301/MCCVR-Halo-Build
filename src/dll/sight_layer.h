@@ -1,0 +1,83 @@
+#pragma once
+
+// SIGHT LAYER -- the title-agnostic half of trace-and-reaim for every title other than Reach (Reach keeps
+// its own lane, reach_sight_trace.inl, which this generalises). It is only plumbing between threads:
+//
+//   1. the aim path (the input poll, or whichever thread builds the controller aim for that title)
+//      publishes the INTENT RAY: the rendered centre eye it starts at, the controller's direction, and
+//      the ENGINE EYE the title aims its shots from -- all in the title's own world units;
+//   2. the title's simulation-thread hook traces that ray with the title's own collision query and
+//      publishes the range (a miss is the far end of the trace);
+//   3. the aim path bends its aim so the engine's line from the engine eye passes through the traced
+//      point (aim_solve::converge_direction), actuates it, and marks the aim in effect as converged;
+//   4. the compositor draws the reticle on the eye-anchored ray at the traced depth while it is.
+//
+// A title that cannot trace simply never publishes a result, and its aim path keeps its old behaviour:
+// the fallback runs only when this cannot resolve.
+
+#include "../common/runtime_types.h"
+#include <cstdint>
+
+// The intent ray is traced 1 km out, like Reach's and Halo: Campaign Evolved's (a Blam world unit is 10 ft).
+inline constexpr float kSightWorldUnitsPerMetre = 1.0f / 3.048f;
+inline constexpr float kSightTraceLengthWu = 1000.0f * kSightWorldUnitsPerMetre;
+inline constexpr float kSightCmPerWorldUnit = 304.8f;
+// A trace result older than this is not used (the trace runs every ~30 ms): no fresh result means the
+// simulation stalled or the trace is off, and the shot genuinely cannot be resolved.
+inline constexpr uint64_t kSightFreshMs = 150;
+inline constexpr uint64_t kSightTraceIntervalMs = 30;
+// A published ray older than this is not traced (and asking is what keeps the trace running).
+inline constexpr uint64_t kSightRayFreshMs = 100;
+// Start 5 cm down the ray so the trace clears the head it starts in; ranges are still from the ray origin.
+inline constexpr float kSightTraceSkipWu = 0.05f * kSightWorldUnitsPerMetre;
+
+struct SightRay
+{
+    uint32_t generation = 0;
+    uint64_t sampleMs = 0;
+    float head[3]{};        // the rendered centre eye: the intent ray starts here
+    float dir[3]{};         // unit controller direction
+    float eye[3]{};         // the engine eye the title aims its shots from
+    int32_t unit = -1;      // the local unit the ray belongs to (the trace ignores it)
+    int32_t ignoreB = -1;   // further objects the trace passes through (seated: the vehicle), or -1
+    int32_t ignoreC = -1;
+};
+
+struct SightTrace
+{
+    uint32_t generation = 0;
+    uint64_t sampleMs = 0;
+    bool hit = false;
+    float rangeWu = 0.0f;   // on a miss: the trace length (the target is at least that far)
+};
+
+void Sight_PublishRay(GameTitle title, const SightRay& ray);
+bool Sight_ReadRay(GameTitle title, uint32_t generation, uint64_t maxAgeMs, SightRay& out);
+// The simulation-thread trace driver's rate limit: true at most once per kSightTraceIntervalMs per title.
+bool Sight_TraceDue(GameTitle title, uint64_t nowMs);
+void Sight_PublishTrace(GameTitle title, uint32_t generation, bool hit, float rangeWu, uint64_t costTicks);
+bool Sight_ReadTrace(GameTitle title, uint32_t generation, uint64_t maxAgeMs, SightTrace& out);
+void Sight_NoteTraceFault(GameTitle title);
+bool Sight_TraceFaulted(GameTitle title);
+void Sight_ResetTitle(GameTitle title);   // a new title generation: forget faults and stale state
+
+// The aim now in effect for `title` is a converged one. `unitsPerVrMetre` is the title's current VR world
+// scale (world units per metre of VR space), which the compositor needs to put the reticle at the depth
+// the traced surface appears at.
+void Sight_MarkConverged(GameTitle title, float unitsPerVrMetre);
+bool Sight_ConvergedLive(GameTitle title);
+
+// One-shot convergence for a title that aims with a direction: bend `dir` (unit, world) from `head`
+// through the traced point, as seen from `eye`, using the latest fresh trace. False (out untouched) when
+// there is no fresh trace for this generation or the geometry cannot resolve.
+bool Sight_ConvergedDirection(GameTitle title, uint32_t generation, const float head[3], const float dir[3],
+                              const float eye[3], float out[3], float* outRangeWu = nullptr,
+                              bool* outHit = nullptr);
+
+// For the compositor (any thread): the active title's traced range along its eye-anchored intent ray, in
+// VR METRES, and whether it hit -- only while that title's aim in effect is converged. Never Reach
+// (Game_ReachSightReticleRange owns Reach).
+bool Game_SightReticleRange(float& outRangeM, bool& outHit);
+
+// Cold worker: one status line per title that is tracing, every 2 s.
+void Sight_Report();

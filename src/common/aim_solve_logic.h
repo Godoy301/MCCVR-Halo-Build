@@ -183,6 +183,34 @@ inline bool converge_trace_reaim(float& yaw_deg, float& pitch_deg,
     return true;
 }
 
+// TRACE-AND-REAIM as a DIRECTION, for a title whose aim record is a vector, or whose closed loop steers
+// toward one: the unit direction from the engine eye E that passes through the point the intent ray hits,
+// out = normalize((H - E) + dir * range), with delta = H - E. `delta` and `range` are in the title's own
+// units and `cm_per_unit` converts them for the rails (which are in cm), so every title shares one policy.
+// `dir` need not be exactly unit length; it is normalized first. Same contract as converge_trace_reaim:
+// true when the aim converges (bent, or the offset is below min_divergence_cm, which returns `dir`
+// itself); false, `out` untouched, only when it cannot resolve.
+inline bool converge_direction(const Vec3& delta, const Vec3& dir, float range, float cm_per_unit,
+                               const ConvergeRails& r, Vec3& out) {
+    if (!std::isfinite(cm_per_unit) || !(cm_per_unit > 0.0f)) return false;
+    const float dl = std::sqrt(dir.x * dir.x + dir.y * dir.y + dir.z * dir.z);
+    if (!std::isfinite(dl) || !(dl > 1.0e-6f)) return false;
+    const Vec3 u{dir.x / dl, dir.y / dl, dir.z / dl};
+    const float m2 = delta.x * delta.x + delta.y * delta.y + delta.z * delta.z;
+    if (!std::isfinite(m2)) return false;
+    const float minDiv = r.min_divergence_cm / cm_per_unit;
+    if (m2 <= minDiv * minDiv) { out = u; return true; }                  // already converged: no bend
+    if (!std::isfinite(range) || !(range * cm_per_unit > r.range_floor_cm)) return false;
+    const Vec3 t{delta.x + u.x * range, delta.y + u.y * range, delta.z + u.z * range};
+    const float len = std::sqrt(t.x * t.x + t.y * t.y + t.z * t.z);
+    if (!std::isfinite(len) || !(len * cm_per_unit > 1.0f)) return false;
+    const Vec3 a{t.x / len, t.y / len, t.z / len};
+    float c = a.z; c = c < -1.0f ? -1.0f : (c > 1.0f ? 1.0f : c);
+    if (std::fabs(std::asin(c) * 57.295779513082320f) > r.max_pitch_deg) return false;
+    out = a;
+    return true;
+}
+
 // A CHASE CAMERA'S CROSSHAIR LINE, as a shot origin. A title that aims vehicle weapons at the point under
 // a third-person camera's crosshair traces from that camera along its forward (Reach: HREK aim_assist ->
 // following-camera position and forward). That camera ORBITS a pivot as the aim turns, so its position

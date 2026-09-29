@@ -54,6 +54,7 @@
 #include "haloce_unit_control.h"
 #include "title_reentry_probe.h"
 #include "roomscale.h"
+#include "sight_layer.h"
 #include "physical_crouch_camera.h"
 #include "../common/physical_crouch_native_read.h"
 #include "../common/physical_crouch_additional_witnesses.h"
@@ -43431,6 +43432,8 @@ namespace
             const uint64_t pollNow = GetTickCount64();
             NativeFaultProbe_Poll();
             Roomscale_Report();
+            // Trace-and-reaim outside Reach (sight_layer.h): traces, cost and converged polls, per title.
+            Sight_Report();
 #if HALOMCCVR_EXPERIMENTAL_REACH_RENDER_CANDIDATE
             // Status the aim provider and the direct-drive hook only count into atomics; logged here.
             ReachAimProvider_Report();
