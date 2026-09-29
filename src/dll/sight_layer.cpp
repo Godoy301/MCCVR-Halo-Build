@@ -157,22 +157,15 @@ void Sight_PublishTrace(GameTitle title, uint32_t generation, bool hit, float ra
 {
     auto& t = g_traces[Slot(title)];
     const uint64_t now = GetTickCount64();
-    // The range the aim converges on: the bend goes as 1/range, so average the INVERSE range
-    // (aim_solve::ema_inverse_range) -- a sweep off a near edge onto a far wall would otherwise snap the aim
-    // in one trace. A miss holds the last range, as Reach's aim does; a new generation, or a gap in the
-    // traces (a seat, a menu, a stall), starts afresh from the next hit.
-    float inv = t.invRangePerWu.load(std::memory_order_relaxed);
+    // The range the aim converges on (SightSmoothInverseRange): the inverse range averaged over 120 ms, a
+    // miss counting as the trace's far end. A new generation, or a gap in the traces (a seat, a menu, a
+    // stall), starts afresh from this trace.
     const uint64_t lastMs = t.smoothMs.load(std::memory_order_relaxed);
     const bool continuous = lastMs && now >= lastMs && now - lastMs <= kSightFreshMs &&
         t.smoothGeneration.load(std::memory_order_relaxed) == generation;
-    if (!continuous)
-        inv = 0.0f;
-    if (hit && std::isfinite(rangeWu) && rangeWu > 0.0f)
-    {
-        const float dt = continuous ? float(now - lastMs) / 1000.0f : float(kSightTraceIntervalMs) / 1000.0f;
-        inv = aim_solve::ema_inverse_range(inv, rangeWu,
-            aim_solve::ema_alpha(kSightRangeTauMs, std::clamp(dt, 0.001f, 0.1f)));
-    }
+    const float dt = continuous ? float(now - lastMs) / 1000.0f : float(kSightTraceIntervalMs) / 1000.0f;
+    const float inv = SightSmoothInverseRange(t.invRangePerWu.load(std::memory_order_relaxed), continuous,
+        hit, rangeWu, dt);
     t.invRangePerWu.store(inv, std::memory_order_relaxed);
     t.smoothMs.store(now, std::memory_order_relaxed);
     t.smoothGeneration.store(generation, std::memory_order_relaxed);
@@ -213,8 +206,8 @@ bool Sight_ReadTrace(GameTitle title, uint32_t generation, uint64_t maxAgeMs, Si
         if (!generation || r.generation != generation || !Fresh(r.sampleMs, GetTickCount64(), maxAgeMs))
             return false;
         r.hit = r.hit && std::isfinite(r.rangeWu) && r.rangeWu > 0.0f;
-        // A miss means the target is at least the whole trace away (the reticle parks); the aim keeps
-        // converging on the last range it had (convergeRangeWu).
+        // A miss means the target is at least the whole trace away (the reticle parks); the aim's
+        // smoothed range (convergeRangeWu) is heading for that far end too.
         if (!r.hit)
             r.rangeWu = kSightTraceLengthWu;
         if (!std::isfinite(r.convergeRangeWu) || !(r.convergeRangeWu > 0.0f))
@@ -461,7 +454,7 @@ void Sight_Report()
         const uint64_t costMax = s.costMaxTicks.exchange(0, std::memory_order_relaxed);
         const auto title = static_cast<GameTitle>(i);
         const float convergeWu = g_traces[i].convergeRangeWu.load(std::memory_order_relaxed);
-        LOG("SIGHT %s: rays %llu, traces %llu (%llu hits, %llu misses [hold the last range]), cost avg %.1f / "
+        LOG("SIGHT %s: rays %llu, traces %llu (%llu hits, %llu misses [= the far end]), cost avg %.1f / "
             "max %.1f us; converged aim %llu polls, declined %llu; converging at %.2f m (smoothed); faulted=%d%s",
             TitleName(title), (unsigned long long)rays, (unsigned long long)traces, (unsigned long long)hits,
             (unsigned long long)misses, traces ? double(cost) / double(traces) * usPerTick : 0.0,

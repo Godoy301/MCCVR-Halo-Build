@@ -9,7 +9,7 @@
 //   2. the title's simulation-thread hook traces that ray with the title's own collision query and
 //      publishes the range, which the layer also SMOOTHS for the aim: the bend goes as 1/range, so the
 //      inverse range is averaged over ~120 ms (a sweep off a near edge would otherwise snap the aim in
-//      one trace) and a miss holds the last range, as Reach's aim does (aim_solve::solve_and_actuate);
+//      one trace), and a miss counts as the trace's far end, as Reach's aim does (SightSmoothInverseRange);
 //   3. the aim path bends its aim so the engine's line from the engine eye passes through the point at
 //      that range (aim_solve::converge_direction), actuates it, and marks the aim in effect as converged;
 //   4. the compositor draws the reticle on the eye-anchored ray at the traced depth while it is.
@@ -19,6 +19,9 @@
 // off (no ray, no trace, no convergence): every title then aims as it did before it.
 
 #include "../common/runtime_types.h"
+#include "../common/aim_solve_logic.h"
+#include <algorithm>
+#include <cmath>
 #include <cstdint>
 
 // The intent ray is traced 1 km out, like Reach's and Halo: Campaign Evolved's (a Blam world unit is 10 ft).
@@ -35,6 +38,22 @@ inline constexpr uint64_t kSightRayFreshMs = 100;
 inline constexpr float kSightTraceSkipWu = 0.05f * kSightWorldUnitsPerMetre;
 // The time constant of the inverse-range average the aim converges on (Reach's: reach_aim_provider.cpp).
 inline constexpr float kSightRangeTauMs = 120.0f;
+
+// One trace's step of the range the aim converges on, kept as the INVERSE range (the bend goes as 1/range)
+// and averaged over kSightRangeTauMs, so a sweep off a near edge onto a far wall does not snap the aim in
+// one trace. A MISS means the target is at least the whole trace away, so it feeds the far end: a sustained
+// miss converges far, exactly as Reach's aim does (Game_ReachSightSample hands its provider the trace
+// length on a miss). Holding the last range instead kept Halo 4's aim converged on a 1.6 m spawn hit
+// through minutes of sky, bending every far shot by the eye-to-hand parallax (FA, Forge, 2026-09-29).
+// `continuous` false (a new generation, or a gap in the traces) starts afresh from this sample.
+inline float SightSmoothInverseRange(float invPerWu, bool continuous, bool hit, float rangeWu, float dtSeconds)
+{
+    if (!continuous)
+        invPerWu = 0.0f;
+    const float sampleWu = hit && std::isfinite(rangeWu) && rangeWu > 0.0f ? rangeWu : kSightTraceLengthWu;
+    return aim_solve::ema_inverse_range(invPerWu, sampleWu,
+        aim_solve::ema_alpha(kSightRangeTauMs, std::clamp(dtSeconds, 0.001f, 0.1f)));
+}
 
 struct SightRay
 {
@@ -54,7 +73,7 @@ struct SightTrace
     uint64_t sampleMs = 0;
     bool hit = false;
     float rangeWu = 0.0f;         // this trace's own result; on a miss the trace length
-    float convergeRangeWu = 0.0f; // the smoothed range the aim converges on; 0 = no hit yet (cannot converge)
+    float convergeRangeWu = 0.0f; // the smoothed range the aim converges on (a miss counts as the far end); 0 = no trace yet
     // The range the aim was bent through: what a shot check must measure against.
     float AimRangeWu() const { return convergeRangeWu > 0.0f ? convergeRangeWu : rangeWu; }
 };
