@@ -42,6 +42,7 @@
 #include "menu.h"
 #include "halo2_stereo_core.h"
 #include "vr.h"
+#include "sight_layer.h"
 
 #ifndef HALOMCCVR_HALO2_OBSERVER_6DOF
 #define HALOMCCVR_HALO2_OBSERVER_6DOF 0
@@ -539,6 +540,14 @@ namespace
     std::atomic<uint64_t> g_nativeAimNonOwned{0};
     std::atomic<uint64_t> g_nativeAimStockPassed{0};
     std::atomic<uint64_t> g_nativeAimRefused{0};
+    // Trace-and-reaim (sight_layer.h): on-foot unit aims written converged on the traced point, and
+    // written with the fixed-range steer because no fresh trace could resolve them.
+    std::atomic<uint64_t> g_nativeAimConverged{0};
+    std::atomic<uint64_t> g_nativeAimFixedRange{0};
+    // The held weapon, published by the first-person packet builder, so the sight trace can ignore it
+    // (a trace from the eye can pass through the character's own gun when the hand points low).
+    std::atomic<uint32_t> g_sightWeaponObject{UINT32_MAX};
+    std::atomic<uint64_t> g_sightWeaponAtMs{0};
 
     // E-H2-77: the H2EK/retail central aim-assist calculation. This optional
     // transaction only neutralizes its outputs for local user 0 while the
@@ -2598,6 +2607,8 @@ namespace
                     context.user = user;
                     context.unitObject = unitObject;
                     context.weaponObject = weaponObject;
+                    g_sightWeaponObject.store(weaponObject, std::memory_order_relaxed);
+                    g_sightWeaponAtMs.store(GetTickCount64(), std::memory_order_release);
                     context.handsCount = handsCount;
                     context.gunCount = gunCount;
                     context.handsRemap = handsRemap;
@@ -3213,8 +3224,107 @@ namespace
         g_weaponsActiveCallbacks.fetch_sub(1, std::memory_order_acq_rel);
     }
 
-    bool BuildPublishedControllerAimDirection(float direction[3]) noexcept
+    // TRACE-AND-REAIM, on foot (sight_layer.h). The intent ray starts at the rendered centre eye -- the
+    // observer's tracked camera -- and runs along the aiming hand's carrier. The engine eye is the stock
+    // camera: the point this builder has always aimed the local player's unit from. Everything comes from
+    // one observer publication, so the three can never be sampled at different instants.
+    bool Halo2SightGeometry(const Halo2ObserverPosePublication& publication,
+        const Halo2CameraBasis& rightCarrier, float head[3], float dir[3],
+        float eye[3]) noexcept
     {
+        float lengthSquared = 0.0f;
+        for (int axis = 0; axis < 3; ++axis)
+            lengthSquared += rightCarrier.forward[axis] * rightCarrier.forward[axis];
+        const float length = std::sqrt(lengthSquared);
+        if (!std::isfinite(length) || length < 1.0e-4f)
+            return false;
+        for (int axis = 0; axis < 3; ++axis)
+        {
+            head[axis] = publication.tracked.position[axis];
+            dir[axis] = rightCarrier.forward[axis] / length;
+            eye[axis] = publication.stock.position[axis];
+            if (!std::isfinite(head[axis]) || !std::isfinite(dir[axis]) ||
+                !std::isfinite(eye[axis]))
+                return false;
+        }
+        return true;
+    }
+
+    // Simulation thread, inside the native aim update for the owned on-foot unit: trace the intent ray
+    // (at most every 30 ms) with the same central collision_test_vector and flags the physical-melee and
+    // world-collision queries already run from this hook -- structure, and objects of every type, front
+    // faces only, invisible surfaces ignored (bits decoded from 0x75B850 itself: bit 0 structure, bit 3
+    // objects, bits 4-16 the object types, none set meaning all; bit 23 front faces; bit 26 ignore
+    // invisible). It ignores the unit and its held weapon. The call joins the collision feature's own
+    // callback count, so the collision teardown cannot free the trampoline under it.
+    void Halo2SightTrace(uint32_t unit) noexcept
+    {
+        constexpr GameTitle kTitle = GameTitle::Halo2;
+        const uint64_t now = GetTickCount64();
+        if (Sight_TraceFaulted(kTitle) ||
+            !g_halo2WorldCollision.installed.load(std::memory_order_acquire) ||
+            !Sight_TraceDue(kTitle, now))
+            return;
+        const uint32_t generation = g_generation.load(std::memory_order_acquire);
+        Halo2ObserverPosePublication publication{};
+        Halo2CameraBasis rightCarrier{}, leftCarrier{};
+        float head[3]{}, dir[3]{}, eye[3]{};
+        if (!generation || !Halo2Observer6Dof_ReadPublishedPose(publication) ||
+            !BuildStableFirstPersonCarriers(
+                publication, generation, rightCarrier, leftCarrier) ||
+            !Halo2SightGeometry(publication, rightCarrier, head, dir, eye))
+            return;
+        int32_t weapon = -1;
+        const uint64_t weaponAtMs = g_sightWeaponAtMs.load(std::memory_order_acquire);
+        if (weaponAtMs && now >= weaponAtMs && now - weaponAtMs <= 250)
+            weapon = static_cast<int32_t>(
+                g_sightWeaponObject.load(std::memory_order_relaxed));
+        const float length = kSightTraceLengthWu;
+        const float start[3]{head[0] + dir[0] * kSightTraceSkipWu,
+            head[1] + dir[1] * kSightTraceSkipWu, head[2] + dir[2] * kSightTraceSkipWu};
+        const float delta[3]{dir[0] * length, dir[1] * length, dir[2] * length};
+        alignas(16) Halo2CollisionResult result{};
+        bool hit = false, called = false;
+        LARGE_INTEGER before{}, after{};
+        g_halo2WorldCollision.callbacks.fetch_add(1, std::memory_order_acq_rel);
+        __try
+        {
+            const auto original = g_halo2WorldCollision.original;
+            if (original &&
+                g_halo2WorldCollision.installed.load(std::memory_order_acquire) &&
+                g_halo2WorldCollision.active.load(std::memory_order_acquire))
+            {
+                QueryPerformanceCounter(&before);
+                hit = original(kHalo2CollisionFlags, start, delta,
+                    static_cast<int32_t>(unit), weapon, &result) != 0;
+                QueryPerformanceCounter(&after);
+                called = true;
+            }
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            called = false;
+            Sight_NoteTraceFault(kTitle);
+        }
+        g_halo2WorldCollision.callbacks.fetch_sub(1, std::memory_order_acq_rel);
+        if (!called)
+            return;
+        hit = hit && std::isfinite(result.fraction) &&
+            result.fraction >= 0.0f && result.fraction <= 1.0f;
+        Sight_PublishTrace(kTitle, generation, hit,
+            hit ? kSightTraceSkipWu + result.fraction * length : 0.0f,
+            static_cast<uint64_t>(after.QuadPart - before.QuadPart));
+    }
+
+    // The direction the owned on-foot unit aims along. Trace-and-reaim whenever it can resolve: the line
+    // from the stock camera through the point the eye-anchored intent ray hits (`converged`). Without a
+    // fresh trace, the older fixed-range steer: the stock camera's line through the hand ray at the
+    // reticle distance, which is right at that one distance only.
+    bool BuildPublishedControllerAimDirection(float direction[3],
+        bool* converged = nullptr) noexcept
+    {
+        if (converged)
+            *converged = false;
         if (!direction)
             return false;
         Halo2ObserverPosePublication publication{};
@@ -3227,6 +3337,15 @@ namespace
                 publication, generation, rightCarrier, leftCarrier))
         {
             return false;
+        }
+        float head[3]{}, dir[3]{}, eye[3]{}, bent[3]{};
+        if (Halo2SightGeometry(publication, rightCarrier, head, dir, eye) &&
+            Sight_ConvergedDirection(GameTitle::Halo2, generation, head, dir, eye, bent))
+        {
+            std::memcpy(direction, bent, sizeof(bent));
+            if (converged)
+                *converged = true;
+            return true;
         }
         const float range = std::clamp(
             g_config.crosshair_distance_m, 2.0f, 50.0f) *
@@ -3284,8 +3403,10 @@ namespace
                     if (seated) __leave;
                 }
                 if (!directVrAim) __leave;
+                Halo2SightTrace(objectIndex);
                 float direction[3]{};
-                if (!BuildPublishedControllerAimDirection(direction)) __leave;
+                bool converged = false;
+                if (!BuildPublishedControllerAimDirection(direction, &converged)) __leave;
                 std::memcpy(
                     unit + kHalo2UnitDesiredAimingVectorOffset,
                     direction, sizeof(direction));
@@ -3294,6 +3415,16 @@ namespace
                     direction, sizeof(direction));
                 applied = true;
                 result |= 1u;
+                // The aim in effect is the converged one: the compositor draws the traced reticle.
+                if (converged)
+                {
+                    g_nativeAimConverged.fetch_add(1, std::memory_order_relaxed);
+                    Sight_MarkConverged(GameTitle::Halo2, Game_GetWorldScale());
+                }
+                else
+                {
+                    g_nativeAimFixedRange.fetch_add(1, std::memory_order_relaxed);
+                }
             }
             __except (EXCEPTION_EXECUTE_HANDLER)
             {
@@ -5596,6 +5727,12 @@ namespace
                 g_nativeAimRefused.load(std::memory_order_relaxed)),
             static_cast<unsigned long long>(
                 g_nativeAimStockPassed.load(std::memory_order_relaxed)));
+        LOG("Halo 2 trace-and-reaim: %llu on-foot aims converged on the traced point, %llu on the "
+            "fixed-range steer (no fresh trace)",
+            static_cast<unsigned long long>(
+                g_nativeAimConverged.load(std::memory_order_relaxed)),
+            static_cast<unsigned long long>(
+                g_nativeAimFixedRange.load(std::memory_order_relaxed)));
         LOG("Halo 2 C-H2-92 controller melee targeting: %llu central calls, "
             "%llu camera assists suppressed for VR-owned local user 0 "
             "(%llu controller-ray targets selected, %llu controller-ray no "
