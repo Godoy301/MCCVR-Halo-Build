@@ -59,6 +59,7 @@ float CrouchCameraBody(uint32_t expectedGeneration,uint64_t epoch,float physical
            get(state.unit,1)!=reinterpret_cast<uintptr_t>(unit)||
            physical_crouch_native::Read<uint32_t>(unit,0)!=tag||!StateCurrent()||generation.load()!=expectedGeneration)
         {crouchCameraLease.Reset();return 0;}
+        PhysicalCrouchCamera_NoteNativeDrop(GameTitle::HaloCE,reduction);   // dev: the game's own crouch
         return crouchCameraLease.Update(request,GameTitle::HaloCE,expectedGeneration,epoch,GetTickCount64(),
             state.unit,reinterpret_cast<uintptr_t>(unit),reduction,physicalDown);
     }

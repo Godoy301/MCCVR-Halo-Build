@@ -45,6 +45,7 @@ void Halo3ApplyPhysicalCrouchCamera(float* position,float physicalDown,bool play
         float reduction=0.f;
         if(!Halo3PhysicalCrouchReduction(unit,definition,reduction))
         {lease.Reset();return;}
+        PhysicalCrouchCamera_NoteNativeDrop(GameTitle::Halo3,reduction);   // dev: the game's own crouch
         const float correction=lease.Update(request,GameTitle::Halo3,generation,
             VR_PhysicalCrouchEpoch(),GetTickCount64(),owner,reinterpret_cast<uintptr_t>(unit),
             reduction,physicalDown);

@@ -46,6 +46,7 @@ void Halo2ApplyPhysicalCrouchCamera(float* position,float physicalDown,bool allo
            Halo2OwnedUnit()!=owner||Halo2ObjectFromIndex(owner)!=unit||
            physical_crouch_native::Read<uint32_t>(unit,0)!=tag)
         {g_halo2CrouchLease.Reset();return;}
+        PhysicalCrouchCamera_NoteNativeDrop(GameTitle::Halo2,reduction);   // dev: the game's own crouch
         position[2]+=g_halo2CrouchLease.Update(request,GameTitle::Halo2,g_generation.load(),
             VR_PhysicalCrouchEpoch(),GetTickCount64(),owner,reinterpret_cast<uintptr_t>(unit),reduction,physicalDown);
     }

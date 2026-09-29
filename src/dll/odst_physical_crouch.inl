@@ -46,6 +46,7 @@ void OdstApplyPhysicalCrouchCamera(float* position,float physicalDown,bool playe
         float reduction=0.f;
         if(!physical_crouch_native::Odst(unit,definition,reduction))
         {lease.Reset();return;}
+        PhysicalCrouchCamera_NoteNativeDrop(GameTitle::Halo3ODST,reduction);   // dev: the game's own crouch
         const float correction=lease.Update(request,GameTitle::Halo3ODST,generation,
             VR_PhysicalCrouchEpoch(),GetTickCount64(),owner,reinterpret_cast<uintptr_t>(unit),
             reduction,physicalDown);

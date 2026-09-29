@@ -109,6 +109,8 @@ void ApplyCachedPhysicalCrouch(GameTitle title,float* position,float physicalDow
                 if(!physical_crouch_cached::Reduction(layout,unit,table,binding.pages,reduction,definition,
                         &diag))
                     why|=0x080u;
+                else
+                    PhysicalCrouchCamera_NoteNativeDrop(title,reduction);   // dev: the game's own crouch
             }
             if(why)
                 lease.Reset();

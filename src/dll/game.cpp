@@ -49124,6 +49124,18 @@ void* Game_ReloadPolicyWeapon(GameTitle title, uint32_t weapon)
     __except(EXCEPTION_EXECUTE_HANDLER) { return nullptr; }
 }
 
+// Halo 4 publishes Gameplay in a seat too; the physical crouch needs its own on-foot state. Called from the
+// XInput poll, which runs on an engine thread (Game_MapMoveStick reads the same seat state from there).
+bool Game_Halo4OnFoot()
+{
+#if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA
+    Halo4VehicleInputState seat{};
+    return Halo4ReadVehicleInput(seat) && !seat.seated && seat.parent==UINT32_MAX;
+#else
+    return false;
+#endif
+}
+
 bool Game_RoomscaleCameraAllowed(GameTitle title)
 {
     if (title!=TitleAdapter_GetActiveTitle()) return false;

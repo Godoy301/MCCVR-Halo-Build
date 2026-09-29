@@ -25,6 +25,7 @@
 #include "../common/physical_crouch_input.h"
 #include "physical_crouch_camera.h"
 #include "dev_pad.h"
+#include "halo2_observer_6dof.h"
 
 // M3 VR input. MCC reads gamepads through XInputGetState; hooking it lets the
 // mod present the Sense controllers as a gamepad the game already understands
@@ -351,6 +352,16 @@ namespace
 #if HALOMCCVR_EXPERIMENTAL_REACH_RENDER_CANDIDATE
         if(currentTitle==GameTitle::HaloReach)
         {crouchOnFootWhy=Game_ReachDirectDriveOnFootWhy();crouchOnFoot=crouchOnFootWhy==0;}
+#endif
+        // Halo 2 and Halo 4 publish Gameplay in a seat too (Halo 3, ODST and CE switch to Vehicle), so a
+        // physical duck would press their crouch binding in a vehicle. Require each one's own on-foot state.
+#if HALOMCCVR_HALO2_STEREO6DOF
+        if(currentTitle==GameTitle::Halo2)
+        {crouchOnFoot=Halo2Observer6Dof_OnFootFresh();crouchOnFootWhy=crouchOnFoot?0u:0x100u;}
+#endif
+#if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA
+        if(currentTitle==GameTitle::Halo4)
+        {crouchOnFoot=Game_Halo4OnFoot();crouchOnFootWhy=crouchOnFoot?0u:0x200u;}
 #endif
         const bool crouchTracking=physicalCrouchEnabled&&inputMode==RuntimeMode::Gameplay&&
             gameplayMode&&crouchOnFoot&&Game_IsHeadTracking()&&Game_IsPositionalTracking()&&
@@ -1067,6 +1078,13 @@ void Input_ReportPhysicalCrouch(uint64_t now)
     const float base = g_crouchStatus.base.load(std::memory_order_relaxed);
     const uint64_t epoch = g_crouchStatus.epoch.load(std::memory_order_relaxed);
     int unit = -1;
+    // Every title: the game's own crouch camera drop, as its correction read it (world units; a Blam world
+    // unit is 3.048 m). Crouched = more than 10 cm of it. Reach keeps its unit-state bit.
+    float nativeDropWu = 0.0f;
+    const bool nativeDropFresh =
+        PhysicalCrouchCamera_NativeDrop(static_cast<GameTitle>(title), 500, nativeDropWu);
+    if (nativeDropFresh)
+        unit = nativeDropWu * 3.048f > 0.10f ? 1 : 0;
 #if HALOMCCVR_EXPERIMENTAL_REACH_RENDER_CANDIDATE
     if (static_cast<GameTitle>(title) == GameTitle::HaloReach)
         unit = Game_ReachUnitCrouchState();
@@ -1080,13 +1098,14 @@ void Input_ReportPhysicalCrouch(uint64_t now)
     // epoch = calibration count : tracking-space count, as handed to the gesture (a new one is held back
     // until the head is steady). why = the on-foot predicate's failing bits (Reach; 0 = on foot).
     LOG("CROUCH: title=%u gate(tracking=%d native=%d onfoot=%d why=0x%X) head=%.3f base=%.3f down=%.3f "
-        "init=%d active=%d suspended=%d pressed=0x%X transport=0x%X unitCrouched=%d mccCrouchLock(pad=%s mk=%s) "
-        "epoch=%u:%u gen=%u",
+        "init=%d active=%d suspended=%d pressed=0x%X transport=0x%X unitCrouched=%d nativeDrop=%s%.0fmm "
+        "mccCrouchLock(pad=%s mk=%s) epoch=%u:%u gen=%u",
         title, (gates & 1u) ? 1 : 0, (gates & 2u) ? 1 : 0, (gates & 4u) ? 1 : 0,
         g_crouchStatus.onFootWhy.load(std::memory_order_relaxed), head, base, base - head,
         (gates & 8u) ? 1 : 0, (gates & 16u) ? 1 : 0, (gates & 32u) ? 1 : 0,
         g_crouchStatus.pressed.load(std::memory_order_relaxed),
-        g_crouchStatus.transport.load(std::memory_order_relaxed), unit, lockPad, lockMk,
+        g_crouchStatus.transport.load(std::memory_order_relaxed), unit, nativeDropFresh ? "" : "stale:",
+        double(nativeDropWu) * 3048.0, lockPad, lockMk,
         unsigned(epoch >> 32), unsigned(epoch), g_crouchStatus.generation.load(std::memory_order_relaxed));
 #else
     (void)now;
