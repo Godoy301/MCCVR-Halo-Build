@@ -53,6 +53,16 @@ struct RoomscaleFollow
     // than a person can (a jump) is folded into the neutral lean, and a debt larger than any play space
     // is dropped. Neither is a walk.
     static constexpr float kHeadJumpM=0.5f, kHeadMaxSpeed=6.0f, kMaxDebtM=3.0f;
+    // A FOLLOW THE BODY DOES NOT ANSWER stands down. Measured in Halo 3 FA (2026-09-29): a step settled 27 mm
+    // short, inside the start band but outside the stop band, so the follow kept commanding a 0.09 stick
+    // the unit never moved for (a move-stick deadzone above MCC's floor for this title, a wall or a
+    // control lock all look the same) -- for over a minute, the character pushing at nothing. After
+    // kStallMs of commanding with the body slower than kStallSpeed the follow ends, and the next one
+    // needs the head a further kFollowStart away than where it stalled.
+    static constexpr uint64_t kStallMs=600;
+    static constexpr float kStallSpeed=0.02f;
+    uint64_t stallSince=0;
+    float stalledAt=0.0f;   // error at the last stand-down; 0 = none (cleared inside kFollowStop)
     bool haveLastHead=false;
     uint64_t lastHeadMs=0;
     float lastHead[2]{};
@@ -197,8 +207,10 @@ struct RoomscaleFollow
         }
         else
         {
+            if (distance<=kFollowStop) stalledAt=0.0f;   // the body caught up: a stand-down is over
+            const float startAt=stalledAt>0.0f ? std::max(kFollowStart, stalledAt+kFollowStart) : kFollowStart;
             following=!manualMove && !manualPaused &&
-                (distance>kFollowStart || (following && distance>kFollowStop));
+                (distance>startAt || (following && distance>kFollowStop));
             // Command ONLY while a follow is running. Once it ends inside kFollowStop, the game's own
             // deceleration finishes the step: `settling` below still consumes that tail into the
             // reference, but a command here would be floored by MCC to a >=27% stick -- a fresh walk
@@ -224,6 +236,16 @@ struct RoomscaleFollow
                 moveX=-cx*hz+cz*hx;
                 moveY=cx*hx+cz*hz;
             }
+            // The stand-down: commanding, and the body not moving.
+            if ((moveX!=0 || moveY!=0) && std::hypot(velocity[0],velocity[1])<kStallSpeed)
+            {
+                if (!stallSince) stallSince=now;
+                else if (now>=stallSince && now-stallSince>=kStallMs)
+                {
+                    following=false; moveX=moveY=0; stalledAt=distance; stallSince=0;
+                }
+            }
+            else stallSince=0;
         }
         commanded=moveX!=0 || moveY!=0;
         if(commanded)lastCommand=now;

@@ -17825,6 +17825,23 @@ int main()
         Check(!follow.Update(8,772,true,false,body,head,reference,0,-1,wx,wy,scale,mx,my) && mx==0 && my==0,
             "nonfinite tracking cannot produce locomotion");
     }
+    // A follow the body does not answer (a deadzone above the stick floor, a wall) stands down after
+    // kStallMs, and does not restart until the head is a further kFollowStart away.
+    {
+        RoomscaleFollow follow;
+        float body[3]{}, head[3]{0,1.7f,0}, reference[3]{0,1.7f,0};
+        float mx=0,my=0; uint64_t now=100;
+        auto step=[&]{now+=11;return follow.Update(3,now,true,false,body,head,reference,0,-1,1,0,1.0f,mx,my);};
+        step();
+        head[0]=0.05f; step();
+        Check((mx!=0 || my!=0) && follow.following, "a 5 cm step starts a follow");
+        for (int i=0;i<60;++i) step();   // ~660 ms of commanding with the body stuck
+        Check(mx==0 && my==0 && !follow.following, "a command the body never answers stands down");
+        head[0]=0.07f; step();
+        Check(mx==0 && my==0, "2 cm further does not restart a stood-down follow");
+        head[0]=0.085f; step();
+        Check((mx!=0 || my!=0) && follow.following, "3.5 cm further tries again");
+    }
     // The A/B switch's original law (RoomscaleFollowOriginal, upstream Alpha 0.6.0 verbatim) is the
     // law the refinements changed: a 2.5 cm lean walks under it and not under the refined law.
     {
