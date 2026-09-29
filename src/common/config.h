@@ -692,9 +692,6 @@ struct Config
     // bit 1 = withhold the resolved flags; bit 2 = the resolver's value check refuses at install;
     // bit 3 = the cold worker's periodic re-check withdraws the flags.
     int reach_sight_fault = 0;
-    // DEV BUILDS ONLY, test-only (never saved): which eye trace-and-reaim solves from. 0 = the stock
-    // camera base (the shipped behaviour), 1 = the rendered head. An A/B for the native shot origin.
-    int reach_sight_eye = 0;
     // Diagnostic: log the distinct (caller, flags, mode) of Reach's own collision_test_vector calls,
     // to identify the flags a bullet's flight test uses. Leave at 0 for play.
     int reach_collision_census = 0;
@@ -704,6 +701,18 @@ struct Config
     bool crosshair = true;
     float crosshair_distance_m = 41.0f; // how far along the aim ray it floats
     float crosshair_size_deg = 10.10f;  // apparent (angular) size
+
+    // Halo Reach ON FOOT, while trace-and-reaim converges: Halo: Campaign Evolved's reticle placement
+    // (its aimreticulemaxdist / surfaceoff / minscale knobs, same defaults). The crosshair sits on the
+    // surface the aim ray hits, pulled back reticle_surface_offset_m; it parks at reticle_max_dist_m
+    // beyond that and on a miss; and it shrinks away as the surface comes closer than
+    // reticle_min_scale_dist_m (to reticle_min_scale there). The ray starts at the player's eye, so
+    // parking it short never moves it off the thing being aimed at. It holds crosshair_size_deg at the
+    // cap. crosshair_distance_m still applies everywhere else (vehicles, the fallback aim).
+    float reticle_max_dist_m = 6.0f;
+    float reticle_surface_offset_m = 0.5f;
+    float reticle_min_scale_dist_m = 0.7f;
+    float reticle_min_scale = 0.001f;
 
     // DEMO / comparison aid: also publish the crosshair at the game's REAL aim
     // while ON FOOT, not only in the seated cases. On foot the closed-loop aim

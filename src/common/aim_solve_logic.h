@@ -183,4 +183,32 @@ inline bool converge_trace_reaim(float& yaw_deg, float& pitch_deg,
     return true;
 }
 
+// HALO: CAMPAIGN EVOLVED'S RETICLE PLACEMENT (Plugin.cpp onfoot_reticule_tick), for a marker drawn on
+// an EYE-anchored intent ray -- the ray converge_trace_reaim bends the shot onto. On a hit the marker
+// sits on the surface, pulled back `surface_off_m` (never closer than 20 cm); past `cap_m`, and on a
+// miss, it parks at the cap. On an eye-anchored ray every depth projects onto the same background
+// point, so parking it short costs nothing.
+// Its WORLD width is `scale` x the width that subtends `size_deg` at the cap, where scale ramps
+// linearly from `min_scale` at `min_scale_dist_m` up to 1 at the cap: near-constant apparent size out
+// to a few metres, shrinking away as a surface closes in on the muzzle.
+struct TracedReticle { float dist_m = 0.0f; float width_m = 0.0f; };
+inline TracedReticle traced_reticle_placement(bool hit, float range_m, float cap_m, float surface_off_m,
+                                              float min_scale_dist_m, float min_scale, float size_deg) {
+    TracedReticle out;
+    float d = cap_m;
+    if (hit && std::isfinite(range_m) && range_m <= cap_m) {
+        d = range_m - surface_off_m;
+        if (d < 0.2f) d = 0.2f;
+    }
+    float s = 1.0f;
+    if (cap_m > min_scale_dist_m) {
+        float t = (d - min_scale_dist_m) / (cap_m - min_scale_dist_m);
+        t = t < 0.0f ? 0.0f : (t > 1.0f ? 1.0f : t);
+        s = min_scale + (1.0f - min_scale) * t;
+    }
+    out.dist_m = d;
+    out.width_m = s * 2.0f * cap_m * std::tan(size_deg * 0.5f * 0.017453292519943295f);
+    return out;
+}
+
 } // namespace aim_solve

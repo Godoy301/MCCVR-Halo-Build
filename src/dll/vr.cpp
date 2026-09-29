@@ -32,6 +32,7 @@
 #include "native_subtitles.h"
 #include "../common/subtitle_logic.h"
 #include "../common/dual_reticle_logic.h"
+#include "../common/aim_solve_logic.h"
 #include "../common/game_menu_pointer.h"
 #include "../common/exclusive_input.h"
 #include "../common/game_menu_pointer_xr.h"
@@ -13319,6 +13320,71 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                                     }
                                 }
                             }
+                            // REACH ON FOOT, TRACE-AND-REAIM CONVERGED: Halo:
+                            // Campaign Evolved's reticle. The marker rides the
+                            // same EYE-anchored ray the aim converges on (the
+                            // controller's direction from the centre eye), sits
+                            // on the surface that ray hits, parks at a readable
+                            // depth beyond it, and shrinks away up close -- see
+                            // aim_solve::traced_reticle_placement. The honest
+                            // (clamped) aim is NOT used here: the achieved aim
+                            // is the intent bent for the shot origin, and
+                            // drawing it from the eye would apply the bend twice.
+                            bool tracedReticle = false;
+                            aim_solve::TracedReticle tracedPlacement{};
+#if HALOMCCVR_EXPERIMENTAL_REACH_RENDER_CANDIDATE
+                            float tracedRangeM = 0.0f;
+                            bool tracedHit = false;
+                            if (reachTitle && !reachNativeAim && !primaryBarrel &&
+                                projection.viewCount == 2 &&
+                                projectionViews.size() == 2 &&
+                                Game_ReachSightReticleRange(tracedRangeM, tracedHit))
+                            {
+                                const XrPosef& left = projectionViews[0].pose;
+                                const XrPosef& right = projectionViews[1].pose;
+                                const float leftQuaternion[4] = {
+                                    left.orientation.x, left.orientation.y,
+                                    left.orientation.z, left.orientation.w};
+                                const float rightQuaternion[4] = {
+                                    right.orientation.x, right.orientation.y,
+                                    right.orientation.z, right.orientation.w};
+                                const float leftPosition[3] = {
+                                    left.position.x, left.position.y, left.position.z};
+                                const float rightPosition[3] = {
+                                    right.position.x, right.position.y, right.position.z};
+                                tracedReticle = ReachBuildStereoCenterPose(
+                                    leftQuaternion, leftPosition,
+                                    rightQuaternion, rightPosition, reachCenter);
+                                if (tracedReticle)
+                                    tracedPlacement = aim_solve::traced_reticle_placement(
+                                        tracedHit, tracedRangeM,
+                                        g_config.reticle_max_dist_m,
+                                        g_config.reticle_surface_offset_m,
+                                        g_config.reticle_min_scale_dist_m,
+                                        g_config.reticle_min_scale,
+                                        g_config.crosshair_size_deg);
+                            }
+                            {
+                                static bool loggedTraced = false;
+                                static uint64_t lastTracedLogMs = 0;
+                                const uint64_t nowMs = GetTickCount64();
+                                if (reachTitle && (tracedReticle != loggedTraced ||
+                                        (tracedReticle && nowMs - lastTracedLogMs >= 2000)))
+                                {
+                                    loggedTraced = tracedReticle;
+                                    lastTracedLogMs = nowMs;
+                                    if (tracedReticle)
+                                        LOG("REACHRETICLE on the traced eye ray: %s %.2f m -> drawn at %.2f m, "
+                                            "width %.3f m (cap %.1f m)", tracedHit ? "hit" : "miss",
+                                            tracedRangeM, tracedPlacement.dist_m, tracedPlacement.width_m,
+                                            g_config.reticle_max_dist_m);
+                                    else
+                                        LOG("REACHRETICLE traced placement off: the crosshair is back on the "
+                                            "controller ray at %.1f m (not converging, or not on foot)",
+                                            g_config.crosshair_distance_m);
+                                }
+                            }
+#endif
                             // A vehicle seat bounds the weapon to a cone around
                             // the hull, so a hand outside it asks for an angle
                             // the engine will never reach. While that limit is
@@ -13326,14 +13392,16 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                             // reticle is meant to be the truth, and this is the
                             // one case where the hand ray is not.
                             float clampedAim[3];
-                            if (!reachNativeAim &&
+                            if (!reachNativeAim && !tracedReticle &&
                                 Game_GetClampedAimDirection(clampedAim))
                             {
                                 aimDir[0] = clampedAim[0];
                                 aimDir[1] = clampedAim[1];
                                 aimDir[2] = clampedAim[2];
                             }
-                            const float dist = g_config.crosshair_distance_m;
+                            const float dist = tracedReticle
+                                ? tracedPlacement.dist_m
+                                : g_config.crosshair_distance_m;
                             const float yaw = atan2f(aimDir[0], -aimDir[2]);
                             const float sp = fminf(fmaxf(aimDir[1], -1.0f), 1.0f);
                             const float pitch = asinf(sp);
@@ -13363,12 +13431,13 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                                 g_reticleAimPose.position;
                             if(primaryBarrel) reticleOrigin={committedPrimary.position[0],
                                 committedPrimary.position[1],committedPrimary.position[2]};
-                            if (reachNativeAim)
+                            if (reachNativeAim || tracedReticle)
                             {
                                 // The direction and origin share one validated
                                 // predicted-display-time stereo-center pose.
                                 // Vehicle barrels retain their native origin
                                 // and therefore their honest close parallax.
+                                // On foot this is the eye the traced ray starts at.
                                 reticleOrigin = {
                                     reachCenter.position[0],
                                     reachCenter.position[1],
@@ -13378,8 +13447,10 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                                 reticleOrigin.x + aimDir[0] * dist,
                                 reticleOrigin.y + aimDir[1] * dist,
                                 reticleOrigin.z + aimDir[2] * dist};
-                            const float w = 2.0f * dist *
-                                tanf(g_config.crosshair_size_deg * 0.5f * 0.0174533f);
+                            const float w = tracedReticle
+                                ? tracedPlacement.width_m
+                                : 2.0f * dist *
+                                  tanf(g_config.crosshair_size_deg * 0.5f * 0.0174533f);
                             reticleQuad.size = {w, w};
                             layers.push_back(
                                 reinterpret_cast<XrCompositionLayerBaseHeader*>(&reticleQuad));

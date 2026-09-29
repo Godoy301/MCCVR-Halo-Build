@@ -2,13 +2,14 @@
 //
 // TRACE-AND-REAIM for Halo Reach on foot -- the Halo: Campaign Evolved aim.
 //
-// The player points along the rendered intent ray (the controller/reticle ray). Reach decides where a
-// shot goes from its own camera: on the fire tick it traces the unit's aim ray 128 wu into the world
-// (HREK aim_assist.cpp:986, aim_projectile_internal_result) and sends the projectile from its native
-// origin at the point that trace hit. A direction alone cannot put that point where the intent ray
-// points; a direction plus a RANGE can:
+// The player points along the intent ray: from their rendered EYE, along the controller's direction --
+// Halo: Campaign Evolved's geometry, so the reticle drawn on it reads true at any depth. Reach decides
+// where a shot goes from its own camera: on the fire tick it traces the unit's aim ray 128 wu into the
+// world (HREK aim_assist.cpp:986, aim_projectile_internal_result) and sends the projectile from its
+// native origin at the point that trace hit. A direction alone cannot put that point where the intent
+// ray points; a direction plus a RANGE can:
 //
-//      T   = H + u * d                the point the intent ray hits (H origin, u direction)
+//      T   = H + u * d                the point the intent ray hits (H the eye, u the controller dir)
 //      aim = normalize(T - E)         the direction whose ray from the engine eye E passes through T
 //          = normalize((H - E) + u * d)
 //
@@ -74,7 +75,7 @@ float ReachSightTraceLength()
 #endif
     return kReachSightTraceLengthWu;
 }
-// Start 5 cm down the ray so the trace clears the gun in the hand; the range reported is still
+// Start 5 cm down the ray so the trace clears the head it starts in; the range reported is still
 // measured from the ray's origin.
 inline constexpr float kReachSightTraceSkipWu = 0.05f * kReachWorldUnitsPerMeter;
 // The range is smoothed over 120 ms in the provider, so ~30 Hz measures it fully.
@@ -444,15 +445,18 @@ void ReachSightTraceTick(uint32_t unit)
     }
     float u[3]{ray.target[0] - ray.origin[0], ray.target[1] - ray.origin[1], ray.target[2] - ray.origin[2]};
     const float length = std::sqrt(u[0] * u[0] + u[1] * u[1] + u[2] * u[2]);
-    if (!std::isfinite(length) || length < 1.0e-3f)
+    if (!std::isfinite(length) || length < 1.0e-3f || !std::isfinite(ray.head[0]) ||
+        !std::isfinite(ray.head[1]) || !std::isfinite(ray.head[2]))
     {
         REACH_SIGHT_DEV_COUNT(trace.skips);
         return;
     }
     for (float& c : u) c /= length;
-    const float start[3]{ray.origin[0] + u[0] * kReachSightTraceSkipWu,
-                         ray.origin[1] + u[1] * kReachSightTraceSkipWu,
-                         ray.origin[2] + u[2] * kReachSightTraceSkipWu};
+    // From the player's EYE along the controller's direction (see Game_ReachSightSample): the ray the
+    // aim converges on and the reticle is drawn along.
+    const float start[3]{ray.head[0] + u[0] * kReachSightTraceSkipWu,
+                         ray.head[1] + u[1] * kReachSightTraceSkipWu,
+                         ray.head[2] + u[2] * kReachSightTraceSkipWu};
     const float traceLengthWu = ReachSightTraceLength();
     const float vector[3]{u[0] * traceLengthWu, u[1] * traceLengthWu, u[2] * traceLengthWu};
     // Result: type (int32 +0) and fraction (float +4), the layout HREK's collisions.cpp asserts name and
@@ -824,7 +828,7 @@ void ReportReachSightTrace()
         {
             const ReachSightShotRecord r = ring.records[ring.printed % kReachSightShotRingSize];
             LOG("REACHSIGHT shot %u: miss %.0f mm at %.2f m; N minus [along,right,up mm] eye(solve) %.0f,%.0f,%.0f "
-                "| head %.0f,%.0f,%.0f | hand-ray %.0f,%.0f,%.0f | unit-eval%s %.0f,%.0f,%.0f | camera-arg%s "
+                "| head %.0f,%.0f,%.0f | ray-origin %.0f,%.0f,%.0f | unit-eval%s %.0f,%.0f,%.0f | camera-arg%s "
                 "%.0f,%.0f,%.0f; firesFromCamera=%u useUnitAim=%u; head-committed=%u fire-tid=%u render-tid=%u",
                 ring.printed, double(r.missMm), double(r.rangeM),
                 double(r.fromEye[0]), double(r.fromEye[1]), double(r.fromEye[2]),

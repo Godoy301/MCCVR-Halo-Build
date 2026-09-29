@@ -436,6 +436,11 @@ static void Clamp()
         std::clamp(g_config.halo4_hand_lateral_m, -0.50f, 0.50f);
     g_config.crosshair_distance_m = std::clamp(g_config.crosshair_distance_m, 2.0f, 50.0f);
     g_config.crosshair_size_deg = std::clamp(g_config.crosshair_size_deg, 0.3f, 20.0f);
+    g_config.reticle_max_dist_m = std::clamp(g_config.reticle_max_dist_m, 1.0f, 50.0f);
+    g_config.reticle_surface_offset_m = std::clamp(g_config.reticle_surface_offset_m, 0.0f, 2.0f);
+    g_config.reticle_min_scale_dist_m =
+        std::clamp(g_config.reticle_min_scale_dist_m, 0.0f, g_config.reticle_max_dist_m - 0.1f);
+    g_config.reticle_min_scale = std::clamp(g_config.reticle_min_scale, 0.001f, 1.0f);
     // 0 stays 0 (hold one image); every other value is clamped into the range
     // the publish floor can actually honour.
     if (g_config.crosshair_animation_frames != 0)
@@ -976,10 +981,13 @@ void ConfigLoad(const wchar_t* path)
         if (!strcmp(key, "reach_sight_trace_mode")) { g_config.reach_sight_trace_mode=(int)strtol(val,nullptr,0); continue; }
         if (!strcmp(key, "reach_collision_census")) { g_config.reach_collision_census=atoi(val); continue; }
         if (!strcmp(key, "reach_sight_fault")) { g_config.reach_sight_fault=(int)strtol(val,nullptr,0); continue; }
-        if (!strcmp(key, "reach_sight_eye")) { g_config.reach_sight_eye=(int)strtol(val,nullptr,0); continue; }
         if (!strcmp(key, "reach_sight_trace_length_m")) { g_config.reach_sight_trace_length_m=(float)atof(val); continue; }
 #endif
         if (!strcmp(key, "honest_reticle_onfoot")) { g_config.honest_reticle_onfoot=atoi(val)!=0; continue; }
+        if (!strcmp(key, "reticle_max_dist_m")) { g_config.reticle_max_dist_m=(float)atof(val); continue; }
+        if (!strcmp(key, "reticle_surface_offset_m")) { g_config.reticle_surface_offset_m=(float)atof(val); continue; }
+        if (!strcmp(key, "reticle_min_scale_dist_m")) { g_config.reticle_min_scale_dist_m=(float)atof(val); continue; }
+        if (!strcmp(key, "reticle_min_scale")) { g_config.reticle_min_scale=(float)atof(val); continue; }
         if (!strcmp(key, "halo4_helmet"))
         {
             g_config.halo4_helmet = atoi(val) != 0;
@@ -1680,6 +1688,16 @@ void ConfigSave()
     fprintf(f, "# Apparent size of the crosshair, in degrees.\n");
     fprintf(f, "# (default %.2f, range 0.3 to 20)\n", d.crosshair_size_deg);
     fprintf(f, "crosshair_size_deg = %.2f\n\n", g_config.crosshair_size_deg);
+    fprintf(f, "# Halo: Reach on foot: the crosshair sits on the surface you aim at, pulled\n");
+    fprintf(f, "# back reticle_surface_offset_m, and parks at reticle_max_dist_m beyond that.\n");
+    fprintf(f, "# It shrinks away as a surface comes closer than reticle_min_scale_dist_m\n");
+    fprintf(f, "# (to reticle_min_scale). Distances in meters. (defaults %.1f, %.2f, %.2f, %.3f)\n",
+            d.reticle_max_dist_m, d.reticle_surface_offset_m, d.reticle_min_scale_dist_m,
+            d.reticle_min_scale);
+    fprintf(f, "reticle_max_dist_m = %.1f\n", g_config.reticle_max_dist_m);
+    fprintf(f, "reticle_surface_offset_m = %.2f\n", g_config.reticle_surface_offset_m);
+    fprintf(f, "reticle_min_scale_dist_m = %.2f\n", g_config.reticle_min_scale_dist_m);
+    fprintf(f, "reticle_min_scale = %.3f\n\n", g_config.reticle_min_scale);
     fprintf(f, "# How often the VR crosshair re-reads the game's own crosshair art,\n");
     fprintf(f, "# in frames. This makes Halo 3 and Halo 4 authored crosshairs animate:\n");
     fprintf(f, "# when you shoot, and the red/green target colors. Lower is more\n");

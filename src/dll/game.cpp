@@ -47418,22 +47418,20 @@ bool Game_ReachSightSample(ReachSightSample& out)
     const float length = sqrtf(u[0] * u[0] + u[1] * u[1] + u[2] * u[2]);
     if (!std::isfinite(length) || length < 1.0e-3f)
         return false;
+    // THE INTENT RAY STARTS AT THE PLAYER'S EYE, along the controller's direction -- Halo: Campaign
+    // Evolved's geometry (Plugin.cpp onfoot_reticule_tick). The reticle is drawn on this same ray, and
+    // every point on an eye-anchored ray projects onto the same background point, so the marker can be
+    // parked at a readable depth without lying. Anchored at the hand instead, a marker drawn short of
+    // the surface is off by the eye-to-hand offset x (1/drawn - 1/actual).
     for (int axis = 0; axis < 3; ++axis)
     {
-        out.origin[axis] = ray.origin[axis];
+        out.origin[axis] = ray.head[axis];
         out.dir[axis] = u[axis] / length;
         out.eye[axis] = ray.base[axis];
         out.head[axis] = ray.head[axis];
         if (!std::isfinite(out.origin[axis]) || !std::isfinite(out.eye[axis]))
             return false;
     }
-#if HALOMCCVR_DEV_DIAGNOSTICS
-    // DEV experiment (reach_sight_eye, test-only, never saved): 1 = solve from the rendered head
-    // instead of the stock camera base, to A/B which eye the native shot really leaves from.
-    if (g_config.reach_sight_eye == 1 && std::isfinite(out.head[0]) && std::isfinite(out.head[1]) &&
-        std::isfinite(out.head[2]))
-        memcpy(out.eye, out.head, sizeof(out.eye));
-#endif
     out.raySampleMs = ray.sampleMs;
     // The trace result: a torn read retries once, then reports "no range" (the provider holds).
     auto& trace = g_reachSightTrace;
@@ -47483,6 +47481,42 @@ void Game_ReachNoteConvergedSample(const ReachSightSample& sample, float smoothe
 #else
     (void)sample; (void)smoothedRangeWu;
 #endif
+}
+
+bool Game_ReachSightReticleRange(float& outRangeM, bool& outHit)
+{
+    outRangeM = 0.0f;
+    outHit = false;
+    if (g_config.reach_direct_drive != 3)
+        return false;
+    const uint64_t now = GetTickCount64();
+    // Only while the angles in effect are converged ones: then the shot lands where this ray hits. On
+    // the fallback the shot leaves the hand ray, and the ordinary hand-ray crosshair is the true one.
+    if (!ReachConvergedShotLive(now))
+        return false;
+    int32_t mode = 0;
+    if (!ReachSightActiveFlags(mode) || g_reachSightTrace.faulted.load(std::memory_order_acquire))
+        return false;
+    const uint32_t generation = g_reachCamera.generation.load(std::memory_order_acquire);
+    auto& trace = g_reachSightTrace;
+    for (int attempt = 0; attempt < 2; ++attempt)
+    {
+        const uint32_t before = trace.sequence.load(std::memory_order_acquire);
+        if (!before || (before & 1u))
+            continue;
+        const uint32_t traceGeneration = trace.generation.load(std::memory_order_relaxed);
+        const uint64_t at = trace.sampleMs.load(std::memory_order_relaxed);
+        const bool hit = trace.hit.load(std::memory_order_relaxed) != 0;
+        const float range = trace.rangeWu.load(std::memory_order_relaxed);
+        if (trace.sequence.load(std::memory_order_acquire) != before)
+            continue;
+        if (!generation || traceGeneration != generation || !at || now < at || now - at > kReachSightFreshMs)
+            return false;
+        outHit = hit && std::isfinite(range) && range > 0.0f;
+        outRangeM = outHit ? range / kReachWorldUnitsPerMeter : 0.0f;
+        return true;
+    }
+    return false;
 }
 
 // Runs on the SIM thread from the naked detour, AFTER native 0x6375C updated desired_angles (stick

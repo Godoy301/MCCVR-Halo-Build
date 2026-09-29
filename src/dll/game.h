@@ -174,16 +174,21 @@ void Game_ReachDirectDriveReport();   // cold worker: the hook's once-a-second s
 //                  the shot check measures against what was aimed rather than a later sample.
 struct ReachSightSample
 {
-    float origin[3]{};   // where the intent ray starts (the rendered hand/reticle ray)
-    float dir[3]{};      // its unit direction
+    float origin[3]{};   // where the intent ray starts: the player's rendered EYE (centre eye), as in
+                         // Halo: Campaign Evolved -- so a marker anywhere on the ray reads true
+    float dir[3]{};      // its unit direction: the controller's aim direction
     float eye[3]{};      // the engine's own eye: Reach's first-person shot origin
-    float head[3]{};     // the rendered head (centre eye) of the same frame; DEV diagnostics
+    float head[3]{};     // the rendered head (centre eye) of the same frame (== origin)
     float rangeWu = 0.0f;
     bool hit = false;
     uint64_t raySampleMs = 0, traceSampleMs = 0;
 };
 bool Game_ReachSightSample(ReachSightSample& out);
 void Game_ReachNoteConvergedSample(const ReachSightSample& sample, float smoothedRangeWu);
+// The on-foot reticle's range along that eye-anchored intent ray, for the compositor (any thread):
+// the latest fresh trace result -- the hit range in METRES, or hit=false on a miss -- and only while
+// the aim in effect is the converged one, so the marker and the shot come from one piece of geometry.
+bool Game_ReachSightReticleRange(float& outRangeM, bool& outHit);
 // C-H2-41. True only while Halo 2's controller-owned aim/weapon feature is
 // requested; tracking loss still makes each call fail open independently.
 bool Game_Halo2ControllerAimActive();

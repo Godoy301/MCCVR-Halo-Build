@@ -135,6 +135,28 @@ static void test_converge() {
     }
 }
 
+// Halo: Campaign Evolved's reticle placement, with its defaults (6 m cap, 50 cm standoff, 70 cm / 0.001).
+static void test_traced_reticle() {
+    const float cap = 6.0f, off = 0.5f, md = 0.7f, ms = 0.001f, deg = 10.0f;
+    const float capWidth = 2.0f * cap * std::tan(deg * 0.5f / 57.29578f);
+    // A wall at 4 m: drawn on it, pulled back 50 cm; world width ramps with distance.
+    TracedReticle r = traced_reticle_placement(true, 4.0f, cap, off, md, ms, deg);
+    CHECK(near(r.dist_m, 3.5f, 1e-4f));
+    CHECK(near(r.width_m, (ms + (1.0f - ms) * (3.5f - md) / (cap - md)) * capWidth, 1e-4f));
+    // Beyond the cap, and on a miss: parked at the cap, at the full (cap) size.
+    r = traced_reticle_placement(true, 30.0f, cap, off, md, ms, deg);
+    CHECK(near(r.dist_m, cap, 1e-4f) && near(r.width_m, capWidth, 1e-4f));
+    r = traced_reticle_placement(false, 0.0f, cap, off, md, ms, deg);
+    CHECK(near(r.dist_m, cap, 1e-4f) && near(r.width_m, capWidth, 1e-4f));
+    // Muzzle against a surface: floored at 20 cm and shrunk to the minimum (it fades out).
+    r = traced_reticle_placement(true, 0.3f, cap, off, md, ms, deg);
+    CHECK(near(r.dist_m, 0.2f, 1e-4f) && near(r.width_m, ms * capWidth, 1e-5f));
+    // Apparent size holds near the cap and falls away up close (CampE's "scales out when too close").
+    const float at3 = traced_reticle_placement(true, 3.5f, cap, off, md, ms, deg).width_m / 3.0f;
+    const float at1 = traced_reticle_placement(true, 1.5f, cap, off, md, ms, deg).width_m / 1.0f;
+    CHECK(at3 > 0.8f * capWidth / cap && at1 < 0.5f * capWidth / cap);
+}
+
 static void test_orchestrator() {
     // No foundation -> fail closed, never actuates.
     {
@@ -325,6 +347,7 @@ int main() {
     test_selectors();
     test_angles_from_dir();
     test_converge();
+    test_traced_reticle();
     test_orchestrator();
     test_unwrap_to_branch();
     test_clamp_pitch();
