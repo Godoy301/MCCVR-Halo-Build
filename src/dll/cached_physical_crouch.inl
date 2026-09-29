@@ -132,6 +132,9 @@ void ApplyCachedPhysicalCrouch(GameTitle title,float* position,float physicalDow
         }
         __except(EXCEPTION_EXECUTE_HANDLER) {lease.Reset();why|=0x400u;}
     }
+    // Dev: where this title's read stopped, on the shared CROUCH line (the reader step in bits 12+). A
+    // correction that is not needed (standing: 0x100) is not a miss.
+    if(why&~0x100u) PhysicalCrouchCamera_NoteNativeMiss(title,why|(uint32_t(diag.step)<<12));
 #if HALOMCCVR_DEV_DIAGNOSTICS
     if(reach)
     {
