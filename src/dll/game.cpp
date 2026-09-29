@@ -7291,6 +7291,7 @@ namespace
         int32_t directType = -1;
         int32_t seatIndex = -1;
         int32_t parentHandle = -1;
+        int32_t carrierHandle = -1;   // the vehicle carrying the seated one (a mounted turret's), or -1
         int32_t nativeInVehicle = 0;
         // C8: the identity the authored point is keyed on â€” the seated
         // parent's, or the CARRIER's when the player is a mounted-turret
@@ -8361,6 +8362,7 @@ namespace
                 xf.directType = directType;
                 xf.seatIndex = seat;
                 xf.parentHandle = parent;
+                xf.carrierHandle = parentOfParent;
                 xf.nativeInVehicle = static_cast<int32_t>(native);
                 xf.vehicleId = static_cast<uint32_t>(anchorId);
                 xf.mountedTurret = mountedTurret ? 1 : 0;
@@ -8584,6 +8586,7 @@ namespace
         bool headParented = false;
         int seatIndex = -1;
         int parentHandle = -1;
+        int carrierHandle = -1;
         uint32_t identity = static_cast<uint32_t>(Halo3VehicleId::Unknown);
         bool mounted = false;
     };
@@ -8611,6 +8614,7 @@ namespace
         out.headParented = xf.headParented != 0;
         out.seatIndex = xf.seatIndex;
         out.parentHandle = xf.parentHandle;
+        out.carrierHandle = xf.carrierHandle;
         out.identity = xf.vehicleId;
         out.mounted = xf.mountedTurret != 0;
         if (xf.seq.load(std::memory_order_acquire) != seq)
@@ -10626,6 +10630,7 @@ namespace
         uint32_t headParented = 0;
         int32_t seatIndex = -1;
         int32_t parentHandle = -1;
+        int32_t carrierHandle = -1;   // the vehicle carrying the seated one, or -1
         uint32_t vehicleId =
             static_cast<uint32_t>(OdstVehicleId::Unknown);
         int32_t mountedTurret = 0;
@@ -10872,6 +10877,7 @@ namespace
         bool anchorBaseValid;
         int seatIndex;
         int parentHandle;
+        int carrierHandle;
         OdstVehicleId identity;
         bool mounted;
     };
@@ -10896,6 +10902,7 @@ namespace
             seat.anchorBaseValid = xf.anchorBaseValid != 0;
             seat.seatIndex = xf.seatIndex;
             seat.parentHandle = xf.parentHandle;
+            seat.carrierHandle = xf.carrierHandle;
             seat.identity = static_cast<OdstVehicleId>(xf.vehicleId);
             seat.mounted = xf.mountedTurret != 0;
             if (xf.seq.load(std::memory_order_acquire) != before)
@@ -11278,6 +11285,7 @@ namespace
         int unit = -1;
         int seat = -1;
         int parent = -1;
+        int carrier = -1;
         unsigned parentKind = 0;
         unsigned native = 0;
         uint32_t defIndex = 0xFFFFFFFFu;
@@ -11336,6 +11344,8 @@ namespace
                                 parentKind == kOdstObjectKindVehicle)
                             {
                                 parentObjectData = parentData;
+                                carrier = *reinterpret_cast<const int32_t*>(
+                                    parentData + kOdstObjectParentOffset);
                                 const uint16_t definitionIndex =
                                     *reinterpret_cast<const uint16_t*>(
                                         parentData);
@@ -11613,6 +11623,7 @@ namespace
             xf.headParented = headParented ? 1u : 0u;
             xf.seatIndex = seat;
             xf.parentHandle = parent;
+            xf.carrierHandle = carrier;
             xf.vehicleId = static_cast<uint32_t>(anchorId);
             xf.mountedTurret = 0;
             xf.occupiedSeatFlags = occupiedSeatFlags;
@@ -48024,6 +48035,9 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
         desiredYaw = atan2f(followedAim[1], followedAim[0]);
         desiredPitch = asinf(Clamp(followedAim[2], -1.0f, 1.0f));
     }
+    // The controller's own direction in the frame the seat is aimed in, before any correction below: what a
+    // SEATED intent ray runs along (trace-and-reaim, below).
+    const float intentYaw = desiredYaw, intentPitch = desiredPitch;
 
     // ODST and Reach need no correction here: each has a shot-origin hook that
     // substitutes our rendered eye into (unit_get_camera_position, aiming
@@ -48079,16 +48093,21 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
             g_halo3SeatAimReOrigins.fetch_add(1, std::memory_order_relaxed);
         }
     }
-    // TRACE-AND-REAIM, Halo 3 and ODST on foot (legacy_sight_trace.inl). Publish the intent ray -- the
-    // rendered eye along the controller, mapped into the game basis exactly as the steer above maps its
-    // target -- and, when the simulation thread has a fresh range for it, chase the engine eye's line
+    // TRACE-AND-REAIM, Halo 3 and ODST, on foot and seated (legacy_sight_trace.inl). Publish the intent ray
+    // -- the rendered eye along the controller, mapped into the game basis exactly as the steer above maps
+    // its target -- and, when the simulation thread has a fresh range for it, chase the engine eye's line
     // through the point it hits instead of the fixed-distance steer: the steer aims the rendered eye
     // through the hand ray at one distance, while the shot leaves from the engine eye, so it missed by the
-    // head's offset from the character. With no fresh range the steer above stands exactly as it was.
+    // head's offset from the character (in a passenger seat, by the seat trim: the re-origin above is the
+    // same correction at one distance only). With no fresh range the steer above stands exactly as it was.
+    bool sightSeatedConverged = false;
+    GameTitle sightSeatedTitle = GameTitle::None;
     {
         const GameTitle sightTitle = TitleAdapter_GetActiveTitle();
         float sightHead[3]{}, sightEye[3]{};
         bool sightEyes = false;
+        bool sightSeated = false;
+        int32_t sightVehicle = -1, sightCarrier = -1;
         if (halo4Aim)
         {
 #if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA
@@ -48112,7 +48131,34 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
 #if HALOMCCVR_EXPERIMENTAL_ODST_BRINGUP
             seated = seated || OdstVehicleFpActive();
 #endif
-            sightEyes = !seated &&
+            // SEATED: C20 keeps every Halo 3 / ODST seat in the game's own first-person camera, so the engine
+            // eye is the same camera as on foot. The trace must pass through the vehicle and the one carrying
+            // it, which the vehicle sampler names; with the vehicle unknown the seat is not traced.
+            if (seated)
+            {
+                if (sightTitle == GameTitle::Halo3 && Halo3VehicleFpActive())
+                {
+                    Halo3SeatSnapshot seat;
+                    if (Halo3ReadSeatSnapshot(seat) && seat.parentHandle != -1)
+                    {
+                        sightVehicle = seat.parentHandle;
+                        sightCarrier = seat.carrierHandle;
+                    }
+                }
+#if HALOMCCVR_EXPERIMENTAL_ODST_BRINGUP
+                else if (sightTitle == GameTitle::Halo3ODST && OdstVehicleFpActive())
+                {
+                    OdstSeatSnapshot seat;
+                    if (OdstReadSeatSnapshot(seat) && seat.parentHandle != -1)
+                    {
+                        sightVehicle = seat.parentHandle;
+                        sightCarrier = seat.carrierHandle;
+                    }
+                }
+#endif
+            }
+            sightSeated = seated;
+            sightEyes = (!seated || sightVehicle != -1) &&
                 (sightTitle == GameTitle::Halo3 || sightTitle == GameTitle::Halo3ODST) &&
                 LegacySight(sightTitle).flags.load(std::memory_order_acquire) &&
                 g_camValid.load(std::memory_order_acquire) &&
@@ -48125,9 +48171,11 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
         }
         if (sightEyes)
         {
-            const float controllerYaw =
+            // Seated, the controller's direction in the seat's frame (intentYaw/intentPitch, before the
+            // passenger re-origin above); on foot, the controller in the game basis as the steer maps it.
+            const float controllerYaw = sightSeated ? intentYaw :
                 gameYawReference + g_yawSign.load() * WrapPi(atan2f(fx, -fz) - headYawReference);
-            const float controllerPitch =
+            const float controllerPitch = sightSeated ? intentPitch :
                 Clamp(g_pitchSign.load() * asinf(Clamp(fy, -1.0f, 1.0f)), -1.45f, 1.45f);
             const float cosControllerPitch = cosf(controllerPitch);
             SightRay ray{};
@@ -48138,6 +48186,8 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
             ray.dir[1] = cosControllerPitch * sinf(controllerYaw);
             ray.dir[2] = sinf(controllerPitch);
             memcpy(ray.eye, sightEye, sizeof(ray.eye));
+            ray.ignoreB = sightVehicle;
+            ray.ignoreC = sightCarrier;
             Sight_PublishRay(sightTitle, ray);
             float bent[3]{};
             // 1.45 rad: the pitch clamp of this servo target and of the direct drive's write.
@@ -48146,7 +48196,18 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
             {
                 desiredYaw = atan2f(bent[1], bent[0]);
                 desiredPitch = Clamp(asinf(Clamp(bent[2], -1.0f, 1.0f)), -1.45f, 1.45f);
-                Sight_MarkConverged(sightTitle, g_worldScale.load(std::memory_order_relaxed));
+                // On foot the converged aim is in effect now. In a seat the seat's limits decide: the mark
+                // waits for the stall check below, so a seat holding the gun short of the target draws the
+                // honest reticle on the gun, never the traced one.
+                if (sightSeated)
+                {
+                    sightSeatedConverged = true;
+                    sightSeatedTitle = sightTitle;
+                }
+                else
+                {
+                    Sight_MarkConverged(sightTitle, g_worldScale.load(std::memory_order_relaxed));
+                }
                 LegacySight(sightTitle).converged.fetch_add(1, std::memory_order_relaxed);
             }
             else
@@ -48309,6 +48370,9 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
         else
         {
             g_aimClampedValid.store(0, std::memory_order_release);
+            // A seat following the converged aim (no stall, not a turret): it is in effect now.
+            if (sightSeatedConverged)
+                Sight_MarkConverged(sightSeatedTitle, g_worldScale.load(std::memory_order_relaxed));
         }
     }
 

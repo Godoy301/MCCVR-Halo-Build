@@ -141,14 +141,15 @@ void LegacyResolveSightFlags(GameTitle title, uintptr_t base, size_t size,
 }
 
 // Simulation thread, inside the title's per-unit contact update (counted by that hook's callbacks, whose
-// teardown drains before the collision trampoline is freed). Traces the local on-foot unit's published
-// intent ray at most every 30 ms.
+// teardown drains before the collision trampoline is freed). Traces the local unit's published intent ray
+// at most every 30 ms: on foot, or in a seat whose vehicle the aim path named (the trace passes through it
+// and through the vehicle carrying it).
 void LegacySightTraceTick(GameTitle title, uint32_t unit, int32_t localUnit, bool onFoot,
                           const LegacyWorldCollisionFeature& collision)
 {
     auto& state = LegacySight(title);
     const uint64_t flags = state.flags.load(std::memory_order_acquire);
-    if (!flags || !onFoot || localUnit == -1 || unit != static_cast<uint32_t>(localUnit) ||
+    if (!flags || localUnit == -1 || unit != static_cast<uint32_t>(localUnit) ||
         TitleAdapter_GetActiveTitle() != title)
         return;
     const uint64_t now = GetTickCount64();
@@ -157,6 +158,8 @@ void LegacySightTraceTick(GameTitle title, uint32_t unit, int32_t localUnit, boo
     const uint32_t generation = TitleAdapter_GetGeneration(title);
     SightRay ray{};
     if (!Sight_ReadRay(title, generation, kSightRayFreshMs, ray))
+        return;
+    if (!onFoot && ray.ignoreB == -1)
         return;
     const auto original = reinterpret_cast<LegacyCollisionTestVectorFn>(collision.original);
     if (!original || !collision.originalIsVectorTest || !collision.installed.load(std::memory_order_acquire))
@@ -171,7 +174,8 @@ void LegacySightTraceTick(GameTitle title, uint32_t unit, int32_t localUnit, boo
     LARGE_INTEGER before{}, after{};
     QueryPerformanceCounter(&before);
     const bool completed = ReachSightGuardedTrace(original, flags, kReachAimTraceMode, start, vector,
-                                                  static_cast<int32_t>(unit), -1, -1, result, returned, false);
+                                                  static_cast<int32_t>(unit), ray.ignoreB, ray.ignoreC, result,
+                                                  returned, false);
     QueryPerformanceCounter(&after);
     if (!completed)
     {
