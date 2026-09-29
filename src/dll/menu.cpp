@@ -1129,6 +1129,28 @@ namespace
             "Left/right: negative moves left, positive moves right.");
         ImGui::Spacing();
         ImGui::Separator();
+        ImGui::Text("Halo: Reach vehicle aim");
+        {
+            static const char* const kVehicleAimModes[] = {
+                "Off (old stick aim)", "Gunners and passengers", "Every seat I aim"};
+            int vehicleAim = std::clamp(g_config.reach_vehicle_aim, 0, 2);
+            if (ImGui::Combo("Converged aim in seats", &vehicleAim, kVehicleAimModes, 3))
+            {
+                g_config.reach_vehicle_aim = vehicleAim;
+                changed = true;
+            }
+        }
+        ImGui::TextDisabled(
+            "With direct drive on (reach_direct_drive = 3), seats get the on-foot\n"
+            "aim: the shot lands on what you point at, at any distance. Reach fires\n"
+            "a seat's weapon at what its own crosshair hits, and the aim is bent\n"
+            "so that crosshair sits on your target. Turret and passenger limits\n"
+            "still hold. Gunners and passengers also covers drivers whose gun\n"
+            "turns apart from the hull (Scorpion, Wraith); a driver whose look\n"
+            "steers keeps the stick aim. A seat that steers with the stick always\n"
+            "does.");
+        ImGui::Spacing();
+        ImGui::Separator();
         ImGui::Text("Turning with the vehicle");
         changed |= ImGui::Checkbox("View follows the vehicle",
                                    &g_config.vehicle_view_follow);

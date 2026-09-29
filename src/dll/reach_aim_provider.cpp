@@ -58,17 +58,18 @@ public:
         // conditioning, before the aim vector is derived, and persistent (one write steers the sim).
         // Offered only when opted in (reach_direct_drive=3), with the hook proven by the arm-gate AND
         // demonstrably running (its heartbeat -- a hook that stopped would otherwise leave the stick
-        // neutral with nothing writing), and on foot -- vehicles and cinematics keep the stick loop,
-        // which is proven there. Co-op host-follow is UNVERIFIED, so actuate() never claims a
-        // replicated write.
+        // neutral with nothing writing), on foot or in a seat the hand aims (Game_ReachDirectDriveAimWhy:
+        // not a seat whose stick is steering, and as reach_vehicle_aim allows). Cinematics keep the stick
+        // loop. Co-op host-follow is UNVERIFIED, so actuate() never claims a replicated write.
         c.can_write_state       = g_config.reach_direct_drive == 3 && Game_ReachDirectDriveReady() &&
-                                  Game_ReachDirectDriveOnFoot();
+                                  Game_ReachDirectDriveAimWritable();
         c.has_stick_loop        = true;   // Reach steers via Game_ComputeAimStick, like Halo 3
         // TRACE-AND-REAIM (reach_sight_trace.inl): whenever the trace has a fresh result (hit or miss)
         // and direct drive can actuate the bent aim (a stick loop cannot hold an aim that bends with
         // range).
         c.has_sightline_trace   = trace_ok && c.can_write_state;
-        c.has_origin_relocation = true;   // R-V10/R-V27 firing-site eye substitution, foot + vehicle
+        c.has_origin_relocation = true;   // the worst-case fallbacks: the hand shot ray on foot, and in a
+                                          // seat R-V27 (passenger origin) and R-V22 (barrel direction)
         c.has_fixed_range_reaim = true;   // ComputeAimStick steers through the crosshair-distance point
         c.has_barrel_marker     = g_config.gun_barrel_aim != 0;
         c.camera_follows_aim    = true;   // Reach writes the aim, so the view follows the hand
@@ -101,7 +102,8 @@ public:
         *out_cm = sight.rangeWu * kCmPerWorldUnit;
         return true;
     }
-    // Ray origin minus the engine eye (Reach's first-person shot origin), world basis, cm.
+    // Ray origin minus the engine eye (where Reach aims from: on foot the character's eye, in a seat the
+    // point of its own camera's line nearest the seat), world basis, cm.
     bool origin_delta(Vec3* out) override {
         if (!out || !snapshot.has_sightline_trace) return false;
         *out = reach_aim_basis::DeltaCm(sight.origin, sight.eye);
@@ -122,7 +124,7 @@ public:
             last_converged = state && state->converged && snapshot.has_sightline_trace;
             float yawRad = 0.0f, pitchRad = 0.0f;
             reach_aim_basis::GameAnglesFromCore(converged, yawRad, pitchRad);
-            Game_ReachDirectDrivePublish(yawRad, pitchRad, last_converged);
+            Game_ReachDirectDrivePublish(yawRad, pitchRad, last_converged, seated);
             if (last_converged)
                 Game_ReachNoteConvergedSample(sight, state->range_cm / kCmPerWorldUnit);
             return { true, false };   // not a replicated write until co-op host-follow is verified
@@ -137,6 +139,7 @@ public:
     bool      servo_ok    = false;               // set by ProduceStick before each solve
     bool      sight_ok    = false;               // ditto: a trace-and-reaim sample this poll
     bool      trace_ok    = false;               // ...carrying a fresh trace result (hit or miss)
+    bool      seated      = false;               // this poll's aim is a seat's (the hook guards its limits)
     ReachSightSample sight{};
     const SolveState* state = nullptr;
     Actuation last_how    = Actuation::None;
@@ -172,7 +175,16 @@ bool ReachAimProvider_ProduceStick(float& outRx, float& outRy) {
     // 2. This poll's trace-and-reaim sample and the caps snapshot the whole solve will see.
     provider.sight_ok = Game_ReachSightSample(provider.sight);   // true only with a fresh trace result
     provider.trace_ok = provider.sight_ok && provider.sight.traceSampleMs != 0;
+    provider.seated = Game_ReachDirectDriveSeated();
     provider.snapshot = provider.compute_caps();
+    // A range smoothed on foot describes nothing in a seat, and the other way round.
+    static bool seatedLastPoll = false;
+    if (provider.seated != seatedLastPoll)
+    {
+        state.range_cm = 0.0f;
+        state.inv_range_per_cm = 0.0f;
+        seatedLastPoll = provider.seated;
+    }
     // A range smoothed before a gap describes some earlier view: start it afresh from the first hit.
     if (!provider.snapshot.has_sightline_trace || !traceReaimLastPoll)
     {
@@ -231,17 +243,18 @@ void ReachAimProvider_Report() {
     if (!polls) return;   // the provider is not running (another title, a menu, or the default config)
     const int rung = g_status.rung.load(std::memory_order_relaxed);
     // ready = hook installed + arm-gate armed + hook heartbeat fresh (Game_ReachDirectDriveReady).
-    // why = the failing on-foot conditions (Game_ReachDirectDriveOnFootWhy's bits; 0 = on foot).
+    // why = the failing aim-write conditions (Game_ReachDirectDriveAimWhy's bits; 0 = the write may drive:
+    // on foot, or in a hand-aimed seat).
     // converge: 0 trace-and-reaim, 1 origin relocation, 2 fixed range, 3 direction only.
     LOG("AIMPROVIDER reach: rung=%s (WriteState %u/%u polls, converged %u; trace hits %u, misses %u "
         "[far end]) mode=%d ready=%d "
-        "onfoot=%d why=0x%02X converge=%d range=%.2f m eye->ray %.1f cm yaw=%.1f pitch=%.1f",
+        "onfoot=%d seated=%d why=0x%03X converge=%d range=%.2f m eye->ray %.1f cm yaw=%.1f pitch=%.1f",
         rung_name(static_cast<Actuation>(rung)), g_status.writes.exchange(0, std::memory_order_relaxed), polls,
         g_status.converged.exchange(0, std::memory_order_relaxed),
         g_status.freshHits.exchange(0, std::memory_order_relaxed),
         g_status.freshMisses.exchange(0, std::memory_order_relaxed), g_config.reach_direct_drive,
         Game_ReachDirectDriveReady() ? 1 : 0, Game_ReachDirectDriveOnFoot() ? 1 : 0,
-        static_cast<unsigned>(Game_ReachDirectDriveOnFootWhy()),
+        Game_ReachDirectDriveSeated() ? 1 : 0, static_cast<unsigned>(Game_ReachDirectDriveAimWhy()),
         g_status.converge.load(std::memory_order_relaxed), g_status.rangeM.load(std::memory_order_relaxed),
         g_status.deltaCm.load(std::memory_order_relaxed), g_status.yawDeg.load(std::memory_order_relaxed),
         g_status.pitchDeg.load(std::memory_order_relaxed));

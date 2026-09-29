@@ -531,7 +531,7 @@ try {
     $dllText = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($dllPath))
     foreach ($devTag in @('REACHWP', 'REACHVS', 'REACHDDP', 'REACHAIMPROBE', 'REACHDIRECTDRIVE',
             'REACHCROUCHCAM', 'DEV BUILD', 'CENSUS collision_test_vector', 'Roomscale trace',
-            'DEV TEST OVERRIDE', 'DEV fault injection', 'REACHSIGHT shot')) {
+            'DEV TEST OVERRIDE', 'DEV fault injection', 'REACHSIGHT shot', 'REACHSIGHT engine trace')) {
         if ($dllText.Contains($devTag)) {
             throw "Refusing to package: dev-only tag '$devTag' is compiled into HaloMCCVR.dll."
         }

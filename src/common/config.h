@@ -696,6 +696,19 @@ struct Config
     // to identify the flags a bullet's flight test uses. Leave at 0 for play.
     int reach_collision_census = 0;
 
+    // Halo Reach, SEATED, direct drive (reach_direct_drive = 3): the same trace-and-reaim aim in vehicles.
+    // The write drives the seat's look (desired_angles), and Reach aims every seat's weapon from it: it
+    // traces its crosshair from its OWN camera along that look and fires the barrel at what the trace
+    // hits (HREK aim_assist). So the aim is bent to put that camera line through the point the intent ray
+    // hits. A seat's own limits (a turret's pitch stop, a passenger's cone) are respected: the aim holds
+    // at the limit, and there the old fixed-distance shot redirect takes over. A seat whose stick is
+    // steering (a vehicle_view_follow driver) always keeps the stick.
+    //   0 = off: vehicles keep the stick servo and the fixed-distance shot redirect, as before.
+    //   1 = gunner and passenger seats, and drivers whose gun turns apart from the hull (Scorpion,
+    //       Wraith); a driver whose look steers the vehicle (Warthog, Ghost, Banshee ...) keeps the stick.
+    //   2 = every seat the hand aims, drivers included. (default)
+    int reach_vehicle_aim = 2;
+
     // rendering. The game's own HUD reticle sits at head-center and is wrong
     // whenever hand aim is on; this one is the truth.
     bool crosshair = true;

@@ -1,6 +1,15 @@
 // Included in game.cpp (anonymous namespace) before reach_contact_melee_runtime.inl.
 //
-// TRACE-AND-REAIM for Halo Reach on foot -- the Halo: Campaign Evolved aim.
+// TRACE-AND-REAIM for Halo Reach, on foot and seated -- the Halo: Campaign Evolved aim.
+//
+// SEATED (2026-09-28): the same solve with the engine eye E moved. In a vehicle Reach does not fire from
+// the character's eye: its aim_assist (HREK 0x4E32A0, after the unit-adjust hook) traces the crosshair
+// from its OWN camera along that camera's forward -- the chase camera in a third-person seat (HREK
+// 0x4E5B60 -> the following camera), the unit camera in a first-person one -- and turns the barrel's shot
+// at whatever the trace hits. So E is a point of that camera line (the one nearest the seat, which stays
+// put as the chase camera orbits), the intent ray still starts at the rendered eye, and the trace ignores
+// the player's own vehicle. The seat's limits clamp the record before our write; the hook keeps its write
+// inside them (aim_write::LimitLatch) and then does not claim a converged shot.
 //
 // The player points along the intent ray: from their rendered EYE, along the controller's direction --
 // Halo: Campaign Evolved's geometry, so the reticle drawn on it reads true at any depth. Reach decides
@@ -47,6 +56,7 @@ struct ReachSightTracePublication
     std::atomic<uint64_t> traceTicksSum{0}, traceTicksMax{0}, timed{0};
     std::atomic<uint32_t> objectHits{0};   // type 4: bipeds, vehicles, crates, scenery ...
     std::atomic<uint32_t> bipedHits{0};    // ...of which the hit object's kind is 0 (a biped)
+    std::atomic<uint64_t> selfHits{0};     // seated: a pass met our own vehicle and looked past it
 #endif
 } g_reachSightTrace;
 
@@ -78,6 +88,54 @@ float ReachSightTraceLength()
 // Start 5 cm down the ray so the trace clears the head it starts in; the range reported is still
 // measured from the ray's origin.
 inline constexpr float kReachSightTraceSkipWu = 0.05f * kReachWorldUnitsPerMeter;
+// Seated, a pass that meets our own vehicle continues 5 cm past the contact, at most this many passes.
+inline constexpr int kReachSightSelfPasses = 3;
+inline constexpr float kReachSightSelfStepWu = 0.05f * kReachWorldUnitsPerMeter;
+
+// The root of an object's parent chain (the vehicle a seated unit rides; on foot the unit itself), or -1.
+// Sim thread; guarded, and kept free of C++ objects so __try is legal.
+int32_t ReachSightRootOf(int32_t object)
+{
+    const auto ultimateParent = g_reachCamera.objectUltimateParent;
+    if (object == -1 || !ultimateParent)
+        return -1;
+    __try
+    {
+        return ultimateParent(object);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return -1;
+    }
+}
+
+// One guarded native collision_test_vector pass (the unhooked trampoline). Our query must not schedule
+// world-collision work of its own from anything hooked it reaches, so it runs as an owned query. False on
+// a native fault (the caller latches the trace off).
+bool ReachSightGuardedTrace(LegacyCollisionTestVectorFn original, uint64_t flags, int32_t mode,
+                            const float* start, const float* vector, int32_t ignoreA, int32_t ignoreB,
+                            int32_t ignoreC, uint8_t* result, uint8_t& returned, bool injectFault)
+{
+    const bool previousOwned = g_legacyCollisionOwnedQuery;
+    g_legacyCollisionOwnedQuery = true;
+    __try
+    {
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        if (injectFault)
+            RaiseException(0xE0FA0001u, 0, 0, nullptr);
+#else
+        (void)injectFault;
+#endif
+        returned = original(flags, mode, start, vector, ignoreA, ignoreB, ignoreC, result);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        g_legacyCollisionOwnedQuery = previousOwned;
+        return false;
+    }
+    g_legacyCollisionOwnedQuery = previousOwned;
+    return true;
+}
 // The range is smoothed over 120 ms in the provider, so ~30 Hz measures it fully.
 inline constexpr uint64_t kReachSightTraceIntervalMs = 30;
 
@@ -436,7 +494,7 @@ void ReachSightTraceTick(uint32_t unit)
     }
     const uint32_t generation = g_reachCamera.generation.load(std::memory_order_acquire);
     ReachCompletedReticleTargetSnapshot ray{};
-    if (!ReachReadCompletedReticleTarget(ray, g_reachOnFootShotRay) || !generation ||
+    if (!ReachReadCompletedReticleTarget(ray, g_reachLocalShotRay) || !generation ||
         ray.generation != generation || !ray.sampleMs || now < ray.sampleMs || now - ray.sampleMs > 100 ||
         ray.key.unitHandle != localUnit)
     {
@@ -452,52 +510,82 @@ void ReachSightTraceTick(uint32_t unit)
         return;
     }
     for (float& c : u) c /= length;
+    // Ignored objects. On foot: the local unit -- the engine's crosshair trace ignores the unit's root, and
+    // on foot that is the unit itself. Seated (the ray carries the seat key): the engine ignores the root,
+    // the vehicle, but its trace starts out past the vehicle, while ours starts at the rendered eye INSIDE
+    // it; so ours ignores the root, the occupant and the seat's own parent (a Warthog's turret is a
+    // vehicle of its own), and looks past any other part of the same vehicle it still meets.
+    const bool seated = ray.key.directParent != -1;
+    int32_t ignoreA = localUnit, ignoreB = -1, ignoreC = -1, root = -1;
+    if (seated)
+    {
+        root = ReachSightRootOf(localUnit);
+        if (root == -1)
+        {
+            REACH_SIGHT_DEV_COUNT(trace.skips);
+            return;
+        }
+        ignoreA = root;
+        ignoreB = localUnit;
+        ignoreC = ray.key.directParent != root ? ray.key.directParent : -1;
+    }
     // From the player's EYE along the controller's direction (see Game_ReachSightSample): the ray the
     // aim converges on and the reticle is drawn along.
-    const float start[3]{ray.head[0] + u[0] * kReachSightTraceSkipWu,
-                         ray.head[1] + u[1] * kReachSightTraceSkipWu,
-                         ray.head[2] + u[2] * kReachSightTraceSkipWu};
     const float traceLengthWu = ReachSightTraceLength();
-    const float vector[3]{u[0] * traceLengthWu, u[1] * traceLengthWu, u[2] * traceLengthWu};
-    // Result: type (int32 +0) and fraction (float +4), the layout HREK's collisions.cpp asserts name and
-    // this repo's Reach contact-melee path already reads; the buffer is generously sized.
+    // Result: type (int32 +0), fraction (float +4) and the hit object (int32 +0x40), the layout HREK's
+    // collisions.cpp asserts name and this repo's Reach contact-melee path already reads; the buffer is
+    // generously sized.
     alignas(16) uint8_t result[0x400]{};
-    uint8_t returned = 0;
-    // Our query calls the unhooked entry; anything it reaches that is hooked must not schedule
-    // world-collision work of its own from inside it.
-    const bool previousOwned = g_legacyCollisionOwnedQuery;
-    g_legacyCollisionOwnedQuery = true;
 #if HALOMCCVR_DEV_DIAGNOSTICS
     // Fault injection (dev), bit 0: raise INSIDE the guarded native call, so the genuine __except runs
     // (the owned-query flag restore and the fault latch) -- the exact path a real native fault takes.
     const bool injectFault = (g_config.reach_sight_fault & 1) != 0;
     LARGE_INTEGER qpcStart{};
     QueryPerformanceCounter(&qpcStart);
+#else
+    const bool injectFault = false;
 #endif
-    __try
-    {
-#if HALOMCCVR_DEV_DIAGNOSTICS
-        if (injectFault)
-            RaiseException(0xE0FA0001u, 0, 0, nullptr);
-#endif
-        // Ignored object: the local unit, as the engine's crosshair trace ignores the unit's root (on
-        // foot, the unit itself).
-        returned = original(flags, mode, start, vector, localUnit, -1, -1, result);
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER)
-    {
-        g_legacyCollisionOwnedQuery = previousOwned;
-        trace.faulted.store(true, std::memory_order_release);   // fail closed: the old aim comes back
-        return;
-    }
-    g_legacyCollisionOwnedQuery = previousOwned;
-    trace.traces.fetch_add(1, std::memory_order_relaxed);
+    bool hit = false;
     uint32_t type = 0;
-    float fraction = 1.0f;
-    memcpy(&type, result, sizeof(type));
-    memcpy(&fraction, result + 4, sizeof(fraction));
-    const bool hit = returned && std::isfinite(fraction) && fraction >= 0.0f && fraction <= 1.0f;
-    const float rangeWu = hit ? kReachSightTraceSkipWu + fraction * traceLengthWu : 0.0f;
+    float rangeWu = 0.0f;
+    float alongWu = kReachSightTraceSkipWu;   // where this pass starts, measured from the eye
+    for (int pass = 0; pass < (seated ? kReachSightSelfPasses : 1); ++pass)
+    {
+        const float remainingWu = traceLengthWu - (alongWu - kReachSightTraceSkipWu);
+        if (!(remainingWu > 0.0f))
+            break;
+        const float start[3]{ray.head[0] + u[0] * alongWu, ray.head[1] + u[1] * alongWu,
+                             ray.head[2] + u[2] * alongWu};
+        const float vector[3]{u[0] * remainingWu, u[1] * remainingWu, u[2] * remainingWu};
+        memset(result, 0, sizeof(result));
+        uint8_t returned = 0;
+        if (!ReachSightGuardedTrace(original, flags, mode, start, vector, ignoreA, ignoreB, ignoreC, result,
+                                    returned, injectFault))
+        {
+            trace.faulted.store(true, std::memory_order_release);   // fail closed: the old aim comes back
+            return;
+        }
+        trace.traces.fetch_add(1, std::memory_order_relaxed);
+        float fraction = 1.0f;
+        memcpy(&type, result, sizeof(type));
+        memcpy(&fraction, result + 4, sizeof(fraction));
+        hit = returned && std::isfinite(fraction) && fraction >= 0.0f && fraction <= 1.0f;
+        if (!hit)
+            break;
+        rangeWu = alongWu + fraction * remainingWu;
+        if (!seated)
+            break;
+        int32_t object = -1;
+        memcpy(&object, result + 0x40, sizeof(object));
+        if (object == -1 || ReachSightRootOf(object) != root)
+            break;
+        // A part of our own vehicle the ignores did not cover (another occupant, an attached gun):
+        // not a target. Look past it.
+        REACH_SIGHT_DEV_COUNT(trace.selfHits);
+        hit = false;
+        rangeWu = 0.0f;
+        alongWu += fraction * remainingWu + kReachSightSelfStepWu;
+    }
 #if HALOMCCVR_DEV_DIAGNOSTICS
     LARGE_INTEGER qpcEnd{};
     QueryPerformanceCounter(&qpcEnd);
@@ -540,20 +628,12 @@ struct ReachSightShotStats
     std::atomic<uint32_t> originOffsetMaxMm{0};
     std::atomic<uint32_t> lastRangeMm{0}, lastMissMm{0};
 } g_reachSightShots;
-#endif
 
-void ReachSightMeasureShot(int32_t unitIndex, const float* origin, const float* direction,
-                           const float* cameraPoint, uint8_t firesFromCamera, uint8_t useUnitAim)
+// What the provider AIMED at: the ray (o, u), the engine eye e, the rendered head h and the smoothed
+// range it actuated -- not a later sample. False unless one coherent record younger than 150 ms exists.
+bool ReachSightReadActuated(uint64_t now, float o[3], float u[3], float e[3], float h[3], float& rangeWu)
 {
-#if HALOMCCVR_DEV_DIAGNOSTICS
-    auto& stats = g_reachSightShots;
-    stats.shots.fetch_add(1, std::memory_order_relaxed);
-    if (!origin || !direction)
-        return;
-    // What the provider AIMED at: the ray, eye and smoothed range it actuated (not a later sample).
     auto& a = g_reachSightActuated;
-    const uint64_t now = GetTickCount64();
-    float o[3]{}, u[3]{}, e[3]{}, h[3]{}, rangeWu = 0.0f;
     uint64_t atMs = 0;
     bool coherent = false;
     for (int attempt = 0; attempt < 2 && !coherent; ++attempt)
@@ -568,7 +648,21 @@ void ReachSightMeasureShot(int32_t unitIndex, const float* origin, const float* 
         rangeWu = a.rangeWu.load(std::memory_order_relaxed);
         coherent = a.sequence.load(std::memory_order_acquire) == before;
     }
-    if (!coherent || !atMs || now < atMs || now - atMs > 150 || !std::isfinite(rangeWu) || rangeWu <= 0.0f)
+    return coherent && atMs && now >= atMs && now - atMs <= 150 && std::isfinite(rangeWu) && rangeWu > 0.0f;
+}
+#endif
+
+void ReachSightMeasureShot(int32_t unitIndex, const float* origin, const float* direction,
+                           const float* cameraPoint, uint8_t firesFromCamera, uint8_t useUnitAim)
+{
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    auto& stats = g_reachSightShots;
+    stats.shots.fetch_add(1, std::memory_order_relaxed);
+    if (!origin || !direction)
+        return;
+    const uint64_t now = GetTickCount64();
+    float o[3]{}, u[3]{}, e[3]{}, h[3]{}, rangeWu = 0.0f;
+    if (!ReachSightReadActuated(now, o, u, e, h, rangeWu))
         return;
     const float dl = std::sqrt(direction[0] * direction[0] + direction[1] * direction[1] + direction[2] * direction[2]);
     if (!std::isfinite(dl) || dl < 1.0e-6f)
@@ -637,6 +731,85 @@ void ReachSightMeasureShot(int32_t unitIndex, const float* origin, const float* 
     ring.written.fetch_add(1, std::memory_order_release);
 #else
     (void)unitIndex; (void)origin; (void)direction; (void)cameraPoint; (void)firesFromCamera; (void)useUnitAim;
+#endif
+}
+
+// ---- engine-trace check (dev): does REACH'S OWN crosshair trace pass through the traced point? ------
+// This is where a seated shot is decided: Reach's aim_assist (HREK 0x4E32A0, called from the projectile
+// builder AFTER the unit-adjust hook the shot check above runs in) traces the crosshair from its camera
+// along the aim and turns the barrel's shot at whatever that trace hits. So the check for a vehicle is the
+// trace itself, seen in the collision hook: its start and direction against what the solver aimed.
+#if HALOMCCVR_DEV_DIAGNOSTICS
+struct ReachEngineTraceRecord
+{
+    uint64_t atMs = 0;
+    float missMm = 0.0f, rangeM = 0.0f, dirVsAimDeg = 0.0f;
+    float startFromEye[3]{};    // the trace's start minus the solver's eye, (along the aim, right, up) mm
+    int32_t ignored[3]{-1, -1, -1};
+    int32_t unit = -1, root = -1;
+};
+inline constexpr uint32_t kReachEngineTraceRingSize = 16;
+struct ReachEngineTraceRing
+{
+    std::atomic<uint32_t> written{0};
+    ReachEngineTraceRecord records[kReachEngineTraceRingSize];
+    uint32_t printed = 0;   // cold worker only
+} g_reachEngineTraceRing;
+#endif
+
+void ReachSightNoteEngineTrace(uint64_t flags, const float* start, const float* vector,
+                               int32_t ignoredA, int32_t ignoredB, int32_t ignoredC)
+{
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    // Cheapest gate first: this runs for every collision query the game makes.
+    const uint64_t resolved = g_reachSightFlags.flags.load(std::memory_order_acquire);
+    if (!resolved || flags != resolved || !start || !vector)
+        return;
+    const uint64_t now = GetTickCount64();
+    if (!ReachConvergedShotLive(now))
+        return;
+    float o[3]{}, u[3]{}, e[3]{}, h[3]{}, rangeWu = 0.0f;
+    if (!ReachSightReadActuated(now, o, u, e, h, rangeWu))
+        return;
+    const float vl = std::sqrt(vector[0] * vector[0] + vector[1] * vector[1] + vector[2] * vector[2]);
+    if (!std::isfinite(vl) || vl < 1.0e-6f)
+        return;
+    const float d[3]{vector[0] / vl, vector[1] / vl, vector[2] / vl};
+    // The traced point the solver aimed at, and its distance from the engine's crosshair line.
+    const float target[3]{o[0] + u[0] * rangeWu, o[1] + u[1] * rangeWu, o[2] + u[2] * rangeWu};
+    const float w[3]{target[0] - start[0], target[1] - start[1], target[2] - start[2]};
+    const float c[3]{w[1] * d[2] - w[2] * d[1], w[2] * d[0] - w[0] * d[2], w[0] * d[1] - w[1] * d[0]};
+    // The direction the hook wrote (desired_angles), against the direction Reach actually traced.
+    const float yaw = g_reachDriveYaw.load(std::memory_order_relaxed);
+    const float pitch = g_reachDrivePitch.load(std::memory_order_relaxed);
+    const float a[3]{std::cos(pitch) * std::cos(yaw), std::cos(pitch) * std::sin(yaw), std::sin(pitch)};
+    float dot = a[0] * d[0] + a[1] * d[1] + a[2] * d[2];
+    dot = dot > 1.0f ? 1.0f : (dot < -1.0f ? -1.0f : dot);
+    // The start relative to the solver's eye, in the aim's frame (along, horizontal right, up).
+    float right[3]{d[1], -d[0], 0.0f};
+    float rl = std::sqrt(right[0] * right[0] + right[1] * right[1]);
+    if (!(rl > 1.0e-4f)) { right[0] = 1.0f; right[1] = 0.0f; rl = 1.0f; }
+    right[0] /= rl; right[1] /= rl;
+    const float up[3]{right[1] * d[2] - right[2] * d[1], right[2] * d[0] - right[0] * d[2],
+                      right[0] * d[1] - right[1] * d[0]};
+    const float se[3]{start[0] - e[0], start[1] - e[1], start[2] - e[2]};
+    const float toMm = 1000.0f / kReachWorldUnitsPerMeter;
+    auto& ring = g_reachEngineTraceRing;
+    ReachEngineTraceRecord& r = ring.records[ring.written.load(std::memory_order_relaxed) % kReachEngineTraceRingSize];
+    r = {};
+    r.atMs = now;
+    r.missMm = std::sqrt(c[0] * c[0] + c[1] * c[1] + c[2] * c[2]) * toMm;
+    r.rangeM = rangeWu / kReachWorldUnitsPerMeter;
+    r.dirVsAimDeg = std::acos(dot) * 57.29578f;
+    r.startFromEye[0] = (se[0] * d[0] + se[1] * d[1] + se[2] * d[2]) * toMm;
+    r.startFromEye[1] = (se[0] * right[0] + se[1] * right[1] + se[2] * right[2]) * toMm;
+    r.startFromEye[2] = (se[0] * up[0] + se[1] * up[1] + se[2] * up[2]) * toMm;
+    r.ignored[0] = ignoredA; r.ignored[1] = ignoredB; r.ignored[2] = ignoredC;
+    r.unit = LegacyCollisionIgnoredObject(GameTitle::HaloReach);
+    r.root = ReachSightRootOf(r.unit);
+    ring.written.fetch_add(1, std::memory_order_release);
+#else
+    (void)flags; (void)start; (void)vector; (void)ignoredA; (void)ignoredB; (void)ignoredC;
 #endif
 }
 
@@ -763,7 +936,8 @@ void ReportReachSightTrace()
                                                           "fixed-distance steer" :
         !hostLive ? "OFF: the collision hook or contact melee (the per-unit hook the trace runs in) is not "
                     "live; aim keeps the fixed-distance steer" :
-        traces ? "running" : "idle (direct drive not converging: not on foot, not armed, or not in use)";
+        traces ? "running" : "idle (direct drive not converging: not on foot or in an aimed seat, not armed, "
+                             "or not in use)";
     static const char* s_lastState = nullptr;
     if (state != s_lastState)
     {
@@ -787,7 +961,8 @@ void ReportReachSightTrace()
         QueryPerformanceFrequency(&freq);
         const double usPerTick = freq.QuadPart ? 1.0e6 / double(freq.QuadPart) : 0.0;
         const uint64_t now = GetTickCount64();
-        LOG("REACHSIGHT trace: %llu traces (%llu hits, %u on objects, %u bipeds / %llu misses, %llu skipped; blocked "
+        LOG("REACHSIGHT trace: %llu traces (%llu hits, %u on objects, %u bipeds / %llu misses, %llu skipped, %llu "
+            "passes past our own vehicle; blocked "
             "unresolved %llu faulted %llu idle %llu unhooked %llu unarmed %llu); cost avg %.1f / max %.1f us; "
             "range last %.2f m (nearest %.2f / farthest %.2f m), type %u; converged-shot live=%d; shots %u "
             "(%u measured): miss at the traced point avg %u / max %u mm, last %u mm at %.2f m; native origin "
@@ -798,6 +973,7 @@ void ReportReachSightTrace()
             trace.bipedHits.exchange(0, std::memory_order_relaxed),
             (unsigned long long)trace.misses.exchange(0, std::memory_order_relaxed),
             (unsigned long long)trace.skips.exchange(0, std::memory_order_relaxed),
+            (unsigned long long)trace.selfHits.exchange(0, std::memory_order_relaxed),
             (unsigned long long)trace.blockedUnresolved.exchange(0, std::memory_order_relaxed),
             (unsigned long long)trace.blockedFaulted.exchange(0, std::memory_order_relaxed),
             (unsigned long long)trace.blockedIdle.exchange(0, std::memory_order_relaxed),
@@ -841,6 +1017,27 @@ void ReportReachSightTrace()
         }
         if (ring.printed != written)
             ring.printed = written;   // more than 8 this window: the rest are summarized above
+    }
+    // Reach's own crosshair traces while a converged aim was live: the check that decides a SEATED shot
+    // (the barrel fires at what this line hits). Pass = the point aimed at sits ~0 mm off the line.
+    {
+        auto& ring = g_reachEngineTraceRing;
+        const uint32_t written = ring.written.load(std::memory_order_acquire);
+        if (written - ring.printed > kReachEngineTraceRingSize)
+            ring.printed = written - kReachEngineTraceRingSize;
+        uint32_t shown = 0;
+        for (; ring.printed != written && shown < 8; ++ring.printed, ++shown)
+        {
+            const ReachEngineTraceRecord r = ring.records[ring.printed % kReachEngineTraceRingSize];
+            LOG("REACHSIGHT engine trace %u: the point aimed at is %.0f mm off Reach's crosshair line at %.2f m; "
+                "that line is %.2f deg from the written aim; its start minus eye(solve) [along,right,up mm] "
+                "%.0f,%.0f,%.0f; ignores %d/%d/%d (unit %d, root %d)",
+                ring.printed, double(r.missMm), double(r.rangeM), double(r.dirVsAimDeg),
+                double(r.startFromEye[0]), double(r.startFromEye[1]), double(r.startFromEye[2]),
+                r.ignored[0], r.ignored[1], r.ignored[2], r.unit, r.root);
+        }
+        if (ring.printed != written)
+            ring.printed = written;
     }
     if (!g_config.reach_collision_census)
         return;

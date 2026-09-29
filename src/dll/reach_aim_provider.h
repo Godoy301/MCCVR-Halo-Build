@@ -9,10 +9,10 @@
 //
 // RUNGS. The core picks from caps() every poll:
 //   WriteState -- direct drive into player_control.desired_angles (hook on haloreach+0x6375C). Offered
-//                 only with reach_direct_drive=3, the arm-gate armed, and on foot. The aim stick is
-//                 held neutral while it drives.
-//   StickLoop  -- Game_ComputeAimStick, the shipped closed loop, byte-for-byte: vehicles, cinematics,
-//                 an unarmed gate, and the default configuration all aim exactly as before.
+//                 only with reach_direct_drive=3, the arm-gate armed, and on foot or in a seat the hand
+//                 aims (reach_vehicle_aim). The aim stick is held neutral while it drives.
+//   StickLoop  -- Game_ComputeAimStick, the shipped closed loop, byte-for-byte: a seat whose stick
+//                 steers, cinematics, an unarmed gate, and the default configuration all aim as before.
 // The servo runs FIRST every poll -- it records the desired aim the core takes as its intent and
 // computes the fallback stick -- so dropping from WriteState to StickLoop is immediate, never a gap.
 //

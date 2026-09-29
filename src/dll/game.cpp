@@ -101,7 +101,11 @@ static std::atomic<bool>               g_reachDriveValid{false};
 // ray stands down exactly while the angles in effect are converged.
 static std::atomic<bool>               g_reachDriveConverged{false};
 static std::atomic<unsigned long long> g_reachWrittenConvergedMs{0};
-// Seqlock over the setpoint (yaw, pitch, converged, publish time): the sim-thread hook must never pair
+// Whether the published setpoint is for a SEAT: there the game's own update clamps the record to the
+// seat's limits before the hook writes, and the hook keeps its write inside them (aim_write::LimitLatch).
+static std::atomic<bool>               g_reachDriveSeated{false};
+static std::atomic<unsigned>           g_reachApplyLimited{0};   // ticks written held at a seat limit
+// Seqlock over the setpoint (yaw, pitch, converged, seated, publish time): the sim-thread hook must never pair
 // one publish's angles with another publish's converged bit, because the firing site's stand-down of
 // the hand shot ray follows that bit. One writer (the provider, on the input poll).
 static std::atomic<uint32_t>           g_reachDriveSeq{0};
@@ -146,6 +150,7 @@ static constexpr size_t kReachPlayerControlTlsOffset = 0xD8;
 static constexpr size_t kReachPlayerControlStride    = 0x180;
 #endif
 #include "../common/aim_servo_logic.h"
+#include "../common/aim_solve_logic.h"
 #include "../common/aim_write_logic.h"
 #include "../common/log.h"
 #include "../common/config.h"
@@ -1443,6 +1448,8 @@ namespace
     void ReachSightTraceTick(uint32_t unit);
     void ReachNoteCollisionCensus(uintptr_t caller, uint64_t flags, int32_t mode,
         const float* vector, int32_t ignoredA);
+    void ReachSightNoteEngineTrace(uint64_t flags, const float* start, const float* vector,
+        int32_t ignoredA, int32_t ignoredB, int32_t ignoredC);
     bool ReachConvergedShotLive(uint64_t nowMs);
     void ReachSightMeasureShot(int32_t unitIndex, const float* origin, const float* direction,
                                const float* cameraPoint, uint8_t firesFromCamera, uint8_t useUnitAim);
@@ -5074,7 +5081,11 @@ namespace
         const uintptr_t caller=reinterpret_cast<uintptr_t>(_ReturnAddress());
         __try {
             if (!g_legacyCollisionOwnedQuery)
+            {
                 ReachNoteCollisionCensus(caller,flags,mode,vector,ignoredObjectA);
+                ReachSightNoteEngineTrace(flags,start,vector,ignoredObjectA,ignoredObjectB,
+                    ignoredObjectC);
+            }
             if (!ReachRedirectContactVector(caller,flags,mode,ignoredObjectA,
                     ignoredObjectB,ignoredObjectC,result,nativeResult))
                 nativeResult=LegacyCollisionSchedulerDetourBody(
@@ -17674,6 +17685,12 @@ namespace
         float rawCarrierForward[3]{};
         float entryForward[3]{};
         float unitAimForward[3]{};
+        // The seat's native camera point (unit_get_camera_info's world point: the unit camera-position
+        // evaluator's answer for this seat). Trace-and-reaim uses it to find the point of Reach's own
+        // crosshair line that stays put while the chase camera orbits (the local shot ray's engine eye,
+        // ReachPublishCompletedFrameFeedback).
+        bool nativeCameraValid = false;
+        float nativeCameraPoint[3]{};
     };
 
     struct ReachRenderHelpers
@@ -17859,6 +17876,9 @@ namespace
         ReachVrRenderAccess* renderAccess = nullptr;
         float gameplayBasePosition[3]{};
         float presentedCameraBasePosition[3]{};
+        // The stock camera's forward (compact camera +0x0C). In a third-person seat Reach traces its
+        // crosshair from that camera along this forward, so trace-and-reaim needs the line, not a point.
+        float presentedCameraForward[3]{};
         // World-unit lift our corrections gave the view over the character's eye this frame (on
         // foot): the crouch correction's given-back native drop plus the leash's lift. Added to the
         // hands' and the reticle ray's base so they rise with the view; the stock
@@ -18132,20 +18152,21 @@ namespace
         std::atomic<float> originX{0.0f};
         std::atomic<float> originY{0.0f};
         std::atomic<float> originZ{0.0f};
-        // On-foot ray only: the engine's own eye this frame (the stock camera base, never lifted by
-        // the leash), which is where Reach fires first-person shots from. Trace-and-reaim needs the
-        // offset from here to the ray's origin.
+        // Local shot ray only: the ENGINE EYE this frame -- where Reach aims this player's shots from
+        // (on foot the stock camera base, never lifted by the leash; seated, the point of the stock
+        // camera's line nearest the seat). Trace-and-reaim needs the offset from here to the ray's origin.
         std::atomic<float> baseX{0.0f};
         std::atomic<float> baseY{0.0f};
         std::atomic<float> baseZ{0.0f};
-        // On-foot ray only: the rendered head (centre eye) of the same frame, which follows the
-        // headset. Trace-and-reaim's DEV shot check compares the native shot origin against it.
+        // Local shot ray only: the rendered head (centre eye) of the same frame, which follows the
+        // headset. The intent ray starts here; the DEV shot check compares the native origin with it.
         std::atomic<float> headX{0.0f};
         std::atomic<float> headY{0.0f};
         std::atomic<float> headZ{0.0f};
     };
     ReachCompletedReticleTargetPublication g_reachCompletedReticleTarget;
-    ReachCompletedReticleTargetPublication g_reachOnFootShotRay;
+    // The local player's shot ray for trace-and-reaim: on foot, or seated (directParent != -1).
+    ReachCompletedReticleTargetPublication g_reachLocalShotRay;
     std::atomic<uint32_t> g_reachHandShotMoves{0};
     std::atomic<uint32_t> g_reachHandShotMisses{0};
 
@@ -18166,7 +18187,7 @@ namespace
 
     void ReachClearCompletedFrameFeedback()
     {
-        g_reachOnFootShotRay.generation.store(0,std::memory_order_release);
+        g_reachLocalShotRay.generation.store(0,std::memory_order_release);
         {
             auto& published = g_reachCompletedReticleAim;
             published.sequence.fetch_add(1, std::memory_order_acq_rel);
@@ -18442,6 +18463,8 @@ namespace
     std::atomic<uint32_t> g_reachFiringOriginSkipKeyMismatch{0};
     std::atomic<uint32_t> g_reachFiringOriginSkipStaleEye{0};
     std::atomic<uint32_t> g_reachFiringOriginSkipNoSightRay{0};
+    // Seated shots whose origin was left stock because trace-and-reaim was live (not a failure).
+    std::atomic<uint32_t> g_reachFiringOriginConverged{0};
     // The occupied seat's own flags word, published by the engine
     // thread that read it so the worker can report it honestly.
     std::atomic<uint32_t> g_reachVehicleSeatFlagsPublished{0};
@@ -18617,10 +18640,18 @@ namespace
             return stockResult;           // not the shot line; leave it alone
         if (g_reachCinematicLocked.load(std::memory_order_relaxed))
             return stockResult;           // authored camera owns the view
-
         ReachShotOccupationSnapshot occupation{};
         ReachCompletedEyeSnapshot renderedEye{};
         const uint64_t nowMs = GetTickCount64();
+        // Trace-and-reaim live: the aim already converges this shot on the traced point from Reach's
+        // own origin (on foot and in a seat alike). Moving the origin onto the sight ray as well would
+        // correct it twice. The substitution below is the worst-case fallback.
+        if (ReachConvergedShotLive(nowMs))
+        {
+            if (ReachReadShotOccupation(occupation) && occupation.active)
+                g_reachFiringOriginConverged.fetch_add(1, std::memory_order_relaxed);
+            return stockResult;
+        }
         const uint32_t generation =
             g_reachCamera.generation.load(std::memory_order_acquire);
         const bool coherent =
@@ -18778,6 +18809,8 @@ namespace
     std::atomic<bool> g_reachVehicleShotRedirectEnabled{false};
     std::atomic<uint32_t> g_reachVehicleShotRedirects{0};
     std::atomic<uint32_t> g_reachVehicleShotRedirectMisses{0};
+    // Seated shots left to Reach's own aim because trace-and-reaim was live (no redirect needed).
+    std::atomic<uint32_t> g_reachVehicleShotConverged{0};
 
     // HREK render_first_person_view.cpp has one output-user predicate before
     // either first-person render pass.  Reach's vehicle passenger camera leaves
@@ -18889,7 +18922,8 @@ namespace
             }
             float handDirection[3]{};
             const bool owned=onFootNow && nativeOnFoot &&
-                ReachReadCompletedReticleTarget(handRay,g_reachOnFootShotRay) &&
+                ReachReadCompletedReticleTarget(handRay,g_reachLocalShotRay) &&
+                handRay.key.directParent==-1 &&   // an on-foot ray, never a seat's
                 ReachBuildHandShotDirection(generation,handRay.generation,
                     unitIndex,currentUnit,handRay.key.unitHandle,GetTickCount64(),
                     handRay.sampleMs,handRay.origin,handRay.target,handDirection);
@@ -18936,6 +18970,23 @@ namespace
             g_reachCinematicLocked.load(std::memory_order_relaxed))
         {
             return;
+        }
+        // SEATED TRACE-AND-REAIM live: the direct-drive aim already puts Reach's own crosshair line
+        // through the traced point, and Reach turns this seat's shot at whatever that line hits (its
+        // aim_assist, which runs after this call). Redirecting the shot here toward the fixed-distance
+        // reticle point would undo that, locally only. Stand down, as the on-foot hand shot ray does; the
+        // passenger origin substitution stands down with it (ReachUnitCameraPositionBody).
+        if (ReachConvergedShotLive(GetTickCount64()))
+        {
+            ReachShotOccupationSnapshot seatedNow{};
+            if (ReachReadShotOccupation(seatedNow) && seatedNow.active &&
+                seatedNow.generation ==
+                    g_reachCamera.generation.load(std::memory_order_acquire) &&
+                seatedNow.key.unitHandle == unitIndex)
+            {
+                g_reachVehicleShotConverged.fetch_add(1, std::memory_order_relaxed);
+                return;
+            }
         }
 
         ReachShotOccupationSnapshot occupation{};
@@ -22394,26 +22445,66 @@ namespace
         float presentedOrigin[3]{};
         uint64_t presentedTargetMs = 0;
         {
-            auto& published=g_reachOnFootShotRay;
+            // THE LOCAL SHOT RAY for trace-and-reaim (reach_sight_trace.inl): the presented intent ray,
+            // the rendered eye it starts at, and the ENGINE EYE -- where Reach aims this player's shots
+            // from. On foot that is the stock camera, the character's eye. In a seat Reach traces its
+            // crosshair from its OWN camera along that camera's forward (HREK aim_assist -> the following
+            // camera in a third-person seat, the unit camera in a first-person one) and fires the barrel
+            // at what that trace hits. A chase camera orbits as the aim turns, so the published eye is
+            // the point of its line nearest the seat's native camera point, which stays put
+            // (aim_solve::line_point_nearest; in a first-person seat that is the camera itself). A seated
+            // ray carries the seat key (directParent != -1): the trace ignores the vehicle by it, and the
+            // on-foot fallback never takes one.
+            auto& published=g_reachLocalShotRay;
             const int32_t unit=LegacyCollisionIgnoredObject(GameTitle::HaloReach);
-            const bool onFoot=generation && preparedSerial && unit!=-1 &&
-                !owner.vehicleViewApplied && !owner.vehicle.active &&
-                !owner.cutsceneTheater && owner.fpTargets.rightWristValid &&
+            const bool live=generation && preparedSerial && unit!=-1 && !owner.cutsceneTheater;
+            const bool onFoot=live && !owner.vehicleViewApplied && !owner.vehicle.active &&
+                owner.fpTargets.rightWristValid &&
                 ReachBuildPresentedReticleWorldTarget(
                     owner,presentedTarget,presentedOrigin,presentedTargetMs);
+            float engineEye[3]{owner.presentedCameraBasePosition[0],
+                owner.presentedCameraBasePosition[1],owner.presentedCameraBasePosition[2]};
+            bool seatedRay=false;
+            if(!onFoot && live && seated && owner.vehicle.unitHandle==unit &&
+                ReachSeatLeaseKeyValid(reticle.occupation) &&
+                ReachBuildPresentedReticleWorldTarget(
+                    owner,presentedTarget,presentedOrigin,presentedTargetMs))
+            {
+                seatedRay=true;
+                aim_solve::Vec3 anchor{};
+                if(owner.vehicle.nativeCameraValid &&
+                    aim_solve::line_point_nearest(
+                        {engineEye[0],engineEye[1],engineEye[2]},
+                        {owner.presentedCameraForward[0],owner.presentedCameraForward[1],
+                         owner.presentedCameraForward[2]},
+                        {owner.vehicle.nativeCameraPoint[0],owner.vehicle.nativeCameraPoint[1],
+                         owner.vehicle.nativeCameraPoint[2]},
+                        anchor) &&
+                    std::isfinite(anchor.x) && std::isfinite(anchor.y) && std::isfinite(anchor.z))
+                {
+                    engineEye[0]=anchor.x;
+                    engineEye[1]=anchor.y;
+                    engineEye[2]=anchor.z;
+                }
+            }
+            const bool rayValid=onFoot || seatedRay;
             published.sequence.fetch_add(1,std::memory_order_acq_rel);
-            published.generation.store(onFoot?generation:0,std::memory_order_relaxed);
-            published.sampleMs.store(onFoot?presentedTargetMs:0,std::memory_order_relaxed);
-            published.unitHandle.store(onFoot?unit:-1,std::memory_order_relaxed);
+            published.generation.store(rayValid?generation:0,std::memory_order_relaxed);
+            published.sampleMs.store(rayValid?presentedTargetMs:0,std::memory_order_relaxed);
+            published.unitHandle.store(rayValid?unit:-1,std::memory_order_relaxed);
+            published.directParent.store(seatedRay?owner.vehicle.directParent:-1,std::memory_order_relaxed);
+            published.definitionDatum.store(seatedRay?owner.vehicle.definitionDatum:0xFFFFFFFFu,
+                std::memory_order_relaxed);
+            published.seatIndex.store(seatedRay?owner.vehicle.seatIndex:-1,std::memory_order_relaxed);
             published.x.store(presentedTarget[0],std::memory_order_relaxed);
             published.y.store(presentedTarget[1],std::memory_order_relaxed);
             published.z.store(presentedTarget[2],std::memory_order_relaxed);
             published.originX.store(presentedOrigin[0],std::memory_order_relaxed);
             published.originY.store(presentedOrigin[1],std::memory_order_relaxed);
             published.originZ.store(presentedOrigin[2],std::memory_order_relaxed);
-            published.baseX.store(owner.presentedCameraBasePosition[0],std::memory_order_relaxed);
-            published.baseY.store(owner.presentedCameraBasePosition[1],std::memory_order_relaxed);
-            published.baseZ.store(owner.presentedCameraBasePosition[2],std::memory_order_relaxed);
+            published.baseX.store(engineEye[0],std::memory_order_relaxed);
+            published.baseY.store(engineEye[1],std::memory_order_relaxed);
+            published.baseZ.store(engineEye[2],std::memory_order_relaxed);
             {
                 const float* head=reinterpret_cast<const float*>(owner.headCenter+0x00);
                 published.headX.store(head[0],std::memory_order_relaxed);
@@ -27954,6 +28045,9 @@ namespace
                 frame.identity = identity;
                 frame.seatFlags = seatFlags;
                 frame.unitAimValid = unitAimValid;
+                frame.nativeCameraValid = true;   // finite: checked right after the camera-info call
+                memcpy(frame.nativeCameraPoint, info.worldCameraPoint,
+                       sizeof(frame.nativeCameraPoint));
                 frame.entryForwardValid = true;
                 memcpy(frame.entryForward,rootMarker.matrix.forward,
                        sizeof(frame.entryForward));
@@ -28767,6 +28861,8 @@ namespace
                sizeof(candidate.gameplayBasePosition));
         memcpy(candidate.presentedCameraBasePosition,primaryCompact+0x00,
                sizeof(candidate.presentedCameraBasePosition));
+        memcpy(candidate.presentedCameraForward,primaryCompact+0x0C,
+               sizeof(candidate.presentedCameraForward));
         candidate.vehicle = vehicleFrame;
         const float* authoredProjection = reinterpret_cast<const float*>(
             primaryDerived + kReachDerivedProjectionOffset);
@@ -33006,6 +33102,39 @@ namespace
             loggedVehicleShotMiss = true;
             LOG("Reach vehicle shot line: a local seated shot lacked a fresh "
                 "exact-key presented-reticle target; that shot remained stock");
+        }
+        // Which aim decided the seated shots, every 10 s while any were fired: Reach's own, converged by
+        // trace-and-reaim, or a worst-case fallback (the fixed-distance barrel redirect, the passenger
+        // origin swap).
+        {
+            static uint64_t s_nextSeatShotLogMs = 0;
+            static uint32_t s_seenConverged = 0, s_seenRedirects = 0, s_seenOrigin = 0,
+                s_seenOriginConverged = 0;
+            const uint64_t seatShotNowMs = GetTickCount64();
+            if (seatShotNowMs >= s_nextSeatShotLogMs)
+            {
+                s_nextSeatShotLogMs = seatShotNowMs + 10000;
+                // The counters restart at each install, so a smaller value is a fresh count.
+                const auto delta = [](uint32_t current, uint32_t& seen)
+                {
+                    const uint32_t d = current >= seen ? current - seen : current;
+                    seen = current;
+                    return d;
+                };
+                const uint32_t converged = delta(
+                    g_reachVehicleShotConverged.load(std::memory_order_relaxed), s_seenConverged);
+                const uint32_t redirected = delta(
+                    g_reachVehicleShotRedirects.load(std::memory_order_relaxed), s_seenRedirects);
+                const uint32_t originMoved = delta(
+                    g_reachFiringOriginMoves.load(std::memory_order_relaxed), s_seenOrigin);
+                const uint32_t originKept = delta(
+                    g_reachFiringOriginConverged.load(std::memory_order_relaxed), s_seenOriginConverged);
+                if (converged || redirected || originMoved)
+                    LOG("Reach seated shots, last 10 s: %u aimed by trace-and-reaim (Reach's own shot, "
+                        "converged; %u passenger origins left stock), %u fallback redirects through the "
+                        "fixed-distance reticle, %u fallback passenger origin swaps",
+                        converged, originKept, redirected, originMoved);
+            }
         }
         if (!loggedPassengerFirstPersonAdmission &&
             g_reachPassengerFirstPersonAdmissions.load(
@@ -47373,13 +47502,60 @@ bool Game_ReachDirectDriveOnFoot()
     return Game_ReachDirectDriveOnFootWhy() == 0;
 }
 
+// Where the state write may drive the aim: on foot, or in a first-person SEAT whose aim the hand owns
+// (a gunner, a passenger, a look-steered driver). In a seat the write is the same record: desired_angles
+// is the look, and Reach aims every seat's weapon from it (measured 2026-09-28: in the driver and gunner
+// seats the unit aim follows desired_angles to 0.05 deg, and the hook stays armed). Bits (0 = writable):
+// 0x01-0x40 as Game_ReachDirectDriveOnFootWhy, except that 0x08 now means the fresh sample is neither on
+// foot nor seated; and, seated: 0x80 our first-person seat camera is not up (no presented intent ray),
+// 0x100 this seat steers with the stick or wheel right now (vehicle_view_follow driver: the stick is
+// steering, not aiming), 0x200 reach_vehicle_aim leaves this seat on the stick servo.
+uint32_t Game_ReachDirectDriveAimWhy()
+{
+    uint32_t why = Game_ReachDirectDriveOnFootWhy();
+    if (!(why & 0x08))
+        return why;
+    const uint32_t gen = TitleAdapter_GetGeneration(GameTitle::HaloReach);
+    if (g_reachVehicleInputSnapshot.load(std::memory_order_acquire) !=
+        ReachVehicleInputSnapshot(gen, ReachVehicleInputState::Vehicle))
+        return why;
+    why &= ~0x08u;
+    ReachVehicleId identity = ReachVehicleId::Unknown;
+    int seatIndex = -1;
+    if (!ReachVehicleFpActive() || !ReachCurrentSeat(identity, seatIndex))
+        why |= 0x80;
+    else if (ReachSeatAuthorsSteeringNow())
+        why |= 0x100;
+    else if (g_config.reach_vehicle_aim <= 0 ||
+             (g_config.reach_vehicle_aim == 1 && ReachVehicleSeatIsDriver(identity, seatIndex) &&
+              ReachVehicleIsLookSteered(identity)))   // 1: a driver whose look steers keeps the servo
+        why |= 0x200;
+    return why;
+}
+
+bool Game_ReachDirectDriveAimWritable()
+{
+    return Game_ReachDirectDriveAimWhy() == 0;
+}
+
+// Seated in the sense above: a fresh Vehicle sample of this generation (whatever else fails).
+bool Game_ReachDirectDriveSeated()
+{
+    const uint32_t why = Game_ReachDirectDriveOnFootWhy();
+    const uint32_t gen = TitleAdapter_GetGeneration(GameTitle::HaloReach);
+    return (why & 0x04) == 0 &&
+        g_reachVehicleInputSnapshot.load(std::memory_order_acquire) ==
+            ReachVehicleInputSnapshot(gen, ReachVehicleInputState::Vehicle);
+}
+
 // The provider's WriteState actuation: the setpoint the sim-thread hook writes on its next tick.
-void Game_ReachDirectDrivePublish(float gameYaw, float gamePitch, bool converged)
+void Game_ReachDirectDrivePublish(float gameYaw, float gamePitch, bool converged, bool seated)
 {
     g_reachDriveSeq.fetch_add(1, std::memory_order_acq_rel);   // odd: a publish is in progress
     g_reachDriveYaw.store(gameYaw, std::memory_order_relaxed);
     g_reachDrivePitch.store(gamePitch, std::memory_order_relaxed);
     g_reachDriveConverged.store(converged, std::memory_order_relaxed);
+    g_reachDriveSeated.store(seated, std::memory_order_relaxed);
     g_reachDriveMs.store(GetTickCount64(), std::memory_order_relaxed);
     g_reachDriveSeq.fetch_add(1, std::memory_order_release);    // even: one coherent setpoint
     g_reachDriveValid.store(true, std::memory_order_release);
@@ -47403,15 +47579,16 @@ bool Game_ReachSightSample(ReachSightSample& out)
         return false;
     const uint64_t now = GetTickCount64();
     // And only while it can act on the result right now (the provider's can_write_state: hook armed with
-    // a fresh heartbeat, on foot). That predicate does not depend on the trace, so asking cannot starve.
-    if (Game_ReachDirectDriveReady() && Game_ReachDirectDriveOnFoot())
+    // a fresh heartbeat, on foot or in a hand-aimed seat). That predicate does not depend on the trace,
+    // so asking cannot starve.
+    if (Game_ReachDirectDriveReady() && Game_ReachDirectDriveAimWritable())
         g_reachSightDemandMs.store(now, std::memory_order_relaxed);
     int32_t mode = 0;
     if (!ReachSightActiveFlags(mode) || g_reachSightTrace.faulted.load(std::memory_order_acquire))
         return false;
     const uint32_t generation = g_reachCamera.generation.load(std::memory_order_acquire);
     ReachCompletedReticleTargetSnapshot ray{};
-    if (!generation || !ReachReadCompletedReticleTarget(ray, g_reachOnFootShotRay) ||
+    if (!generation || !ReachReadCompletedReticleTarget(ray, g_reachLocalShotRay) ||
         ray.generation != generation || !ray.sampleMs || now < ray.sampleMs || now - ray.sampleMs > 100)
         return false;
     float u[3]{ray.target[0] - ray.origin[0], ray.target[1] - ray.origin[1], ray.target[2] - ray.origin[2]};
@@ -47525,7 +47702,10 @@ bool Game_ReachSightReticleRange(float& outRangeM, bool& outHit)
 // address the engine-thread arm-gate validated. SEH-guarded; skips on stale/NaN/out-of-range.
 extern "C" void ReachPcApplyForUser(int user)
 {
-    int wrote = 0, valid = 0, same = 0, armed = 0; float yaw = 0.0f, pitch = 0.0f; unsigned long long age = 0;
+    // Sim thread, first local player only: the seat-limit guard's memory of what it wrote last tick.
+    static aim_write::LimitLatch s_seatLimit;
+    int wrote = 0, valid = 0, same = 0, armed = 0, limited = 0;
+    float yaw = 0.0f, pitch = 0.0f; unsigned long long age = 0;
     uintptr_t pc = 0;
     __try
     {
@@ -47549,7 +47729,7 @@ extern "C" void ReachPcApplyForUser(int user)
         // One coherent setpoint (the seqlock in Game_ReachDirectDrivePublish): angles, publish time and
         // the converged bit all from the same publish. A torn read retries once; still torn, this tick
         // writes nothing and the game keeps last tick's angles.
-        bool coherent = false, drivenConverged = false;
+        bool coherent = false, drivenConverged = false, drivenSeated = false;
         unsigned long long publishedMs = 0;
         for (int attempt = 0; attempt < 2 && !coherent; ++attempt)
         {
@@ -47559,6 +47739,7 @@ extern "C" void ReachPcApplyForUser(int user)
             yaw = g_reachDriveYaw.load(std::memory_order_relaxed);
             pitch = g_reachDrivePitch.load(std::memory_order_relaxed);
             drivenConverged = g_reachDriveConverged.load(std::memory_order_relaxed);
+            drivenSeated = g_reachDriveSeated.load(std::memory_order_relaxed);
             publishedMs = g_reachDriveMs.load(std::memory_order_relaxed);
             coherent = g_reachDriveSeq.load(std::memory_order_acquire) == before;
         }
@@ -47568,21 +47749,43 @@ extern "C" void ReachPcApplyForUser(int user)
             std::isfinite(yaw) && std::isfinite(pitch))
         {
             float* pair = reinterpret_cast<float*>(pc + 0x94);   // desired_angles: yaw, pitch
+            // In a seat, the game's update has just clamped the record to the seat's limits (a turret's
+            // pitch stop, a passenger's cone): keep the write inside them rather than carry the aim past
+            // (aim_write::LimitLatch). On foot there is no such clamp, and nothing changes.
+            float target[2]{yaw, pitch};
+            if (drivenSeated)
+            {
+                const float native[2]{pair[0], pair[1]};
+                limited = s_seatLimit.apply(native, target, target) ? 1 : 0;
+            }
+            else
+                s_seatLimit.reset();
             // Keep yaw on the branch the game's value is on (never a 2*pi jump between ticks, which an
             // interpolated snapshot would render as a spin), and pitch inside the game's own clamp.
-            const float y = aim_write::unwrap_to_branch(yaw, pair[0]);
-            if (std::isfinite(y))
+            const float y = aim_write::unwrap_to_branch(target[0], pair[0]);
+            if (std::isfinite(y) && std::isfinite(target[1]))
             {
                 pair[0] = y;
-                pair[1] = aim_write::clamp_pitch(pitch, 1.45f);
+                pair[1] = aim_write::clamp_pitch(target[1], 1.45f);
                 wrote = 1;
+                if (drivenSeated)
+                {
+                    const float written[2]{pair[0], pair[1]};
+                    s_seatLimit.wrote(written);
+                }
             }
+            else
+                s_seatLimit.reset();
         }
+        else if (user == 0)
+            s_seatLimit.reset();
         // Trace-and-reaim: record whether the angles now in effect are converged ones (first local
         // player only -- the other slots' calls must not clear it). The firing site reads this on this
-        // same thread, so its stand-down tracks the write, not a publish.
+        // same thread, so its stand-down tracks the write, not a publish. An aim held at a seat's limit
+        // is not the converged one, so it is not claimed.
         if (user == 0)
-            g_reachWrittenConvergedMs.store((wrote && drivenConverged) ? tick : 0, std::memory_order_release);
+            g_reachWrittenConvergedMs.store((wrote && drivenConverged && !limited) ? tick : 0,
+                                            std::memory_order_release);
     }
     __except (EXCEPTION_EXECUTE_HANDLER) {}
     // Counted here, logged by the cold worker (Game_ReachDirectDriveReport): no file I/O or log lock on
@@ -47591,6 +47794,7 @@ extern "C" void ReachPcApplyForUser(int user)
     {
         g_reachApplyCalls.fetch_add(1, std::memory_order_relaxed);
         g_reachApplyWrites.fetch_add(static_cast<unsigned>(wrote), std::memory_order_relaxed);
+        g_reachApplyLimited.fetch_add(static_cast<unsigned>(wrote && limited), std::memory_order_relaxed);
         g_reachApplyLast.store((armed ? 1u : 0u) | (same ? 2u : 0u) | (valid ? 4u : 0u), std::memory_order_relaxed);
         g_reachApplyAgeMs.store(static_cast<uint32_t>(age > 0xFFFFFFFFull ? 0xFFFFFFFFull : age), std::memory_order_relaxed);
         g_reachApplyYaw.store(yaw, std::memory_order_relaxed);
@@ -47609,10 +47813,11 @@ void Game_ReachDirectDriveReport()
     if (!calls) return;
     const unsigned last = g_reachApplyLast.load(std::memory_order_relaxed);
     LOG("REACHDRIVE apply user=0 armed=%d pcMatch=%d valid=%d age=%u yaw=%.3f pitch=%.3f wrote %u/%u per s "
-        "(mismatches %u)", (last & 1u) ? 1 : 0, (last & 2u) ? 1 : 0, (last & 4u) ? 1 : 0,
+        "(held at a seat limit %u; mismatches %u)", (last & 1u) ? 1 : 0, (last & 2u) ? 1 : 0, (last & 4u) ? 1 : 0,
         g_reachApplyAgeMs.load(std::memory_order_relaxed), g_reachApplyYaw.load(std::memory_order_relaxed),
         g_reachApplyPitch.load(std::memory_order_relaxed), g_reachApplyWrites.exchange(0, std::memory_order_relaxed),
-        calls, g_reachPcMismatch.load(std::memory_order_relaxed));
+        calls, g_reachApplyLimited.exchange(0, std::memory_order_relaxed),
+        g_reachPcMismatch.load(std::memory_order_relaxed));
 }
 
 // True while the reach_direct_drive=4 persistence test owns Reach's aim: input.cpp then holds the

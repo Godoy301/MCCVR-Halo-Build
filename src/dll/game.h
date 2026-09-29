@@ -149,22 +149,30 @@ bool Game_ReachDdTestOwnsAim();
 //                     poll; consumed once, so a stopped aim path can never be chased.
 //   Ready          -- the hook is installed, the arm-gate has proven the player_control address, and
 //                     the hook has run on it within 150 ms (installed is not running).
-//   OnFoot         -- fresh on-foot, player-controlled Reach gameplay (the write is proven on foot only).
+//   OnFoot         -- fresh on-foot, player-controlled Reach gameplay.
+//   AimWritable    -- where the write may drive the aim: on foot, or in a first-person seat the hand
+//                     aims (not one whose stick is steering; as reach_vehicle_aim allows). AimWhy gives
+//                     the failing conditions as bits, Seated whether the fresh sample is a seat.
 //   Publish        -- set the setpoint (radians) the sim-thread hook writes on its next tick.
 //   Release        -- invalidate it at once, so the hook stops writing and the stick servo aims alone.
 bool Game_ReachTakeDesiredAim(float& yaw, float& pitch);
 bool Game_ReachDirectDriveReady();
 bool Game_ReachDirectDriveOnFoot();
 uint32_t Game_ReachDirectDriveOnFootWhy();   // failing on-foot conditions as bits (0 = on foot)
+bool Game_ReachDirectDriveAimWritable();
+uint32_t Game_ReachDirectDriveAimWhy();      // failing aim-write conditions as bits (0 = writable)
+bool Game_ReachDirectDriveSeated();
 int Game_ReachUnitCrouchState();             // native crouch state 0/1, -1 unknown/stale (diagnostics)
 // `converged` = the core bent this setpoint through a freshly traced point. The sim-thread hook records
 // it with every write, and the firing site stands the hand shot ray down only while the angles
-// actually in desired_angles are converged ones.
-void Game_ReachDirectDrivePublish(float gameYaw, float gamePitch, bool converged);
+// actually in desired_angles are converged ones. `seated` = the aim is a seat's: the hook then keeps its
+// write inside the limits the game clamps that seat's record to.
+void Game_ReachDirectDrivePublish(float gameYaw, float gamePitch, bool converged, bool seated);
 void Game_ReachDirectDriveRelease();
 void Game_ReachDirectDriveReport();   // cold worker: the hook's once-a-second status line
-// Reach on foot, trace-and-reaim (reach_sight_trace.inl). Defined only in experimental Reach builds.
-//   SightSample -- the latest rendered intent (reticle) ray and the engine eye the shot leaves from,
+// Reach trace-and-reaim, on foot and seated (reach_sight_trace.inl). Defined only in experimental Reach
+// builds.
+//   SightSample -- the latest rendered intent (reticle) ray and the engine eye the shot is aimed from,
 //                  all in world units, plus the latest range the sim-thread trace measured along that
 //                  ray: the hit, or on a miss (hit=false) the trace's far end, since the target is at
 //                  least that far. Only direct drive (reach_direct_drive=3) asks; asking is what keeps
@@ -177,7 +185,8 @@ struct ReachSightSample
     float origin[3]{};   // where the intent ray starts: the player's rendered EYE (centre eye), as in
                          // Halo: Campaign Evolved -- so a marker anywhere on the ray reads true
     float dir[3]{};      // its unit direction: the controller's aim direction
-    float eye[3]{};      // the engine's own eye: Reach's first-person shot origin
+    float eye[3]{};      // the engine eye Reach aims from: on foot the character's eye; seated, the point
+                         // of Reach's own camera line nearest the seat (its crosshair trace starts on it)
     float head[3]{};     // the rendered head (centre eye) of the same frame (== origin)
     float rangeWu = 0.0f;
     bool hit = false;
@@ -185,7 +194,7 @@ struct ReachSightSample
 };
 bool Game_ReachSightSample(ReachSightSample& out);
 void Game_ReachNoteConvergedSample(const ReachSightSample& sample, float smoothedRangeWu);
-// The on-foot reticle's range along that eye-anchored intent ray, for the compositor (any thread):
+// The traced reticle's range along that eye-anchored intent ray, for the compositor (any thread):
 // the latest fresh trace result -- the hit range in METRES, or hit=false on a miss -- and only while
 // the aim in effect is the converged one, so the marker and the shot come from one piece of geometry.
 bool Game_ReachSightReticleRange(float& outRangeM, bool& outHit);

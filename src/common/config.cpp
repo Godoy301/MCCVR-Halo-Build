@@ -983,6 +983,12 @@ void ConfigLoad(const wchar_t* path)
         if (!strcmp(key, "reach_sight_fault")) { g_config.reach_sight_fault=(int)strtol(val,nullptr,0); continue; }
         if (!strcmp(key, "reach_sight_trace_length_m")) { g_config.reach_sight_trace_length_m=(float)atof(val); continue; }
 #endif
+        if (!strcmp(key, "reach_vehicle_aim"))
+        {
+            const int v = atoi(val);
+            g_config.reach_vehicle_aim = v < 0 ? 0 : (v > 2 ? 2 : v);
+            continue;
+        }
         if (!strcmp(key, "honest_reticle_onfoot")) { g_config.honest_reticle_onfoot=atoi(val)!=0; continue; }
         if (!strcmp(key, "reticle_max_dist_m")) { g_config.reticle_max_dist_m=(float)atof(val); continue; }
         if (!strcmp(key, "reticle_surface_offset_m")) { g_config.reticle_surface_offset_m=(float)atof(val); continue; }
@@ -1725,9 +1731,9 @@ void ConfigSave()
 #if !HALOMCCVR_DEV_DIAGNOSTICS
     fprintf(f, "# EXPERIMENTAL, Halo Reach only. 3 = DIRECT DRIVE: your aim writes the game's own control\n");
     fprintf(f, "# angles directly (crisp; co-op replication not yet verified); needs a relaunch to install,\n");
-    fprintf(f, "# then arms itself once it has validated the address (log: REACHDRIVE ARMED). On foot only:\n");
-    fprintf(f, "# vehicles, cutscenes and menus keep the normal stick aim. 0 = off. (default %d)\n",
-            d.reach_direct_drive);
+    fprintf(f, "# then arms itself once it has validated the address (log: REACHDRIVE ARMED). On foot, and\n");
+    fprintf(f, "# in vehicles as reach_vehicle_aim says; cutscenes and menus keep the normal stick aim.\n");
+    fprintf(f, "# 0 = off. (default %d)\n", d.reach_direct_drive);
     fprintf(f, "reach_direct_drive = %d\n\n", g_config.reach_direct_drive);
 #else
     fprintf(f, "# DEV BUILD ONLY (the research keys below). EXPERIMENTAL / diagnostic, Halo Reach only, READ-ONLY. Confirms the desired-aim\n");
@@ -1747,7 +1753,7 @@ void ConfigSave()
     fprintf(f, "# many degrees off your reticle. 3 = ACTIVE DIRECT DRIVE: your aim writes the game's own\n");
     fprintf(f, "# control angles directly (crisp; co-op replication not yet verified); needs a relaunch\n");
     fprintf(f, "# to install, then arms itself once it has validated the address (log: REACHDRIVE ARMED).\n");
-    fprintf(f, "# On foot only: vehicles, cutscenes and menus keep the normal stick aim.\n");
+    fprintf(f, "# On foot, and in vehicles as reach_vehicle_aim says; cutscenes and menus keep the stick.\n");
     fprintf(f, "# 4 = PERSISTENCE TEST: one write to the sim's own control angles, checks that it\n");
     fprintf(f, "# sticks and turns your view, then puts your aim back (your view jumps briefly; the\n");
     fprintf(f, "# stick is ignored while it runs). Leave at 0 unless testing. (default %d)\n", d.reach_direct_drive);
@@ -1769,6 +1775,14 @@ void ConfigSave()
     fprintf(f, "# DEV BUILD ONLY. Log Reach's own collision-test calls (caller, flags, mode). Leave at 0.\n");
     fprintf(f, "reach_collision_census = %d\n\n", g_config.reach_collision_census);
 #endif
+    fprintf(f, "# Halo Reach vehicles, with reach_direct_drive = 3: the same converged aim as on foot. The\n");
+    fprintf(f, "# write drives the seat's look, and Reach fires the seat's weapon at what its own crosshair\n");
+    fprintf(f, "# (traced from its own camera) hits, so the look is bent to put that on what you point at.\n");
+    fprintf(f, "# A turret's or passenger seat's limits still hold. A seat whose stick steers keeps the\n");
+    fprintf(f, "# stick. 0 = off (vehicles keep the old stick aim), 1 = gunners, passengers, and drivers\n");
+    fprintf(f, "# whose gun turns apart from the hull (a driver whose look steers keeps the stick),\n");
+    fprintf(f, "# 2 = every seat you aim, drivers included. (default %d)\n", d.reach_vehicle_aim);
+    fprintf(f, "reach_vehicle_aim = %d\n\n", g_config.reach_vehicle_aim);
     fprintf(f, "# -------------------------------------------------------------------\n");
     fprintf(f, "#  WEAPON CALIBRATION\n");
     fprintf(f, "#  Personal trims applied over the active title's verified base pose.\n");

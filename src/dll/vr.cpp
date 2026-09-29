@@ -13320,8 +13320,8 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                                     }
                                 }
                             }
-                            // REACH ON FOOT, TRACE-AND-REAIM CONVERGED: Halo:
-                            // Campaign Evolved's reticle. The marker rides the
+                            // REACH TRACE-AND-REAIM CONVERGED (on foot or seated):
+                            // Halo: Campaign Evolved's reticle. The marker rides the
                             // same EYE-anchored ray the aim converges on (the
                             // controller's direction from the centre eye), sits
                             // on the surface that ray hits, parks at a readable
@@ -13380,7 +13380,8 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                                             g_config.reticle_max_dist_m);
                                     else
                                         LOG("REACHRETICLE traced placement off: the crosshair is back on the "
-                                            "controller ray at %.1f m (not converging, or not on foot)",
+                                            "controller ray at %.1f m (the aim is not converging: off, a "
+                                            "seat limit, or no fresh trace)",
                                             g_config.crosshair_distance_m);
                                 }
                             }
