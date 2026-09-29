@@ -78,7 +78,10 @@ int RunRoomscaleInputTests()
         check(!Roomscale_Move(x,y),"physical input cancels already-published follow immediately");
         Roomscale_Input(eligible,0,0); testNow+=16; camera();
         x=y=0;
-        check(!Roomscale_Move(x,y),"physical stick release cannot replay old follow demand");
+        // Since 2026-09-28 the step owed from before the stick survives it (RoomscaleFollow::Rebase):
+        // the camera derives a fresh demand for it, in the new epoch, rather than replaying the old one.
+        check(Roomscale_Move(x,y) && y>0,
+            "after the physical stick the owed step is followed again, as a fresh demand");
         testNow+=16; head[2]-=0.2f; camera();
         x=y=0; check(Roomscale_Move(x,y),"a fresh physical step resumes body follow");
         body[0]+=0.1f*0.328084f; testNow+=16; camera();
@@ -207,23 +210,24 @@ int RunRoomscaleInputTests()
                 std::fabs(body[0]-allManualDistance+ref[2])<.0001f;
         }
         check(repeatedDebt,"repeated manual/physical cycles preserve accumulated physical travel without baseline drift");
-        // Tracking loss must drop retained debt instead of walking later when
-        // a controller or headset becomes fresh again.
+        // Tracking loss keeps what is owed (changed 2026-09-28; it used to drop it, which left the
+        // body wherever the player had walked away from it -- "they are not under me"). When the
+        // headset is fresh again the body walks the physical step it still owes.
         testNow+=16;Roomscale_Input(true,0,.75f);head[2]-=.2f;camera();
         testTracking=false;Roomscale_Input(true,0,0);camera();
         testTracking=true;Roomscale_Input(true,0,0);camera();
         for(int frame=0;frame<12;++frame)
         {testNow+=16;Roomscale_Input(true,0,0);camera();}
         x=y=0;
-        check(!Roomscale_Move(x,y),"tracking recovery never resumes stale physical debt from manual travel");
+        check(Roomscale_Move(x,y)&&y>0,"tracking recovery resumes the physical step still owed");
         testNow+=16;Roomscale_Input(true,0,.75f);head[2]-=.2f;camera();
-        // There may be no camera or input callback during an interruption.
-        // A fresh poll must not revive debt merely because allowed stays true.
+        // There may be no camera or input callback during an interruption. A stale polling gap ends
+        // the follow in progress; the step it owed is walked once input is fresh again.
         testNow+=120;Roomscale_Input(true,0,0);camera();
         for(int frame=0;frame<12;++frame)
         {testNow+=16;Roomscale_Input(true,0,0);camera();}
         x=y=0;
-        check(!Roomscale_Move(x,y),"fresh input after a stale polling gap drops retained physical debt");
+        check(Roomscale_Move(x,y)&&y>0,"a stale polling gap keeps the physical step still owed");
     }
     // Closed-loop synthetic native walker: physical motion must end up in the
     // body, while body + remaining lean stays exactly one tracked displacement.

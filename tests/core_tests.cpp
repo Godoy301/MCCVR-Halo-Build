@@ -17799,10 +17799,13 @@ int main()
         const float before=reference[0];
         body[0]+=10*scale;
         follow.Update(7,327,true,false,body,head,reference,0,-1,wx,wy,scale,mx,my);
-        Check(mx==0 && my==0 && reference[0]==before, "teleport rebases demand without consuming false travel");
+        Check((mx!=0 || my!=0) && reference[0]==before,
+            "a teleport keeps the owed physical step, without consuming the jump as travel");
+        const float owedBefore=std::hypot(follow.error[0],follow.error[1]);
         head[0]+=2;
         follow.Update(7,338,true,false,body,head,reference,0,-1,wx,wy,scale,mx,my);
-        Check(mx==0 && my==0, "tracking jump cannot become a long unattended walk");
+        Check(std::fabs(std::hypot(follow.error[0],follow.error[1])-owedBefore)<1e-4f,
+            "a tracking jump adds nothing to what is owed: it cannot become a long unattended walk");
         head[0]+=0.1f;
         follow.Update(8,349,true,false,body,head,reference,0,-1,wx,wy,scale,mx,my);
         Check(mx==0 && my==0, "new title generation cancels pending movement");
@@ -17810,9 +17813,11 @@ int main()
         follow.Update(8,360,false,false,body,head,reference,0,-1,wx,wy,scale,mx,my);
         Check(mx==0 && my==0 && !follow.seeded, "disabled roomscale leaves existing tracking reference alone");
         follow.Update(8,371,true,false,body,head,reference,0,-1,wx,wy,scale,mx,my);
+        Check(mx!=0, "the step taken while roomscale was disabled is still owed when it comes back");
         head[0]+=0.1f;
         follow.Update(8,750,true,false,body,head,reference,0,-1,wx,wy,scale,mx,my);
-        Check(mx==0 && my==0, "stale camera resumes without replaying physical movement");
+        Check(mx!=0 && std::fabs(follow.error[0]-0.2f)<1e-4f,
+            "a stale camera resumes owing everything walked while it was away (legs end up under you)");
         reference[0]=head[0]; reference[2]=head[2];
         follow.Update(8,761,true,false,body,head,reference,0,-1,wx,wy,scale,mx,my);
         Check(mx==0 && my==0, "manual recenter cancels prior roomscale demand");
@@ -17919,6 +17924,47 @@ int main()
         Check(resumed && resumedAt-released<=RoomscaleFollow::kManualPauseMaxMs+22,
             "aim swing cannot hold the manual pause open: the follow resumes within kManualPauseMaxMs");
         Check(resumed && resumedAt-released>=150, "the pause still covers the stick's braking tail");
+    }
+    // The owed distance survives an interruption (the user, 2026-09-28: "they are not under me").
+    // Tracking or admission goes away while the player walks 0.6 m; when it comes back the body still
+    // owes the whole 0.6 m -- the offset at the moment of return is NOT the new "under me".
+    {
+        RoomscaleFollow follow;
+        float body[3]{}, head[3]{0,1.7f,0}, reference[3]{0,1.7f,0};
+        float mx=0,my=0; uint64_t now=100;
+        auto step=[&](bool enabled){now+=11;return follow.Update(3,now,enabled,false,body,head,reference,0,-1,1,0,1.0f,mx,my);};
+        step(true);
+        for (int i=0;i<30;++i) { head[0]+=0.02f; step(false); }   // tracking lost; the player walks 0.6 m
+        for (int i=0;i<5;++i) step(true);                           // tracking back
+        Check(std::fabs(follow.error[0]-0.6f)<1e-4f && (mx!=0 || my!=0),
+            "after a tracking gap the whole distance walked is still owed, and the body walks it");
+        // The same across an admission change (the camera rebases the follow in progress).
+        follow.Rebase();
+        step(true);
+        Check(std::fabs(follow.error[0]-0.6f)<1e-4f && (mx!=0 || my!=0),
+            "an admission change ends the follow in progress but keeps what is owed");
+        // A recenter is the one thing that says the player is over the body again.
+        reference[0]=head[0]; reference[2]=head[2];
+        step(true);
+        Check(mx==0 && my==0 && std::fabs(follow.error[0])<1e-4f, "a recenter clears what is owed");
+    }
+    // A tracking fault is not owed. A head that jumps further between two updates than a person can
+    // is folded into the neutral lean; a debt larger than any play space is dropped.
+    {
+        RoomscaleFollow follow;
+        float body[3]{}, head[3]{0,1.7f,0}, reference[3]{0,1.7f,0};
+        float mx=0,my=0; uint64_t now=100;
+        auto step=[&]{now+=11;return follow.Update(3,now,true,false,body,head,reference,0,-1,1,0,1.0f,mx,my);};
+        step();
+        head[0]+=1.0f; step();
+        Check(mx==0 && my==0 && std::fabs(follow.error[0])<1e-4f, "a 1 m head jump in one frame is not walked");
+        head[0]+=0.2f; step();
+        Check(mx!=0 && std::fabs(follow.error[0]-0.2f)<1e-4f, "a real step after the jump is still followed");
+        // Walking away in ordinary steps past kMaxDebtM (the follow cannot move this body) is dropped.
+        for (int i=0;i<200 && follow.error[0]<RoomscaleFollow::kMaxDebtM-0.05f;++i) { head[0]+=0.05f; step(); }
+        head[0]+=0.1f; step();
+        Check(mx==0 && my==0 && std::fabs(follow.error[0])<1e-4f,
+            "a debt larger than any play space is a tracking fault, never a long walk");
     }
     // The stopping tail is claimed only while the body keeps moving the way the follow walked: travel
     // against that direction (a platform, a knockback) ends the tail unclaimed.
