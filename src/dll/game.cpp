@@ -1466,6 +1466,9 @@ namespace
     // Halo 3 / ODST trace-and-reaim, the engine-crosshair check (dev; legacy_sight_trace.inl).
     void LegacySightNoteEngineTrace(GameTitle title, uint64_t flags, const float* start, const float* vector,
         uintptr_t caller);
+    // Halo 4 raycast census (dev, halo4_ray_census; legacy_sight_trace.inl).
+    void LegacySightNoteHalo4Ray(uintptr_t caller, uintptr_t base, size_t size, uint32_t profile,
+        uint32_t flags, const float* start, const float* end);
     bool ReachConvergedShotLive(uint64_t nowMs);
     void ReachSightMeasureShot(int32_t unitIndex, const float* origin, const float* direction,
                                const float* cameraPoint, uint8_t firesFromCamera, uint8_t useUnitAim);
@@ -36186,6 +36189,11 @@ namespace
             1, std::memory_order_acq_rel);
         __try
         {
+#if HALOMCCVR_DEV_DIAGNOSTICS
+            if (input && !g_halo4MuzzleOwnedQuery && g_config.halo4_ray_census)
+                LegacySightNoteHalo4Ray(reinterpret_cast<uintptr_t>(_ReturnAddress()), g_halo4Camera.base,
+                    g_halo4Camera.size, input->profile, input->collisionFlags, input->start, input->end);
+#endif
             if(g_halo4MuzzleOwnedQuery||!Halo4RedirectContactRay(reinterpret_cast<uintptr_t>(_ReturnAddress()),input,output,result))
                 result = Halo4PhysicsRayCastDetourBody(input, output);
         }

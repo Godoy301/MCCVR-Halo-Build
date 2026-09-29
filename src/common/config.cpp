@@ -981,6 +981,7 @@ void ConfigLoad(const wchar_t* path)
         if (!strcmp(key, "reach_sight_trace_flags")) { g_config.reach_sight_trace_flags=strtoull(val,nullptr,0); continue; }
         if (!strcmp(key, "reach_sight_trace_mode")) { g_config.reach_sight_trace_mode=(int)strtol(val,nullptr,0); continue; }
         if (!strcmp(key, "reach_collision_census")) { g_config.reach_collision_census=atoi(val); continue; }
+        if (!strcmp(key, "halo4_ray_census")) { g_config.halo4_ray_census=atoi(val); continue; }
         if (!strcmp(key, "reach_sight_fault")) { g_config.reach_sight_fault=(int)strtol(val,nullptr,0); continue; }
         if (!strcmp(key, "reach_sight_trace_length_m")) { g_config.reach_sight_trace_length_m=(float)atof(val); continue; }
 #endif
@@ -1775,6 +1776,8 @@ void ConfigSave()
     fprintf(f, "reach_sight_trace_mode = %d\n", g_config.reach_sight_trace_mode);
     fprintf(f, "# DEV BUILD ONLY. Log Reach's own collision-test calls (caller, flags, mode). Leave at 0.\n");
     fprintf(f, "reach_collision_census = %d\n\n", g_config.reach_collision_census);
+    fprintf(f, "# DEV BUILD ONLY. Log Halo 4's own raycasts that start at the eye along the aim. Leave at 0.\n");
+    fprintf(f, "halo4_ray_census = %d\n\n", g_config.halo4_ray_census);
 #endif
     fprintf(f, "# Halo Reach vehicles, with reach_direct_drive = 3: the same converged aim as on foot. The\n");
     fprintf(f, "# write drives the seat's look, and Reach fires the seat's weapon at what its own crosshair\n");

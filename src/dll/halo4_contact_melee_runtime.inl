@@ -214,14 +214,84 @@ void Halo4ContactTick(uint32_t unit,void* instance)
     g_halo4Contact.processing.store(false,std::memory_order_release);
 }
 
+// THE SHOT'S OWN QUERY. A census of Halo 4's PhysicsRayCast callers on the fire tick (dev
+// halo4_ray_census, 2026-09-29, Forge) found a shot's aim-assist query: caller +0x1DC6FA (function
+// 0x1DC2F4), profile 0x1A, 128 wu from the engine eye along the aim, flags 0x...44D409. It builds them
+// the way Reach and Halo 3 build their crosshair query (global | 0x202000 there):
+//      mov rax,[rip+global]; mov ecx,0x404400; mov edi,eax; ...; or edi,ecx; shr rax,32; ... call PhysicsRayCast
+// Every `mov ecx, 0x404400` anchor must have that load before it, the `shr rax, 32` after it and a call to
+// the hooked PhysicsRayCast within 0x200 bytes; all must name one global inside the module, and the global
+// must hold the melee query's flags (ValueAgreement with the global the contact install pinned: the same
+// engine default). Then the trace uses global | 0x404400, the shot's flags. Any doubt: 0, and the trace
+// keeps the melee query's flags, as before.
+// ADDR-HYGIENE: resolved + guarded (anchor + load + call edge + value agreement; no address is assumed).
+std::atomic<uint64_t> g_halo4SightShotFlags{0};
+
+const char* Halo4ResolveShotFlags(uintptr_t base,size_t size,uint64_t meleeValue,uint64_t& flags,
+    uint32_t& anchors,uintptr_t& global)
+{
+    static constexpr char kAnchor[]="B9 00 44 40 00";   // mov ecx, 0x404400
+    constexpr uint64_t kShotFlagsOr=0x404400;
+    flags=0; anchors=0; global=0;
+    const uintptr_t rayCast=reinterpret_cast<uintptr_t>(g_halo4WorldCollision.rayCastTarget);
+    uintptr_t textBegin=0,textEnd=0;
+    uint32_t stamp=0;
+    size_t imageSize=0;
+    if(!rayCast) return "PhysicsRayCast is not hooked on this build";
+    if(!meleeValue) return "the melee collision flags are zero";
+    if(!ResolveOdstTextRange(base,size,textBegin,textEnd,stamp,imageSize)) return "the module has no .text section";
+    __try
+    {
+        for(uintptr_t at=sig::Find(textBegin,textEnd-textBegin,kAnchor);at;
+            at=at+1<textEnd ? sig::Find(at+1,textEnd-at-1,kAnchor) : 0)
+        {
+            const auto* code=reinterpret_cast<const uint8_t*>(at);
+            const uint8_t* load=nullptr;
+            for(uintptr_t back=7;back<=0x10 && at-back>=textBegin && !load;++back)
+                if(code[-static_cast<intptr_t>(back)]==0x48 && code[1-static_cast<intptr_t>(back)]==0x8B &&
+                    code[2-static_cast<intptr_t>(back)]==0x05)
+                    load=code-back;
+            if(!load) continue;   // another use of the constant, not a flags build
+            bool high=false,calls=false;
+            for(uintptr_t fwd=5;fwd<=0x20 && at+fwd+4<=textEnd && !high;++fwd)
+                high=code[fwd]==0x48 && code[fwd+1]==0xC1 && code[fwd+2]==0xE8 && code[fwd+3]==0x20;
+            for(uintptr_t fwd=5;fwd<=0x200 && at+fwd+5<=textEnd && !calls;++fwd)
+            {
+                if(code[fwd]!=0xE8) continue;
+                int32_t rel=0;
+                memcpy(&rel,code+fwd+1,sizeof(rel));
+                calls=at+fwd+5+static_cast<intptr_t>(rel)==rayCast;
+            }
+            if(!high || !calls) continue;
+            int32_t disp=0;
+            memcpy(&disp,load+3,sizeof(disp));
+            const uintptr_t named=reinterpret_cast<uintptr_t>(load)+7+static_cast<intptr_t>(disp);
+            if(named<base || named+sizeof(uint64_t)>base+size || (named&7u))
+                return "a shot-flags load does not address an aligned qword inside the module";
+            if(global && named!=global) return "two shot queries name different flags globals";
+            global=named;
+            if(++anchors>4) return "more shot-query anchors than any known build has";
+        }
+        if(!anchors) return "no `mov ecx, 0x404400` feeding PhysicsRayCast";
+        uint64_t value=0;
+        memcpy(&value,reinterpret_cast<const void*>(global),sizeof(value));
+        if(value!=meleeValue) return "the shot-flags global disagrees with the melee query's flags";
+        flags=value|kShotFlagsOr;
+        return nullptr;
+    }
+    __except(EXCEPTION_EXECUTE_HANDLER)
+    {
+        return "a fault while reading the shot query's code";
+    }
+}
+
 // TRACE-AND-REAIM, Halo 4 on foot (sight_layer.h; the servo side is in Game_ComputeAimStick). Halo 4
 // queries collision with Havok PhysicsRayCast, which is only safe in a native simulation context: this
-// runs inside the per-unit update the contact lane hooks, after its own contact tick, with the query
-// the contact lane issues itself -- the native melee profile (0x1A) and the melee collision flags that
-// its install pinned from their own call site -- and ignores the unit. The engine's own crosshair query
-// is not identified on this build (no H4EK), so the range is measured with the melee query: structure
-// and objects, which is what a range for the aim needs. The unit is the one whose first-person body
-// the render thread last solved (g_halo4SightUnit), and a seated unit (parent != -1) is not traced.
+// runs inside the per-unit update the contact lane hooks, after its own contact tick, with profile 0x1A
+// and the SHOT's own flags (above) when they resolve, else the melee collision flags the contact install
+// pinned from their own call site (the query the contact lane issues itself), and ignores the unit.
+// The unit is the one whose first-person body the render thread last solved (g_halo4SightUnit), and a
+// seated unit (parent != -1) is not traced.
 void Halo4SightTraceTick(uint32_t unit,void* instance)
 {
     constexpr GameTitle kTitle=GameTitle::Halo4;
@@ -255,7 +325,9 @@ void Halo4SightTraceTick(uint32_t unit,void* instance)
         onFoot=biped && biped==instance && *reinterpret_cast<const int32_t*>(biped+0x24)==-1;
         if(onFoot)
         {
-            memcpy(&input.collisionFlags,g_halo4Contact.flags,sizeof(uint64_t));
+            const uint64_t shotFlags=g_halo4SightShotFlags.load(std::memory_order_acquire);
+            if(shotFlags) memcpy(&input.collisionFlags,&shotFlags,sizeof(shotFlags));
+            else memcpy(&input.collisionFlags,g_halo4Contact.flags,sizeof(uint64_t));
             QueryPerformanceCounter(&before);
             returned=g_halo4WorldCollision.originalRayCast(&input,&output);
             QueryPerformanceCounter(&after);
@@ -297,6 +369,7 @@ bool RemoveHalo4ContactMelee()
 {
     g_halo4Contact.enabled.store(false,std::memory_order_release);
     LegacySight(GameTitle::Halo4).flags.store(0,std::memory_order_release);
+    g_halo4SightShotFlags.store(0,std::memory_order_release);
     if(!g_halo4Contact.updateTarget && !g_halo4Contact.damageTarget) return true;
     void** targets[]{&g_halo4Contact.updateTarget,&g_halo4Contact.damageTarget};
     for(auto target:targets) if(*target)
@@ -344,6 +417,7 @@ bool InstallHalo4ContactMelee(uintptr_t base,size_t size,uint32_t generation)
     };
     g_halo4Contact.enabled.store(false,std::memory_order_release);
     LegacySight(GameTitle::Halo4).flags.store(0,std::memory_order_release);
+    g_halo4SightShotFlags.store(0,std::memory_order_release);
     if(!g_halo4WorldCollision.originalRayCast || !g_halo4EngineTlsIndex ||
         g_halo4Contact.updateTarget || g_halo4Contact.damageTarget) return false;
     for(const auto& binding:bindings)
@@ -403,11 +477,24 @@ bool InstallHalo4ContactMelee(uintptr_t base,size_t size,uint32_t generation)
         memcpy(&meleeFlags,g_halo4Contact.flags,sizeof(meleeFlags));
         auto& sight=LegacySight(GameTitle::Halo4);
         Sight_ResetTitle(GameTitle::Halo4);
+        uint64_t shotFlags=0;
+        uint32_t shotAnchors=0;
+        uintptr_t shotGlobal=0;
+        const char* shotWhy=Halo4ResolveShotFlags(base,size,meleeFlags,shotFlags,shotAnchors,shotGlobal);
+        g_halo4SightShotFlags.store(shotWhy ? 0 : shotFlags,std::memory_order_release);
         sight.why.store(meleeFlags ? nullptr : "the melee collision flags are zero",std::memory_order_release);
         sight.flags.store(meleeFlags,std::memory_order_release);
-        LOG("SIGHT Halo 4 aim trace %s: PhysicsRayCast, native melee profile 0x1A, melee collision flags "
-            "0x%llX (global +0x2FFB098, pinned from its own call site); on foot, the unit ignored",
-            meleeFlags ? "armed" : "NOT armed",static_cast<unsigned long long>(meleeFlags));
+        if(!shotWhy)
+            LOG("SIGHT Halo 4 aim trace %s: PhysicsRayCast, profile 0x1A, the SHOT's own flags 0x%llX (%u "
+                "aim-assist anchor(s), global +0x%llX = the melee query's 0x%llX, | 0x404400); on foot, the unit "
+                "ignored", meleeFlags ? "armed" : "NOT armed",static_cast<unsigned long long>(shotFlags),
+                shotAnchors,static_cast<unsigned long long>(shotGlobal-base),
+                static_cast<unsigned long long>(meleeFlags));
+        else
+            LOG("SIGHT Halo 4 aim trace %s: PhysicsRayCast, native melee profile 0x1A, melee collision flags "
+                "0x%llX (global +0x2FFB098, pinned from its own call site; the shot's own flags did not resolve: "
+                "%s); on foot, the unit ignored", meleeFlags ? "armed" : "NOT armed",
+                static_cast<unsigned long long>(meleeFlags),shotWhy);
     }
     return true;
 }

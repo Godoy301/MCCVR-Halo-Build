@@ -274,6 +274,86 @@ void LegacySightNoteEngineTrace(GameTitle title, uint64_t flags, const float* st
 #endif
 }
 
+// ---- Halo 4 raycast census (dev, halo4_ray_census = 1): which PhysicsRayCast is Halo 4's crosshair? -------
+// Halo 4 has no editing kit and ~150 PhysicsRayCast call sites, so the trace above borrows the melee query.
+// The crosshair query starts at the engine eye and runs along the aim (a shot's on the fire tick). Every
+// raycast the hook sees is binned by caller; one that starts within 0.3 m of the solve's eye and points
+// within 2 deg of the eye -> traced-point direction counts as ALIGNED. Compare windows with and without
+// shots: the caller whose aligned count follows the shots is the crosshair query.
+#if HALOMCCVR_DEV_DIAGNOSTICS
+struct Halo4RayCensusEntry
+{
+    std::atomic<uint32_t> rva{0};
+    std::atomic<uint32_t> profile{0}, flags{0};
+    std::atomic<uint32_t> count{0}, aligned{0};
+    std::atomic<float> lengthM{0.0f}, startMm{0.0f}, angleDeg{0.0f}, missMm{0.0f}, rangeM{0.0f};
+};
+inline constexpr uint32_t kHalo4RayCensusSlots = 48;
+Halo4RayCensusEntry g_halo4RayCensus[kHalo4RayCensusSlots];
+#endif
+
+void LegacySightNoteHalo4Ray(uintptr_t caller, uintptr_t base, size_t size, uint32_t profile, uint32_t flags,
+                             const float* start, const float* end)
+{
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    if (!base || caller < base || caller >= base + size || !start || !end)
+        return;
+    const uint32_t rva = static_cast<uint32_t>(caller - base);
+    Halo4RayCensusEntry* entry = nullptr;
+    for (auto& candidate : g_halo4RayCensus)
+    {
+        uint32_t expected = 0;
+        if (candidate.rva.load(std::memory_order_acquire) == rva ||
+            candidate.rva.compare_exchange_strong(expected, rva, std::memory_order_acq_rel) || expected == rva)
+        {
+            entry = &candidate;
+            break;
+        }
+    }
+    if (!entry)
+        return;
+    entry->count.fetch_add(1, std::memory_order_relaxed);
+    entry->profile.store(profile, std::memory_order_relaxed);
+    entry->flags.store(flags, std::memory_order_relaxed);
+    const float v[3]{end[0] - start[0], end[1] - start[1], end[2] - start[2]};
+    const float length = std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+    if (!std::isfinite(length) || length < 1.0e-6f)
+        return;
+    entry->lengthM.store(length * 3.048f, std::memory_order_relaxed);
+    const uint32_t generation = TitleAdapter_GetGeneration(GameTitle::Halo4);
+    SightRay ray{};
+    SightTrace trace{};
+    if (!Sight_ReadRay(GameTitle::Halo4, generation, kSightRayFreshMs, ray) ||
+        !Sight_ReadTrace(GameTitle::Halo4, generation, kSightFreshMs, trace))
+        return;
+    const float p[3]{ray.head[0] + ray.dir[0] * trace.rangeWu, ray.head[1] + ray.dir[1] * trace.rangeWu,
+                     ray.head[2] + ray.dir[2] * trace.rangeWu};
+    const float a[3]{p[0] - ray.eye[0], p[1] - ray.eye[1], p[2] - ray.eye[2]};
+    const float al = std::sqrt(a[0] * a[0] + a[1] * a[1] + a[2] * a[2]);
+    if (!(al > 1.0e-6f))
+        return;
+    float dot = (a[0] * v[0] + a[1] * v[1] + a[2] * v[2]) / (al * length);
+    dot = dot > 1.0f ? 1.0f : (dot < -1.0f ? -1.0f : dot);
+    const float angle = std::acos(dot) * 57.29578f;
+    const float s[3]{start[0] - ray.eye[0], start[1] - ray.eye[1], start[2] - ray.eye[2]};
+    const float startMm = std::sqrt(s[0] * s[0] + s[1] * s[1] + s[2] * s[2]) * 3048.0f;
+    if (startMm < 300.0f && angle < 2.0f)
+    {
+        // How far the traced point sits off this query's line (the shot check's number).
+        const float d[3]{v[0] / length, v[1] / length, v[2] / length};
+        const float w[3]{p[0] - start[0], p[1] - start[1], p[2] - start[2]};
+        const float c[3]{w[1] * d[2] - w[2] * d[1], w[2] * d[0] - w[0] * d[2], w[0] * d[1] - w[1] * d[0]};
+        entry->aligned.fetch_add(1, std::memory_order_relaxed);
+        entry->startMm.store(startMm, std::memory_order_relaxed);
+        entry->angleDeg.store(angle, std::memory_order_relaxed);
+        entry->missMm.store(std::sqrt(c[0] * c[0] + c[1] * c[1] + c[2] * c[2]) * 3048.0f, std::memory_order_relaxed);
+        entry->rangeM.store(std::sqrt(w[0] * w[0] + w[1] * w[1] + w[2] * w[2]) * 3.048f, std::memory_order_relaxed);
+    }
+#else
+    (void)caller; (void)base; (void)size; (void)profile; (void)flags; (void)start; (void)end;
+#endif
+}
+
 // Cold worker, every 5 s: how the servo target was chosen per title, and why a title does not trace.
 void LegacySightReport()
 {
@@ -311,6 +391,30 @@ void LegacySightReport()
             double(window.missMm.load()), double(window.maxMissMm.exchange(0.0f)), double(window.rangeM.load()),
             double(window.angleDeg.load()), double(window.startAlongMm.load()),
             double(window.startRightMm.load()), double(window.startUpMm.load()));
+    }
+    if (g_config.halo4_ray_census)
+    {
+        uint32_t callers = 0, calls = 0;
+        for (auto& entry : g_halo4RayCensus)
+        {
+            const uint32_t rva = entry.rva.load(std::memory_order_acquire);
+            if (!rva)
+                continue;
+            const uint32_t count = entry.count.exchange(0, std::memory_order_relaxed);
+            const uint32_t aligned = entry.aligned.exchange(0, std::memory_order_relaxed);
+            if (count)
+            {
+                ++callers;
+                calls += count;
+            }
+            if (aligned)
+                LOG("H4 RAYS +0x%X profile 0x%X flags 0x%X: %u calls, %u ALIGNED (start %.0f mm from the eye, "
+                    "%.2f deg from eye->point; the traced point %.0f mm off this line at %.2f m), %.1f m long",
+                    rva, entry.profile.load(), entry.flags.load(), count, aligned, double(entry.startMm.load()),
+                    double(entry.angleDeg.load()), double(entry.missMm.load()), double(entry.rangeM.load()),
+                    double(entry.lengthM.load()));
+        }
+        LOG("H4 RAYS: %u callers, %u raycasts in 5 s", callers, calls);
     }
 #endif
 }
