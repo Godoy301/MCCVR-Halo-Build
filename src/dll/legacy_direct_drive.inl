@@ -31,7 +31,9 @@
 // ON FOOT, and (seat_direct_drive, Halo 3 / ODST) in a seat that fires the occupant's own weapon: the input
 // thread publishes such a seat's setpoint flagged `seated`, and the write goes through Reach's seat-limit
 // latch (aim_write::LimitLatch) so a passenger's cone holds it at the edge instead of the aim running past.
-// Every other seat is never written; it keeps the servo.
+// An arm earned on foot does not carry into a seat: every seat stint first passes the same agreement on
+// its own record, under the servo, before its first write. Every other seat is never written; it keeps
+// the servo.
 
 namespace
 {
@@ -97,10 +99,13 @@ struct LegacyDriveState
     std::atomic<bool> setSeated{false};      // the setpoint is a seat's (seat_direct_drive)
     // Seated writes (sim thread): the seat-limit latch, and when a seat write last ran / last held short.
     aim_write::LimitLatch seatLatch{};
+    uint32_t seatTicks = 0;                  // consecutive seat writes since the latch last reset (capped)
+    uint32_t seatAgree = 0;                  // this seat stint: consecutive updates its record held the aim
+    bool seatVerified = false;               // this seat stint passed its own agreement
     std::atomic<uint64_t> seatWriteMs{0}, seatLimitedMs{0};
     // Status (sim thread counts, cold worker logs).
     std::atomic<uint32_t> calls{0}, writes{0}, arms{0}, disarms{0}, seatedSkips{0}, faults{0};
-    std::atomic<uint32_t> seatWrites{0}, seatHeld{0};
+    std::atomic<uint32_t> seatWrites{0}, seatHeld{0}, seatVerifies{0}, seatUnverified{0};
     std::atomic<float> nativeYaw{0.0f}, nativePitch{0.0f};
 };
 LegacyDriveState g_legacyDrive[3];
@@ -113,6 +118,29 @@ int LegacyDriveSlot(GameTitle title)
 float LegacyDriveAngleDiff(float a, float b)
 {
     return std::remainder(a - b, 6.28318531f);
+}
+
+// ValueAgreement: the record holds the game's own aim within 1.7 deg for 30 consecutive updates.
+constexpr float kLegacyDriveAgreeRad = 0.03f;
+constexpr uint32_t kLegacyDriveAgreeUpdates = 30;
+// The first writes of a seat stint read no limit off the record. Until the input thread sees the seat
+// written (LegacyDriveSeatLive) the servo may still be deflecting the stick, and the game's next update
+// moves our first write by that deflection, which the latch would take for a seat limit.
+constexpr uint32_t kLegacyDriveSeatPrimeUpdates = 2;
+
+bool LegacyDriveAgrees(bool fresh, float nativeYaw, float nativePitch, float aimYaw, float aimPitch)
+{
+    return fresh && std::isfinite(nativeYaw) && std::isfinite(nativePitch) && std::isfinite(aimYaw) &&
+           std::isfinite(aimPitch) && std::fabs(LegacyDriveAngleDiff(nativeYaw, aimYaw)) < kLegacyDriveAgreeRad &&
+           std::fabs(nativePitch - aimPitch) < kLegacyDriveAgreeRad;
+}
+
+// Sim thread: the seat stint is over (left the seat, the seat stopped qualifying, a disarm or a fault). The
+// next seat proves its record again.
+void LegacyDriveForgetSeat(LegacyDriveState& st)
+{
+    st.seatAgree = 0;
+    st.seatVerified = false;
 }
 
 // The pattern matches at exactly base + rva (not merely somewhere).
@@ -216,6 +244,11 @@ bool LegacyDriveInstall(GameTitle title, uintptr_t base, size_t size)
     st.agree = 0;
     st.liveMs.store(0, std::memory_order_release);
     st.setValid.store(false, std::memory_order_release);
+    st.seatLatch.reset();
+    st.seatTicks = 0;
+    LegacyDriveForgetSeat(st);
+    st.seatWriteMs.store(0, std::memory_order_release);
+    st.seatLimitedMs.store(0, std::memory_order_release);
     st.tlsIndexAddress = indexAddress;
     const MH_STATUS created = MH_CreateHook(target, detour, orig);
     if (created != MH_OK || MH_EnableHook(target) != MH_OK)
@@ -267,7 +300,7 @@ bool LegacyDriveRemove(GameTitle title)
 // Input thread: the servo's target (the converged aim when it resolves) and the game's own aim. `seated`:
 // the setpoint belongs to a seat the hook may write (seat_direct_drive); on foot it is false.
 void LegacyDrivePublish(GameTitle title, float yaw, float pitch, float aimYaw, float aimPitch, bool valid,
-                        bool seated = false)
+                        bool seated)
 {
     const int slot = LegacyDriveSlot(title);
     if (slot < 0)
@@ -327,6 +360,8 @@ extern "C" void LegacyPcApplyForUser(int slot, int user)
     const auto& site = kLegacyDriveSites[slot];
     st.callbacks.fetch_add(1, std::memory_order_acq_rel);
     st.calls.fetch_add(1, std::memory_order_relaxed);
+    bool seatWrote = false;   // this update ended in a seat write (the latch keeps its last value only then)
+    bool seatKept = false;    // this update continued a seat stint (its agreement count survives)
     __try
     {
         do
@@ -373,29 +408,41 @@ extern "C" void LegacyPcApplyForUser(int slot, int user)
             }
             const uint64_t now = GetTickCount64();
             const bool fresh = coherent && valid && setMs && now >= setMs && now - setMs <= 200;
+            // ValueAgreement (the arm gate, and each seat stint's own check below): the record holds the
+            // game's own aim.
+            const bool agrees = LegacyDriveAgrees(fresh, nativeYaw, nativePitch, aimYaw, aimPitch);
             // Seated: only a seat the input thread flagged (seat_direct_drive, a seat that fires the occupant's
             // own weapon; Halo 3 / ODST) is written, through the seat-limit latch below. Any other seat keeps
             // the servo, exactly as before.
             const bool onFoot = LegacyDriveLocalOnFoot(slot);
             const bool seatWrite = !onFoot && slot != 2 && g_config.seat_direct_drive && fresh && seatedSet;
+            seatKept = seatWrite;
             if (!onFoot && !seatWrite)
             {
                 st.seatedSkips.fetch_add(1, std::memory_order_relaxed);
                 st.agree = 0;
-                st.seatLatch.reset();
                 break;
             }
-            if (onFoot)
-                st.seatLatch.reset();
+            // SEATED VALUE AGREEMENT. A seat's record need not hold the aim the shot follows the way an
+            // on-foot record does (a driver seat measured 1.8 deg between them), and an arm earned on foot says
+            // nothing about it. So each seat stint proves its own, counted here whether or not the hook is
+            // armed yet: the record holds the game's aim, under the servo, for the arm gate's 30 updates before
+            // the first seat write. A seat that never agrees is never written; it keeps the servo, and the
+            // report counts the updates it waited.
+            if (seatWrite && !st.seatVerified)
+            {
+                st.seatAgree = agrees ? st.seatAgree + 1 : 0;
+                if (st.seatAgree >= kLegacyDriveAgreeUpdates)
+                {
+                    st.seatVerified = true;
+                    st.seatVerifies.fetch_add(1, std::memory_order_relaxed);
+                }
+            }
             if (!st.armed.load(std::memory_order_acquire))
             {
                 // ValueAgreement: the record must hold the game's own aim before it is ever written.
-                const bool agrees = fresh && std::isfinite(nativeYaw) && std::isfinite(nativePitch) &&
-                    std::isfinite(aimYaw) && std::isfinite(aimPitch) &&
-                    std::fabs(LegacyDriveAngleDiff(nativeYaw, aimYaw)) < 0.03f &&
-                    std::fabs(nativePitch - aimPitch) < 0.03f;
                 st.agree = agrees ? st.agree + 1 : 0;
-                if (st.agree >= 30)
+                if (st.agree >= kLegacyDriveAgreeUpdates)
                 {
                     st.expected.store(pc, std::memory_order_release);
                     st.armed.store(true, std::memory_order_release);
@@ -407,30 +454,35 @@ extern "C" void LegacyPcApplyForUser(int slot, int user)
             {
                 st.armed.store(false, std::memory_order_release);
                 st.agree = 0;
+                seatKept = false;
                 st.disarms.fetch_add(1, std::memory_order_relaxed);
                 break;
             }
             st.liveMs.store(now, std::memory_order_release);
+            if (seatWrite && !st.seatVerified)
+            {
+                st.seatUnverified.fetch_add(1, std::memory_order_relaxed);
+                break;
+            }
             if (fresh && std::isfinite(yaw) && std::isfinite(pitch))
             {
                 // Stay on the branch the game's yaw is on (never a 2*pi jump) and inside its pitch clamp.
                 float y = aim_write::unwrap_to_branch(yaw, nativeYaw);
                 float p = aim_write::clamp_pitch(pitch, 1.45f);
-                if (seatWrite && std::isfinite(y))
+                bool limited = false;
+                if (seatWrite)
                 {
                     // The game clamped the record to the seat's limits before this write; the latch reads
                     // that clamp off last tick's write and keeps this one at the limit (one probe step past
                     // it), so a passenger's cone holds the aim at its edge instead of the write running on.
+                    // The stint's first writes read no limit (kLegacyDriveSeatPrimeUpdates).
+                    if (st.seatTicks < kLegacyDriveSeatPrimeUpdates)
+                        st.seatLatch.reset();
                     const float native[2]{nativeYaw, nativePitch}, target[2]{y, p};
                     float held[2]{};
-                    const bool limited = st.seatLatch.apply(native, target, held);
+                    limited = st.seatLatch.apply(native, target, held);
                     y = aim_write::unwrap_to_branch(held[0], nativeYaw);
                     p = aim_write::clamp_pitch(held[1], 1.45f);
-                    st.seatWriteMs.store(now, std::memory_order_release);
-                    st.seatLimitedMs.store(limited ? now : 0, std::memory_order_release);
-                    st.seatWrites.fetch_add(1, std::memory_order_relaxed);
-                    if (limited)
-                        st.seatHeld.fetch_add(1, std::memory_order_relaxed);
                 }
                 if (std::isfinite(y) && std::isfinite(p))
                 {
@@ -440,6 +492,14 @@ extern "C" void LegacyPcApplyForUser(int slot, int user)
                     {
                         const float written[2]{y, p};
                         st.seatLatch.wrote(written);
+                        seatWrote = true;
+                        if (st.seatTicks < kLegacyDriveSeatPrimeUpdates)
+                            ++st.seatTicks;
+                        st.seatWriteMs.store(now, std::memory_order_release);
+                        st.seatLimitedMs.store(limited ? now : 0, std::memory_order_release);
+                        st.seatWrites.fetch_add(1, std::memory_order_relaxed);
+                        if (limited)
+                            st.seatHeld.fetch_add(1, std::memory_order_relaxed);
                     }
                     st.writes.fetch_add(1, std::memory_order_relaxed);
                 }
@@ -449,8 +509,20 @@ extern "C" void LegacyPcApplyForUser(int slot, int user)
     __except (EXCEPTION_EXECUTE_HANDLER)
     {
         st.armed.store(false, std::memory_order_release);
+        seatWrote = false;
+        seatKept = false;
         st.faults.fetch_add(1, std::memory_order_relaxed);
     }
+    // The latch's contract is "nothing written last tick: forget everything". Every update that did not end
+    // in a seat write -- on foot, a skipped or unverified seat, disarmed, switched off, a fault -- resets it
+    // here, so a later seat write never reads a limit off a value this hook did not write.
+    if (!seatWrote)
+    {
+        st.seatLatch.reset();
+        st.seatTicks = 0;
+    }
+    if (!seatKept)
+        LegacyDriveForgetSeat(st);
     st.callbacks.fetch_sub(1, std::memory_order_acq_rel);
 }
 
@@ -469,10 +541,11 @@ void LegacyDriveReport()
         if (!calls)
             continue;
         LOG("DRIVE %s: armed=%d updates %u, wrote %u; arms %u, disarms %u, seated %u, faults %u; seat writes %u "
-            "(held at a seat limit %u); record yaw %.3f pitch %.3f vs game aim yaw %.3f pitch %.3f",
+            "(held at a seat limit %u), seat checks passed %u, seat updates held for the check %u; record yaw "
+            "%.3f pitch %.3f vs game aim yaw %.3f pitch %.3f",
             kLegacyDriveSites[slot].name, st.armed.load() ? 1 : 0, calls, st.writes.exchange(0), st.arms.exchange(0),
             st.disarms.exchange(0), st.seatedSkips.exchange(0), st.faults.exchange(0), st.seatWrites.exchange(0),
-            st.seatHeld.exchange(0), st.nativeYaw.load(), st.nativePitch.load(), st.aimYaw.load(),
-            st.aimPitch.load());
+            st.seatHeld.exchange(0), st.seatVerifies.exchange(0), st.seatUnverified.exchange(0),
+            st.nativeYaw.load(), st.nativePitch.load(), st.aimYaw.load(), st.aimPitch.load());
     }
 }

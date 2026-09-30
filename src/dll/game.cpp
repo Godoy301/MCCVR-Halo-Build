@@ -166,7 +166,8 @@ extern "C" { void* g_halo3PcOrig = nullptr; void* g_odstPcOrig = nullptr; void* 
 extern "C" void LegacyPcApplyForUser(int slot, int user);
 bool LegacyDriveInstall(GameTitle title, uintptr_t base, size_t size);
 bool LegacyDriveRemove(GameTitle title);
-void LegacyDrivePublish(GameTitle title, float yaw, float pitch, float aimYaw, float aimPitch, bool valid);
+void LegacyDrivePublish(GameTitle title, float yaw, float pitch, float aimYaw, float aimPitch, bool valid,
+                        bool seated);
 bool LegacyDriveLive(GameTitle title);
 void LegacyDriveReport();
 #include "../common/aim_servo_logic.h"
@@ -48307,7 +48308,8 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
                 }
 #if HALOMCCVR_EXPERIMENTAL_ODST_BRINGUP
                 else if (sightTitle == GameTitle::Halo3ODST && OdstVehicleFpActive() &&
-                         g_odstNativeSeatState.load(std::memory_order_acquire) == 1u)
+                         g_odstNativeSeatState.load(std::memory_order_acquire) ==
+                             static_cast<uint32_t>(OdstNativeSeatState::Active))
                 {
                     OdstSeatSnapshot seat;
                     if (OdstReadSeatSnapshot(seat) && seat.parentHandle != -1)
@@ -48442,6 +48444,9 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
             // weapon, where the look IS the gun (a passenger). Drivers steer by it and gunners turn a rate-capped
             // barrel; both keep the servo. The hook writes the setpoint through the seat-limit latch.
             // "Converged aim in seats: Off" (reach_vehicle_aim 0) keeps every seat on the old stick aim, this too.
+            // Both titles also require C20 to hold the seat in the game's first-person camera (vehicle_hide_body),
+            // as their seated sight gates above do: Halo3OccupiedSeatFlags() is 0 unless Halo 3's seat patch is
+            // Active, and ODST checks its own. A chase-camera seat keeps the servo.
             bool seatDrive = false;
             if (driveSeated && g_config.seat_direct_drive && g_config.reach_vehicle_aim > 0 && !halo4Aim)
             {
@@ -48449,7 +48454,10 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
                     seatDrive = Halo3VehicleFpActive() && Halo3SeatFiresPersonalWeapon(Halo3OccupiedSeatFlags());
 #if HALOMCCVR_EXPERIMENTAL_ODST_BRINGUP
                 else if (driveTitle == GameTitle::Halo3ODST)
-                    seatDrive = OdstVehicleFpActive() && OdstSeatFiresPersonalWeapon();
+                    seatDrive = OdstVehicleFpActive() &&
+                        g_odstNativeSeatState.load(std::memory_order_acquire) ==
+                            static_cast<uint32_t>(OdstNativeSeatState::Active) &&
+                        OdstSeatFiresPersonalWeapon();
 #endif
             }
             LegacyDrivePublish(driveTitle, desiredYaw, desiredPitch, aimYaw, aimPitch, !driveSeated || seatDrive,
