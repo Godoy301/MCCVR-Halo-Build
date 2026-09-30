@@ -1143,37 +1143,12 @@ namespace
             "Left/right: negative moves left, positive moves right.");
         ImGui::Spacing();
         ImGui::Separator();
-        ImGui::Text("Vehicle aim (every title with seat aiming)");
-        {
-            static const char* const kVehicleAimModes[] = {
-                "Off (old stick aim)", "Gunners and passengers", "Every seat I aim"};
-            int vehicleAim = std::clamp(g_config.reach_vehicle_aim, 0, 2);
-            if (ImGui::Combo("Converged aim in seats", &vehicleAim, kVehicleAimModes, 3))
-            {
-                g_config.reach_vehicle_aim = vehicleAim;
-                changed = true;
-            }
-            bool seatDrive = g_config.seat_direct_drive != 0;
-            if (ImGui::Checkbox("Direct drive in passenger seats (Halo 3, ODST; experimental)", &seatDrive))
-            {
-                g_config.seat_direct_drive = seatDrive ? 1 : 0;
-                changed = true;
-            }
-            ImGui::TextDisabled("With Direct drive on, a first-person seat that fires your own weapon is\n"
-                                "written like on foot instead of steered by the stick, once its aim checks\n"
-                                "out (about a second after you sit down; a seat that never does keeps the\n"
-                                "stick aim). The seat's limits still hold.");
-        }
-        ImGui::TextDisabled(
-            "Halo 3 and ODST seats converge while Converged aim (Weapon & aim) is on;\n"
-            "Off here keeps their old seat aim. In Reach, with Direct drive on, seats get the on-foot\n"
-            "aim: the shot lands on what you point at, at any distance. Reach fires\n"
-            "a seat's weapon at what its own crosshair hits, and the aim is bent\n"
-            "so that crosshair sits on your target. Turret and passenger limits\n"
-            "still hold. Gunners and passengers also covers drivers whose gun\n"
-            "turns apart from the hull (Scorpion, Wraith); a driver whose look\n"
-            "steers keeps the stick aim. A seat that steers with the stick always\n"
-            "does.");
+        ImGui::Text("Aim in seats");
+        ImGui::TextDisabled("Seats follow Converged aim and Direct drive in Weapon & Aim, as on foot.\n"
+                            "Reach fires a seat's weapon at what that seat's own crosshair hits, so the\n"
+                            "aim is bent to put that crosshair on your target. A turret's or passenger\n"
+                            "seat's limits still hold; there the crosshair shows where the gun really\n"
+                            "points. A seat whose stick steers the vehicle keeps the stick.");
         ImGui::Spacing();
         ImGui::Separator();
         ImGui::Text("Turning with the vehicle");
@@ -1333,6 +1308,10 @@ namespace
                                 "controller at once instead of at the game's turn rate. It arms itself a moment after\n"
                                 "you switch it on. OFF: the aim steers the game's look like a right stick.\n"
                                 "Halo CE and Halo 2 always write their aim directly. Both switches are live.");
+            ImGui::TextDisabled("Both cover vehicle seats too. Every seat you aim from converges (Halo 3 and ODST\n"
+                                "in first-person seats; Reach with Direct drive). With Direct drive, a Reach seat,\n"
+                                "and a Halo 3 or ODST seat that fires your own weapon, has its aim written too;\n"
+                                "a Halo 3 or ODST seat first checks its aim, about a second after you sit down.");
         }
         ImGui::Spacing();
         ImGui::Separator();

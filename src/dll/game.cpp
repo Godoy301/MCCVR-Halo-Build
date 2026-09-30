@@ -48265,8 +48265,8 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
 #endif
             // SEATED: C20 keeps every Halo 3 / ODST seat in the game's own first-person camera, so the engine
             // eye is the same camera as on foot. The trace must pass through the vehicle and the one carrying
-            // it, which the vehicle sampler names; with the vehicle unknown the seat is not traced. F1's
-            // "Converged aim in seats" (reach_vehicle_aim, every title) Off keeps every seat's old aim.
+            // it, which the vehicle sampler names; with the vehicle unknown the seat is not traced.
+            // reach_vehicle_aim = 0 (cfg only; F1's Converged aim covers seats) keeps every seat's old aim.
             // ...and only while C20 actually holds that seat in the first-person camera (vehicle_hide_body): without
             // it the engine renders its chase camera, g_baseCam is that camera, and a solve from it would bend
             // the shot for an eye the seat does not fire from.
@@ -48422,7 +48422,7 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
             // SEATED DIRECT DRIVE (seat_direct_drive, Halo 3 / ODST): only a seat that fires the occupant's own
             // weapon, where the look IS the gun (a passenger). Drivers steer by it and gunners turn a rate-capped
             // barrel; both keep the servo. The hook writes the setpoint through the seat-limit latch.
-            // "Converged aim in seats: Off" (reach_vehicle_aim 0) keeps every seat on the old stick aim, this too.
+            // reach_vehicle_aim = 0 or seat_direct_drive = 0 (cfg-only kill switches) keeps every seat on the stick.
             // Both titles also require C20 to hold the seat in the game's first-person camera (vehicle_hide_body),
             // as their seated sight gates above do: Halo3OccupiedSeatFlags() is 0 unless Halo 3's seat patch is
             // Active, and ODST checks its own. A chase-camera seat keeps the servo.
