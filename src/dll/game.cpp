@@ -48478,11 +48478,21 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
                 // claim no converged shot. Otherwise the written aim is the target: a converged one is in effect.
                 if (LegacyDriveSeatLimited(driveTitle))
                 {
-                    const float vrYaw = headYawReference + g_yawSign.load() * WrapPi(aimYaw - gameYawReference);
-                    const float vrPitch = g_pitchSign.load() * aimPitch;
-                    g_aimClampedVrYaw.store(vrYaw, std::memory_order_relaxed);
-                    g_aimClampedVrPitch.store(vrPitch, std::memory_order_relaxed);
-                    g_aimClampedValid.store(1, std::memory_order_release);
+                    // Back through the frame the target came through, hull pitch included when the view
+                    // follows the vehicle (Halo3SeatAimToVrReticle).
+                    float vrYaw = 0.0f, vrPitch = 0.0f;
+                    if (Halo3SeatAimToVrReticle(aimForward, followedVehicleFrame, hullYaw, hullPitch,
+                                                gameYawReference, headYawReference, g_yawSign.load(),
+                                                g_pitchSign.load(), vrYaw, vrPitch))
+                    {
+                        g_aimClampedVrYaw.store(vrYaw, std::memory_order_relaxed);
+                        g_aimClampedVrPitch.store(vrPitch, std::memory_order_relaxed);
+                        g_aimClampedValid.store(1, std::memory_order_release);
+                    }
+                    else
+                    {
+                        g_aimClampedValid.store(0, std::memory_order_release);
+                    }
                 }
                 else
                 {

@@ -1273,11 +1273,11 @@ inline bool Halo3ComposeRollStableFollowBasis(
     return true;
 }
 
-// Dormant algebraic inverse retained from the pre-package Reach reticle draft.
-// The active reticle path deliberately does not use it: it projects world aim
+// Algebraic inverse of the follow basis, from the pre-package Reach reticle
+// draft. Reach's reticle deliberately does not use it: it projects world aim
 // through the final completed compact-camera basis, which already includes
-// pitch trim, View Follow, roll and headset smoothing. Keeping this pure helper
-// tested records the rejected draft's math without putting it on a hot path.
+// pitch trim, View Follow, roll and headset smoothing. The Halo 3 / ODST
+// seat-drive honest reticle does (Halo3SeatAimToVrReticle, below).
 inline bool Halo3InverseRollStableFollowForward(
     const float worldForward[3], float hullYaw, float hullPitch,
     float gameYawRef, float& outTrackedYawDelta, float& outTrackedPitch)
@@ -1341,6 +1341,52 @@ inline bool Halo3InverseRollStableFollowForward(
         return false;
     outTrackedYawDelta = trackedYawDelta;
     outTrackedPitch = trackedPitch;
+    return true;
+}
+
+// The honest reticle for a seat whose aim is held short of its target: the
+// game's aim (world forward, game axes) expressed back in VR space through the
+// mapping the seat's target came through, as the yaw/pitch the reticle is
+// drawn along. The forward mapping is
+//   delta = yawSign * wrap(vrYaw - headYawRef),  pitch = pitchSign * vrPitch,
+// then the game angles are gameYawRef + delta and pitch, or, in the roll-stable
+// vehicle-follow frame (`followed`), that pair composed into the hull's yaw and
+// PITCH (Halo3ComposeRollStableFollowBasis). Undoing only the flat form in a
+// followed seat leaves the hull pitch on the reticle: on a 20-degree slope the
+// reticle sits ~20 degrees off the gun when it aims over the hood or the tail.
+inline bool Halo3SeatAimToVrReticle(
+    const float aimForward[3], bool followed, float hullYaw, float hullPitch,
+    float gameYawRef, float headYawRef, float yawSign, float pitchSign,
+    float& outVrYaw, float& outVrPitch)
+{
+    if (!aimForward || !std::isfinite(aimForward[0]) ||
+        !std::isfinite(aimForward[1]) || !std::isfinite(aimForward[2]) ||
+        !std::isfinite(gameYawRef) || !std::isfinite(headYawRef) ||
+        !std::isfinite(yawSign) || !std::isfinite(pitchSign))
+        return false;
+    float trackedYawDelta = 0.0f, trackedPitch = 0.0f;
+    if (followed)
+    {
+        if (!Halo3InverseRollStableFollowForward(
+                aimForward, hullYaw, hullPitch, gameYawRef,
+                trackedYawDelta, trackedPitch))
+            return false;
+    }
+    else
+    {
+        const float z = aimForward[2] < -1.0f
+            ? -1.0f
+            : (aimForward[2] > 1.0f ? 1.0f : aimForward[2]);
+        trackedYawDelta = Halo3WrapPi(
+            std::atan2(aimForward[1], aimForward[0]) - gameYawRef);
+        trackedPitch = std::asin(z);
+    }
+    const float vrYaw = headYawRef + yawSign * trackedYawDelta;
+    const float vrPitch = pitchSign * trackedPitch;
+    if (!std::isfinite(vrYaw) || !std::isfinite(vrPitch))
+        return false;
+    outVrYaw = vrYaw;
+    outVrPitch = vrPitch;
     return true;
 }
 

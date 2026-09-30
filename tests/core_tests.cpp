@@ -16784,9 +16784,56 @@ int main()
                 !Halo3SeatFollowsPitch(Halo3VehicleId::Unknown, 0, false);
             Check(pitchSafe && hillSafe && sideSafe && pitchSeatPolicy,
                   "Vehicle pitch follow is roll-stable and seat-safe");
+            // The seat-drive honest reticle: a VR direction taken forward through
+            // the follow basis (as Game_ComputeAimStick maps a seat's target) comes
+            // back as the same VR direction, where undoing only the flat mapping
+            // leaves the hull's pitch on it. Unfollowed, it is the flat inverse.
+            constexpr float seatHeadYawRef = 0.9f;
+            constexpr float seatYawSign = -1.0f;
+            constexpr float seatPitchSign = 1.0f;
+            constexpr float seatSlope = 0.349066f;   // 20 degrees
+            float seatAim[9], seatVrYaw = 0.0f, seatVrPitch = 0.0f;
+            const float seatVrYawIn = 1.3f, seatVrPitchIn = -0.1f;
+            const bool seatComposed = Halo3ComposeRollStableFollowBasis(
+                0.4f, seatSlope, 0.7f,
+                seatYawSign * Halo3WrapPi(seatVrYawIn - seatHeadYawRef),
+                seatPitchSign * seatVrPitchIn, 0.0f, seatAim);
+            const bool seatFollowedRoundTrip = seatComposed &&
+                Halo3SeatAimToVrReticle(seatAim, true, 0.4f, seatSlope, 0.7f,
+                    seatHeadYawRef, seatYawSign, seatPitchSign,
+                    seatVrYaw, seatVrPitch) &&
+                approx(Halo3WrapPi(seatVrYaw - seatVrYawIn), 0.0f) &&
+                approx(seatVrPitch, seatVrPitchIn);
+            // Straight over the hood on the slope: the flat inverse reads the
+            // hull's 20 degrees as the reticle's pitch; the follow inverse, 0.
+            float hoodAim[9], hoodYaw = 0.0f, hoodPitch = 0.0f;
+            const bool hoodComposed = Halo3ComposeRollStableFollowBasis(
+                0.4f, seatSlope, 0.4f, 0.0f, 0.0f, 0.0f, hoodAim);
+            const bool seatHoodSafe = hoodComposed &&
+                approx(std::asin(hoodAim[2]), seatSlope) &&
+                Halo3SeatAimToVrReticle(hoodAim, true, 0.4f, seatSlope, 0.4f,
+                    seatHeadYawRef, seatYawSign, seatPitchSign,
+                    hoodYaw, hoodPitch) &&
+                approx(hoodPitch, 0.0f) &&
+                approx(Halo3WrapPi(hoodYaw - seatHeadYawRef), 0.0f);
+            const float flatSeatAim[3] = {
+                std::cos(-0.2f) * std::cos(0.5f),
+                std::cos(-0.2f) * std::sin(0.5f), std::sin(-0.2f)};
+            const bool seatFlatSafe =
+                Halo3SeatAimToVrReticle(flatSeatAim, false, 0.0f, 0.0f, 0.3f,
+                    seatHeadYawRef, seatYawSign, seatPitchSign,
+                    seatVrYaw, seatVrPitch) &&
+                approx(seatVrYaw,
+                    seatHeadYawRef + seatYawSign * Halo3WrapPi(0.5f - 0.3f)) &&
+                approx(seatVrPitch, seatPitchSign * -0.2f) &&
+                !Halo3SeatAimToVrReticle(badNose, false, 0.0f, 0.0f, 0.0f,
+                    0.0f, 1.0f, 1.0f, seatVrYaw, seatVrPitch) &&
+                !Halo3SeatAimToVrReticle(zeroAim, true, 0.0f, 0.0f, 0.0f,
+                    0.0f, 1.0f, 1.0f, seatVrYaw, seatVrPitch);
             const bool inverseSafe = inverseFollowSafe &&
                 inverseFlatSafe && inverseRejectsZero &&
-                inverseRejectsNonfinite;
+                inverseRejectsNonfinite && seatFollowedRoundTrip &&
+                seatHoodSafe && seatFlatSafe;
             Check(inverseSafe,
                   "World-space vehicle aim inverts to tracked yaw/pitch");
         }
