@@ -42735,37 +42735,53 @@ namespace
         // menu/theatre presentation returns. Loading hitches shorter than
         // 2.5 s are untouched; a longer one re-earns the install through the
         // normal level-load gate, as every consecutive level already does.
+        // AN UNPAUSE IS NOT A LEVEL EXIT. The pause screen renders stock
+        // windows, so the serial stands still through the whole pause, and
+        // the first owned frame after it comes a moment after the pause state
+        // clears: Reach measured the sim resuming ~1.5 s after its flag
+        // (title_runtime_state.h). Without a grace any pause longer than
+        // 2.5 s retired the core at the unpause, the same fault Reach had,
+        // so the unpause gets kTitlePauseResumeGraceMs (TitleHeartbeatLost).
         {
             static uint32_t heartbeatSerial = 0;
             static uint64_t heartbeatMs = 0;
             static uint32_t heartbeatGeneration = 0;
+            static bool heartbeatPaused = false;
+            static uint64_t pauseExitMs = 0;
             const uint32_t generation =
                 g_halo4Camera.generation.load(std::memory_order_acquire);
             const uint32_t serial =
                 g_halo4Camera.enginePitchSerial.load(std::memory_order_acquire);
             const uint64_t nowMs = GetTickCount64();
+            const bool paused = VR_IsPausePresentation();
+            if (heartbeatPaused && !paused)
+                pauseExitMs = nowMs;
+            heartbeatPaused = paused;
             if (generation != heartbeatGeneration)
             {
                 heartbeatGeneration = generation;
                 heartbeatSerial = serial;
                 heartbeatMs = nowMs;
+                pauseExitMs = 0;
             }
             else if (serial != heartbeatSerial)
             {
                 heartbeatSerial = serial;
                 heartbeatMs = nowMs;
             }
-            else if (serial != 0 && heartbeatMs != 0 &&
+            else if (serial != 0 &&
                      g_halo4Camera.armed.load(std::memory_order_acquire) &&
                      !g_halo4Camera.teardownRequested.load(
                          std::memory_order_acquire) &&
-                     !VR_IsPausePresentation() &&
-                     nowMs - heartbeatMs > 2500)
+                     TitleHeartbeatLost(nowMs, heartbeatMs, paused,
+                         pauseExitMs, 2500))
             {
                 LOG("Halo 4 camera core: no camera heartbeat for %llu ms while "
-                    "armed (the level closed) - retiring so presentation "
+                    "armed outside a pause (last unpause %lld ms ago, -1 = none "
+                    "this level; the level closed) - retiring so presentation "
                     "returns to the menu screen, exactly like the other titles",
-                    static_cast<unsigned long long>(nowMs - heartbeatMs));
+                    static_cast<unsigned long long>(nowMs - heartbeatMs),
+                    pauseExitMs ? static_cast<long long>(nowMs - pauseExitMs) : -1LL);
                 g_halo4Camera.armed.store(false, std::memory_order_release);
                 g_halo4Camera.teardownRequested.store(
                     true, std::memory_order_release);

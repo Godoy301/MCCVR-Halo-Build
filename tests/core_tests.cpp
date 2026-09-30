@@ -18175,6 +18175,12 @@ int main()
             "outside any pause, more than one second without a heartbeat is lost");
         Check(!TitleHeartbeatLost(5'000,0,false,0,1000) && !TitleHeartbeatLost(3'000,4'000,false,0,1000),
             "no heartbeat yet, or one stamped after this frame read the clock, never tears down");
+        // Halo 4's level-exit rule (2.5 s of an unchanged camera serial) has the same shape: its pause screen
+        // renders stock windows, so the serial stands still for the whole pause.
+        Check(!TitleHeartbeatLost(unpaused+50,lastBeat,false,unpaused,2500),
+            "Halo 4: the first worker tick after a 13 s pause is not a level exit");
+        Check(TitleHeartbeatLost(unpaused+kTitlePauseResumeGraceMs+1,lastBeat,false,unpaused,2500),
+            "Halo 4: a level quit from the pause menu still retires the core once the grace ends");
     }
     Check(!Config{}.roomscale_movement, "roomscale is opt-in for existing and new configurations");
 
