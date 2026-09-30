@@ -6,8 +6,8 @@ using OdstContactMeleeFn=void(__fastcall*)(uint32_t,int32_t,int16_t,float);
 // slot a seventh would use (LTCG: every native caller reserves it, so the compiler may). The original is
 // therefore called with two spare slots it may scribble on: called with only six, that byte landed on the
 // detour's saved r15 and went back to the native caller -- the unit-action updater 3FCBE4 then read its
-// own unit through a pointer one byte off and faulted (the ODST crashes, 2026-09-29). tools/audit_
-// caller_area.py finds any other hooked function that does this.
+// own unit through a pointer one byte off and faulted (the ODST crashes, 2026-09-29).
+// tools/audit_caller_area.py finds any other hooked function that does this.
 using OdstContactDamageFn=void(__fastcall*)(void*,uint32_t,int16_t,int16_t,uint16_t,void*,
     uint64_t spareSeventh,uint64_t spareEighth);
 struct OdstContactRuntime
