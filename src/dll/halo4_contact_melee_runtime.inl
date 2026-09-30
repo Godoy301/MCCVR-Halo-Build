@@ -1,6 +1,9 @@
 // H4EK-owned native contact path. Included after Halo 4's physics types/state.
 // Binding and layout evidence: CONTACT-RESUME-CHECKPOINT.md.
-using Halo4ContactUpdateFn=void(__fastcall*)(void*);
+// UnitInstance::Update (0x5ECCB4) returns a byte, "this object did something this tick" (`mov al, r12b`):
+// the biped and vehicle Update virtuals OR it into their own result, and the per-object update lets an
+// object whose updates all report nothing go idle. The detour passes it back, as Halo 3's twin does.
+using Halo4ContactUpdateFn=uint8_t(__fastcall*)(void*);
 using Halo4ContactBuildFn=void(__fastcall*)(uint32_t,int32_t,uint32_t*);
 using Halo4ContactConsumeFn=void(__fastcall*)(uint32_t,uint64_t,int16_t,float,uint8_t,uint32_t*,void*);
 // Forwarded through CallNativeWithSpareSlots (native_forward.h), like every title's damage event.
@@ -346,9 +349,10 @@ void Halo4SightTraceTick(uint32_t unit,void* instance)
         static_cast<uint64_t>(after.QuadPart-before.QuadPart));
 }
 
-__declspec(noinline) void __fastcall Halo4ContactUpdateDetour(void* instance)
+__declspec(noinline) uint8_t __fastcall Halo4ContactUpdateDetour(void* instance)
 {
     g_halo4Contact.callbacks.fetch_add(1,std::memory_order_acq_rel);
+    uint8_t result=0;
     __try
     {
         uint32_t unit=UINT32_MAX;
@@ -360,11 +364,12 @@ __declspec(noinline) void __fastcall Halo4ContactUpdateDetour(void* instance)
                 unit=*reinterpret_cast<const uint32_t*>(static_cast<const uint8_t*>(instance)-0xC);
         }
         __except(EXCEPTION_EXECUTE_HANDLER) { unit=UINT32_MAX; }
-        if(g_halo4Contact.updateOriginal) g_halo4Contact.updateOriginal(instance);
+        if(g_halo4Contact.updateOriginal) result=g_halo4Contact.updateOriginal(instance);
         if(unit!=UINT32_MAX) Halo4ContactTick(unit,instance);
         if(unit!=UINT32_MAX) Halo4SightTraceTick(unit,instance);
     }
     __finally { g_halo4Contact.callbacks.fetch_sub(1,std::memory_order_acq_rel); }
+    return result;
 }
 
 bool RemoveHalo4ContactMelee()
