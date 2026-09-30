@@ -90,6 +90,12 @@
 // previous target, 0x1E0834, installed but never ran on foot.
 extern "C" void ReachPlayerControlHook();                          // naked MinHook detour (asm)
 extern "C" { void* g_reachPcOrig = nullptr; }
+// Reach's first-person render gate (haloreach+0x6527C) is a LEAF, and haloreach.dll's LTCG callers keep
+// r10, r11 and xmm0-xmm5 live across it (0x2B349F: the TLS block in r10, a float in xmm1; 0x2C3B1D: the
+// user index in r10). MinHook therefore enters through a thunk that preserves them
+// (reach_render_gate_thunk.asm) and hands the C++ hook the native return address.
+extern "C" int32_t ReachFirstPersonRenderGateThunk(int32_t outputUserIndex);
+extern "C" int32_t ReachFirstPersonRenderGateEnter(int32_t outputUserIndex, uintptr_t caller);
 // The SETPOINT the hook writes: published only by the aim provider's WriteState actuation
 // (Game_ReachDirectDrivePublish) and released the moment it stops selecting WriteState.
 static std::atomic<float>              g_reachDriveYaw{0.0f};
@@ -18909,11 +18915,12 @@ namespace
         return -1;
     }
 
-    __declspec(noinline) int32_t __fastcall ReachFirstPersonRenderGateHook(
-        int32_t outputUserIndex)
+    // Entered only through ReachFirstPersonRenderGateThunk (reach_render_gate_thunk.asm), which preserves
+    // the volatile registers the native's callers keep live and supplies `caller`: this function's own
+    // _ReturnAddress() would be the thunk.
+    extern "C" __declspec(noinline) int32_t ReachFirstPersonRenderGateEnter(
+        int32_t outputUserIndex, uintptr_t caller)
     {
-        const uintptr_t caller =
-            reinterpret_cast<uintptr_t>(_ReturnAddress());
         int32_t result = -1;
         g_reachCamera.activeCallbacks.fetch_add(
             1, std::memory_order_acq_rel);
@@ -29489,7 +29496,7 @@ namespace
     bool ScanForReachDetourIngress(bool& busy)
     {
         static bool rangesResolved = false;
-        static ReachDetourCodeRange ranges[19]{};
+        static ReachDetourCodeRange ranges[20]{};
         if (!rangesResolved)
         {
             const void* functions[] = {
@@ -29505,7 +29512,9 @@ namespace
                 reinterpret_cast<const void*>(&ReachRainRenderDetour),
                 reinterpret_cast<const void*>(&ReachUnitCameraPositionHook),
                 reinterpret_cast<const void*>(&ReachUnitAdjustHook),
-                reinterpret_cast<const void*>(&ReachFirstPersonRenderGateHook),
+                // The asm thunk MinHook enters (PROC FRAME gives it a .pdata entry); the C++ entry it
+                // calls is the last entry, paired with the same target and trampoline.
+                reinterpret_cast<const void*>(&ReachFirstPersonRenderGateThunk),
                 reinterpret_cast<const void*>(&ReachHudXformDetour),
                 reinterpret_cast<const void*>(&ReachCollisionVectorDetour),
                 reinterpret_cast<const void*>(&ReachContactUpdateDetour),
@@ -29514,6 +29523,7 @@ namespace
                 // Direct drive's naked asm detour: its PROC FRAME gives it the .pdata entry that
                 // ResolveReachDetourCodeRange needs (without one, every Reach teardown would fail).
                 reinterpret_cast<const void*>(&ReachPlayerControlHook),
+                reinterpret_cast<const void*>(&ReachFirstPersonRenderGateEnter),
             };
             static_assert(_countof(functions) == _countof(ranges));
             bool resolved = true;
@@ -29546,6 +29556,7 @@ namespace
             g_reachContact.damageTarget,
             g_reachHudAnchorBasisTarget,
             g_reachPcTarget,
+            g_reachFirstPersonRenderGateTarget,   // its C++ entry (ranges, last)
         };
         void* const trampolines[] = {
             reinterpret_cast<void*>(g_reachOrigMainRenderView),
@@ -29567,6 +29578,7 @@ namespace
             reinterpret_cast<void*>(g_reachContact.damageOriginal),
             reinterpret_cast<void*>(g_reachOrigHudAnchorBasis),
             g_reachPcOrig,
+            reinterpret_cast<void*>(g_origReachFirstPersonRenderGate),
         };
         static_assert(_countof(targets) == _countof(ranges));
         static_assert(_countof(trampolines) == _countof(ranges));
@@ -32137,7 +32149,7 @@ namespace
                 const MH_STATUS created = MH_CreateHook(
                     g_reachFirstPersonRenderGateTarget,
                     reinterpret_cast<void*>(
-                        &ReachFirstPersonRenderGateHook),
+                        &ReachFirstPersonRenderGateThunk),
                     reinterpret_cast<void**>(
                         &g_origReachFirstPersonRenderGate));
                 const bool enabled = created == MH_OK &&

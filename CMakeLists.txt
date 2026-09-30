@@ -324,7 +324,8 @@ if(HALOMCCVR_EXPERIMENTAL_REACH_RENDER_CANDIDATE)
         src/dll/reach_render_candidate.cpp
         src/dll/reach_render_preflight.cpp
         src/dll/reach_aim_provider.cpp
-        src/dll/reach_player_control_hook.asm)
+        src/dll/reach_player_control_hook.asm
+        src/dll/reach_render_gate_thunk.asm)
 endif()
 target_compile_definitions(halo3xr PRIVATE
     UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN
