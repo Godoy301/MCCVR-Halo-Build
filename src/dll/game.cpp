@@ -11142,6 +11142,18 @@ namespace
         g_odstFiringOriginMoves.fetch_add(1, std::memory_order_relaxed);
     }
 
+    // True while O6 above hands the local seated player's own-weapon shot the rendered eye: the hook is
+    // installed, no authored camera holds the view, the seat fires the occupant's weapon, and the rendered eye
+    // is valid. The seat's converged aim solves from that eye while this holds (Game_ComputeAimStick).
+    bool OdstFiringOriginFromEye()
+    {
+        return g_odstFiringOriginReturn != 0 &&
+            !g_odstCinematicLocked.load(std::memory_order_relaxed) &&
+            g_odstSeatedPlayerUnit.load(std::memory_order_relaxed) != -1 &&
+            OdstSeatFiresPersonalWeapon() &&
+            g_camValid.load(std::memory_order_acquire);
+    }
+
     // O3: the follow gate for the shared reader. ODST answers only when its
     // own transaction is armed and fresh, so a Halo 3 sample can never pitch
     // an ODST camera or the reverse.
@@ -48147,8 +48159,26 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
         desiredPitch = asinf(Clamp(followedAim[2], -1.0f, 1.0f));
     }
     // The controller's own direction in the frame the seat is aimed in, before any correction below: what a
-    // SEATED intent ray runs along (trace-and-reaim, below).
-    const float intentYaw = desiredYaw, intentPitch = desiredPitch;
+    // SEATED intent ray runs along (trace-and-reaim, below). The CONTROLLER's direction, not the servo target
+    // above, which steers from the eye through the hand ray's point at the crosshair distance: the traced
+    // reticle is drawn along the controller's direction from the eye (vr.cpp), so the ray the trace measures
+    // must be that one, or the marker and the traced point part by the hand's parallax at that distance.
+    const float handYaw = atan2f(fx, -fz);
+    const float handPitch = Clamp(g_pitchSign.load() * asinf(Clamp(fy, -1.0f, 1.0f)), -1.45f, 1.45f);
+    float intentYaw = gameYawReference + g_yawSign.load() * WrapPi(handYaw - headYawReference);
+    float intentPitch = handPitch;
+    if (followedVehicleFrame)
+    {
+        float followedIntent[9];
+        if (Halo3ComposeRollStableFollowBasis(
+                hullYaw, hullPitch, gameYawReference,
+                g_yawSign.load() * WrapPi(handYaw - headYawReference), handPitch, 0.0f,
+                followedIntent))
+        {
+            intentYaw = atan2f(followedIntent[1], followedIntent[0]);
+            intentPitch = asinf(Clamp(followedIntent[2], -1.0f, 1.0f));
+        }
+    }
 
     // ODST and Reach need no correction here: each has a shot-origin hook that
     // substitutes our rendered eye into (unit_get_camera_position, aiming
@@ -48246,9 +48276,14 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
             // eye is the same camera as on foot. The trace must pass through the vehicle and the one carrying
             // it, which the vehicle sampler names; with the vehicle unknown the seat is not traced. F1's
             // "Converged aim in seats" (reach_vehicle_aim, every title) Off keeps every seat's old aim.
+            // ...and only while C20 actually holds that seat in the first-person camera (vehicle_hide_body): without
+            // it the engine renders its chase camera, g_baseCam is that camera, and a solve from it would bend
+            // the shot for an eye the seat does not fire from.
             if (seated && g_config.reach_vehicle_aim > 0)
             {
-                if (sightTitle == GameTitle::Halo3 && Halo3VehicleFpActive())
+                if (sightTitle == GameTitle::Halo3 && Halo3VehicleFpActive() &&
+                    g_halo3NativeSeatState.load(std::memory_order_acquire) ==
+                        static_cast<uint32_t>(Halo3NativeSeatState::Active))
                 {
                     Halo3SeatSnapshot seat;
                     if (Halo3ReadSeatSnapshot(seat) && seat.parentHandle != -1)
@@ -48258,7 +48293,8 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
                     }
                 }
 #if HALOMCCVR_EXPERIMENTAL_ODST_BRINGUP
-                else if (sightTitle == GameTitle::Halo3ODST && OdstVehicleFpActive())
+                else if (sightTitle == GameTitle::Halo3ODST && OdstVehicleFpActive() &&
+                         g_odstNativeSeatState.load(std::memory_order_acquire) == 1u)
                 {
                     OdstSeatSnapshot seat;
                     if (OdstReadSeatSnapshot(seat) && seat.parentHandle != -1)
@@ -48279,6 +48315,16 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
             {
                 sightHead[0] = g_camX.load(); sightHead[1] = g_camY.load(); sightHead[2] = g_camZ.load();
                 sightEye[0] = g_baseCamX.load(); sightEye[1] = g_baseCamY.load(); sightEye[2] = g_baseCamZ.load();
+#if HALOMCCVR_EXPERIMENTAL_ODST_BRINGUP
+                // ODST's O6 hands a weapon-carrying passenger's shot the RENDERED eye as its origin
+                // (OdstUnitCameraPositionHook), so that shot leaves from the head: solve from the head as well.
+                // Bending the aim for the seat's engine eye on top of that corrected the passenger twice -- the
+                // shot left the head along a line bent for the other eye, parallel and off by their distance.
+                // From the head the solve is the intent ray itself, and the shot follows the sight line at every
+                // depth.
+                if (seated && sightTitle == GameTitle::Halo3ODST && OdstFiringOriginFromEye())
+                    memcpy(sightEye, sightHead, sizeof(sightEye));
+#endif
             }
         }
         if (sightEyes)
