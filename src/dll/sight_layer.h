@@ -114,6 +114,14 @@ bool Game_SightReticleRange(float& outRangeM, bool& outHit);
 // Cold worker: one status line per title that is tracing, every 2 s.
 void Sight_Report();
 
+// SHOT WITNESS (dev; compiled out of player builds): a title's firing path reports each local shot's ray --
+// origin and direction in world units, as the engine adjusted them -- and the cold worker logs, per title
+// every 2 s, where those shots pass the surface under the reticle (the intent ray's latest trace) and the
+// converged point, in the intent ray's own frame (up / right, mm), and where they left from relative to the
+// engine eye and the rendered eye. "The shots land below the reticle" is then a number, and so is its cause.
+void Sight_NoteShot(GameTitle title, uint32_t generation, const float origin[3], const float direction[3]);
+void Sight_ReportShots();
+
 // ENGINE-RAY CENSUS (dev; the callers gate it with the dev key sight_ray_census): which of the title's own
 // collision queries is its crosshair / shot query? A title's collision hook reports each query the game
 // makes with its caller's RVA. One that starts within 0.3 m of the solve's engine eye and runs within 2 deg

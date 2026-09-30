@@ -43510,6 +43510,7 @@ namespace
             Sight_Report();
             LegacySightReport();
             Sight_ReportEngineRays();
+            Sight_ReportShots();
             LegacyDriveReport();
 #if HALOMCCVR_EXPERIMENTAL_REACH_RENDER_CANDIDATE
             // Status the aim provider and the direct-drive hook only count into atomics; logged here.

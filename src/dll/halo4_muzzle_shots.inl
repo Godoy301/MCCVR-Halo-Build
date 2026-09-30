@@ -176,6 +176,17 @@ __declspec(noinline) void __fastcall Halo4MuzzleAimDetour(uint32_t unit,float* o
         feature.aimOriginal(unit,origin,direction,velocity,offset,camera,project,unitAim,simulation);
         if(owned&&std::isfinite(origin[0])&&std::isfinite(origin[1])&&std::isfinite(origin[2]))
             std::memcpy(shot.position,origin,12);
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        // The shot witness (sight_layer.h): the local player's on-foot shot as the engine left it -- origin
+        // projected, offset and obstruction-checked, direction the unit's aim -- measured against the ray the
+        // reticle is on. This call site runs for every barrel of every fire, barrel feature or not.
+        if(origin&&direction&&reinterpret_cast<uintptr_t>(_ReturnAddress())==feature.base+0x617E95)
+        {
+            Halo4VehicleInputState seat{};
+            if(Halo4ReadVehicleInput(seat)&&seat.unit==unit&&!seat.seated)
+                Sight_NoteShot(GameTitle::Halo4,TitleAdapter_GetGeneration(GameTitle::Halo4),origin,direction);
+        }
+#endif
     }
     __finally {feature.callbacks.fetch_sub(1,std::memory_order_acq_rel);}
 }

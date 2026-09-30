@@ -311,6 +311,25 @@ bool Game_SightReticleRange(float& outRangeM, bool& outHit)
 #if HALOMCCVR_DEV_DIAGNOSTICS
 namespace
 {
+// The shot witness's per-title sums since the last report (mm), and the last shot's origin offsets.
+struct ShotWitness
+{
+    std::atomic<uint32_t> count{0}, unmeasured{0};
+    std::atomic<float> surfaceUp{0.0f}, surfaceRight{0.0f}, pointUp{0.0f}, pointRight{0.0f};
+    std::atomic<float> surfaceM{0.0f}, pointM{0.0f};
+    std::atomic<float> fromEye[3]{}, fromHead[3]{};
+};
+ShotWitness g_shots[kTitleSlots];
+constexpr float kMmPerWu = 3048.0f;
+
+void AddRelaxed(std::atomic<float>& total, float value)
+{
+    float current = total.load(std::memory_order_relaxed);
+    while (!total.compare_exchange_weak(current, current + value, std::memory_order_relaxed))
+    {
+    }
+}
+
 struct EngineRayEntry
 {
     std::atomic<uint32_t> rva{0}, profile{0};
@@ -386,6 +405,120 @@ void Sight_NoteEngineRay(GameTitle title, uint32_t generation, uint32_t callerRv
                         std::memory_order_relaxed);
 #else
     (void)title; (void)generation; (void)callerRva; (void)profile; (void)flags; (void)start; (void)end;
+#endif
+}
+
+void Sight_NoteShot(GameTitle title, uint32_t generation, const float origin[3], const float direction[3])
+{
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    auto& w = g_shots[Slot(title)];
+    SightRay ray{};
+    SightTrace trace{};
+    const float length = origin && direction
+        ? std::sqrt(direction[0] * direction[0] + direction[1] * direction[1] + direction[2] * direction[2])
+        : 0.0f;
+    if (!std::isfinite(length) || length < 1.0e-6f || !Sight_ReadRay(title, generation, kSightRayFreshMs, ray) ||
+        !Sight_ReadTrace(title, generation, kSightFreshMs, trace))
+    {
+        w.unmeasured.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    for (int axis = 0; axis < 3; ++axis)
+        if (!std::isfinite(origin[axis]))
+        {
+            w.unmeasured.fetch_add(1, std::memory_order_relaxed);
+            return;
+        }
+    // The intent ray's own frame: forward along it, right level (Blam is Z-up), up perpendicular to both.
+    const float f[3]{ray.dir[0], ray.dir[1], ray.dir[2]};
+    float right[3]{f[1], -f[0], 0.0f};
+    const float rightLength = std::sqrt(right[0] * right[0] + right[1] * right[1]);
+    if (!std::isfinite(rightLength) || rightLength < 1.0e-3f)   // straight up or down: no level right
+    {
+        w.unmeasured.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    right[0] /= rightLength;
+    right[1] /= rightLength;
+    const float up[3]{right[1] * f[2] - right[2] * f[1], right[2] * f[0] - right[0] * f[2],
+                      right[0] * f[1] - right[1] * f[0]};
+    const float u[3]{direction[0] / length, direction[1] / length, direction[2] / length};
+    const auto dot = [](const float* a, const float* b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; };
+    // Where the shot's line passes the point `range` along the intent ray, measured from that point.
+    const auto passes = [&](float range, float& outUp, float& outRight) {
+        const float point[3]{ray.head[0] + f[0] * range, ray.head[1] + f[1] * range, ray.head[2] + f[2] * range};
+        const float toPoint[3]{point[0] - origin[0], point[1] - origin[1], point[2] - origin[2]};
+        const float t = dot(toPoint, u);
+        const float miss[3]{origin[0] + u[0] * t - point[0], origin[1] + u[1] * t - point[1],
+                            origin[2] + u[2] * t - point[2]};
+        outUp = dot(miss, up) * kMmPerWu;
+        outRight = dot(miss, right) * kMmPerWu;
+    };
+    float surfaceUp = 0.0f, surfaceRight = 0.0f, pointUp = 0.0f, pointRight = 0.0f;
+    passes(trace.rangeWu, surfaceUp, surfaceRight);
+    passes(trace.AimRangeWu(), pointUp, pointRight);
+    if (!std::isfinite(surfaceUp) || !std::isfinite(surfaceRight) || !std::isfinite(pointUp) ||
+        !std::isfinite(pointRight))
+    {
+        w.unmeasured.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    AddRelaxed(w.surfaceUp, surfaceUp);
+    AddRelaxed(w.surfaceRight, surfaceRight);
+    AddRelaxed(w.pointUp, pointUp);
+    AddRelaxed(w.pointRight, pointRight);
+    w.surfaceM.store(trace.rangeWu * kSightCmPerWorldUnit * 0.01f, std::memory_order_relaxed);
+    w.pointM.store(trace.AimRangeWu() * kSightCmPerWorldUnit * 0.01f, std::memory_order_relaxed);
+    const float fromEye[3]{origin[0] - ray.eye[0], origin[1] - ray.eye[1], origin[2] - ray.eye[2]};
+    const float fromHead[3]{origin[0] - ray.head[0], origin[1] - ray.head[1], origin[2] - ray.head[2]};
+    w.fromEye[0].store(dot(fromEye, right) * kMmPerWu, std::memory_order_relaxed);
+    w.fromEye[1].store(dot(fromEye, up) * kMmPerWu, std::memory_order_relaxed);
+    w.fromEye[2].store(dot(fromEye, f) * kMmPerWu, std::memory_order_relaxed);
+    w.fromHead[0].store(dot(fromHead, right) * kMmPerWu, std::memory_order_relaxed);
+    w.fromHead[1].store(dot(fromHead, up) * kMmPerWu, std::memory_order_relaxed);
+    w.fromHead[2].store(dot(fromHead, f) * kMmPerWu, std::memory_order_relaxed);
+    w.count.fetch_add(1, std::memory_order_release);
+#else
+    (void)title; (void)generation; (void)origin; (void)direction;
+#endif
+}
+
+void Sight_ReportShots()
+{
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    static uint64_t s_last = 0;
+    const uint64_t now = GetTickCount64();
+    if (now - s_last < 2000)
+        return;
+    s_last = now;
+    for (size_t slot = 0; slot < kTitleSlots; ++slot)
+    {
+        auto& w = g_shots[slot];
+        const uint32_t count = w.count.exchange(0, std::memory_order_acquire);
+        const uint32_t unmeasured = w.unmeasured.exchange(0, std::memory_order_relaxed);
+        const float surfaceUp = w.surfaceUp.exchange(0.0f, std::memory_order_relaxed);
+        const float surfaceRight = w.surfaceRight.exchange(0.0f, std::memory_order_relaxed);
+        const float pointUp = w.pointUp.exchange(0.0f, std::memory_order_relaxed);
+        const float pointRight = w.pointRight.exchange(0.0f, std::memory_order_relaxed);
+        if (!count && !unmeasured)
+            continue;
+        const auto title = static_cast<GameTitle>(slot);
+        if (!count)
+        {
+            LOG("SHOT %s: %u shot(s), none measurable (no fresh intent ray or trace, or aimed straight up/down)",
+                TitleName(title), unmeasured);
+            continue;
+        }
+        const float n = static_cast<float>(count);
+        LOG("SHOT %s: %u shot(s) (+%u unmeasured) pass %+.0f mm up / %+.0f mm right of the surface under the "
+            "reticle (%.2f m) and %+.0f / %+.0f mm of the converged point (%.2f m), on average; the last left "
+            "%+.0f/%+.0f/%+.0f mm (right/up/along) from the engine eye and %+.0f/%+.0f/%+.0f mm from the "
+            "rendered eye", TitleName(title), count, unmeasured, double(surfaceUp / n), double(surfaceRight / n),
+            double(w.surfaceM.load(std::memory_order_relaxed)), double(pointUp / n), double(pointRight / n),
+            double(w.pointM.load(std::memory_order_relaxed)), double(w.fromEye[0].load()),
+            double(w.fromEye[1].load()), double(w.fromEye[2].load()), double(w.fromHead[0].load()),
+            double(w.fromHead[1].load()), double(w.fromHead[2].load()));
+    }
 #endif
 }
 
