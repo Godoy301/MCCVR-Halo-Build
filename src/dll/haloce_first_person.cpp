@@ -717,22 +717,24 @@ bool Remove() noexcept
         if (result!=MH_OK&&result!=MH_ERROR_DISABLED) return false;
         hook->enabled=false;
     }
+    // The skin hook's asm entry and the C++ entry it calls sit side by side, in the SAME batch: each batch
+    // is its own freeze and checks only RIP, so a thread moving from the thunk into the entry's uncounted
+    // prologue between two freezes would pass both if they were checked apart.
     const void* functions[]={reinterpret_cast<const void*>(&PrepareHook),reinterpret_cast<const void*>(&PaletteHook),
         reinterpret_cast<const void*>(&ModernRayHook),reinterpret_cast<const void*>(&LegacyRayHook),
         reinterpret_cast<const void*>(&AssistRayHook),reinterpret_cast<const void*>(&HaloCeSkinConvertEnter),
-        reinterpret_cast<const void*>(&ProjectionHook),reinterpret_cast<const void*>(&ZfillProjectionHook),
-        reinterpret_cast<const void*>(&SfxProjectionHook),reinterpret_cast<const void*>(&ClassicLensHook),
-        reinterpret_cast<const void*>(&ParticleDrawHook),reinterpret_cast<const void*>(&ParticleCommitHook),
-        reinterpret_cast<const void*>(&VisibilityPrepareHook),reinterpret_cast<const void*>(&VisibilitySubmitHook),reinterpret_cast<const void*>(&TargetQueryHook),
-        reinterpret_cast<const void*>(&HaloCeSkinConvertThunk)};   // the skin hook's asm entry, same trampoline
-    const void* trampolines[]={prepareHook.original,paletteHook.original,modernRayHook.original,legacyRayHook.original,assistRayHook.original,skinConvertHook.original,projectionHook.original,zfillProjectionHook.original,sfxProjectionHook.original,classicLensHook.original,particleDrawHook.original,particleCommitHook.original,visibilityPrepareHook.original,visibilitySubmitHook.original,targetQueryHook.original,skinConvertHook.original};
-    static_assert(_countof(functions)==_countof(trampolines));
+        reinterpret_cast<const void*>(&HaloCeSkinConvertThunk),reinterpret_cast<const void*>(&ProjectionHook),
+        reinterpret_cast<const void*>(&ZfillProjectionHook),reinterpret_cast<const void*>(&SfxProjectionHook),
+        reinterpret_cast<const void*>(&ClassicLensHook),reinterpret_cast<const void*>(&ParticleDrawHook),
+        reinterpret_cast<const void*>(&ParticleCommitHook),reinterpret_cast<const void*>(&VisibilityPrepareHook),
+        reinterpret_cast<const void*>(&VisibilitySubmitHook),reinterpret_cast<const void*>(&TargetQueryHook)};
+    const void* trampolines[]={prepareHook.original,paletteHook.original,modernRayHook.original,legacyRayHook.original,assistRayHook.original,skinConvertHook.original,skinConvertHook.original,projectionHook.original,zfillProjectionHook.original,sfxProjectionHook.original,classicLensHook.original,particleDrawHook.original,particleCommitHook.original,visibilityPrepareHook.original,visibilitySubmitHook.original,targetQueryHook.original};
+    static_assert(_countof(functions)==16 && _countof(trampolines)==16);
     // The shared native stack verifier admits at most eight detour ranges.
-    // All sixteen entries above are disabled before any batch is checked;
-    // keep every trampoline/module alive until every batch is quiescent.
+    // All sixteen entries above are disabled before either batch is checked;
+    // keep every trampoline/module alive until both batches are quiescent.
     if (!WaitForNativeDetourQuiescence(functions,trampolines,8,callbacks)||
-        !WaitForNativeDetourQuiescence(functions+8,trampolines+8,7,callbacks)||
-        !WaitForNativeDetourQuiescence(functions+15,trampolines+15,1,callbacks)) return false;
+        !WaitForNativeDetourQuiescence(functions+8,trampolines+8,8,callbacks)) return false;
     for (Hook* hook:{&prepareHook,&paletteHook,&modernRayHook,&legacyRayHook,&assistRayHook,&skinConvertHook,&projectionHook,&zfillProjectionHook,&sfxProjectionHook,&classicLensHook,&particleDrawHook,&particleCommitHook,&visibilityPrepareHook,&visibilitySubmitHook,&targetQueryHook})
     {
         if (hook->target&&MH_RemoveHook(hook->target)!=MH_OK) return false;

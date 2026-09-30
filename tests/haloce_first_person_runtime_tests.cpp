@@ -25,6 +25,8 @@ static float lensArgument{};
 static unsigned prepareCalls{};
 static unsigned quiescenceCalls{},quiescenceRanges{};
 static size_t blockedQuiescenceCount{};
+static unsigned blockedQuiescenceCall{};   // 1-based: that call refuses (0 = none)
+static bool skinEntriesSplit{};            // the skin thunk and its C++ entry checked in different freezes
 static uintptr_t visibilityListAddress{},visibilityModelAddress{};
 static bool visibilityListValid=true,visibilityExpectPrivate{},visibilityNativeChecks=true,visibilityFault{};
 static unsigned visibilityListReads{},visibilityRevokeOnRead{},visibilityNativeCalls{};
@@ -138,7 +140,15 @@ bool WaitForNativeDetourQuiescence(const void* const* functions,const void* cons
     const std::atomic<uint32_t>& activeCallbacks)
 {
     ++quiescenceCalls;quiescenceRanges+=unsigned(count);
-    return functions&&trampolines&&count&&count<=8&&count!=blockedQuiescenceCount&&!activeCallbacks.load();
+    bool enter=false,thunk=false;
+    for (size_t i=0;functions&&i<count;++i)
+    {
+        enter|=functions[i]==reinterpret_cast<const void*>(&HaloCeSkinConvertEnter);
+        thunk|=functions[i]==reinterpret_cast<const void*>(&HaloCeSkinConvertThunk);
+    }
+    skinEntriesSplit|=enter!=thunk;
+    return functions&&trampolines&&count&&count<=8&&count!=blockedQuiescenceCount&&
+        quiescenceCalls!=blockedQuiescenceCall&&!activeCallbacks.load();
 }
 void __fastcall NativePrepareFixture(int16_t user)
 {
@@ -700,14 +710,15 @@ int main(int argc,char** argv)
     blockedQuiescenceCount=0;CHECK(RemoveVisibility()&&!visibilityRetiring&&installed.load());
     CHECK(!visibilityPrepareHook.original&&!visibilitySubmitHook.original);
     RunCeMuzzleTests();
-    quiescenceCalls=quiescenceRanges=0;
-    blockedQuiescenceCount=7;
+    quiescenceCalls=quiescenceRanges=0;skinEntriesSplit=false;
+    blockedQuiescenceCall=2;   // the second batch refuses: everything stays retained
     CHECK(!Remove());CHECK(retiring.load()&&generation.load()==testGeneration);
     CHECK(prepareHook.original==reinterpret_cast<void*>(&NativePrepareFixture));
-    CHECK(quiescenceCalls==2&&quiescenceRanges==15);
-    blockedQuiescenceCount=0;quiescenceCalls=quiescenceRanges=0;
+    CHECK(quiescenceCalls==2&&quiescenceRanges==16);
+    blockedQuiescenceCall=0;quiescenceCalls=quiescenceRanges=0;
     CHECK(Remove());CHECK(!retiring.load()&&!generation.load()&&!prepareHook.original);
-    CHECK(quiescenceCalls==3&&quiescenceRanges==16);   // + the skin hook's asm thunk, its own batch
+    CHECK(quiescenceCalls==2&&quiescenceRanges==16);   // 15 hooks + the skin hook's asm entry, 8 + 8
+    CHECK(!skinEntriesSplit);   // the skin thunk and its C++ entry were always checked in one freeze
     CHECK(VirtualFree(native,0,MEM_RELEASE));
     std::puts("PASS production CE first-person receipt: Classic/Anniversary projection, continuous controller targeting, isolated particles, visibility, recovery and fifteen-hook retirement (plus the skin hook's asm thunk)");
     return 0;
