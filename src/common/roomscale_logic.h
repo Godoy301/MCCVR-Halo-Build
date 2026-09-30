@@ -62,18 +62,23 @@ struct RoomscaleFollow
     // into him the whole time, and as control came back the body point jumped (the error changed sign
     // within 100 ms). Consumed as a walk, that sent the follow chasing it at full stick for ~3 s: the
     // body 2.2 m out and back. So a command run that has not moved the body kNoResponseM the way it
-    // pushes within kNoResponseMs stands the follow down: no command, nothing claimed. It resumes once
-    // the body point has been still for kStallQuietMs -- after it moved (control handed back, a camera
-    // settling), or kStallRetryMs after standing down if it never did, and at kStallMaxMs regardless.
-    // The run after that is a probe: until it has moved the body kProbeConfirmM the way it pushes, a
-    // step longer than kProbeStepM, or one more across the push than along it, is the game moving him,
-    // not our step, and stands it down again. What is owed is kept throughout. The body point arrives
-    // in sim-tick chunks (30 Hz), so these are per-update distances, never per-update speeds.
-    static constexpr uint64_t kNoResponseMs=500, kStallQuietMs=150, kStallRetryMs=1500, kStallMaxMs=4000;
+    // pushes within kNoResponseMs stands the follow down: no command, nothing claimed. If the body point
+    // moves meanwhile (control handed back, a camera settling), the follow resumes once it has been
+    // still for kStallQuietMs (kStallMaxMs at the latest). If it never moves (a deadzone above the
+    // stick floor, a wall, a lock that hands back quietly), the follow restarts only when the body is
+    // under the head again or the head is a further kFollowStart away than where it stood down --
+    // never on a timer, which would push into a wall every few seconds (the rule the all-titles branch
+    // measured in Halo 3 FA, where a 27 mm residual commanded a stick the unit never moved for). The
+    // run after either is a probe: until it has moved the body kProbeConfirmM the way it pushes, a step
+    // longer than kProbeStepM, or one more across the push than along it, is the game moving him, not
+    // our step, and stands it down again. What is owed is kept throughout. The body point arrives in
+    // sim-tick chunks (30 Hz), so these are per-update distances, never per-update speeds.
+    static constexpr uint64_t kNoResponseMs=500, kStallQuietMs=150, kStallMaxMs=4000;
     static constexpr float kNoResponseM=0.02f, kStallStillM=0.003f, kProbeStepM=0.15f, kProbeConfirmM=0.05f;
     bool stalled=false, stallMoved=false, probing=false;
     uint64_t stallSince=0, stallQuietSince=0, runSince=0;
     float runProgress=0;   // travel the way the current command run pushes (m, net)
+    float stalledAt=0;     // the follow error when it stood down for want of a response (m)
     // What a guard did on the last update, for the caller's report. Not state.
     enum class Guard : uint8_t { None, StoodDown, NotOurs };
     Guard guard=Guard::None;
@@ -189,13 +194,13 @@ struct RoomscaleFollow
         }
         else if (stalled)
         {
-            // Stood down (see kNoResponseMs): claim nothing, and wait for the body point to be still.
+            // Stood down (see kNoResponseMs): claim nothing. Once the body point has moved, resume
+            // when it is still again; if it never moves, the head decides (below, with the error).
             if (std::hypot(position[0]-body[0],position[1]-body[1])/scale>kStallStillM)
             { stallMoved=true; stallQuietSince=now; }
             const uint64_t stood=now>=stallSince ? now-stallSince : 0;
             const bool still=now>=stallQuietSince && now-stallQuietSince>=kStallQuietMs;
-            if ((still && (stallMoved || stood>=kStallRetryMs)) || stood>=kStallMaxMs)
-            { stalled=false; probing=true; }
+            if (stallMoved && (still || stood>=kStallMaxMs)) { stalled=false; probing=true; }
             velocity[0]=velocity[1]=0;
         }
         else if (!reset && (commanded || (settling && now>=lastCommand && now-lastCommand<=kSettleMaxMs &&
@@ -260,6 +265,10 @@ struct RoomscaleFollow
         }
         else
         {
+            // A stand-down the body point never moved through ends when the body is under the head
+            // again, or when the head is a further kFollowStart away than where it stood down.
+            if (stalled && !stallMoved && (distance<=kFollowStop || distance>stalledAt+kFollowStart))
+            { stalled=false; probing=distance>kFollowStop; }
             following=!manualMove && !manualPaused && !stalled &&
                 (distance>kFollowStart || (following && distance>kFollowStop));
             // Command ONLY while a follow is running. Once it ends inside kFollowStop, the game's own
@@ -293,7 +302,7 @@ struct RoomscaleFollow
         if (wantsMove && !commanded) { runSince=now; runProgress=0; }
         else if (wantsMove && now>=runSince && now-runSince>=kNoResponseMs && runProgress<kNoResponseM)
         {
-            StandDown(now,false); guard=Guard::StoodDown;
+            StandDown(now,false); guard=Guard::StoodDown; stalledAt=distance;
             moveX=moveY=0;
         }
         commanded=moveX!=0 || moveY!=0;

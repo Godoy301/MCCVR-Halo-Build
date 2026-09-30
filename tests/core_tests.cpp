@@ -18060,8 +18060,9 @@ int main()
         }
         Check(sideways, "while probing, travel across the push is not our step either");
     }
-    // Stood down with the body point never moving, the follow tries again kStallRetryMs later, and a
-    // probe the unit answers becomes an ordinary follow again.
+    // Stood down with the body point never moving (a deadzone above the stick floor, a wall), the follow
+    // does not push again on a timer: it restarts when the head is a further kFollowStart away, as a
+    // probe, and a probe the unit answers becomes an ordinary follow again.
     {
         RoomscaleFollow follow;
         float body[3]{}, head[3]{0,1.7f,0}, reference[3]{0,1.7f,0};
@@ -18071,14 +18072,30 @@ int main()
         head[0]=0.08f; step();
         uint64_t stoodAt=0;
         for (int i=0;i<80 && !stoodAt;++i) { step(); if (mx==0 && my==0) stoodAt=now; }
-        uint64_t probedAt=0;
-        for (int i=0;i<300 && !probedAt;++i) { step(); if (mx!=0 || my!=0) probedAt=now; }
-        Check(stoodAt && probedAt && probedAt-stoodAt>=RoomscaleFollow::kStallRetryMs &&
-              probedAt-stoodAt<=RoomscaleFollow::kStallRetryMs+11,
-            "with the body point still throughout, it probes again after kStallRetryMs");
+        bool held=stoodAt!=0;
+        for (int i=0;i<400;++i) { step(); held&=mx==0 && my==0; }   // 4.4 s with the body point still
+        Check(held && follow.stalled,
+            "stood down against a body that never moves, it does not push again on a timer");
+        head[0]=0.10f; step();
+        Check(mx==0 && my==0, "2 cm further does not restart it");
+        head[0]=0.115f; step();
+        Check((mx!=0 || my!=0) && follow.probing, "3.5 cm further tries again, as a probe");
         for (int i=0;i<20 && follow.following;++i) { body[1]-=0.011f; step(); }   // 1 m/s the way it pushes
         Check(!follow.probing && !follow.stalled && reference[0]>0.05f,
             "a probe the unit answers is an ordinary follow again, its travel claimed");
+    }
+    // ...and a stand-down ends quietly when the player walks back over the body.
+    {
+        RoomscaleFollow follow;
+        float body[3]{}, head[3]{0,1.7f,0}, reference[3]{0,1.7f,0};
+        float mx=0,my=0; uint64_t now=100;
+        auto step=[&]{now+=11;return follow.Update(3,now,true,false,body,head,reference,0,-1,1,0,1.0f,mx,my);};
+        step();
+        head[0]=0.08f; step();
+        for (int i=0;i<80 && !follow.stalled;++i) step();
+        head[0]=0.01f; step();
+        Check(follow.stalled==false && !follow.probing && mx==0 && my==0,
+            "walking back over the body ends a stand-down with nothing to walk");
     }
     // An unpause is not a lost title. The sim resumes a moment after the pause flag clears (Reach,
     // 2026-09-28: ~1.5 s in a Falcon, where nothing else stamps the heartbeat), so the teardown waits
