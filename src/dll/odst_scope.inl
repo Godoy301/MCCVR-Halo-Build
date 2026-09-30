@@ -19,12 +19,11 @@ void RenderOdstScopeBody(void* view)
     auto* camera=bytes+layout.rootCurrentCompact;
     float basis[9]{},seat[3]{},scale=1;
     float direction[3]{g_aimFwdX.load(),g_aimFwdY.load(),g_aimFwdZ.load()};
-    // SCOPE CONVERGENCE (F1 > Scope): AT the converged aim's point from this rendered eye, not along the aim
-    // (Halo 3's BuildRightHandScopeCamera says why).
-    float convergedPoint[3]{};
-    if(Sight_ScopeConvergedPoint(GameTitle::Halo3ODST,convergedPoint))
-        ComputeScopeLookAtDirection(reinterpret_cast<const float*>(camera+layout.compactPosition),convergedPoint,
-            kSightScopeLookAtMinimumWu,direction);
+    // SCOPE CONVERGENCE (F1 > Scope): along the intent ray from this rendered eye while the converged aim is
+    // written, not along the aim (Halo 3's BuildRightHandScopeCamera says why).
+    float convergedForward[3]{};
+    if(Sight_ScopeConvergedDirection(GameTitle::Halo3ODST,convergedForward))
+        std::memcpy(direction,convergedForward,sizeof(direction));
     ScopeCameraPose pose{};float aspect=4.f/3.f;
     if(!ControllerWorldPoseEx(false,basis,seat,scale)||
         !ComputeScopeCameraPose(basis,reinterpret_cast<const float*>(camera+layout.compactPosition),direction,pose)||

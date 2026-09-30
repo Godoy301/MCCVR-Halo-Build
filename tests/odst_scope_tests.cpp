@@ -32,12 +32,11 @@ static struct {
     void(*fpCameraUpload)(void*,void*)=nullptr;
 } g_odstCamera;
 static bool cinematic=false,controllerValid=true,requested=true,targetReady=true,raster=false;
-// Scope convergence (sight_layer.h): off unless a case publishes a converged point.
+// Scope convergence (sight_layer.h): off unless a case publishes a converged direction.
 static bool converge=false;
-static float convergedPoint[3]{},expectForward[3]{0,1,0};
-static constexpr float kSightScopeLookAtMinimumWu=0.1f/3.048f;
-static bool Sight_ScopeConvergedPoint(GameTitle title,float out[3],float* =nullptr)
-{Check(title==GameTitle::Halo3ODST,"ODST asks for its own converged point");if(!converge)return false;std::memcpy(out,convergedPoint,12);return true;}
+static float convergedForward[3]{},expectForward[3]{0,1,0};
+static bool Sight_ScopeConvergedDirection(GameTitle title,float out[3])
+{Check(title==GameTitle::Halo3ODST,"ODST asks for its own converged direction");if(!converge)return false;std::memcpy(out,convergedForward,12);return true;}
 static float zoom=6,aspect=4.f/3.f;
 static unsigned step=0,faultStep=0,draws=0,copies=0,ends=0,logs=0;
 static alignas(16) unsigned char view[0xB00],saved[sizeof(view)];
@@ -63,7 +62,7 @@ static void Draw(void* input)
     const auto* camera=reinterpret_cast<const float*>(view+l.rootCurrentCompact);
     Check(camera[0]==2&&camera[1]==3&&camera[2]==4&&camera[3]==expectForward[0]&&camera[4]==expectForward[1]&&
         camera[5]==expectForward[2],
-        "scope stays at native gameplay origin, along the aim or AT the converged point");
+        "scope stays at native gameplay origin, along the aim or along the converged intent ray");
     const auto lens=ComputeScopeProjectionTangents(zoom,aspect);
     const auto* matrix=reinterpret_cast<const float*>(view+l.rootCurrentDerived+l.projectionMatrix);
     Check(std::abs(matrix[0]-1.f/lens.horizontal)<.001f&&std::abs(matrix[5]-1.f/lens.vertical)<.001f,
@@ -120,13 +119,10 @@ int main()
         case 5:g_odstScopeFaultGeneration=7;break;case 6:g_odstRuntimeGeneration=0;break;}
         RenderOdstScope(view);Check(draws==0&&ends==0,"unproven scope never opens native transaction");Restored();
     }
-    // Converged: the lens looks AT the point from its own origin (2,3,4), not along the aim (0,1,0).
-    Reset();converge=true;convergedPoint[0]=12;convergedPoint[1]=3;convergedPoint[2]=4;
+    // Converged: the lens looks along the intent ray from its own origin (2,3,4), not along the aim (0,1,0).
+    Reset();converge=true;convergedForward[0]=1;convergedForward[1]=0;convergedForward[2]=0;
     expectForward[0]=1;expectForward[1]=0;expectForward[2]=0;
     RenderOdstScope(view);Check(draws==1&&copies==1,"a converged lens renders once");Restored();
-    // A converged point on top of the lens is not aimed at: the lens keeps the aim.
-    Reset();converge=true;convergedPoint[0]=2.01f;convergedPoint[1]=3;convergedPoint[2]=4;
-    RenderOdstScope(view);Check(draws==1,"a point on the lens keeps the aim direction");Restored();
     ReportOdstScope();Check(logs==1,"fault details emitted only by worker report");
     std::printf("PASS: %u production ODST scope checks (native renderer stubbed)\n",checks);
 }

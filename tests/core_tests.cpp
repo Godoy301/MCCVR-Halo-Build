@@ -14510,43 +14510,6 @@ int main()
           std::fabs(scopeCamera.forward[2] - bulletForward[2] / bulletLength) < 1e-5f,
         "Remote scope center continues along Halo's actual bullet direction");
 
-    // SCOPE CONVERGENCE. Standing 0.8 away from the character (roomscale off), the converged aim leaves the
-    // ENGINE eye bent through the point the rendered eye's ray hits 10 ahead. A lens at the rendered eye that
-    // looks along that aim runs parallel to the shot line and misses the point by the whole 0.8 (the Halo 3
-    // headset report); looked AT the point it has it dead centre, from that eye or anywhere else.
-    {
-        const float engineEye[3]{0.0f, 0.0f, 0.0f};
-        const float renderedEye[3]{0.0f, 0.8f, 0.0f};
-        const float converged[3]{10.0f, 0.8f, 0.0f};   // the rendered eye's ray (+X) at range 10
-        const float aimLength = std::sqrt(10.0f * 10.0f + 0.8f * 0.8f);
-        const float bentAim[3]{(converged[0] - engineEye[0]) / aimLength,
-                               (converged[1] - engineEye[1]) / aimLength, 0.0f};
-        // Where a ray from `from` along `dir` passes the converged point's depth, measured from the point.
-        const auto missAtPoint = [&](const float* from, const float* dir) {
-            const float t = (converged[0] - from[0]) / dir[0];
-            const float dy = from[1] + dir[1] * t - converged[1];
-            const float dz = from[2] + dir[2] * t - converged[2];
-            return std::sqrt(dy * dy + dz * dz);
-        };
-        Check(std::fabs(missAtPoint(renderedEye, bentAim) - 0.8f) < 1e-3f,
-            "Fixture: a lens at the rendered eye looking along the converged aim misses by the whole offset");
-        float look[3]{};
-        Check(ComputeScopeLookAtDirection(renderedEye, converged, 0.03f, look) &&
-              missAtPoint(renderedEye, look) < 1e-4f &&
-              std::fabs(look[0] - 1.0f) < 1e-5f,
-            "A converged lens at the rendered eye looks down that eye's own ray, through the point");
-        const float gun[3]{0.2f, 0.3f, -0.4f};
-        Check(ComputeScopeLookAtDirection(gun, converged, 0.03f, look) && missAtPoint(gun, look) < 1e-4f,
-            "Looked AT the converged point, the lens has it dead centre from any origin");
-        float untouched[3]{7.0f, 7.0f, 7.0f};
-        const float nearPoint[3]{0.01f, 0.8f, 0.0f};
-        const float nanPoint[3]{std::nanf(""), 0.0f, 0.0f};
-        Check(!ComputeScopeLookAtDirection(renderedEye, nearPoint, 0.03f, untouched) &&
-              !ComputeScopeLookAtDirection(renderedEye, nanPoint, 0.03f, untouched) &&
-              untouched[0] == 7.0f && untouched[1] == 7.0f && untouched[2] == 7.0f,
-            "A point on top of the lens, or a non-finite one, leaves the caller's own direction untouched");
-    }
-
     const ScopeProjectionTangents scopeLens =
         ComputeScopeProjectionTangents(2.5f, 16.0f / 9.0f);
     Check(std::fabs(scopeLens.horizontal / scopeLens.vertical - 16.0f / 9.0f) < 1e-5f,

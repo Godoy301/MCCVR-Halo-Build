@@ -3453,6 +3453,7 @@ namespace
                 {
                     g_nativeAimConverged.fetch_add(1, std::memory_order_relaxed);
                     Sight_MarkConverged(GameTitle::Halo2, Game_GetWorldScale());
+                    Sight_MarkAimWritten(GameTitle::Halo2);   // written into the unit just above
                 }
                 else
                 {
@@ -6118,15 +6119,16 @@ bool Halo2Observer6Dof_BuildScopeCamera(Halo2CameraBasis& camera) noexcept
     if(!Halo2Observer6Dof_ReadPublishedPose(p)||!Halo2ObserverControllerSnapshotUsable(p,gen)||
         !BuildStableFirstPersonCarriers(p,gen,primary,secondary))return false;
     float direction[3]{},basis[9]{};
-    // SCOPE CONVERGENCE (F1 > Scope): the lens moves to the rendered eye and looks AT the point the converged
-    // aim passes through, like every other title's. Otherwise the earlier lens: the engine eye, steered
-    // through the hand ray at the crosshair distance.
+    // SCOPE CONVERGENCE (F1 > Scope): the lens moves to the rendered eye and looks along the intent ray, which
+    // leaves that same eye (Halo2SightGeometry's head is p.tracked), like every other title's. Otherwise the
+    // earlier lens: the engine eye, steered through the hand ray at the crosshair distance.
     const float* origin=p.stock.position;
-    float head[3]{},dir[3]{},eye[3]{},convergedPoint[3]{};
-    if(Halo2SightGeometry(p,primary,head,dir,eye)&&
-        Sight_ScopeConvergedPointOnRay(GameTitle::Halo2,gen,head,dir,convergedPoint)&&
-        ComputeScopeLookAtDirection(head,convergedPoint,kSightScopeLookAtMinimumWu,direction))
+    float head[3]{},dir[3]{},eye[3]{};
+    if(Halo2SightGeometry(p,primary,head,dir,eye)&&Sight_ScopeConvergedLive(GameTitle::Halo2))
+    {
+        memcpy(direction,dir,sizeof(direction));
         origin=p.tracked.position;
+    }
     else if(!Halo2BuildControllerShotDirection(p.stock.position,primary,
         std::clamp(g_config.crosshair_distance_m,2.f,50.f)*Game_GetWorldScale(),direction))return false;
     memcpy(basis,primary.forward,12);memcpy(basis+6,primary.up,12);

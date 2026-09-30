@@ -199,9 +199,9 @@ void Game_ReachNoteConvergedSample(const ReachSightSample& sample, float smoothe
 // the latest fresh trace result -- the hit range in METRES, or hit=false on a miss -- and only while
 // the aim in effect is the converged one, so the marker and the shot come from one piece of geometry.
 bool Game_ReachSightReticleRange(float& outRangeM, bool& outHit);
-// The point Reach's zoom camera looks AT (scope convergence, F1 > Scope): the eye-anchored intent ray at the
-// latest fresh trace's range (a miss: the far end), under the traced reticle's own gates plus scope_converge.
-bool Game_ReachScopeConvergedPoint(float outPoint[3]);
+// The direction Reach's zoom camera looks along from the head (scope convergence, F1 > Scope): the
+// eye-anchored intent ray's, under the traced reticle's own gates plus scope_converge.
+bool Game_ReachScopeConvergedDirection(float outDir[3]);
 // C-H2-41. True only while Halo 2's controller-owned aim/weapon feature is
 // requested; tracking loss still makes each call fail open independently.
 bool Game_Halo2ControllerAimActive();

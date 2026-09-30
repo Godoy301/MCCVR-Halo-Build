@@ -143,6 +143,7 @@ void UnitControlBody(uint32_t unit,const UnitControlPacket* source,int32_t clien
         {
             convergedPackets.fetch_add(1,std::memory_order_relaxed);
             Sight_MarkConverged(GameTitle::HaloCE,context.unitsPerMeter);
+            Sight_MarkAimWritten(GameTitle::HaloCE);   // the packet the native just consumed carries it
         }
         return;
     }

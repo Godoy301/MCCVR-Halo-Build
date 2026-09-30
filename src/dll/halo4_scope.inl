@@ -17,15 +17,18 @@ void Halo4RenderScopeBody(uintptr_t element,uintptr_t view,uint32_t window,
     memcpy(input.controllerOrientation,g_halo4RigTracking.rightAimOrientation,sizeof(input.controllerOrientation));
     memcpy(input.controllerPosition,g_halo4RigTracking.rightAimPosition,sizeof(input.controllerPosition));
     if(!Halo4BuildControllerWorldPose(input,controller))return;
-    // SCOPE CONVERGENCE (F1 > Scope): from the rendered eye, AT the point the converged aim passes through --
-    // the centre of the lens is then the reticle's point, as in every other title. Otherwise the earlier lens:
-    // Chief's eye along his aim, which is the shot's own line but seen from where the character stands.
+    // SCOPE CONVERGENCE (F1 > Scope): from the rendered eye along the intent ray while the converged aim is
+    // written -- the centre of the lens is then the reticle's point, as in every other title. Otherwise the
+    // earlier lens: Chief's eye along his aim, which is the shot's own line but seen from where the character
+    // stands.
     const float* scopeOrigin=root.position;
     float scopeForward[3]{root.forward[0],root.forward[1],root.forward[2]};
-    float convergedPoint[3]{};
-    if(Sight_ScopeConvergedPoint(GameTitle::Halo4,convergedPoint)&&
-        ComputeScopeLookAtDirection(center.position,convergedPoint,kSightScopeLookAtMinimumWu,scopeForward))
+    float convergedForward[3]{};
+    if(Sight_ScopeConvergedDirection(GameTitle::Halo4,convergedForward))
+    {
+        memcpy(scopeForward,convergedForward,sizeof(scopeForward));
         scopeOrigin=center.position;
+    }
     ScopeCameraPose pose{};float aspect=1;
     if(!ComputeScopeCameraPose(controller.basis,scopeOrigin,scopeForward,pose)||
         !VR_GetScopeRenderAspect(aspect))return;

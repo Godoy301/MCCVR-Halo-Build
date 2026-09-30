@@ -27,11 +27,10 @@ static unsigned char wind[48]{};
 static struct{std::atomic<uint32_t> generation{7};uintptr_t base=0;void* hudDrawWidgetTarget=wind;void* decoratorWindState=wind;}g_reachCamera;
 static unsigned phase{},faultAt{},draws{},copies{},logs{};
 static bool requested=true,resources=true,image=false;
-// Scope convergence (game.h Game_ReachScopeConvergedPoint): off unless a case publishes a converged point.
+// Scope convergence (game.h Game_ReachScopeConvergedDirection): off unless a case publishes a converged direction.
 static bool converge=false;
-static float convergedPoint[3]{};
-static constexpr float kSightScopeLookAtMinimumWu=0.1f/3.048f;
-static bool Game_ReachScopeConvergedPoint(float out[3]){if(!converge)return false;std::memcpy(out,convergedPoint,12);return true;}
+static float convergedForward[3]{};
+static bool Game_ReachScopeConvergedDirection(float out[3]){if(!converge)return false;std::memcpy(out,convergedForward,12);return true;}
 static float zoom=6,aspect=16.f/9.f;
 static alignas(16) unsigned char workspace[kReachRenderScopeSnapshotSize],view[0xA40],savedWorkspace[sizeof(workspace)],savedView[sizeof(view)];
 static uintptr_t ownerGlobal{};
@@ -107,26 +106,26 @@ int main()
     Reset();resources=false;Check(!Prepare(access),"missing GPU cache refuses scope only");
     Reset();g_reachCinematicLocked=true;Check(!Prepare(access),"authored cinematics refuse scope");
     Reset();requested=false;Check(!Prepare(access),"disabled scope changes nothing");
-    // Converged: the lens looks from the head AT the point, 30 deg off the game's aim (which the converged
-    // aim bends for the engine eye, so from the head it runs parallel to the shot and misses the point).
+    // Converged: the lens looks from the head along the intent ray, 30 deg off the game's aim (which the
+    // converged aim bends for the engine eye, so from the head it runs parallel to the shot and misses the point).
     {
         Reset();converge=true;
         const float c=std::cos(30.f*.0174532925f),s=std::sin(30.f*.0174532925f);
-        convergedPoint[0]=2+10*c;convergedPoint[1]=3+10*s;convergedPoint[2]=4;
+        convergedForward[0]=c;convergedForward[1]=s;convergedForward[2]=0;
         Check(Prepare(access),"a converged lens is prepared");
         const auto* forward=reinterpret_cast<const float*>(g_reachOwnerScope.scope.compact+0xC);
         const auto* position=reinterpret_cast<const float*>(g_reachOwnerScope.scope.compact);
         Check(std::fabs(forward[0]-c)<1e-5f&&std::fabs(forward[1]-s)<1e-5f&&std::fabs(forward[2])<1e-5f,
-            "the converged lens looks AT the point");
+            "the converged lens looks along the intent ray");
         Check(position[0]==2&&position[1]==3&&position[2]==4,"the converged lens stays at the head");
         ReachRenderScope(reinterpret_cast<uintptr_t>(view),access);
         Check(draws==1&&copies==1&&image,"the converged lens draws once");Restored();
     }
-    // A converged point on the head is not aimed at: the lens keeps the game's aim.
+    // Not converged (the converged aim not written, scope_converge off): the lens keeps the game's aim.
     {
         const float c=std::cos(30.f*.0174532925f),s=std::sin(30.f*.0174532925f);
-        Reset();converge=true;convergedPoint[0]=2.01f;convergedPoint[1]=3;convergedPoint[2]=4;g_aimFwdX=c;g_aimFwdY=s;
-        Check(Prepare(access),"a point on the head keeps the aim");
+        Reset();converge=false;g_aimFwdX=c;g_aimFwdY=s;
+        Check(Prepare(access),"an unconverged lens is prepared");
         const auto* forward=reinterpret_cast<const float*>(g_reachOwnerScope.scope.compact+0xC);
         Check(std::fabs(forward[0]-c)<1e-5f&&std::fabs(forward[1]-s)<1e-5f&&std::fabs(forward[2])<1e-5f,
             "the lens keeps the game's aim");

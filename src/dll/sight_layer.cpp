@@ -50,11 +50,14 @@ struct ConvergedStamp
     std::atomic<uint64_t> atMs{0};
     std::atomic<uint32_t> generation{0};
     std::atomic<float> unitsPerVrMetre{0.0f};
+    // Sight_MarkAimWritten: the converged aim is the game's aim itself, not a servo's target.
+    std::atomic<uint64_t> writtenMs{0};
+    std::atomic<uint32_t> writtenGeneration{0};
 };
 
 struct Stats
 {
-    std::atomic<uint64_t> rays{0}, traces{0}, hits{0}, misses{0}, faults{0}, converged{0}, declined{0};
+    std::atomic<uint64_t> rays{0}, traces{0}, hits{0}, misses{0}, faults{0}, converged{0}, declined{0}, written{0};
     std::atomic<uint64_t> costTicks{0}, costMaxTicks{0};
 };
 
@@ -238,6 +241,7 @@ void Sight_ResetTitle(GameTitle title)
     t.invRangePerWu.store(0.0f, std::memory_order_relaxed);
     t.smoothMs.store(0, std::memory_order_relaxed);
     g_converged[Slot(title)].atMs.store(0, std::memory_order_release);
+    g_converged[Slot(title)].writtenMs.store(0, std::memory_order_release);
 }
 
 void Sight_MarkConverged(GameTitle title, float unitsPerVrMetre)
@@ -255,6 +259,22 @@ bool Sight_ConvergedLive(GameTitle title)
     const uint64_t at = c.atMs.load(std::memory_order_acquire);
     return Fresh(at, GetTickCount64(), 100) &&
            c.generation.load(std::memory_order_relaxed) == TitleAdapter_GetGeneration(title);
+}
+
+void Sight_MarkAimWritten(GameTitle title)
+{
+    auto& c = g_converged[Slot(title)];
+    c.writtenGeneration.store(TitleAdapter_GetGeneration(title), std::memory_order_relaxed);
+    c.writtenMs.store(GetTickCount64(), std::memory_order_release);
+    g_stats[Slot(title)].written.fetch_add(1, std::memory_order_relaxed);
+}
+
+bool Sight_AimWrittenLive(GameTitle title)
+{
+    const auto& c = g_converged[Slot(title)];
+    const uint64_t at = c.writtenMs.load(std::memory_order_acquire);
+    return Fresh(at, GetTickCount64(), 100) &&
+           c.writtenGeneration.load(std::memory_order_relaxed) == TitleAdapter_GetGeneration(title);
 }
 
 bool Sight_ConvergedDirection(GameTitle title, uint32_t generation, const float head[3], const float dir[3],
@@ -288,35 +308,24 @@ bool Sight_ConvergedDirection(GameTitle title, uint32_t generation, const float 
     return true;
 }
 
-bool Sight_ScopeConvergedPointOnRay(GameTitle title, uint32_t generation, const float head[3], const float dir[3],
-                                    float outPoint[3])
+bool Sight_ScopeConvergedLive(GameTitle title)
 {
-    SightTrace trace{};
-    if (!g_config.scope_converge || !Sight_AimEnabled() || !head || !dir || !outPoint ||
-        !Sight_ConvergedLive(title) || !Sight_ReadTrace(title, generation, kSightFreshMs, trace) ||
-        !(trace.convergeRangeWu > 0.0f))
-        return false;
-    const float range = trace.AimRangeWu();
-    float point[3]{};
-    for (int axis = 0; axis < 3; ++axis)
-    {
-        point[axis] = head[axis] + dir[axis] * range;
-        if (!std::isfinite(point[axis]))
-            return false;
-    }
-    std::memcpy(outPoint, point, sizeof(point));
-    return true;
+    return g_config.scope_converge && Sight_AimEnabled() && Sight_ConvergedLive(title) &&
+           Sight_AimWrittenLive(title);
 }
 
-bool Sight_ScopeConvergedPoint(GameTitle title, float outPoint[3], float outHead[3])
+bool Sight_ScopeConvergedDirection(GameTitle title, float outDir[3])
 {
     const uint32_t generation = TitleAdapter_GetGeneration(title);
     SightRay ray{};
-    if (!generation || !Sight_ReadRay(title, generation, kSightRayFreshMs, ray) ||
-        !Sight_ScopeConvergedPointOnRay(title, generation, ray.head, ray.dir, outPoint))
+    if (!outDir || !generation || !Sight_ScopeConvergedLive(title) ||
+        !Sight_ReadRay(title, generation, kSightRayFreshMs, ray))
         return false;
-    if (outHead)
-        std::memcpy(outHead, ray.head, sizeof(ray.head));
+    const float length = std::sqrt(ray.dir[0] * ray.dir[0] + ray.dir[1] * ray.dir[1] + ray.dir[2] * ray.dir[2]);
+    if (!std::isfinite(length) || length < 1.0e-3f)
+        return false;
+    for (int axis = 0; axis < 3; ++axis)
+        outDir[axis] = ray.dir[axis] / length;
     return true;
 }
 
@@ -626,6 +635,7 @@ void Sight_Report()
         const uint64_t rays = s.rays.exchange(0, std::memory_order_relaxed);
         const uint64_t traces = s.traces.exchange(0, std::memory_order_relaxed);
         const uint64_t converged = s.converged.exchange(0, std::memory_order_relaxed);
+        const uint64_t written = s.written.exchange(0, std::memory_order_relaxed);
         const uint64_t declined = s.declined.exchange(0, std::memory_order_relaxed);
         const uint64_t faults = s.faults.exchange(0, std::memory_order_relaxed);
         if (!rays && !traces && !converged && !declined && !faults)
@@ -637,10 +647,12 @@ void Sight_Report()
         const auto title = static_cast<GameTitle>(i);
         const float convergeWu = g_traces[i].convergeRangeWu.load(std::memory_order_relaxed);
         LOG("SIGHT %s: rays %llu, traces %llu (%llu hits, %llu misses [= the far end]), cost avg %.1f / "
-            "max %.1f us; converged aim %llu polls, declined %llu; converging at %.2f m (smoothed); faulted=%d%s",
+            "max %.1f us; converged aim %llu polls (written, not steered: %llu), declined %llu; converging at "
+            "%.2f m (smoothed); faulted=%d%s",
             TitleName(title), (unsigned long long)rays, (unsigned long long)traces, (unsigned long long)hits,
             (unsigned long long)misses, traces ? double(cost) / double(traces) * usPerTick : 0.0,
-            double(costMax) * usPerTick, (unsigned long long)converged, (unsigned long long)declined,
+            double(costMax) * usPerTick, (unsigned long long)converged, (unsigned long long)written,
+            (unsigned long long)declined,
             double(convergeWu) * double(kSightCmPerWorldUnit) * 0.01, Sight_TraceFaulted(title) ? 1 : 0,
             faults ? " (a native fault latched the trace off)" : "");
     }

@@ -180,26 +180,6 @@ ScopeQuadTransform ComputeScopeQuadTransform(const float orientation[4],
     return result;
 }
 
-bool ComputeScopeLookAtDirection(const float origin[3], const float point[3],
-                                 float minimumDistance, float out[3])
-{
-    if (!origin || !point || !out || !std::isfinite(minimumDistance))
-        return false;
-    float v[3]{};
-    for (int i = 0; i < 3; ++i)
-    {
-        if (!std::isfinite(origin[i]) || !std::isfinite(point[i]))
-            return false;
-        v[i] = point[i] - origin[i];
-    }
-    const float length = std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
-    if (!std::isfinite(length) || length < std::max(minimumDistance, 1.0e-6f))
-        return false;
-    for (int i = 0; i < 3; ++i)
-        out[i] = v[i] / length;
-    return true;
-}
-
 bool ComputeScopeCameraPose(const float controllerBasis[9],
                             const float cameraOrigin[3],
                             const float bulletForward[3],

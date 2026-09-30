@@ -9832,11 +9832,12 @@ namespace
             g_aimFwdX.load(),g_aimFwdY.load(),g_aimFwdZ.load()};
         // SCOPE CONVERGENCE (F1 > Scope): this lens sits at the RENDERED eye, but the game's aim is bent to
         // leave from the character's, so looking along it from here runs parallel to the shot line and off
-        // it by the head's distance from the character. Look AT the point the converged aim passes through
-        // instead: it is then the centre of the lens from here, as the reticle is.
-        float convergedPoint[3]{};
-        if(Sight_ScopeConvergedPoint(GameTitle::Halo3,convergedPoint))
-            ComputeScopeLookAtDirection(cameraOrigin,convergedPoint,kSightScopeLookAtMinimumWu,bulletForward);
+        // it by the head's distance from the character. While the converged aim is written, look along the
+        // intent ray instead: from here it passes through the point the shot does, the centre of the lens
+        // as it is the reticle's (sight_layer.h says why a direction, and why only a written aim).
+        float convergedForward[3]{};
+        if(Sight_ScopeConvergedDirection(GameTitle::Halo3,convergedForward))
+            memcpy(bulletForward,convergedForward,sizeof(bulletForward));
         ScopeCameraPose pose{};
         if(!ComputeScopeCameraPose(controllerBasis,cameraOrigin,
                                    bulletForward,pose))
@@ -47804,17 +47805,15 @@ void Game_ReachNoteConvergedSample(const ReachSightSample& sample, float smoothe
 #endif
 }
 
-bool Game_ReachScopeConvergedPoint(float outPoint[3])
+bool Game_ReachScopeConvergedDirection(float outDir[3])
 {
-    // The same gates as the traced reticle below: converged angles in effect, a fresh ray and trace.
-    if (!outPoint || !g_config.scope_converge || g_config.reach_direct_drive != 3 || !g_config.converged_aim)
+    // The traced reticle's own gates (converged angles written by direct drive, a fresh trace), then a fresh
+    // intent ray. The direction, not a point on it: sight_layer.h's scope convergence says why.
+    float rangeM = 0.0f;
+    bool hit = false;
+    if (!outDir || !g_config.scope_converge || !Game_ReachSightReticleRange(rangeM, hit))
         return false;
     const uint64_t now = GetTickCount64();
-    if (!ReachConvergedShotLive(now))
-        return false;
-    int32_t mode = 0;
-    if (!ReachSightActiveFlags(mode) || g_reachSightTrace.faulted.load(std::memory_order_acquire))
-        return false;
     const uint32_t generation = g_reachCamera.generation.load(std::memory_order_acquire);
     ReachCompletedReticleTargetSnapshot ray{};
     if (!generation || !ReachReadCompletedReticleTarget(ray, g_reachLocalShotRay) ||
@@ -47825,33 +47824,9 @@ bool Game_ReachScopeConvergedPoint(float outPoint[3])
     const float length = sqrtf(u[0] * u[0] + u[1] * u[1] + u[2] * u[2]);
     if (!std::isfinite(length) || length < 1.0e-3f)
         return false;
-    auto& trace = g_reachSightTrace;
-    for (int attempt = 0; attempt < 2; ++attempt)
-    {
-        const uint32_t before = trace.sequence.load(std::memory_order_acquire);
-        if (!before || (before & 1u))
-            continue;
-        const uint32_t traceGeneration = trace.generation.load(std::memory_order_relaxed);
-        const uint64_t at = trace.sampleMs.load(std::memory_order_relaxed);
-        const bool hit = trace.hit.load(std::memory_order_relaxed) != 0;
-        const float rangeWu = trace.rangeWu.load(std::memory_order_relaxed);
-        if (trace.sequence.load(std::memory_order_acquire) != before)
-            continue;
-        if (traceGeneration != generation || !at || now < at || now - at > kReachSightFreshMs)
-            return false;
-        // A miss: the far end, where the provider converges too.
-        const float range = hit && std::isfinite(rangeWu) && rangeWu > 0.0f ? rangeWu : ReachSightTraceLength();
-        float point[3]{};
-        for (int axis = 0; axis < 3; ++axis)
-        {
-            point[axis] = ray.head[axis] + u[axis] / length * range;
-            if (!std::isfinite(point[axis]))
-                return false;
-        }
-        memcpy(outPoint, point, sizeof(point));
-        return true;
-    }
-    return false;
+    for (int axis = 0; axis < 3; ++axis)
+        outDir[axis] = u[axis] / length;
+    return true;
 }
 
 bool Game_ReachSightReticleRange(float& outRangeM, bool& outHit)
@@ -48257,6 +48232,8 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
     // same correction at one distance only). With no fresh range the steer above stands exactly as it was.
     bool sightSeatedConverged = false;
     GameTitle sightSeatedTitle = GameTitle::None;
+    bool sightOnFootConverged = false;
+    GameTitle sightOnFootTitle = GameTitle::None;
     {
         const GameTitle sightTitle = TitleAdapter_GetActiveTitle();
         float sightHead[3]{}, sightEye[3]{};
@@ -48380,6 +48357,8 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
                 else
                 {
                     Sight_MarkConverged(sightTitle, g_worldScale.load(std::memory_order_relaxed));
+                    sightOnFootConverged = true;
+                    sightOnFootTitle = sightTitle;
                 }
                 LegacySight(sightTitle).converged.fetch_add(1, std::memory_order_relaxed);
             }
@@ -48465,7 +48444,10 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
             if (!driveSeated && LegacyDriveLive(driveTitle))
             {
                 // The honest-reticle block below is skipped: the game's aim IS the written target now, so
-                // the reticle is the target's, never a direction a seat left behind.
+                // the reticle is the target's, never a direction a seat left behind. A converged target is
+                // then the game's aim itself, not one a servo is turning toward: the zoom may show it.
+                if (sightOnFootConverged && sightOnFootTitle == driveTitle)
+                    Sight_MarkAimWritten(driveTitle);
                 g_aimClampedValid.store(0, std::memory_order_release);
                 outRx = 0.0f;
                 outRy = 0.0f;
@@ -48498,7 +48480,10 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
                 {
                     g_aimClampedValid.store(0, std::memory_order_release);
                     if (sightSeatedConverged)
+                    {
                         Sight_MarkConverged(sightSeatedTitle, g_worldScale.load(std::memory_order_relaxed));
+                        Sight_MarkAimWritten(sightSeatedTitle);
+                    }
                 }
                 outRx = 0.0f;
                 outRy = 0.0f;

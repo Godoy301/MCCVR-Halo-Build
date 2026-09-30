@@ -23,15 +23,14 @@ static float aspect=1.5f,zoom=4,gain=.5f;
 static unsigned step=0,fault=0,draws=0,copies=0,restores=0,ends=0;
 static unsigned char observer[kHalo4ObserverSnapshotBytes],saved[sizeof(observer)],element[0x800];
 static Halo4CameraBasis root{{2,3,4},{1,0,0},{0,0,1}};
-// The rendered centre eye, 0.8 to the character's left (roomscale off), and the converged point on its ray.
+// The rendered centre eye, 0.8 to the character's left (roomscale off), and the intent ray it looks along.
 static Halo4CameraBasis center{{2,3.8f,4},{1,0,0},{0,0,1}};
 static bool converge=false;
-static float convergedPoint[3]{12,3.8f,4};
+static float convergedForward[3]{1,0,0};
 static const float* expectPosition=root.position;
 static float expectForward[3]{1,0,0};
-static constexpr float kSightScopeLookAtMinimumWu=0.1f/3.048f;
-static bool Sight_ScopeConvergedPoint(GameTitle title,float out[3],float* =nullptr)
-{Check(title==GameTitle::Halo4,"Halo 4 asks for its own converged point");if(!converge)return false;memcpy(out,convergedPoint,12);return true;}
+static bool Sight_ScopeConvergedDirection(GameTitle title,float out[3])
+{Check(title==GameTitle::Halo4,"Halo 4 asks for its own converged direction");if(!converge)return false;memcpy(out,convergedForward,12);return true;}
 static void Phase(){if(++step==fault)RaiseException(0xe0431111,0,0,nullptr);}
 static bool VR_ScopeShouldRenderThisFrame(){return request;}
 static void VR_InvalidateScopeImage(){image=false;}
@@ -49,7 +48,7 @@ static void Setup(uintptr_t,uint32_t,uint32_t,uint32_t,uint32_t,uintptr_t at)
     Check(!memcmp(observer+kHalo4ObserverPositionOffset,expectPosition,12),
         "the lens sits on Chief's eye, or converged on the rendered eye");
     Check(!memcmp(observer+kHalo4ObserverForwardOffset,expectForward,12),
-        "the lens looks along Chief's aim, or converged AT the point");
+        "the lens looks along Chief's aim, or converged along the intent ray");
     for(size_t i=0;i<sizeof(observer);++i)
         if(!(i<12||(i>=0x28&&i<0x40)||(i>=0x78&&i<0x7C)))
             Check(observer[i]==saved[i],"opaque observer and FOV ratio remain native");
@@ -102,18 +101,16 @@ int main()
         Run(learned);Check(!image&&copies==0,"missing proof never publishes scope pixels");
     }
     Reset();restoreOk=false;Run();Check(!image&&g_halo4ScopeFaultGeneration==7,"failed restore invalidates an already captured image");
-    // Converged: the lens moves to the rendered eye and looks AT the point on that eye's ray. Chief's own aim
-    // passes through the point too, but from 0.8 away; the lens no longer shows the view from where he stands.
+    // Converged: the lens moves to the rendered eye and looks along that eye's intent ray, which passes through
+    // the converged point. Chief's own aim passes through the point too, but from 0.8 away; the lens no longer
+    // shows the view from where he stands.
     Reset();converge=true;expectPosition=center.position;expectForward[0]=1;expectForward[1]=0;expectForward[2]=0;
     Run();Check(draws==1&&copies==1&&image,"a converged lens renders from the rendered eye");
-    // Converged on a point off that eye's straight ahead: the lens turns to it.
-    Reset();converge=true;expectPosition=center.position;convergedPoint[0]=2;convergedPoint[1]=13.8f;convergedPoint[2]=4;
+    // Converged along a ray off that eye's straight ahead: the lens turns with it.
+    Reset();converge=true;expectPosition=center.position;
+    convergedForward[0]=0;convergedForward[1]=1;convergedForward[2]=0;
     expectForward[0]=0;expectForward[1]=1;expectForward[2]=0;
-    Run();Check(draws==1,"a converged lens turns to the point");
-    convergedPoint[0]=12;convergedPoint[1]=3.8f;convergedPoint[2]=4;
-    // A point on top of the rendered eye is not aimed at: the earlier lens stands, on Chief's eye.
-    Reset();converge=true;convergedPoint[0]=2.01f;convergedPoint[1]=3.8f;convergedPoint[2]=4;
-    Run();Check(draws==1,"a point on the rendered eye keeps the earlier lens");
-    convergedPoint[0]=12;convergedPoint[1]=3.8f;convergedPoint[2]=4;
+    Run();Check(draws==1,"a converged lens turns with the ray");
+    convergedForward[0]=1;convergedForward[1]=0;convergedForward[2]=0;
     printf("Halo 4 scope: %u checks passed\n",checks);
 }
