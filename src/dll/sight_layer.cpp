@@ -347,6 +347,10 @@ namespace
 // The shot witness's per-title sums since the last report (mm), and the last shot's origin offsets.
 struct ShotWitness
 {
+    // One lock keeps a shot's sums and its count in the same report window: NoteShot adds both under it and
+    // ReportShots takes both under it. Without it a shot straddling a report split across two windows, and a
+    // window whose count was 0 dropped the sums and logged the next window's shot as a perfect +0 mm.
+    SRWLOCK lock = SRWLOCK_INIT;
     std::atomic<uint32_t> count{0}, unmeasured{0};
     std::atomic<float> surfaceUp{0.0f}, surfaceRight{0.0f}, pointUp{0.0f}, pointRight{0.0f};
     std::atomic<float> surfaceM{0.0f}, pointM{0.0f};
@@ -496,21 +500,23 @@ void Sight_NoteShot(GameTitle title, uint32_t generation, const float origin[3],
         w.unmeasured.fetch_add(1, std::memory_order_relaxed);
         return;
     }
+    const float fromEye[3]{origin[0] - ray.eye[0], origin[1] - ray.eye[1], origin[2] - ray.eye[2]};
+    const float fromHead[3]{origin[0] - ray.head[0], origin[1] - ray.head[1], origin[2] - ray.head[2]};
+    AcquireSRWLockExclusive(&w.lock);
     AddRelaxed(w.surfaceUp, surfaceUp);
     AddRelaxed(w.surfaceRight, surfaceRight);
     AddRelaxed(w.pointUp, pointUp);
     AddRelaxed(w.pointRight, pointRight);
     w.surfaceM.store(trace.rangeWu * kSightCmPerWorldUnit * 0.01f, std::memory_order_relaxed);
     w.pointM.store(trace.AimRangeWu() * kSightCmPerWorldUnit * 0.01f, std::memory_order_relaxed);
-    const float fromEye[3]{origin[0] - ray.eye[0], origin[1] - ray.eye[1], origin[2] - ray.eye[2]};
-    const float fromHead[3]{origin[0] - ray.head[0], origin[1] - ray.head[1], origin[2] - ray.head[2]};
     w.fromEye[0].store(dot(fromEye, right) * kMmPerWu, std::memory_order_relaxed);
     w.fromEye[1].store(dot(fromEye, up) * kMmPerWu, std::memory_order_relaxed);
     w.fromEye[2].store(dot(fromEye, f) * kMmPerWu, std::memory_order_relaxed);
     w.fromHead[0].store(dot(fromHead, right) * kMmPerWu, std::memory_order_relaxed);
     w.fromHead[1].store(dot(fromHead, up) * kMmPerWu, std::memory_order_relaxed);
     w.fromHead[2].store(dot(fromHead, f) * kMmPerWu, std::memory_order_relaxed);
-    w.count.fetch_add(1, std::memory_order_release);
+    w.count.fetch_add(1, std::memory_order_relaxed);
+    ReleaseSRWLockExclusive(&w.lock);
 #else
     (void)title; (void)generation; (void)origin; (void)direction;
 #endif
@@ -527,12 +533,23 @@ void Sight_ReportShots()
     for (size_t slot = 0; slot < kTitleSlots; ++slot)
     {
         auto& w = g_shots[slot];
-        const uint32_t count = w.count.exchange(0, std::memory_order_acquire);
+        // Take the window whole (see ShotWitness::lock), last-shot fields included.
+        AcquireSRWLockExclusive(&w.lock);
+        const uint32_t count = w.count.exchange(0, std::memory_order_relaxed);
         const uint32_t unmeasured = w.unmeasured.exchange(0, std::memory_order_relaxed);
         const float surfaceUp = w.surfaceUp.exchange(0.0f, std::memory_order_relaxed);
         const float surfaceRight = w.surfaceRight.exchange(0.0f, std::memory_order_relaxed);
         const float pointUp = w.pointUp.exchange(0.0f, std::memory_order_relaxed);
         const float pointRight = w.pointRight.exchange(0.0f, std::memory_order_relaxed);
+        const float surfaceM = w.surfaceM.load(std::memory_order_relaxed);
+        const float pointM = w.pointM.load(std::memory_order_relaxed);
+        float fromEye[3], fromHead[3];
+        for (int axis = 0; axis < 3; ++axis)
+        {
+            fromEye[axis] = w.fromEye[axis].load(std::memory_order_relaxed);
+            fromHead[axis] = w.fromHead[axis].load(std::memory_order_relaxed);
+        }
+        ReleaseSRWLockExclusive(&w.lock);
         if (!count && !unmeasured)
             continue;
         const auto title = static_cast<GameTitle>(slot);
@@ -547,10 +564,9 @@ void Sight_ReportShots()
             "reticle (%.2f m) and %+.0f / %+.0f mm of the converged point (%.2f m), on average; the last left "
             "%+.0f/%+.0f/%+.0f mm (right/up/along) from the engine eye and %+.0f/%+.0f/%+.0f mm from the "
             "rendered eye", TitleName(title), count, unmeasured, double(surfaceUp / n), double(surfaceRight / n),
-            double(w.surfaceM.load(std::memory_order_relaxed)), double(pointUp / n), double(pointRight / n),
-            double(w.pointM.load(std::memory_order_relaxed)), double(w.fromEye[0].load()),
-            double(w.fromEye[1].load()), double(w.fromEye[2].load()), double(w.fromHead[0].load()),
-            double(w.fromHead[1].load()), double(w.fromHead[2].load()));
+            double(surfaceM), double(pointUp / n), double(pointRight / n), double(pointM), double(fromEye[0]),
+            double(fromEye[1]), double(fromEye[2]), double(fromHead[0]), double(fromHead[1]),
+            double(fromHead[2]));
     }
 #endif
 }
