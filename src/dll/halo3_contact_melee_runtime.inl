@@ -2,6 +2,8 @@
 // H3EK mappings and native ABI proof: PHYSICAL-CONTACT-MELEE-WORK.md.
 using Halo3ContactUpdateFn=uint8_t(__fastcall*)(uint32_t);
 using Halo3ContactMeleeFn=void(__fastcall*)(uint32_t,int32_t,int16_t,float);
+// Forwarded through CallNativeWithSpareSlots (native_forward.h) like ODST's twin, which uses its caller's
+// stack past its six arguments. This build's 36FE00 stops at entry+0x30, but a game update may not.
 using Halo3ContactDamageFn=void(__fastcall*)(void*,uint32_t,int16_t,int16_t,uint16_t,void*);
 struct Halo3ContactRuntime
 {
@@ -120,7 +122,7 @@ __declspec(noinline) void __fastcall Halo3ContactDamageDetour(void* event,uint32
             }
             if(g_halo3Contact.damageOriginal)
             {
-                g_halo3Contact.damageOriginal(event,target,region,node,material,result);
+                CallNativeWithSpareSlots(g_halo3Contact.damageOriginal,event,target,region,node,material,result);
                 if(own) scope.submitted=true;
             }
         }

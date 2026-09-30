@@ -3,6 +3,7 @@
 using Halo4ContactUpdateFn=void(__fastcall*)(void*);
 using Halo4ContactBuildFn=void(__fastcall*)(uint32_t,int32_t,uint32_t*);
 using Halo4ContactConsumeFn=void(__fastcall*)(uint32_t,uint64_t,int16_t,float,uint8_t,uint32_t*,void*);
+// Forwarded through CallNativeWithSpareSlots (native_forward.h), like every title's damage event.
 using Halo4ContactDamageFn=void(__fastcall*)(uint32_t,int32_t,const void*,const void*,const float*);
 using Halo4ContactObjectFn=const uint8_t*(__fastcall*)(uint32_t,uint32_t);
 struct Halo4ContactRuntime
@@ -102,7 +103,8 @@ __declspec(noinline) void __fastcall Halo4ContactDamageDetour(uint32_t unit,int3
             Halo4ContactBiped(scope.owner) && Halo4ContactObject(scope.target);
         if(g_halo4Contact.damageOriginal && (!own || exact))
         {
-            g_halo4Contact.damageOriginal(unit,damage,definition,impact,own ? scope.direction : direction);
+            CallNativeWithSpareSlots(g_halo4Contact.damageOriginal,unit,damage,definition,impact,
+                own ? scope.direction : direction);
             if(own) scope.submitted=true;
         }
     }

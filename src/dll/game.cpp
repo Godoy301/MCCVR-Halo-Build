@@ -20,6 +20,7 @@
 #include "../common/legacy_runtime_weapon_bounds.h"
 #include "menu.h"
 #include "hook_quiescence.h"
+#include "native_forward.h"
 #include "../common/minhook_lifecycle.h"
 #include "../common/manual_vr_recovery.h"
 #include "../common/manual_vr_recovery_logic.h"

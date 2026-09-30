@@ -1,6 +1,7 @@
 // H2EK-specific adapter, shared by H2 Classic and Anniversary renderers.
 // See PHYSICAL-CONTACT-MELEE-WORK.md for ABI, layouts and native call edges.
 using Halo2ContactMeleeFn=void(__fastcall*)(uint32_t,int32_t,uint8_t,float);
+// Forwarded through CallNativeWithSpareSlots (native_forward.h), like every title's damage event.
 using Halo2ContactDamageFn=void(__fastcall*)(void*,uint32_t);
 using Halo2ContactEventFn=void(__fastcall*)(uint32_t,int32_t,const uint32_t*,uint32_t,
     uint32_t,const void*,uint32_t,uint32_t);
@@ -83,7 +84,7 @@ __declspec(noinline) void __fastcall Halo2ContactDamageDetour(void* event,uint32
             }
             if(g_halo2Contact.damageOriginal)
             {
-                g_halo2Contact.damageOriginal(event,target);
+                CallNativeWithSpareSlots(g_halo2Contact.damageOriginal,event,target);
                 if(own) scope.applied=true;
             }
         }

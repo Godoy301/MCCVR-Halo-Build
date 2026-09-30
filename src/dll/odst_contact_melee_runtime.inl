@@ -1,15 +1,15 @@
 // ODST native contact adapter. Included after the title-owned native getters.
-// ODST kit mappings and native ABI proof: PHYSICAL-CONTACT-MELEE-WORK.md.
+// ODST kit mappings and native ABI proof: PHYSICAL-CONTACT-MELEE-WORK.md (including the damage
+// event's use of its caller's seventh argument slot, below).
 using OdstContactUpdateFn=uint8_t(__fastcall*)(uint32_t);
 using OdstContactMeleeFn=void(__fastcall*)(uint32_t,int32_t,int16_t,float);
 // The damage event 3B68A8 takes six arguments but keeps a bool in its CALLER's stack at entry+0x38, the
-// slot a seventh would use (LTCG: every native caller reserves it, so the compiler may). The original is
-// therefore called with two spare slots it may scribble on: called with only six, that byte landed on the
-// detour's saved r15 and went back to the native caller -- the unit-action updater 3FCBE4 then read its
-// own unit through a pointer one byte off and faulted (the ODST crashes, 2026-09-29).
-// tools/audit_caller_area.py finds any other hooked function that does this.
-using OdstContactDamageFn=void(__fastcall*)(void*,uint32_t,int16_t,int16_t,uint16_t,void*,
-    uint64_t spareSeventh,uint64_t spareEighth);
+// slot a seventh would use (LTCG: every native caller reserves it, so the compiler may). Forwarded with only
+// its six, that byte landed on the detour's saved r15 and went back to the native caller -- the unit-action
+// updater 3FCBE4 then read its own unit through a pointer one byte off and faulted (the ODST crashes,
+// 2026-09-29). So the original is called through CallNativeWithSpareSlots (native_forward.h), whose spare
+// stack slots it may scribble on. tools/audit_caller_area.py finds any other hooked function that does this.
+using OdstContactDamageFn=void(__fastcall*)(void*,uint32_t,int16_t,int16_t,uint16_t,void*);
 struct OdstContactRuntime
 {
     std::atomic<bool> enabled{false},faulted{false},processing{false};
@@ -129,7 +129,7 @@ __declspec(noinline) void __fastcall OdstContactDamageDetour(void* event,uint32_
                 g_odstContact.damageEvents.fetch_add(1,std::memory_order_relaxed);
                 if(caller==g_odstContact.base+0x3FCF1F)
                     g_odstContact.actionDamageEvents.fetch_add(1,std::memory_order_relaxed);
-                g_odstContact.damageOriginal(event,target,region,node,material,result,0,0);
+                CallNativeWithSpareSlots(g_odstContact.damageOriginal,event,target,region,node,material,result);
                 if(own) scope.submitted=true;
             }
         }

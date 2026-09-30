@@ -13,6 +13,7 @@
 #include "../common/halo2_vehicle_identity.h"
 #include "contact_melee_queue.h"
 #include "hook_quiescence.h"
+#include "native_forward.h"
 #include "../common/minhook_lifecycle.h"
 #include "../common/manual_vr_recovery_logic.h"
 #include "halo2_observer_6dof.h"
