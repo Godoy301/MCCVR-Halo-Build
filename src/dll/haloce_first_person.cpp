@@ -461,7 +461,7 @@ __declspec(noinline) void __fastcall ProjectionHook(uintptr_t material,float* co
     // The native writer is GLT-specific. Only its proven first-person flag
     // and exact four-lane selector can authorize the optional correction.
     uint32_t flags{};
-    if (!Read(model+0x28,flags)||!(flags&0x10000000u)) return;
+    if (!model||!Read(model+0x28,flags)||!(flags&0x10000000u)) return;   // a null model: no SEH round trip
     if (ApplyTrackedProjection(constants,model)) projectionApplied.fetch_add(1,std::memory_order_relaxed);
     else projectionRefused.fetch_add(1,std::memory_order_relaxed);
 }
@@ -474,7 +474,7 @@ __declspec(noinline) void __fastcall ZfillProjectionHook(uintptr_t material,floa
     original(material,constants,model,variants,a5,a6,a7,a8);
     if (!projectionInstalled.load(std::memory_order_acquire)||!Current()) return;
     uint32_t flags{};
-    if (!Read(model+0x28,flags)||!(flags&0x10000000u)) return;
+    if (!model||!Read(model+0x28,flags)||!(flags&0x10000000u)) return;   // a null model: no SEH round trip
     if (ApplyTrackedProjection(constants,model,0x20)) projectionApplied.fetch_add(1,std::memory_order_relaxed);
     else projectionRefused.fetch_add(1,std::memory_order_relaxed);
 }
@@ -487,7 +487,7 @@ __declspec(noinline) void __fastcall SfxProjectionHook(uintptr_t material,float*
     original(material,constants,model,variants,a5,a6,a7,a8);
     if (!projectionInstalled.load(std::memory_order_acquire)||!Current()) return;
     uint32_t flags{};
-    if (!Read(model+0x28,flags)||!(flags&0x10000000u)) return;
+    if (!model||!Read(model+0x28,flags)||!(flags&0x10000000u)) return;   // a null model: no SEH round trip
     if (ApplyTrackedProjection(constants,model,0x70)) projectionApplied.fetch_add(1,std::memory_order_relaxed);
     else projectionRefused.fetch_add(1,std::memory_order_relaxed);
 }
