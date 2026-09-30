@@ -2,12 +2,22 @@
 // ODST kit mappings and native ABI proof: PHYSICAL-CONTACT-MELEE-WORK.md.
 using OdstContactUpdateFn=uint8_t(__fastcall*)(uint32_t);
 using OdstContactMeleeFn=void(__fastcall*)(uint32_t,int32_t,int16_t,float);
-using OdstContactDamageFn=void(__fastcall*)(void*,uint32_t,int16_t,int16_t,uint16_t,void*);
+// The damage event 3B68A8 takes six arguments but keeps a bool in its CALLER's stack at entry+0x38, the
+// slot a seventh would use (LTCG: every native caller reserves it, so the compiler may). The original is
+// therefore called with two spare slots it may scribble on: called with only six, that byte landed on the
+// detour's saved r15 and went back to the native caller -- the unit-action updater 3FCBE4 then read its
+// own unit through a pointer one byte off and faulted (the ODST crashes, 2026-09-29). tools/audit_
+// caller_area.py finds any other hooked function that does this.
+using OdstContactDamageFn=void(__fastcall*)(void*,uint32_t,int16_t,int16_t,uint16_t,void*,
+    uint64_t spareSeventh,uint64_t spareEighth);
 struct OdstContactRuntime
 {
     std::atomic<bool> enabled{false},faulted{false},processing{false};
     std::atomic<uint32_t> callbacks{0};
     std::atomic<uint64_t> queries{0},contacts{0},submitted[2]{},rejected{0},overflow{0},predicted{0};
+    // Damage events forwarded to the native, and those from the unit-action updater (3FCBE4, return
+    // 3FCF1F) -- the caller that crashed while the forward reserved too little stack (OdstContactDamageFn).
+    std::atomic<uint64_t> damageEvents{0},actionDamageEvents{0};
     uintptr_t base=0;
     uint32_t generation=0;
     void* updateTarget=nullptr;
@@ -116,7 +126,10 @@ __declspec(noinline) void __fastcall OdstContactDamageDetour(void* event,uint32_
             }
             if(g_odstContact.damageOriginal)
             {
-                g_odstContact.damageOriginal(event,target,region,node,material,result);
+                g_odstContact.damageEvents.fetch_add(1,std::memory_order_relaxed);
+                if(caller==g_odstContact.base+0x3FCF1F)
+                    g_odstContact.actionDamageEvents.fetch_add(1,std::memory_order_relaxed);
+                g_odstContact.damageOriginal(event,target,region,node,material,result,0,0);
                 if(own) scope.submitted=true;
             }
         }
@@ -384,9 +397,10 @@ void OdstPublishContactHand(int hand,const FpInterpolationContext& context,
 void ReportOdstContactMelee()
 {
     if(!g_odstContact.updateTarget) return;
-    LOG("ODST contact melee: enabled=%d fault=%d queries=%llu contacts=%llu submissions(L/R)=%llu/%llu nativeRejected=%llu queueDrops=%llu predictedRequests=%llu",
+    LOG("ODST contact melee: enabled=%d fault=%d queries=%llu contacts=%llu submissions(L/R)=%llu/%llu nativeRejected=%llu queueDrops=%llu predictedRequests=%llu; damage events forwarded %llu (unit-action %llu)",
         OdstContactMeleeReady()?1:0,g_odstContact.faulted.load()?1:0,
         g_odstContact.queries.exchange(0),g_odstContact.contacts.exchange(0),
         g_odstContact.submitted[0].exchange(0),g_odstContact.submitted[1].exchange(0),
-        g_odstContact.rejected.exchange(0),g_odstContact.overflow.exchange(0),g_odstContact.predicted.exchange(0));
+        g_odstContact.rejected.exchange(0),g_odstContact.overflow.exchange(0),g_odstContact.predicted.exchange(0),
+        g_odstContact.damageEvents.exchange(0),g_odstContact.actionDamageEvents.exchange(0));
 }
