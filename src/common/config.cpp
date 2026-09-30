@@ -966,6 +966,7 @@ void ConfigLoad(const wchar_t* path)
         if (!strcmp(key, "legacy_direct_drive")) { g_config.legacy_direct_drive = atoi(val) != 0 ? 1 : 0; continue; }
         if (!strcmp(key, "converged_aim")) { g_config.converged_aim = atoi(val) != 0 ? 1 : 0; continue; }
         if (!strcmp(key, "scope_converge")) { g_config.scope_converge = atoi(val) != 0 ? 1 : 0; continue; }
+        if (!strcmp(key, "seat_direct_drive")) { g_config.seat_direct_drive = atoi(val) != 0 ? 1 : 0; continue; }
         if (!strcmp(key, "aim_direct_drive"))
         { g_config.aim_direct_drive = atoi(val) != 0 ? 1 : 0; aimDirectDriveSeen = true; continue; }
         if (!strcmp(key, "reach_direct_drive"))
@@ -1817,6 +1818,11 @@ void ConfigSave()
     fprintf(f, "# whose gun turns apart from the hull (a driver whose look steers keeps the stick),\n");
     fprintf(f, "# 2 = every seat you aim, drivers included. (default %d)\n", d.reach_vehicle_aim);
     fprintf(f, "reach_vehicle_aim = %d\n\n", g_config.reach_vehicle_aim);
+    fprintf(f, "# Halo 3 and ODST, experimental: 1 = with aim_direct_drive = 1, a seat that fires your own\n");
+    fprintf(f, "# weapon (a passenger) is written by direct drive too, instead of steered by the stick. The\n");
+    fprintf(f, "# seat's limits still hold. Drivers, gunners and turrets keep the stick. (default %d)\n",
+            d.seat_direct_drive);
+    fprintf(f, "seat_direct_drive = %d\n\n", g_config.seat_direct_drive);
     fprintf(f, "# Reach, Halo 3, ODST and Halo 4 (switch it live in F1 > Weapon & aim). 1 = DIRECT DRIVE: your\n");
     fprintf(f, "# aim writes the game's own aim instead of steering the right stick (which can only turn at the\n");
     fprintf(f, "# game's turn rate). It arms itself a moment after it is switched on, once the aim it found\n");

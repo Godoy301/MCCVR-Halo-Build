@@ -1152,6 +1152,14 @@ namespace
                 g_config.reach_vehicle_aim = vehicleAim;
                 changed = true;
             }
+            bool seatDrive = g_config.seat_direct_drive != 0;
+            if (ImGui::Checkbox("Direct drive in passenger seats (Halo 3, ODST; experimental)", &seatDrive))
+            {
+                g_config.seat_direct_drive = seatDrive ? 1 : 0;
+                changed = true;
+            }
+            ImGui::TextDisabled("With Direct drive on, a seat that fires your own weapon is written like\n"
+                                "on foot instead of steered by the stick; the seat's limits still hold.");
         }
         ImGui::TextDisabled(
             "Halo 3 and ODST seats converge while Converged aim (Weapon & aim) is on;\n"

@@ -48425,12 +48425,50 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
 #if HALOMCCVR_EXPERIMENTAL_ODST_BRINGUP
             driveSeated = driveSeated || OdstVehicleFpActive();
 #endif
-            LegacyDrivePublish(driveTitle, desiredYaw, desiredPitch, aimYaw, aimPitch, !driveSeated);
+            // SEATED DIRECT DRIVE (seat_direct_drive, Halo 3 / ODST): only a seat that fires the occupant's own
+            // weapon, where the look IS the gun (a passenger). Drivers steer by it and gunners turn a rate-capped
+            // barrel; both keep the servo. The hook writes the setpoint through the seat-limit latch.
+            // "Converged aim in seats: Off" (reach_vehicle_aim 0) keeps every seat on the old stick aim, this too.
+            bool seatDrive = false;
+            if (driveSeated && g_config.seat_direct_drive && g_config.reach_vehicle_aim > 0 && !halo4Aim)
+            {
+                if (driveTitle == GameTitle::Halo3)
+                    seatDrive = Halo3VehicleFpActive() && Halo3SeatFiresPersonalWeapon(Halo3OccupiedSeatFlags());
+#if HALOMCCVR_EXPERIMENTAL_ODST_BRINGUP
+                else if (driveTitle == GameTitle::Halo3ODST)
+                    seatDrive = OdstVehicleFpActive() && OdstSeatFiresPersonalWeapon();
+#endif
+            }
+            LegacyDrivePublish(driveTitle, desiredYaw, desiredPitch, aimYaw, aimPitch, !driveSeated || seatDrive,
+                               seatDrive);
             if (!driveSeated && LegacyDriveLive(driveTitle))
             {
                 // The honest-reticle block below is skipped: the game's aim IS the written target now, so
                 // the reticle is the target's, never a direction a seat left behind.
                 g_aimClampedValid.store(0, std::memory_order_release);
+                outRx = 0.0f;
+                outRy = 0.0f;
+                return true;
+            }
+            if (seatDrive && LegacyDriveSeatLive(driveTitle))
+            {
+                // The seat's aim is written. Held at a seat limit, the gun points where the latch left it, not at
+                // the target: show that (the honest reticle, as the stall branch below does for the servo) and
+                // claim no converged shot. Otherwise the written aim is the target: a converged one is in effect.
+                if (LegacyDriveSeatLimited(driveTitle))
+                {
+                    const float vrYaw = headYawReference + g_yawSign.load() * WrapPi(aimYaw - gameYawReference);
+                    const float vrPitch = g_pitchSign.load() * aimPitch;
+                    g_aimClampedVrYaw.store(vrYaw, std::memory_order_relaxed);
+                    g_aimClampedVrPitch.store(vrPitch, std::memory_order_relaxed);
+                    g_aimClampedValid.store(1, std::memory_order_release);
+                }
+                else
+                {
+                    g_aimClampedValid.store(0, std::memory_order_release);
+                    if (sightSeatedConverged)
+                        Sight_MarkConverged(sightSeatedTitle, g_worldScale.load(std::memory_order_relaxed));
+                }
                 outRx = 0.0f;
                 outRy = 0.0f;
                 return true;

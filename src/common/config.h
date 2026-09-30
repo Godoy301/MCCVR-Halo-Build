@@ -738,6 +738,12 @@ struct Config
     //       Wraith); a driver whose look steers the vehicle (Warthog, Ghost, Banshee ...) keeps the stick.
     //   2 = every seat the hand aims, drivers included. (default)
     int reach_vehicle_aim = 2;
+    // Halo 3 and ODST, SEATED DIRECT DRIVE (experimental, live in F1 > Vehicles): 1 = in a seat that fires
+    // your OWN weapon (a Warthog, Mongoose or Hornet passenger), direct drive (aim_direct_drive = 1) writes
+    // the seat's aim too, as on foot, instead of the stick steering it at the game's turn rate. The seat's
+    // limits (a passenger's cone) still hold: the write stops at the limit, where the reticle shows the gun's
+    // real aim. Drivers, gunners and turrets keep the stick. 0 = every seat keeps the stick. (default 0)
+    int seat_direct_drive = 0;
 
     // rendering. The game's own HUD reticle sits at head-center and is wrong
     // whenever hand aim is on; this one is the truth.
