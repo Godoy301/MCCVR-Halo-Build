@@ -330,11 +330,12 @@ struct RoomscaleFollow
     }
 };
 
-// THE ORIGINAL FOLLOW LAW (upstream Alpha 0.6.0, 56fed9e), kept VERBATIM for the live A/B switch
-// roomscale_follow_law = 0. RoomscaleFollow above is the refined law (default): hysteresis, brake by
-// release, command only while a follow runs, the stopping tail claimed only in the walked direction,
-// the 500 ms pause cap, and an owed distance that survives interruptions. Do not "fix" this copy:
-// its whole purpose is to be exactly what shipped before, so a player can compare the two.
+// THE THRESHOLD FOLLOW LAW (upstream 56fed9e, as it shipped in Alpha 0.6.0), kept VERBATIM for the live A/B
+// switch roomscale_follow_law = 0: walks from 1.5 cm and brakes by reversing. RoomscaleFollow above is the
+// hysteresis law (default): 3 cm start / 1.5 cm stop, brake by release, command only while a follow runs,
+// the stopping tail claimed only in the walked direction, the 500 ms pause cap, and an owed distance that
+// survives interruptions. Do not "fix" this copy: its whole purpose is to be exactly what shipped before, so
+// a player can compare the two.
 struct RoomscaleFollowOriginal
 {
     bool seeded=false, commanded=false, settling=false;

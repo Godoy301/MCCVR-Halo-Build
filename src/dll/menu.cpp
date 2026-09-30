@@ -774,13 +774,14 @@ namespace
             // A/B: switches live; each switch starts the follow afresh from where you stand.
             ImGui::Text("Follow:");
             ImGui::SameLine();
-            changed |= ImGui::RadioButton("Refined (A)", &g_config.roomscale_follow_law, 1);
+            changed |= ImGui::RadioButton("Hysteresis (A)", &g_config.roomscale_follow_law, 1);
             ImGui::SameLine();
-            changed |= ImGui::RadioButton("Original (B)", &g_config.roomscale_follow_law, 0);
+            changed |= ImGui::RadioButton("Threshold (B)", &g_config.roomscale_follow_law, 0);
             ImGui::TextDisabled(g_config.roomscale_follow_law
-                ? "Refined: a lean under 3 cm never walks, the body brakes by letting go instead of backing up,\n"
+                ? "Hysteresis: a lean under 3 cm never walks, the body brakes by letting go instead of backing up,\n"
                   "and a distance you walked away during a tracking gap is still caught up."
-                : "Original (Alpha 0.6.0): walks from 1.5 cm and brakes by reversing. For comparison.");
+                : "Threshold: walks from 1.5 cm and brakes by reversing. Kept as it shipped in Alpha 0.6.0, "
+                  "for comparison.");
         }
         if(ImGui::Checkbox("Physical crouch",&g_config.physical_crouch))
         {changed=true;VR_RecalibratePhysicalCrouch();}

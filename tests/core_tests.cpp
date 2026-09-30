@@ -17879,21 +17879,21 @@ int main()
         head[0]=0.085f; step();
         Check((mx!=0 || my!=0) && follow.following, "3.5 cm further tries again");
     }
-    // The A/B switch's original law (RoomscaleFollowOriginal, upstream Alpha 0.6.0 verbatim) is the
-    // law the refinements changed: a 2.5 cm lean walks under it and not under the refined law.
+    // The A/B switch's threshold law (RoomscaleFollowOriginal, upstream verbatim, as it shipped in Alpha
+    // 0.6.0) is the law the hysteresis law changed: a 2.5 cm lean walks under it and not under hysteresis.
     {
-        RoomscaleFollowOriginal originalLaw;
-        RoomscaleFollow refinedLaw;
+        RoomscaleFollowOriginal thresholdLaw;
+        RoomscaleFollow hysteresisLaw;
         float bodyA[3]{}, headA[3]{0,1.7f,0}, referenceA[3]{0,1.7f,0};
         float bodyB[3]{}, headB[3]{0,1.7f,0}, referenceB[3]{0,1.7f,0};
         float ax=0,ay=0,bx=0,by=0; uint64_t now=100;
         auto step=[&]{now+=11;
-            originalLaw.Update(3,now,true,false,bodyA,headA,referenceA,0,-1,1,0,1.0f,ax,ay);
-            refinedLaw.Update(3,now,true,false,bodyB,headB,referenceB,0,-1,1,0,1.0f,bx,by);};
+            thresholdLaw.Update(3,now,true,false,bodyA,headA,referenceA,0,-1,1,0,1.0f,ax,ay);
+            hysteresisLaw.Update(3,now,true,false,bodyB,headB,referenceB,0,-1,1,0,1.0f,bx,by);};
         step();
         headA[0]=headB[0]=0.025f; step();
         Check((ax!=0 || ay!=0) && bx==0 && by==0,
-            "A/B: a 2.5 cm lean walks under the original law and not under the refined one");
+            "A/B: a 2.5 cm lean walks under the threshold law and not under the hysteresis law");
     }
     // Follow hysteresis: head sway inside kFollowStart never walks; once a follow starts it runs
     // until the error is inside kFollowStop. (Head right = tracking +x; body right = world -y here.)

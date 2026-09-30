@@ -98,9 +98,9 @@ void Roomscale_Camera(GameTitle title,bool allowed,const float body[3],
     // The published tracking reference belongs to the title, not one engine
     // thread. The nonblocking publishing guard above protects this shared
     // history when native camera callbacks migrate between threads.
-    // Two follow laws for the A/B switch (roomscale_follow_law): the refined one (default) and the
-    // original Alpha 0.6.0 one, verbatim. Only the selected one runs; a switch starts both afresh, so
-    // each begins from where the player stands.
+    // Two follow laws for the A/B switch (roomscale_follow_law): hysteresis (1, the default) and threshold
+    // (0, verbatim as it shipped in Alpha 0.6.0). Only the selected one runs; a switch starts both afresh,
+    // so each begins from where the player stands.
     static RoomscaleFollow state;
     static RoomscaleFollowOriginal original;
     static int priorLaw=-1;
@@ -151,7 +151,7 @@ void Roomscale_Camera(GameTitle title,bool allowed,const float body[3],
     if (g_config.roomscale_movement)
     {
         (valid ? admitted : refused).fetch_add(1,std::memory_order_relaxed);
-        // The refined law's guards (the original law has none).
+        // The hysteresis law's guards (the threshold law has none).
         if (law && state.guard==RoomscaleFollow::Guard::StoodDown) guardStoodDown.fetch_add(1,std::memory_order_relaxed);
         else if (law && state.guard==RoomscaleFollow::Guard::NotOurs) guardNotOurs.fetch_add(1,std::memory_order_relaxed);
         if (valid && manual) manualSamples.fetch_add(1,std::memory_order_relaxed);
@@ -224,8 +224,8 @@ void Roomscale_Report() noexcept
     if (enabled && law!=previousLaw)
     {
         LOG("Roomscale follow: %s (A/B switch roomscale_follow_law = %d)",
-            law ? "REFINED (hysteresis 3/1.5 cm, brake by release, owed distance kept)"
-                : "ORIGINAL (Alpha 0.6.0: 1.5 cm threshold, reverse brake)", law);
+            law ? "A, hysteresis (3 cm start / 1.5 cm stop, brake by release, owed distance kept)"
+                : "B, threshold (1.5 cm, reverse brake; as it shipped in Alpha 0.6.0)", law);
         previousLaw=law;
     }
     if (now-last<2000) return;
@@ -244,7 +244,7 @@ void Roomscale_Report() noexcept
             (unsigned long long)native,(unsigned long long)tracking,(unsigned long long)input,
             (unsigned long long)manual,(unsigned long long)demand,(unsigned long long)travel,
             (unsigned long long)errLast,(unsigned long long)errMax,double(cmdMax)*0.001,
-            lawInEffect.load(std::memory_order_relaxed)==0 ? "original" : "refined",
+            lawInEffect.load(std::memory_order_relaxed)==0 ? "threshold" : "hysteresis",
             good ? "native body follow available" :
             "StockFallback: awaiting fresh on-foot camera, tracking and gameplay input; VR stays active");
     const auto stoodDown=guardStoodDown.exchange(0), notOurs=guardNotOurs.exchange(0);

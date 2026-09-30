@@ -1642,9 +1642,10 @@ void ConfigSave()
     fprintf(f, "# Physical horizontal movement drives native walking while on foot.\n");
     fprintf(f, "# Default off. Controller aiming is preserved; walking stays head-relative.\n");
     fprintf(f, "roomscale_movement = %d\n\n", g_config.roomscale_movement ? 1 : 0);
-    fprintf(f, "# Roomscale A/B: 1 = the refined follow (a lean under 3 cm never walks, it brakes by letting\n");
+    fprintf(f, "# Roomscale A/B: 1 = hysteresis (a lean under 3 cm never walks, it brakes by letting\n");
     fprintf(f, "# go of the stick, and a distance walked away during a tracking gap is still caught up),\n");
-    fprintf(f, "# 0 = the original follow from Alpha 0.6.0, exactly as it was. (default %d)\n", d.roomscale_follow_law);
+    fprintf(f, "# 0 = threshold (walks from 1.5 cm, brakes by reversing), exactly as it shipped in\n");
+    fprintf(f, "# Alpha 0.6.0. (default %d)\n", d.roomscale_follow_law);
     fprintf(f, "roomscale_follow_law = %d\n\n", g_config.roomscale_follow_law);
     fprintf(f, "# Degrees per snap turn.\n");
     fprintf(f, "# (default %.0f, range 5 to 90)\n", d.turn_snap_deg);
