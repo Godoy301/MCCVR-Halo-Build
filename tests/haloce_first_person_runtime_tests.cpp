@@ -707,8 +707,8 @@ int main(int argc,char** argv)
     CHECK(quiescenceCalls==2&&quiescenceRanges==15);
     blockedQuiescenceCount=0;quiescenceCalls=quiescenceRanges=0;
     CHECK(Remove());CHECK(!retiring.load()&&!generation.load()&&!prepareHook.original);
-    CHECK(quiescenceCalls==2&&quiescenceRanges==15);
+    CHECK(quiescenceCalls==3&&quiescenceRanges==16);   // + the skin hook's asm thunk, its own batch
     CHECK(VirtualFree(native,0,MEM_RELEASE));
-    std::puts("PASS production CE first-person receipt: Classic/Anniversary projection, continuous controller targeting, isolated particles, visibility, recovery and fifteen-hook retirement");
+    std::puts("PASS production CE first-person receipt: Classic/Anniversary projection, continuous controller targeting, isolated particles, visibility, recovery and fifteen-hook retirement (plus the skin hook's asm thunk)");
     return 0;
 }

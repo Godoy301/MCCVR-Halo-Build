@@ -376,7 +376,13 @@ bool ScaleConvertedSkin(const NodeMatrix* source,SaberBoneMatrix* destination) n
     __except(EXCEPTION_EXECUTE_HANDLER)
     { exceptions.fetch_add(1,std::memory_order_relaxed);return false; }
 }
-__declspec(noinline) void __fastcall SkinConvertHook(const NodeMatrix* source,SaberBoneMatrix* destination)
+// first_person_saber_bone_convert (0x77E70) writes only eax and xmm0-xmm5, and halo1.dll's LTCG callers
+// keep rcx, rdx and r8-r11 live across it (0xABCCA3: a global in r10, r10+0x138 in r11). MinHook therefore
+// enters through a thunk that preserves them (haloce_skin_convert_thunk.asm); the thunk calls this entry
+// with the NATIVE return address, since this function's own _ReturnAddress() would be the thunk.
+extern "C" void HaloCeSkinConvertThunk(const NodeMatrix* source,SaberBoneMatrix* destination);
+extern "C" __declspec(noinline) void HaloCeSkinConvertEnter(const NodeMatrix* source,SaberBoneMatrix* destination,
+    uintptr_t caller)
 {
     Callback callback;
     const auto original=reinterpret_cast<SkinConvertFn>(skinConvertHook.original);
@@ -384,7 +390,7 @@ __declspec(noinline) void __fastcall SkinConvertHook(const NodeMatrix* source,Sa
     original(source,destination);
     // Only the native first-person skin subclass's proven conversion call.
     // Object carrier conversion and all world-object matrices remain native.
-    if (reinterpret_cast<uintptr_t>(_ReturnAddress())!=moduleBase+0x8b982||
+    if (caller!=moduleBase+0x8b982||
         !skinInstalled.load(std::memory_order_acquire)||!Current()) return;
     if (ScaleConvertedSkin(source,destination)) skinApplied.fetch_add(1,std::memory_order_relaxed);
     else skinRefused.fetch_add(1,std::memory_order_relaxed);
@@ -713,17 +719,20 @@ bool Remove() noexcept
     }
     const void* functions[]={reinterpret_cast<const void*>(&PrepareHook),reinterpret_cast<const void*>(&PaletteHook),
         reinterpret_cast<const void*>(&ModernRayHook),reinterpret_cast<const void*>(&LegacyRayHook),
-        reinterpret_cast<const void*>(&AssistRayHook),reinterpret_cast<const void*>(&SkinConvertHook),
+        reinterpret_cast<const void*>(&AssistRayHook),reinterpret_cast<const void*>(&HaloCeSkinConvertEnter),
         reinterpret_cast<const void*>(&ProjectionHook),reinterpret_cast<const void*>(&ZfillProjectionHook),
         reinterpret_cast<const void*>(&SfxProjectionHook),reinterpret_cast<const void*>(&ClassicLensHook),
         reinterpret_cast<const void*>(&ParticleDrawHook),reinterpret_cast<const void*>(&ParticleCommitHook),
-        reinterpret_cast<const void*>(&VisibilityPrepareHook),reinterpret_cast<const void*>(&VisibilitySubmitHook),reinterpret_cast<const void*>(&TargetQueryHook)};
-    const void* trampolines[]={prepareHook.original,paletteHook.original,modernRayHook.original,legacyRayHook.original,assistRayHook.original,skinConvertHook.original,projectionHook.original,zfillProjectionHook.original,sfxProjectionHook.original,classicLensHook.original,particleDrawHook.original,particleCommitHook.original,visibilityPrepareHook.original,visibilitySubmitHook.original,targetQueryHook.original};
+        reinterpret_cast<const void*>(&VisibilityPrepareHook),reinterpret_cast<const void*>(&VisibilitySubmitHook),reinterpret_cast<const void*>(&TargetQueryHook),
+        reinterpret_cast<const void*>(&HaloCeSkinConvertThunk)};   // the skin hook's asm entry, same trampoline
+    const void* trampolines[]={prepareHook.original,paletteHook.original,modernRayHook.original,legacyRayHook.original,assistRayHook.original,skinConvertHook.original,projectionHook.original,zfillProjectionHook.original,sfxProjectionHook.original,classicLensHook.original,particleDrawHook.original,particleCommitHook.original,visibilityPrepareHook.original,visibilitySubmitHook.original,targetQueryHook.original,skinConvertHook.original};
+    static_assert(_countof(functions)==_countof(trampolines));
     // The shared native stack verifier admits at most eight detour ranges.
-    // All fifteen entries above are disabled before either batch is checked;
-    // keep every trampoline/module alive until both batches are quiescent.
+    // All sixteen entries above are disabled before any batch is checked;
+    // keep every trampoline/module alive until every batch is quiescent.
     if (!WaitForNativeDetourQuiescence(functions,trampolines,8,callbacks)||
-        !WaitForNativeDetourQuiescence(functions+8,trampolines+8,7,callbacks)) return false;
+        !WaitForNativeDetourQuiescence(functions+8,trampolines+8,7,callbacks)||
+        !WaitForNativeDetourQuiescence(functions+15,trampolines+15,1,callbacks)) return false;
     for (Hook* hook:{&prepareHook,&paletteHook,&modernRayHook,&legacyRayHook,&assistRayHook,&skinConvertHook,&projectionHook,&zfillProjectionHook,&sfxProjectionHook,&classicLensHook,&particleDrawHook,&particleCommitHook,&visibilityPrepareHook,&visibilitySubmitHook,&targetQueryHook})
     {
         if (hook->target&&MH_RemoveHook(hook->target)!=MH_OK) return false;
@@ -742,9 +751,10 @@ bool RemoveSkin() noexcept
         if (result!=MH_OK&&result!=MH_ERROR_DISABLED) return false;
         skinConvertHook.enabled=false;
     }
-    const void* functions[]={reinterpret_cast<const void*>(&SkinConvertHook)};
-    const void* trampolines[]={skinConvertHook.original};
-    if (!WaitForNativeDetourQuiescence(functions,trampolines,1,callbacks)) return false;
+    const void* functions[]={reinterpret_cast<const void*>(&HaloCeSkinConvertThunk),
+        reinterpret_cast<const void*>(&HaloCeSkinConvertEnter)};
+    const void* trampolines[]={skinConvertHook.original,skinConvertHook.original};
+    if (!WaitForNativeDetourQuiescence(functions,trampolines,2,callbacks)) return false;
     if (skinConvertHook.target&&MH_RemoveHook(skinConvertHook.target)!=MH_OK) return false;
     skinConvertHook={};skinRetiring=false;return true;
 }
@@ -756,7 +766,7 @@ bool InstallSkin(uintptr_t base,size_t size,uint32_t gen) noexcept
     if (!VerifyNativeFeatureBindings(base,size,gen,contracts,failure))
     { LOG("CE Anniversary hand scale stock fallback: binding verification failed: %s",failure?failure:"unknown");return false; }
     void* target=reinterpret_cast<void*>(base+contract::first_person_skin::first_person_saber_bone_convert);
-    auto result=MH_CreateHook(target,reinterpret_cast<void*>(&SkinConvertHook),&skinConvertHook.original);
+    auto result=MH_CreateHook(target,reinterpret_cast<void*>(&HaloCeSkinConvertThunk),&skinConvertHook.original);
     if (result!=MH_OK)
     { LOG("CE Anniversary hand scale stock fallback: create hook status %d",result);return false; }
     skinConvertHook.target=target;

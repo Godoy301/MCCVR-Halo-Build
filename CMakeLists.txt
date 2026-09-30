@@ -314,6 +314,8 @@ if(HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA)
 endif()
 # Halo 3 / ODST / Halo 4 direct drive (legacy_direct_drive): the control-update detours.
 target_sources(halo3xr PRIVATE src/dll/legacy_player_control_hook.asm)
+# CE's saber bone-convert hook enters through a register-preserving thunk (haloce_first_person.cpp).
+target_sources(halo3xr PRIVATE src/dll/haloce_skin_convert_thunk.asm)
 set_target_properties(halo3xr PROPERTIES OUTPUT_NAME "HaloMCCVR")
 target_include_directories(halo3xr PRIVATE
     ${HALOMCCVR_GENERATED_DIR}
@@ -680,7 +682,8 @@ if(BUILD_TESTING)
     target_compile_definitions(halomccvr_ce_network_input_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
     add_test(NAME halomccvr_ce_network_input_tests COMMAND halomccvr_ce_network_input_tests)
     add_executable(halomccvr_ce_first_person_runtime_tests tests/haloce_first_person_runtime_tests.cpp
-        src/dll/haloce_native_bindings.cpp src/dll/ik.cpp src/dll/sight_layer.cpp)
+        src/dll/haloce_native_bindings.cpp src/dll/ik.cpp src/dll/sight_layer.cpp
+        src/dll/haloce_skin_convert_thunk.asm)
     target_include_directories(halomccvr_ce_first_person_runtime_tests PRIVATE src/common src/dll)
     target_compile_definitions(halomccvr_ce_first_person_runtime_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
     target_link_libraries(halomccvr_ce_first_person_runtime_tests PRIVATE minhook)
