@@ -875,6 +875,13 @@ struct Config
     // native zoom so the full VR gun/body remain visible; scope_zoom is the
     // fixed 4:3 lens restored on every activation before right-stick adjustment.
     bool scope_enabled = true;
+    // SCOPE CONVERGENCE, live (F1 > Scope): 1 = the zoom camera LOOKS AT the point your converged aim sends
+    // the shot to (Halo: Campaign Evolved's scope rule), from your eye, so its centre is the reticle's point
+    // however far you stand from the character. 0 = each title's earlier zoom camera, which looks along the
+    // game's aim and so runs parallel to your sight line, off by the distance between you and the character.
+    // Needs Converged aim; with the aim not converged (off, a seat limit, no trace) the zoom is the earlier
+    // one either way. (default 1)
+    int scope_converge = 1;
     float scope_zoom = 24.0f;
     float scope_screen_width_m = 0.159f;
     float scope_screen_right_m = -0.058f;

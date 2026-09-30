@@ -6117,11 +6117,20 @@ bool Halo2Observer6Dof_BuildScopeCamera(Halo2CameraBasis& camera) noexcept
     if(!Halo2Observer6Dof_ReadPublishedPose(p)||!Halo2ObserverControllerSnapshotUsable(p,gen)||
         !BuildStableFirstPersonCarriers(p,gen,primary,secondary))return false;
     float direction[3]{},basis[9]{};
-    if(!Halo2BuildControllerShotDirection(p.stock.position,primary,
+    // SCOPE CONVERGENCE (F1 > Scope): the lens moves to the rendered eye and looks AT the point the converged
+    // aim passes through, like every other title's. Otherwise the earlier lens: the engine eye, steered
+    // through the hand ray at the crosshair distance.
+    const float* origin=p.stock.position;
+    float head[3]{},dir[3]{},eye[3]{},convergedPoint[3]{};
+    if(Halo2SightGeometry(p,primary,head,dir,eye)&&
+        Sight_ScopeConvergedPointOnRay(GameTitle::Halo2,gen,head,dir,convergedPoint)&&
+        ComputeScopeLookAtDirection(head,convergedPoint,kSightScopeLookAtMinimumWu,direction))
+        origin=p.tracked.position;
+    else if(!Halo2BuildControllerShotDirection(p.stock.position,primary,
         std::clamp(g_config.crosshair_distance_m,2.f,50.f)*Game_GetWorldScale(),direction))return false;
     memcpy(basis,primary.forward,12);memcpy(basis+6,primary.up,12);
     ScopeCameraPose pose{};
-    if(!ComputeScopeCameraPose(basis,p.stock.position,direction,pose))return false;
+    if(!ComputeScopeCameraPose(basis,origin,direction,pose))return false;
     camera=p.stock;memcpy(camera.position,pose.position,12);memcpy(camera.forward,pose.forward,12);
     memcpy(camera.up,pose.up,12);return Halo2ValidateCameraBasis(camera);
 }

@@ -13,7 +13,13 @@ bool ReachPrepareScopeBody(ReachOwnerScope& frame,unsigned char* headDerived,
         !g_reachCamera.decoratorWindState||g_reachWindReplayFaults.load()||
         !VR_ReachScopeReady(access))return false;
     float basis[9]{},seat[3]{},scale=1,aspect=1;
-    const float direction[]{g_aimFwdX.load(),g_aimFwdY.load(),g_aimFwdZ.load()};
+    float direction[]{g_aimFwdX.load(),g_aimFwdY.load(),g_aimFwdZ.load()};
+    // SCOPE CONVERGENCE (F1 > Scope): AT the converged aim's point from the head, not along the aim
+    // (Halo 3's BuildRightHandScopeCamera says why).
+    float convergedPoint[3]{};
+    if(Game_ReachScopeConvergedPoint(convergedPoint))
+        ComputeScopeLookAtDirection(reinterpret_cast<const float*>(frame.headCenter),convergedPoint,
+            kSightScopeLookAtMinimumWu,direction);
     ScopeCameraPose pose{};
     if(!ControllerWorldPoseEx(false,basis,seat,scale)||!VR_GetScopeRenderAspect(aspect)||
         !ComputeScopeCameraPose(basis,reinterpret_cast<const float*>(frame.headCenter),direction,pose))return false;

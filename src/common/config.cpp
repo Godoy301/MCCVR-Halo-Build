@@ -965,6 +965,7 @@ void ConfigLoad(const wchar_t* path)
         if (!strcmp(key, "aim_provider")) { g_config.aim_provider=atoi(val); continue; }
         if (!strcmp(key, "legacy_direct_drive")) { g_config.legacy_direct_drive = atoi(val) != 0 ? 1 : 0; continue; }
         if (!strcmp(key, "converged_aim")) { g_config.converged_aim = atoi(val) != 0 ? 1 : 0; continue; }
+        if (!strcmp(key, "scope_converge")) { g_config.scope_converge = atoi(val) != 0 ? 1 : 0; continue; }
         if (!strcmp(key, "aim_direct_drive"))
         { g_config.aim_direct_drive = atoi(val) != 0 ? 1 : 0; aimDirectDriveSeen = true; continue; }
         if (!strcmp(key, "reach_direct_drive"))
@@ -2096,6 +2097,11 @@ void ConfigSave()
     fprintf(f, "# The main VR view stays wide while a fixed-magnification image appears. 1 = on.\n");
     fprintf(f, "# (default %d)\n", d.scope_enabled ? 1 : 0);
     fprintf(f, "scope_enabled = %d\n\n", g_config.scope_enabled ? 1 : 0);
+    fprintf(f, "# The zoom looks AT the point your converged aim sends the shot to, from your eye, so the\n");
+    fprintf(f, "# reticle's point is its centre however far you stand from the character. 0 = the earlier\n");
+    fprintf(f, "# zoom, along the game's aim: parallel to your sight line, off by that distance. Needs\n");
+    fprintf(f, "# converged_aim. Live in F1 > Scope. (default %d)\n", d.scope_converge);
+    fprintf(f, "scope_converge = %d\n\n", g_config.scope_converge);
     fprintf(f, "# Default experimental magnification used for every weapon.\n");
     fprintf(f, "# Initial zoom restored whenever R3 opens the scope; right-stick Y adjusts it.\n");
     fprintf(f, "# (default %.2f, range 6.0 to 24.0)\n", d.scope_zoom);

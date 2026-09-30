@@ -9820,8 +9820,15 @@ namespace
         if(!ControllerWorldPoseEx(false,controllerBasis,weaponSeat,meshScale))
             return false;
         const float* cameraOrigin=reinterpret_cast<const float*>(saved);
-        const float bulletForward[3]={
+        float bulletForward[3]={
             g_aimFwdX.load(),g_aimFwdY.load(),g_aimFwdZ.load()};
+        // SCOPE CONVERGENCE (F1 > Scope): this lens sits at the RENDERED eye, but the game's aim is bent to
+        // leave from the character's, so looking along it from here runs parallel to the shot line and off
+        // it by the head's distance from the character. Look AT the point the converged aim passes through
+        // instead: it is then the centre of the lens from here, as the reticle is.
+        float convergedPoint[3]{};
+        if(Sight_ScopeConvergedPoint(GameTitle::Halo3,convergedPoint))
+            ComputeScopeLookAtDirection(cameraOrigin,convergedPoint,kSightScopeLookAtMinimumWu,bulletForward);
         ScopeCameraPose pose{};
         if(!ComputeScopeCameraPose(controllerBasis,cameraOrigin,
                                    bulletForward,pose))
@@ -40873,7 +40880,7 @@ namespace
             // model_skinning. Hand-to-held motion is captured and consumed
             // inside each eye's current ordered record sequence.
             Halo4BeginFloatingPair();
-            if(!authoredTheater)Halo4RenderScope(element,view,window,args,savedObserver,controllerRoot,calibration);
+            if(!authoredTheater)Halo4RenderScope(element,view,window,args,savedObserver,controllerRoot,stock,calibration);
             const int firstEye = g_config.right_eye_first ? 1 : 0;
             for (int pass = 0; pass < 2; ++pass)
             {
@@ -47769,6 +47776,56 @@ void Game_ReachNoteConvergedSample(const ReachSightSample& sample, float smoothe
 #else
     (void)sample; (void)smoothedRangeWu;
 #endif
+}
+
+bool Game_ReachScopeConvergedPoint(float outPoint[3])
+{
+    // The same gates as the traced reticle below: converged angles in effect, a fresh ray and trace.
+    if (!outPoint || !g_config.scope_converge || g_config.reach_direct_drive != 3 || !g_config.converged_aim)
+        return false;
+    const uint64_t now = GetTickCount64();
+    if (!ReachConvergedShotLive(now))
+        return false;
+    int32_t mode = 0;
+    if (!ReachSightActiveFlags(mode) || g_reachSightTrace.faulted.load(std::memory_order_acquire))
+        return false;
+    const uint32_t generation = g_reachCamera.generation.load(std::memory_order_acquire);
+    ReachCompletedReticleTargetSnapshot ray{};
+    if (!generation || !ReachReadCompletedReticleTarget(ray, g_reachLocalShotRay) ||
+        ray.generation != generation || !ray.sampleMs || now < ray.sampleMs || now - ray.sampleMs > 100)
+        return false;
+    // The intent ray as Game_ReachSightSample builds it: from the eye, along the controller.
+    const float u[3]{ray.target[0] - ray.origin[0], ray.target[1] - ray.origin[1], ray.target[2] - ray.origin[2]};
+    const float length = sqrtf(u[0] * u[0] + u[1] * u[1] + u[2] * u[2]);
+    if (!std::isfinite(length) || length < 1.0e-3f)
+        return false;
+    auto& trace = g_reachSightTrace;
+    for (int attempt = 0; attempt < 2; ++attempt)
+    {
+        const uint32_t before = trace.sequence.load(std::memory_order_acquire);
+        if (!before || (before & 1u))
+            continue;
+        const uint32_t traceGeneration = trace.generation.load(std::memory_order_relaxed);
+        const uint64_t at = trace.sampleMs.load(std::memory_order_relaxed);
+        const bool hit = trace.hit.load(std::memory_order_relaxed) != 0;
+        const float rangeWu = trace.rangeWu.load(std::memory_order_relaxed);
+        if (trace.sequence.load(std::memory_order_acquire) != before)
+            continue;
+        if (traceGeneration != generation || !at || now < at || now - at > kReachSightFreshMs)
+            return false;
+        // A miss: the far end, where the provider converges too.
+        const float range = hit && std::isfinite(rangeWu) && rangeWu > 0.0f ? rangeWu : ReachSightTraceLength();
+        float point[3]{};
+        for (int axis = 0; axis < 3; ++axis)
+        {
+            point[axis] = ray.head[axis] + u[axis] / length * range;
+            if (!std::isfinite(point[axis]))
+                return false;
+        }
+        memcpy(outPoint, point, sizeof(point));
+        return true;
+    }
+    return false;
 }
 
 bool Game_ReachSightReticleRange(float& outRangeM, bool& outHit)

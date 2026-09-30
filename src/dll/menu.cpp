@@ -1575,6 +1575,13 @@ namespace
         if (g_config.scope_enabled)
         {
             ImGui::Indent();
+            bool converge = g_config.scope_converge != 0;
+            if (ImGui::Checkbox("Converge on the reticle", &converge))
+            { g_config.scope_converge = converge ? 1 : 0; changed = true; }
+            ImGui::TextDisabled("ON: the lens looks from your eye AT the point your shot converges on, so the\n"
+                                "reticle's point is its centre even when you stand away from the character.\n"
+                                "OFF: the earlier lens, along the game's aim, parallel to your sight line.\n"
+                                "Needs Converged aim (Weapon & aim). Live.");
             changed |= vr_menu::SliderFloat("Default scope zoom", &g_config.scope_zoom,
                                           6.0f, 24.0f, "%.2fx");
             changed |= vr_menu::SliderFloat("Lens diameter (m)##scope",

@@ -111,6 +111,19 @@ bool Sight_ConvergedDirection(GameTitle title, uint32_t generation, const float 
 // (Game_ReachSightReticleRange owns Reach).
 bool Game_SightReticleRange(float& outRangeM, bool& outHit);
 
+// SCOPE CONVERGENCE (scope_logic.h ComputeScopeLookAtDirection): the point a title's zoom camera looks AT --
+// the intent ray at the smoothed traced range, the point the aim in effect is bent through -- while that aim
+// is converged (Sight_ConvergedLive) and the player key scope_converge is on. Sight_ScopeConvergedPoint reads
+// the ray the aim path published (Halo 3, ODST, Halo 4) and can hand back its head, the rendered eye; a title
+// that builds its ray itself passes it in (Halo 2). False when there is none: the zoom keeps its own
+// direction, as before. Any thread.
+bool Sight_ScopeConvergedPoint(GameTitle title, float outPoint[3], float outHead[3] = nullptr);
+bool Sight_ScopeConvergedPointOnRay(GameTitle title, uint32_t generation, const float head[3], const float dir[3],
+                                    float outPoint[3]);
+// A converged point nearer the zoom camera than this (world units) is not aimed at: the camera keeps its own
+// direction rather than swing on a point it is nearly standing on.
+inline constexpr float kSightScopeLookAtMinimumWu = 0.1f * kSightWorldUnitsPerMetre;
+
 // Cold worker: one status line per title that is tracing, every 2 s.
 void Sight_Report();
 

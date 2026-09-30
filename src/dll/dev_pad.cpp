@@ -90,6 +90,7 @@ bool SetLive(const std::string& name, int value)
     else if (name == "roomscale_follow_law") g_config.roomscale_follow_law = value ? 1 : 0;
     else if (name == "roomscale_movement") g_config.roomscale_movement = value != 0;
     else if (name == "physical_crouch") g_config.physical_crouch = value != 0;
+    else if (name == "scope_converge") g_config.scope_converge = value ? 1 : 0;
     else return false;
     return true;
 }

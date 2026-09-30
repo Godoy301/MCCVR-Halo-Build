@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <cstring>
 
 namespace
 {
@@ -284,6 +285,38 @@ bool Sight_ConvergedDirection(GameTitle title, uint32_t generation, const float 
     out[2] = bent.z;
     if (outRangeWu) *outRangeWu = trace.convergeRangeWu;
     if (outHit) *outHit = trace.hit;
+    return true;
+}
+
+bool Sight_ScopeConvergedPointOnRay(GameTitle title, uint32_t generation, const float head[3], const float dir[3],
+                                    float outPoint[3])
+{
+    SightTrace trace{};
+    if (!g_config.scope_converge || !Sight_AimEnabled() || !head || !dir || !outPoint ||
+        !Sight_ConvergedLive(title) || !Sight_ReadTrace(title, generation, kSightFreshMs, trace) ||
+        !(trace.convergeRangeWu > 0.0f))
+        return false;
+    const float range = trace.AimRangeWu();
+    float point[3]{};
+    for (int axis = 0; axis < 3; ++axis)
+    {
+        point[axis] = head[axis] + dir[axis] * range;
+        if (!std::isfinite(point[axis]))
+            return false;
+    }
+    std::memcpy(outPoint, point, sizeof(point));
+    return true;
+}
+
+bool Sight_ScopeConvergedPoint(GameTitle title, float outPoint[3], float outHead[3])
+{
+    const uint32_t generation = TitleAdapter_GetGeneration(title);
+    SightRay ray{};
+    if (!generation || !Sight_ReadRay(title, generation, kSightRayFreshMs, ray) ||
+        !Sight_ScopeConvergedPointOnRay(title, generation, ray.head, ray.dir, outPoint))
+        return false;
+    if (outHead)
+        std::memcpy(outHead, ray.head, sizeof(ray.head));
     return true;
 }
 

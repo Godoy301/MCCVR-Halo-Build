@@ -92,6 +92,18 @@ bool ComputeScopeCameraPose(const float controllerBasis[9],
                             const float bulletForward[3],
                             ScopeCameraPose& result);
 
+// SCOPE CONVERGENCE, Halo: Campaign Evolved's scope rule: "look at the target,
+// do not look along the ray". A zoom camera that looks along the shot's
+// direction from anywhere off the shot's line is parallel to it and off by the
+// distance between the two at every depth -- stand away from the character with
+// roomscale off and the lens shows the ground beside what the reticle is on.
+// Looked AT the point the aim converges on, the lens has it dead centre from
+// any origin. This is the unit direction from `origin` to `point` (same units);
+// false, out untouched, for a non-finite input or a point nearer than
+// `minimumDistance`, where the direction is undefined.
+bool ComputeScopeLookAtDirection(const float origin[3], const float point[3],
+                                 float minimumDistance, float out[3]);
+
 struct ScopeProjectionTangents
 {
     float horizontal = 0.0f;
