@@ -18097,6 +18097,35 @@ int main()
         Check(follow.stalled==false && !follow.probing && mx==0 && my==0,
             "walking back over the body ends a stand-down with nothing to walk");
     }
+    // A run that WALKS and then stops answering, still commanding, stands down too -- not only a run
+    // that never moved. All-titles FA, 2026-09-29: 0.5 m steps in Halo 3, Halo 2 and Halo CE walked
+    // most of the way, then stopped 16-27 mm short (past the stop band) while a 0.06-0.09 command the
+    // unit never moved for ran on. The native walker decelerates gradually, so the brake-by-release
+    // never zeroes the command in between and the run never restarts: progress counted from the start
+    // of the run (~0.48 m) can never read as "no response".
+    {
+        RoomscaleFollow follow;
+        float body[3]{}, head[3]{0,1.7f,0}, reference[3]{0,1.7f,0};
+        float mx=0,my=0; uint64_t now=100;
+        auto step=[&]{now+=11;return follow.Update(3,now,true,false,body,head,reference,0,-1,1,0,1.0f,mx,my);};
+        step();
+        head[0]=0.5f; step();
+        Check(follow.following && (mx!=0 || my!=0), "fixture: a 0.5 m step starts a follow");
+        bool gap=false, stood=false;
+        for (int i=0;i<300 && !stood;++i)
+        {
+            // Up to ~0.9 m/s, easing to a stop 2 cm short (the walker's own braking).
+            body[1]-=std::min(0.01f,std::max(0.0f,(follow.error[0]-0.02f)*0.15f));
+            step();
+            stood=follow.stalled && mx==0 && my==0;
+            gap|=!stood && mx==0 && my==0;
+        }
+        Check(!gap, "fixture: the command never paused on the way in (one run throughout)");
+        Check(stood && follow.guard!=RoomscaleFollow::Guard::NotOurs && follow.error[0]>RoomscaleFollow::kFollowStop,
+            "a run that walked most of the way and then stopped answering stands down, short of the stop band");
+        head[0]+=0.02f; step();
+        Check(mx==0 && my==0, "and 2 cm further does not restart it");
+    }
     // An unpause is not a lost title. The sim resumes a moment after the pause flag clears (Reach,
     // 2026-09-28: ~1.5 s in a Falcon, where nothing else stamps the heartbeat), so the teardown waits
     // kTitlePauseResumeGraceMs from the unpause before a stale heartbeat counts.
