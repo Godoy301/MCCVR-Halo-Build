@@ -1159,8 +1159,10 @@ namespace
                 g_config.seat_direct_drive = seatDrive ? 1 : 0;
                 changed = true;
             }
-            ImGui::TextDisabled("With Direct drive on, a seat that fires your own weapon is written like\n"
-                                "on foot instead of steered by the stick; the seat's limits still hold.");
+            ImGui::TextDisabled("With Direct drive on, a first-person seat that fires your own weapon is\n"
+                                "written like on foot instead of steered by the stick, once its aim checks\n"
+                                "out (about a second after you sit down; a seat that never does keeps the\n"
+                                "stick aim). The seat's limits still hold.");
         }
         ImGui::TextDisabled(
             "Halo 3 and ODST seats converge while Converged aim (Weapon & aim) is on;\n"
@@ -1587,10 +1589,12 @@ namespace
             bool converge = g_config.scope_converge != 0;
             if (ImGui::Checkbox("Converge on the reticle", &converge))
             { g_config.scope_converge = converge ? 1 : 0; changed = true; }
-            ImGui::TextDisabled("ON: the lens looks from your eye AT the point your shot converges on, so the\n"
-                                "reticle's point is its centre even when you stand away from the character.\n"
-                                "OFF: the earlier lens, along the game's aim, parallel to your sight line.\n"
-                                "Needs Converged aim (Weapon & aim). Live.");
+            ImGui::TextDisabled("ON: the lens looks from your eye along your aim line, through the point your\n"
+                                "shot converges on, so the reticle's point is its centre even when you stand\n"
+                                "away from the character. OFF: the earlier lens, along the game's aim.\n"
+                                "Needs Converged aim, and Direct drive in Reach, Halo 3, ODST and Halo 4\n"
+                                "(Weapon & Aim): with the stick aim the shot still trails your hand, so the\n"
+                                "lens keeps showing the game's aim. Live.");
             changed |= vr_menu::SliderFloat("Default scope zoom", &g_config.scope_zoom,
                                           6.0f, 24.0f, "%.2fx");
             changed |= vr_menu::SliderFloat("Lens diameter (m)##scope",
