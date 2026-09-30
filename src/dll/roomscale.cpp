@@ -24,6 +24,8 @@ std::atomic<uint64_t> manualSamples{0}, demandSamples{0}, travelMm{0};
 // Follow quality for the report: how far the head is from where the body will be (the controller's
 // error), the largest in the window, and the largest stick command issued.
 std::atomic<uint64_t> errorLastMm{0}, errorMaxMm{0}, commandMaxMilli{0};
+// RoomscaleFollow's guards (see kNoResponseMs): stand-downs, and probe travel it refused to claim.
+std::atomic<uint64_t> guardStoodDown{0}, guardNotOurs{0};
 #if HALOMCCVR_DEV_DIAGNOSTICS
 // Follow trace (dev builds only): one sample per ~100 ms while a follow is in progress (error past the
 // deadband, a command, or native travel still settling). Written only by the camera hook under
@@ -130,6 +132,8 @@ void Roomscale_Camera(GameTitle title,bool allowed,const float body[3],
     if (g_config.roomscale_movement)
     {
         (valid ? admitted : refused).fetch_add(1,std::memory_order_relaxed);
+        if (state.guard==RoomscaleFollow::Guard::StoodDown) guardStoodDown.fetch_add(1,std::memory_order_relaxed);
+        else if (state.guard==RoomscaleFollow::Guard::NotOurs) guardNotOurs.fetch_add(1,std::memory_order_relaxed);
         if (valid && manual) manualSamples.fetch_add(1,std::memory_order_relaxed);
         if (valid && (x!=0 || y!=0)) demandSamples.fetch_add(1,std::memory_order_relaxed);
         const float distance=std::hypot(reference[0]-oldRefX,reference[2]-oldRefZ);
@@ -153,11 +157,12 @@ void Roomscale_Camera(GameTitle title,bool allowed,const float body[3],
                 while (milli>prior && !commandMaxMilli.compare_exchange_weak(prior,milli,std::memory_order_relaxed)) {}
             }
 #if HALOMCCVR_DEV_DIAGNOSTICS
-            // Only while a follow is actually running: a steady lean inside the start band is the
-            // normal idle state and must not log a line every report.
+            // Only while a follow is actually running (or stood down, which is a follow held off): a
+            // steady lean inside the start band is the normal idle state and must not log a line every
+            // report.
             const float speed=std::hypot(state.velocity[0],state.velocity[1]);
             if (std::isfinite(err) && std::isfinite(cmd) && std::isfinite(speed) &&
-                (state.following || cmd>0 || state.settling) &&
+                (state.following || cmd>0 || state.settling || state.stalled) &&
                 (now<followSampledAt || now-followSampledAt>=100))
             {
                 const unsigned slot=followHead.load(std::memory_order_relaxed);
@@ -210,6 +215,12 @@ void Roomscale_Report() noexcept
             (unsigned long long)errLast,(unsigned long long)errMax,double(cmdMax)*0.001,
             good ? "native body follow available" :
             "StockFallback: awaiting fresh on-foot camera, tracking and gameplay input; VR stays active");
+    const auto stoodDown=guardStoodDown.exchange(0), notOurs=guardNotOurs.exchange(0);
+    if (enabled && (stoodDown || notOurs))
+        LOG("Roomscale guard: stood down %llu time(s) (the character ignored the follow's stick for %llu ms); "
+            "%llu move(s) while probing it again were the game moving him, not counted as walking",
+            (unsigned long long)stoodDown,(unsigned long long)RoomscaleFollow::kNoResponseMs,
+            (unsigned long long)notOurs);
 #if HALOMCCVR_DEV_DIAGNOSTICS
     static unsigned printed=0;
     const unsigned head=followHead.load(std::memory_order_acquire);

@@ -56,6 +56,27 @@ struct RoomscaleFollow
     bool haveLastHead=false;
     uint64_t lastHeadMs=0;
     float lastHead[2]{};
+    // A UNIT THAT IGNORES THE STICK IS NOT PUSHED, AND WHAT IT DOES MEANWHILE IS NOT OURS. Measured
+    // 2026-09-28 (Reach, headset, dev trace): five times in one minute the character stopped responding
+    // for 2-7 s (the game kept ticking; only the player's control update stopped). The follow commanded
+    // into him the whole time, and as control came back the body point jumped (the error changed sign
+    // within 100 ms). Consumed as a walk, that sent the follow chasing it at full stick for ~3 s: the
+    // body 2.2 m out and back. So a command run that has not moved the body kNoResponseM the way it
+    // pushes within kNoResponseMs stands the follow down: no command, nothing claimed. It resumes once
+    // the body point has been still for kStallQuietMs -- after it moved (control handed back, a camera
+    // settling), or kStallRetryMs after standing down if it never did, and at kStallMaxMs regardless.
+    // The run after that is a probe: until it has moved the body kProbeConfirmM the way it pushes, a
+    // step longer than kProbeStepM, or one more across the push than along it, is the game moving him,
+    // not our step, and stands it down again. What is owed is kept throughout. The body point arrives
+    // in sim-tick chunks (30 Hz), so these are per-update distances, never per-update speeds.
+    static constexpr uint64_t kNoResponseMs=500, kStallQuietMs=150, kStallRetryMs=1500, kStallMaxMs=4000;
+    static constexpr float kNoResponseM=0.02f, kStallStillM=0.003f, kProbeStepM=0.15f, kProbeConfirmM=0.05f;
+    bool stalled=false, stallMoved=false, probing=false;
+    uint64_t stallSince=0, stallQuietSince=0, runSince=0;
+    float runProgress=0;   // travel the way the current command run pushes (m, net)
+    // What a guard did on the last update, for the caller's report. Not state.
+    enum class Guard : uint8_t { None, StoodDown, NotOurs };
+    Guard guard=Guard::None;
     bool seeded=false, commanded=false, settling=false;
     bool manualPaused=false, following=false;
     uint32_t generation=0;
@@ -91,6 +112,15 @@ struct RoomscaleFollow
         // or a residual inside the start band would resume walking.
         commanded=settling=following=false;velocity[0]=velocity[1]=0;
         manualPaused=true;manualQuietSince=manualSince=now;
+        stalled=probing=false;runProgress=0;
+    }
+
+    // The unit is not responding to the follow (or is being moved by something else): command
+    // nothing, claim nothing, until the body point is still again.
+    void StandDown(uint64_t now,bool moved) noexcept
+    {
+        stalled=true; stallMoved=moved; stallSince=stallQuietSince=now;
+        commanded=settling=following=false; velocity[0]=velocity[1]=0; runProgress=0;
     }
 
     bool Update(uint32_t epoch,uint64_t now,bool enabled,bool manualMove,
@@ -98,6 +128,7 @@ struct RoomscaleFollow
         float hx,float hz,float wx,float wy,float scale,float& moveX,float& moveY) noexcept
     {
         moveX=moveY=0;
+        guard=Guard::None;
         const float values[]{position[0],position[1],head[0],head[2],reference[0],
             reference[2],hx,hz,wx,wy,scale};
         for (float v:values) if (!std::isfinite(v)) { seeded=false; commanded=settling=manualPaused=following=false; return false; }
@@ -123,6 +154,7 @@ struct RoomscaleFollow
             commanded=settling=following=false; velocity[0]=velocity[1]=0;
             lastCommand=lastMotion=now; seeded=true;
             manualPaused=false;
+            stalled=probing=false; runProgress=0;
             haveLastHead=false;   // no jump test across a re-seed: the head may really have moved
         }
         else if (haveLastHead && now>=lastHeadMs)
@@ -146,9 +178,25 @@ struct RoomscaleFollow
             // kManualPauseMaxMs after the stick let go.
             if (std::hypot(position[0]-body[0],position[1]-body[1])/scale>0.0001f)
                 manualQuietSince=now;
-            if ((now>=manualQuietSince&&now-manualQuietSince>=150) ||
-                (now>=manualSince&&now-manualSince>=kManualPauseMaxMs))
+            const bool quietEnd=now>=manualQuietSince&&now-manualQuietSince>=150;
+            const bool capEnd=now>=manualSince&&now-manualSince>=kManualPauseMaxMs;
+            if (quietEnd || capEnd)
+            {
                 manualPaused=false;
+                // Ended by the cap, the body may still be moving on its own: the next run is a probe.
+                probing=!quietEnd;
+            }
+        }
+        else if (stalled)
+        {
+            // Stood down (see kNoResponseMs): claim nothing, and wait for the body point to be still.
+            if (std::hypot(position[0]-body[0],position[1]-body[1])/scale>kStallStillM)
+            { stallMoved=true; stallQuietSince=now; }
+            const uint64_t stood=now>=stallSince ? now-stallSince : 0;
+            const bool still=now>=stallQuietSince && now-stallQuietSince>=kStallQuietMs;
+            if ((still && (stallMoved || stood>=kStallRetryMs)) || stood>=kStallMaxMs)
+            { stalled=false; probing=true; }
+            velocity[0]=velocity[1]=0;
         }
         else if (!reset && (commanded || (settling && now>=lastCommand && now-lastCommand<=kSettleMaxMs &&
             now>=lastMotion && now-lastMotion<=150)))
@@ -159,6 +207,9 @@ struct RoomscaleFollow
             const float right=dx*worldForward[1]-dy*worldForward[0];
             const float tx=forward*headForward[0]-right*headForward[1];
             const float tz=forward*headForward[1]+right*headForward[0];
+            const float along=tx*tailDir[0]+tz*tailDir[1];
+            const float across=std::fabs(tx*tailDir[1]-tz*tailDir[0]);
+            const float stepLength=std::hypot(tx,tz);
             // Native acceleration and braking can move after the last nonzero
             // stick request, including past the target. Account for that bounded
             // tail in the SAME tracking frame instead of adding it to the view.
@@ -167,7 +218,14 @@ struct RoomscaleFollow
             // The tail (no command on the last update) is ours only while it keeps moving the way we
             // walked: travel across or against that direction is a platform, a knockback or other
             // physics, and it ends the tail unclaimed (the view then carries it, as it should).
-            if (!commanded && (tx!=0 || tz!=0) && tx*tailDir[0]+tz*tailDir[1]<=0)
+            if (commanded && probing &&
+                (stepLength>kProbeStepM || (stepLength>kStallStillM && across>along)))
+            {
+                // Probing a unit that just ignored the stick: a jump, or travel across or against the
+                // push, is the game moving him, not our step. The view carries it, as for a knockback.
+                StandDown(now,true); guard=Guard::NotOurs;
+            }
+            else if (!commanded && (tx!=0 || tz!=0) && along<=0)
             {
                 settling=false; velocity[0]=velocity[1]=0;
             }
@@ -182,6 +240,11 @@ struct RoomscaleFollow
                     velocity[1]+=(tz/elapsed-velocity[1])*blend;
                 }
                 if(tx!=0 || tz!=0)lastMotion=now;
+                if (commanded)
+                {
+                    runProgress+=along;
+                    if (probing && runProgress>=kProbeConfirmM) probing=false;
+                }
             }
         }
         else velocity[0]=velocity[1]=0;
@@ -197,7 +260,7 @@ struct RoomscaleFollow
         }
         else
         {
-            following=!manualMove && !manualPaused &&
+            following=!manualMove && !manualPaused && !stalled &&
                 (distance>kFollowStart || (following && distance>kFollowStop));
             // Command ONLY while a follow is running. Once it ends inside kFollowStop, the game's own
             // deceleration finishes the step: `settling` below still consumes that tail into the
@@ -224,6 +287,14 @@ struct RoomscaleFollow
                 moveX=-cx*hz+cz*hx;
                 moveY=cx*hx+cz*hz;
             }
+        }
+        // A command run that has not moved the body the way it pushes: the unit is ignoring the stick.
+        const bool wantsMove=moveX!=0 || moveY!=0;
+        if (wantsMove && !commanded) { runSince=now; runProgress=0; }
+        else if (wantsMove && now>=runSince && now-runSince>=kNoResponseMs && runProgress<kNoResponseM)
+        {
+            StandDown(now,false); guard=Guard::StoodDown;
+            moveX=moveY=0;
         }
         commanded=moveX!=0 || moveY!=0;
         if(commanded)lastCommand=now;

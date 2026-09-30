@@ -17924,6 +17924,10 @@ int main()
         Check(resumed && resumedAt-released<=RoomscaleFollow::kManualPauseMaxMs+22,
             "aim swing cannot hold the manual pause open: the follow resumes within kManualPauseMaxMs");
         Check(resumed && resumedAt-released>=150, "the pause still covers the stick's braking tail");
+        Check(follow.probing, "ended by the cap, the next run is a probe (the body may still move on its own)");
+        for (int i=0;i<5;++i) { body[0]+=swing; swing=-swing; step(false); }
+        Check((mx!=0 || my!=0) && !follow.stalled,
+            "the eye's half-millimetre swing is not a jump: the probe keeps following");
     }
     // The owed distance survives an interruption (the user, 2026-09-28: "they are not under me").
     // Tracking or admission goes away while the player walks 0.6 m; when it comes back the body still
@@ -18004,6 +18008,77 @@ int main()
             }
         }
         Check(claimedEarly && !claimedLate, "the tail is claimed up to kSettleMaxMs after the last command, never after");
+    }
+    // A unit that ignores the stick is not pushed forever, and what it does meanwhile is not claimed.
+    // Reach, 2026-09-28 (headset, dev trace): control stopped for 2-7 s at a time; the follow kept
+    // commanding, then consumed the body point's jump as control came back and chased it 2.2 m out and
+    // back at full stick. Here: an 8 cm lean, a unit that never moves, then the body point swinging
+    // 0.4 m back and 0.7 m on in 30 Hz sim-tick chunks (Head right = tracking +x; body right = world -y).
+    {
+        RoomscaleFollow follow;
+        float body[3]{}, head[3]{0,1.7f,0}, reference[3]{0,1.7f,0};
+        float mx=0,my=0; uint64_t now=100;
+        auto step=[&]{now+=11;return follow.Update(3,now,true,false,body,head,reference,0,-1,1,0,1.0f,mx,my);};
+        step();
+        head[0]=0.08f; step();
+        Check(mx!=0 || my!=0, "fixture: an 8 cm lean starts a follow");
+        const uint64_t pushed=now;
+        uint64_t stoodAt=0;
+        for (int i=0;i<80 && !stoodAt;++i) { step(); if (mx==0 && my==0) stoodAt=now; }
+        Check(stoodAt && stoodAt-pushed>=RoomscaleFollow::kNoResponseMs &&
+              stoodAt-pushed<=RoomscaleFollow::kNoResponseMs+11 && follow.stalled,
+            "a unit that ignores the stick for kNoResponseMs is stood down");
+        bool untouched=true;
+        const float kept=reference[0];
+        for (float d : {-0.13f,0.f,0.f,-0.13f,0.f,0.f,-0.14f,0.f,0.f,0.23f,0.f,0.f,0.24f,0.f,0.f,
+                        0.23f,0.f,0.f,-0.2f,0.f,0.f,-0.1f})
+        {
+            body[1]-=d; step();
+            untouched&=mx==0 && my==0 && reference[0]==kept;
+        }
+        Check(untouched, "while stood down, the body point's swing is neither followed nor claimed");
+        const uint64_t swingEnded=now;
+        uint64_t resumedAt=0;
+        for (int i=0;i<40 && !resumedAt;++i) { step(); if (mx!=0 || my!=0) resumedAt=now; }
+        Check(resumedAt && resumedAt-swingEnded>=RoomscaleFollow::kStallQuietMs &&
+              resumedAt-swingEnded<=RoomscaleFollow::kStallQuietMs+22,
+            "once the body point is still again, the follow resumes");
+        Check(std::fabs(follow.error[0]-0.08f)<1e-4f && follow.probing,
+            "with the whole lean still owed, as a probe");
+        const float beforeJump=reference[0];
+        body[1]-=0.3f; step();
+        Check(reference[0]==beforeJump && follow.stalled && follow.guard==RoomscaleFollow::Guard::NotOurs,
+            "while probing, a 0.3 m jump the way it pushes is the game moving him: stood down, unclaimed");
+        body[1]+=0.3f;
+        for (int i=0;i<40 && follow.stalled;++i) step();
+        bool sideways=false;
+        for (int i=0;i<3 && !sideways;++i)
+        {
+            const float before=reference[0];
+            body[0]+=0.02f; step();   // 2 cm across the push, per update
+            sideways=follow.stalled && reference[0]==before && follow.guard==RoomscaleFollow::Guard::NotOurs;
+        }
+        Check(sideways, "while probing, travel across the push is not our step either");
+    }
+    // Stood down with the body point never moving, the follow tries again kStallRetryMs later, and a
+    // probe the unit answers becomes an ordinary follow again.
+    {
+        RoomscaleFollow follow;
+        float body[3]{}, head[3]{0,1.7f,0}, reference[3]{0,1.7f,0};
+        float mx=0,my=0; uint64_t now=100;
+        auto step=[&]{now+=11;return follow.Update(3,now,true,false,body,head,reference,0,-1,1,0,1.0f,mx,my);};
+        step();
+        head[0]=0.08f; step();
+        uint64_t stoodAt=0;
+        for (int i=0;i<80 && !stoodAt;++i) { step(); if (mx==0 && my==0) stoodAt=now; }
+        uint64_t probedAt=0;
+        for (int i=0;i<300 && !probedAt;++i) { step(); if (mx!=0 || my!=0) probedAt=now; }
+        Check(stoodAt && probedAt && probedAt-stoodAt>=RoomscaleFollow::kStallRetryMs &&
+              probedAt-stoodAt<=RoomscaleFollow::kStallRetryMs+11,
+            "with the body point still throughout, it probes again after kStallRetryMs");
+        for (int i=0;i<20 && follow.following;++i) { body[1]-=0.011f; step(); }   // 1 m/s the way it pushes
+        Check(!follow.probing && !follow.stalled && reference[0]>0.05f,
+            "a probe the unit answers is an ordinary follow again, its travel claimed");
     }
     Check(!Config{}.roomscale_movement, "roomscale is opt-in for existing and new configurations");
 
