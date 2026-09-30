@@ -18080,6 +18080,23 @@ int main()
         Check(!follow.probing && !follow.stalled && reference[0]>0.05f,
             "a probe the unit answers is an ordinary follow again, its travel claimed");
     }
+    // An unpause is not a lost title. The sim resumes a moment after the pause flag clears (Reach,
+    // 2026-09-28: ~1.5 s in a Falcon, where nothing else stamps the heartbeat), so the teardown waits
+    // kTitlePauseResumeGraceMs from the unpause before a stale heartbeat counts.
+    {
+        const uint64_t lastBeat=10'000, unpaused=23'700;   // paused ~13 s, then the flag clears
+        Check(!TitleHeartbeatLost(20'000,lastBeat,true,0,1000), "a paused title is never lost");
+        Check(!TitleHeartbeatLost(unpaused+1'500,lastBeat,false,unpaused,1000),
+            "1.5 s after an unpause, before the sim resumes, the title is not lost");
+        Check(!TitleHeartbeatLost(unpaused+1'600,unpaused+1'450,false,unpaused,1000),
+            "once the sim stamps again the heartbeat is fresh");
+        Check(TitleHeartbeatLost(unpaused+kTitlePauseResumeGraceMs+1,lastBeat,false,unpaused,1000),
+            "a title that never resumes after the unpause is lost once the grace ends");
+        Check(TitleHeartbeatLost(5'001,4'000,false,0,1000) && !TitleHeartbeatLost(5'000,4'000,false,0,1000),
+            "outside any pause, more than one second without a heartbeat is lost");
+        Check(!TitleHeartbeatLost(5'000,0,false,0,1000) && !TitleHeartbeatLost(3'000,4'000,false,0,1000),
+            "no heartbeat yet, or one stamped after this frame read the clock, never tears down");
+    }
     Check(!Config{}.roomscale_movement, "roomscale is opt-in for existing and new configurations");
 
     g_failures += RunRoomscaleInputTests();

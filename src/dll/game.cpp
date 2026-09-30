@@ -46026,6 +46026,9 @@ void Game_AutoVrTick()
 #if HALOMCCVR_EXPERIMENTAL_REACH_RENDER_CANDIDATE
     static bool wasReachHudContext = false;
     static bool wasReachNativePause = false;
+    // When Reach's native pause last ended: the heartbeat teardown gives an unpause
+    // kTitlePauseResumeGraceMs, because the sim resumes a moment after the flag clears.
+    static uint64_t reachPauseExitMs = 0;
     if (TitleAdapter_GetActiveTitle() == GameTitle::HaloReach)
     {
         wasReachHudContext = true;
@@ -46066,6 +46069,7 @@ void Game_AutoVrTick()
             else if ((!reachPauseKnown || !reachPaused) && wasReachNativePause)
             {
                 wasReachNativePause = false;
+                reachPauseExitMs = GetTickCount64();
                 VR_RequestPausePresentation(false);
                 LOG("Reach pause presentation: native pause exited, "
                     "restoring stereo 3D");
@@ -46099,9 +46103,18 @@ void Game_AutoVrTick()
                 // no longer owns the frame (Save & Quit, shell, or an equivalent
                 // bypass). Request verified worker teardown while Stage 3T's
                 // loader pin still makes every MinHook target safely mapped.
-                if (reachLastCamMs && !(reachPauseKnown && reachPaused) &&
-                    GetTickCount64() - reachLastCamMs > 1000)
+                // An unpause first gets kTitlePauseResumeGraceMs: the sim resumes
+                // a moment after the flag clears, and in a third-person seat
+                // nothing stamps the heartbeat until it does (TitleHeartbeatLost).
+                const uint64_t heartbeatNow = GetTickCount64();
+                if (TitleHeartbeatLost(heartbeatNow, reachLastCamMs,
+                        reachPauseKnown && reachPaused, reachPauseExitMs, 1000))
                 {
+                    LOG("Reach camera core: no Reach camera or sim heartbeat for %llu ms "
+                        "outside a pause (last unpause %lld ms ago, -1 = none this session); "
+                        "requesting teardown",
+                        (unsigned long long)(heartbeatNow - reachLastCamMs),
+                        reachPauseExitMs ? (long long)(heartbeatNow - reachPauseExitMs) : -1LL);
                     g_reachCamera.teardownRequested.store(
                         true, std::memory_order_release);
                 }
