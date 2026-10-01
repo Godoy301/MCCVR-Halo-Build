@@ -2,6 +2,7 @@
 #include "haloce_controls.h"
 #include "physical_crouch_camera.h"
 uint64_t VR_PhysicalCrouchEpoch() noexcept;
+float VR_RecenterStandingLiftM() noexcept;   // vr.h
 #include "haloce_native_bindings.h"
 #include "haloce_hud_layout.h"
 #include "haloce_hud_target.h"
@@ -375,7 +376,10 @@ uintptr_t __fastcall BuilderHook(uintptr_t arg,SaberViewPair* list,uint8_t secon
     if (force&&constructTrackedViews)
     {
         if (recenter.exchange(false)||reference.generation!=gen||reference.spaceEpoch!=tracking.spaceEpoch)
+        {
             reference={tracking.headPosition,tracking.headOrientation,tracking.spaceEpoch,gen};
+            reference.position.y+=VR_RecenterStandingLiftM();   // the standing height, not a caught crouch
+        }
         // Roomscale (body following) in the Anniversary renderer. The native camera for THIS frame is
         // built inside ConstructViews, after the reference is fixed, so follow from the engine's centre
         // camera the previous frame published (at most one frame old; the body moves at the sim's rate).
@@ -407,7 +411,10 @@ uintptr_t __fastcall BuilderHook(uintptr_t arg,SaberViewPair* list,uint8_t secon
         SaberViewPair source{},rasterSource{},committed{}; StagedViewPair staged{};
         if (!constructTrackedViews&&
             (recenter.exchange(false)||reference.generation!=gen||reference.spaceEpoch!=tracking.spaceEpoch))
+        {
             reference={tracking.headPosition,tracking.headOrientation,tracking.spaceEpoch,gen};
+            reference.position.y+=VR_RecenterStandingLiftM();
+        }
         if (!recenter.load(std::memory_order_acquire)&&
             revisionBeforeBuild==referenceRevision.load(std::memory_order_acquire))
             publishedReference.Publish({constructTrackedViews?construction.views.reference:reference,revisionBeforeBuild});

@@ -926,6 +926,13 @@ struct VrPhysicalCrouchSample
     bool valid=false,calibrated=false,riseCapped=false;
 };
 bool VR_GetPhysicalCrouchSample(VrPhysicalCrouchSample& out) noexcept;
+// For a recenter capturing the head as the view's neutral position: how far (room metres, >= 0) the head is
+// below the player's STANDING height now, to add to the captured height. With the physical crouch on, the
+// view's neutral height is then the standing height the crouch itself measures from, wherever the head was
+// when the recenter landed -- most recenters are automatic (an unpause, a cutscene's end, a seat, a level
+// load) and catch the player crouched or leaning, and the view kept that height as "standing" until the next
+// manual recenter. 0 with the physical crouch off or no standing height known yet: the head as it is.
+float VR_RecenterStandingLiftM() noexcept;
 // Diagnostics (the CROUCH line): the continuous frame's carry (m) and how each discontinuity was met.
 struct VrCrouchContinuityStats
 {

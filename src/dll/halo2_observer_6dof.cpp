@@ -1154,6 +1154,9 @@ namespace
             std::memcpy(
                 g_reference.position, snapshot.headPosition,
                 sizeof(g_reference.position));
+            // The neutral height is the standing one, not a crouch the recenter happened to catch
+            // (VR_RecenterStandingLiftM; the same height in every Halo 2 core, whenever each captures).
+            g_reference.position[1] += VR_RecenterStandingLiftM();
             g_referenceValid.store(true, std::memory_order_release);
             g_referenceAwaitingFollow = true;
             g_snapTurn={};
@@ -1192,6 +1195,9 @@ namespace
             std::memcpy(
                 g_reference.position, snapshot.headPosition,
                 sizeof(g_reference.position));
+            // Its height stays the standing one the recenter took (VR_RecenterStandingLiftM), not a
+            // crouch this step happened to catch.
+            g_reference.position[1] += VR_RecenterStandingLiftM();
             g_referenceAwaitingFollow = false;
         }
 

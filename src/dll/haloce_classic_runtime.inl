@@ -413,7 +413,10 @@ void ClassicGameRenderBody(float delta,float interpolation)
     scope.revision=referenceRevision.load();
     if (recenter.exchange(false)||reference.generation!=scope.generation||
         reference.spaceEpoch!=tracking.spaceEpoch)
+    {
         reference={tracking.headPosition,tracking.headOrientation,tracking.spaceEpoch,scope.generation};
+        reference.position.y+=VR_RecenterStandingLiftM();   // the standing height, not a caught crouch
+    }
     scope.reference=reference;
     if (scope.revision==referenceRevision.load())
         publishedReference.Publish({reference,scope.revision});

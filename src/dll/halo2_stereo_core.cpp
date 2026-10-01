@@ -866,11 +866,15 @@ namespace
                     std::memory_order_relaxed);
                 output.orientation[component] = normalized[component];
             }
+            // The neutral height is the standing one, not a crouch the recenter happened to catch
+            // (VR_RecenterStandingLiftM; the same height the observer's reference takes).
+            const float standingLift = VR_RecenterStandingLiftM();
             for (int axis = 0; axis < 3; ++axis)
             {
+                const float captured = position[axis] + (axis == 1 ? standingLift : 0.0f);
                 g_headReferenceBits[4 + axis].store(
-                    FloatBits(position[axis]), std::memory_order_relaxed);
-                output.position[axis] = position[axis];
+                    FloatBits(captured), std::memory_order_relaxed);
+                output.position[axis] = captured;
             }
             if ((g_headReferenceResetSerial.load(
                      std::memory_order_acquire) &

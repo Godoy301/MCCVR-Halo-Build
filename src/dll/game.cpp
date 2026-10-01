@@ -7000,7 +7000,9 @@ namespace
             g_headYawRef = hy;
             if (manualRecenter)
             {
-                g_headPosRef[0] = hpos[0]; g_headPosRef[1] = hpos[1];
+                // The neutral height is the standing one (VR_RecenterStandingLiftM), not a crouch the
+                // recenter happened to catch.
+                g_headPosRef[0] = hpos[0]; g_headPosRef[1] = hpos[1] + VR_RecenterStandingLiftM();
                 g_headPosRef[2] = hpos[2];
                 g_needPosRecenter = false;
                 LOG("head tracking recentered (game yaw %.1f deg)",
@@ -7022,7 +7024,8 @@ namespace
         {
             // Enabling leaning: capture the neutral head position only, so the
             // aim/yaw baseline is left untouched (no view snap).
-            g_headPosRef[0] = hpos[0]; g_headPosRef[1] = hpos[1]; g_headPosRef[2] = hpos[2];
+            g_headPosRef[0] = hpos[0]; g_headPosRef[1] = hpos[1] + VR_RecenterStandingLiftM();
+            g_headPosRef[2] = hpos[2];
         }
 
         // Rotation: yaw relative + recenter, pitch absolute + trim.
@@ -11866,6 +11869,7 @@ namespace
             if (manualRecenter)
             {
                 memcpy(g_headPosRef, headPosition, sizeof(g_headPosRef));
+                g_headPosRef[1] += VR_RecenterStandingLiftM();   // the standing height, not a caught crouch
                 g_needPosRecenter.store(false, std::memory_order_release);
             }
             if (cinematicBoundary)
@@ -11883,6 +11887,7 @@ namespace
         else if (g_needPosRecenter.exchange(false, std::memory_order_acq_rel))
         {
             memcpy(g_headPosRef, headPosition, sizeof(g_headPosRef));
+            g_headPosRef[1] += VR_RecenterStandingLiftM();
         }
 
         // Halo 3 parity: recentered yaw plus HMD-relative yaw; absolute HMD
@@ -21510,11 +21515,13 @@ namespace
             effectiveGameYawRef=vehicleEntryYaw;
             effectiveHeadYawRef=hy;
             memcpy(effectiveHeadPosRef,hpos,sizeof(effectiveHeadPosRef));
+            // The standing height, not a crouch the seat entry happened to catch (VR_RecenterStandingLiftM).
+            effectiveHeadPosRef[1]+=VR_RecenterStandingLiftM();
             pendingSeatRecenter.valid=true;
             pendingSeatRecenter.key=*entryRecenterKey;
             pendingSeatRecenter.gameYaw=vehicleEntryYaw;
             pendingSeatRecenter.headYaw=hy;
-            memcpy(pendingSeatRecenter.headPosition,hpos,
+            memcpy(pendingSeatRecenter.headPosition,effectiveHeadPosRef,
                    sizeof(pendingSeatRecenter.headPosition));
         }
         else if (manualRecenter || cutRealign)
@@ -21524,12 +21531,14 @@ namespace
             if (manualRecenter)
             {
                 memcpy(g_headPosRef,hpos,sizeof(g_headPosRef));
+                g_headPosRef[1]+=VR_RecenterStandingLiftM();
                 g_needPosRecenter.store(false,std::memory_order_release);
             }
         }
         else if (g_needPosRecenter.exchange(false))
         {
             memcpy(g_headPosRef,hpos,sizeof(g_headPosRef));
+            g_headPosRef[1]+=VR_RecenterStandingLiftM();
         }
         if (!vehicleEntryRecenter)
         {
@@ -40887,10 +40896,14 @@ namespace
                     true, std::memory_order_release);
                 g_halo4Camera.headYawReference.store(
                     head.yaw, std::memory_order_relaxed);
+                // The neutral height is the standing one (VR_RecenterStandingLiftM), not a crouch the
+                // recenter happened to catch.
+                const float standingLift = VR_RecenterStandingLiftM();
                 for (int axis = 0; axis < 3; ++axis)
                 {
                     g_halo4Camera.headPositionReference[axis].store(
-                        snapshot.headPosition[axis], std::memory_order_relaxed);
+                        snapshot.headPosition[axis] + (axis == 1 ? standingLift : 0.0f),
+                        std::memory_order_relaxed);
                 }
                 // C-H4-35 keeps Halo 4's reference pair private. C-H4-33's
                 // writes into the Halo 3/ODST/Reach globals existed only for
@@ -40903,10 +40916,12 @@ namespace
             {
                 // Enabling leaning captures the neutral head position only, so
                 // the yaw baseline is untouched and the view does not snap.
+                const float standingLift = VR_RecenterStandingLiftM();
                 for (int axis = 0; axis < 3; ++axis)
                 {
                     g_halo4Camera.headPositionReference[axis].store(
-                        snapshot.headPosition[axis], std::memory_order_relaxed);
+                        snapshot.headPosition[axis] + (axis == 1 ? standingLift : 0.0f),
+                        std::memory_order_relaxed);
                 }
             }
 

@@ -18990,6 +18990,17 @@ bool VR_GetPhysicalCrouchSample(VrPhysicalCrouchSample& out) noexcept
     if(!at||now<at||now-at>100) out.valid=false;
     return out.valid;
 }
+float VR_RecenterStandingLiftM() noexcept
+{
+    if(!g_config.physical_crouch) return 0.0f;
+    VrPhysicalCrouchSample sample{};
+    if(!VR_GetPhysicalCrouchSample(sample)) return 0.0f;
+    // Both in the crouch's continuous frame, so a runtime recenter between them cannot fake a height; the
+    // difference carries into whatever frame the caller's head position is in (each is a vertical
+    // translation of the OpenXR LOCAL space).
+    const float below=sample.baseline-sample.height;
+    return std::isfinite(below)&&below>0.0f?std::min(below,1.0f):0.0f;
+}
 void VR_GetCrouchContinuityStats(VrCrouchContinuityStats& out) noexcept
 {
     out={};
