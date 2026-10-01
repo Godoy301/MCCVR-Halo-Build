@@ -143,6 +143,23 @@ void TestStintCheck()
         c.step(true, 0.0f, p, 0.0f, p, t);    // settles back onto the record
         Check(c.pitch_ok, "one more settled agreement passes pitch");
     }
+    {   // a pause after yaw passed: the gap adds at most 100 ms to pitch's budget
+        StintCheck c;
+        unsigned long long t = 1000;
+        for (int i = 0; i < 30; ++i, t += 16) c.step(true, 0.0f, 0.0f, 0.0f, 0.3f, t);
+        Check(c.yaw_ok && !c.pitch_failed, "(setup) yaw passed, pitch disagreeing");
+        t += 60000;
+        c.step(true, 0.0f, 0.0f, 0.0f, 0.3f, t);
+        Check(!c.pitch_failed && c.elapsed_ms - c.yaw_ok_at_ms <= 100, "a minute paused is not pitch's budget");
+    }
+    {   // a stale or non-finite sample neither counts nor resets pitch
+        StintCheck c;
+        unsigned long long t = 1000;
+        for (int i = 0; i < 20; ++i, t += 16) c.step(true, 0.0f, 0.0f, 0.0f, 0.0f, t);
+        c.step(false, 0.0f, 0.5f, 0.0f, 0.0f, t); t += 16;
+        c.step(true, 0.0f, std::nanf(""), 0.0f, 0.0f, t); t += 16;
+        Check(c.pitch_count == 19, "a stale or non-finite sample leaves the pitch count");
+    }
     {   // a pause: the gap adds at most 100 ms to the budget
         StintCheck c;
         c.step(true, 0.0f, 0.0f, 0.0f, 0.3f, 1000);

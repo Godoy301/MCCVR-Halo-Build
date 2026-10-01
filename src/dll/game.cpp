@@ -19401,6 +19401,14 @@ namespace
     bool ReachPresentedRayConsumable(GameTitle title, uint32_t generation,
         uint64_t consumerSerial, uint64_t raySupportEpoch,
         bool raySupportTrusted, uint64_t raySerial);
+    // A SEATED ray (ReachBuildPresentedReticleWorldTarget `seated`): no F06 receipt exists in a seat (no
+    // first-person interpolation runs there) and a seat holds no support grip, so it is consumable when it
+    // belongs to this frame -- the serial staleness bound only.
+    bool ReachSeatedRayConsumable(uint64_t raySerial, uint64_t consumerSerial)
+    {
+        return !VR_SupportGripWiredForTitle(GameTitle::HaloReach) ||
+            support_grip::PresentedRaySerialCompatible(raySerial, consumerSerial);
+    }
 
     bool ReachReadCompletedReticleTarget(
         ReachCompletedReticleTargetSnapshot& out,
@@ -19580,9 +19588,10 @@ namespace
             // consuming prepared serial in scope inside the weapon transaction,
             // so they deliberately keep the ray serial and document the
             // conservative latest-only-receipt behaviour.
-            ReachPresentedRayConsumable(GameTitle::HaloReach, generation,
-                sample.renderedEyePreparedSerial, sight.supportEpoch,
-                sight.supportTrusted, sight.raySerial);
+            // A seated target (all of g_reachCompletedReticleTarget is seated) carries no support receipt:
+            // Reach runs no first-person interpolation in a seat, and a seat holds no support grip. Its ray
+            // only has to belong to this frame (ReachSeatedRayConsumable).
+            ReachSeatedRayConsumable(sight.raySerial, sample.renderedEyePreparedSerial);
         if (!sightUsable)
         {
             g_reachFiringOriginSkips.fetch_add(1, std::memory_order_relaxed);
@@ -19881,10 +19890,8 @@ namespace
             // in this weapon transaction, so the ray serial is passed
             // deliberately (latest-only receipt => an old ray and an old
             // receipt are both refused).
-            ReachPresentedRayConsumable(GameTitle::HaloReach,
-                g_reachCamera.generation.load(std::memory_order_acquire),
-                target.raySerial, target.supportEpoch, target.supportTrusted,
-                target.raySerial);
+            // Seated, as the firing-origin site: no support receipt in a seat (ReachSeatedRayConsumable).
+            ReachSeatedRayConsumable(target.raySerial, target.raySerial);
         const uint32_t generation =
             g_reachCamera.generation.load(std::memory_order_acquire);
         const bool localCandidate = occupationCoherent && occupation.active &&
@@ -51022,7 +51029,17 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
         const float errorMagnitude =
             sqrtf(errYaw * errYaw + errPitch * errPitch);
         const uint64_t nowMs = GetTickCount64();
-        const bool seated = !halo4Aim &&
+        bool halo4SeatedNow = false;
+#if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA
+        if (halo4Aim)
+        {
+            // A Halo 4 seat writes the heading only and leaves its pitch on this servo, so a pitch stop is
+            // seen here: the camera hook's seat stamp makes the stall check see the seat.
+            Halo4VehicleInputState stampSeat{};
+            halo4SeatedNow = Halo4ReadSeatStamp(stampSeat) && stampSeat.seated;
+        }
+#endif
+        const bool seated = halo4Aim ? halo4SeatedNow :
             (Halo3VehicleFpActive()
 #if HALOMCCVR_EXPERIMENTAL_ODST_BRINGUP
              || OdstVehicleFpActive()

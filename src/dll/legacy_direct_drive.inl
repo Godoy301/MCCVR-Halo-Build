@@ -34,9 +34,10 @@
 // 2026-10-01; the one exception, Halo 4's type-13 driver, runs a different controller and never reaches
 // the hook, so it stays on the servo). The input thread publishes a seat's setpoint flagged `seated`, with
 // the AXES the hand owns there (seat_drive::Decide: a passenger, gunner or turret both; a look-steered
-// driver the heading only at reach_vehicle_aim 2; nothing in a seat whose view is not ours). Each seat stint
-// then proves its own record axis by axis before that axis is written (seat_drive::StintCheck: yaw on 30
-// agreeing updates, pitch on 30 SETTLED ones within 3 s, never before yaw -- a Halo 3 driver+gunner's pitch
+// driver both at reach_vehicle_aim 2, the pitch only while the stick or wheel steers, none at 1; Halo 4 seats
+// the heading only (game.cpp); nothing in a seat whose view is not ours). Each seat stint then proves its own
+// record axis by axis before that axis is written (seat_drive::StintCheck: yaw on 30 agreeing updates, pitch
+// on 30 SETTLED ones within 3 s of yaw passing, never before yaw -- a Halo 3 driver+gunner's pitch
 // sits ~13 deg off the gun and stays on the servo). The write goes through Reach's seat-limit latch
 // (aim_write::LimitLatch), pitch excepted for a driver, whose pitch the accumulator levels as the vehicle
 // moves. A seat may also ARM the hook, on yaw agreement alone: a checkpoint that loads in a vehicle.
@@ -452,7 +453,7 @@ bool LegacyDriveLive(GameTitle title)
 }
 
 // Input thread: which axes of a SEAT the hook wrote within 150 ms (seat_direct_drive) -- the servo stands down
-// on those -- and whether that write was held short at a seat limit (then the aim is not the converged one).
+// on those. Whether a write was held short at a seat limit: LegacyDriveSeatLimited.
 seat_drive::Axes LegacyDriveSeatAxes(GameTitle title)
 {
     seat_drive::Axes axes;

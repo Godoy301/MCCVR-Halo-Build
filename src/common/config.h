@@ -760,10 +760,12 @@ struct Config
     // aim_direct_drive = 1, a seat's aim is written as on foot -- in the seats reach_vehicle_aim names, axis by
     // axis once that seat's own aim record has checked out -- instead of the stick steering it at the game's
     // turn rate. The seat's limits (a passenger's cone) still hold: the write stops at the limit, where the
-    // reticle shows the gun's real aim. A driver whose stick or wheel steers keeps it for the heading. Halo 4
-    // and Halo 2 seats need the first-person seat view (vehicle_first_person); their seat roles are not mapped,
-    // so every seat there counts as a driver whose look steers (written at 2, the stick at 1), and Halo 4
-    // writes the heading only. 0 keeps every seat on the stick.
+    // reticle shows the gun's real aim. A driver whose stick or wheel steers keeps it for the heading. Every
+    // title needs its first-person seat view (vehicle_first_person; Halo 3 / ODST also vehicle_hide_body, whose
+    // native seat patch holds the camera; Halo 2 also vehicle_motion, and nothing is written there with
+    // vehicle_view_follow on). Halo 4 and Halo 2 seat roles are not mapped, so every seat there counts as a
+    // driver whose look steers (written at 2, the stick at 1), and Halo 4 writes the heading only. 0 keeps
+    // every seat on the stick.
     // F1 > Vehicles > Aim in seats > "Direct drive in seats". (default 1)
     int seat_direct_drive = 1;
 

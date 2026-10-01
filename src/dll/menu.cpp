@@ -1150,16 +1150,27 @@ namespace
             if (ImGui::Checkbox("Direct drive in seats", &seats))
             { g_config.seat_direct_drive = seats ? 1 : 0; changed = true; }
             ImGui::TextDisabled("ON (with Direct drive): a seat's aim is written as on foot, once the seat has\n"
-                                "checked its own aim (a moment after you sit down). Halo 4 and Halo 2 seats need\n"
-                                "the first-person seat view; Halo 4 seats write the heading only. OFF: the stick\n"
-                                "steers the aim in every seat.");
-            bool drivers = g_config.reach_vehicle_aim >= 2;
-            if (ImGui::Checkbox("Drivers aim with the hand", &drivers))
-            { g_config.reach_vehicle_aim = drivers ? 2 : 1; changed = true; }
-            ImGui::TextDisabled("ON: a driver whose vehicle turns toward the aim (Warthog, Ghost, Banshee) steers\n"
-                                "with the hand. OFF: that driver keeps the stick; gunners and passengers still\n"
-                                "aim with the hand -- except in Halo 4 and Halo 2, which cannot yet tell a seat's\n"
-                                "role, so OFF keeps every seat there on the stick.");
+                                "checked its own aim (a moment after you sit down). Every title needs its\n"
+                                "first-person seat view: in Halo 3 and ODST with \"Hide my character in the seat\"\n"
+                                "on; in Halo 2 also with \"View follows the vehicle\" off. Halo 4 seats write the\n"
+                                "heading only. OFF: the stick steers the aim in every seat.");
+            if (g_config.reach_vehicle_aim <= 0)
+            {
+                // 0 is a cfg-only "seat aim off": never shown as the OFF below, never rewritten silently.
+                ImGui::TextDisabled("Seat aim is off in the cfg (reach_vehicle_aim = 0): every seat keeps the stick.");
+                if (ImGui::SmallButton("Turn seat aim on##reach_vehicle_aim"))
+                { g_config.reach_vehicle_aim = 2; changed = true; }
+            }
+            else
+            {
+                bool drivers = g_config.reach_vehicle_aim >= 2;
+                if (ImGui::Checkbox("Drivers aim with the hand", &drivers))
+                { g_config.reach_vehicle_aim = drivers ? 2 : 1; changed = true; }
+                ImGui::TextDisabled("ON: a driver whose vehicle turns toward the aim (Warthog, Ghost, Banshee) steers\n"
+                                    "with the hand. OFF: that driver keeps the stick; gunners and passengers still\n"
+                                    "aim with the hand -- except in Halo 4 and Halo 2, which cannot yet tell a seat's\n"
+                                    "role, so OFF keeps every seat there on the stick.");
+            }
         }
         ImGui::Spacing();
         ImGui::Separator();
