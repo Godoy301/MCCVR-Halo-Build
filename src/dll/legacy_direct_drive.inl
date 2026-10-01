@@ -141,6 +141,11 @@ void LegacyDriveForgetSeat(LegacyDriveState& st)
 {
     st.seatAgree = 0;
     st.seatVerified = false;
+    // The input thread reads the seat as written while these are fresh (LegacyDriveSeatLive): a stint that
+    // is over stops claiming it at once, or the stick stays zeroed and the reticle reads "written" for up to
+    // 150 ms over an aim nothing writes any more.
+    st.seatWriteMs.store(0, std::memory_order_release);
+    st.seatLimitedMs.store(0, std::memory_order_release);
 }
 
 // The pattern matches at exactly base + rva (not merely somewhere).
