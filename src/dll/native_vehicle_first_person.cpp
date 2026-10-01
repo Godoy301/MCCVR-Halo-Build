@@ -32,6 +32,17 @@ struct Runtime
     std::atomic<bool> requested{},faulted{};
     std::atomic<uint32_t> callbacks{};
     std::atomic<uint64_t> selected{},positioned{},missingMarker{},faults{};
+    // The seat this override last placed the camera in, and when: the seat's view is ours (seat direct drive
+    // writes a seat's aim only while it is -- a chase camera would swing round the vehicle with each write).
+    std::atomic<uint64_t> positionedMs{};
+    std::atomic<uint32_t> positionedParent{UINT32_MAX};
+    std::atomic<int> positionedSeat{-1};
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    // Why the selector was not taken over: the native mode it chose (0-4, other), and Owner()'s first refusal.
+    std::atomic<uint32_t> modeSeen[6]{};
+    std::atomic<uint32_t> ownerWhy[7]{};
+    std::atomic<uint32_t> lastSelectorUnit{},lastOwnerUnit{};
+#endif
     uint64_t reportAt{};
 };
 Runtime runtime[3];
@@ -43,11 +54,29 @@ bool Current(unsigned i) noexcept
         TitleAdapter_GetActiveTitle()==kBindings[i].title&&
         TitleAdapter_GetGeneration(kBindings[i].title)==r.generation;
 }
+enum OwnerWhy : unsigned { OwnerOk,OwnerNotCurrent,OwnerBadUnit,OwnerRead,OwnerUnitMismatch,OwnerGeneration,
+    OwnerNoSeat };
+unsigned OwnerReason(unsigned i,uint32_t unit,NativeVehicleCameraOwner& owner) noexcept
+{
+    if (!Current(i)) return OwnerNotCurrent;
+    if (unit==UINT32_MAX||!(unit>>16)) return OwnerBadUnit;
+    if (!Game_ReadVehicleCameraOwner(kBindings[i].title,owner)) return OwnerRead;
+    if (owner.unit!=unit) return OwnerUnitMismatch;
+    if (owner.generation!=runtime[i].generation) return OwnerGeneration;
+    if (owner.parent==UINT32_MAX||owner.seat<0) return OwnerNoSeat;
+    return OwnerOk;
+}
 bool Owner(unsigned i,uint32_t unit,NativeVehicleCameraOwner& owner) noexcept
 {
-    return Current(i)&&unit!=UINT32_MAX&&(unit>>16)&&
-        Game_ReadVehicleCameraOwner(kBindings[i].title,owner)&&owner.unit==unit&&
-        owner.generation==runtime[i].generation&&owner.parent!=UINT32_MAX&&owner.seat>=0;
+    const unsigned why=OwnerReason(i,unit,owner);
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    runtime[i].ownerWhy[why].fetch_add(1,std::memory_order_relaxed);
+    if (why==OwnerUnitMismatch) {
+        runtime[i].lastSelectorUnit.store(unit,std::memory_order_relaxed);
+        runtime[i].lastOwnerUnit.store(owner.unit,std::memory_order_relaxed);
+    }
+#endif
+    return why==OwnerOk;
 }
 // All three native marker records have their world transform at +56 and
 // translation at +96, independently witnessed by their own camera consumers.
@@ -110,6 +139,9 @@ template<unsigned I> bool SelectOwned(uint32_t unit,Mode<I>* mode) noexcept
 {
     __try {
         NativeVehicleCameraOwner before{},after{};float point[3]{};
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        if (mode) runtime[I].modeSeen[(*mode>=0&&*mode<=4)?unsigned(*mode):5u].fetch_add(1,std::memory_order_relaxed);
+#endif
         if (!mode||*mode!=2||!Owner(I,unit,before)) return false;
         if (!Head(I,before,point)) {runtime[I].missingMarker.fetch_add(1,std::memory_order_relaxed);return false;}
         return Owner(I,unit,after)&&before==after;
@@ -141,6 +173,9 @@ template<unsigned I> void PositionOwned(uint32_t unit,void* result) noexcept
             r.trimWriting.clear(std::memory_order_release);
         }
         runtime[I].positioned.fetch_add(1,std::memory_order_relaxed);
+        r.positionedParent.store(before.parent,std::memory_order_relaxed);
+        r.positionedSeat.store(before.seat,std::memory_order_relaxed);
+        r.positionedMs.store(GetTickCount64(),std::memory_order_release);
     } __except(EXCEPTION_EXECUTE_HANDLER) {
         Fault(I);
     }
@@ -220,6 +255,19 @@ bool Install(unsigned i,size_t size)
     return true;
 }
 }
+bool NativeVehicleFirstPerson_SeatViewOwned(GameTitle title,uint32_t parent,int seat) noexcept
+{
+    if (title!=TitleAdapter_GetActiveTitle()||parent==UINT32_MAX||seat<0) return false;
+    for (unsigned i=0;i<3;++i) if (kBindings[i].title==title)
+    {
+        const auto& r=runtime[i];
+        if (!r.requested.load(std::memory_order_acquire)||r.faulted.load(std::memory_order_acquire)) return false;
+        const uint64_t at=r.positionedMs.load(std::memory_order_acquire),now=GetTickCount64();
+        return at&&now>=at&&now-at<=250&&r.positionedParent.load(std::memory_order_relaxed)==parent&&
+            r.positionedSeat.load(std::memory_order_relaxed)==seat;
+    }
+    return false;
+}
 bool NativeVehicleFirstPerson_TrimTarget(GameTitle title,uint64_t& identity,int& seat) noexcept
 {
     identity=0;seat=-1;
@@ -266,6 +314,17 @@ void NativeVehicleFirstPerson_Poll()
             LOG("Vehicle first person title=%u enabled=%d selected=%llu positioned=%llu missingHead=%llu faults=%llu%s",
                 unsigned(title),r.requested.load()?1:0,r.selected.load(),r.positioned.load(),
                 r.missingMarker.load(),r.faults.load(),r.faulted.load()?" STOCK FALLBACK (guarded access fault)":"");
+#if HALOMCCVR_DEV_DIAGNOSTICS
+            uint32_t modes[6]{},why[7]{};
+            for (unsigned k=0;k<6;++k) modes[k]=r.modeSeen[k].exchange(0,std::memory_order_relaxed);
+            for (unsigned k=0;k<7;++k) why[k]=r.ownerWhy[k].exchange(0,std::memory_order_relaxed);
+            LOG("Vehicle first person title=%u why: native mode 0/1/2/3/4/other %u/%u/%u/%u/%u/%u; owner ok %u, "
+                "not current %u, bad unit %u, read refused %u, unit mismatch %u (selector 0x%08X vs local 0x%08X), "
+                "generation %u, no seat %u",unsigned(title),modes[0],modes[1],modes[2],modes[3],modes[4],modes[5],
+                why[OwnerOk],why[OwnerNotCurrent],why[OwnerBadUnit],why[OwnerRead],why[OwnerUnitMismatch],
+                r.lastSelectorUnit.load(),r.lastOwnerUnit.load(),why[OwnerGeneration],why[OwnerNoSeat]);
+            if (title==GameTitle::Halo4) Game_Halo4CameraOwnerReport();
+#endif
         }
     }
 }

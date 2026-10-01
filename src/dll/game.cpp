@@ -49475,27 +49475,67 @@ bool WaitForNativeDetourQuiescence(const void* const* functions,
     return false;
 }
 
+#if HALOMCCVR_DEV_DIAGNOSTICS
+// Why Halo 4's seat owner was refused (dev): the first failing gate per call, reported every 5 s on the
+// `Vehicle first person title=4` lines. 0 ok, 1 preconditions, 2 the seat read failed, 3 not seated, 4 no
+// engine TLS on this thread, 5 the unit is not a biped, 6 the parent resolves to nothing in the selector's
+// own mask, 7 the unit's parent/seat changed under the read. Also counted, never refused: ok with an
+// armor ability held (unit+0x664 set), the case that refused every seat before 2026-10-01.
+namespace { std::atomic<uint32_t> g_h4OwnerWhy[8]{}, g_h4OwnerWithEquipment{0}; }
+void Game_Halo4CameraOwnerReport() noexcept
+{
+    uint32_t why[8]{};
+    for (unsigned k=0;k<8;++k) why[k]=g_h4OwnerWhy[k].exchange(0,std::memory_order_relaxed);
+    LOG("Vehicle first person title=4 owner read: ok %u (armor ability held %u), preconditions %u, seat read "
+        "failed %u, not seated %u, no TLS %u, unit not a biped %u, parent unresolved %u, parent/seat changed %u",
+        why[0],g_h4OwnerWithEquipment.exchange(0,std::memory_order_relaxed),why[1],why[2],why[3],why[4],why[5],
+        why[6],why[7]);
+}
+#define MCCVR_H4_OWNER_WHY(n) g_h4OwnerWhy[n].fetch_add(1,std::memory_order_relaxed)
+#else
+#define MCCVR_H4_OWNER_WHY(n) ((void)0)
+#endif
+
 bool Game_ReadVehicleCameraOwner(GameTitle title,NativeVehicleCameraOwner& owner) noexcept
 {
-    if (title!=TitleAdapter_GetActiveTitle()||!Game_IsHeadTracking()||!VR_IsStereoEnabled()||
+    if (title!=TitleAdapter_GetActiveTitle()) return false;
+    if (!Game_IsHeadTracking()||!VR_IsStereoEnabled()||
         Menu_IsOpen()||VR_IsPausePresentation()||VR_IsPausePresentationTarget()||
-        VR_IsCutsceneTheaterActive()||TitleAdapter_GetRuntimeMode()!=RuntimeMode::Gameplay) return false;
+        VR_IsCutsceneTheaterActive()||TitleAdapter_GetRuntimeMode()!=RuntimeMode::Gameplay)
+    {
+        if (title==GameTitle::Halo4) MCCVR_H4_OWNER_WHY(1);
+        return false;
+    }
     if (title==GameTitle::HaloCE) return HaloCEControls_ReadVehicleCameraOwner(owner);
     if (title==GameTitle::Halo2) return Halo2Observer6Dof_ReadVehicleCameraOwner(owner);
     if (title!=GameTitle::Halo4) return false;
     __try {
         Halo4VehicleInputState seat{};
-        if (!Halo4ReadVehicleInput(seat)||!seat.seated) return false;
+        if (!Halo4ReadVehicleInput(seat)) {MCCVR_H4_OWNER_WHY(2);return false;}
+        if (!seat.seated) {MCCVR_H4_OWNER_WHY(3);return false;}
         const auto** slots=reinterpret_cast<const uint8_t**>(__readgsqword(0x58));
         const auto* tls=slots?slots[*g_halo4EngineTlsIndex]:nullptr;
-        if (!tls) return false;
+        if (!tls) {MCCVR_H4_OWNER_WHY(4);return false;}
         const auto* table=Halo4VehicleRead<const uint8_t*>(tls,0x18);
         const auto* unit=Halo4VehicleObject(table,seat.unit,1);
-        const auto* parent=Halo4VehicleObject(table,seat.parent,2);
-        // H4's selector can also force chase for the unit+664 special state.
-        if (!unit||!parent||Halo4VehicleRead<int32_t>(unit,0x664)!=-1||
-            Halo4VehicleRead<uint32_t>(unit,0x24)!=seat.parent||
-            Halo4VehicleRead<int16_t>(unit,0x2c)!=seat.seat) return false;
+        // The parent in the native selector's own seat mask (0x10D2ED: biped|vehicle|giant, 0x2003), so a
+        // seat the game treats as a seat is one here: the kind-2 (vehicle) test alone refused giant parents.
+        const auto* parent=Halo4VehicleObject(table,seat.parent,0x2003);
+        if (!unit) {MCCVR_H4_OWNER_WHY(5);return false;}
+        if (!parent) {MCCVR_H4_OWNER_WHY(6);return false;}
+        // NOT refused: unit+0x664 is the unit's EQUIPMENT -- the armor ability Chief carries (written by
+        // 0x5FC100 with the new equipment object, -1 only while he carries none). The selector (0x10D40C)
+        // reads it only to force its chase RETURN through 0x625AA8 ("this equipment forces third person");
+        // it never touches the mode this override keys on. Refusing it refused every seat whenever an armor
+        // ability was held, which in the campaign is nearly always: "selected=0" for a whole session
+        // (2026-09-30), and the stock chase camera orbiting with the aim.
+        if (Halo4VehicleRead<uint32_t>(unit,0x24)!=seat.parent||
+            Halo4VehicleRead<int16_t>(unit,0x2c)!=seat.seat) {MCCVR_H4_OWNER_WHY(7);return false;}
+        MCCVR_H4_OWNER_WHY(0);
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        if (Halo4VehicleRead<int32_t>(unit,0x664)!=-1)
+            g_h4OwnerWithEquipment.fetch_add(1,std::memory_order_relaxed);
+#endif
         owner={TitleAdapter_GetGeneration(title),seat.unit,seat.parent,seat.seat,
             reinterpret_cast<uintptr_t>(unit),Halo4ReadVehicleIdentity(parent)};return true;
     } __except(EXCEPTION_EXECUTE_HANDLER) { return false; }
