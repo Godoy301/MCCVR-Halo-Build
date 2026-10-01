@@ -1326,6 +1326,12 @@ void ConfigLoad(const wchar_t* path)
             g_config.left_handed = atoi(val) != 0;
             continue;
         }
+        // Here, not in the else-if chain below: that chain is at MSVC's block nesting limit (C1061).
+        if (!strcmp(key, "vehicle_vr_controls"))
+        {
+            g_config.vehicle_vr_controls = atoi(val) != 0;
+            continue;
+        }
         // C-H2-85: handled by table, not by the else-if chain below - that
         // chain is at MSVC's block nesting limit and cannot take more arms.
         {
@@ -1563,8 +1569,6 @@ void ConfigLoad(const wchar_t* path)
             g_config.vehicle_steady_exposure = atoi(val) != 0;
         else if (!strcmp(key, "vehicle_motion"))
             g_config.vehicle_motion = atoi(val) != 0;
-        else if (!strcmp(key, "vehicle_vr_controls"))
-            g_config.vehicle_vr_controls = atoi(val) != 0;
         else if (!strcmp(key, "vehicle_wheel_max_deg"))
             g_config.vehicle_wheel_max_deg = (float)atof(val);
         else if (!strcmp(key, "vehicle_wheel_deadzone_deg"))
