@@ -304,7 +304,7 @@ int main()
     perspective=1;Put(unitAddress+0xd8,vehicleId);Put(unitAddress+0x2d0,int16_t(0));
     Put(vehicleAddress+0xd8,UINT32_MAX);
     Put(vehicleAddress+0x30,halo_ce::Vec3{1,0,0});Put(vehicleAddress+0x3c,halo_ce::Vec3{0,0,1});
-    vehicleViewReady=true;rig.vehicleMotion=true;rig.vehicleViewFollow=true;
+    vehicleViewReady=true;rig.vehicleControls=true;rig.vehicleViewFollow=true;
     rig.turnX=0;++gameplay.tracking.serial;vehicleFollow={};
     TurnDispatch(1,.25f,.5f,moduleBase+0xa99660);
     Check(lastYaw==0&&lastPitch==0&&HaloCEControls_OwnsLookStick(),
@@ -342,7 +342,7 @@ int main()
         switch(reject)
         {
         case 0:vehicleViewReady=false;break;
-        case 1:rig.vehicleMotion=false;break;
+        case 1:rig.vehicleControls=false;break;
         case 2:Put(unitAddress+0x2d0,int16_t(-1));break;
         case 3:Put(vehicleAddress+0xd8,uint32_t(0x6789000a));break;
         case 4:Put(vehicleAddress+0x30,halo_ce::Vec3{0,0,1});break;
@@ -354,7 +354,7 @@ int main()
         ++gameplay.tracking.serial;TurnDispatch(1,.25f,.5f,moduleBase+0xa99660);
         Check(Near(lastYaw,.25f)&&Near(lastPitch,.5f)&&!HaloCEControls_OwnsLookStick(),
             "unproven, disabled, nested, stale or unreadable vehicle view retains original native input");
-        vehicleViewReady=true;rig.vehicleMotion=true;vehicleAddress=arena+0xc000;
+        vehicleViewReady=true;rig.vehicleControls=true;vehicleAddress=arena+0xc000;
         Put(unitAddress+0x2d0,int16_t(0));Put(unitAddress+0xd8,vehicleId);
         Put(vehicleAddress+0xd8,UINT32_MAX);Put(vehicleAddress+0x30,halo_ce::Vec3{0,1,0});
         Put(vehicleAddress+0x3c,halo_ce::Vec3{0,0,1});contextCurrent=true;

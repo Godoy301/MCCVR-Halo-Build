@@ -1165,7 +1165,18 @@ namespace
             "Position only - it never turns your view.");
         ImGui::Spacing();
         ImGui::Separator();
-        ImGui::Text("Motion steering");
+        ImGui::Text("VR controls in seats (Halo CE, Halo 2)");
+        changed |= ImGui::Checkbox("VR controls in Halo CE and Halo 2 vehicles",
+                                   &g_config.vehicle_vr_controls);
+        ImGui::TextDisabled(
+            "ON (default): in Halo CE the right stick snap/smooth-turns your\n"
+            "seat view; in Halo 2 your hand aims, and the seat keeps a view of\n"
+            "its own that the aim does not swing. OFF: those two games' seats\n"
+            "use the plain right stick, as on a flat screen. Halo 3, ODST,\n"
+            "Reach and Halo 4 seats are not affected.");
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Text("Motion steering (Halo 3, ODST, Reach)");
         changed |= ImGui::Checkbox("Virtual steering wheel",
                                    &g_config.vehicle_motion);
         ImGui::TextDisabled(

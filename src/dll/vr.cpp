@@ -15672,7 +15672,7 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                 rig.vehicleSmoothTurn=g_config.vehicle_smooth_turn;
                 rig.turnSnapDeg=g_config.turn_snap_deg;
                 rig.turnSmoothDegS=g_config.turn_smooth_deg_s;
-                rig.vehicleMotion=g_config.vehicle_motion;
+                rig.vehicleControls=g_config.vehicle_vr_controls;
                 rig.vehicleViewFollow=g_config.vehicle_view_follow;
                 // Freeze the user's setting with this CE tracking frame;
                 // the camera consumer separately proves native on-foot state.

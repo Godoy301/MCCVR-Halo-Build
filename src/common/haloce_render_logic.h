@@ -130,7 +130,7 @@ struct ControllerRig
     bool gunBarrelAim{};
     bool roomscaleEnabled{};
     bool physicalRunningEnabled{};
-    bool vehicleMotion{true},vehicleViewFollow{};
+    bool vehicleControls{true},vehicleViewFollow{};
     float turnSnapDeg{30.0f},turnSmoothDegS{120.0f};
 };
 struct HudSettings
