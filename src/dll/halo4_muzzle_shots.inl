@@ -34,15 +34,34 @@ thread_local Halo4MuzzleQueryCapture g_halo4BarrelCapture;
 thread_local Halo4MuzzleShotScope g_halo4BarrelShot;
 thread_local Halo4MuzzleRequest g_halo4BarrelRequest;
 __declspec(noinline) void MarkHalo4MuzzleFault(){g_halo4Barrel.faulted.store(true,std::memory_order_release);}
+#if HALOMCCVR_DEV_DIAGNOSTICS
+// Halo 4 seated convergence, stage 0 (halo4_seat_sight.inl, included after this lane): the per-tick aim-camera
+// sample with its first-person witness, and the seated shot's tag for the assist-exit witness.
+bool Halo4SeatSightArmAimCamera(uintptr_t caller);
+void Halo4SeatSightNoteAimCamera(uint32_t unit,const float* origin,const float* dir,const float* camera);
+void Halo4SeatSightNoteFiringAim(uint32_t unit,const Halo4VehicleInputState& seat);
+void Halo4SeatSightClearShot();
+#endif
 
 __declspec(noinline) void __fastcall Halo4MuzzleViewDetour(uint32_t unit,uint8_t flags,
     uintptr_t inputDirection,float* origin,float* cameraDirection,float* camera)
 {
     auto& feature=g_halo4Barrel;feature.callbacks.fetch_add(1,std::memory_order_acq_rel);
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    bool seatWitness=false;
+#endif
     __try
     {
         if(!feature.viewOriginal)__leave;
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        seatWitness=Halo4SeatSightArmAimCamera(reinterpret_cast<uintptr_t>(_ReturnAddress()));
+#endif
         feature.viewOriginal(unit,flags,inputDirection,origin,cameraDirection,camera);
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        // The game's own aim camera, BEFORE any barrel substitution below could touch these outputs (and never
+        // for the mod's own query or a barrel shot: the arming refused those).
+        if(seatWitness){seatWitness=false;Halo4SeatSightNoteAimCamera(unit,origin,cameraDirection,camera);}
+#endif
         const auto caller=reinterpret_cast<uintptr_t>(_ReturnAddress());
         const bool query=caller==feature.base+0x1DB9A6||caller==feature.base+0x1DBDB6;
         const bool assist=caller==feature.base+0x1DC8C4;
@@ -58,7 +77,14 @@ __declspec(noinline) void __fastcall Halo4MuzzleViewDetour(uint32_t unit,uint8_t
         std::memcpy(cameraDirection,shot.direction,12);
         shot.viewApplied=true;
     }
-    __finally {feature.callbacks.fetch_sub(1,std::memory_order_acq_rel);}
+    __finally
+    {
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        // The native view call raised: disarm this thread's first-person witness.
+        if(seatWitness)(void)NativeVehicleFirstPerson_TakeSelectWitness();
+#endif
+        feature.callbacks.fetch_sub(1,std::memory_order_acq_rel);
+    }
 }
 __declspec(noinline) void __fastcall Halo4MuzzleQueryDetour(int32_t inputUser,uint8_t flags,
     float* direction,int16_t zoom,float* control,void* targeting)
@@ -226,6 +252,10 @@ __declspec(noinline) void __fastcall Halo4MuzzleAimDetour(uint32_t unit,float* o
             Halo4VehicleInputState seat{};
             if(Halo4ReadVehicleInput(seat)&&seat.unit==unit&&!seat.seated)
                 Sight_NoteShot(GameTitle::Halo4,TitleAdapter_GetGeneration(GameTitle::Halo4),origin,direction);
+            // Seated (halo4_seat_sight.inl): the local occupant aims this shot (the assist exit measures it), or
+            // our own vehicle does (no assist at all).
+            else if(seat.seated)
+                Halo4SeatSightNoteFiringAim(unit,seat);
         }
 #endif
     }
@@ -239,6 +269,9 @@ __declspec(noinline) void __fastcall Halo4MuzzleFireDetour(uint32_t weapon,int16
     __try {if(feature.fireOriginal)feature.fireOriginal(weapon,barrel,data,simulation);}
     __finally
     {
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        Halo4SeatSightClearShot();   // a seated shot's tag never outlives its fire
+#endif
         RestoreHalo4MuzzleTarget(lease);g_halo4BarrelShot=previousShot;g_halo4BarrelRequest=previousRequest;
         feature.callbacks.fetch_sub(1,std::memory_order_acq_rel);
     }
