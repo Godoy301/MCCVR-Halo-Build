@@ -39,7 +39,8 @@ __declspec(noinline) void MarkHalo4MuzzleFault(){g_halo4Barrel.faulted.store(tru
 // sample with its first-person witness, and the seated shot's tag for the assist-exit witness.
 bool Halo4SeatSightArmAimCamera(uintptr_t caller);
 void Halo4SeatSightNoteAimCamera(uint32_t unit,const float* origin,const float* dir,const float* camera);
-void Halo4SeatSightNoteFiringAim(uint32_t unit,const Halo4VehicleInputState& seat);
+void Halo4SeatSightNoteFiringAim(uint32_t unit,const Halo4VehicleInputState& seat,const float direction[3],
+    bool unitAim,uint32_t simulation,bool substituted);
 void Halo4SeatSightClearShot();
 #endif
 
@@ -253,9 +254,10 @@ __declspec(noinline) void __fastcall Halo4MuzzleAimDetour(uint32_t unit,float* o
             if(Halo4ReadVehicleInput(seat)&&seat.unit==unit&&!seat.seated)
                 Sight_NoteShot(GameTitle::Halo4,TitleAdapter_GetGeneration(GameTitle::Halo4),origin,direction);
             // Seated (halo4_seat_sight.inl): the local occupant aims this shot (the assist exit measures it), or
-            // our own vehicle does (no assist at all).
+            // our own vehicle does (no assist at all); either way the shot form records the unit-aim flag this
+            // call was handed (after an owned substitution cleared it), which picks the line the assist turns.
             else if(seat.seated)
-                Halo4SeatSightNoteFiringAim(unit,seat);
+                Halo4SeatSightNoteFiringAim(unit,seat,direction,unitAim!=0,simulation,owned);
         }
 #endif
     }

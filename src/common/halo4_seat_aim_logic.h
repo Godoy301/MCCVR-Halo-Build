@@ -5,18 +5,20 @@
 // What the game does in a seat (static RE of the retail module, 2026-10-01): the fire routine 0x6176B8
 // turns a seated shot onto the CROSSHAIR point. Its assist 0x1DCB8C traces 128 wu from the player's aim
 // camera 0x2061A8 (the first-person eye 0x5F8A1C, or the slaved turret's marker for seat flag bit 7) along
-// the unit's aim and turns the projectile from the BARREL toward what that ray hits -- by at most
-// max(21 deg, the weapon's own angle) from the barrel's forward. It runs only while the aiming unit
-// 0x5F1ABC(weapon owner) carries a player. So a seat converges exactly like Halo 3's: bend the aim so the
-// game's eye line passes through the point the intent ray hits, and the native assist does the shot side --
-// as long as the barrel can reach that point within its cap.
+// the unit's aim and turns the projectile from its SHOT LINE toward what that ray hits -- by at most
+// max(21 deg, the weapon's own angle). The shot line is the barrel marker's forward, or the aiming unit's own
+// aim vector when the fire routine hands its aim call the unit-aim flag (see ShotLine). It runs only while
+// the aiming unit 0x5F1ABC(weapon owner) carries a player. So a seat converges exactly like Halo 3's: bend
+// the aim so the game's eye line passes through the point the intent ray hits, and the native assist does
+// the shot side -- as long as the shot line can reach that point within its cap.
 //
 // This header holds the pure decisions, unit-tested in tests/halo4_seat_aim_logic_tests.cpp:
 //   * the seat CLASS from the seat flags and the unit the seat controls (0x5F9694);
 //   * the EYE AGREEMENT between the game's own aim-camera sample (simulation tick) and the eye the render
 //     transaction hands the solve, and the exact first-person witness that must back it;
 //   * the seated trace's IGNORE list and its LOOK-PAST of our own vehicle (three own-vehicle passes = a MISS);
-//   * the BARREL CLAIM: converged only while the barrel reaches the point inside its cap (minus a margin);
+//   * the SHOT LINE the native assist turns: the one the last fire of this weapon and aiming unit was handed;
+//   * the BARREL CLAIM: converged only while the shot line reaches the point inside its cap (minus a margin);
 //     otherwise the honest reticle sits on the line the capped shot really flies;
 //   * the RECORD-FRAME GATE: until the record rebase 0x5F97DC is ported, a seat is converged only while its
 //     record is in world angles (flag bit 4) or its vehicle is level.
@@ -260,6 +262,53 @@ SeatTraceResult TraceLookingPast(float lengthWu, float skipWu, float stepWu, int
     return r;
 }
 
+// ---- the shot line (verifier item 11) ---------------------------------------------------------------------
+// The direction the native seated assist turns (0x1DCB8C's argument 8) is the buffer the fire routine's aim
+// call 0x5F3510 (at 0x617E90) leaves: the barrel marker's forward (record +0x3C, read at 0x6179B2) -- UNLESS
+// the fire routine hands that call its unit-aim flag (argument 8: the weapon's owner is its own aiming unit,
+// owner+0x694 == -1; barrel flag bit 15 clear; no actor veto 0x7BB3F8). Then 0x5F3510 replaces it with the
+// AIMING UNIT's aim vector (+0x4EC; +0x4E0 for a simulation-1 fire), and the shot turns from that line. A
+// Warthog passenger's own gun is the usual case: the biped owns it and nobody controls the biped.
+//
+// The mod does not re-derive the flag (bit 15 lives in the weapon tag's barrel block): it records the flag
+// the native call was actually handed, per fire, and applies it to the per-tick sample of the SAME weapon,
+// owner and aiming unit -- the three inputs the flag depends on at runtime. Before the first fire of that
+// combination the line is unknown: no claim, and no honest reticle is substituted.
+enum class ShotLine : uint8_t { Unknown, Barrel, UnitAim, Substituted };
+
+inline const char* ShotLineName(ShotLine l)
+{
+    switch (l)
+    {
+    case ShotLine::Barrel: return "the barrel's forward";
+    case ShotLine::UnitAim: return "the aiming unit's aim";
+    case ShotLine::Substituted: return "the mod's muzzle shot";
+    default: return "unknown (no fire yet)";
+    }
+}
+
+// One recorded fire: what the aim call 0x5F3510 was handed for it.
+struct ShotForm {
+    bool known = false;
+    uint32_t generation = 0, weapon = UINT32_MAX, owner = UINT32_MAX, aiming = UINT32_MAX;
+    bool unitAim = false;        // the call's unit-aim flag, as handed to the native
+    bool substituted = false;    // the mod's own muzzle shot replaced the direction (and cleared the flag)
+};
+
+// The shot line of a sample: the last recorded fire of exactly this weapon, owner and aiming unit in this
+// generation says which; a fire of anything else (another weapon or seat, an earlier level) says nothing.
+inline ShotLine ResolveShotLine(const ShotForm& fire, uint32_t generation, uint32_t weapon, uint32_t owner,
+                                uint32_t aiming)
+{
+    if (!fire.known || !generation || fire.generation != generation || weapon == UINT32_MAX ||
+        owner == UINT32_MAX || aiming == UINT32_MAX || fire.weapon != weapon || fire.owner != owner ||
+        fire.aiming != aiming)
+        return ShotLine::Unknown;
+    if (fire.substituted)
+        return ShotLine::Substituted;
+    return fire.unitAim ? ShotLine::UnitAim : ShotLine::Barrel;
+}
+
 // ---- the barrel claim -----------------------------------------------------------------------------------
 struct Vec3 {
     float x = 0.0f, y = 0.0f, z = 0.0f;
@@ -288,21 +337,21 @@ inline constexpr float kSeatClaimMarginRad = 2.0f * 0.017453293f;
 struct BarrelVerdict {
     bool valid = false;       // the geometry resolved
     bool claim = false;       // the shot reaches the point: the converged aim may be claimed
-    float angleRad = 0.0f;    // barrel forward to (point - barrel origin)
+    float angleRad = 0.0f;    // shot line to (point - barrel origin)
     Vec3 shot{};              // the direction the shot really leaves the barrel along
 };
 
-// The shot leaves the barrel origin B. With the assist (`assisted`: the aiming unit carries the player) it
-// turns from the barrel's forward f toward the point P, by at most `capRad`; without it, it flies along f.
-// Claimed only when assisted and the turn needed is inside capRad - marginRad. At range (P far beyond B) the
-// angle is the eye->point angle the design names; near, B's offset from the eye matters, so it is measured
-// from B.
-inline BarrelVerdict JudgeBarrel(Vec3 barrelForward, Vec3 barrelOrigin, Vec3 point, bool assisted,
+// The shot leaves the barrel origin B along its shot line f (ShotLine: the barrel's forward, or the aiming
+// unit's aim -- whichever the assist is handed). With the assist (`assisted`: the aiming unit carries the
+// player) it turns from f toward the point P, by at most `capRad`; without it, it flies along f. Claimed
+// only when assisted and the turn needed is inside capRad - marginRad. At range (P far beyond B) the angle is
+// the eye->point angle the design names; near, B's offset from the eye matters, so it is measured from B.
+inline BarrelVerdict JudgeBarrel(Vec3 shotForward, Vec3 barrelOrigin, Vec3 point, bool assisted,
                                  float capRad = kSeatAssistCapRad, float marginRad = kSeatClaimMarginRad)
 {
     BarrelVerdict v{};
     Vec3 f{}, t{};
-    if (!Normalize(barrelForward, f) || !Finite(barrelOrigin) || !Normalize(Sub(point, barrelOrigin), t))
+    if (!Normalize(shotForward, f) || !Finite(barrelOrigin) || !Normalize(Sub(point, barrelOrigin), t))
         return v;
     float c = Dot(f, t);
     c = c > 1.0f ? 1.0f : (c < -1.0f ? -1.0f : c);

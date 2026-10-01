@@ -1,5 +1,5 @@
 // Halo 4 seated aim (src/common/halo4_seat_aim_logic.h): the seat class table, the eye agreement, the seated
-// trace's ignores and look-past, the barrel claim and the record-frame gate.
+// trace's ignores and look-past, the shot line, the barrel claim and the record-frame gate.
 #include "halo4_seat_aim_logic.h"
 #include <cmath>
 #include <cstdio>
@@ -285,6 +285,41 @@ void TestBarrel()
     }
 }
 
+void TestShotLine()
+{
+    const uint32_t gen = 7, weapon = 0x40004, biped = 0x10001, vehicle = 0x20002;
+    ShotForm fire{};
+    Check(ResolveShotLine(fire, gen, weapon, biped, biped) == ShotLine::Unknown, "no fire yet: unknown");
+    // A Warthog passenger's own gun: the biped owns and aims it, and the fire handed the unit-aim flag.
+    fire = {true, gen, weapon, biped, biped, true, false};
+    Check(ResolveShotLine(fire, gen, weapon, biped, biped) == ShotLine::UnitAim,
+          "the flag the fire was handed: the aiming unit's aim");
+    fire.unitAim = false;
+    Check(ResolveShotLine(fire, gen, weapon, biped, biped) == ShotLine::Barrel, "no flag: the barrel's forward");
+    fire.substituted = true;
+    Check(ResolveShotLine(fire, gen, weapon, biped, biped) == ShotLine::Substituted,
+          "the mod's own muzzle shot is its own line, never the barrel's");
+    fire.substituted = false;
+    // Any other fire says nothing about this sample.
+    Check(ResolveShotLine(fire, gen + 1, weapon, biped, biped) == ShotLine::Unknown, "another level: unknown");
+    Check(ResolveShotLine(fire, gen, weapon + 1, biped, biped) == ShotLine::Unknown, "another weapon: unknown");
+    Check(ResolveShotLine(fire, gen, weapon, vehicle, biped) == ShotLine::Unknown,
+          "another owner (the flag reads owner+0x694): unknown");
+    Check(ResolveShotLine(fire, gen, weapon, biped, vehicle) == ShotLine::Unknown,
+          "another aiming unit (whose aim vector it would be): unknown");
+    Check(ResolveShotLine(fire, 0, weapon, biped, biped) == ShotLine::Unknown, "no generation: unknown");
+    fire.weapon = UINT32_MAX;
+    Check(ResolveShotLine(fire, gen, UINT32_MAX, biped, biped) == ShotLine::Unknown, "no weapon: unknown");
+    fire.known = false;
+    fire.weapon = weapon;
+    Check(ResolveShotLine(fire, gen, weapon, biped, biped) == ShotLine::Unknown, "an unrecorded form: unknown");
+    Check(ShotLineName(ShotLine::UnitAim)[4] == 'a' && ShotLineName(ShotLine::Unknown)[0] == 'u', "line names");
+    // The claim judges the line the assist turns: a unit-aim line pointing at the point is claimed even with
+    // the barrel marker 30 deg off (the marker never enters it).
+    const auto v = JudgeBarrel({0, 1, 0}, {0, 0, 0}, {0, 50, 0}, true);
+    Check(v.valid && v.claim && Near(v.angleRad, 0.0f, 1e-4f), "the shot line, not the marker, is judged");
+}
+
 void TestRecordFrame()
 {
     Check(!SeatRecordIsWorld(false, kSeatFlagWorldAngles, true, {0, 0, 1}), "flags unknown: never");
@@ -306,6 +341,7 @@ int main()
     TestIgnores();
     TestLookPast();
     TestBarrel();
+    TestShotLine();
     TestRecordFrame();
     std::printf("Halo 4 seated aim: %u checks, %u failures\n", checks, failures);
     return failures ? 1 : 0;
