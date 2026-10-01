@@ -29,6 +29,8 @@ struct Seen
     uint16_t material = 0;
     void* result = nullptr;
     float scale = 0.0f;
+    float floats[4]{};
+    const void* input = nullptr;
     uint64_t spare[8]{};
     unsigned calls = 0;
 } seen;
@@ -75,6 +77,27 @@ __declspec(noinline) uint32_t __fastcall FloatFixture(uint32_t unit, float scale
 }
 using FloatFn = uint32_t(__fastcall*)(uint32_t, float);
 
+// The type-13 pilot controllers (Reach +0x64828, Halo 4 +0xAA524): seven declared arguments -- user, vehicle,
+// two float deltas in xmm2/xmm3, then the input pointer and two floats on the stack at entry+0x28/+0x30/+0x38
+// -- then four stack spares (entry+0x40..+0x58), 11 slots in all.
+__declspec(noinline) void __fastcall ControllerFixture(int user, uint32_t vehicle, float yawD, float pitchD,
+                                                      const void* input, float dtA, float dtB, uint64_t s0,
+                                                      uint64_t s1, uint64_t s2, uint64_t s3)
+{
+    seen.target = static_cast<uint32_t>(user) ^ vehicle;
+    seen.event = reinterpret_cast<void*>(static_cast<uintptr_t>(vehicle));
+    seen.region = static_cast<int16_t>(user);
+    seen.floats[0] = yawD;
+    seen.floats[1] = pitchD;
+    seen.floats[2] = dtA;
+    seen.floats[3] = dtB;
+    seen.input = input;
+    const uint64_t spares[]{s0, s1, s2, s3};
+    std::memcpy(seen.spare, spares, sizeof(spares));
+    ++seen.calls;
+}
+using ControllerFn = void(__fastcall*)(int, uint32_t, float, float, const void*, float, float);
+
 void Scribble() { std::memset(seen.spare, 0xCD, sizeof(seen.spare)); }
 bool SparesZero(size_t count)
 {
@@ -108,6 +131,15 @@ int main()
     Check(seen.calls == 3 && seen.target == 5u && seen.scale == 2.5f && returned == 6u,
           "a float argument and the return value pass through");
     Check(SparesZero(6), "the spares after a float argument are zero too");
+
+    const auto controller = reinterpret_cast<ControllerFn>(&ControllerFixture);
+    Scribble();
+    CallNativeWithSpareSlots(controller, 1, 0xE0010002u, -0.75f, 0.035f, &resultStorage, 0.0333f, 3.5e-2f);
+    Check(seen.calls == 4 && seen.region == 1 && seen.event == reinterpret_cast<void*>(uintptr_t(0xE0010002u)) &&
+              seen.floats[0] == -0.75f && seen.floats[1] == 0.035f && seen.input == &resultStorage &&
+              seen.floats[2] == 0.0333f && seen.floats[3] == 3.5e-2f,
+          "seven declared arguments (floats in positions 3, 4, 6 and 7) arrive unchanged");
+    Check(SparesZero(4), "then four zeroed stack slots (entry+0x40 through +0x58)");
 
     std::printf("%s: %u native forward checks, %u failed\n", failures ? "FAIL" : "PASS", checks, failures);
     return failures ? 1 : 0;
