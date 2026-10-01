@@ -276,7 +276,13 @@ void LegacySightTraceTick(GameTitle title, uint32_t unit, int32_t localUnit, boo
             break;
         int32_t object = -1;
         memcpy(&object, result + 0x40, sizeof(object));
-        if (object == -1 || LegacySightRootOf(objectData, object) != root)
+        // Ours: its root is our root, or -- when that walk fails, as it did for the unit on the fallback path
+        // above -- it is one of the seat chain's own handles.
+        const int32_t hitRoot = LegacySightRootOf(objectData, object);
+        const bool ours = object != -1 && (hitRoot != -1 ? hitRoot == root
+            : object == root || object == ignoreB || object == ignoreC || object == ray.ignoreB ||
+              object == ray.ignoreC);
+        if (!ours)
             break;
         // A part of our own vehicle the ignores did not cover: not a target. Look past it.
         state.selfHits.fetch_add(1, std::memory_order_relaxed);
