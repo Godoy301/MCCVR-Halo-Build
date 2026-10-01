@@ -303,6 +303,19 @@ int main()
             Check(follow.Build(key,basis(2.0f),basis(.5f),true,29000,out)&&
                 std::fabs(std::atan2(out.forward[1],out.forward[0])-.7f)<1e-5f,
                 "H2 pause: a followed heading resumes where it was shown");
+            // The vehicle turned while the view was suspended (a menu over a running game): still followed.
+            follow.Suspend();
+            Check(follow.Build(key,basis(2.0f),basis(1.0f),true,39000,out)&&
+                std::fabs(std::atan2(out.forward[1],out.forward[0])-1.2f)<1e-5f,
+                "H2 pause: a hull turn made while suspended is still followed");
+            // A recenter folds the head's turn into the kept heading: the view the player looked along resumes.
+            Halo2VehicleViewState fold;
+            Check(fold.Build(key,basis(.4f),basis(0),false,40000,out),"H2 recenter: seated");
+            fold.Suspend();
+            fold.FoldResume(.3f);
+            Check(fold.Build(key,basis(2.0f),basis(0),false,49000,out)&&
+                std::fabs(std::atan2(out.forward[1],out.forward[0])-.7f)<1e-5f,
+                "H2 recenter: the head's turn from the old reference is kept");
         }
         const auto saved=reference;auto bad=basis(0);bad.forward[0]=NAN;
         Check(!state.Build(key,bad,basis(0),false,2010,reference)&&!state.active&&

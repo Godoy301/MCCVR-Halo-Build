@@ -49344,6 +49344,22 @@ static bool ReachControllerAimActive()
 static bool ReachControllerAimActive() { return false; }
 #endif
 
+// A Halo 2 SEAT owns its aim without the on-foot palette witness: a driver or gunner holds no first-person
+// weapon, so no hands+gun packet is ever applied there, and Game_Halo2ControllerAimActive never holds.
+bool Game_Halo2SeatAimActive()
+{
+#if HALOMCCVR_HALO2_STEREO6DOF
+    return kHalo2VisibleConsumerControllerOwnershipEnabled &&
+        TitleAdapter_GetActiveTitle() == GameTitle::Halo2 &&
+        Game_HasTitleCapability(TitleCapability_ControllerAim) &&
+        Halo2Observer6Dof_Armed() && Halo2Observer6Dof_VehicleControlActive() &&
+        g_enabled.load(std::memory_order_acquire) &&
+        g_vrAim.load(std::memory_order_acquire) && VR_IsStereoEnabled();
+#else
+    return false;
+#endif
+}
+
 bool Game_Halo2ControllerAimActive()
 {
 #if HALOMCCVR_HALO2_STEREO6DOF

@@ -250,7 +250,7 @@ void Halo2DriveApply(int user, uint64_t returnAddress) noexcept
                 // fresh for 150 ms after sitting down.
                 float direction[3]{};
                 float yaw = 0.0f, pitch = 0.0f;
-                const bool handAim = Game_Halo2ControllerAimActive() &&
+                const bool handAim = Game_Halo2SeatAimActive() &&
                     BuildPublishedControllerAimDirection(direction, nullptr, false) &&
                     Halo2DriveYawPitch(direction, yaw, pitch);
                 const bool writeYaw = axes.yaw && st.stint.yaw_ok && handAim;

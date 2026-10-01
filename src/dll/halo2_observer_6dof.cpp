@@ -1156,6 +1156,19 @@ namespace
         if (g_recenterRequested.exchange(false, std::memory_order_acq_rel) ||
             !g_referenceValid.load(std::memory_order_acquire))
         {
+            // The head's turn from the OLD reference (yaw about +y), for the seat heading kept below.
+            float headTurn = NAN;
+            if (g_referenceValid.load(std::memory_order_acquire))
+            {
+                const auto yawAboutUp = [](const float q[4]) {
+                    const float back[3]{0.0f, 0.0f, -1.0f};
+                    float f[3]{};
+                    Halo2RotateVectorByQuaternion(q, back, f);
+                    return std::atan2(-f[0], -f[2]);
+                };
+                headTurn = std::remainder(yawAboutUp(snapshot.headOrientation) -
+                    yawAboutUp(g_reference.orientation), 6.28318531f);
+            }
             std::memcpy(
                 g_reference.orientation, snapshot.headOrientation,
                 sizeof(g_reference.orientation));
@@ -1171,6 +1184,7 @@ namespace
             // A seat keeps its heading through a recenter (Suspend): every unpause and theater exit recenters,
             // and the stock heading it would re-take is, under the seat drive, the hand's last aim.
             g_vehicleView.Suspend();
+            g_vehicleView.FoldResume(headTurn);
             // Under direct drive a recentre re-takes the view's heading from the body (the hand's aim), as
             // Halo 3's re-seeds its game yaw from the stock heading; UpdateFootView takes it again below.
             g_footView.Release();

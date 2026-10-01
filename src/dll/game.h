@@ -215,6 +215,7 @@ bool Game_ReachScopeConvergedDirection(float outDir[3]);
 // C-H2-41. True only while Halo 2's controller-owned aim/weapon feature is
 // requested; tracking loss still makes each call fail open independently.
 bool Game_Halo2ControllerAimActive();
+bool Game_Halo2SeatAimActive();   // a Halo 2 seat owns its aim (no on-foot palette witness in a seat)
 bool Game_CeControllerFeaturesRequested();
 bool Game_ComputeHalo2SnapStick(float& outRx);
 // C-H2-89 optional feature transaction. The official H2EK boolean is resolved
