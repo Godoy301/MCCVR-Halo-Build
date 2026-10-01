@@ -51440,26 +51440,26 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
     }
 #if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA && HALOMCCVR_DEV_DIAGNOSTICS
     // HALO 4 SEATED CLAIM (stage 1, halo4_seat_sight.inl). The aim is bent so the game's seat eye line passes
-    // through the point; whether the SHOT follows is the native seated assist's, which turns it from the barrel
-    // by at most 21 deg and only for an aiming unit that carries the player. Not claimable: the aim still
-    // steers through the point (the crosshair trace then hits it), but no converged shot is claimed, and the
-    // reticle shows where the shot really goes (below, in the servo's honest block). A slaved turret is never
-    // claimed: its reticle rides the barrel (turretSeat).
-    bool halo4SeatHonest = false;
-    float halo4SeatHonestDir[3]{};
-    if (sightSeatedConverged && sightSeatedTitle == GameTitle::Halo4 && halo4SeatSight.seated &&
-        (!halo4SeatPointValid ||
-         !Halo4SeatSightClaim(halo4SeatSight, halo4SeatPoint, halo4SeatHonest, halo4SeatHonestDir)))
+    // through the point, and the converged aim is claimed exactly as a Halo 3 seat's is (2026-10-01): whether the
+    // SHOT follows is the native seated assist's -- it turns the shot from the barrel by at most 21 deg, and only
+    // for an aiming unit that carries the player -- and a gun the assist cannot bring onto the point fires where
+    // it can, as in flat Halo, with the game's tracers showing it. The assist's verdict (capped, unassisted,
+    // unknown, a slaved turret) is COUNTED for the dev line only (Halo4SeatSightClaimWitness); the claim is
+    // withheld only when the point itself is not a finite position (our code).
+    if (sightSeatedConverged && sightSeatedTitle == GameTitle::Halo4 && halo4SeatSight.seated)
     {
-        sightSeatedConverged = false;
+        if (!halo4SeatPointValid)
+            sightSeatedConverged = false;
+        else
+            Halo4SeatSightClaimWitness(halo4SeatSight, halo4SeatPoint);
     }
-    // ...and for the servo's honest branches that show the game's ACTUAL aim (a stall at a seat limit, the drive's
-    // latch, a short yaw): there the aim is not where it was bent, and for an unassisted or capped vehicle gun the
-    // game's aim is not where the shot goes either. Where that shot really is, composed from the shot's own line
-    // toward the point on the game's aim (Halo4SeatSightHonestAlongAim); unknown keeps the game's aim, as before.
+    // DEV ASSESSMENT ONLY (honest_reticle_assess = 2): where the shot really goes for a seat whose proofs hold,
+    // composed from the shot's own line toward the point on the game's aim (Halo4SeatSightHonestAlongAim);
+    // unknown keeps the game's aim. Read by the servo path's assessment, nothing else.
     bool halo4SeatAimHonest = false;
     float halo4SeatAimHonestDir[3]{};
-    if (halo4SeatPointValid && halo4SeatSight.seated && halo4SeatSight.solve)
+    if (converge::AssessDrawsGameAim(g_config.honest_reticle_assess, true) && halo4SeatPointValid &&
+        halo4SeatSight.seated && halo4SeatSight.solve)
         halo4SeatAimHonest = Halo4SeatSightHonestAlongAim(halo4SeatSight, halo4SeatPoint, halo4AimForward,
                                                           halo4SeatAimHonestDir);
 #endif
@@ -51811,15 +51811,6 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
             }
             (shown ? g_h4SeatEyeWitness.honestAlongAim : g_h4SeatEyeWitness.honestGameAim)
                 .fetch_add(1, std::memory_order_relaxed);
-        }
-        // A Halo 4 seat whose shot cannot reach the point it aims through (the assist's cap, or no assist):
-        // the honest reticle sits where the real shot is at that range, seen from the rendered head.
-        if (halo4SeatHonest)
-        {
-            const float honestYaw = atan2f(halo4SeatHonestDir[1], halo4SeatHonestDir[0]);
-            const float honestPitch = asinf(Clamp(halo4SeatHonestDir[2], -1.0f, 1.0f));
-            clamped.set(headYawReference + g_yawSign.load() * WrapPi(honestYaw - gameYawReference),
-                        g_pitchSign.load() * honestPitch);
         }
 #endif
     }

@@ -11,13 +11,13 @@
 //     seat flags    0x5FB2D4 (seat, body) + the dispatcher's call 0xA88F1        -> class Unknown, no convergence
 //     controlled    0x5F9694 + 0x1DC9E4's own call 0x1DCA0E                      -> class Unknown, no convergence
 //     object frame  0x5D84D0 + the record rebase's call 0x5F98DB (0x5F98C2)      -> bit-4 seats only
-//     barrel        0x6121B8 + the fire routine's marker block 0x61797F          -> no claim (honest reticle)
-//     aim unit      the fire routine's aim-unit block 0x617DA7 (+0x49C)          -> no claim (honest reticle)
+//     barrel        0x6121B8 + the fire routine's marker block 0x61797F          -> assist verdict unknown (witness)
+//     aim unit      the fire routine's aim-unit block 0x617DA7 (+0x49C)          -> assist verdict unknown (witness)
 //     aim camera    0x2061A8 whole (selector call, +0x490 bit 31) + 0x1DCA25     -> no first-person witness, no convergence
 //     assist exit   0x1DCB8C + the fire routine's call 0x618103 (a dev hook)     -> no SHOT Halo 4 seated line
 //     shot line     0x5F3510's unit-aim block (0x5F351B..0x5F3601: +0x4EC/+0x4E0 into its direction argument)
 //                   + the fire routine's aim call 0x617E60 (direction [rbp+0x30], call 0x617E90) and assist
-//                   call 0x6180CC (argument 8 = the same [rbp+0x30], call 0x618103)   -> no claim, no honest reticle
+//                   call 0x6180CC (argument 8 = the same [rbp+0x30], call 0x618103)   -> assist verdict unknown (witness)
 //     (0x5F3510's first bytes carry the muzzle lane's hook: its entry was proven by that lane before hooking,
 //     and this signature starts past the patched bytes.)
 //   The weapon-slot, owner, aiming-unit and barrel-marker natives (0x5FA1C4, 0x612238, 0x5F1ABC, 0x610F6C) and
@@ -429,7 +429,7 @@ bool Halo4SeatSightBuildSample(uint32_t unit, const Halo4VehicleInputState& seat
             // THE SHOT LINE (verifier item 11): what the native seated assist will turn. The barrel's forward,
             // unless the last fire of this weapon, owner and aiming unit was handed the unit-aim flag: then
             // 0x5F3510 replaced it with the aiming unit's aim vector, read here exactly as it reads it. Before
-            // that fire (or for another weapon) the line is unknown: the claim and the honest reticle stand down.
+            // that fire (or for another weapon) the line is unknown: the assist witness cannot judge the shot.
             halo4_seat_aim::ShotForm form{};
             uint32_t simulation = 0;
             if (Halo4ReadSeatShotForm(form, simulation))
@@ -1086,7 +1086,7 @@ struct Halo4SeatSightPoll
     bool seated = false;   // the camera hook's stamp names the local unit seated (fresh)
     bool ray = false;      // publish the seated intent ray: our seat view, the rendered head known, seats aimed
     bool solve = false;    // stage 1: every pre-bend proof holds (bend the aim through the traced point)
-    bool turret = false;   // stage 1: a slaved-turret seat (the reticle rides the barrel, never claimed)
+    bool turret = false;   // stage 1: a slaved-turret seat (the servo parks it; its reticle is no different)
     uint32_t unit = UINT32_MAX, parent = UINT32_MAX;
     int16_t seat = -1;
     float head[3]{}, eye[3]{};          // H (the rendered centre eye) and the ray's eye (E when it is known)
@@ -1104,7 +1104,9 @@ enum Halo4SeatSightWhy : unsigned
     kH4SeatWhyClass, kH4SeatWhyRecord, kH4SeatWhyKey, kH4SeatWhySolved, kH4SeatWhyCount
 };
 
-// Why a converged seat aim was not CLAIMED (Game_ComputeAimStick, stage 1).
+// The native assist's verdict on a converged seat aim (Game_ComputeAimStick, stage 1): a WITNESS only since
+// 2026-10-01 -- the claim no longer waits on it (a gun the assist cannot bring onto the point fires where it can,
+// as in flat Halo).
 enum Halo4SeatClaimWhy : unsigned
 {
     kH4ClaimYes, kH4ClaimTurret, kH4ClaimUnknown, kH4ClaimUnassisted, kH4ClaimCap, kH4ClaimCount
@@ -1113,9 +1115,12 @@ enum Halo4SeatClaimWhy : unsigned
 struct Halo4SeatEyeWitness
 {
     std::atomic<uint64_t> polls{0}, provenPolls{0}, why[kH4SeatWhyCount]{}, claim[kH4ClaimCount]{};
-    // Polls whose honest reticle showed the game's actual aim (stall, latch, short yaw): composed from the shot's
-    // line (Halo4SeatSightHonestAlongAim), or left on the game's aim because that could not be composed.
+    // Polls whose dev assessment reticle (honest_reticle_assess) showed the game's actual aim: composed from the
+    // shot's line (Halo4SeatSightHonestAlongAim), or left on the game's aim because that could not be composed.
     std::atomic<uint64_t> honestAlongAim{0}, honestGameAim{0};
+    // Solved polls on a record that is NOT in world angles now (a tilted vehicle without seat flag bit 4): the
+    // slope-frame question (0x5F97DC) the rebase port answers. Natural; counted, never refused.
+    std::atomic<uint64_t> solvedTilted{0};
     std::atomic<float> maxGapMm{0.0f}, speedMps{0.0f}, eyeFromHead[3]{}, maxDirDeg{0.0f}, maxBarrelDeg{0.0f};
     std::atomic<uint32_t> evidence[4]{};   // halo4_seat_aim::EyeEvidence counts over new samples
 } g_h4SeatEyeWitness;
@@ -1258,8 +1263,13 @@ bool Halo4SeatSightPrepare(Halo4SeatSightPoll& out, const float observerForward[
         ? halo4_seat_aim::ClassifySeat(sample.flagsKnown, sample.flags, sample.controlledKind, sample.weaponKnown,
                                        sample.hasWeapon)
         : halo4_seat_aim::SeatClass::Unknown;
-    const bool recordWorld = sameSeat && halo4_seat_aim::SeatRecordIsWorld(sample.flagsKnown, sample.flags,
-        sample.upKnown, {sample.up[0], sample.up[1], sample.up[2]});
+    // The gate is what our code must prove (the flags, the frame anchor); a tilt is natural and only counted
+    // (SeatRecordIsWorld: the slope-frame witness until the 0x5F97DC rebase is ported).
+    const halo4_seat_aim::Vec3 sampleUp{sample.up[0], sample.up[1], sample.up[2]};
+    const bool recordSolvable = sameSeat &&
+        halo4_seat_aim::SeatRecordSolvable(sample.flagsKnown, sample.flags, sample.upKnown, sampleUp);
+    const bool recordTilted = recordSolvable &&
+        !halo4_seat_aim::SeatRecordIsWorld(sample.flagsKnown, sample.flags, sample.upKnown, sampleUp);
     if (s_state.agreement.proven)
         w.provenPolls.fetch_add(1, std::memory_order_relaxed);
     // THE PROOFS, every one required (any failure: this seat aims exactly as before). The kill switches are in
@@ -1275,17 +1285,19 @@ bool Halo4SeatSightPrepare(Halo4SeatSightPoll& out, const float observerForward[
     else if (!s_state.agreement.proven) why = kH4SeatWhyWitness;
     else if (seatClass == halo4_seat_aim::SeatClass::Unknown || seatClass == halo4_seat_aim::SeatClass::NoWeapon)
         why = kH4SeatWhyClass;
-    else if (!recordWorld) why = kH4SeatWhyRecord;
+    else if (!recordSolvable) why = kH4SeatWhyRecord;
     else if (!key) why = kH4SeatWhyKey;   // every proof holds; only the stage-1 key is off
     w.why[why].fetch_add(1, std::memory_order_relaxed);
     out.solve = why == kH4SeatWhySolved;
-    // A slaved turret's aim camera IS its barrel's line (0x124DE6): the reticle rides the barrel, whatever the
-    // eye proofs say, and nothing is ever claimed there (verifier item 14). The class is LATCHED for the stint:
+    if (out.solve && recordTilted)
+        w.solvedTilted.fetch_add(1, std::memory_order_relaxed);
+    // A slaved turret's aim camera IS its barrel's line (0x124DE6): the servo parks it as a turret, whatever the
+    // eye proofs say (its pitch is on the servo; verifier item 14). The class is LATCHED for the stint:
     // set by a fresh sample of this seat that says bit 7, released only by a fresh sample of this seat with
     // another known class (or a new stint) -- never because this poll's sample was stale or its read collided,
-    // which would flip the servo's turret mode (resetting its measured quantum and logging armed/released) and
-    // drop the reticle off the barrel for that poll. Nor does it wait on the rendered head: the turret's
-    // reticle and servo use the game's own aim, so only the switches and our seat view gate it.
+    // which would flip the servo's turret mode (resetting its measured quantum and logging armed/released). Nor
+    // does it wait on the rendered head: the turret's servo uses the game's own aim, so only the switches and
+    // our seat view gate it.
     if (sameSeat && seatClass != halo4_seat_aim::SeatClass::Unknown)
         s_state.turret = seatClass == halo4_seat_aim::SeatClass::SlavedTurret;
     out.turret = key && viewOwned && g_config.reach_vehicle_aim > 0 && Sight_AimEnabled() && s_state.turret;
@@ -1306,18 +1318,15 @@ bool Halo4SeatSightPrepare(Halo4SeatSightPoll& out, const float observerForward[
 }
 
 // Stage 1, Game_ComputeAimStick, after the aim was bent through `point` (the intent ray at the converged range):
-// may the converged aim be CLAIMED (verifier items 11 and 12)? The native seated assist turns the shot from its
-// shot line (the barrel's forward, or the aiming unit's aim under the unit-aim flag) toward the crosshair point
-// by at most max(21 deg, the weapon's own angle), and only while the shot's aiming unit carries the player;
-// claimed only with 2 deg to spare inside 21 deg or the widest turn seen for the weapon.
-// Otherwise honestDir is the world direction from the rendered head to where the real shot is at the point's
-// range, when that is known. An unknown shot line (no fire of this weapon yet) claims nothing and substitutes
-// no reticle.
-bool Halo4SeatSightClaim(const Halo4SeatSightPoll& seat, const float point[3], bool& honestValid,
-                         float honestDir[3])
+// WITNESS ONLY (verifier items 11 and 12) -- would the native seated assist bring the shot onto the point? It
+// turns the shot from its shot line (the barrel's forward, or the aiming unit's aim under the unit-aim flag)
+// toward the crosshair point by at most max(21 deg, the weapon's own angle), and only while the shot's aiming
+// unit carries the player; "on the point" with 2 deg to spare inside 21 deg or the widest turn seen for the
+// weapon. Until 2026-10-01 this withheld the converged claim and drew an honest reticle; now it is counted for
+// the dev line and decides nothing (a capped or unassisted gun fires where it can, as in flat Halo).
+void Halo4SeatSightClaimWitness(const Halo4SeatSightPoll& seat, const float point[3])
 {
     using halo4_seat_aim::Vec3;
-    honestValid = false;
     auto& w = g_h4SeatEyeWitness;
     unsigned why = kH4ClaimYes;
     if (seat.turret)
@@ -1342,31 +1351,19 @@ bool Halo4SeatSightClaim(const Halo4SeatSightPoll& seat, const float point[3], b
                 why = kH4ClaimUnassisted;
             else if (!verdict.claim)
                 why = kH4ClaimCap;
-            Vec3 dir{};
-            if (why != kH4ClaimYes &&
-                halo4_seat_aim::ShotReticleDirection({seat.head[0], seat.head[1], seat.head[2]}, barrelOrigin,
-                                                     verdict.shot, target, dir))
-            {
-                honestDir[0] = dir.x;
-                honestDir[1] = dir.y;
-                honestDir[2] = dir.z;
-                honestValid = true;
-            }
         }
     }
     w.claim[why].fetch_add(1, std::memory_order_relaxed);
-    return why == kH4ClaimYes;
 }
 
-// Stage 1, the servo's honest branches that publish the game's ACTUAL aim -- a stall at a seat limit, the seat
-// drive's latch, a short yaw -- for a seat whose proofs all hold (verifier item 11). There the aim is not where it
-// was bent, and the game's aim is not the shot's line either: the native assist's crosshair trace runs from the
-// game's eye E along the unit's actual aim, and the shot turns from its own line (the barrel's, or the aiming
+// Stage 1, DEV ASSESSMENT ONLY (honest_reticle_assess = 2): where the shot really goes for a seat whose proofs all
+// hold (verifier item 11). The game's aim is not the shot's line: the native assist's crosshair trace runs from
+// the game's eye E along the unit's actual aim, and the shot turns from its own line (the barrel's, or the aiming
 // unit's aim) toward that point by at most the cap -- or not at all, unassisted. The point is taken on the actual
 // aim at the converged point's range (the native trace's own range is not known; the range only moves the
 // parallax between H, E and the barrel). honestDir: from the rendered head H to where that shot is at the range.
-// False -- the caller keeps the game's aim, as before -- for a turret (its reticle rides the barrel), or with the
-// shot line, the assist or the eye unknown.
+// False -- the caller keeps the game's aim -- for a turret (the game's aim is its barrel), or with the shot
+// line, the assist or the eye unknown.
 bool Halo4SeatSightHonestAlongAim(const Halo4SeatSightPoll& seat, const float point[3], const float aimForward[3],
                                   float honestDir[3])
 {
@@ -1445,9 +1442,9 @@ void Halo4SeatSightReport()
             "player %s, barrel %s, shot line %s, vehicle up.z %s; eye vs sim: agree %u disagree %u chase %u unmeasured speed %u, "
             "max |E_sim - E_render| %.0f mm at %.1f m/s, E_render - head [along,right,up] %.0f,%.0f,%.0f mm, sim aim vs "
             "observer forward max %.2f deg; %llu polls, eye proven in %llu; not solved: view %llu, head %llu, "
-            "switches %llu, eye %llu, sample %llu, witness %llu, class %llu, tilted record %llu, key off %llu; "
-            "SOLVED %llu; claimed %llu, not claimed: turret %llu, shot unknown %llu, no assist %llu, beyond the cap "
-            "%llu (max shot line->point %.1f deg); aim held off the bend (stall/latch/short yaw): honest reticle on "
+            "switches %llu, eye %llu, sample %llu, witness %llu, class %llu, record frame unproven %llu, key off %llu; "
+            "SOLVED %llu (on a tilted record %llu); assist witness (decides nothing): on the point %llu, turret %llu, shot unknown %llu, no assist "
+            "%llu, beyond the cap %llu (max shot line->point %.1f deg); assessment reticle (honest_reticle_assess) on "
             "the shot %llu, on the game's aim %llu",
             static_cast<unsigned long long>(samples), static_cast<unsigned long long>(f.firstPerson.exchange(0)),
             static_cast<unsigned long long>(f.chase.exchange(0)), static_cast<unsigned long long>(f.noWitness.exchange(0)),
@@ -1465,6 +1462,7 @@ void Halo4SeatSightReport()
             static_cast<unsigned long long>(why[kH4SeatWhyWitness]), static_cast<unsigned long long>(why[kH4SeatWhyClass]),
             static_cast<unsigned long long>(why[kH4SeatWhyRecord]), static_cast<unsigned long long>(why[kH4SeatWhyKey]),
             static_cast<unsigned long long>(why[kH4SeatWhySolved]),
+            static_cast<unsigned long long>(w.solvedTilted.exchange(0)),
             static_cast<unsigned long long>(w.claim[kH4ClaimYes].exchange(0)),
             static_cast<unsigned long long>(w.claim[kH4ClaimTurret].exchange(0)),
             static_cast<unsigned long long>(w.claim[kH4ClaimUnknown].exchange(0)),
@@ -1667,14 +1665,14 @@ void InstallHalo4SeatSight(uintptr_t base, size_t size, uint32_t generation)
     }
     else
         LOG("SIGHT Halo 4 seats: the barrel marker read (0x6121B8, the fire routine's marker block 0x61797F) did "
-            "not prove; no seat claims convergence (the reticle stays honest)");
+            "not prove; the assist witness cannot judge seated shots (it decides nothing)");
     if (Halo4SeatSightUnique(base, size, 0x617DA7, "41 8B CC E8 ?? ?? ?? ?? 8B C8 8B D8 E8 ?? ?? ?? ?? 48 8B 48 10 8B 81 "
             "9C 04 00 00 44 8B A1 84 04 00 00 89 44 24 6C 48 8D 81 A8 05 00 00") &&
         Halo4SeatSightCalls(base, 0x617DAA, 0x5F1ABC))
         ready |= kH4SeatAimUnit;
     else
         LOG("SIGHT Halo 4 seats: the fire routine's aiming unit (0x617DA7: 0x5F1ABC, its +0x49C player) did not "
-            "prove; no seat claims convergence (the reticle stays honest)");
+            "prove; the assist witness cannot judge seated shots (it decides nothing)");
     if (Halo4SeatSightUnique(base, size, 0x2061A8, "48 89 5C 24 10 48 89 6C 24 18 56 57 41 56 48 83 EC 20 48 8B FA 8B F1 "
             "48 8D 54 24 40 45 8B F1 49 8B D8 E8 ?? ?? ?? ?? 44 8B 1D ?? ?? ?? ?? 8B E8 65 4C 8B 14 25 58 00 00 00 44 0F "
             "B7 C6 B9 18 00 00 00 4B 8B 04 DA 4B 8D 14 40 48 8B 0C 01 48 8B 49 50 4C 8B 44 D1 10 41 8B 88 90 04 00 00 "
@@ -1734,7 +1732,7 @@ void InstallHalo4SeatSight(uintptr_t base, size_t size, uint32_t generation)
     else
         LOG("SIGHT Halo 4 seats: the shot line (0x5F3510's unit-aim block 0x5F351B, the fire routine's aim call "
             "0x617E60 and assist call 0x6180CC sharing [rbp+0x30]) did not prove; the line the assist turns is "
-            "unknown, so no seat claims convergence and no honest reticle is substituted");
+            "unknown, so the assist witness cannot judge seated shots (it decides nothing)");
     f.ready.store(ready, std::memory_order_release);
     LOG("SIGHT Halo 4 seats (dev): witnesses %s -- seat flags %d, controlled unit %d, object frame %d, barrel %d, "
         "aiming unit %d, aim camera %d, assist exit %d, shot line %d",

@@ -749,11 +749,12 @@ struct Config
     // DEV BUILDS ONLY (not parsed otherwise), Halo 4 SEATED CONVERGENCE, stage 1: 1 = a Halo 4 seat converges
     // like a Halo 3 one -- the seated trace is published, and the aim is bent so the game's own seat eye line
     // passes through the point the intent ray hits, while every proof holds (our first-person seat view, the
-    // exact first-person witness, the eye agreement, a known seat class with a weapon, a record in world angles).
-    // Converged is CLAIMED only while the shot's aiming unit carries the player and the barrel reaches the point
-    // inside the native 21 deg assist cap (2 deg to spare); otherwise the reticle shows where the shot really
-    // goes. A slaved turret's reticle rides its barrel. 0 = every Halo 4 seat aims as before (stage 0 still
-    // measures). For A/B in the headset. (default 0)
+    // exact first-person witness, the eye agreement, a known seat class with a weapon, the record's frame anchor
+    // read). Converged is then CLAIMED as on foot and in a Halo 3 seat (2026-10-01): the native assist's verdict
+    // (21 deg cap, an aiming unit that carries the player), a slope and a slaved turret are natural and only
+    // counted for the dev line; a gun that cannot reach the point fires where it can, as in flat Halo. A slaved
+    // turret is still parked by the servo. 0 = every Halo 4 seat aims as before (stage 0 still measures). For A/B
+    // in the headset. (default 0)
     int halo4_seat_converge = 0;
     // DEV BUILD ONLY (parsed and saved only in dev builds; the hooks are compiled out of player builds): 1 = log
     // the type-13 pilot controllers, Reach's Sabre/Seraph (haloreach+0x64828) and Halo 4's Broadsword

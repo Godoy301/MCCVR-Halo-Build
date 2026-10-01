@@ -404,11 +404,17 @@ inline bool ShotReticleDirection(Vec3 head, Vec3 barrelOrigin, Vec3 shot, Vec3 p
     return Normalize(Sub(Add(barrelOrigin, Scale(s, range)), head), out);
 }
 
-// ---- the record-frame gate --------------------------------------------------------------------------------
+// ---- the record frame --------------------------------------------------------------------------------------
 // In a seat WITHOUT flag bit 4 the game's record is rotated by R = [normalize(Y x u), u x f, u] (0x5F97DC,
-// u the vehicle's up): world angles only while u is +Z. Until that rebase is ported, a seat converges only
-// with bit 4, or while its vehicle is level within 2 deg. (u.z, not |u.z|: an upturned vehicle's R is a half
-// turn, not the identity.)
+// u the vehicle's up): world angles only while u is +Z. SeatRecordIsWorld says whether it is now (bit 4, or the
+// vehicle level within 2 deg; u.z, not |u.z|: an upturned vehicle's R is a half turn, not the identity).
+//
+// THE GATE is SeatRecordSolvable, not that. Until 2026-10-01 a tilted seat refused the solve; but the unbent
+// steer it fell back to is written into the same rotated record and carries the same frame error, so the
+// refusal bought nothing except convergence switching off on every slope -- a natural cause. The gate keeps only
+// what our code must prove: the seat's flags read, and for a seat without bit 4 the vehicle's frame anchor
+// readable (a finite, non-zero up). The 0x5F97DC rebase port is its own fix; SeatRecordIsWorld stays as its
+// dev witness.
 inline constexpr float kSeatLevelCos = 0.99939083f;   // cos(2 deg)
 
 inline bool SeatRecordIsWorld(bool flagsKnown, uint32_t flags, bool upKnown, Vec3 up)
@@ -419,6 +425,16 @@ inline bool SeatRecordIsWorld(bool flagsKnown, uint32_t flags, bool upKnown, Vec
         return true;
     Vec3 u{};
     return upKnown && Normalize(up, u) && u.z > kSeatLevelCos;
+}
+
+inline bool SeatRecordSolvable(bool flagsKnown, uint32_t flags, bool upKnown, Vec3 up)
+{
+    if (!flagsKnown)
+        return false;
+    if (flags & kSeatFlagWorldAngles)
+        return true;
+    Vec3 u{};
+    return upKnown && Normalize(up, u);
 }
 
 } // namespace halo4_seat_aim

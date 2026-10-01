@@ -2190,7 +2190,7 @@ void ConfigSave()
     fprintf(f, "# Halo 2). Leave at 0.\n");
     fprintf(f, "sight_ray_census = %d\n\n", g_config.sight_ray_census);
     fprintf(f, "# DEV BUILD ONLY. Halo 4 seated convergence (stage 1): 1 = a seat converges like Halo 3's while\n");
-    fprintf(f, "# every proof holds; the reticle stays honest where the shot cannot follow. 0 = seats as before.\n");
+    fprintf(f, "# every proof holds, and stays converged where the native assist cannot bring the shot on. 0 = seats as before.\n");
     fprintf(f, "halo4_seat_converge = %d\n\n", g_config.halo4_seat_converge);
     fprintf(f, "# DEV BUILD ONLY. Assessment: draw the crosshair on the game's REAL aim instead of the aim point, to see\n");
     fprintf(f, "# how far the game trails the hand. Moves the drawing only; shots, aim and convergence are unchanged.\n");

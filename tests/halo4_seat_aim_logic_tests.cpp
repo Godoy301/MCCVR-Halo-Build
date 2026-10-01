@@ -343,6 +343,19 @@ void TestRecordFrame()
     Check(!SeatRecordIsWorld(true, 0, false, {0, 0, 1}), "no up: not proven level");
     Check(!SeatRecordIsWorld(true, 0, true, {0, 0, 0}), "a zero up proves nothing");
     Check(SeatRecordIsWorld(true, 0, true, {0, 0, 5}), "an unnormalised up is normalised");
+
+    // THE GATE (2026-10-01): a tilt is natural and no longer refuses the solve; only our code's proofs do.
+    Check(!SeatRecordSolvable(false, kSeatFlagWorldAngles, true, {0, 0, 1}), "solvable: flags unknown, never");
+    Check(SeatRecordSolvable(true, kSeatFlagWorldAngles, false, {}), "solvable: bit 4 at any tilt");
+    Check(SeatRecordSolvable(true, 0, true, {0, 0, 1}), "solvable: level");
+    Check(SeatRecordSolvable(true, 0, true, {std::sin(3.0f * kDeg), 0, std::cos(3.0f * kDeg)}),
+          "solvable: a 3 deg slope no longer switches the seat's convergence off");
+    Check(SeatRecordSolvable(true, 0, true, {std::sin(30.0f * kDeg), 0, std::cos(30.0f * kDeg)}),
+          "solvable: nor does a 30 deg one");
+    Check(SeatRecordSolvable(true, 0, true, {0, 0, -1}), "solvable: even upturned (the steer has the same error)");
+    Check(!SeatRecordSolvable(true, 0, false, {0, 0, 1}), "solvable: no up read, the anchor is unproven");
+    Check(!SeatRecordSolvable(true, 0, true, {0, 0, 0}), "solvable: a zero up proves nothing");
+    Check(!SeatRecordSolvable(true, 0, true, {std::nanf(""), 0, 1}), "solvable: a NaN up proves nothing");
 }
 } // namespace
 
