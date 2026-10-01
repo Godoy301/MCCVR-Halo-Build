@@ -410,6 +410,31 @@ namespace
     // world units; 0 in a seat, a cinematic, or without positional tracking.
     std::atomic<float> g_baseCamViewLiftZ{0};
     float BaseCamHandsZ() noexcept {return g_baseCamZ.load()+g_baseCamViewLiftZ.load();}
+
+    // FIRST-PERSON WITNESSES (roomscale and the head leash; Halo 4's is g_halo4FirstPersonMs). Each title's
+    // on-foot proof passes in third person too -- a death camera, a carried turret, Reach's Armor Lock,
+    // scripted third person -- and roomscale's body point is the engine camera, so a third-person camera
+    // was walked as a body (Halo 4, user log 2026-09-30). The witness is the title's first-person weapon
+    // interpolation, which runs only while the engine draws the first-person view model: Halo 3 and ODST
+    // for perspective 0 (docs/RE-notes.md), Reach for slot 0 with two hits inside the window, because Reach
+    // interpolates a few stray first-person calls from third-person seats (6 in ~57 s,
+    // REACH-VEHICLE-EVIDENCE.md). It runs on the render path, a frame either side of the camera hook that
+    // reads it, so it is a timestamp with a window of several frames. Not measured: whether an unarmed
+    // character or a native zoom still interpolates a view model; if not, roomscale and the leash stand down
+    // there too (fail closed: the view stays 6DOF, the body just does not follow).
+    inline constexpr uint64_t kFirstPersonWitnessMs = 100, kReachFirstPersonWitnessMs = 150;
+    std::atomic<uint64_t> g_halo3FirstPersonMs{0}, g_odstFirstPersonMs{0};
+    std::atomic<uint64_t> g_reachFirstPersonMs{0}, g_reachFirstPersonPrevMs{0};
+    bool WitnessFresh(const std::atomic<uint64_t>& stamp, uint64_t now, uint64_t window) noexcept
+    {
+        const uint64_t at = stamp.load(std::memory_order_acquire);
+        return at && now >= at && now - at <= window;
+    }
+    bool ReachFirstPersonFresh(uint64_t now) noexcept
+    {
+        return WitnessFresh(g_reachFirstPersonMs, now, kReachFirstPersonWitnessMs) &&
+            WitnessFresh(g_reachFirstPersonPrevMs, now, kReachFirstPersonWitnessMs);
+    }
     std::atomic<float> g_camFwd[3] = {{1},{0},{0}};
     std::atomic<float> g_camUp[3] = {{0},{0},{1}};
     std::atomic<bool> g_camValid{false};
@@ -5139,6 +5164,8 @@ namespace
         uint32_t muzzleUnit=UINT32_MAX,muzzleWeapon=UINT32_MAX;
         const bool muzzleOwner=Halo3CaptureMuzzleOwner(view,slot,muzzleUnit,muzzleWeapon);
         const bool result=g_origFpInterpolate(view,id,slot,outBones,outCount);
+        if (result && view==0 && (slot==0 || slot==1))
+            g_halo3FirstPersonMs.store(GetTickCount64(), std::memory_order_release);
         if (slot==0 || slot==1)
         {
         g_fpInterpolationContexts[slot]={};
@@ -12850,6 +12877,8 @@ namespace
             reinterpret_cast<FpInterpolateFn>(g_odstCamera.originalFpInterpolate);
         if (original)
             result = original(view, id, slot, outBones, outCount);
+        if (result && view == 0 && (slot == 0 || slot == 1))
+            g_odstFirstPersonMs.store(GetTickCount64(), std::memory_order_release);
         if(g_scopeRenderActive.load(std::memory_order_acquire))
         {
             if(slot==0||slot==1)
@@ -21605,6 +21634,7 @@ namespace
             // its crouch feature: the leash is about the view entering the body, however it got low.
             const float leash = g_config.head_leash_below_eye_m;
             if (!(vehicle && vehicle->active) && Game_ReachDirectDriveOnFootWhy() == 0 &&
+                ReachFirstPersonFresh(GetTickCount64()) &&
                 std::isfinite(leash) && leash >= 0.0f && std::isfinite(characterEyeZ))
             {
                 const float floorZ = characterEyeZ - leash * kReachWorldUnitsPerMeter;
@@ -24492,6 +24522,10 @@ namespace
             ReachFpInterpolateFn original=g_reachOrigFpInterpolate;
             if (original)
                 result=original(view,id,slot,outBones,outCount);
+            if (result && slot==0)
+                g_reachFirstPersonPrevMs.store(
+                    g_reachFirstPersonMs.exchange(GetTickCount64(),std::memory_order_acq_rel),
+                    std::memory_order_release);
             ReachCaptureFpInterpolation(view,id,slot,result,outBones,outCount,muzzleUnit,muzzleWeapon);
         }
         __finally
@@ -38589,7 +38623,23 @@ namespace
             // hands off.
             if (reinterpret_cast<uintptr_t>(_ReturnAddress())==
                     g_halo4Camera.base+kHalo4FirstPersonSkinningReturnRva)
+            {
                 g_halo4FirstPersonMs.store(GetTickCount64(),std::memory_order_release);
+                // The body record's unit -- direct drive's and the sight trace's on-foot proof -- is stamped in
+                // the hands block below, which never runs with the VR hands off: stamp it here then.
+                if (!g_config.halo4_hands &&
+                    !g_halo4Camera.teardownRequested.load(std::memory_order_acquire) &&
+                    g_halo4Camera.armed.load(std::memory_order_acquire) &&
+                    Halo4RecordFillFlag(inputObjectNodeMatrices)==kHalo4FirstPersonBodyFillFlag)
+                {
+                    Halo4RenderModelIdentity identity{};
+                    if (Halo4ResolveRenderModelIdentity(renderModelIndex,identity))
+                    {
+                        g_halo4SightUnit.store(objectIndex,std::memory_order_relaxed);
+                        g_halo4SightUnitAtMs.store(GetTickCount64(),std::memory_order_release);
+                    }
+                }
+            }
             if (!g_halo4Camera.teardownRequested.load(std::memory_order_acquire) &&
                 g_halo4Camera.armed.load(std::memory_order_acquire) &&
                 // C-H4-32: `arm_ik` is NO LONGER A GATE. There is no arm IK in
@@ -40873,7 +40923,8 @@ namespace
                     // On foot and player-controlled only; the hands rise with the view.
                     const float leash = g_config.head_leash_below_eye_m;
                     if (onFoot && headInput.positional && std::isfinite(leash) && leash >= 0.0f &&
-                        std::isfinite(beforeHead.position[2]))
+                        std::isfinite(beforeHead.position[2]) &&
+                        WitnessFresh(g_halo4FirstPersonMs, GetTickCount64(), kHalo4FirstPersonFreshMs))
                     {
                         const float floorZ = beforeHead.position[2] - leash * worldScale;
                         if (stock.position[2] < floorZ &&
@@ -49524,7 +49575,10 @@ bool Game_TitleOnFootPlayerControlled(GameTitle title)
         case GameTitle::Halo3:
         {
             int32_t scene=-1,shot=-1;
-            if (ReadCinematicControl(scene,shot)!=CinematicControlState::PlayerControlled ||
+            // The witness hook installs apart from the camera (M3); without it, admit as before.
+            if ((g_fpInterpolatorHooked.load(std::memory_order_acquire) &&
+                 !WitnessFresh(g_halo3FirstPersonMs, now, kFirstPersonWitnessMs)) ||
+                ReadCinematicControl(scene,shot)!=CinematicControlState::PlayerControlled ||
                 Game_Halo3VehicleState().state!=Halo3VehicleState::OnFoot ||
                 !g_halo3PlayerUnitGetter) return false;
             const auto* unit=Halo3MeleeSelectionObject(
@@ -49536,6 +49590,7 @@ bool Game_TitleOnFootPlayerControlled(GameTitle title)
             int32_t scene=-1,shot=-1;
             const auto at=g_odstRoomscaleOnFootMs.load();
             return at && now>=at && now-at<=100 &&
+                WitnessFresh(g_odstFirstPersonMs, now, kFirstPersonWitnessMs) &&
                 g_odstVehicleBinding.load()==static_cast<uint8_t>(OdstVehicleBindingState::Installed) &&
                 g_odstVehicleFpStable.load()==static_cast<uint32_t>(Halo3VehicleState::OnFoot) &&
                 ReadOdstCinematicControl(scene,shot)==CinematicControlState::PlayerControlled;
@@ -49544,7 +49599,7 @@ bool Game_TitleOnFootPlayerControlled(GameTitle title)
         {
             const auto at=g_reachVehicleSampleMs.load();
             const auto cine=TitleAdapter_GetCinematicControlPublication(title);
-            return at && now>=at && now-at<=100 &&
+            return at && now>=at && now-at<=100 && ReachFirstPersonFresh(now) &&
                 g_reachVehicleInputSnapshot.load()==ReachVehicleInputSnapshot(
                     TitleAdapter_GetGeneration(title),ReachVehicleInputState::OnFoot) &&
                 cine.generation==TitleAdapter_GetGeneration(title) &&
@@ -49571,9 +49626,8 @@ bool Game_TitleOnFootPlayerControlled(GameTitle title)
             const auto* biped=Halo4ContactBiped(unit);
             // Existing H4EK-proven contact admission: unparented local biped -- and the camera at his eye
             // (the first-person witness): third person is on foot and player-controlled too.
-            const auto firstPerson=g_halo4FirstPersonMs.load(std::memory_order_acquire);
             return biped && *reinterpret_cast<const int32_t*>(biped+0x24)==-1 &&
-                firstPerson && now>=firstPerson && now-firstPerson<=kHalo4FirstPersonFreshMs;
+                WitnessFresh(g_halo4FirstPersonMs, now, kHalo4FirstPersonFreshMs);
         }
 #endif
         default: return false;
