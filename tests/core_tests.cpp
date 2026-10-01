@@ -2899,6 +2899,18 @@ int main()
               ReachVehicleUsesWheel(ReachVehicleId::Forklift) &&
               !ReachVehicleUsesWheel(ReachVehicleId::Banshee),
             "Reach view-follow and steering ownership remain seat-explicit");
+        // Critic M1: a look-steered DRIVER's pitch is never latched (the game's autolevel is not a limit), as
+        // in Halo 3 / ODST; gunners, passengers, tank drivers and turrets latch both axes.
+        Check(!ReachSeatPitchLatches(ReachVehicleId::Warthog, 0) &&
+              !ReachSeatPitchLatches(ReachVehicleId::Ghost, 0) &&
+              !ReachSeatPitchLatches(ReachVehicleId::Banshee, 0) &&
+              ReachSeatPitchLatches(ReachVehicleId::Warthog, 1) &&
+              ReachSeatPitchLatches(ReachVehicleId::WarthogChaingun, 0) &&
+              ReachSeatPitchLatches(ReachVehicleId::Scorpion, 0) &&
+              ReachSeatPitchLatches(ReachVehicleId::Wraith, 0) &&
+              ReachSeatPitchLatches(ReachVehicleId::ShadePlasma, 0) &&
+              ReachSeatPitchLatches(ReachVehicleId::Unknown, 0),
+            "Reach seat latch exempts only a look-steered driver's pitch");
         // R-V19 is intentionally refresh-rate independent: every supported
         // 72-144 Hz headset consumes that frame's render-matched carrier basis.
         Check(!kReachR_V15RawHullFollowEnabled,

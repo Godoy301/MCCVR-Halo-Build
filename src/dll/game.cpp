@@ -124,8 +124,12 @@ static std::atomic<unsigned long long> g_reachHeldAtLimitMs{0};
 // Whether the published setpoint is for a SEAT: there the game's own update clamps the record to the
 // seat's limits before the hook writes, and the hook keeps its write inside them (aim_write::LimitLatch).
 static std::atomic<bool>               g_reachDriveSeated{false};
+// Whether that seat's latch may read pitch limits (ReachSeatPitchLatches): false for a look-steered driver,
+// whose pitch the game levels as the vehicle moves (autolevel is not a limit). Part of the same seqlock.
+static std::atomic<bool>               g_reachDrivePitchLatch{true};
 static std::atomic<unsigned>           g_reachApplyLimited{0};   // updates written held at a seat limit
-// Seqlock over the setpoint (yaw, pitch, converged, seated, publish time): the sim-thread hook must never pair
+static std::atomic<unsigned>           g_reachApplyPitchFree{0}; // seated updates whose pitch was not latched
+// Seqlock over the setpoint (yaw, pitch, converged, seated, pitch latch, publish time): the sim-thread hook must never pair
 // one publish's angles with another publish's converged bit, because the firing site's stand-down of
 // the hand shot ray follows that bit. One writer (the provider, on the input poll).
 static std::atomic<uint32_t>           g_reachDriveSeq{0};
@@ -50400,11 +50404,22 @@ bool Game_ReachDirectDriveSeated()
 // The provider's WriteState actuation: the setpoint the sim-thread hook writes on its next tick.
 void Game_ReachDirectDrivePublish(float gameYaw, float gamePitch, bool converged, bool seated)
 {
+    // Which axes the hook's seat-limit latch may read (critic M1): the seat this poll's aim is for, resolved
+    // here on the poll's thread from the same snapshot Game_ReachDirectDriveAimWhy judged writability on.
+    bool pitchLatch = true;
+    if (seated)
+    {
+        ReachVehicleId identity = ReachVehicleId::Unknown;
+        int seatIndex = -1;
+        if (ReachCurrentSeat(identity, seatIndex))
+            pitchLatch = ReachSeatPitchLatches(identity, seatIndex);
+    }
     g_reachDriveSeq.fetch_add(1, std::memory_order_acq_rel);   // odd: a publish is in progress
     g_reachDriveYaw.store(gameYaw, std::memory_order_relaxed);
     g_reachDrivePitch.store(gamePitch, std::memory_order_relaxed);
     g_reachDriveConverged.store(converged, std::memory_order_relaxed);
     g_reachDriveSeated.store(seated, std::memory_order_relaxed);
+    g_reachDrivePitchLatch.store(pitchLatch, std::memory_order_relaxed);
     g_reachDriveMs.store(GetTickCount64(), std::memory_order_relaxed);
     g_reachDriveSeq.fetch_add(1, std::memory_order_release);    // even: one coherent setpoint
     g_reachDriveValid.store(true, std::memory_order_release);
@@ -50726,7 +50741,7 @@ extern "C" void ReachPcApplyForUser(int user, const uint8_t* entryRsp)
         // One coherent setpoint (the seqlock in Game_ReachDirectDrivePublish): angles, publish time and
         // the converged bit all from the same publish. A torn read retries once; still torn, this update
         // writes nothing and the game keeps the last angles.
-        bool coherent = false, drivenConverged = false, drivenSeated = false;
+        bool coherent = false, drivenConverged = false, drivenSeated = false, drivenPitchLatch = true;
         unsigned long long publishedMs = 0;
         for (int attempt = 0; attempt < 2 && !coherent; ++attempt)
         {
@@ -50737,6 +50752,7 @@ extern "C" void ReachPcApplyForUser(int user, const uint8_t* entryRsp)
             pitch = g_reachDrivePitch.load(std::memory_order_relaxed);
             drivenConverged = g_reachDriveConverged.load(std::memory_order_relaxed);
             drivenSeated = g_reachDriveSeated.load(std::memory_order_relaxed);
+            drivenPitchLatch = g_reachDrivePitchLatch.load(std::memory_order_relaxed);
             publishedMs = g_reachDriveMs.load(std::memory_order_relaxed);
             coherent = g_reachDriveSeq.load(std::memory_order_acquire) == before;
         }
@@ -50861,12 +50877,22 @@ extern "C" void ReachPcApplyForUser(int user, const uint8_t* entryRsp)
 #endif
                 // In a seat, the game's update has just clamped the record to the seat's limits (a turret's
                 // pitch stop, a passenger's cone): keep the write inside them rather than carry the aim past
-                // (aim_write::LimitLatch). On foot there is no such clamp, and nothing changes.
+                // (aim_write::LimitLatch). On foot there is no such clamp, and nothing changes. Per axis, as in
+                // Halo 3 / ODST (critic M1): a look-steered driver's pitch is never latched -- the game levels
+                // it as the vehicle moves, which the latch would take for a limit and hold the write short of
+                // the hand -- so that axis is written as the hand's; its yaw still latches.
                 float target[2]{yaw, pitch};
                 if (drivenSeated)
                 {
                     const float native[2]{pair[0], pair[1]};
-                    limited = s_seatLimit.apply(native, target, target) ? 1 : 0;
+                    const bool latch[2]{true, drivenPitchLatch};
+                    float held[2]{};
+                    limited = s_seatLimit.apply(native, target, held, latch) ? 1 : 0;
+                    target[0] = held[0];
+                    if (latch[1])
+                        target[1] = held[1];
+                    else if (user == 0)
+                        g_reachApplyPitchFree.fetch_add(1, std::memory_order_relaxed);
                 }
                 else
                     s_seatLimit.reset();
@@ -50975,11 +51001,13 @@ void Game_ReachDirectDriveReport()
     {
         const unsigned last = g_reachApplyLast.load(std::memory_order_relaxed);
         LOG("REACHDRIVE apply user=0 armed=%d pcMatch=%d valid=%d age=%u yaw=%.3f pitch=%.3f wrote %u/%u per s "
-            "(held at a seat limit %u; mismatches %u); %s", (last & 1u) ? 1 : 0, (last & 2u) ? 1 : 0,
+            "(held at a seat limit %u; pitch left unlatched for a look-steered driver %u; mismatches %u); %s",
+            (last & 1u) ? 1 : 0, (last & 2u) ? 1 : 0,
             (last & 4u) ? 1 : 0, g_reachApplyAgeMs.load(std::memory_order_relaxed),
             g_reachApplyYaw.load(std::memory_order_relaxed), g_reachApplyPitch.load(std::memory_order_relaxed),
             g_reachApplyWrites.exchange(0, std::memory_order_relaxed), calls,
             g_reachApplyLimited.exchange(0, std::memory_order_relaxed),
+            g_reachApplyPitchFree.exchange(0, std::memory_order_relaxed),
             g_reachPcMismatch.load(std::memory_order_relaxed), callers);
     }
     else if (extra)
