@@ -1320,7 +1320,9 @@ namespace
         if (g_config.roomscale_movement||g_config.physical_running)
         {
             const HeadReference beforeRoomscale = g_reference;
-            Roomscale_Camera(GameTitle::Halo2, roomscaleAllowed,
+            // The camera's own admission, which also admits physical running (0.7.0) with roomscale off; the
+            // first-admission re-seat above stays roomscale's alone.
+            Roomscale_Camera(GameTitle::Halo2, Game_RoomscaleCameraAllowed(GameTitle::Halo2),
                 stock.position, snapshot.headPosition, snapshot.headOrientation, tracked.forward,
                 g_reference.position, head.worldScale);
             memcpy(head.referencePosition, g_reference.position, sizeof(head.referencePosition));
@@ -3752,9 +3754,12 @@ namespace
         Halo2ObserverPosePublication publication{};
         Halo2CameraBasis rightCarrier{}, leftCarrier{};
         float head[3]{}, dir[3]{}, eye[3]{};
+        // The carrier the aim itself uses (BuildPublishedControllerAimDirection): with the persistent support
+        // grip detached, the independent one-hand pose, or the trace measures a ray nothing aims along.
         if (!generation || !Halo2Observer6Dof_ReadPublishedPose(publication) ||
             !BuildStableFirstPersonCarriers(
-                publication, generation, rightCarrier, leftCarrier) ||
+                publication, generation, rightCarrier, leftCarrier,
+                Halo2SupportCarrierMustDetach(publication)) ||
             !Halo2SightGeometry(publication, rightCarrier, head, dir, eye))
             return;
         int32_t weapon = -1;
@@ -4504,7 +4509,8 @@ namespace
         float head[3]{}, dir[3]{}, eye[3]{};
         if (!generation || !Halo2Observer6Dof_ReadPublishedPose(publication) ||
             !Halo2ObserverControllerSnapshotUsable(publication, generation) ||
-            !BuildStableFirstPersonCarriers(publication, generation, primary, secondary) ||
+            !BuildStableFirstPersonCarriers(publication, generation, primary, secondary,
+                Halo2SupportCarrierMustDetach(publication)) ||
             !Halo2SightGeometry(publication, primary, head, dir, eye))
         {
             Sight_NoteMuzzleShotUnconverged(GameTitle::Halo2);

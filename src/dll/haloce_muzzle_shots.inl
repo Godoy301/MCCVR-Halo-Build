@@ -56,9 +56,21 @@ bool ApplyMuzzleMarker(uint32_t object,int16_t count,void* markers,int16_t capac
         {
             if(!context.tracking.controllers.muzzleShots)return false;
             Vec3 head{},dir{},eye{};
+            // The carrier the aim itself uses (ControllerShotDirection): with the persistent support grip
+            // detached, the independent one-hand pose. Unreadable while the grip is wired: the eye shot.
+            HaloCELocalPlayerState player{};
+            const bool wired=VR_SupportGripWiredForTitle(GameTitle::HaloCE);
+            const bool havePlayer=HaloCEControls_GetLocalPlayerState(player);
+            const CeSupportInvocation support=havePlayer?CeEvaluateSupportInvocation(wired,player,
+                context.tracking.controllers.primaryAimSupportDerived):CeSupportInvocation{};
+            const bool detach=support.detach;
+            if((wired&&!havePlayer)||(detach&&!context.tracking.controllers.independentPrimaryAim.valid))
+            {Sight_NoteMuzzleShotUnconverged(GameTitle::HaloCE);return false;}
+            const ControllerPose& carrier=detach?context.tracking.controllers.independentPrimaryAim:
+                context.tracking.controllers.primaryAim;
             if(context.tracking.controllers.controlsPresentationBlocked||
                 !BuildSightGeometry(context.camera,context.tracking,context.reference,
-                    context.tracking.controllers.primaryAim,context.unitsPerMeter,context.positional,head,dir,eye))
+                    carrier,context.unitsPerMeter,context.positional,head,dir,eye))
             {Sight_NoteMuzzleShotUnconverged(GameTitle::HaloCE);return false;}
             const float h[3]{head.x,head.y,head.z},d[3]{dir.x,dir.y,dir.z},e[3]{eye.x,eye.y,eye.z};
             float through[3]{shot.direction.x,shot.direction.y,shot.direction.z};

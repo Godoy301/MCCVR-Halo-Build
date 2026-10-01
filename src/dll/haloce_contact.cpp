@@ -418,8 +418,16 @@ void SightTick(uint32_t unit) noexcept
     HaloCELocalPlayerState state{};RenderContext context{};
     if (!Admitted(unit,state,context)) return;
     Vec3 head{},dir{},eye{};
+    // The carrier the aim itself uses (ControllerShotDirection): with the persistent support grip detached, the
+    // independent one-hand pose, or the trace measures a ray nothing aims along.
+    const CeSupportInvocation support=CeEvaluateSupportInvocation(
+        VR_SupportGripWiredForTitle(GameTitle::HaloCE),state,
+        context.tracking.controllers.primaryAimSupportDerived);
+    if (support.detach&&!context.tracking.controllers.independentPrimaryAim.valid) return;
+    const ControllerPose& carrier=support.detach?context.tracking.controllers.independentPrimaryAim:
+        context.tracking.controllers.primaryAim;
     if (!BuildSightGeometry(context.camera,context.tracking,context.reference,
-        context.tracking.controllers.primaryAim,context.unitsPerMeter,context.positional,head,dir,eye)) return;
+        carrier,context.unitsPerMeter,context.positional,head,dir,eye)) return;
     const float length=kSightTraceLengthWu;
     const float start[3]{head.x+dir.x*kSightTraceSkipWu,head.y+dir.y*kSightTraceSkipWu,head.z+dir.z*kSightTraceSkipWu};
     const float displacement[3]{dir.x*length,dir.y*length,dir.z*length};

@@ -23239,11 +23239,15 @@ namespace
     // game space as `outTarget`. Both come from one controller pose through one
     // transform, so a shot fired from the origin toward the target is the exact
     // line the player sees - at every range, not just at crosshair_distance_m.
+    // `seated`: a vehicle seat's ray. The F06 producer receipt comes from the first-person interpolation
+    // pass, which Reach does not run in a seat (its weapon is the vehicle's), so a seat could never present
+    // one and every seated ray -- trace-and-reaim, the seat reticle -- was refused while the support grip
+    // was wired. A seat holds no support grip: its ray only has to belong to this frame (the serial bound).
     bool ReachBuildPresentedReticleWorldTarget(
         const ReachOwnerScope& owner, uint32_t generation, float outTarget[3],
         float outOrigin[3], uint64_t& outSampleMs,
         uint64_t* outSupportEpoch = nullptr, bool* outSupportTrusted = nullptr,
-        uint64_t* outRaySerial = nullptr)
+        uint64_t* outRaySerial = nullptr, bool seated = false)
     {
         if (outSupportEpoch) *outSupportEpoch = 0;
         if (outSupportTrusted) *outSupportTrusted = false;
@@ -23265,7 +23269,13 @@ namespace
         // F06: the ray must belong to this consuming frame (serial staleness
         // bound) and its producer receipt must still agree with the live
         // relationship AND this title invocation's own owner proof.
-        if (!ReachPresentedRayConsumable(GameTitle::HaloReach, generation,
+        if (seated)
+        {
+            if (VR_SupportGripWiredForTitle(GameTitle::HaloReach) &&
+                !support_grip::PresentedRaySerialCompatible(raySerial, owner.preparedSerial))
+                return false;
+        }
+        else if (!ReachPresentedRayConsumable(GameTitle::HaloReach, generation,
                 owner.preparedSerial, supportEpoch, supportTrusted, raySerial))
             return false;
         if (outSupportEpoch) *outSupportEpoch = supportEpoch;
@@ -23469,7 +23479,7 @@ namespace
                 ReachBuildPresentedReticleWorldTarget(
                     owner,generation,presentedTarget,presentedOrigin,
                     presentedTargetMs,&presentedSupportEpoch,
-                    &presentedSupportTrusted,&presentedRaySerial))
+                    &presentedSupportTrusted,&presentedRaySerial,true))
             {
                 seatedRay=true;
                 aim_solve::Vec3 anchor{};
@@ -23528,7 +23538,7 @@ namespace
             ReachBuildPresentedReticleWorldTarget(
                 owner, generation, presentedTarget, presentedOrigin,
                 presentedTargetMs, &presentedSupportEpoch,
-                &presentedSupportTrusted, &presentedRaySerial);
+                &presentedSupportTrusted, &presentedRaySerial, true);
         {
             auto& published = g_reachCompletedReticleTarget;
             published.sequence.fetch_add(1, std::memory_order_acq_rel);

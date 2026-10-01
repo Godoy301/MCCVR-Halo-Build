@@ -171,6 +171,7 @@ bool VR_PulseWeaponHaptics(GameTitle title,uint32_t gen,bool secondary,bool supp
 bool VR_GetSupportGripRelationship(SupportGripRelationshipSnapshot& out) noexcept
 { out={GameTitle::HaloCE,testGeneration,testOwner,0x5678000b,1,testSupport};return true; }
 bool VR_IsTwoHandAiming() { return testSupport; }
+bool VR_SupportGripWiredForTitle(GameTitle) noexcept { return false; }   // the sight trace's carrier choice
 void Logf(const char*,...) {}
 bool WaitForNativeDetourQuiescence(const void* const*,const void* const*,size_t,const std::atomic<uint32_t>& count)
 { return count.load()==0; }
