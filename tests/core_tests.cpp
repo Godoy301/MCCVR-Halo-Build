@@ -1129,6 +1129,76 @@ int main()
               "authored invalid colour rejected");
     }
     {
+        // Where the art sits in its texture: a square ring of ink centred on
+        // (32, 18) of a 64x64 readback, i.e. well above the texture centre, as
+        // Halo 4's capture left the magnum's art. Rows carry padding, as a
+        // mapped staging texture's do.
+        constexpr uint32_t size = 64;
+        constexpr size_t pitch = size * 4 + 32;
+        std::array<uint8_t, pitch * size> colour{};
+        std::array<uint8_t, pitch * size> alpha{};
+        for (uint32_t y = 14; y < 22; ++y)
+            for (uint32_t x = 28; x < 36; ++x)
+            {
+                if (y != 14 && y != 21 && x != 28 && x != 35)
+                    continue;
+                uint8_t* c = colour.data() + y * pitch + x * 4;
+                c[0] = 40; c[1] = 160; c[2] = 220; c[3] = 0;
+                alpha[y * pitch + x * 4 + 3] = 255;
+            }
+        const AuthoredReticleArtCentre byColour =
+            MeasureAuthoredReticleArtCentre(colour.data(), pitch, size, true, 2);
+        Check(byColour.valid && std::fabs(byColour.u - 0.5f) < 1.0e-5f &&
+                  std::fabs(byColour.v - 18.0f / 64.0f) < 1.0e-5f,
+              "art centre: colour ink locates a ring above the texture centre");
+        const AuthoredReticleArtCentre byAlpha =
+            MeasureAuthoredReticleArtCentre(alpha.data(), pitch, size, false, 2);
+        Check(byAlpha.valid && std::fabs(byAlpha.u - byColour.u) < 1.0e-5f &&
+                  std::fabs(byAlpha.v - byColour.v) < 1.0e-5f,
+              "art centre: alpha ink finds the same centre");
+        Check(!MeasureAuthoredReticleArtCentre(alpha.data(), pitch, size, true, 2).valid,
+              "art centre: colour ink ignores alpha-only art");
+        const std::array<uint8_t, pitch * size> blank{};
+        Check(!MeasureAuthoredReticleArtCentre(blank.data(), pitch, size, true, 2).valid,
+              "art centre: a blank capture has no centre");
+        Check(!MeasureAuthoredReticleArtCentre(colour.data(), size * 4 - 4, size, true, 2).valid &&
+                  !MeasureAuthoredReticleArtCentre(nullptr, pitch, size, true, 2).valid,
+              "art centre: a short row pitch or no data is refused");
+
+        // The quad moves DOWN by the art's height above the centre, so the
+        // art's centre lands on the aim point; a centred art does not move it.
+        const AuthoredReticleQuadShift shift = AuthoredReticleArtCentreShift(byColour, 0.755f);
+        Check(std::fabs(shift.right) < 1.0e-6f &&
+                  std::fabs(shift.up - (18.0f / 64.0f - 0.5f) * 0.755f) < 1.0e-6f &&
+                  shift.up < 0.0f,
+              "art centre: art above the centre moves the quad down by its offset");
+        AuthoredReticleArtCentre right{};
+        right.u = 0.6f; right.v = 0.5f; right.valid = true;
+        Check(std::fabs(AuthoredReticleArtCentreShift(right, 1.0f).right + 0.1f) < 1.0e-6f,
+              "art centre: art right of the centre moves the quad left");
+        AuthoredReticleArtCentre wild{};
+        wild.u = 0.5f; wild.v = 0.0f; wild.valid = true;
+        Check(std::fabs(AuthoredReticleArtCentreShift(wild, 1.0f).up + 1.0f / 3.0f) < 1.0e-6f,
+              "art centre: a wild measurement is clamped to a third of the quad");
+        const AuthoredReticleQuadShift none = AuthoredReticleArtCentreShift({}, 1.0f);
+        Check(none.right == 0.0f && none.up == 0.0f,
+              "art centre: no measurement leaves the quad centred");
+
+        // Bloom shuffles the centroid by a texel; the centre in use holds until
+        // a measurement moves it past the deadband, and a gap keeps it.
+        AuthoredReticleArtCentre nudged = byColour;
+        nudged.v += 1.0f / 512.0f;
+        Check(SettleAuthoredReticleArtCentre(byColour, nudged, 2.0f / 512.0f).v == byColour.v,
+              "art centre: a texel of jitter does not move the quad");
+        AuthoredReticleArtCentre moved = byColour;
+        moved.v += 5.0f / 512.0f;
+        Check(SettleAuthoredReticleArtCentre(byColour, moved, 2.0f / 512.0f).v == moved.v,
+              "art centre: a real move is followed at once");
+        Check(SettleAuthoredReticleArtCentre(byColour, {}, 2.0f / 512.0f).v == byColour.v &&
+                  SettleAuthoredReticleArtCentre({}, byColour, 2.0f / 512.0f).valid,
+              "art centre: an unmeasured sample keeps the centre; the first one sets it");
+    }
+    {
         AuthoredReticleRefreshState state{};
         Check(!ShouldUploadAuthoredReticle(
                   AuthoredReticleRefreshPolicy::IdentityAndColorState,

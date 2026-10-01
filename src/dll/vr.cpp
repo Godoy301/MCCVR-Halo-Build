@@ -339,6 +339,20 @@ namespace
     uint32_t g_authoredReticleLastColorInk = 0;
     uint32_t g_authoredReticleBlankHeld = 0;
     bool g_authoredReticleProbeUsable = true;
+    // Halo 4: where the art sits in its texture (authored_reticle_logic.h). A
+    // 64x64 copy of the capture rides the coverage probe's readback; its
+    // centroid is the art's centre. The quad is shifted to put that centre on
+    // the aim point. Optional: without the staging texture the quad stays
+    // centred on the texture, as before.
+    ID3D11Texture2D* g_authoredReticleCentreStaging = nullptr;
+    constexpr uint32_t kAuthoredReticleCentreProbeSize = 64;
+    // Two texels of the 512 capture: below it a centroid change is noise.
+    constexpr float kAuthoredReticleCentreDeadband = 2.0f / 512.0f;
+    bool g_authoredReticleCentreQueued = false;
+    AuthoredReticleArtCentre g_authoredReticleMeasuredCentre{};
+    // The centre of the art now in the swapchain; invalid while it holds
+    // procedural art or art nobody measured.
+    AuthoredReticleArtCentre g_authoredReticlePublishedCentre{};
     // Set when an upload was deliberately withheld because the capture had no
     // visible art. The caller must tell this apart from a real upload failure,
     // which repaints the chain and would erase the crosshair itself.
@@ -7893,6 +7907,11 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
             g_authoredReticleProbeStaging->Release();
             g_authoredReticleProbeStaging = nullptr;
         }
+        if (g_authoredReticleCentreStaging)
+        {
+            g_authoredReticleCentreStaging->Release();
+            g_authoredReticleCentreStaging = nullptr;
+        }
         if (g_authoredReticleProbeFence)
         {
             g_authoredReticleProbeFence->Release();
@@ -7900,6 +7919,8 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         }
         g_authoredReticleProbePending = false;
         g_authoredReticleGoodValid = false;
+        g_authoredReticleCentreQueued = false;
+        g_authoredReticleMeasuredCentre = {};
     }
 
     bool EnsureAuthoredReticleTexture()
@@ -8017,12 +8038,24 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                 return false;
             }
         }
+        else
+        {
+            // The art-centre readback is optional on top of the probe: if it
+            // cannot be created the quad simply stays centred on the texture.
+            D3D11_TEXTURE2D_DESC centreDesc = probeDesc;
+            centreDesc.Width = kAuthoredReticleCentreProbeSize;
+            centreDesc.Height = kAuthoredReticleCentreProbeSize;
+            if (FAILED(g_device->CreateTexture2D(
+                    &centreDesc, nullptr, &g_authoredReticleCentreStaging)))
+                g_authoredReticleCentreStaging = nullptr;
+        }
         LOG("M3: authored crosshair capture target ready (%ux%u); blank-art "
-            "guard %s",
+            "guard %s; art-centre readback %s",
             kReticleSize, kReticleSize,
             g_authoredReticleProbeUsable
                 ? "armed"
-                : "UNAVAILABLE - crosshair keeps its previous behavior");
+                : "UNAVAILABLE - crosshair keeps its previous behavior",
+            g_authoredReticleCentreStaging ? "ready" : "unavailable");
         return true;
     }
 
@@ -8091,14 +8124,39 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         if (width != kAuthoredReticleProbeSize)
             return 0;
 
+        // Halo 4 also reads a finer level of the same capture, in the same
+        // readback, to find where its art sits (authored_reticle_logic.h).
+        uint32_t centreMip = UINT32_MAX;
+        if (g_authoredReticleCentreStaging &&
+            TitleAdapter_GetActiveTitle() == GameTitle::Halo4)
+        {
+            for (uint32_t mip = 0; mip < desc.MipLevels; ++mip)
+            {
+                if ((desc.Width >> mip) == kAuthoredReticleCentreProbeSize &&
+                    (desc.Height >> mip) == kAuthoredReticleCentreProbeSize)
+                {
+                    centreMip = mip;
+                    break;
+                }
+            }
+        }
+        const auto queueReadback = [&]() {
+            g_context->GenerateMips(g_authoredReticleSrv);
+            g_context->CopySubresourceRegion(
+                g_authoredReticleProbeStaging, 0, 0, 0, 0,
+                g_authoredReticleTexture, probeMip, nullptr);
+            g_authoredReticleCentreQueued = centreMip != UINT32_MAX;
+            if (g_authoredReticleCentreQueued)
+                g_context->CopySubresourceRegion(
+                    g_authoredReticleCentreStaging, 0, 0, 0, 0,
+                    g_authoredReticleTexture, centreMip, nullptr);
+        };
+
         if (g_authoredReticleGoodValid)
         {
             if (!g_authoredReticleProbePending)
             {
-                g_context->GenerateMips(g_authoredReticleSrv);
-                g_context->CopySubresourceRegion(
-                    g_authoredReticleProbeStaging, 0, 0, 0, 0,
-                    g_authoredReticleTexture, probeMip, nullptr);
+                queueReadback();
                 g_context->End(g_authoredReticleProbeFence);
                 g_authoredReticleProbePending = true;
                 return kAuthoredReticleCoveragePending;
@@ -8118,10 +8176,7 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         {
             // Bootstrap once so the player receives art before the defer policy
             // has a known-good image to hold.
-            g_context->GenerateMips(g_authoredReticleSrv);
-            g_context->CopySubresourceRegion(
-                g_authoredReticleProbeStaging, 0, 0, 0, 0,
-                g_authoredReticleTexture, probeMip, nullptr);
+            queueReadback();
         }
 
         D3D11_MAPPED_SUBRESOURCE mapped{};
@@ -8146,6 +8201,24 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         g_context->Unmap(g_authoredReticleProbeStaging, 0);
         g_authoredReticleLastAlphaInk=alphaInk;
         g_authoredReticleLastColorInk=colorInk;
+        // The centre copy was queued with the probe, so this readback has
+        // completed too. It weighs the same ink the coverage resolver below
+        // chooses for Halo 4.
+        g_authoredReticleMeasuredCentre = {};
+        if (g_authoredReticleCentreQueued)
+        {
+            g_authoredReticleCentreQueued = false;
+            D3D11_MAPPED_SUBRESOURCE centreMapped{};
+            if (SUCCEEDED(g_context->Map(g_authoredReticleCentreStaging, 0,
+                                         D3D11_MAP_READ, 0, &centreMapped)))
+            {
+                g_authoredReticleMeasuredCentre = MeasureAuthoredReticleArtCentre(
+                    static_cast<const uint8_t*>(centreMapped.pData),
+                    centreMapped.RowPitch, kAuthoredReticleCentreProbeSize,
+                    colorInk > alphaInk, kAuthoredReticleArtAlphaThreshold);
+                g_context->Unmap(g_authoredReticleCentreStaging, 0);
+            }
+        }
         // CE's native bitmap pass writes RGB only. Like Halo 4's CUI, its
         // transparent capture cannot be judged by the untouched alpha plane.
         // This is independently proven by CE's native blend descriptor.
@@ -8275,6 +8348,7 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         g_reticlePaintedOpacity=kProceduralOpacity;
         g_reticleEnemyPainted=enemy;
         g_reticleContainsAuthored=false;
+        g_authoredReticlePublishedCentre = {};
         if (clearingAuthored)
             LOG("M3: authored crosshair cleared after capture stopped");
         return true;
@@ -8314,6 +8388,9 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         // last crosshair the player could actually see instead of the blank
         // the engine just handed us.
         ID3D11Texture2D* source = g_authoredReticleTexture;
+        // Where this art sits in its texture, when its readback measured it;
+        // art nobody measured publishes no centre.
+        AuthoredReticleArtCentre publishedCentre{};
         if (g_authoredReticleProbeUsable && g_authoredReticleGoodTexture)
         {
             const uint32_t ink = MeasureAuthoredReticleCoverage();
@@ -8399,6 +8476,10 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                 g_authoredReticleGoodInk = ink;
             }
             source = g_authoredReticleGoodTexture;
+            publishedCentre = SettleAuthoredReticleArtCentre(
+                g_authoredReticlePublishedCentre,
+                g_authoredReticleMeasuredCentre,
+                kAuthoredReticleCentreDeadband);
         }
 
         uint32_t index = 0;
@@ -8457,6 +8538,7 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
             return false;
         g_authoredReticleUploadedSerial = g_authoredReticleSerial;
         g_reticleContainsAuthored = true;
+        g_authoredReticlePublishedCentre = publishedCentre;
         return true;
     }
 
@@ -12977,6 +13059,26 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                                     s_refreshState.lastPublishedDraws,
                                     g_authoredReticleLastCoverage,
                                     g_authoredReticleBlankHeld);
+                                // Where the art sits in its texture, as a
+                                // fraction of it: the quad is shifted by this
+                                // so the art's centre is on the aim point.
+                                if (reticleTitle == GameTitle::Halo4)
+                                {
+                                    if (g_authoredReticlePublishedCentre.valid)
+                                        LOG("Halo 4 reticle art centre: %+.3f right, %+.3f down "
+                                            "of the texture centre (ink %llu); the quad puts it on "
+                                            "the aim point",
+                                            g_authoredReticlePublishedCentre.u - 0.5f,
+                                            g_authoredReticlePublishedCentre.v - 0.5f,
+                                            static_cast<unsigned long long>(
+                                                g_authoredReticlePublishedCentre.ink));
+                                    else
+                                        LOG("Halo 4 reticle art centre: not measured (%s); the "
+                                            "quad is centred on the texture",
+                                            g_authoredReticleCentreStaging
+                                                ? "no measured art on the quad yet"
+                                                : "art-centre readback unavailable");
+                                }
                                 g_authoredReticleBlankHeld = 0;
                                 s_uploadsDone = 0;
                                 s_uploadsSkipped = 0;
@@ -13457,6 +13559,26 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                                 : 2.0f * dist *
                                   tanf(g_config.crosshair_size_deg * 0.5f * 0.0174533f);
                             reticleQuad.size = {w, w};
+                            // Halo 4's capture does not centre its art in the
+                            // texture (the framing is fitted per HUD layout),
+                            // so the quad moves to put the art's MEASURED centre
+                            // on the aim point. Centring the texture there left
+                            // the player aiming with the art's bottom edge.
+                            if (reticleTitle == GameTitle::Halo4 &&
+                                g_reticleContainsAuthored && !dualReticles)
+                            {
+                                const AuthoredReticleQuadShift shift =
+                                    AuthoredReticleArtCentreShift(
+                                        g_authoredReticlePublishedCentre, w);
+                                const XrVector3f quadRight = Rotate(q, {1.0f, 0.0f, 0.0f});
+                                const XrVector3f quadUp = Rotate(q, {0.0f, 1.0f, 0.0f});
+                                reticleQuad.pose.position.x +=
+                                    quadRight.x * shift.right + quadUp.x * shift.up;
+                                reticleQuad.pose.position.y +=
+                                    quadRight.y * shift.right + quadUp.y * shift.up;
+                                reticleQuad.pose.position.z +=
+                                    quadRight.z * shift.right + quadUp.z * shift.up;
+                            }
                             layers.push_back(
                                 reinterpret_cast<XrCompositionLayerBaseHeader*>(&reticleQuad));
                             if(dualReticles) {
@@ -15945,6 +16067,9 @@ void VR_DetachGamePresentation()
     g_authoredReticleSerial = 0;
     g_authoredReticleUploadedSerial = 0;
     g_reticleContainsAuthored = false;
+    g_authoredReticlePublishedCentre = {};
+    g_authoredReticleMeasuredCentre = {};
+    g_authoredReticleCentreQueued = false;
     // Known-good art belongs to the title that captured it; a new title must
     // measure its own before anything is held on its behalf.
     g_authoredReticleGoodValid = false;

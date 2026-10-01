@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 
 inline uint32_t ClassifyAuthoredReticleColorOrdering(const float channel[4])
@@ -256,4 +257,101 @@ inline uint64_t ResolveAuthoredAnimationGapFrames(int configuredFrames)
     if (configuredFrames > kMaximumAnimationGapFrames)
         return static_cast<uint64_t>(kMaximumAnimationGapFrames);
     return static_cast<uint64_t>(configuredFrames);
+}
+
+// WHERE THE ART SITS IN ITS TEXTURE. The reticle quad is centred on the aim
+// point, so the art's own centre has to be the texture's centre, or the player
+// aims with one edge of it. Halo 4's capture framing is fitted per HUD layout,
+// and on the 2026-09-30 layout (baseY 647.256) it left the art wholly above the
+// centre: the magnum's bottom edge sat on the aim point, about 0.18 of the
+// texture high (1.3 deg at the 6 m cap). The centre is measured instead: the
+// ink-weighted centroid of a downsampled copy of the capture. Reticles are
+// symmetric about their aim point, so the centroid is that point.
+struct AuthoredReticleArtCentre
+{
+    float u = 0.5f;  // 0..1 across the texture, left to right
+    float v = 0.5f;  // 0..1 down the texture, top to bottom
+    uint64_t ink = 0;
+    bool valid = false;
+};
+
+// `rows`: `size` x `size` RGBA8 texels, `rowPitch` bytes apart. `colourInk`
+// weighs each texel by r+g+b (Halo 4's CUI target writes colour with a zero
+// alpha channel), otherwise by alpha. Less than `minimumInk` in total is no art.
+inline AuthoredReticleArtCentre MeasureAuthoredReticleArtCentre(
+    const uint8_t* rows, size_t rowPitch, uint32_t size, bool colourInk,
+    uint64_t minimumInk)
+{
+    AuthoredReticleArtCentre out{};
+    if (!rows || size == 0 || rowPitch < static_cast<size_t>(size) * 4)
+        return out;
+    double sumX = 0.0, sumY = 0.0;
+    uint64_t ink = 0;
+    for (uint32_t y = 0; y < size; ++y)
+    {
+        const uint8_t* texel = rows + static_cast<size_t>(y) * rowPitch;
+        for (uint32_t x = 0; x < size; ++x, texel += 4)
+        {
+            const uint32_t weight = colourInk
+                ? static_cast<uint32_t>(texel[0]) + texel[1] + texel[2]
+                : texel[3];
+            if (!weight)
+                continue;
+            sumX += (x + 0.5) * weight;
+            sumY += (y + 0.5) * weight;
+            ink += weight;
+        }
+    }
+    out.ink = ink;
+    if (ink == 0 || ink < minimumInk)
+        return out;
+    out.u = static_cast<float>(sumX / static_cast<double>(ink) / size);
+    out.v = static_cast<float>(sumY / static_cast<double>(ink) / size);
+    out.valid = std::isfinite(out.u) && std::isfinite(out.v);
+    return out;
+}
+
+// Bloom and anti-aliasing move a capture's centroid by a texel or so from one
+// sample to the next. The centre in use only follows a measurement that moves
+// it by more than `deadband` (a fraction of the texture), so the quad does not
+// shimmer with them; a new weapon or layout moves it at once. A sample that
+// could not be measured keeps the centre in use.
+inline AuthoredReticleArtCentre SettleAuthoredReticleArtCentre(
+    const AuthoredReticleArtCentre& applied,
+    const AuthoredReticleArtCentre& measured, float deadband)
+{
+    if (!measured.valid)
+        return applied;
+    if (!applied.valid || std::fabs(measured.u - applied.u) > deadband ||
+        std::fabs(measured.v - applied.v) > deadband)
+        return measured;
+    return applied;
+}
+
+// The shift that puts the art's centre, not the texture's, on the quad's
+// intended centre: metres along the quad's own right and up axes, for a square
+// quad `width` wide whose texture runs top to bottom down it. Art above the
+// texture centre (v < 0.5) moves the quad down. Clamped to a third of the
+// quad, so a stray measurement cannot carry the reticle far off its ray.
+struct AuthoredReticleQuadShift
+{
+    float right = 0.0f;
+    float up = 0.0f;
+};
+
+inline AuthoredReticleQuadShift AuthoredReticleArtCentreShift(
+    const AuthoredReticleArtCentre& centre, float width)
+{
+    constexpr float kMaximumOffset = 1.0f / 3.0f;
+    AuthoredReticleQuadShift shift{};
+    if (!centre.valid || !std::isfinite(width) || width <= 0.0f ||
+        !std::isfinite(centre.u) || !std::isfinite(centre.v))
+        return shift;
+    const auto clampOffset = [](float value) {
+        return value < -kMaximumOffset ? -kMaximumOffset
+            : (value > kMaximumOffset ? kMaximumOffset : value);
+    };
+    shift.right = -clampOffset(centre.u - 0.5f) * width;
+    shift.up = clampOffset(centre.v - 0.5f) * width;
+    return shift;
 }
