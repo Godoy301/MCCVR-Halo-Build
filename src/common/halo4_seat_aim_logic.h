@@ -87,20 +87,38 @@ inline SeatClass ClassifySeat(bool flagsKnown, uint32_t flags, Controlled contro
 // ---- eye agreement ------------------------------------------------------------------------------------
 // The solve's eye E is the render transaction's (the controller root plus the native eye's offset from the
 // placed head, same frame as the rendered head H). The game's own aim camera is sampled on the simulation
-// tick. They are compared only as a coarse rail -- the two clocks part them by the vehicle's speed times up
-// to a tick -- while WHICH eye the game aims from is the exact first-person witness's job: a sample the
-// selector proves was the chase camera unproves at once.
+// tick. They are compared only as a coarse rail -- the two clocks part them by the camera's speed times the
+// sample's age plus a tick and a half -- while WHICH eye the game aims from is the exact first-person
+// witness's job: a sample the selector proves was the chase camera unproves at once.
+//
+// NATURAL MOTION IS NO EVIDENCE (the user's rule, 2026-10-01: convergence never switches off for an in-game
+// cause; only our code failing may turn it off). Until then a fast turn, a boost past 40 m/s, a hitch or a
+// weapon switch (no aim-camera sample while the weapon test fails) aged the proof out in 250 ms and switched
+// the seat's convergence off. Now:
+//   * the rail's window grows with the sample's measured AGE, so a sample read late is judged at its age;
+//   * a camera faster than kEyeMaxSpeedMps is no evidence either way (the rail there could not tell a lagging
+//     eye from a wrong one), where it used to be judged on a rail capped at 40 m/s and fail;
+//   * no sample at all is no evidence (the caller does not step the proof), where it used to count as a
+//     disagreement;
+//   * a proof drops only after `drop_ms` of disagreement over at least `drop_samples` judged samples, so two
+//     samples either side of a hitch cannot drop it.
+// What it still catches: an eye that is really wrong (another seat's, a chase camera's push) disagrees on every
+// judged sample at ordinary speeds and drops the proof within ~250 ms, and a chase sample drops it at once.
 
-// Metres. The base absorbs interpolation; the speed term a tick and a half of travel (0.05 s).
+// Metres. The base absorbs interpolation; the speed term a tick and a half of travel (0.05 s) plus the
+// sample's age (capped at 0.15 s, the sample's freshness window).
 inline constexpr float kEyeToleranceBaseM = 0.30f;
 inline constexpr float kEyeToleranceWindowS = 0.05f;
+inline constexpr float kEyeMaxAgeS = 0.15f;
 inline constexpr float kEyeMaxSpeedMps = 40.0f;
 
-inline float EyeToleranceM(float speedMps)
+inline float EyeToleranceM(float speedMps, float ageS = 0.0f)
 {
     float s = std::isfinite(speedMps) ? speedMps : kEyeMaxSpeedMps;
     s = s < 0.0f ? 0.0f : (s > kEyeMaxSpeedMps ? kEyeMaxSpeedMps : s);
-    return kEyeToleranceBaseM + s * kEyeToleranceWindowS;
+    float a = std::isfinite(ageS) ? ageS : 0.0f;
+    a = a < 0.0f ? 0.0f : (a > kEyeMaxAgeS ? kEyeMaxAgeS : a);
+    return kEyeToleranceBaseM + s * (kEyeToleranceWindowS + a);
 }
 
 enum class EyeEvidence : uint8_t { None, Agree, Disagree, Chase };
@@ -110,8 +128,9 @@ enum class EyeEvidence : uint8_t { None, Agree, Disagree, Chase };
 // or the unit's camera override bit). sameSeat: the sample is this occupant, vehicle and seat. speedMps:
 // the camera's speed, or NaN when the sample could not measure it (the first of a stint, or after a pause):
 // then the gap is no evidence either way -- neither the widest rail (which would let a 2 m error agree) nor
-// the rest rail (which would fail a fast vehicle). The witness still counts: a chase sample unproves.
-inline EyeEvidence JudgeEye(int witness, bool sameSeat, float gapM, float speedMps)
+// the rest rail (which would fail a fast vehicle). A speed past kEyeMaxSpeedMps (a boost) is no evidence
+// either. The witness still counts: a chase sample unproves. ageS: how old the sample is as it is judged.
+inline EyeEvidence JudgeEye(int witness, bool sameSeat, float gapM, float speedMps, float ageS = 0.0f)
 {
     if (!sameSeat)
         return EyeEvidence::Disagree;
@@ -119,25 +138,29 @@ inline EyeEvidence JudgeEye(int witness, bool sameSeat, float gapM, float speedM
         return EyeEvidence::Chase;
     if (witness < 0)
         return EyeEvidence::Disagree;
-    if (!std::isfinite(speedMps))
+    if (!std::isfinite(speedMps) || speedMps > kEyeMaxSpeedMps)
         return EyeEvidence::None;
-    return std::isfinite(gapM) && gapM <= EyeToleranceM(speedMps) ? EyeEvidence::Agree : EyeEvidence::Disagree;
+    return std::isfinite(gapM) && gapM <= EyeToleranceM(speedMps, ageS) ? EyeEvidence::Agree
+                                                                         : EyeEvidence::Disagree;
 }
 
-// Proven after `needed` consecutive agreeing samples; unproven after `drop_ms` of disagreement (or of no
-// sample at all, which the caller reports as Disagree), and at once on a chase sample.
+// Proven after `needed` consecutive agreeing samples; unproven after `drop_ms` of disagreement spanning at least
+// `drop_samples` disagreeing samples, and at once on a chase sample. No evidence (None) changes nothing.
 struct SeatEyeAgreement {
     unsigned needed = 10;
     unsigned long long drop_ms = 250;
+    unsigned drop_samples = 6;
 
     bool proven = false;
     unsigned count = 0;
+    unsigned bad_count = 0;
     unsigned long long bad_since_ms = 0;
 
     void reset()
     {
         proven = false;
         count = 0;
+        bad_count = 0;
         bad_since_ms = 0;
     }
 
@@ -149,6 +172,7 @@ struct SeatEyeAgreement {
             break;
         case EyeEvidence::Agree:
             bad_since_ms = 0;
+            bad_count = 0;
             if (count < needed)
                 ++count;
             if (count >= needed)
@@ -157,13 +181,15 @@ struct SeatEyeAgreement {
         case EyeEvidence::Chase:
             count = 0;
             proven = false;
+            bad_count = 0;
             bad_since_ms = now_ms ? now_ms : 1;
             break;
         case EyeEvidence::Disagree:
             count = 0;
+            ++bad_count;
             if (!bad_since_ms)
                 bad_since_ms = now_ms ? now_ms : 1;
-            if (proven && now_ms >= bad_since_ms && now_ms - bad_since_ms >= drop_ms)
+            if (proven && bad_count >= drop_samples && now_ms >= bad_since_ms && now_ms - bad_since_ms >= drop_ms)
                 proven = false;
             break;
         }

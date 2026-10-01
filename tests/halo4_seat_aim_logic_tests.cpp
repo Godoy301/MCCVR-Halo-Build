@@ -68,10 +68,15 @@ void TestEye()
     Check(Near(EyeToleranceM(400.0f), 2.30f, 1e-5f), "speed clamped to 40 m/s");
     Check(Near(EyeToleranceM(-5.0f), 0.30f, 1e-6f), "negative speed is rest");
     Check(Near(EyeToleranceM(std::nanf("")), 2.30f, 1e-5f), "the rail alone: NaN is the widest, not a crash (JudgeEye never asks it with NaN)");
+    Check(Near(EyeToleranceM(20.0f, 0.1f), 3.30f, 1e-5f), "a sample 100 ms old: its travel over that age too");
+    Check(Near(EyeToleranceM(20.0f, 5.0f), 4.30f, 1e-5f), "the age is capped at the freshness window");
+    Check(Near(EyeToleranceM(20.0f, -1.0f), 1.30f, 1e-5f), "a negative age is none");
 
     Check(JudgeEye(1, true, 0.1f, 0.0f) == EyeEvidence::Agree, "first person, close: agree");
     Check(JudgeEye(1, true, 0.5f, 0.0f) == EyeEvidence::Disagree, "first person, 50 cm at rest: disagree");
     Check(JudgeEye(1, true, 0.5f, 10.0f) == EyeEvidence::Agree, "50 cm at 10 m/s: within the speed rail");
+    Check(JudgeEye(1, true, 1.5f, 20.0f) == EyeEvidence::Disagree, "1.5 m at 20 m/s, judged fresh: disagree");
+    Check(JudgeEye(1, true, 1.5f, 20.0f, 0.033f) == EyeEvidence::Agree, "...but read a tick late it is that tick's travel");
     Check(JudgeEye(0, true, 0.0f, 0.0f) == EyeEvidence::Chase, "the selector proved the chase camera");
     Check(JudgeEye(-1, true, 0.0f, 0.0f) == EyeEvidence::Disagree, "no witness proves nothing");
     Check(JudgeEye(1, false, 0.0f, 0.0f) == EyeEvidence::Disagree, "another seat proves nothing");
@@ -83,6 +88,10 @@ void TestEye()
     Check(JudgeEye(0, true, 0.0f, std::nanf("")) == EyeEvidence::Chase, "unknown speed: a chase sample still unproves");
     Check(JudgeEye(-1, true, 0.0f, std::nanf("")) == EyeEvidence::Disagree, "unknown speed: no witness still disagrees");
     Check(JudgeEye(1, false, 0.0f, std::nanf("")) == EyeEvidence::Disagree, "unknown speed: another seat disagrees");
+    // A boost past the cap: no evidence either way (it used to be judged on the capped rail and fail).
+    Check(JudgeEye(1, true, 3.0f, 55.0f) == EyeEvidence::None, "55 m/s, 3 m apart: a boost is no evidence");
+    Check(JudgeEye(1, true, 0.1f, 55.0f) == EyeEvidence::None, "55 m/s, close: no agreement on an unjudgeable rail");
+    Check(JudgeEye(0, true, 0.0f, 55.0f) == EyeEvidence::Chase, "55 m/s: a chase sample still unproves");
 
     SeatEyeAgreement a;
     unsigned long long t = 1000;
@@ -94,16 +103,41 @@ void TestEye()
     Check(a.proven, "proven on the tenth consecutive agreeing sample");
     a.step(EyeEvidence::None, t + 5000);
     Check(a.proven, "no new sample is not evidence");
+    // A WRONG EYE still drops the proof: it disagrees on every judged sample, ~250 ms at 30 Hz.
+    {
+        SeatEyeAgreement w = a;
+        unsigned long long u = t;
+        int samples = 0;
+        while (w.proven && samples < 100)
+        {
+            w.step(EyeEvidence::Disagree, u);
+            u += 33;
+            ++samples;
+        }
+        Check(!w.proven && samples >= 8 && samples <= 9, "a wrong eye at 30 Hz is unproven in ~250 ms");
+    }
     a.step(EyeEvidence::Disagree, t);
     Check(a.proven, "one disagreement does not drop a proof");
-    a.step(EyeEvidence::Disagree, t + 200);
-    Check(a.proven, "200 ms of disagreement still holds");
-    a.step(EyeEvidence::Disagree, t + 250);
-    Check(!a.proven, "250 ms of disagreement unproves");
-    t += 300;
+    a.step(EyeEvidence::Disagree, t + 400);
+    Check(a.proven, "a hitch: two disagreements 400 ms apart are two samples, not a wrong eye");
+    for (int i = 0; i < 4; ++i)
+        a.step(EyeEvidence::Disagree, t + 433 + 33 * i);
+    Check(!a.proven, "six disagreeing samples over 250 ms unprove");
+    t += 600;
     for (int i = 0; i < 10; ++i, t += 33)
         a.step(EyeEvidence::Agree, t);
     Check(a.proven, "a fresh run of ten proves again");
+    // Two seconds of boost past the cap (every sample no evidence), then a few samples judged at their age.
+    {
+        SeatEyeAgreement b = a;
+        unsigned long long u = t;
+        for (int i = 0; i < 60; ++i, u += 33)
+            b.step(JudgeEye(1, true, 2.5f, 48.0f), u);
+        Check(b.proven, "a boost past 40 m/s keeps the proof");
+        for (int i = 0; i < 6; ++i, u += 33)
+            b.step(JudgeEye(1, true, 1.4f, 30.0f, 0.02f), u);
+        Check(b.proven && b.bad_count == 0, "slowing through 30 m/s, judged at the samples' age: agreement");
+    }
     a.step(EyeEvidence::Chase, t);
     Check(!a.proven && a.count == 0, "a chase sample unproves at once");
     for (int i = 0; i < 5; ++i, t += 33)
@@ -116,13 +150,15 @@ void TestEye()
     a.step(EyeEvidence::Agree, t);
     Check(a.proven, "and then it is");
     a.reset();
-    Check(!a.proven && !a.count && !a.bad_since_ms, "reset forgets the stint");
+    Check(!a.proven && !a.count && !a.bad_since_ms && !a.bad_count, "reset forgets the stint");
     // Agreement interrupted, then restored within 250 ms, keeps the proof and clears the timer.
     for (int i = 0; i < 10; ++i, t += 33)
         a.step(EyeEvidence::Agree, t);
     a.step(EyeEvidence::Disagree, t);
     a.step(EyeEvidence::Agree, t + 100);
-    a.step(EyeEvidence::Disagree, t + 200);
+    Check(a.bad_count == 0 && !a.bad_since_ms, "an agreement clears the disagreement run");
+    for (int i = 0; i < 5; ++i)
+        a.step(EyeEvidence::Disagree, t + 133 + 33 * i);
     Check(a.proven, "the disagreement timer restarts after an agreement");
 }
 

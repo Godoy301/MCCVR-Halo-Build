@@ -1121,6 +1121,8 @@ struct Halo4SeatEyeWitness
     // Solved polls on a record that is NOT in world angles now (a tilted vehicle without seat flag bit 4): the
     // slope-frame question (0x5F97DC) the rebase port answers. Natural; counted, never refused.
     std::atomic<uint64_t> solvedTilted{0};
+    // Polls whose seat facts came from the stint's last sample, held across a gap in the samples (a weapon switch).
+    std::atomic<uint64_t> heldPolls{0};
     std::atomic<float> maxGapMm{0.0f}, speedMps{0.0f}, eyeFromHead[3]{}, maxDirDeg{0.0f}, maxBarrelDeg{0.0f};
     std::atomic<uint32_t> evidence[4]{};   // halo4_seat_aim::EyeEvidence counts over new samples
 } g_h4SeatEyeWitness;
@@ -1134,6 +1136,9 @@ void Halo4SeatSightStoreMax(std::atomic<float>& slot, float value)
 // A seated poll this long after the last one starts a new seat stint, even in the same seat: leaving and
 // re-entering a seat takes far longer, and while no poll ran nothing was proven (the aim path was not here).
 inline constexpr uint64_t kHalo4SeatStintGapMs = 150;
+// How long a seat's last aim-camera sample stands in for a missing one (a weapon switch is about a second). Past
+// it the sampler is taken to have stopped -- our code -- and the seat solves no more until a sample comes.
+inline constexpr uint64_t kHalo4SeatSampleHoldMs = 3000;
 
 // Input thread. True while seated (out filled); false on foot or with no fresh stamp (out untouched beyond
 // its defaults), which leaves the on-foot path exactly as it was.
@@ -1146,6 +1151,10 @@ bool Halo4SeatSightPrepare(Halo4SeatSightPoll& out, const float observerForward[
         uint64_t lastSeatedMs = 0;   // the last seated poll of this stint
         bool turret = false;         // a fresh sample of this stint classed the seat a slaved turret (latched)
         halo4_seat_aim::SeatEyeAgreement agreement{};
+        // The last fresh sample of THIS seat, held across a natural gap in the samples (a weapon switch: the
+        // view call that carries them runs behind the same weapon test as the shot's assist).
+        Halo4SeatAimSample seatSample{};
+        uint64_t seatSampleMs = 0;
     };
     static State s_state;   // Game_ComputeAimStick's thread only, like the servo's own statics
     Halo4VehicleInputState stamp{};
@@ -1211,9 +1220,11 @@ bool Halo4SeatSightPrepare(Halo4SeatSightPoll& out, const float observerForward[
                              sample.camera[2] - out.eye[2]};
             gapM = std::sqrt(g[0] * g[0] + g[1] * g[1] + g[2] * g[2]) * 3.048f;
         }
-        // An unmeasured speed (the stint's first sample, or after a pause) makes the gap no evidence either way.
+        // An unmeasured speed (the stint's first sample, or after a pause) makes the gap no evidence either way,
+        // as does a speed past the rail's cap; the rail widens by the sample's age as it is judged.
         const float speed = sample.speedMps >= 0.0f ? sample.speedMps : std::numeric_limits<float>::quiet_NaN();
-        const auto evidence = halo4_seat_aim::JudgeEye(sample.witness, sameSeat && out.eyeKnown, gapM, speed);
+        const float ageS = static_cast<float>(now - sample.ms) / 1000.0f;
+        const auto evidence = halo4_seat_aim::JudgeEye(sample.witness, sameSeat && out.eyeKnown, gapM, speed, ageS);
         s_state.agreement.step(evidence, now);
         w.evidence[static_cast<unsigned>(evidence) & 3u].fetch_add(1, std::memory_order_relaxed);
         if (sameSeat && out.eyeKnown && std::isfinite(speed) && std::isfinite(gapM) &&
@@ -1240,12 +1251,23 @@ bool Halo4SeatSightPrepare(Halo4SeatSightPoll& out, const float observerForward[
             }
         }
     }
-    else if (!fresh)
+    // No sample is no evidence (2026-10-01): the proof is neither aged out nor renewed. Until then it counted as a
+    // disagreement, so a weapon switch -- the view call that carries the sample runs behind the same weapon test as
+    // the shot's assist -- unproved the eye and switched the seat's convergence off for a natural cause.
+    if (sameSeat)
     {
-        // No sample: the proof ages out (a seat with no weapon never gets one -- its view call is gated by the
-        // same weapon test as the shot's assist).
-        s_state.agreement.step(halo4_seat_aim::EyeEvidence::Disagree, now);
+        s_state.seatSample = sample;
+        s_state.seatSampleMs = now;
     }
+    // This seat's facts (its class, its flags, its frame anchor): this poll's sample, or the last one of this
+    // stint across a gap of up to kHalo4SeatSampleHoldMs. Seat-constant facts do not change while no sample comes;
+    // a longer silence is no longer a natural gap but our sampler not running, and the seat solves no more.
+    const bool seatSampleHeld = !sameSeat && s_state.seatSampleMs && now >= s_state.seatSampleMs &&
+        now - s_state.seatSampleMs <= kHalo4SeatSampleHoldMs;
+    const bool seatFactsKnown = sameSeat || seatSampleHeld;
+    const Halo4SeatAimSample& seatFacts = sameSeat ? sample : s_state.seatSample;
+    if (seatSampleHeld)
+        w.heldPolls.fetch_add(1, std::memory_order_relaxed);
     if (headKnown && out.eyeKnown)
     {
         // E relative to the rendered head, in the head's frame (forward, right, up), for the dev line.
@@ -1259,17 +1281,17 @@ bool Halo4SeatSightPrepare(Halo4SeatSightPoll& out, const float observerForward[
                                std::memory_order_relaxed);
         w.eyeFromHead[2].store((e[0] * up[0] + e[1] * up[1] + e[2] * up[2]) * 3048.0f, std::memory_order_relaxed);
     }
-    const auto seatClass = sameSeat
-        ? halo4_seat_aim::ClassifySeat(sample.flagsKnown, sample.flags, sample.controlledKind, sample.weaponKnown,
-                                       sample.hasWeapon)
+    const auto seatClass = seatFactsKnown
+        ? halo4_seat_aim::ClassifySeat(seatFacts.flagsKnown, seatFacts.flags, seatFacts.controlledKind,
+                                       seatFacts.weaponKnown, seatFacts.hasWeapon)
         : halo4_seat_aim::SeatClass::Unknown;
     // The gate is what our code must prove (the flags, the frame anchor); a tilt is natural and only counted
     // (SeatRecordIsWorld: the slope-frame witness until the 0x5F97DC rebase is ported).
-    const halo4_seat_aim::Vec3 sampleUp{sample.up[0], sample.up[1], sample.up[2]};
-    const bool recordSolvable = sameSeat &&
-        halo4_seat_aim::SeatRecordSolvable(sample.flagsKnown, sample.flags, sample.upKnown, sampleUp);
+    const halo4_seat_aim::Vec3 sampleUp{seatFacts.up[0], seatFacts.up[1], seatFacts.up[2]};
+    const bool recordSolvable = seatFactsKnown &&
+        halo4_seat_aim::SeatRecordSolvable(seatFacts.flagsKnown, seatFacts.flags, seatFacts.upKnown, sampleUp);
     const bool recordTilted = recordSolvable &&
-        !halo4_seat_aim::SeatRecordIsWorld(sample.flagsKnown, sample.flags, sample.upKnown, sampleUp);
+        !halo4_seat_aim::SeatRecordIsWorld(seatFacts.flagsKnown, seatFacts.flags, seatFacts.upKnown, sampleUp);
     if (s_state.agreement.proven)
         w.provenPolls.fetch_add(1, std::memory_order_relaxed);
     // THE PROOFS, every one required (any failure: this seat aims exactly as before). The kill switches are in
@@ -1281,7 +1303,7 @@ bool Halo4SeatSightPrepare(Halo4SeatSightPoll& out, const float observerForward[
     else if (!headKnown) why = kH4SeatWhyHead;
     else if (!out.ray || !Sight_AimEnabled()) why = kH4SeatWhySwitch;
     else if (!out.eyeKnown) why = kH4SeatWhyEye;
-    else if (!sameSeat) why = kH4SeatWhySample;
+    else if (!seatFactsKnown) why = kH4SeatWhySample;
     else if (!s_state.agreement.proven) why = kH4SeatWhyWitness;
     else if (seatClass == halo4_seat_aim::SeatClass::Unknown || seatClass == halo4_seat_aim::SeatClass::NoWeapon)
         why = kH4SeatWhyClass;
@@ -1439,10 +1461,11 @@ void Halo4SeatSightReport()
                  (shotLine & 7u) && !f.lastShotKnown.load(std::memory_order_relaxed) ? " (unreadable)" : "");
         LOG("SIGHT Halo 4 seat eye: %llu sim samples (first person %llu, chase %llu, no witness %llu; chase pushes "
             "%llu; faults %llu, writer busy %llu); seat flags %s, class %s, controls %s, aiming unit carries the "
-            "player %s, barrel %s, shot line %s, vehicle up.z %s; eye vs sim: agree %u disagree %u chase %u unmeasured speed %u, "
+            "player %s, barrel %s, shot line %s, vehicle up.z %s; eye vs sim: agree %u disagree %u chase %u no evidence (speed unmeasured or past 40 m/s) %u, "
             "max |E_sim - E_render| %.0f mm at %.1f m/s, E_render - head [along,right,up] %.0f,%.0f,%.0f mm, sim aim vs "
             "observer forward max %.2f deg; %llu polls, eye proven in %llu; not solved: view %llu, head %llu, "
             "switches %llu, eye %llu, sample %llu, witness %llu, class %llu, record frame unproven %llu, key off %llu; "
+            "facts held across a sample gap %llu; "
             "SOLVED %llu (on a tilted record %llu); assist witness (decides nothing): on the point %llu, turret %llu, shot unknown %llu, no assist "
             "%llu, beyond the cap %llu (max shot line->point %.1f deg); assessment reticle (honest_reticle_assess) on "
             "the shot %llu, on the game's aim %llu",
@@ -1461,6 +1484,7 @@ void Halo4SeatSightReport()
             static_cast<unsigned long long>(why[kH4SeatWhyEye]), static_cast<unsigned long long>(why[kH4SeatWhySample]),
             static_cast<unsigned long long>(why[kH4SeatWhyWitness]), static_cast<unsigned long long>(why[kH4SeatWhyClass]),
             static_cast<unsigned long long>(why[kH4SeatWhyRecord]), static_cast<unsigned long long>(why[kH4SeatWhyKey]),
+            static_cast<unsigned long long>(w.heldPolls.exchange(0)),
             static_cast<unsigned long long>(why[kH4SeatWhySolved]),
             static_cast<unsigned long long>(w.solvedTilted.exchange(0)),
             static_cast<unsigned long long>(w.claim[kH4ClaimYes].exchange(0)),
