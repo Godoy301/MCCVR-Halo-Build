@@ -644,8 +644,15 @@ void Halo4SightTraceSeated(uint32_t unit, void* instance)
     auto& legacy = LegacySight(kTitle);
     legacy.seatedTraces.fetch_add(1, std::memory_order_relaxed);
     legacy.selfHits.fetch_add(static_cast<uint64_t>(result.selfHits), std::memory_order_relaxed);
-    // Stage 0: the seat's own record only (the shot witness reads it); the sight layer stays untouched.
+    // The seat's own record (the shot witness reads it); with the stage-1 key, the sight layer's too: the aim
+    // path converges on it only while every proof holds (Halo4SeatSightPrepare), so publishing alone bends
+    // nothing.
     Halo4PublishSeatTrace(generation, result.hit, result.rangeWu, ray);
+    if (g_config.halo4_seat_converge)
+    {
+        Sight_PublishTrace(kTitle, generation, result.hit, result.hit ? result.rangeWu : 0.0f, cost);
+        f.published.fetch_add(1, std::memory_order_relaxed);
+    }
 }
 
 // ---- the shot witness (0x1DCB8C's exit, the fire routine's call only) --------------------------------------
@@ -828,14 +835,20 @@ struct Halo4SeatSightPoll
 // Why a seat did not solve this poll: the first proof that failed (counted for the dev line).
 enum Halo4SeatSightWhy : unsigned
 {
-    kH4SeatWhyView, kH4SeatWhyHead, kH4SeatWhyEye, kH4SeatWhySample, kH4SeatWhyWitness, kH4SeatWhyClass,
-    kH4SeatWhyRecord, kH4SeatWhyKey, kH4SeatWhyCount
+    kH4SeatWhyView, kH4SeatWhyHead, kH4SeatWhySwitch, kH4SeatWhyEye, kH4SeatWhySample, kH4SeatWhyWitness,
+    kH4SeatWhyClass, kH4SeatWhyRecord, kH4SeatWhyKey, kH4SeatWhySolved, kH4SeatWhyCount
+};
+
+// Why a converged seat aim was not CLAIMED (Game_ComputeAimStick, stage 1).
+enum Halo4SeatClaimWhy : unsigned
+{
+    kH4ClaimYes, kH4ClaimTurret, kH4ClaimUnknown, kH4ClaimUnassisted, kH4ClaimCap, kH4ClaimCount
 };
 
 struct Halo4SeatEyeWitness
 {
-    std::atomic<uint64_t> polls{0}, provenPolls{0}, why[kH4SeatWhyCount]{};
-    std::atomic<float> maxGapMm{0.0f}, speedMps{0.0f}, eyeFromHead[3]{}, maxDirDeg{0.0f};
+    std::atomic<uint64_t> polls{0}, provenPolls{0}, why[kH4SeatWhyCount]{}, claim[kH4ClaimCount]{};
+    std::atomic<float> maxGapMm{0.0f}, speedMps{0.0f}, eyeFromHead[3]{}, maxDirDeg{0.0f}, maxBarrelDeg{0.0f};
     std::atomic<uint32_t> evidence[4]{};   // halo4_seat_aim::EyeEvidence counts over new samples
 } g_h4SeatEyeWitness;
 
@@ -964,17 +977,26 @@ bool Halo4SeatSightPrepare(Halo4SeatSightPoll& out, const float observerForward[
         sample.upKnown, {sample.up[0], sample.up[1], sample.up[2]});
     if (s_state.agreement.proven)
         w.provenPolls.fetch_add(1, std::memory_order_relaxed);
-    unsigned why = kH4SeatWhyCount;
+    // THE PROOFS, every one required (any failure: this seat aims exactly as before). The kill switches are in
+    // them: vehicle_first_person = 0 (the view is never ours), reach_vehicle_aim = 0 and converged_aim = 0 (no
+    // seated ray), and the dev key itself.
+    const bool key = g_config.halo4_seat_converge != 0;
+    unsigned why = kH4SeatWhySolved;
     if (!viewOwned) why = kH4SeatWhyView;
     else if (!headKnown) why = kH4SeatWhyHead;
+    else if (!out.ray || !Sight_AimEnabled()) why = kH4SeatWhySwitch;
     else if (!out.eyeKnown) why = kH4SeatWhyEye;
     else if (!sameSeat) why = kH4SeatWhySample;
     else if (!s_state.agreement.proven) why = kH4SeatWhyWitness;
     else if (seatClass == halo4_seat_aim::SeatClass::Unknown || seatClass == halo4_seat_aim::SeatClass::NoWeapon)
         why = kH4SeatWhyClass;
     else if (!recordWorld) why = kH4SeatWhyRecord;
-    else why = kH4SeatWhyKey;   // stage 0: every proof holds; only the stage-1 key is missing
+    else if (!key) why = kH4SeatWhyKey;   // every proof holds; only the stage-1 key is off
     w.why[why].fetch_add(1, std::memory_order_relaxed);
+    out.solve = why == kH4SeatWhySolved;
+    // A slaved turret's aim camera IS its barrel's line (0x124DE6): the reticle rides the barrel, whatever the
+    // eye proofs say, and nothing is ever claimed there (verifier item 14).
+    out.turret = key && out.ray && Sight_AimEnabled() && seatClass == halo4_seat_aim::SeatClass::SlavedTurret;
     // The shot side's facts for the claim (stage 1).
     out.assistKnown = sameSeat && sample.aimUnitKnown;
     out.assisted = out.assistKnown && sample.assisted;
@@ -986,6 +1008,54 @@ bool Halo4SeatSightPrepare(Halo4SeatSightPoll& out, const float observerForward[
             out.barrelOrigin[axis] = out.eye[axis] + sample.barrelOffset[axis];
     }
     return true;
+}
+
+// Stage 1, Game_ComputeAimStick, after the aim was bent through `point` (the intent ray at the converged range):
+// may the converged aim be CLAIMED (verifier items 11 and 12)? The native seated assist turns the shot from the
+// barrel toward the crosshair point by at most 21 deg, and only while the shot's aiming unit carries the player;
+// claimed only with 2 deg to spare. Otherwise honestDir is the world direction from the rendered head to where
+// the real shot is at the point's range, when that is known.
+bool Halo4SeatSightClaim(const Halo4SeatSightPoll& seat, const float point[3], bool& honestValid,
+                         float honestDir[3])
+{
+    using halo4_seat_aim::Vec3;
+    honestValid = false;
+    auto& w = g_h4SeatEyeWitness;
+    unsigned why = kH4ClaimYes;
+    if (seat.turret)
+        why = kH4ClaimTurret;
+    else if (!seat.barrelKnown || !seat.assistKnown)
+        why = kH4ClaimUnknown;
+    else
+    {
+        const Vec3 barrelOrigin{seat.barrelOrigin[0], seat.barrelOrigin[1], seat.barrelOrigin[2]};
+        const Vec3 target{point[0], point[1], point[2]};
+        const auto verdict = halo4_seat_aim::JudgeBarrel(
+            {seat.barrelForward[0], seat.barrelForward[1], seat.barrelForward[2]}, barrelOrigin, target,
+            seat.assisted);
+        if (!verdict.valid)
+            why = kH4ClaimUnknown;
+        else
+        {
+            Halo4SeatSightStoreMax(w.maxBarrelDeg, verdict.angleRad * 57.29578f);
+            if (!seat.assisted)
+                why = kH4ClaimUnassisted;
+            else if (!verdict.claim)
+                why = kH4ClaimCap;
+            Vec3 dir{};
+            if (why != kH4ClaimYes &&
+                halo4_seat_aim::ShotReticleDirection({seat.head[0], seat.head[1], seat.head[2]}, barrelOrigin,
+                                                     verdict.shot, target, dir))
+            {
+                honestDir[0] = dir.x;
+                honestDir[1] = dir.y;
+                honestDir[2] = dir.z;
+                honestValid = true;
+            }
+        }
+    }
+    w.claim[why].fetch_add(1, std::memory_order_relaxed);
+    return why == kH4ClaimYes;
 }
 
 // Cold worker, every 2 s: the three dev lines.
@@ -1028,8 +1098,10 @@ void Halo4SeatSightReport()
             "%llu; faults %llu, writer busy %llu); seat flags %s, class %s, controls %s, aiming unit carries the "
             "player %s, barrel %s, vehicle up.z %s; eye vs sim: agree %u disagree %u chase %u, max |E_sim - "
             "E_render| %.0f mm at %.1f m/s, E_render - head [along,right,up] %.0f,%.0f,%.0f mm, sim aim vs "
-            "observer forward max %.2f deg; %llu polls, eye proven in %llu; not solved: view %llu, head %llu, eye "
-            "%llu, sample %llu, witness %llu, class %llu, tilted record %llu, all proofs held %llu",
+            "observer forward max %.2f deg; %llu polls, eye proven in %llu; not solved: view %llu, head %llu, "
+            "switches %llu, eye %llu, sample %llu, witness %llu, class %llu, tilted record %llu, key off %llu; "
+            "SOLVED %llu; claimed %llu, not claimed: turret %llu, shot unknown %llu, no assist %llu, beyond the cap "
+            "%llu (max barrel->point %.1f deg)",
             static_cast<unsigned long long>(samples), static_cast<unsigned long long>(f.firstPerson.exchange(0)),
             static_cast<unsigned long long>(f.chase.exchange(0)), static_cast<unsigned long long>(f.noWitness.exchange(0)),
             static_cast<unsigned long long>(f.pushes.exchange(0)), static_cast<unsigned long long>(f.sampleFaults.exchange(0)),
@@ -1041,9 +1113,16 @@ void Halo4SeatSightReport()
             double(w.eyeFromHead[1].load()), double(w.eyeFromHead[2].load()), double(w.maxDirDeg.exchange(0.0f)),
             static_cast<unsigned long long>(polls), static_cast<unsigned long long>(w.provenPolls.exchange(0)),
             static_cast<unsigned long long>(why[kH4SeatWhyView]), static_cast<unsigned long long>(why[kH4SeatWhyHead]),
+            static_cast<unsigned long long>(why[kH4SeatWhySwitch]),
             static_cast<unsigned long long>(why[kH4SeatWhyEye]), static_cast<unsigned long long>(why[kH4SeatWhySample]),
             static_cast<unsigned long long>(why[kH4SeatWhyWitness]), static_cast<unsigned long long>(why[kH4SeatWhyClass]),
-            static_cast<unsigned long long>(why[kH4SeatWhyRecord]), static_cast<unsigned long long>(why[kH4SeatWhyKey]));
+            static_cast<unsigned long long>(why[kH4SeatWhyRecord]), static_cast<unsigned long long>(why[kH4SeatWhyKey]),
+            static_cast<unsigned long long>(why[kH4SeatWhySolved]),
+            static_cast<unsigned long long>(w.claim[kH4ClaimYes].exchange(0)),
+            static_cast<unsigned long long>(w.claim[kH4ClaimTurret].exchange(0)),
+            static_cast<unsigned long long>(w.claim[kH4ClaimUnknown].exchange(0)),
+            static_cast<unsigned long long>(w.claim[kH4ClaimUnassisted].exchange(0)),
+            static_cast<unsigned long long>(w.claim[kH4ClaimCap].exchange(0)), double(w.maxBarrelDeg.exchange(0.0f)));
     }
     const uint64_t seatedUpdates = f.seatedUpdates.exchange(0, std::memory_order_relaxed);
     const uint64_t traces = f.traces.exchange(0, std::memory_order_relaxed);
@@ -1058,7 +1137,7 @@ void Halo4SeatSightReport()
         LOG("SIGHT Halo 4 seated trace: %llu updates of the seated local biped; %llu traces (%llu hits, %llu misses, "
             "%llu of them after three passes on our own vehicle), looked past our own vehicle %llu times; %llu seats "
             "untraced (the ray named no vehicle), %llu not this thread's seat, %llu root fallbacks; cost avg %.1f / "
-            "max %.1f us; published %llu (stage 0 counts only)",
+            "max %.1f us; published to the sight layer %llu (halo4_seat_converge)",
             static_cast<unsigned long long>(seatedUpdates), static_cast<unsigned long long>(traces),
             static_cast<unsigned long long>(f.traceHits.exchange(0)), static_cast<unsigned long long>(f.traceMisses.exchange(0)),
             static_cast<unsigned long long>(f.exhausted.exchange(0)), static_cast<unsigned long long>(f.lookPasts.exchange(0)),

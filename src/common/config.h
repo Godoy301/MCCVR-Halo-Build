@@ -736,6 +736,15 @@ struct Config
     // engine eye and run along the converged aim (the crosshair / shot query candidates; Halo 4 and Halo 2).
     // Leave at 0 for play.
     int sight_ray_census = 0;
+    // DEV BUILDS ONLY (not parsed otherwise), Halo 4 SEATED CONVERGENCE, stage 1: 1 = a Halo 4 seat converges
+    // like a Halo 3 one -- the seated trace is published, and the aim is bent so the game's own seat eye line
+    // passes through the point the intent ray hits, while every proof holds (our first-person seat view, the
+    // exact first-person witness, the eye agreement, a known seat class with a weapon, a record in world angles).
+    // Converged is CLAIMED only while the shot's aiming unit carries the player and the barrel reaches the point
+    // inside the native 21 deg assist cap (2 deg to spare); otherwise the reticle shows where the shot really
+    // goes. A slaved turret's reticle rides its barrel. 0 = every Halo 4 seat aims as before (stage 0 still
+    // measures). For A/B in the headset. (default 0)
+    int halo4_seat_converge = 0;
     // DEV BUILD ONLY, headless tests: 1 = the synthetic gamepad. Scripts dropped as halomccvr_pad.txt in the
     // mod folder press its buttons (tools/Send-MccPad.ps1; the language is src/common/dev_pad_script.h).
     // Read once at startup. Leave at 0 to play.
