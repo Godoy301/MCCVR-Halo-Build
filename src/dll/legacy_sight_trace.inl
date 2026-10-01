@@ -1,4 +1,6 @@
-// Included in game.cpp (anonymous namespace) after odst_contact_melee_runtime.inl.
+// Included in game.cpp (anonymous namespace) BEFORE halo3_contact_melee_runtime.inl and
+// odst_contact_melee_runtime.inl, whose per-unit update hooks call LegacySightTraceTick (each hands it its
+// own object-table reader, which is defined there).
 //
 // TRACE-AND-REAIM for Halo 3 and ODST, on foot (sight_layer.h) -- Reach's aim (reach_sight_trace.inl) for
 // the two titles that aim with the right-stick servo instead of direct drive.
@@ -37,6 +39,10 @@ struct LegacySightState
     std::atomic<const char*> why{"the title is not installed"};
     std::atomic<uint32_t> anchors{0}, globalRva{0};
     std::atomic<uint64_t> converged{0}, fallback{0};      // servo targets, counted on the input thread
+    // Seated traces (sim thread): how many ran, how many passes met a part of our own vehicle and looked
+    // past it, how many seats were refused because the aim path named no vehicle, and how many fell back
+    // to the published seat chain because the object table could not be walked.
+    std::atomic<uint64_t> seatedTraces{0}, selfHits{0}, seatUnnamed{0}, rootFallbacks{0};
     // Dev: the return address of each crosshair trace's collision call (the engine-crosshair check).
     std::atomic<uintptr_t> siteReturn[4]{};
 };
@@ -140,12 +146,57 @@ void LegacyResolveSightFlags(GameTitle title, uintptr_t base, size_t size,
         static_cast<unsigned long long>(value), static_cast<unsigned long long>(flags), kReachAimTraceMode);
 }
 
+// Seated, a pass that meets our own vehicle continues 5 cm past the contact, at most this many passes
+// (Reach's kReachSightSelfPasses / kReachSightSelfStepWu).
+inline constexpr int kLegacySightSelfPasses = 3;
+inline constexpr float kLegacySightSelfStepWu = 0.05f * kReachWorldUnitsPerMeter;
+// The parent link in an object's data: +0x10 in both titles (kHalo3ObjectParentOffset,
+// kOdstObjectParentOffset; the seat samplers already walk it).
+inline constexpr size_t kLegacyObjectParentOffset = 0x10;
+using LegacyObjectDataFn = const uint8_t* (*)(uint32_t handle);
+
+// The root of an object's parent chain (the vehicle a seated unit rides; on foot the unit itself), walked
+// through the title's own object table: objectData maps a handle the table still holds to that object's
+// data, or null. -1 when any link is stale or the chain is deeper than any vehicle. Simulation thread;
+// guarded, and kept free of C++ objects so __try is legal.
+int32_t LegacySightRootOf(LegacyObjectDataFn objectData, int32_t object)
+{
+    if (object == -1 || !objectData)
+        return -1;
+    __try
+    {
+        int32_t current = object;
+        for (int depth = 0; depth < 8; ++depth)
+        {
+            const uint8_t* data = objectData(static_cast<uint32_t>(current));
+            if (!data)
+                return -1;
+            int32_t parent = -1;
+            memcpy(&parent, data + kLegacyObjectParentOffset, sizeof(parent));
+            if (parent == -1)
+                return current;
+            current = parent;
+        }
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+    }
+    return -1;
+}
+
 // Simulation thread, inside the title's per-unit contact update (counted by that hook's callbacks, whose
 // teardown drains before the collision trampoline is freed). Traces the local unit's published intent ray
-// at most every 30 ms: on foot, or in a seat whose vehicle the aim path named (the trace passes through it
-// and through the vehicle carrying it).
+// at most every 30 ms: on foot, or in a seat whose vehicle the aim path named.
+//
+// SEATED, the ray starts at the rendered eye INSIDE the vehicle, so it must not stop on the vehicle itself
+// (user report 2026-09-30: "in the Banshee it felt like my intent ray was colliding with the vehicle"). It
+// ignores the vehicle's ROOT in the first slot -- the slot both engines' own crosshair traces fill (Reach's
+// engine query is (root, -1, -1); Halo 3's ignores the unit's root) -- then the occupant and the seat's own
+// parent when that is not the root (a Warthog's turret is a vehicle of its own); and any other part of
+// the same vehicle the ray still meets (another occupant, an attached gun) is looked past, as Reach's trace
+// does. Before this the vehicle sat only in the second slot and the hit object was never read.
 void LegacySightTraceTick(GameTitle title, uint32_t unit, int32_t localUnit, bool onFoot,
-                          const LegacyWorldCollisionFeature& collision)
+                          const LegacyWorldCollisionFeature& collision, LegacyObjectDataFn objectData)
 {
     auto& state = LegacySight(title);
     const uint64_t flags = state.flags.load(std::memory_order_acquire);
@@ -159,35 +210,82 @@ void LegacySightTraceTick(GameTitle title, uint32_t unit, int32_t localUnit, boo
     SightRay ray{};
     if (!Sight_ReadRay(title, generation, kSightRayFreshMs, ray))
         return;
-    if (!onFoot && ray.ignoreB == -1)
+    // Seated is the unit's own parent link. unit_in_vehicle (the caller's onFoot) answers false in a
+    // stationary turret, which then traced as on foot -- with nothing but the unit ignored, into the turret.
+    // When the table cannot be walked, the caller's answer stands.
+    int32_t root = LegacySightRootOf(objectData, static_cast<int32_t>(unit));
+    const bool seated = root != -1 ? root != static_cast<int32_t>(unit) : !onFoot;
+    if (seated && ray.ignoreB == -1)
+    {
+        // A seat the aim path did not name: no trace (the aim keeps its fixed-distance steer).
+        state.seatUnnamed.fetch_add(1, std::memory_order_relaxed);
         return;
+    }
     const auto original = reinterpret_cast<LegacyCollisionTestVectorFn>(collision.original);
     if (!original || !collision.originalIsVectorTest || !collision.installed.load(std::memory_order_acquire))
         return;
+    int32_t ignoreA = static_cast<int32_t>(unit), ignoreB = -1, ignoreC = -1;
+    if (seated)
+    {
+        if (root == -1 || root == static_cast<int32_t>(unit))
+        {
+            // The walk failed: the published seat chain's top (the carrier when the seat's parent is
+            // attached to one, else the parent).
+            root = ray.ignoreC != -1 ? ray.ignoreC : ray.ignoreB;
+            state.rootFallbacks.fetch_add(1, std::memory_order_relaxed);
+        }
+        ignoreA = root;
+        ignoreB = static_cast<int32_t>(unit);
+        ignoreC = ray.ignoreB != root ? ray.ignoreB : -1;
+        state.seatedTraces.fetch_add(1, std::memory_order_relaxed);
+    }
     const float length = kSightTraceLengthWu;
-    const float start[3]{ray.head[0] + ray.dir[0] * kSightTraceSkipWu, ray.head[1] + ray.dir[1] * kSightTraceSkipWu,
-                         ray.head[2] + ray.dir[2] * kSightTraceSkipWu};
-    const float vector[3]{ray.dir[0] * length, ray.dir[1] * length, ray.dir[2] * length};
     // Native collision initializes fields through +63 (type +0, fraction +4, point +8, object +0x40).
     alignas(16) uint8_t result[0x80]{};
-    uint8_t returned = 0;
+    bool hit = false;
+    float rangeWu = 0.0f;
+    float alongWu = kSightTraceSkipWu;   // where this pass starts, measured from the eye
     LARGE_INTEGER before{}, after{};
     QueryPerformanceCounter(&before);
-    const bool completed = ReachSightGuardedTrace(original, flags, kReachAimTraceMode, start, vector,
-                                                  static_cast<int32_t>(unit), ray.ignoreB, ray.ignoreC, result,
-                                                  returned, false);
-    QueryPerformanceCounter(&after);
-    if (!completed)
+    for (int pass = 0; pass < (seated ? kLegacySightSelfPasses : 1); ++pass)
     {
-        Sight_NoteTraceFault(title);
-        LOG("SIGHT %s: the aim trace raised a native fault; it stays off until the title reinstalls",
-            LegacySightTitleName(title));
-        return;
+        const float remainingWu = length - (alongWu - kSightTraceSkipWu);
+        if (!(remainingWu > 0.0f))
+            break;
+        const float start[3]{ray.head[0] + ray.dir[0] * alongWu, ray.head[1] + ray.dir[1] * alongWu,
+                             ray.head[2] + ray.dir[2] * alongWu};
+        const float vector[3]{ray.dir[0] * remainingWu, ray.dir[1] * remainingWu, ray.dir[2] * remainingWu};
+        memset(result, 0, sizeof(result));
+        uint8_t returned = 0;
+        const bool completed = ReachSightGuardedTrace(original, flags, kReachAimTraceMode, start, vector,
+                                                      ignoreA, ignoreB, ignoreC, result, returned, false);
+        if (!completed)
+        {
+            Sight_NoteTraceFault(title);
+            LOG("SIGHT %s: the aim trace raised a native fault; it stays off until the title reinstalls",
+                LegacySightTitleName(title));
+            return;
+        }
+        float fraction = 0.0f;
+        memcpy(&fraction, result + 4, sizeof(fraction));
+        hit = returned && std::isfinite(fraction) && fraction >= 0.0f && fraction <= 1.0f;
+        if (!hit)
+            break;
+        rangeWu = alongWu + fraction * remainingWu;
+        if (!seated)
+            break;
+        int32_t object = -1;
+        memcpy(&object, result + 0x40, sizeof(object));
+        if (object == -1 || LegacySightRootOf(objectData, object) != root)
+            break;
+        // A part of our own vehicle the ignores did not cover: not a target. Look past it.
+        state.selfHits.fetch_add(1, std::memory_order_relaxed);
+        hit = false;
+        rangeWu = 0.0f;
+        alongWu += fraction * remainingWu + kLegacySightSelfStepWu;
     }
-    float fraction = 0.0f;
-    memcpy(&fraction, result + 4, sizeof(fraction));
-    const bool hit = returned && std::isfinite(fraction) && fraction >= 0.0f && fraction <= 1.0f;
-    Sight_PublishTrace(title, generation, hit, hit ? kSightTraceSkipWu + fraction * length : 0.0f,
+    QueryPerformanceCounter(&after);
+    Sight_PublishTrace(title, generation, hit, hit ? rangeWu : 0.0f,
                        static_cast<uint64_t>(after.QuadPart - before.QuadPart));
 }
 
@@ -292,12 +390,20 @@ void LegacySightReport()
         auto& state = LegacySight(title);
         const uint64_t converged = state.converged.exchange(0, std::memory_order_relaxed);
         const uint64_t fallback = state.fallback.exchange(0, std::memory_order_relaxed);
-        if (!converged && !fallback)
+        const uint64_t seatedTraces = state.seatedTraces.exchange(0, std::memory_order_relaxed);
+        const uint64_t selfHits = state.selfHits.exchange(0, std::memory_order_relaxed);
+        const uint64_t seatUnnamed = state.seatUnnamed.exchange(0, std::memory_order_relaxed);
+        const uint64_t rootFallbacks = state.rootFallbacks.exchange(0, std::memory_order_relaxed);
+        if (!converged && !fallback && !seatedTraces && !seatUnnamed)
             continue;
         const char* why = state.why.load(std::memory_order_acquire);
         LOG("SIGHT %s aim servo: %llu targets converged on the traced point, %llu on the fixed-distance steer "
-            "(no fresh trace)%s%s", LegacySightTitleName(title), static_cast<unsigned long long>(converged),
-            static_cast<unsigned long long>(fallback), why ? "; trace off: " : "", why ? why : "");
+            "(no fresh trace)%s%s; seated traces %llu (looked past our own vehicle %llu times, %llu from the "
+            "published seat chain), %llu seats untraced (no vehicle named)", LegacySightTitleName(title),
+            static_cast<unsigned long long>(converged), static_cast<unsigned long long>(fallback),
+            why ? "; trace off: " : "", why ? why : "", static_cast<unsigned long long>(seatedTraces),
+            static_cast<unsigned long long>(selfHits), static_cast<unsigned long long>(rootFallbacks),
+            static_cast<unsigned long long>(seatUnnamed));
     }
 #if HALOMCCVR_DEV_DIAGNOSTICS
     for (int slot = 0; slot < 2; ++slot)

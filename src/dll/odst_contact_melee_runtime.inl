@@ -76,6 +76,16 @@ bool OdstContactObject(uint32_t handle,bool requireBiped=false)
 
 bool OdstContactBiped(uint32_t handle) { return OdstContactObject(handle,true); }
 
+// Any live object's data (unit, vehicle, weapon...), for the sight trace's parent-chain walk; null when the
+// table no longer holds the handle.
+const uint8_t* OdstSightObjectData(uint32_t handle)
+{
+    if(!OdstContactObject(handle)) return nullptr;
+    const auto* table=*reinterpret_cast<const uint8_t* const*>(OdstContactTls()+kOdstTlsObjectTableOffset);
+    const auto* entries=*reinterpret_cast<const uint8_t* const*>(table+0x48);
+    return *reinterpret_cast<const uint8_t* const*>(entries+(handle&0xFFFF)*0x18+0x10);
+}
+
 bool OdstRedirectContactVector(uintptr_t caller,uint64_t flags,int32_t mode,
     int32_t ignoredA,int32_t ignoredB,int32_t ignoredC,void* result,uint8_t& returned)
 {
@@ -246,7 +256,8 @@ __declspec(noinline) uint8_t __fastcall OdstContactUpdateDetour(uint32_t unit)
             const int32_t local=g_odstPlayerUnitGetter(0);
             if(local!=-1 && unit==static_cast<uint32_t>(local))
                 LegacySightTraceTick(GameTitle::Halo3ODST,unit,local,
-                    g_odstUnitInVehicle && !g_odstUnitInVehicle(local),g_odstWorldCollision);
+                    g_odstUnitInVehicle && !g_odstUnitInVehicle(local),g_odstWorldCollision,
+                    OdstSightObjectData);
         }
     }
     __finally { g_odstContact.callbacks.fetch_sub(1,std::memory_order_acq_rel); }

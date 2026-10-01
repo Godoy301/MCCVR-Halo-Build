@@ -70,6 +70,16 @@ bool Halo3ContactObject(uint32_t handle,bool requireBiped=false)
 
 bool Halo3ContactBiped(uint32_t handle) { return Halo3ContactObject(handle,true); }
 
+// Any live object's data (unit, vehicle, weapon...), for the sight trace's parent-chain walk; null when the
+// table no longer holds the handle.
+const uint8_t* Halo3SightObjectData(uint32_t handle)
+{
+    if(!Halo3ContactObject(handle)) return nullptr;
+    const auto* table=*reinterpret_cast<const uint8_t* const*>(Halo3ContactTls()+0x38);
+    const auto* entries=*reinterpret_cast<const uint8_t* const*>(table+0x48);
+    return *reinterpret_cast<const uint8_t* const*>(entries+(handle&0xFFFF)*0x18+0x10);
+}
+
 #include "halo3_melee_selection.inl"
 
 bool Halo3RedirectContactVector(uintptr_t caller,uint64_t flags,int32_t mode,
@@ -242,7 +252,8 @@ __declspec(noinline) uint8_t __fastcall Halo3ContactUpdateDetour(uint32_t unit)
             const int32_t local=g_halo3PlayerUnitGetter(0);
             if(local!=-1 && unit==static_cast<uint32_t>(local))
                 LegacySightTraceTick(GameTitle::Halo3,unit,local,
-                    g_halo3UnitInVehicle && !g_halo3UnitInVehicle(local),g_halo3WorldCollision);
+                    g_halo3UnitInVehicle && !g_halo3UnitInVehicle(local),g_halo3WorldCollision,
+                    Halo3SightObjectData);
         }
     }
     __finally { g_halo3Contact.callbacks.fetch_sub(1,std::memory_order_acq_rel); }
