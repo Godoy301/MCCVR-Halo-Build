@@ -121,9 +121,14 @@ template<unsigned I> void Run()
         // The first-person witness: armed, the selector hook records what it decided for this thread.
         NativeVehicleFirstPerson_ArmSelectWitness();
         Check(NativeVehicleFirstPerson_TakeSelectWitness().calls==0,"an armed witness with no selector call is empty");
+        // Taken (disarmed) and NOT re-armed: arming would clear whatever the unarmed call wrote, so the check
+        // could never fail. Take again and the witness must still be empty.
         (void)SelectHook<I>(owned.unit,&mode);
-        NativeVehicleFirstPerson_ArmSelectWitness();
         Check(NativeVehicleFirstPerson_TakeSelectWitness().calls==0,"an unarmed selector call is not recorded");
+        NativeVehicleFirstPerson_ArmSelectWitness();
+        (void)SelectHook<I>(owned.unit,&mode);(void)NativeVehicleFirstPerson_TakeSelectWitness();
+        (void)SelectHook<I>(owned.unit,&mode);
+        Check(NativeVehicleFirstPerson_TakeSelectWitness().calls==1,"a call after the take is not added to the taken one");
         NativeVehicleFirstPerson_ArmSelectWitness();
         (void)SelectHook<I>(owned.unit,&mode);
         auto w=NativeVehicleFirstPerson_TakeSelectWitness();
