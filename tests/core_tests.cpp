@@ -294,6 +294,15 @@ int main()
             Check(paused.Build(key,basis(2.6f),basis(0),false,9510,out)&&
                 std::fabs(std::atan2(out.forward[1],out.forward[0])-2.6f)<1e-5f,
                 "H2 pause: a resume is used once");
+            // With the view following the hull, the resumed heading is the one SHOWN (hull turn included).
+            Halo2VehicleViewState follow;
+            Check(follow.Build(key,basis(.2f),basis(0),true,20000,out)&&
+                follow.Build(key,basis(.2f),basis(.5f),true,20010,out)&&
+                std::fabs(std::atan2(out.forward[1],out.forward[0])-.7f)<1e-5f,"H2 pause: following the hull");
+            follow.Suspend();
+            Check(follow.Build(key,basis(2.0f),basis(.5f),true,29000,out)&&
+                std::fabs(std::atan2(out.forward[1],out.forward[0])-.7f)<1e-5f,
+                "H2 pause: a followed heading resumes where it was shown");
         }
         const auto saved=reference;auto bad=basis(0);bad.forward[0]=NAN;
         Check(!state.Build(key,bad,basis(0),false,2010,reference)&&!state.active&&

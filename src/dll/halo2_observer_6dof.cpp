@@ -1306,9 +1306,9 @@ namespace
             if(ownsVehicleReference) {g_footSeatSeedValid=false;g_vehicleViewApplied.fetch_add(1,std::memory_order_relaxed);}
             else {g_vehicleView={};g_vehicleViewRefused.fetch_add(1,std::memory_order_relaxed);}
         }
-        // Still seated (a menu, a pause, the theater): keep the seat's heading for its return. Out of the seat,
-        // forget it.
-        else if(vehicle) g_vehicleView.Suspend();
+        // Still seated, or not known to have left (a menu, a pause, the theater -- the seat sample goes stale
+        // while the game is paused): keep the seat's heading for its return. A fresh on-foot sample forgets it.
+        else if(!Halo2Observer6Dof_OnFootFresh()) g_vehicleView.Suspend();
         else g_vehicleView={};
         Halo2CameraBasis tracked{};
         if (!Halo2BuildTrackedCenterCamera(viewBase, head, tracked))
