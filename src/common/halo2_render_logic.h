@@ -1732,9 +1732,11 @@ inline const Halo2CameraBasis& Halo2ControllerReference(
 // player's own -- within ~10 deg of the newest publication's stock camera -- it takes the view's lift above
 // the engine eye from that publication (the physical crouch give-back and the leash: the camera in hand has
 // the character's crouch in it and the head offset the player's, so without the lift a crouch drops the view
-// twice on such frames), and on foot under direct drive, where that camera follows the HAND (the drive
-// writes player control from it), the view's own heading too. Its position is otherwise this frame's. Any
-// other camera (a director's, a scope's), or a publication of another generation, is left as it is.
+// twice on such frames), and the view's own heading wherever the view has one: in a seat, the seat's
+// (the vehicle reference), and on foot under direct drive, where that camera follows the HAND (the drive
+// writes player control from it). A seat's heading is taken even without the drive: the stock camera there is
+// the native look, which the stick servo turns. Its position is otherwise this frame's. Any other camera (a
+// director's, a scope's), or a publication of another generation, is left as it is.
 inline Halo2CameraBasis Halo2SelfTrackBase(
     bool published, const Halo2ObserverPosePublication& publication,
     uint32_t generation, const Halo2CameraBasis& stock) noexcept
@@ -1749,12 +1751,18 @@ inline Halo2CameraBasis Halo2SelfTrackBase(
         return base;
     if (std::isfinite(publication.viewLiftZ) && publication.viewLiftZ > 0.0f && publication.viewLiftZ <= 1.5f)
         base.position[2] += publication.viewLiftZ;
-    if (!publication.footReferenceValid || !Halo2ValidateCameraBasis(publication.footReference))
+    const Halo2CameraBasis* heading =
+        publication.vehicleReferenceValid && Halo2ValidateCameraBasis(publication.vehicleReference)
+            ? &publication.vehicleReference
+            : publication.footReferenceValid && Halo2ValidateCameraBasis(publication.footReference)
+                ? &publication.footReference
+                : nullptr;
+    if (!heading)
         return base;
     for (int axis = 0; axis < 3; ++axis)
     {
-        base.forward[axis] = publication.footReference.forward[axis];
-        base.up[axis] = publication.footReference.up[axis];
+        base.forward[axis] = heading->forward[axis];
+        base.up[axis] = heading->up[axis];
     }
     return base;
 }

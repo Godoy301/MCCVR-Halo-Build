@@ -1272,7 +1272,11 @@ namespace
                     GetTickCount64(),viewBase,g_footSeatSeedValid?&g_footSeatSeed:nullptr);
             if(ownsVehicleReference) {g_footSeatSeedValid=false;g_vehicleViewApplied.fetch_add(1,std::memory_order_relaxed);}
             else {g_vehicleView={};g_vehicleViewRefused.fetch_add(1,std::memory_order_relaxed);}
-        } else g_vehicleView={};
+        }
+        // Still seated (a menu, a pause, the theater): keep the seat's heading for its return. Out of the seat,
+        // forget it.
+        else if(vehicle) g_vehicleView.Suspend();
+        else g_vehicleView={};
         Halo2CameraBasis tracked{};
         if (!Halo2BuildTrackedCenterCamera(viewBase, head, tracked))
         {

@@ -272,6 +272,25 @@ int main()
                 std::fabs(std::atan2(reference.forward[1],reference.forward[0])+1.2f)<1e-5f,
                 "H2 a seed only starts an occupation; it does not move one");
         }
+        {
+            // A pause inside the occupation keeps the seat's heading; the stock heading (under the seat drive,
+            // the hand's) does not reseed it. A different occupation, or a suspension used up, does reseed.
+            Halo2VehicleViewState paused;Halo2CameraBasis out{};
+            Check(paused.Build(key,basis(.2f),basis(0),false,3000,out),"H2 pause: seated");
+            paused.Suspend();
+            Check(!paused.active&&paused.resumeValid,"H2 pause: suspended with the heading kept");
+            Check(paused.Build(key,basis(2.2f),basis(0),false,9000,out)&&
+                std::fabs(std::atan2(out.forward[1],out.forward[0])-.2f)<1e-5f&&!paused.resumeValid,
+                "H2 pause: the same occupation resumes its own heading, not the stock (hand) heading");
+            paused.Suspend();
+            auto otherSeat=key;++otherSeat.seat;
+            Check(paused.Build(otherSeat,basis(1.1f),basis(0),false,9500,out)&&
+                std::fabs(std::atan2(out.forward[1],out.forward[0])-1.1f)<1e-5f,
+                "H2 pause: another occupation starts fresh");
+            Check(paused.Build(key,basis(2.6f),basis(0),false,9510,out)&&
+                std::fabs(std::atan2(out.forward[1],out.forward[0])-2.6f)<1e-5f,
+                "H2 pause: a resume is used once");
+        }
         const auto saved=reference;auto bad=basis(0);bad.forward[0]=NAN;
         Check(!state.Build(key,bad,basis(0),false,2010,reference)&&!state.active&&
             std::memcmp(&saved,&reference,sizeof(saved))==0,"H2 invalid camera leaves output unchanged");
@@ -350,7 +369,14 @@ int main()
         Check(std::fabs(yawOf(Halo2SelfTrackBase(true,published,8,inHand))-2.05f)<1e-6f&&
                   std::fabs(yawOf(Halo2SelfTrackBase(false,published,9,inHand))-2.05f)<1e-6f,
               "H2 self-tracked frame needs a publication of this generation");
+        // In a seat the seat's own heading (the vehicle reference) wins, drive or no drive.
+        published.vehicleReference=basis(-.7f);published.vehicleReferenceValid=true;
+        Check(std::fabs(yawOf(Halo2SelfTrackBase(true,published,9,inHand))+.7f)<1e-6f,
+              "H2 self-tracked frame in a seat takes the seat's heading, not the native look");
         published.footReferenceValid=false;
+        Check(std::fabs(yawOf(Halo2SelfTrackBase(true,published,9,inHand))+.7f)<1e-6f,
+              "H2 self-tracked frame in a seat without the foot heading still takes the seat's");
+        published.vehicleReferenceValid=false;
         Check(std::fabs(yawOf(Halo2SelfTrackBase(true,published,9,inHand))-2.05f)<1e-6f,
               "H2 self-tracked frame without the drive's heading is untouched");
         // ...but the view's lift above the engine eye (the crouch give-back, the leash) rides with the player's

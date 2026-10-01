@@ -19,6 +19,18 @@ struct Halo2VehicleViewState
     bool active=false,follow=false;
     uint64_t timeMs{};
     float referenceYaw{},hullReferenceYaw{},lastYaw{};
+    // A pause, menu or theater inside the occupation suspends the view and keeps its heading for when the same
+    // occupation comes back: under the seat drive the stock heading is the HAND's last aim, so reseeding from
+    // it (the gap reseed below) would snap the view onto the hand on every unpause.
+    Halo2VehicleViewKey resumeKey{};
+    bool resumeValid=false;
+    float resumeYaw{};
+
+    void Suspend() noexcept
+    {
+        if(active) {resumeKey=key;resumeYaw=lastYaw;resumeValid=true;}
+        active=false;
+    }
 
     // `seedYaw`: the heading a new occupation starts from when the view already had its own -- a seat
     // taken from on foot under direct drive (halo2_foot_view.h), where the stock heading is the HAND's.
@@ -36,8 +48,10 @@ struct Halo2VehicleViewState
         const float hullYaw=std::atan2(hull.forward[1],hull.forward[0]);
         const bool same=active&&key==next&&now>=timeMs&&now-timeMs<=250;
         if(!same) {
-            referenceYaw=seedYaw&&std::isfinite(*seedYaw)?*seedYaw:std::atan2(stock.forward[1],stock.forward[0]);
+            referenceYaw=resumeValid&&resumeKey==next&&std::isfinite(resumeYaw)?resumeYaw:
+                seedYaw&&std::isfinite(*seedYaw)?*seedYaw:std::atan2(stock.forward[1],stock.forward[0]);
             hullReferenceYaw=hullYaw;
+            resumeValid=false;
         } else if(follow!=followHull) {
             // Toggling follow preserves the current view at the toggle edge.
             referenceYaw=lastYaw;hullReferenceYaw=hullYaw;
