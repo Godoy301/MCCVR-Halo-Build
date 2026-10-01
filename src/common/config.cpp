@@ -1563,6 +1563,8 @@ void ConfigLoad(const wchar_t* path)
             g_config.vehicle_steady_exposure = atoi(val) != 0;
         else if (!strcmp(key, "vehicle_motion"))
             g_config.vehicle_motion = atoi(val) != 0;
+        else if (!strcmp(key, "vehicle_vr_controls"))
+            g_config.vehicle_vr_controls = atoi(val) != 0;
         else if (!strcmp(key, "vehicle_wheel_max_deg"))
             g_config.vehicle_wheel_max_deg = (float)atof(val);
         else if (!strcmp(key, "vehicle_wheel_deadzone_deg"))
@@ -2181,8 +2183,8 @@ void ConfigSave()
     fprintf(f, "# 1 = with aim_direct_drive = 1, direct drive writes the aim in vehicle seats too (the seats\n");
     fprintf(f, "# reach_vehicle_aim names; each seat checks itself first), instead of the stick steering it\n");
     fprintf(f, "# at the game's turn rate. Every title needs its first-person seat view (Halo 3 / ODST also\n");
-    fprintf(f, "# vehicle_hide_body; Halo 2 also vehicle_motion and vehicle_view_follow off); Halo 4 seats write\n");
-    fprintf(f, "# the heading only. 0 keeps every seat on\n");
+    fprintf(f, "# vehicle_hide_body; Halo 2 also vehicle_vr_controls, and vehicle_view_follow off); Halo 4\n");
+    fprintf(f, "# seats write the heading only. 0 keeps every seat on\n");
     fprintf(f, "# the stick. F1 > Vehicles: \"Direct drive in seats\". (default %d)\n",
             d.seat_direct_drive);
     fprintf(f, "seat_direct_drive = %d\n\n", g_config.seat_direct_drive);
@@ -2445,13 +2447,23 @@ void ConfigSave()
             d.vehicle_steady_exposure ? 1 : 0);
     fprintf(f, "vehicle_steady_exposure = %d\n\n",
             g_config.vehicle_steady_exposure ? 1 : 0);
-    fprintf(f, "# Motion steering. In a Warthog, Mongoose, Ghost, Prowler or\n");
-    fprintf(f, "# Chopper, DOUBLE-CLICK both grips to take hold of an invisible\n");
-    fprintf(f, "# steering wheel: hold your hands as if on a wheel and tilt it,\n");
-    fprintf(f, "# nothing needs squeezing. Double-click again to let go and the\n");
-    fprintf(f, "# right stick steers. A single right grip still gets you out of\n");
-    fprintf(f, "# the vehicle either way. Aircraft and the Scorpion and Wraith\n");
-    fprintf(f, "# are unaffected.\n");
+    fprintf(f, "# VR controls in Halo CE and Halo 2 vehicle seats. ON (default):\n");
+    fprintf(f, "# in Halo CE the right stick snap- or smooth-turns your seat view\n");
+    fprintf(f, "# (pitch is your head's), and the view follows the vehicle when\n");
+    fprintf(f, "# vehicle_view_follow is on; in Halo 2 your hand aims the seat,\n");
+    fprintf(f, "# and the seat keeps a view of its own that the aim does not\n");
+    fprintf(f, "# swing. OFF: those two games' seats use the plain right stick, as\n");
+    fprintf(f, "# on a flat screen. Halo 3, ODST, Reach and Halo 4 seats are not\n");
+    fprintf(f, "# affected.\n");
+    fprintf(f, "# (default %d)\n", d.vehicle_vr_controls ? 1 : 0);
+    fprintf(f, "vehicle_vr_controls = %d\n\n", g_config.vehicle_vr_controls ? 1 : 0);
+    fprintf(f, "# Motion steering (Halo 3, ODST and Reach). In a Warthog,\n");
+    fprintf(f, "# Mongoose, Ghost, Prowler or Chopper, DOUBLE-CLICK both grips to\n");
+    fprintf(f, "# take hold of an invisible steering wheel: hold your hands as if\n");
+    fprintf(f, "# on a wheel and tilt it, nothing needs squeezing. Double-click\n");
+    fprintf(f, "# again to let go and the right stick steers. A single right grip\n");
+    fprintf(f, "# still gets you out of the vehicle either way. Aircraft and the\n");
+    fprintf(f, "# Scorpion and Wraith are unaffected. This switches the wheel only.\n");
     fprintf(f, "# (default %d)\n", d.vehicle_motion ? 1 : 0);
     fprintf(f, "vehicle_motion = %d\n", g_config.vehicle_motion ? 1 : 0);
     fprintf(f, "# Wheel angle for full lock, and the slack around centre.\n");

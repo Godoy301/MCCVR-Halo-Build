@@ -183,7 +183,7 @@ bool VehicleTurnFrame(const HaloCELocalPlayerState& state,const RenderContext& c
     int16_t& seat,float& hullYaw) noexcept
 {
     if (!vehicleViewReady.load(std::memory_order_acquire)||!StateCurrent()||
-        !context.tracking.controllers.vehicleMotion||!context.tracking.controllers.padValid||
+        !context.tracking.controllers.vehicleControls||!context.tracking.controllers.padValid||
         context.tracking.controllers.controlsPresentationBlocked||
         state.generation!=context.tracking.generation||!state.hasControlledUnit||state.onFoot||
         (state.nativePerspective!=0&&state.nativePerspective!=1)||state.parent==UINT32_MAX||!(state.parent>>16)||

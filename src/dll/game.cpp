@@ -50399,7 +50399,7 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
 #endif
     if (TitleAdapter_GetActiveTitle() == GameTitle::Halo2)
     {
-        if (!halo2VehicleAim || !g_config.vehicle_motion) return false;
+        if (!halo2VehicleAim || !g_config.vehicle_vr_controls) return false;
     }
     if (!Game_HasTitleCapability(TitleCapability_ControllerAim) &&
         !ReachControllerAimActive())

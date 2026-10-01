@@ -1152,9 +1152,9 @@ namespace
             ImGui::TextDisabled("ON (with Direct drive): a seat's aim is written as on foot, once the seat has\n"
                                 "checked its own aim (a moment after you sit down). Every title needs its\n"
                                 "first-person seat view: in Halo 3 and ODST with \"Hide my character in the seat\"\n"
-                                "on; in Halo 2 also with \"Virtual steering wheel\" on and \"View follows the\n"
-                                "vehicle\" off. Halo 4 seats write the\n"
-                                "heading only. OFF: the stick steers the aim in every seat.");
+                                "on; in Halo 2 also with \"VR controls in Halo CE and Halo 2 vehicles\" on\n"
+                                "and \"View follows the vehicle\" off. Halo 4 seats write the heading only.\n"
+                                "OFF: the stick steers the aim in every seat.");
             if (g_config.reach_vehicle_aim <= 0)
             {
                 // 0 is a cfg-only "seat aim off": never shown as the OFF below, never rewritten silently.
@@ -1223,7 +1223,18 @@ namespace
             "Position only - it never turns your view.");
         ImGui::Spacing();
         ImGui::Separator();
-        ImGui::Text("Motion steering");
+        ImGui::Text("VR controls in seats (Halo CE, Halo 2)");
+        changed |= ImGui::Checkbox("VR controls in Halo CE and Halo 2 vehicles",
+                                   &g_config.vehicle_vr_controls);
+        ImGui::TextDisabled(
+            "ON (default): in Halo CE the right stick snap/smooth-turns your\n"
+            "seat view; in Halo 2 your hand aims, and the seat keeps a view of\n"
+            "its own that the aim does not swing. OFF: those two games' seats\n"
+            "use the plain right stick, as on a flat screen. Halo 3, ODST,\n"
+            "Reach and Halo 4 seats are not affected.");
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Text("Motion steering (Halo 3, ODST, Reach)");
         changed |= ImGui::Checkbox("Virtual steering wheel",
                                    &g_config.vehicle_motion);
         ImGui::TextDisabled(

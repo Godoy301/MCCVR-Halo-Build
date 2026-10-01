@@ -1333,7 +1333,7 @@ namespace
         const bool ownsFootReference=g_footView.active&&g_footView.Basis(stock,viewBase);
         Halo2VehicleViewKey vehicleKey{};
         bool ownsVehicleReference=false;
-        const bool vehicleRequested=vehicle&&g_config.vehicle_motion&&Game_IsHeadTracking()&&VR_IsStereoEnabled()&&
+        const bool vehicleRequested=vehicle&&g_config.vehicle_vr_controls&&Game_IsHeadTracking()&&VR_IsStereoEnabled()&&
             !Menu_IsOpen()&&!VR_IsPausePresentation()&&!VR_IsCutsceneTheaterActive();
         if(vehicleRequested) {
             vehicleKey.generation=g_generation.load(std::memory_order_acquire);

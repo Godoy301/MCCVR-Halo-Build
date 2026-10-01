@@ -584,9 +584,19 @@ struct Config
     // authored cinematic exposure changes still work. ODST for now.
     bool vehicle_steady_exposure = true;
 
-    // Motion steering in look-steered ground driver seats: grab an invisible
-    // wheel with both grips and turn it. 0 = the right stick steers.
+    // Motion steering in look-steered ground driver seats (Halo 3, ODST and
+    // Reach): grab an invisible wheel with both grips and turn it. 0 = the
+    // right stick steers. The wheel and nothing else: until 2026-10-01 this
+    // key also switched off Halo CE's and Halo 2's VR seat controls, which are
+    // vehicle_vr_controls now.
     bool vehicle_motion = true;
+    // VR controls in Halo CE and Halo 2 vehicle seats. Halo CE: the right
+    // stick snap/smooth-turns the seat view (pitch is the head's), and the
+    // view follows the hull with vehicle_view_follow. Halo 2: the hand aims the
+    // seat, and the seat keeps a view of its own that the aim does not swing.
+    // 0 = both games' seats keep the plain right stick, as on a flat screen.
+    // The other games' seats are not affected (their aim settings govern them).
+    bool vehicle_vr_controls = true;
     float vehicle_wheel_max_deg = 75.0f;      // wheel angle at full lock
     float vehicle_wheel_deadzone_deg = 6.0f;  // slack around centre
 
@@ -762,7 +772,7 @@ struct Config
     // turn rate. The seat's limits (a passenger's cone) still hold: the write stops at the limit, where the
     // reticle shows the gun's real aim. A driver whose stick or wheel steers keeps it for the heading. Every
     // title needs its first-person seat view (vehicle_first_person; Halo 3 / ODST also vehicle_hide_body, whose
-    // native seat patch holds the camera; Halo 2 also vehicle_motion, and nothing is written there with
+    // native seat patch holds the camera; Halo 2 also vehicle_vr_controls, and nothing is written there with
     // vehicle_view_follow on). Halo 4 and Halo 2 seat roles are not mapped, so every seat there counts as a
     // driver whose look steers (written at 2, the stick at 1), and Halo 4 writes the heading only. 0 keeps
     // every seat on the stick.
