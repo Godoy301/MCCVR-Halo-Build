@@ -34551,6 +34551,57 @@ namespace
     // Halo 4's on-foot verdict for the physical crouch, stamped by the camera hook (an engine thread, where
     // Halo 4's per-thread TLS is readable) and read from the XInput poll (Game_Halo4OnFoot).
     std::atomic<uint64_t> g_halo4OnFootMs{0};
+    // Halo 4's seat, stamped by the same camera hook from the same read, for the threads that cannot make it:
+    // Halo4ReadVehicleInput reads the CALLING thread's engine TLS, which the XInput poll and the aim author
+    // have only when they happen to land on an engine thread -- their reads failed and counted `unknown` at
+    // the poll rate (121 per 2 s, on foot and seated alike), so a seated throttle was rotated as on foot and
+    // the aim never knew it was in a seat. Seqlock; a stamp older than 150 ms is no answer.
+    struct Halo4SeatStamp
+    {
+        std::atomic<uint32_t> seq{0};
+        std::atomic<uint64_t> ms{0};
+        std::atomic<uint32_t> unit{UINT32_MAX}, parent{UINT32_MAX};
+        std::atomic<int32_t> seat{-1};
+        std::atomic<bool> seated{false};
+    };
+    Halo4SeatStamp g_halo4SeatStamp;
+    void Halo4PublishSeatStamp(bool valid, const Halo4VehicleInputState& seat) noexcept
+    {
+        auto& s = g_halo4SeatStamp;
+        s.seq.fetch_add(1, std::memory_order_acq_rel);
+        s.unit.store(seat.unit, std::memory_order_relaxed);
+        s.parent.store(seat.parent, std::memory_order_relaxed);
+        s.seat.store(seat.seat, std::memory_order_relaxed);
+        s.seated.store(valid && seat.seated, std::memory_order_relaxed);
+        s.ms.store(valid ? GetTickCount64() : 0, std::memory_order_relaxed);
+        s.seq.fetch_add(1, std::memory_order_release);
+    }
+    // Any thread: the camera hook's last seat read, if it is fresh (150 ms) and was not torn.
+    bool Halo4ReadSeatStamp(Halo4VehicleInputState& out) noexcept
+    {
+        auto& s = g_halo4SeatStamp;
+        for (int attempt = 0; attempt < 2; ++attempt)
+        {
+            const uint32_t before = s.seq.load(std::memory_order_acquire);
+            if (before & 1u)
+                continue;
+            Halo4VehicleInputState seat{};
+            seat.unit = s.unit.load(std::memory_order_relaxed);
+            seat.parent = s.parent.load(std::memory_order_relaxed);
+            seat.seat = static_cast<int16_t>(s.seat.load(std::memory_order_relaxed));
+            seat.seated = s.seated.load(std::memory_order_relaxed);
+            const uint64_t at = s.ms.load(std::memory_order_relaxed);
+            std::atomic_thread_fence(std::memory_order_acquire);
+            if (s.seq.load(std::memory_order_relaxed) != before)
+                continue;
+            const uint64_t now = GetTickCount64();
+            if (!at || now < at || now - at > 150)
+                return false;
+            out = seat;
+            return true;
+        }
+        return false;
+    }
     // FIRST-PERSON WITNESS: stamped every time the first-person view model is skinned (the return site
     // below), which Halo 4 stops doing whenever its camera leaves the eye -- the Thruster Pack, the
     // Hardlight Shield, the death camera ("0 exact first-person calls" through every such window of the user's
@@ -40915,9 +40966,10 @@ namespace
                 if (Halo4ApplyHeadPose(stock, headInput))
                 {
                     Halo4VehicleInputState seat{};
-                    const bool onFoot = Halo4ReadVehicleInput(seat) && !seat.seated &&
-                        seat.parent == UINT32_MAX;
+                    const bool seatRead = Halo4ReadVehicleInput(seat);
+                    const bool onFoot = seatRead && !seat.seated && seat.parent == UINT32_MAX;
                     g_halo4OnFootMs.store(onFoot ? GetTickCount64() : 0, std::memory_order_release);
+                    Halo4PublishSeatStamp(seatRead, seat);
                     // Unlike Halo 3 and Reach, the give-back lands after the head pose here; measure it on
                     // its own, not against beforeHead (which would include the head's own height change).
                     const float beforeCrouchZ = stock.position[2];
@@ -49041,8 +49093,10 @@ void Game_MapMoveStick(float& mx, float& my)
     {
         if (!Halo4ControllerAimActive())
             return;
+        // Seated, the left stick throttles the vehicle as it stands. The camera hook's stamp, not a read here:
+        // this poll has no engine TLS of its own most of the time (Halo4ReadSeatStamp).
         Halo4VehicleInputState seat{};
-        if (Halo4ReadVehicleInput(seat)&&seat.seated) return;
+        if (Halo4ReadSeatStamp(seat)&&seat.seated) return;
         float gameYawReference = 0.0f;
         float headYawReference = 0.0f;
         float aimForward[3]{};

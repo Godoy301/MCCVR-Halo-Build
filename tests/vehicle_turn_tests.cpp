@@ -37,7 +37,8 @@ static bool Halo3SeatAuthorsSteeringNow(){return authorsSteering;}
 static bool Game_Halo3VehicleWheelActive(){return wheelActive;}
 static bool Halo4ControllerAimActive(){return h4Active;}
 struct Halo4VehicleInputState{bool seated=false;};
-static bool Halo4ReadVehicleInput(Halo4VehicleInputState& out){out.seated=h4Seated;return h4Valid;}
+// The camera hook's seat stamp (production: Halo4ReadSeatStamp in game.cpp).
+static bool Halo4ReadSeatStamp(Halo4VehicleInputState& out){out.seated=h4Seated;return h4Valid;}
 struct H4Camera{std::atomic<float> gameYawReference{0};std::atomic<uint64_t> vrTurns{0};}g_halo4Camera;
 static float WrapPi(float value){return std::remainder(value,6.28318530718f);}
 static int64_t ticks=100000;
