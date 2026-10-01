@@ -196,12 +196,18 @@ struct ChangeWatch
     bool have = false;
     bool Changed(T v, T* was = nullptr)
     {
-        const bool changed = !have || !(v == last);
+        const bool changed = Differs(v);
         if (was)
             *was = have ? last : v;
+        Set(v);
+        return changed;
+    }
+    // The two halves, for a caller that may hold a change back and log the latest value later.
+    bool Differs(T v) const { return !have || !(v == last); }
+    void Set(T v)
+    {
         have = true;
         last = v;
-        return changed;
     }
     void Reset() { *this = ChangeWatch{}; }
 };
@@ -504,6 +510,7 @@ struct WindowData
     float errMax, errMean, errPrevMax, errPrevMean, dRollMax, unitErrMax, craftMax, craftMean;   // rad
     float maxTurn, maxYaw, maxPitch, maxArgYaw, maxArgPitch;                                       // rad/s
     uint32_t rateTicks, rateExcluded, windowTicks;
+    uint32_t heldBack;     // change lines held back by the per-kind rate limit (their latest value follows)
 };
 struct TagData
 {
@@ -599,6 +606,8 @@ public:
     static constexpr uint64_t kStintGapMs = 500;     // no call for this long: the stint is over
     static constexpr uint32_t kLinkBurstTicks = 30;  // per-tick LINK lines at a stint's start
     static constexpr uint64_t kWindowMs = 2000;      // LINK / RATE summaries
+    static constexpr uint64_t kChangeLineMs = 250;   // at most one change line per kind this often
+    static_assert(static_cast<size_t>(Kind::Fault) < 16, "lastLineMs_ is indexed by Kind");
 
     explicit Producer(uint8_t title) : title_(title) {}
 
@@ -780,17 +789,36 @@ private:
         }
     }
 
+    // CHANGE LINES. A value is logged when it differs from the last value LOGGED, at most once per kind every
+    // kChangeLineMs: a stamp the game re-writes every tick while the craft scrapes a boundary must not flood
+    // the log. A held-back change is not lost -- the watch keeps the last logged value, so the latest one goes
+    // out when the hold-off ends -- and the window summary counts the held-back ticks. A stint's first values
+    // always go out.
+    bool Allow(Kind kind, uint64_t nowMs, bool stintStart)
+    {
+        uint64_t& last = lastLineMs_[static_cast<size_t>(kind)];
+        if (!stintStart && last && nowMs >= last && nowMs - last < kChangeLineMs)
+        {
+            ++heldBack_;
+            return false;
+        }
+        last = nowMs ? nowMs : 1;
+        return true;
+    }
+
     void Watches(const Sample& s, const CallStep& step, SpscRing<Event, RingN>& ring)
     {
+        const bool first = step.stintBegan;
         if (s.haveVehicle)
         {
-            int32_t was = 0;
-            if (stamp_.Changed(s.stamp, &was))
+            if (stamp_.Differs(s.stamp) && Allow(Kind::Stamp, s.nowMs, first))
             {
+                const int32_t was = stamp_.have ? stamp_.last : kUnread;
+                stamp_.Set(s.stamp);
                 Event e = Make(Kind::Stamp, s.vehicle, s.user, s.tick);
                 StampData& d = e.u.stampEv;
                 d.stamp = s.stamp;
-                d.was = step.stintBegan ? kUnread : was;
+                d.was = first ? kUnread : was;
                 d.age = WindowAge(s.tick, s.stamp, s.spt);
                 d.window = tag_.window;
                 d.open = (tag_.valid && WindowOpen(s.tick, s.stamp, s.spt, tag_.window)) ? 1 : 0;
@@ -801,21 +829,21 @@ private:
                 d.nativeJump = AngleBetween(ForwardFromYawPitch(s.pre[0], s.pre[1]), ForwardFromYawPitch(s.post[0], s.post[1]));
                 ring.Push(e);
             }
-            if (s.state != kUnread || s.stateOff != kUnread)
+            if ((s.state != kUnread || s.stateOff != kUnread) && state_.Differs(s.state) &&
+                Allow(Kind::State, s.nowMs, first))
             {
-                int32_t wasState = 0;
-                if (state_.Changed(s.state, &wasState))
-                {
-                    Event e = Make(Kind::State, s.vehicle, s.user, s.tick);
-                    e.u.state = {s.state, step.stintBegan ? kUnread : wasState, s.stateOff};
-                    ring.Push(e);
-                }
+                const int32_t was = state_.have ? state_.last : kUnread;
+                state_.Set(s.state);
+                Event e = Make(Kind::State, s.vehicle, s.user, s.tick);
+                e.u.state = {s.state, first ? kUnread : was, s.stateOff};
+                ring.Push(e);
             }
             if (s.overrideSet != kUnread)
             {
                 const int64_t packed = (static_cast<int64_t>(s.overrideSet) << 32) | static_cast<uint32_t>(s.overrideType);
-                if (override_.Changed(packed) || step.stintBegan)
+                if (override_.Differs(packed) && Allow(Kind::Type, s.nowMs, first))
                 {
+                    override_.Set(packed);
                     Event e = Make(Kind::Type, s.vehicle, s.user, s.tick);
                     e.u.type = {tag_.tagType, s.overrideSet, s.overrideType};
                     ring.Push(e);
@@ -824,15 +852,18 @@ private:
         }
         // Roll mode: on a change of the bit, or the roll axis crossing 0.1 while it is set.
         const bool axis = s.rollMode && std::fabs(s.moveX) > 0.1f;
-        if (rollBit_.Changed(s.rollMode) | rollAxis_.Changed(axis))
+        if ((rollBit_.Differs(s.rollMode) || rollAxis_.Differs(axis)) && Allow(Kind::Roll, s.nowMs, first))
         {
+            rollBit_.Set(s.rollMode);
+            rollAxis_.Set(axis);
             Event e = Make(Kind::Roll, s.vehicle, s.user, s.tick);
             e.u.roll = {static_cast<uint8_t>(s.rollMode ? 1 : 0), s.moveX, s.rollRate, s.idle, s.hold, s.latch};
             ring.Push(e);
         }
         // The two time arguments, once per stint and whenever either's relation to the tick changes.
         const float a = s.dtA - s.spt, b = s.dtB - s.dtA;
-        if (!dtLogged_ || !SameWithin(a, dtA_, 1e-5f) || !SameWithin(b, dtB_, 1e-5f))
+        if ((!dtLogged_ || !SameWithin(a, dtA_, 1e-5f) || !SameWithin(b, dtB_, 1e-5f)) &&
+            Allow(Kind::Dt, s.nowMs, first))
         {
             dtLogged_ = true;
             dtA_ = a;
@@ -841,21 +872,20 @@ private:
             e.u.dt = {s.dtA, s.dtB, s.spt};
             ring.Push(e);
         }
-        if (s.physOff != kUnread || s.physMode != kUnread)
+        if ((s.physOff != kUnread || s.physMode != kUnread) && phys_.Differs(s.physMode) &&
+            Allow(Kind::Phys, s.nowMs, first))
         {
-            int32_t was = 0;
-            if (phys_.Changed(s.physMode, &was))
-            {
-                Event e = Make(Kind::Phys, s.vehicle, s.user, s.tick);
-                e.u.phys = {s.unit, s.physOff, s.physMode, step.stintBegan ? kUnread : was};
-                ring.Push(e);
-            }
+            const int32_t was = phys_.have ? phys_.last : kUnread;
+            phys_.Set(s.physMode);
+            Event e = Make(Kind::Phys, s.vehicle, s.user, s.tick);
+            e.u.phys = {s.unit, s.physOff, s.physMode, first ? kUnread : was};
+            ring.Push(e);
         }
     }
 
     void FlushWindow(SpscRing<Event, RingN>& ring, uint64_t nowMs = 0)
     {
-        if (err_.n || rate_.ticks || rate_.excluded)
+        if (err_.n || rate_.ticks || rate_.excluded || heldBack_)
         {
             Event e = Make(Kind::Window, vehicle_, user_, lastTick_);
             WindowData& d = e.u.window;
@@ -878,8 +908,10 @@ private:
             d.rateTicks = rate_.ticks;
             d.rateExcluded = rate_.excluded;
             d.windowTicks = windowTicks_;
+            d.heldBack = heldBack_;
             ring.Push(e);
         }
+        heldBack_ = 0;
         err_.Reset();
         errPrev_.Reset();
         dRoll_.Reset();
@@ -914,5 +946,7 @@ private:
     ChangeWatch<bool> rollBit_{}, rollAxis_{};
     bool dtLogged_ = false;
     float dtA_ = 0.0f, dtB_ = 0.0f;
+    uint64_t lastLineMs_[16]{};
+    uint32_t heldBack_ = 0;
 };
 } // namespace t13

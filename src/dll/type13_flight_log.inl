@@ -1209,9 +1209,10 @@ void T13Format(const t13::Event& e)
                 d.linkN, T13Deg(d.errMax), T13Deg(d.errMean), T13Deg(d.errPrevMax), T13Deg(d.errPrevMean),
                 T13Deg(d.dRollMax), T13Deg(d.unitErrMax), T13Deg(d.craftMax), T13Deg(d.craftMean));
         LOG("%s RATE %.1fs maxTurn %.1f maxYaw %.1f maxPitch %.1f deg/s; stick args maxYaw %.1f maxPitch %.1f deg/s "
-            "(|delta|/dtA); ticks %u excluded %u (stint start, %s window ticks %u)",
+            "(|delta|/dtA); ticks %u excluded %u (stint start, %s window ticks %u); change lines held back %u",
             p, d.seconds, T13Deg(d.maxTurn), T13Deg(d.maxYaw), T13Deg(d.maxPitch), T13Deg(d.maxArgYaw),
-            T13Deg(d.maxArgPitch), d.rateTicks, d.rateExcluded, reach ? "forced-steer" : "redirect", d.windowTicks);
+            T13Deg(d.maxArgPitch), d.rateTicks, d.rateExcluded, reach ? "forced-steer" : "redirect", d.windowTicks,
+            d.heldBack);
         break;
     }
     case t13::Kind::Tag:

@@ -409,7 +409,7 @@ void TestProducerHalo4Fields()
     tag.tagType = 13;
     for (int i = 0; i < 3; ++i)
     {
-        Sample s = Base(0xE0070008u, 50 + i, 30000 + 33ull * i);
+        Sample s = Base(0xE0070008u, 50 + i, 30000 + 300ull * i);
         s.physOff = 0x200;
         s.physMode = i < 2 ? 1 : 7;
         s.overrideSet = 0;
@@ -429,6 +429,40 @@ void TestProducerHalo4Fields()
         if (e.kind == Kind::Type)
             Check(e.u.type.tagType == 13 && e.u.type.f58 == 0, "the type line carries the tag's type");
 }
+void TestChangeLinesHeldBack()
+{
+    // A stamp re-written every tick for a second (a craft scraping a boundary): at most one line per 250 ms,
+    // and the latest value still goes out once it settles.
+    static SpscRing<Event, 1024> ring;
+    Producer<1024> p(0);
+    TagFacts tag;
+    tag.valid = true;
+    tag.window = 1.0f;
+    int32_t lastStamp = -1;
+    for (int i = 0; i < 70; ++i)
+    {
+        Sample s = Base(0xE0090009u, 2000 + i, 50000 + 33ull * i);
+        if (i >= 1 && i <= 30)
+            lastStamp = s.stamp = 2000 + i;
+        else
+            s.stamp = lastStamp;
+        const CallStep step = p.Begin(s, 5, ring);
+        if (step.needTag)
+            p.SetTag(tag);
+        p.Finish(s, step, ring);
+    }
+    Drained d = Drain(ring);
+    std::vector<int32_t> stamps;
+    for (const auto& e : d.all)
+        if (e.kind == Kind::Stamp)
+            stamps.push_back(e.u.stampEv.stamp);
+    Check(stamps.size() >= 4 && stamps.size() <= 7, "a stamp changing every tick for 1 s: a handful of lines, not 30");
+    Check(!stamps.empty() && stamps.back() == 2030, "the latest value still goes out after the hold-off");
+    bool counted = false;
+    for (const auto& e : d.all)
+        counted |= e.kind == Kind::Window && e.u.window.heldBack > 0;
+    Check(counted, "the window summary counts the held-back ticks");
+}
 } // namespace
 
 int main()
@@ -444,6 +478,7 @@ int main()
     TestRing();
     TestProducer();
     TestProducerHalo4Fields();
+    TestChangeLinesHeldBack();
     std::printf("%s: %u type-13 flight log checks, %u failed\n", failures ? "FAIL" : "PASS", checks, failures);
     return failures ? 1 : 0;
 }
