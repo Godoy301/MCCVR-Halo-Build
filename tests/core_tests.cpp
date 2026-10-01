@@ -353,6 +353,14 @@ int main()
         published.footReferenceValid=false;
         Check(std::fabs(yawOf(Halo2SelfTrackBase(true,published,9,inHand))-2.05f)<1e-6f,
               "H2 self-tracked frame without the drive's heading is untouched");
+        // ...but the view's lift above the engine eye (the crouch give-back, the leash) rides with the player's
+        // camera with or without the drive: the camera in hand has his crouch in it, the head offset the
+        // player's. Never a director's camera.
+        published.viewLiftZ=.1f;
+        const auto director=basis(-1.0f);
+        Check(std::fabs(Halo2SelfTrackBase(true,published,9,inHand).position[2]-(inHand.position[2]+.1f))<1e-6f &&
+              Halo2SelfTrackBase(true,published,9,director).position[2]==director.position[2],
+              "H2 self-tracked frame takes the published lift; a director camera does not");
     }
     {
         for (float offset : {0.0f,0.17f,-0.17f,1.0f,-1.0f})

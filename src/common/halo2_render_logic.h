@@ -1728,24 +1728,28 @@ inline const Halo2CameraBasis& Halo2ControllerReference(
         : publication.footReferenceValid ? publication.footReference : publication.stock;
 }
 
-// A frame the observer did not publish is composed onto the camera in hand. On foot under direct drive the
-// player's own camera follows the HAND (the drive writes player control from it), so when the camera in hand
-// is that camera -- within ~10 deg of the newest publication's stock camera -- it takes the view's own
-// heading from that publication; its position stays this frame's. Any other camera (a director's, a scope's),
-// or a publication without that heading, is left as it is.
+// A frame the observer did not publish is composed onto the camera in hand. When the camera in hand is the
+// player's own -- within ~10 deg of the newest publication's stock camera -- it takes the view's lift above
+// the engine eye from that publication (the physical crouch give-back and the leash: the camera in hand has
+// the character's crouch in it and the head offset the player's, so without the lift a crouch drops the view
+// twice on such frames), and on foot under direct drive, where that camera follows the HAND (the drive
+// writes player control from it), the view's own heading too. Its position is otherwise this frame's. Any
+// other camera (a director's, a scope's), or a publication of another generation, is left as it is.
 inline Halo2CameraBasis Halo2SelfTrackBase(
     bool published, const Halo2ObserverPosePublication& publication,
     uint32_t generation, const Halo2CameraBasis& stock) noexcept
 {
     Halo2CameraBasis base = stock;
-    if (!published || !publication.footReferenceValid || !generation ||
-        publication.generation != generation ||
-        !Halo2ValidateCameraBasis(publication.footReference))
+    if (!published || !generation || publication.generation != generation)
         return base;
     const float dot = stock.forward[0] * publication.stock.forward[0] +
         stock.forward[1] * publication.stock.forward[1] +
         stock.forward[2] * publication.stock.forward[2];
     if (!std::isfinite(dot) || dot < 0.9848f)
+        return base;
+    if (std::isfinite(publication.viewLiftZ) && publication.viewLiftZ > 0.0f && publication.viewLiftZ <= 1.5f)
+        base.position[2] += publication.viewLiftZ;
+    if (!publication.footReferenceValid || !Halo2ValidateCameraBasis(publication.footReference))
         return base;
     for (int axis = 0; axis < 3; ++axis)
     {
