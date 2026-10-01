@@ -1814,20 +1814,19 @@ void ConfigSave()
     fprintf(f, "# mod folder (tools/Send-MccPad.ps1). Read at startup. Leave at 0.\n");
     fprintf(f, "dev_synthetic_pad = %d\n\n", g_config.dev_synthetic_pad);
 #endif
-    fprintf(f, "# Vehicle seats. Reach, with aim_direct_drive = 1: the same converged aim as on foot. Halo 3 and\n");
-    fprintf(f, "# ODST seats converge whenever converged_aim is on; 0 here keeps their old seat aim too. The\n");
-    fprintf(f, "# write drives the seat's look, and Reach fires the seat's weapon at what its own crosshair\n");
-    fprintf(f, "# (traced from its own camera) hits, so the look is bent to put that on what you point at.\n");
-    fprintf(f, "# A turret's or passenger seat's limits still hold. A seat whose stick steers keeps the\n");
-    fprintf(f, "# stick. 0 = off (vehicles keep the old stick aim), 1 = gunners, passengers, and drivers\n");
-    fprintf(f, "# whose gun turns apart from the hull (a driver whose look steers keeps the stick),\n");
-    fprintf(f, "# 2 = every seat you aim, drivers included. Not in F1: Converged aim and Direct drive cover\n");
-    fprintf(f, "# seats there; this is kept for troubleshooting. (default %d)\n", d.reach_vehicle_aim);
+    fprintf(f, "# Vehicle seats: which seats your hand aims. With aim_direct_drive = 1 the seat's aim is written\n");
+    fprintf(f, "# as on foot (Reach, Halo 3, ODST, Halo 4); Halo 3 and ODST seats also converge whenever\n");
+    fprintf(f, "# converged_aim is on (0 here keeps their old seat aim). A turret's or passenger seat's limits\n");
+    fprintf(f, "# still hold. A driver whose stick or wheel steers keeps it for steering. 0 = off (vehicles\n");
+    fprintf(f, "# keep the old stick aim), 1 = gunners, passengers, and drivers whose gun turns apart from the\n");
+    fprintf(f, "# hull (a driver whose look steers the vehicle keeps the stick), 2 = every seat you aim,\n");
+    fprintf(f, "# drivers included. F1 > Vehicles: \"Drivers aim with the hand\" switches 2 / 1. (default %d)\n",
+            d.reach_vehicle_aim);
     fprintf(f, "reach_vehicle_aim = %d\n\n", g_config.reach_vehicle_aim);
-    fprintf(f, "# Halo 3 and ODST: 1 = with aim_direct_drive = 1, a first-person seat that fires your own\n");
-    fprintf(f, "# weapon (a passenger) is written by direct drive too, once its aim checks out, instead of\n");
-    fprintf(f, "# steered by the stick. The seat's limits still hold. Drivers, gunners and turrets keep the\n");
-    fprintf(f, "# stick. Not in F1 (seats follow Direct drive); 0 keeps every seat on the stick. (default %d)\n",
+    fprintf(f, "# 1 = with aim_direct_drive = 1, direct drive writes the aim in vehicle seats too (the seats\n");
+    fprintf(f, "# reach_vehicle_aim names; each seat checks itself first), instead of the stick steering it\n");
+    fprintf(f, "# at the game's turn rate. Halo 4 seats need the first-person seat view. 0 keeps every seat on\n");
+    fprintf(f, "# the stick. F1 > Vehicles: \"Direct drive in seats\". (default %d)\n",
             d.seat_direct_drive);
     fprintf(f, "seat_direct_drive = %d\n\n", g_config.seat_direct_drive);
     fprintf(f, "# Reach, Halo 3, ODST and Halo 4 (switch it live in F1 > Weapon & aim). 1 = DIRECT DRIVE: your\n");

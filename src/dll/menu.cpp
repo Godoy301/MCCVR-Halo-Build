@@ -1152,6 +1152,20 @@ namespace
                             "aim is bent to put that crosshair on your target. A turret's or passenger\n"
                             "seat's limits still hold; there the crosshair shows where the gun really\n"
                             "points. A seat whose stick steers the vehicle keeps the stick.");
+        {
+            bool seats = g_config.seat_direct_drive != 0;
+            if (ImGui::Checkbox("Direct drive in seats", &seats))
+            { g_config.seat_direct_drive = seats ? 1 : 0; changed = true; }
+            ImGui::TextDisabled("ON (with Direct drive): a seat's aim is written as on foot, in every title, once\n"
+                                "the seat has checked its own aim (a moment after you sit down). OFF: the stick\n"
+                                "steers the aim in every seat.");
+            bool drivers = g_config.reach_vehicle_aim >= 2;
+            if (ImGui::Checkbox("Drivers aim with the hand", &drivers))
+            { g_config.reach_vehicle_aim = drivers ? 2 : 1; changed = true; }
+            ImGui::TextDisabled("ON: a driver whose vehicle turns toward the aim (Warthog, Ghost, Banshee) steers\n"
+                                "with the hand. OFF: that driver keeps the stick; gunners and passengers still\n"
+                                "aim with the hand.");
+        }
         ImGui::Spacing();
         ImGui::Separator();
         ImGui::Text("Turning with the vehicle");

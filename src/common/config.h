@@ -746,15 +746,17 @@ struct Config
     //   1 = gunner and passenger seats, and drivers whose gun turns apart from the hull (Scorpion,
     //       Wraith); a driver whose look steers the vehicle (Warthog, Ghost, Banshee ...) keeps the stick.
     //   2 = every seat the hand aims, drivers included. (default)
-    // Cfg only: F1 has no switch of its own for seats (Converged aim and Direct drive cover them). Kept
-    // for troubleshooting. Halo 3 and ODST seats use it too (0 = their old seat aim; 1 and 2 alike).
+    // Every title's seated direct drive follows the same rule (Halo 3, ODST and Halo 4 too:
+    // seat_drive::Decide); Halo 3 and ODST's seated converged aim uses it as well (0 = their old seat aim).
+    // F1 > Vehicles > Aim in seats > "Drivers aim with the hand" switches it between 2 and 1.
     int reach_vehicle_aim = 2;
-    // Halo 3 and ODST, SEATED DIRECT DRIVE: 1 = in a first-person seat that fires your OWN weapon (a
-    // Warthog, Mongoose or Hornet passenger), direct drive (aim_direct_drive = 1) writes the seat's aim too,
-    // as on foot, once that seat's own aim record has checked out, instead of the stick steering it at the
-    // game's turn rate. The seat's limits (a passenger's cone) still hold: the write stops at the limit,
-    // where the reticle shows the gun's real aim. Drivers, gunners and turrets keep the stick. Cfg only:
-    // seats follow F1's Direct drive; 0 = a kill switch that keeps every seat on the stick. (default 1)
+    // SEATED DIRECT DRIVE, every title with direct drive (Reach, Halo 3, ODST, Halo 4): 1 = with
+    // aim_direct_drive = 1, a seat's aim is written as on foot -- in the seats reach_vehicle_aim names, axis by
+    // axis once that seat's own aim record has checked out -- instead of the stick steering it at the game's
+    // turn rate. The seat's limits (a passenger's cone) still hold: the write stops at the limit, where the
+    // reticle shows the gun's real aim. A driver whose stick or wheel steers keeps it for the heading. Halo 4
+    // seats need the first-person seat view (vehicle_first_person). 0 keeps every seat on the stick.
+    // F1 > Vehicles > Aim in seats > "Direct drive in seats". (default 1)
     int seat_direct_drive = 1;
 
     // rendering. The game's own HUD reticle sits at head-center and is wrong

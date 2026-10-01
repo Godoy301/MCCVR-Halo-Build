@@ -47918,10 +47918,10 @@ uint32_t Game_ReachDirectDriveAimWhy()
         why |= 0x80;
     else if (ReachSeatAuthorsSteeringNow())
         why |= 0x100;
-    else if (g_config.reach_vehicle_aim <= 0 ||
+    else if (!g_config.seat_direct_drive || g_config.reach_vehicle_aim <= 0 ||
              (g_config.reach_vehicle_aim == 1 && ReachVehicleSeatIsDriver(identity, seatIndex) &&
               ReachVehicleIsLookSteered(identity)))   // 1: a driver whose look steers keeps the servo
-        why |= 0x200;
+        why |= 0x200;                                 // seat_direct_drive = 0: every seat keeps it
     return why;
 }
 
