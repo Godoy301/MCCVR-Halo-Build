@@ -858,6 +858,10 @@ void Halo4SeatSightStoreMax(std::atomic<float>& slot, float value)
         slot.store(value, std::memory_order_relaxed);
 }
 
+// A seated poll this long after the last one starts a new seat stint, even in the same seat: leaving and
+// re-entering a seat takes far longer, and while no poll ran nothing was proven (the aim path was not here).
+inline constexpr uint64_t kHalo4SeatStintGapMs = 150;
+
 // Input thread. True while seated (out filled); false on foot or with no fresh stamp (out untouched beyond
 // its defaults), which leaves the on-foot path exactly as it was.
 bool Halo4SeatSightPrepare(Halo4SeatSightPoll& out, const float observerForward[3])
@@ -866,30 +870,39 @@ bool Halo4SeatSightPrepare(Halo4SeatSightPoll& out, const float observerForward[
     {
         uint32_t unit = UINT32_MAX, parent = UINT32_MAX, generation = 0, sampleSequence = 0;
         int16_t seat = -1;
+        uint64_t lastSeatedMs = 0;   // the last seated poll of this stint
         halo4_seat_aim::SeatEyeAgreement agreement{};
     };
     static State s_state;   // Game_ComputeAimStick's thread only, like the servo's own statics
     Halo4VehicleInputState stamp{};
-    if (!Halo4ReadSeatStamp(stamp) || !stamp.seated || stamp.parent == UINT32_MAX || stamp.seat < 0)
+    if (!Halo4ReadSeatStamp(stamp))
+        return false;   // no fresh stamp: the stint survives only if a seated poll follows within the gap
+    if (!stamp.seated || stamp.parent == UINT32_MAX || stamp.seat < 0)
+    {
+        s_state = {};   // a fresh stamp says on foot: the stint is over
         return false;
+    }
     out.seated = true;
     out.unit = stamp.unit;
     out.parent = stamp.parent;
     out.seat = stamp.seat;
     const uint32_t generation = TitleAdapter_GetGeneration(GameTitle::Halo4);
+    const uint64_t now = GetTickCount64();
     if (s_state.unit != stamp.unit || s_state.parent != stamp.parent || s_state.seat != stamp.seat ||
-        s_state.generation != generation)
+        s_state.generation != generation || !s_state.lastSeatedMs || now < s_state.lastSeatedMs ||
+        now - s_state.lastSeatedMs > kHalo4SeatStintGapMs)
     {
-        // A new seat stint: nothing proven in the last one carries over.
+        // A new seat stint (another seat, or the same one after a gap): nothing proven in the last one carries
+        // over -- not the proof, not its disagreement timer.
         s_state = {};
         s_state.unit = stamp.unit;
         s_state.parent = stamp.parent;
         s_state.seat = stamp.seat;
         s_state.generation = generation;
     }
+    s_state.lastSeatedMs = now;
     auto& w = g_h4SeatEyeWitness;
     w.polls.fetch_add(1, std::memory_order_relaxed);
-    const uint64_t now = GetTickCount64();
     const bool viewOwned = NativeVehicleFirstPerson_SeatViewOwned(GameTitle::Halo4, stamp.parent, stamp.seat);
     BoneMatrix center{}, body{};
     const bool headKnown = Halo4LoadCenterRoot(1.0f, center);
