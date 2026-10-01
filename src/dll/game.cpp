@@ -50955,12 +50955,15 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
                 // writes, never this poll's target (the aim trails the newest write by up to a tick).
                 float wy[2]{}, wp[2]{};
                 bool wv[2]{};
-                float yawMiss = fabsf(WrapPi(desiredYaw - aimYaw));
+                // A yaw difference is an angle only at the horizon: scaled by cos(pitch), as the both-axes gate's
+                // true angular miss is (the thresholds would otherwise shrink as the aim pitches up or down).
+                const float yawToAngle = std::fmax(cosf(aimPitch), 0.05f);
+                float yawMiss = fabsf(WrapPi(desiredYaw - aimYaw)) * yawToAngle;
                 if (LegacyDriveSeatWrites(driveTitle, wy, wp, wv))
                 {
-                    yawMiss = fabsf(WrapPi(aimYaw - wy[0]));
+                    yawMiss = fabsf(WrapPi(aimYaw - wy[0])) * yawToAngle;
                     if (wv[1])
-                        yawMiss = std::fmin(yawMiss, fabsf(WrapPi(aimYaw - wy[1])));
+                        yawMiss = std::fmin(yawMiss, fabsf(WrapPi(aimYaw - wy[1])) * yawToAngle);
                 }
                 seatYawShort = s_seatYawOutcome.step(yawMiss, false, GetTickCount64());
             }
@@ -53047,8 +53050,11 @@ bool Game_TitleOnFootPlayerControlled(GameTitle title)
 }
 
 // Whether the local player is in a vehicle seat, from each title's LAST KNOWN seat state (a pause stops the
-// samples, and the recenter that follows it must still see the seat). With no seat sampler, or no answer yet,
-// it fails CLOSED: "seated", so no lift. For the recenter's standing lift (VR_RecenterStandingLiftM): a seat
+// samples, and the recenter that follows it must still see the seat). With no seat sampler (Halo 3 / ODST /
+// Reach not installed or faulted, CE unreadable), or before its first answer where that is known (Halo 4 since
+// the level began, the Halo 2 observer down or not yet sampled), it fails CLOSED: "seated", so no lift.
+// (A runtime sampler fault therefore costs the lift on foot until the title reloads: degraded, never wrong.)
+// For the recenter's standing lift (VR_RecenterStandingLiftM): a seat
 // composes its own view, the player may well be sitting in it, and nothing there pairs with the lift.
 bool Game_TitleSeated(GameTitle title)
 {

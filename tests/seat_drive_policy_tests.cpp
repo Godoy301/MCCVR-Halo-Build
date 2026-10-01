@@ -44,6 +44,14 @@ void TestPolicy()
         Check(a.yaw && a.pitch, "a driver whose look aims a turret is written on both axes");
     }
 
+    // A passenger or gunner of a look-steered vehicle (a Warthog's): both axes at levels 1 and 2, latched.
+    {
+        Seat gunner = Passenger(); gunner.look_steered = true;
+        Check(Decide(gunner, 1, true).yaw && Decide(gunner, 1, true).pitch && Decide(gunner, 2, true).pitch,
+              "a look-steered vehicle's gunner is written on both axes at levels 1 and 2");
+        Check(seat_drive::PitchLatches(gunner), "and its pitch latches");
+    }
+
     // Look-steered drivers.
     Check(!Decide(LookDriver(), 1, true).any(), "level 1 keeps a look-steered driver on the servo");
     Axes a = Decide(LookDriver(), 2, true);

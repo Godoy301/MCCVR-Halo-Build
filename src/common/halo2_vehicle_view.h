@@ -38,10 +38,11 @@ struct Halo2VehicleViewState
     {
         if(resumeValid&&std::isfinite(headTurn)) resumeYaw=std::remainder(resumeYaw+headTurn,6.28318530718f);
     }
-    // The player's own recenter: the seat resumes looking along `yaw` (the vehicle's nose).
-    void ReseedResume(float yaw) noexcept
+    // The player's own recenter: the seat resumes looking along `yaw` (the vehicle's nose), with the hull's
+    // yaw now as the follow reference.
+    void ReseedResume(float yaw,float hullYawNow) noexcept
     {
-        if(resumeValid&&std::isfinite(yaw)) {resumeYaw=yaw;resumeHullYaw=lastHullYaw;}
+        if(resumeValid&&std::isfinite(yaw)&&std::isfinite(hullYawNow)) {resumeYaw=yaw;resumeHullYaw=hullYawNow;}
     }
 
     // `seedYaw`: the heading a new occupation starts from when the view already had its own -- a seat

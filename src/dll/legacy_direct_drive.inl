@@ -39,7 +39,7 @@
 // record axis by axis before that axis is written (seat_drive::StintCheck: yaw on 30 agreeing updates, pitch
 // on 30 SETTLED ones within 3 s of yaw passing, never before yaw -- a Halo 3 driver+gunner's pitch
 // sits ~13 deg off the gun and stays on the servo). The write goes through Reach's seat-limit latch
-// (aim_write::LimitLatch), pitch excepted for a driver, whose pitch the accumulator levels as the vehicle
+// (aim_write::LimitLatch), pitch excepted for a LOOK-STEERED driver, whose pitch the accumulator levels as the vehicle
 // moves. A seat may also ARM the hook, on yaw agreement alone: a checkpoint that loads in a vehicle.
 //
 // THE PRIMARY UPDATE. Halo 3 and ODST also run the accumulator from a weapon's pitch kick and from the
@@ -123,7 +123,7 @@ struct LegacyDriveState
     std::atomic<bool> setValid{false};
     std::atomic<bool> setSeated{false};      // the setpoint is a seat's (seat_direct_drive)
     std::atomic<uint32_t> setAxes{0};        // seated: bit 0 yaw, bit 1 pitch -- the axes the hand owns there
-    std::atomic<bool> setPitchLatch{true};   // seated: the latch may read pitch limits (not a driver's)
+    std::atomic<bool> setPitchLatch{true};   // seated: the latch may read pitch limits (not a look-steered driver's)
     std::atomic<uint32_t> setSeatKey{0};     // seated: which seat (seat_drive::SeatKey)
     // Seated writes (sim thread): the seat-limit latch, this stint's per-axis check, and when each axis was
     // last written / last held short (read by the input thread).
@@ -147,6 +147,8 @@ struct LegacyDriveState
     std::atomic<uintptr_t> lastOtherRet{0};
     uint64_t stintSampleMs = 0;              // the publication the stint last judged (a repeat is no evidence)
     uint32_t stintStaleUpdates = 0;          // consecutive updates of this stint with no fresh publication
+    bool stintTitleSeated = false;           // Halo 3 / ODST: unit_in_vehicle said seated when the stint began
+                                             // (a walk-up turret reads on foot: its word decides nothing then)
     // The last two seat writes (seqlock), for the input thread's honest-reticle gate: the game's aim lags the
     // latest write by up to a tick, so the gate measures it against whichever of the two is nearer.
     std::atomic<uint32_t> wroteSeq{0};
@@ -201,6 +203,7 @@ void LegacyDriveForgetSeat(LegacyDriveState& st)
     st.stintKey = 0;
     st.stintPitchFailCounted = false;
     st.stintStaleUpdates = 0;
+    st.stintTitleSeated = false;
     // The input thread reads an axis as written while these are fresh (LegacyDriveSeatAxes): a stint that
     // is over stops claiming it at once, or the stick stays zeroed and the reticle reads "written" for up to
     // 150 ms over an aim nothing writes any more.
@@ -635,10 +638,11 @@ extern "C" void LegacyPcApplyForUser(int slot, int user, uintptr_t ret)
             // on foot also needs the title's own word. Halo 4 asks the record's own unit, on this thread.
             bool onFoot = !seatedSet && LegacyDriveLocalOnFoot(slot);
             bool seatConfirmed = seatedSet;
+            int recordSeat = -1;   // Halo 4: the record's own unit -- -1 unknown, 0 on foot, 1 seated
 #if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA
             if (slot == 2)
             {
-                const int recordSeat = st.halo4RecordUnit ? LegacyDriveHalo4RecordSeat(tls, pc) : -1;
+                recordSeat = st.halo4RecordUnit ? LegacyDriveHalo4RecordSeat(tls, pc) : -1;
                 onFoot = !seatedSet && (recordSeat == 0 || (recordSeat < 0 && LegacyDriveLocalOnFoot(slot)));
                 seatConfirmed = seatedSet && recordSeat == 1;
             }
@@ -654,13 +658,21 @@ extern "C" void LegacyPcApplyForUser(int slot, int user, uintptr_t ret)
             seatKept = seatWrite;
             if (!onFoot && !seatWrite)
             {
-                // A STALE publication of this stint's own seat (a pause's fade, a tracking dropout -- the input
-                // thread stops publishing) is a gap, not the end of the seat: write nothing, keep the proven
-                // checks (no step: a gap is no evidence, and StintCheck counts a gap at most gap_ms), for a
-                // bounded run of updates. A fresh publication with no axes, another seat, or the game's own word
-                // that the unit is on foot still ends it.
-                if (!fresh && st.stintActive && (!coherent || (seatedSet && seatKey == st.stintKey)) &&
-                    !LegacyDriveLocalOnFoot(slot) && ++st.stintStaleUpdates <= kLegacyDriveStintStaleUpdates)
+                // A GAP in this stint's seat is not the end of it: write nothing, keep the proven checks (no step:
+                // a gap is no evidence, and StintCheck counts one at most gap_ms), for a bounded run of updates.
+                // A gap is either a stale or torn publication of the same seat (a pause's fade, a tracking
+                // dropout: the input thread stops publishing), or a fresh one that lost the seat's VIEW (Halo 4's
+                // seat stamp goes stale in the theater) while the title's own word says the seat is still taken.
+                // That word ends the stint when it says the unit left -- except where it cannot tell: a Halo 3 /
+                // ODST walk-up turret reads "on foot" (unit_in_vehicle 0), and Halo 4's record may be unreadable;
+                // there only the publication's own seat keeps the stint. Another seat, or a fresh publication of
+                // this seat with no axes, ends it.
+                const bool titleKnowsSeat = slot == 2 ? recordSeat >= 0 : st.stintTitleSeated;
+                const bool titleSeated = slot == 2 ? recordSeat == 1 : !LegacyDriveLocalOnFoot(slot);
+                const bool sameSeatStale = !fresh && (!coherent || (seatedSet && seatKey == st.stintKey));
+                const bool seatViewLost = fresh && !seatedSet && titleKnowsSeat && titleSeated;
+                if (st.stintActive && (titleKnowsSeat ? titleSeated : true) && (sameSeatStale || seatViewLost) &&
+                    ++st.stintStaleUpdates <= kLegacyDriveStintStaleUpdates)
                     seatKept = true;
                 st.seatedSkips.fetch_add(1, std::memory_order_relaxed);
                 st.agree = 0;
@@ -677,6 +689,7 @@ extern "C" void LegacyPcApplyForUser(int slot, int user, uintptr_t ret)
                     st.axisTicks[0] = st.axisTicks[1] = 0;
                     st.stintActive = true;
                     st.stintKey = seatKey;
+                    st.stintTitleSeated = slot != 2 && !LegacyDriveLocalOnFoot(slot);
                     st.seatStints.fetch_add(1, std::memory_order_relaxed);
                 }
                 st.stintStaleUpdates = 0;
@@ -745,8 +758,8 @@ extern "C" void LegacyPcApplyForUser(int slot, int user, uintptr_t ret)
                     // The game clamped the record to the seat's limits before this write; the latch reads that
                     // clamp off last tick's write and keeps this one at the limit (one probe step past it), so a
                     // passenger's cone holds the aim at its edge instead of the write running on. Per axis: an
-                    // axis's first writes read no limit (kLegacyDriveSeatPrimeUpdates), and a driver's pitch is
-                    // never latched -- the accumulator levels it as the vehicle moves, which is not a limit.
+                    // axis's first writes read no limit (kLegacyDriveSeatPrimeUpdates), and a look-steered driver's
+                    // pitch is never latched -- the accumulator levels it as the vehicle moves, not a limit.
                     const bool latch[2]{writeYaw && st.axisTicks[0] >= kLegacyDriveSeatPrimeUpdates,
                                         writePitch && pitchLatch && st.axisTicks[1] >= kLegacyDriveSeatPrimeUpdates};
                     const float native[2]{nativeYaw, nativePitch}, target[2]{y, p};

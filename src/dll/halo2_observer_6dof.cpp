@@ -825,6 +825,7 @@ namespace
         aim_write::LimitLatch yawLatch{};
         uint32_t yawTicks = 0;
         uint64_t stintSample = 0;      // the publication the stint last judged (a repeat is no evidence)
+        uint32_t stintStaleUpdates = 0; // consecutive updates of this stint with its seat's view down
         std::atomic<uint64_t> seatYawMs{0}, seatPitchMs{0};
         std::atomic<uint32_t> seatWrites{0}, seatHeld{0}, seatWaits{0}, seatStints{0}, seatYawChecks{0},
             seatPitchChecks{0}, seatPitchFails{0};
@@ -1187,9 +1188,25 @@ namespace
             g_vehicleView.Suspend();
             // The player's own recenter re-aligns the seat to the vehicle's nose (where they now face is
             // forward); an automatic one (an unpause, a theater exit) keeps the view they were looking along.
+            // The nose is read NOW (the hull the view last followed is stale while the F1 menu, a pause or the
+            // theater held the view down -- exactly when the F1 button is pressed), and only when the hull has a
+            // usable heading (a vehicle on its side does not).
+            bool reseeded = false;
             if (g_manualRecenterRequested.exchange(false, std::memory_order_acq_rel))
-                g_vehicleView.ReseedResume(g_vehicleView.lastHullYaw);
-            else
+            {
+                Halo2VehicleViewKey noseKey{};
+                noseKey.generation = g_generation.load(std::memory_order_acquire);
+                noseKey.space = snapshot.trackingSpaceEpoch;
+                Halo2CameraBasis noseHull{};
+                if (ReadVehicleViewFrame(noseKey, noseHull) &&
+                    std::hypot(noseHull.forward[0], noseHull.forward[1]) > 0.2f)
+                {
+                    const float noseYaw = std::atan2(noseHull.forward[1], noseHull.forward[0]);
+                    g_vehicleView.ReseedResume(noseYaw, noseYaw);
+                    reseeded = true;
+                }
+            }
+            if (!reseeded)
                 g_vehicleView.FoldResume(headTurn);
             // Under direct drive a recentre re-takes the view's heading from the body (the hand's aim), as
             // Halo 3's re-seeds its game yaw from the stock heading; UpdateFootView takes it again below.

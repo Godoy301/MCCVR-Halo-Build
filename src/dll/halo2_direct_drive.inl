@@ -102,6 +102,8 @@ int Halo2DriveOccupancy(uint32_t& parent, int16_t& seat) noexcept
 // The first writes of a seat's yaw read no limit off the record (the stick servo may still be deflecting the
 // stick until the input thread sees the seat written), as the other titles' seats.
 constexpr uint32_t kHalo2SeatPrimeUpdates = 2;
+// A stint survives this many consecutive updates with its seat's view down (~4 s of 30 Hz control updates).
+constexpr uint32_t kHalo2StintStaleUpdates = 120;
 
 // Sim thread: the seat stint is over (left the seat, the seat stopped qualifying, a disarm or a fault).
 void Halo2DriveForgetSeat(Halo2DriveState& st) noexcept
@@ -111,6 +113,7 @@ void Halo2DriveForgetSeat(Halo2DriveState& st) noexcept
     st.stintKey = 0;
     st.stintPitchFailCounted = false;
     st.stintSample = 0;
+    st.stintStaleUpdates = 0;
     st.yawLatch.reset();
     st.yawTicks = 0;
     st.seatYawMs.store(0, std::memory_order_release);
@@ -196,13 +199,24 @@ void Halo2DriveApply(int user, uint64_t returnAddress) noexcept
                 facts.driver = facts.look_steered = true;
                 const seat_drive::Axes axes = g_config.vehicle_view_follow ? seat_drive::Axes{}
                     : seat_drive::Decide(facts, g_config.reach_vehicle_aim, g_config.seat_direct_drive != 0);
+                const uint32_t key = seat_drive::SeatKey(static_cast<int>(seatParent), seatIndex, false);
                 if (!axes.any())
                 {
+                    // A GAP in this stint's seat (the F1 menu, a pause and its fade, the theater: the observer stops
+                    // publishing the seat's view) keeps the proven checks for a bounded run of updates, writing
+                    // nothing -- when the seat, its policy and everything but the view are unchanged.
+                    seat_drive::Seat viewed = facts;
+                    viewed.view_owned = true;
+                    const bool onlyTheView = !facts.view_owned && !g_config.vehicle_view_follow &&
+                        seat_drive::Decide(viewed, g_config.reach_vehicle_aim, g_config.seat_direct_drive != 0).any();
+                    if (onlyTheView && facts.identified && st.stintActive && st.stintKey == key &&
+                        ++st.stintStaleUpdates <= kHalo2StintStaleUpdates)
+                        seatKept = true;
                     st.agree = 0;
                     break;
                 }
                 seatKept = true;
-                const uint32_t key = seat_drive::SeatKey(static_cast<int>(seatParent), seatIndex, false);
+                st.stintStaleUpdates = 0;
                 if (!st.stintActive || st.stintKey != key)
                 {
                     Halo2DriveForgetSeat(st);
