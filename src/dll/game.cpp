@@ -49525,10 +49525,7 @@ void* Game_ReloadPolicyWeapon(GameTitle title, uint32_t weapon)
     __except(EXCEPTION_EXECUTE_HANDLER) { return nullptr; }
 }
 
-// Halo 4 publishes Gameplay in a seat too; the physical crouch needs its own on-foot state. Called from the
-// XInput poll, which is NOT always the engine thread: reading Halo 4's per-thread TLS from there passed only
-// when the poll happened to land on it, so the gate flickered about once a second and let go of every duck
-// (FA, Forge, 2026-09-29). The camera hook stamps the verdict instead; a stale stamp is "not on foot".
+// The CROUCH line's handsLift (game.h): the view lift each title last published for its hands.
 float Game_ViewLiftWu(GameTitle title)
 {
     switch (title)
@@ -49552,6 +49549,10 @@ float Game_ViewLiftWu(GameTitle title)
     }
 }
 
+// Halo 4 publishes Gameplay in a seat too; the physical crouch needs its own on-foot state. Called from the
+// XInput poll, which is NOT always the engine thread: reading Halo 4's per-thread TLS from there passed only
+// when the poll happened to land on it, so the gate flickered about once a second and let go of every duck
+// (FA, Forge, 2026-09-29). The camera hook stamps the verdict instead; a stale stamp is "not on foot".
 bool Game_Halo4OnFoot()
 {
 #if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA
