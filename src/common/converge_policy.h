@@ -100,6 +100,13 @@ struct NaturalEvents {
     bool yawShortH4 = false;    // a yaw-only seat whose game yaw stayed off the writes (Halo 4's slope frame)
 };
 
+// Whether any natural cause held the game's aim off the converged point this poll. Read only by the dev
+// witnesses that compare the game's line with the point (they skip such polls), never by a decision.
+inline bool NaturalHoldsAimOff(const NaturalEvents& e)
+{
+    return e.latchHeld || e.outcomeMiss || e.stall || e.turretSlew || e.reachLimited || e.yawShortH4;
+}
+
 struct NaturalCounts {
     uint32_t polls = 0;
     uint32_t latchHeld = 0, outcomeMiss = 0, stall = 0, turretSlew = 0, reachLimited = 0, yawShortH4 = 0;

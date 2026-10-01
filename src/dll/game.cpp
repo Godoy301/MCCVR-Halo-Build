@@ -9537,6 +9537,10 @@ namespace
     // The natural in-game causes that used to switch convergence off, counted per title for the dev line and
     // never read by a decision (converge_policy.h): [0] Halo 3, [1] ODST, [2] Halo 4, [3] Reach.
     converge::NaturalWitness g_convergeNatural[4];
+    // The last poll (GetTickCount64) at which a natural cause held the game's aim off the converged point. The dev
+    // engine-trace witnesses skip those polls: the converged mark now stays on through them, and the game's line
+    // is off the point there by design, so comparing them would only inflate the miss statistics.
+    std::atomic<uint64_t> g_convergeNaturalHeldMs[4]{};
     int ConvergeNaturalSlot(GameTitle title)
     {
         switch (title)
@@ -9547,6 +9551,25 @@ namespace
         case GameTitle::HaloReach: return 3;
         default: return -1;
         }
+    }
+    void ConvergeNoteNatural(GameTitle title, const converge::NaturalEvents& e)
+    {
+        const int slot = ConvergeNaturalSlot(title);
+        if (slot < 0)
+            return;
+        g_convergeNatural[slot].note(e);
+        if (converge::NaturalHoldsAimOff(e))
+            g_convergeNaturalHeldMs[slot].store(GetTickCount64(), std::memory_order_relaxed);
+    }
+    // True while a natural cause held this title's aim off the converged point within the last 150 ms.
+    bool ConvergeNaturalHeld(GameTitle title)
+    {
+        const int slot = ConvergeNaturalSlot(title);
+        if (slot < 0)
+            return false;
+        const uint64_t at = g_convergeNaturalHeldMs[slot].load(std::memory_order_relaxed);
+        const uint64_t now = GetTickCount64();
+        return at && now >= at && now - at <= 150;
     }
 #endif
     std::atomic<uint32_t> g_halo3WheelSwallowsGrips{0};
@@ -51719,8 +51742,7 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
                     Sight_MarkAimWritten(sightSeatedTitle);
 #if HALOMCCVR_DEV_DIAGNOSTICS
                 assessGameAim(true);
-                if (const int slot = ConvergeNaturalSlot(driveTitle); slot >= 0)
-                    g_convergeNatural[slot].note(natural);
+                ConvergeNoteNatural(driveTitle, natural);
 #endif
                 s_turretServoStale = true;
                 outRx = 0.0f;
@@ -51784,8 +51806,8 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
             const float stallYawErr = seatWritten.yaw ? 0.0f : errYaw;
             natural.stall = s_stallWitness.step(seated, sqrtf(stallYawErr * stallYawErr + errPitch * errPitch), nowMs);
             natural.turretSlew = natural.turretSlew || turretSeat;
-            if (const int slot = ConvergeNaturalSlot(TitleAdapter_GetActiveTitle()); slot >= 0 && seated)
-                g_convergeNatural[slot].note(natural);
+            if (seated)
+                ConvergeNoteNatural(TitleAdapter_GetActiveTitle(), natural);
         }
         // DEV ASSESSMENT (honest_reticle_assess): the game's real aim instead of the aim point, so the
         // integrator's lag behind the hand -- or a seat's stop, or a turret's slew -- is visible by eye.

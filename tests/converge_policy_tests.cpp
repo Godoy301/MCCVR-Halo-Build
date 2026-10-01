@@ -54,6 +54,21 @@ void TestClaimIgnoresNaturalCauses()
         }
     }
     Check(combinations == 256 && changed == 0, "no natural cause changes the seated converged claim");
+    {
+        unsigned held = 0;
+        for (unsigned bits = 0; bits < 64; ++bits)
+        {
+            NaturalEvents e;
+            e.latchHeld = (bits & 1u) != 0;
+            e.outcomeMiss = (bits & 2u) != 0;
+            e.stall = (bits & 4u) != 0;
+            e.turretSlew = (bits & 8u) != 0;
+            e.reachLimited = (bits & 16u) != 0;
+            e.yawShortH4 = (bits & 32u) != 0;
+            held += NaturalHoldsAimOff(e) ? 1u : 0u;
+        }
+        Check(held == 63, "any natural cause marks the poll held off the point (for the dev witnesses only)");
+    }
     const NaturalCounts counts = witness.take();
     Check(counts.polls == 256 && counts.latchHeld == 128 && counts.outcomeMiss == 128 && counts.stall == 128 &&
               counts.turretSlew == 128 && counts.reachLimited == 128 && counts.yawShortH4 == 128,
