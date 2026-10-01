@@ -823,6 +823,7 @@ namespace
         bool stintPitchFailCounted = false;
         aim_write::LimitLatch yawLatch{};
         uint32_t yawTicks = 0;
+        uint64_t stintSample = 0;      // the publication the stint last judged (a repeat is no evidence)
         std::atomic<uint64_t> seatYawMs{0}, seatPitchMs{0};
         std::atomic<uint32_t> seatWrites{0}, seatHeld{0}, seatWaits{0}, seatStints{0}, seatYawChecks{0},
             seatPitchChecks{0}, seatPitchFails{0};

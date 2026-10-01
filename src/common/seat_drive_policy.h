@@ -76,9 +76,12 @@ inline unsigned SeatKey(int parent_handle, int seat_index, bool mounted)
 // PER-AXIS SEAT CHECK -- each seat stint proves, axis by axis, that its record holds the aim the game
 // shows before that axis is written. Yaw passes on `needed` consecutive updates within `tol`. Pitch passes
 // on `needed` SETTLED updates within `tol` (the game's aim pitch moved less than `settle` since the last
-// update: a rate-capped barrel still slewing is not a disagreement), inside `budget_ms` of updates; a pitch
-// that has not passed by then stays on the servo for the rest of the stint. Pitch is never verified before
-// yaw. The budget counts only time the game is updating (a gap -- a pause menu -- adds at most `gap_ms`).
+// update: a rate-capped barrel still slewing is not a disagreement) within `budget_ms` of updates after yaw
+// passed; a pitch that has not passed by then stays on the servo for the rest of the stint. Pitch is never
+// verified before yaw, and a slow yaw never uses up pitch's budget (a pitch that agreed all along passes the
+// moment yaw does). The budget counts only time the game is updating (a gap -- a pause menu -- adds at most
+// `gap_ms`). A REPEATED aim sample (the sim ticking faster than the aim is published) is not evidence: it
+// neither counts nor resets.
 struct StintCheck {
     float tol = 0.03f;          // 1.7 deg
     float settle = 0.00175f;    // 0.1 deg per update
@@ -88,7 +91,7 @@ struct StintCheck {
 
     bool yaw_ok = false, pitch_ok = false, pitch_failed = false;
     unsigned yaw_count = 0, pitch_count = 0;
-    unsigned long long elapsed_ms = 0, last_ms = 0;
+    unsigned long long elapsed_ms = 0, last_ms = 0, yaw_ok_at_ms = 0;
     bool have_last = false;
     float last_aim_pitch = 0.0f;
 
@@ -96,35 +99,39 @@ struct StintCheck {
     {
         yaw_ok = pitch_ok = pitch_failed = false;
         yaw_count = pitch_count = 0;
-        elapsed_ms = last_ms = 0;
+        elapsed_ms = last_ms = yaw_ok_at_ms = 0;
         have_last = false;
         last_aim_pitch = 0.0f;
     }
 
-    // One update of the stint. `fresh`: the aim was published recently. Yaw differences wrap.
+    // One update of the stint. `fresh`: the aim was published recently. `new_sample`: the aim is not the one
+    // the previous update already judged. Yaw differences wrap.
     void step(bool fresh, float native_yaw, float native_pitch, float aim_yaw, float aim_pitch,
-              unsigned long long now_ms)
+              unsigned long long now_ms, bool new_sample = true)
     {
         if (last_ms && now_ms >= last_ms)
             elapsed_ms += (now_ms - last_ms) < gap_ms ? (now_ms - last_ms) : gap_ms;
         last_ms = now_ms ? now_ms : 1;
         const bool finite = fresh && std::isfinite(native_yaw) && std::isfinite(native_pitch) &&
                             std::isfinite(aim_yaw) && std::isfinite(aim_pitch);
-        if (!yaw_ok) {
+        if (!yaw_ok && (new_sample || !finite)) {
             const bool agree = finite && std::fabs(std::remainder(native_yaw - aim_yaw, 6.28318531f)) < tol;
             yaw_count = agree ? yaw_count + 1 : 0;
-            if (yaw_count >= needed) yaw_ok = true;
+            if (yaw_count >= needed) {
+                yaw_ok = true;
+                yaw_ok_at_ms = elapsed_ms;
+            }
         }
         if (!pitch_ok && !pitch_failed) {
-            const bool settled = finite && have_last && std::fabs(aim_pitch - last_aim_pitch) < settle;
+            const bool settled = finite && new_sample && have_last && std::fabs(aim_pitch - last_aim_pitch) < settle;
             if (settled) {
                 const bool agree = std::fabs(native_pitch - aim_pitch) < tol;
                 pitch_count = agree ? pitch_count + 1 : 0;
             }
             if (yaw_ok && pitch_count >= needed) pitch_ok = true;
-            else if (elapsed_ms > budget_ms) pitch_failed = true;
+            else if (yaw_ok && elapsed_ms - yaw_ok_at_ms > budget_ms) pitch_failed = true;
         }
-        if (finite) {
+        if (finite && new_sample) {
             have_last = true;
             last_aim_pitch = aim_pitch;
         }

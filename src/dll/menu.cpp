@@ -1149,15 +1149,17 @@ namespace
             bool seats = g_config.seat_direct_drive != 0;
             if (ImGui::Checkbox("Direct drive in seats", &seats))
             { g_config.seat_direct_drive = seats ? 1 : 0; changed = true; }
-            ImGui::TextDisabled("ON (with Direct drive): a seat's aim is written as on foot, in every title, once\n"
-                                "the seat has checked its own aim (a moment after you sit down). OFF: the stick\n"
+            ImGui::TextDisabled("ON (with Direct drive): a seat's aim is written as on foot, once the seat has\n"
+                                "checked its own aim (a moment after you sit down). Halo 4 and Halo 2 seats need\n"
+                                "the first-person seat view; Halo 4 seats write the heading only. OFF: the stick\n"
                                 "steers the aim in every seat.");
             bool drivers = g_config.reach_vehicle_aim >= 2;
             if (ImGui::Checkbox("Drivers aim with the hand", &drivers))
             { g_config.reach_vehicle_aim = drivers ? 2 : 1; changed = true; }
             ImGui::TextDisabled("ON: a driver whose vehicle turns toward the aim (Warthog, Ghost, Banshee) steers\n"
                                 "with the hand. OFF: that driver keeps the stick; gunners and passengers still\n"
-                                "aim with the hand.");
+                                "aim with the hand -- except in Halo 4 and Halo 2, which cannot yet tell a seat's\n"
+                                "role, so OFF keeps every seat there on the stick.");
         }
         ImGui::Spacing();
         ImGui::Separator();
@@ -1329,9 +1331,9 @@ namespace
                                 "the shot leaves your eye as before. \"Aim from the visible gun barrel\" (Crosshair\n"
                                 "page), when on, wins and keeps the barrel's own direction. Live.");
             ImGui::TextDisabled("Both cover vehicle seats too. Every seat you aim from converges (Halo 3 and ODST\n"
-                                "in first-person seats; Reach with Direct drive). With Direct drive, a Reach seat,\n"
-                                "and a Halo 3 or ODST seat that fires your own weapon, has its aim written too;\n"
-                                "a Halo 3 or ODST seat first checks its aim, about a second after you sit down.");
+                                "in first-person seats; Reach with Direct drive). With Direct drive, seats have\n"
+                                "their aim written too (Vehicles > Aim in seats says which); a seat first checks\n"
+                                "its own aim, about a second after you sit down.");
         }
         ImGui::Spacing();
         ImGui::Separator();

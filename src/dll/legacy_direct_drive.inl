@@ -144,6 +144,12 @@ struct LegacyDriveState
     std::atomic<uint32_t> seatStints{0}, seatYawChecks{0}, seatPitchChecks{0}, seatPitchFails{0};
     std::atomic<uint32_t> otherCalls{0}, restores{0};
     std::atomic<uintptr_t> lastOtherRet{0};
+    uint64_t stintSampleMs = 0;              // the publication the stint last judged (a repeat is no evidence)
+    // The last two seat writes (seqlock), for the input thread's honest-reticle gate: the game's aim lags the
+    // latest write by up to a tick, so the gate measures it against whichever of the two is nearer.
+    std::atomic<uint32_t> wroteSeq{0};
+    std::atomic<float> wroteYaw[2]{}, wrotePitch[2]{};
+    std::atomic<bool> wroteValid[2]{};
     std::atomic<float> nativeYaw{0.0f}, nativePitch{0.0f};
 };
 LegacyDriveState g_legacyDrive[3];
@@ -195,6 +201,12 @@ void LegacyDriveForgetSeat(LegacyDriveState& st)
     st.seatYawWriteMs.store(0, std::memory_order_release);
     st.seatPitchWriteMs.store(0, std::memory_order_release);
     st.seatLimitedMs.store(0, std::memory_order_release);
+    // ...and its writes are no reference for the next stint's outcome gate.
+    st.wroteSeq.fetch_add(1, std::memory_order_acq_rel);
+    st.wroteValid[0].store(false, std::memory_order_relaxed);
+    st.wroteValid[1].store(false, std::memory_order_relaxed);
+    st.wroteSeq.fetch_add(1, std::memory_order_release);
+    st.stintSampleMs = 0;
 }
 
 #if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA
@@ -457,6 +469,32 @@ seat_drive::Axes LegacyDriveSeatAxes(GameTitle title)
     return axes;
 }
 
+// Input thread: the hook's last two seat writes (yaw/pitch as written into the record), newest first. False
+// when torn or none.
+bool LegacyDriveSeatWrites(GameTitle title, float yaw[2], float pitch[2], bool valid[2])
+{
+    const int slot = LegacyDriveSlot(title);
+    if (slot < 0)
+        return false;
+    auto& st = g_legacyDrive[slot];
+    for (int attempt = 0; attempt < 2; ++attempt)
+    {
+        const uint32_t before = st.wroteSeq.load(std::memory_order_acquire);
+        if (before & 1u)
+            continue;
+        for (int i = 0; i < 2; ++i)
+        {
+            yaw[i] = st.wroteYaw[i].load(std::memory_order_relaxed);
+            pitch[i] = st.wrotePitch[i].load(std::memory_order_relaxed);
+            valid[i] = st.wroteValid[i].load(std::memory_order_relaxed);
+        }
+        std::atomic_thread_fence(std::memory_order_acquire);
+        if (st.wroteSeq.load(std::memory_order_relaxed) == before)
+            return valid[0];
+    }
+    return false;
+}
+
 bool LegacyDriveSeatLimited(GameTitle title)
 {
     const int slot = LegacyDriveSlot(title);
@@ -523,7 +561,10 @@ extern "C" void LegacyPcApplyForUser(int slot, int user, uintptr_t ret)
         }
         __except (EXCEPTION_EXECUTE_HANDLER)
         {
-            st.armed.store(false, std::memory_order_release);
+            // A fault disarms like a disarm: the record is proven again from a count of zero.
+            if (st.armed.exchange(false, std::memory_order_acq_rel))
+                st.disarms.fetch_add(1, std::memory_order_relaxed);
+            st.agree = 0;
             st.lastWriteMs = 0;
             st.faults.fetch_add(1, std::memory_order_relaxed);
         }
@@ -625,7 +666,9 @@ extern "C" void LegacyPcApplyForUser(int slot, int user, uintptr_t ret)
                     st.seatStints.fetch_add(1, std::memory_order_relaxed);
                 }
                 const bool yawWas = st.stint.yaw_ok, pitchWas = st.stint.pitch_ok;
-                st.stint.step(fresh, nativeYaw, nativePitch, aimYaw, aimPitch, now);
+                const bool newSample = setMs != st.stintSampleMs;
+                st.stintSampleMs = setMs;
+                st.stint.step(fresh, nativeYaw, nativePitch, aimYaw, aimPitch, now, newSample);
                 if (!yawWas && st.stint.yaw_ok)
                     st.seatYawChecks.fetch_add(1, std::memory_order_relaxed);
                 if (!pitchWas && st.stint.pitch_ok)
@@ -718,6 +761,16 @@ extern "C" void LegacyPcApplyForUser(int slot, int user, uintptr_t ret)
                         st.seatYawWriteMs.store(writeYaw ? now : 0, std::memory_order_release);
                         st.seatPitchWriteMs.store(writePitch ? now : 0, std::memory_order_release);
                         st.seatLimitedMs.store(limited ? now : 0, std::memory_order_release);
+                        st.wroteSeq.fetch_add(1, std::memory_order_acq_rel);
+                        st.wroteYaw[1].store(st.wroteYaw[0].load(std::memory_order_relaxed), std::memory_order_relaxed);
+                        st.wrotePitch[1].store(st.wrotePitch[0].load(std::memory_order_relaxed),
+                                               std::memory_order_relaxed);
+                        st.wroteValid[1].store(st.wroteValid[0].load(std::memory_order_relaxed),
+                                               std::memory_order_relaxed);
+                        st.wroteYaw[0].store(writeYaw ? y : nativeYaw, std::memory_order_relaxed);
+                        st.wrotePitch[0].store(writePitch ? p : nativePitch, std::memory_order_relaxed);
+                        st.wroteValid[0].store(true, std::memory_order_relaxed);
+                        st.wroteSeq.fetch_add(1, std::memory_order_release);
                         if (writeYaw)
                             st.seatYawWrites.fetch_add(1, std::memory_order_relaxed);
                         if (writePitch)
@@ -732,7 +785,10 @@ extern "C" void LegacyPcApplyForUser(int slot, int user, uintptr_t ret)
     }
     __except (EXCEPTION_EXECUTE_HANDLER)
     {
-        st.armed.store(false, std::memory_order_release);
+        // A fault disarms like a disarm: the record is proven again from a count of zero.
+        if (st.armed.exchange(false, std::memory_order_acq_rel))
+            st.disarms.fetch_add(1, std::memory_order_relaxed);
+        st.agree = 0;
         st.lastWriteMs = 0;
         seatWrote = false;
         seatKept = false;
@@ -776,7 +832,17 @@ void LegacyDriveReport()
         auto& st = g_legacyDrive[slot];
         const uint32_t calls = st.calls.exchange(0, std::memory_order_relaxed);
         if (!calls)
+        {
+            // No per-tick update (dead, no unit): only other callers ran, which is when their count matters.
+            const uint32_t other = st.otherCalls.exchange(0), restores = st.restores.exchange(0);
+            if (other)
+                LOG("DRIVE %s: no per-tick update; %u calls from another caller (last returned to +0x%llX), %u put "
+                    "back to this tick's write", kLegacyDriveSites[slot].name, other,
+                    static_cast<unsigned long long>(st.lastOtherRet.load(std::memory_order_relaxed) >= st.base
+                        ? st.lastOtherRet.load(std::memory_order_relaxed) - st.base : 0),
+                    restores);
             continue;
+        }
         LOG("DRIVE %s: armed=%d updates %u, wrote %u; arms %u, disarms %u, seated %u, faults %u; record yaw %.3f "
             "pitch %.3f vs game aim yaw %.3f pitch %.3f",
             kLegacyDriveSites[slot].name, st.armed.load() ? 1 : 0, calls, st.writes.exchange(0), st.arms.exchange(0),

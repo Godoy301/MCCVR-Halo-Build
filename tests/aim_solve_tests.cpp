@@ -520,6 +520,31 @@ static void test_limit_latch() {
         const float native[2]{0.0f, 0.9f}, target[2]{0.0f, -0.4f};
         CHECK(!l.apply(native, target, out, both) && near(out[1], -0.4f, 1e-6f) && !l.latched[1]);
     }
+    {   // per axis, the shipping path: a mask with pitch enabled still reads and holds the pitch stop
+        LimitLatch l; float pair[2]{0.0f, -0.1f}, out[2]{};
+        const bool pitchOnly[2]{false, true};
+        const bool recorded[2]{false, true};
+        const float target[2]{0.2f, -35.0f * kD};
+        bool limited = false;
+        for (int t = 0; t < 20; ++t) {
+            float native[2]; game(pair, native);
+            limited = l.apply(native, target, out, pitchOnly);
+            pair[0] = native[0]; pair[1] = out[1]; l.wrote(pair, recorded);
+        }
+        CHECK(limited && out[1] < -20.0f * kD && out[1] >= -20.0f * kD - l.probe - 1e-6f);
+    }
+    {   // wrote(axes): a write made through the prime (apply skipped the axis) is recorded, so the next
+        // tick reads a limit off it
+        LimitLatch l; float out[2]{};
+        const bool off[2]{false, false}, pitchOn[2]{false, true}, recorded[2]{false, true};
+        const float native0[2]{0.0f, 0.0f}, target[2]{0.0f, -0.5f};
+        l.apply(native0, target, out, off);
+        const float written[2]{0.0f, -0.5f};
+        l.wrote(written, recorded);
+        CHECK(l.have_last[1] && !l.have_last[0]);
+        const float clamped[2]{0.0f, -0.3f};                              // the game clamped the primed write
+        CHECK(l.apply(clamped, target, out, pitchOn) && l.latched[1]);
+    }
     {   // per axis: a latched axis that is switched off forgets the latch
         LimitLatch l; float pair[2]{0.0f, -0.1f}, out[2]{};
         const float target[2]{0.2f, -35.0f * kD};

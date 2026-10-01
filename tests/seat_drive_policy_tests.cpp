@@ -95,7 +95,37 @@ void TestStintCheck()
         for (int i = 0; i < 400 && !c.pitch_failed; ++i, t += 16)
             c.step(true, 0.2f, 0.0f, 0.2f, 0.23f, t);
         Check(c.yaw_ok && !c.pitch_ok && c.pitch_failed, "a pitch that disagrees stays on the servo");
-        Check(t > 1000 + 3000 && t < 1000 + 3200, "the pitch budget is three seconds of updates");
+        // yaw passed at its 30th update (464 ms in); pitch then had three seconds of updates
+        Check(t > 1000 + 464 + 3000 && t < 1000 + 464 + 3200, "the pitch budget is three seconds after yaw");
+    }
+    {   // a slow yaw (a gun slewing onto the hand) does not use up an agreeing pitch's budget
+        StintCheck c;
+        unsigned long long t = 1000;
+        for (int i = 0; i < 250; ++i, t += 16)           // 4 s: yaw never 30 in a row, pitch settled and agreeing
+            c.step(true, (i % 2) ? 0.05f : 0.0f, 0.1f, 0.0f, 0.1f, t);
+        Check(!c.yaw_ok && !c.pitch_ok && !c.pitch_failed, "no pitch before yaw, and no budget spent waiting");
+        for (int i = 0; i < 30; ++i, t += 16)
+            c.step(true, 0.0f, 0.1f, 0.0f, 0.1f, t);
+        Check(c.yaw_ok && c.pitch_ok && !c.pitch_failed, "pitch passes the moment the slow yaw does");
+    }
+    {   // agreement must be consecutive
+        StintCheck c;
+        unsigned long long t = 1000;
+        for (int i = 0; i < 29; ++i, t += 16) c.step(true, 0.0f, 0.0f, 0.0f, 0.0f, t);
+        c.step(true, 0.2f, 0.0f, 0.0f, 0.0f, t); t += 16;
+        for (int i = 0; i < 29; ++i, t += 16) c.step(true, 0.0f, 0.0f, 0.0f, 0.0f, t);
+        Check(!c.yaw_ok && c.yaw_count == 29, "one disagreement restarts the yaw count");
+    }
+    {   // a repeated aim sample neither counts nor resets
+        StintCheck c;
+        unsigned long long t = 1000;
+        for (int i = 0; i < 20; ++i, t += 16) c.step(true, 0.0f, 0.0f, 0.0f, 0.0f, t);
+        for (int i = 0; i < 20; ++i, t += 16) c.step(true, 0.0f, 0.0f, 0.0f, 0.0f, t, false);
+        Check(c.yaw_count == 20, "a repeated agreeing sample does not count");
+        c.step(true, 0.2f, 0.2f, 0.0f, 0.0f, t, false); t += 16;
+        Check(c.yaw_count == 20 && c.pitch_count == 19, "a repeated disagreeing sample does not reset");
+        for (int i = 0; i < 10; ++i, t += 16) c.step(true, 0.0f, 0.0f, 0.0f, 0.0f, t);
+        Check(c.yaw_ok, "new samples finish the count");
     }
     {   // a slewing barrel: unsettled updates neither count nor reset
         StintCheck c;

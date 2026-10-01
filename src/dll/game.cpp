@@ -49346,10 +49346,12 @@ bool Game_CeControllerFeaturesRequested()
 // direction later passed to weapon_barrel_simulation_action and projectile
 // creation. Close the ordinary stick loop on the stock observer camera, the
 // same native aim feedback already proven by C-H2-23's headset pitch result.
+// holdYaw / holdPitch: the seat drive writes that axis (halo2_direct_drive.inl). The axis gets no command, and its
+// servo starts afresh rather than learn from motion it did not command.
 static bool ComputeHalo2ControllerAimStick(
     const float controllerOrientation[4], const float controllerPosition[3],
     const float headOrientation[4], const float headPosition[3],
-    float& outRx, float& outRy)
+    float& outRx, float& outRy, bool holdYaw = false, bool holdPitch = false)
 {
 #if HALOMCCVR_HALO2_STEREO6DOF
     static Halo4PitchServo yawServo;
@@ -49479,11 +49481,15 @@ static bool ComputeHalo2ControllerAimStick(
         : engineYaw;
     const float nearestDesiredYaw = continuousEngineYaw +
         WrapPi(desiredYaw - engineYaw);
-    outRx = Halo4PitchServoStep(
+    outRx = holdYaw ? 0.0f : Halo4PitchServoStep(
         yawServo, continuousEngineYaw, nearestDesiredYaw,
         kHalo4PitchServoGain);
-    outRy = Halo4PitchServoStep(
+    outRy = holdPitch ? 0.0f : Halo4PitchServoStep(
         pitchServo, enginePitch, desiredPitch, kHalo4PitchServoGain);
+    if (holdYaw)
+        Halo4ResetPitchServo(yawServo);
+    if (holdPitch)
+        Halo4ResetPitchServo(pitchServo);
     heldRx = outRx;
     heldRy = outRy;
     lastBlock.store(0, std::memory_order_relaxed);
@@ -50377,23 +50383,21 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
     }
     if (halo2Aim)
     {
-        const bool servo = ComputeHalo2ControllerAimStick(q, p, hq, hp, outRx, outRy);
         // A seat axis the direct drive writes (halo2_direct_drive.inl) is not steered as well: both written,
         // the stick is neutral; one written, the servo keeps only the other.
         bool seatYaw = false, seatPitch = false;
-        if (Halo2Observer6Dof_SeatDriveAxes(seatYaw, seatPitch))
+        Halo2Observer6Dof_SeatDriveAxes(seatYaw, seatPitch);
+        const bool servo = ComputeHalo2ControllerAimStick(q, p, hq, hp, outRx, outRy, seatYaw, seatPitch);
+        if (seatYaw && seatPitch)
         {
-            if (seatYaw && seatPitch)
-            {
-                outRx = 0.0f;
-                outRy = 0.0f;
-                return true;
-            }
-            if (servo && seatYaw)
-                outRx = 0.0f;
-            if (servo && seatPitch)
-                outRy = 0.0f;
+            outRx = 0.0f;
+            outRy = 0.0f;
+            return true;
         }
+        if (servo && seatYaw)
+            outRx = 0.0f;
+        if (servo && seatPitch)
+            outRy = 0.0f;
         return servo;
     }
     lastAimBlock = 0;
@@ -50760,6 +50764,13 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
     // before writing it and reports what it wrote; an axis it does not write stays on the servo below (or the
     // steering author), and the stick is zeroed only on the written ones (seatWritten).
     seat_drive::Axes seatWritten{};
+    // A written axis held at a seat limit by the hook's latch: the reticle shows the game's aim at once, whichever
+    // axes are written (the servo path's honest branch below reads it when only one is).
+    bool seatLatchHeld = false;
+    // The turret servo below kept no account of frames the drive aimed for it: its last commands and its quantum
+    // estimate would read the drive's motion as its own. Set when a written frame returns early; the servo then
+    // starts afresh.
+    static bool s_turretServoStale = false;
     if (g_config.legacy_direct_drive)
     {
         const GameTitle driveTitle = TitleAdapter_GetActiveTitle();
@@ -50814,9 +50825,10 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
             {
                 // The camera hook's seat stamp (this thread cannot read Halo 4's seat itself). Halo 4's seat
                 // roles are not mapped yet, so every seat is taken as a driver whose look steers -- the cautious
-                // reading: both axes at reach_vehicle_aim 2, the servo at 1, and pitch never latched. Its view
-                // must be the native first-person seat override's; the stock seat camera is a chase camera
-                // pushed out along this very aim (following_camera), which a write would swing round the hull.
+                // reading: the heading at reach_vehicle_aim 2, the servo at 1 -- and its pitch stays on the servo
+                // (below). Its view must be the native first-person seat override's; the stock seat camera is a
+                // chase camera pushed out along this very aim (following_camera), which a write would swing round
+                // the hull.
                 Halo4VehicleInputState seat{};
                 driveSeated = Halo4ReadSeatStamp(seat) && seat.seated;
                 if (driveSeated && seat.parent != UINT32_MAX && seat.seat >= 0)
@@ -50830,9 +50842,15 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
                 }
             }
 #endif
-            const seat_drive::Axes seatAxes = driveSeated
+            seat_drive::Axes seatAxes = driveSeated
                 ? seat_drive::Decide(seatFacts, g_config.reach_vehicle_aim, g_config.seat_direct_drive != 0)
                 : seat_drive::Axes{};
+            // Halo 4: with the roles unmapped, a gunner's or passenger's pitch stop cannot be told from a driver's
+            // autolevel, so nothing could hold a written pitch at the stop (the latch must stay off a driver's
+            // pitch). Its seats write the heading only; the pitch stays on the servo, which steers through the
+            // accumulator and so keeps every limit.
+            if (halo4Aim)
+                seatAxes.pitch = false;
             LegacyDrivePublish(driveTitle, desiredYaw, desiredPitch, aimYaw, aimPitch, true, driveSeated, seatAxes,
                                seat_drive::PitchLatches(seatFacts), seatKey);
             if (!driveSeated && LegacyDriveLive(driveTitle))
@@ -50843,6 +50861,7 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
                 if (sightOnFootConverged && sightOnFootTitle == driveTitle)
                     Sight_MarkAimWritten(driveTitle);
                 g_aimClampedValid.store(0, std::memory_order_release);
+                s_turretServoStale = true;
                 outRx = 0.0f;
                 outRy = 0.0f;
                 return true;
@@ -50853,6 +50872,7 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
                 const seat_drive::Axes live = LegacyDriveSeatAxes(driveTitle);
                 seatWritten.yaw = live.yaw && seatAxes.yaw;
                 seatWritten.pitch = live.pitch && seatAxes.pitch;
+                seatLatchHeld = seatWritten.any() && LegacyDriveSeatLimited(driveTitle);
             }
             // HONEST RETICLE BY OUTCOME. Written, the seat's aim can still fall short of the target: held at a
             // seat limit by the latch, or downstream of the record, where a gun's rate cap or an aiming clip
@@ -50864,17 +50884,31 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
                 s_seatOutcome.reset();
             if (seatWritten.yaw && seatWritten.pitch)
             {
-                const float cosDesired = cosf(desiredPitch);
-                const float target[3]{cosDesired * cosf(desiredYaw), cosDesired * sinf(desiredYaw), sinf(desiredPitch)};
+                // How far the game's aim is from a direction (yaw, pitch in the record's world angles).
                 const float aimLength = sqrtf(ax * ax + ay * ay + az * az);
-                float miss = std::numeric_limits<float>::quiet_NaN();
-                if (std::isfinite(aimLength) && aimLength > 1e-4f)
-                {
+                const auto missTo = [&](float yaw, float pitch) {
+                    if (!std::isfinite(aimLength) || aimLength <= 1e-4f || !std::isfinite(yaw) || !std::isfinite(pitch))
+                        return std::numeric_limits<float>::quiet_NaN();
+                    const float c = cosf(pitch);
+                    const float target[3]{c * cosf(yaw), c * sinf(yaw), sinf(pitch)};
                     const float cx = (ay * target[2] - az * target[1]) / aimLength;
                     const float cyy = (az * target[0] - ax * target[2]) / aimLength;
                     const float cz = (ax * target[1] - ay * target[0]) / aimLength;
                     const float dot = (ax * target[0] + ay * target[1] + az * target[2]) / aimLength;
-                    miss = atan2f(sqrtf(cx * cx + cyy * cyy + cz * cz), dot);
+                    return atan2f(sqrtf(cx * cx + cyy * cyy + cz * cz), dot);
+                };
+                // Measured against what the hook WROTE, not this poll's target: the game's aim trails the newest
+                // write by up to a tick (and render interpolation sits between the last two), so against the
+                // target every hand sweep read as a shortfall. The nearer of the last two writes is a real
+                // shortfall only when something downstream of the record holds the gun off it.
+                float writtenYaw[2]{}, writtenPitch[2]{};
+                bool writtenValid[2]{};
+                float miss = missTo(desiredYaw, desiredPitch);
+                if (LegacyDriveSeatWrites(driveTitle, writtenYaw, writtenPitch, writtenValid))
+                {
+                    miss = missTo(writtenYaw[0], writtenPitch[0]);
+                    if (writtenValid[1])
+                        miss = std::fmin(miss, missTo(writtenYaw[1], writtenPitch[1]));
                 }
                 const bool turret = !halo4Aim && OccupiedTurretSeat() && kAimServoTurretReticleRidesBarrel;
                 const bool honest = s_seatOutcome.step(miss, LegacyDriveSeatLimited(driveTitle), GetTickCount64()) ||
@@ -50910,6 +50944,7 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
                         Sight_MarkAimWritten(sightSeatedTitle);
                     }
                 }
+                s_turretServoStale = true;
                 outRx = 0.0f;
                 outRy = 0.0f;
                 return true;
@@ -50990,7 +51025,7 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
         // logic (both guards below stay exactly as they were).
         const bool honestOnFoot =
             g_config.honest_reticle_onfoot && !turretSeat && !seated;
-        if (honestOnFoot ||
+        if (honestOnFoot || seatLatchHeld ||
             (turretSeat ? kAimServoTurretReticleRidesBarrel
                         : (stalledSinceMs && nowMs - stalledSinceMs >= stallMs)))
         {
@@ -51040,6 +51075,15 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
     static float servoLastYawCommand = 0.0f;
     static bool servoWasTurret = false;
     static uint32_t servoFrames = 0, servoParkedFrames = 0;
+    if (s_turretServoStale)
+    {
+        // The drive aimed for the servo since its last frame: forget what it measured and commanded then.
+        AimServoReset(servoPitch);
+        AimServoReset(servoYaw);
+        servoLastPitchCommand = 0.0f;
+        servoLastYawCommand = 0.0f;
+        s_turretServoStale = false;
+    }
     if (turretSeat)
     {
         if (!servoWasTurret)

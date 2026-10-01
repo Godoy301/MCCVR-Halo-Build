@@ -33,10 +33,12 @@
 // written after). The slot must resolve inside the module. Any mismatch: no hook, said once, and Halo 2
 // keeps its unit aim (the shot follows the hand; the body and the network do not).
 // ARM GATE (ValueAgreement): installed disarmed. It writes only after the record has held the stock
-// camera's direction (the game builds that camera from the record) within 1.7 deg for 30 updates, only
-// while each later update resolves the same record, only on foot, and only while the observer is
-// publishing the view at its own heading (halo2_foot_view.h): written before that, the stock camera would
-// turn the view with the hand, which the headset rejected as C-H2-41.
+// camera's direction (the game builds that camera from the record) within 1.7 deg for 30 updates -- both
+// axes on foot, yaw in a seat -- and only while each later update resolves the same record. On foot it
+// writes only while the observer publishes the view at its own heading (halo2_foot_view.h): written before
+// that, the stock camera would turn the view with the hand, which the headset rejected as C-H2-41. SEATED
+// (2026-10-01) it writes, axis by axis, only while the seat's own view is up and the seat's own record has
+// passed its checks (the seated branch below).
 
 constexpr uint32_t kHalo2PcEntryRva = 0x6C3DF0;
 constexpr char kHalo2PcEntryPattern[] =
@@ -108,6 +110,7 @@ void Halo2DriveForgetSeat(Halo2DriveState& st) noexcept
     st.stintActive = false;
     st.stintKey = 0;
     st.stintPitchFailCounted = false;
+    st.stintSample = 0;
     st.yawLatch.reset();
     st.yawTicks = 0;
     st.seatYawMs.store(0, std::memory_order_release);
@@ -182,10 +185,14 @@ void Halo2DriveApply(int user, uint64_t returnAddress) noexcept
                 const uint64_t seatViewAt = g_seatViewEngagedMs.load(std::memory_order_acquire);
                 seat_drive::Seat facts{};
                 facts.identified = occupancy > 0;
+                // ...and the native first-person seat view placed THIS seat: the vehicle reference keeps the
+                // stock camera's POSITION, which in a chase seat is pushed out along this very aim, so a write
+                // there would swing the view round the hull (vehicle_first_person = 0 keeps the servo).
                 facts.view_owned = havePublication && publication.vehicleReferenceValid &&
                     publication.vehicleUnit == Halo2OwnedUnit() && publication.vehicleParent == seatParent &&
                     publication.vehicleSeat == seatIndex && seatViewAt && now >= seatViewAt &&
-                    now - seatViewAt <= 100;
+                    now - seatViewAt <= 100 &&
+                    NativeVehicleFirstPerson_SeatViewOwned(GameTitle::Halo2, seatParent, seatIndex);
                 facts.driver = facts.look_steered = true;
                 const seat_drive::Axes axes = g_config.vehicle_view_follow ? seat_drive::Axes{}
                     : seat_drive::Decide(facts, g_config.reach_vehicle_aim, g_config.seat_direct_drive != 0);
@@ -204,7 +211,9 @@ void Halo2DriveApply(int user, uint64_t returnAddress) noexcept
                     st.seatStints.fetch_add(1, std::memory_order_relaxed);
                 }
                 const bool yawWas = st.stint.yaw_ok, pitchWas = st.stint.pitch_ok;
-                st.stint.step(aimValid, nativeYaw, nativePitch, aimYaw, aimPitch, now);
+                const bool newSample = !havePublication || publication.index != st.stintSample;
+                st.stintSample = havePublication ? publication.index : 0;
+                st.stint.step(aimValid, nativeYaw, nativePitch, aimYaw, aimPitch, now, newSample);
                 if (!yawWas && st.stint.yaw_ok)
                     st.seatYawChecks.fetch_add(1, std::memory_order_relaxed);
                 if (!pitchWas && st.stint.pitch_ok)
@@ -368,7 +377,10 @@ void Halo2DriveApply(int user, uint64_t returnAddress) noexcept
     }
     __except (EXCEPTION_EXECUTE_HANDLER)
     {
-        st.armed.store(false, std::memory_order_release);
+        // A fault disarms like a disarm: the record is proven again from a count of zero.
+        if (st.armed.exchange(false, std::memory_order_acq_rel))
+            st.disarms.fetch_add(1, std::memory_order_relaxed);
+        st.agree = 0;
         seatKept = false;
         seatWrote = false;
         st.faults.fetch_add(1, std::memory_order_relaxed);
