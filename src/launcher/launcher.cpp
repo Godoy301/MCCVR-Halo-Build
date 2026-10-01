@@ -70,6 +70,24 @@ static const wchar_t* EditionName(Edition edition)
 
 static std::wstring g_logPath;
 
+// --headless (the unattended FA harness, tools/Enter-Reach-FA.ps1): launch the mod in the launcher's own
+// folder at once, without the setup menu, and never show a dialog. Every message then reaches only
+// HaloMCCVRLauncher.log, in full, and the exit code says what happened -- so an unattended run can never
+// leave a modal box on the desktop of whoever is using the PC (measured 2026-09-30: a "Steam is not
+// running" box sat there after the harness had given up). A headless-test hook, so it is compiled into
+// dev builds only (HALOMCCVR_DEV_DIAGNOSTICS): a player's launcher never parses it, and no player-facing
+// string names it (tools/verify-qol-package.py checks the packaged launcher for the switch).
+#if HALOMCCVR_DEV_DIAGNOSTICS
+static bool g_headless = false;
+#else
+static constexpr bool g_headless = false;
+#endif
+
+// Exit codes. A launch reports success only after the game has run for 12 s.
+constexpr int kExitOk = 0;
+constexpr int kExitFailed = 1;
+constexpr int kExitSteamNotRunning = 2; // the Steam edition, with no steam.exe process
+
 static void LauncherLog(const char* fmt, ...)
 {
     if (g_logPath.empty())
@@ -89,10 +107,50 @@ static void LauncherLog(const char* fmt, ...)
     fclose(f);
 }
 
+// A message as ONE log line: its lines joined by " | " (blank lines dropped), in UTF-8, so the log alone
+// says what the player was told.
+static std::string LogLine(const std::wstring& text)
+{
+    std::wstring flat;
+    size_t start = 0;
+    while (start <= text.size())
+    {
+        size_t end = text.find(L'\n', start);
+        if (end == std::wstring::npos)
+            end = text.size();
+        size_t first = start, last = end;
+        while (first < last && (text[first] == L' ' || text[first] == L'\t'))
+            ++first;
+        while (last > first && (text[last - 1] == L'\r' || text[last - 1] == L' ' || text[last - 1] == L'\t'))
+            --last;
+        if (last > first)
+        {
+            if (!flat.empty())
+                flat += L" | ";
+            flat.append(text, first, last - first);
+        }
+        start = end + 1;
+    }
+    const int bytes = WideCharToMultiByte(CP_UTF8, 0, flat.c_str(), static_cast<int>(flat.size()),
+                                          nullptr, 0, nullptr, nullptr);
+    std::string out(bytes > 0 ? static_cast<size_t>(bytes) : 0, '\0');
+    if (bytes > 0)
+        WideCharToMultiByte(CP_UTF8, 0, flat.c_str(), static_cast<int>(flat.size()), out.data(), bytes,
+                            nullptr, nullptr);
+    return out;
+}
+
 static void ErrorBox(const std::wstring& text)
 {
-    LauncherLog("ERROR shown to user: (see message box)");
-    MessageBoxW(nullptr, text.c_str(), L"Halo MCC VR launcher", MB_OK | MB_ICONERROR | MB_TOPMOST);
+    LauncherLog("ERROR %s: %s", g_headless ? "(unattended, no dialog)" : "shown to user", LogLine(text).c_str());
+    if (!g_headless)
+        MessageBoxW(nullptr, text.c_str(), L"Halo MCC VR launcher", MB_OK | MB_ICONERROR | MB_TOPMOST);
+}
+
+static void InfoBox(const std::wstring& text)
+{
+    LauncherLog("NOTICE shown to user: %s", LogLine(text).c_str());
+    MessageBoxW(nullptr, text.c_str(), L"Halo MCC VR launcher", MB_OK | MB_ICONINFORMATION | MB_TOPMOST);
 }
 
 static std::wstring WinErr(DWORD code)
@@ -143,6 +201,14 @@ static bool ProcessRunning(const wchar_t* exeName)
 
 static int OfferManualVrRecovery(DWORD pid, const std::wstring& expectedExe)
 {
+    if (g_headless)
+    {
+        // Recovery is a person's choice in a dialog; an unattended launch neither offers it nor starts a
+        // second copy of the game.
+        ErrorBox(L"MCC is already running (pid " + std::to_wstring(pid) +
+                 L"). An unattended launch neither offers VR recovery nor starts a second copy.");
+        return kExitFailed;
+    }
     HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
     wchar_t imagePath[32768]{};
     DWORD imageLength = static_cast<DWORD>(std::size(imagePath));
@@ -428,7 +494,7 @@ static int LaunchInstalledMod(const std::wstring& dir)
     {
         ErrorBox(L"Steam is not running.\n\nStart Steam first, then run this launcher again.\n"
                  L"(This Steam copy of the game needs Steam to verify ownership.)");
-        return 1;
+        return kExitSteamNotRunning;
     }
     // The running mod handles recovery on its title worker. Never inject a
     // second copy or start a competing MCC process for this action.
@@ -488,6 +554,21 @@ static int LaunchInstalledMod(const std::wstring& dir)
     LauncherLog("VR render surface: %dx%d (resolution_scale %.2f; native %dx%d)",
                 renderWidth, renderHeight, resolutionScale,
                 kNativeRenderWidth, kNativeRenderHeight);
+
+    // The FA harness starts this launcher (whose manifest asks for administrator
+    // rights, for installs) unelevated through __COMPAT_LAYER=RunAsInvoker, so no
+    // UAC prompt reaches the desktop. That override is for the launcher alone;
+    // the game inherits this environment, so it starts without it.
+    if (g_headless)
+    {
+        wchar_t layer[64]{};
+        const DWORD n = GetEnvironmentVariableW(L"__COMPAT_LAYER", layer, static_cast<DWORD>(std::size(layer)));
+        if (n && n < std::size(layer) && !_wcsicmp(layer, L"RunAsInvoker"))
+        {
+            SetEnvironmentVariableW(L"__COMPAT_LAYER", nullptr);
+            LauncherLog("unattended launch: dropped __COMPAT_LAYER=RunAsInvoker before starting the game");
+        }
+    }
 
     bool injected = false;
     std::wstring failWhy;
@@ -554,21 +635,30 @@ static int LaunchInstalledMod(const std::wstring& dir)
             LauncherLog("activation OK (helper pid %lu); waiting for %ls",
                         activatedPid, kStoreExeName);
         }
+        else if (g_headless)
+        {
+            // The fallback below asks a person to start the game from the Xbox
+            // app; an unattended launch has nobody to ask, so it fails here.
+            LauncherLog("activation FAILED: hr=0x%08X", static_cast<unsigned>(hr));
+            if (coOwned)
+                CoUninitialize();
+            ErrorBox(L"Windows would not start the Microsoft Store copy of the game. "
+                     L"An unattended launch does not wait for a manual start from the Xbox app.");
+            return kExitFailed;
+        }
         else
         {
             // Loud, never silent: say exactly what failed and hand the user a
             // route that still works, rather than pretending the launch is fine.
             LauncherLog("activation FAILED: hr=0x%08X; falling back to attaching "
                         "to a manually started game", static_cast<unsigned>(hr));
-            MessageBoxW(nullptr,
-                        L"Windows would not start the Microsoft Store copy of the game "
-                        L"for this launcher.\n\n"
-                        L"Start Halo: MCC yourself from the Xbox app now - use the\n"
-                        L"\"Halo: MCC Anti-Cheat Disabled (Mods and Limited Services)\"\n"
-                        L"entry - and leave this window alone. The mod will attach to the\n"
-                        L"game automatically as soon as it appears.\n\n"
-                        L"Details are in HaloMCCVRLauncher.log.",
-                        L"Halo MCC VR launcher", MB_OK | MB_ICONINFORMATION | MB_TOPMOST);
+            InfoBox(L"Windows would not start the Microsoft Store copy of the game "
+                    L"for this launcher.\n\n"
+                    L"Start Halo: MCC yourself from the Xbox app now - use the\n"
+                    L"\"Halo: MCC Anti-Cheat Disabled (Mods and Limited Services)\"\n"
+                    L"entry - and leave this window alone. The mod will attach to the\n"
+                    L"game automatically as soon as it appears.\n\n"
+                    L"Details are in HaloMCCVRLauncher.log.");
         }
 
         // Generous: a first Store launch can sit on a licence or EAC-choice
@@ -667,7 +757,7 @@ static int LaunchInstalledMod(const std::wstring& dir)
     }
     LauncherLog("game still running after %lus - launch looks good", watchMs / 1000);
     CloseHandle(pi.hProcess);
-    return 0;
+    return kExitOk;
 }
 
 int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int showCommand)
@@ -724,9 +814,20 @@ int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int showCommand)
         CloseHandle(process.hThread); CloseHandle(process.hProcess);
         return 0;
     }
+    // --headless (dev builds): launch THIS folder's mod. The menu's Launch always targets <game>\Halo_MCC_VR,
+    // so a side-by-side install in another folder is only ever launched from its own folder
+    // this way.
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    const bool headless = args && count == 2 && !wcscmp(args[1], L"--headless");
+    g_headless = headless;
+#else
+    const bool headless = false;
+#endif
     if (args) LocalFree(args);
     try
     {
+        if (headless)
+            return LaunchInstalledMod(launcherDir.wstring());
         const auto selected = mcc_installer::ShowLauncherMenu(instance, launcherDir, showCommand);
         return selected.empty() ? 0 : LaunchInstalledMod(selected);
     }
