@@ -163,6 +163,17 @@ extern "C" void ReachPcApplyForUser(int user);
 // in place by the install's exact-byte anchors before the hook exists.
 static constexpr size_t kReachPlayerControlTlsOffset = 0xD8;
 static constexpr size_t kReachPlayerControlStride    = 0x180;
+#if HALOMCCVR_DEV_DIAGNOSTICS
+// DEV BUILDS ONLY: the log-only hook on Reach's type-13 pilot controller haloreach+0x64828 (the Sabre; defined
+// in type13_flight_log.inl). Declared here because the Reach teardown (DisableAndRemoveReachHooks and
+// ScanForReachDetourIngress) retires it with every other Reach detour. The target is worker-owned like
+// g_reachPcTarget; the trampoline is forgotten only after MH_RemoveHook.
+void ReachType13Detour(int user, uint32_t vehicle, float yawD, float pitchD, const void* input, float dtA, float dtB);
+static void* g_reachT13Target = nullptr;
+static void* g_reachT13Orig = nullptr;
+static std::atomic<bool> g_reachT13Enabled{false};
+bool ReachType13LogInstall(uintptr_t base, size_t size, uint32_t generation);
+#endif
 #endif
 // Halo 3 / ODST / Halo 4 direct drive (legacy_direct_drive; legacy_direct_drive.inl, the detours in
 // legacy_player_control_hook.asm).
@@ -175,6 +186,15 @@ bool LegacyDriveInstall(GameTitle title, uintptr_t base, size_t size);
 bool LegacyDriveRemove(GameTitle title);
 bool LegacyDriveLive(GameTitle title);
 void LegacyDriveReport();
+#if HALOMCCVR_DEV_DIAGNOSTICS
+// DEV BUILDS ONLY: the log-only hooks on the type-13 pilot controllers (type13_flight_log.inl): the cold
+// worker's report, and Halo 4's install/remove inside its camera core.
+void Type13LogReport();
+#if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA
+bool Halo4Type13LogInstall(uintptr_t base, size_t size, uint32_t generation);
+bool Halo4Type13LogRemove();
+#endif
+#endif
 #include "../common/aim_servo_logic.h"
 #include "../common/aim_solve_logic.h"
 #include "../common/aim_write_logic.h"
@@ -30814,7 +30834,8 @@ namespace
     bool ScanForReachDetourIngress(bool& busy)
     {
         static bool rangesResolved = false;
-        static ReachDetourCodeRange ranges[20]{};
+        // Dev builds add the log-only type-13 controller detour (type13_flight_log.inl) as the last entry.
+        static ReachDetourCodeRange ranges[20 + (HALOMCCVR_DEV_DIAGNOSTICS ? 1 : 0)]{};
         if (!rangesResolved)
         {
             const void* functions[] = {
@@ -30831,7 +30852,7 @@ namespace
                 reinterpret_cast<const void*>(&ReachUnitCameraPositionHook),
                 reinterpret_cast<const void*>(&ReachUnitAdjustHook),
                 // The asm thunk MinHook enters (PROC FRAME gives it a .pdata entry); the C++ entry it
-                // calls is the last entry, paired with the same target and trampoline.
+                // calls is the entry after direct drive's, paired with the same target and trampoline.
                 reinterpret_cast<const void*>(&ReachFirstPersonRenderGateThunk),
                 reinterpret_cast<const void*>(&ReachHudXformDetour),
                 reinterpret_cast<const void*>(&ReachCollisionVectorDetour),
@@ -30842,6 +30863,9 @@ namespace
                 // ResolveReachDetourCodeRange needs (without one, every Reach teardown would fail).
                 reinterpret_cast<const void*>(&ReachPlayerControlHook),
                 reinterpret_cast<const void*>(&ReachFirstPersonRenderGateEnter),
+#if HALOMCCVR_DEV_DIAGNOSTICS
+                reinterpret_cast<const void*>(&ReachType13Detour),
+#endif
             };
             static_assert(_countof(functions) == _countof(ranges));
             bool resolved = true;
@@ -30874,7 +30898,10 @@ namespace
             g_reachContact.damageTarget,
             g_reachHudAnchorBasisTarget,
             g_reachPcTarget,
-            g_reachFirstPersonRenderGateTarget,   // its C++ entry (ranges, last)
+            g_reachFirstPersonRenderGateTarget,   // its C++ entry (ranges, after direct drive's)
+#if HALOMCCVR_DEV_DIAGNOSTICS
+            g_reachT13Target,
+#endif
         };
         void* const trampolines[] = {
             reinterpret_cast<void*>(g_reachOrigMainRenderView),
@@ -30897,6 +30924,9 @@ namespace
             reinterpret_cast<void*>(g_reachOrigHudAnchorBasis),
             g_reachPcOrig,
             reinterpret_cast<void*>(g_origReachFirstPersonRenderGate),
+#if HALOMCCVR_DEV_DIAGNOSTICS
+            g_reachT13Orig,
+#endif
         };
         static_assert(_countof(targets) == _countof(ranges));
         static_assert(_countof(trampolines) == _countof(ranges));
@@ -31021,8 +31051,15 @@ namespace
         g_reachWrittenConvergedMs.store(0, std::memory_order_release);
         ReachDriveDisarm();
         g_reachDriveResetSeq.fetch_add(1, std::memory_order_acq_rel);
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        // The log-only type-13 controller detour becomes a pure pass-through before any disable.
+        g_reachT13Enabled.store(false, std::memory_order_release);
+#endif
         bool disabledAll = true;
         void* const targets[] = {
+#if HALOMCCVR_DEV_DIAGNOSTICS
+            g_reachT13Target,
+#endif
             g_reachPcTarget,
             g_reachHudAnchorBasisTarget,
             g_reachWorldCollision.target,
@@ -31059,6 +31096,24 @@ namespace
             return false;
 
         bool removedAll = true;
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        if (g_reachT13Target)
+        {
+            // Quiescence is proven above (callbacks and the ingress scan cover the detour and its trampoline);
+            // the trampoline is forgotten only after MinHook has removed the hook.
+            const MH_STATUS status = MH_RemoveHook(g_reachT13Target);
+            if (status == MH_OK || status == MH_ERROR_NOT_CREATED)
+            {
+                g_reachT13Target = nullptr;
+                g_reachT13Orig = nullptr;
+            }
+            else
+            {
+                removedAll = false;
+                LOG("REACH SF cleanup: type-13 log hook remove failed (%d)", static_cast<int>(status));
+            }
+        }
+#endif
         if (g_reachPcTarget)
         {
             // Clearing the target lets the next title session reinstall on ITS module; the install
@@ -33740,6 +33795,12 @@ namespace
                     "NO hook; the stick servo keeps aiming", entryOk ? 1 : 0, tlsOk ? 1 : 0, accOk ? 1 : 0);
             }
         }
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        // DEV BUILDS ONLY: the log-only observer on the type-13 pilot controller +0x64828, which the dispatcher
+        // calls INSTEAD of the accumulator above for a Sabre/Seraph pilot (type13_flight_log.inl). Its own
+        // anchors decide; a miss leaves only that lane off, and it writes nothing to the game either way.
+        (void)ReachType13LogInstall(base, size, generation);
+#endif
 
         // Reach game brightness. The exact homologue of the Halo 3/ODST screen
         // colour/gamma publisher, pinned by RVA inside the already whole-image-
@@ -44483,6 +44544,10 @@ namespace
             false, std::memory_order_release);
         g_halo4Camera.teardownRequested.store(true, std::memory_order_release);
         g_halo4Camera.armed.store(false, std::memory_order_release);
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        if(!Halo4Type13LogRemove())
+        { LOG("Halo 4 teardown: the type-13 log hook needs cleanup retry; retaining native module"); return false; }
+#endif
         if(!RemoveHalo4VehicleInput())
         { LOG("Halo 4 teardown: vehicle input readers need cleanup retry; retaining native module"); return false; }
         if(!LegacyDriveRemove(GameTitle::Halo4))
@@ -44886,6 +44951,11 @@ namespace
         (void)InstallHalo4ContactMelee(base,size,generation);
         (void)LegacyDriveInstall(GameTitle::Halo4,base,size);
         (void)InstallHalo4VehicleInput(base,size,generation);
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        // DEV BUILDS ONLY: the log-only observer on the Broadsword's pilot controller +0xAA524, called by the
+        // dispatcher instead of the accumulator legacy drive hooks (type13_flight_log.inl). Writes nothing.
+        (void)Halo4Type13LogInstall(base,size,generation);
+#endif
         (void)InstallHalo4Muzzle(base,size,generation);
         (void)InstallHalo4WeaponHaptics(base,size,generation);
         // C-H4-46: Halo 4 supplies authored pixels to the same shared VR
@@ -45869,6 +45939,9 @@ namespace
             Sight_ReportEngineRays();
             Sight_ReportShots();
             LegacyDriveReport();
+#if HALOMCCVR_DEV_DIAGNOSTICS
+            Type13LogReport();   // the type-13 pilot-controller log lines (REACH SF, H4 T13)
+#endif
 #if HALOMCCVR_EXPERIMENTAL_REACH_RENDER_CANDIDATE
             // Status the aim provider and the direct-drive hook only count into atomics; logged here.
             ReachAimProvider_Report();
@@ -50387,6 +50460,9 @@ bool Game_ReachDdTestOwnsAim()
 }
 #endif
 #include "legacy_direct_drive.inl"
+#if HALOMCCVR_DEV_DIAGNOSTICS
+#include "type13_flight_log.inl"
+#endif
 bool Game_ComputeAimStick(float& outRx, float& outRy)
 {
     // Preserve C-H2-43's rejected ON-FOOT hand-driven turning. A newly verified

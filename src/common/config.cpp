@@ -1286,6 +1286,7 @@ void ConfigLoad(const wchar_t* path)
         if (!strcmp(key, "reach_sight_trace_mode")) { g_config.reach_sight_trace_mode=(int)strtol(val,nullptr,0); continue; }
         if (!strcmp(key, "reach_collision_census")) { g_config.reach_collision_census=atoi(val); continue; }
         if (!strcmp(key, "sight_ray_census")) { g_config.sight_ray_census=atoi(val); continue; }
+        if (!strcmp(key, "type13_log")) { g_config.type13_log=atoi(val)!=0?1:0; continue; }
         if (!strcmp(key, "dev_synthetic_pad")) { g_config.dev_synthetic_pad=atoi(val)!=0?1:0; continue; }
         if (!strcmp(key, "reach_sight_fault")) { g_config.reach_sight_fault=(int)strtol(val,nullptr,0); continue; }
         if (!strcmp(key, "reach_sight_trace_length_m")) { g_config.reach_sight_trace_length_m=(float)atof(val); continue; }
@@ -2164,6 +2165,9 @@ void ConfigSave()
     fprintf(f, "# DEV BUILD ONLY. Log the game's own queries that start at the eye along the aim (Halo 4,\n");
     fprintf(f, "# Halo 2). Leave at 0.\n");
     fprintf(f, "sight_ray_census = %d\n\n", g_config.sight_ray_census);
+    fprintf(f, "# DEV BUILD ONLY. 1 = log the type-13 pilot controllers (Reach Sabre, Halo 4 Broadsword): REACH SF and\n");
+    fprintf(f, "# H4 T13 lines. Writes nothing to the game. Read at startup. Leave at 0.\n");
+    fprintf(f, "type13_log = %d\n\n", g_config.type13_log);
     fprintf(f, "# DEV BUILD ONLY. Headless tests: 1 = a synthetic gamepad driven by halomccvr_pad.txt in the\n");
     fprintf(f, "# mod folder (tools/Send-MccPad.ps1). Read at startup. Leave at 0.\n");
     fprintf(f, "dev_synthetic_pad = %d\n\n", g_config.dev_synthetic_pad);
