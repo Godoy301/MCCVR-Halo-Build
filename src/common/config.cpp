@@ -2180,8 +2180,9 @@ void ConfigSave()
     fprintf(f, "reach_vehicle_aim = %d\n\n", g_config.reach_vehicle_aim);
     fprintf(f, "# 1 = with aim_direct_drive = 1, direct drive writes the aim in vehicle seats too (the seats\n");
     fprintf(f, "# reach_vehicle_aim names; each seat checks itself first), instead of the stick steering it\n");
-    fprintf(f, "# at the game's turn rate. Halo 4 and Halo 2 seats need the first-person seat view (Halo 4: the\n");
-    fprintf(f, "# heading only). 0 keeps every seat on\n");
+    fprintf(f, "# at the game's turn rate. Every title needs its first-person seat view (Halo 3 / ODST also\n");
+    fprintf(f, "# vehicle_hide_body; Halo 2 also vehicle_motion and vehicle_view_follow off); Halo 4 seats write\n");
+    fprintf(f, "# the heading only. 0 keeps every seat on\n");
     fprintf(f, "# the stick. F1 > Vehicles: \"Direct drive in seats\". (default %d)\n",
             d.seat_direct_drive);
     fprintf(f, "seat_direct_drive = %d\n\n", g_config.seat_direct_drive);

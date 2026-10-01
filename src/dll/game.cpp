@@ -19890,7 +19890,9 @@ namespace
             // in this weapon transaction, so the ray serial is passed
             // deliberately (latest-only receipt => an old ray and an old
             // receipt are both refused).
-            // Seated, as the firing-origin site: no support receipt in a seat (ReachSeatedRayConsumable).
+            // Seated, as the firing-origin site: no support receipt in a seat (ReachSeatedRayConsumable). No
+            // consuming serial is in scope here, so only a nonzero ray serial is required (the F06 comment
+            // above describes the on-foot receipt this seated target never carries).
             ReachSeatedRayConsumable(target.raySerial, target.raySerial);
         const uint32_t generation =
             g_reachCamera.generation.load(std::memory_order_acquire);
@@ -22294,7 +22296,7 @@ namespace
             effectiveGameYawRef=vehicleEntryYaw;
             effectiveHeadYawRef=hy;
             memcpy(effectiveHeadPosRef,hpos,sizeof(effectiveHeadPosRef));
-            // The standing height, not a crouch the seat entry happened to catch (VR_RecenterStandingLiftM).
+            // No standing lift: VR_RecenterStandingLiftM gives none in a seat (the player may be sitting).
             effectiveHeadPosRef[1]+=VR_RecenterStandingLiftM(GameTitle::HaloReach);
             pendingSeatRecenter.valid=true;
             pendingSeatRecenter.key=*entryRecenterKey;
@@ -35801,6 +35803,7 @@ namespace
         // The last answer a VALID read gave (a failed read -- a cinematic, a refused gate -- leaves it): what
         // Game_TitleSeated reports, so a recenter after a cutscene still sees the seat. Reset per level.
         std::atomic<bool> lastKnownSeated{false};
+        std::atomic<bool> lastKnownValid{false};   // a valid read has happened since the level began
     };
     Halo4SeatStamp g_halo4SeatStamp;
     void Halo4PublishSeatStamp(bool valid, const Halo4VehicleInputState& seat) noexcept
@@ -35814,7 +35817,10 @@ namespace
         s.ms.store(valid ? GetTickCount64() : 0, std::memory_order_relaxed);
         s.seq.fetch_add(1, std::memory_order_release);
         if (valid)
+        {
             s.lastKnownSeated.store(seat.seated, std::memory_order_relaxed);
+            s.lastKnownValid.store(true, std::memory_order_relaxed);
+        }
     }
     // Any thread: the camera hook's last seat read, if it is fresh (150 ms) and was not torn.
     bool Halo4ReadSeatStamp(Halo4VehicleInputState& out) noexcept
@@ -42510,6 +42516,7 @@ namespace
         // Nor does the seat carry across a load (Game_TitleSeated reads the last known one).
         Halo4PublishSeatStamp(false, Halo4VehicleInputState{});
         g_halo4SeatStamp.lastKnownSeated.store(false, std::memory_order_relaxed);
+        g_halo4SeatStamp.lastKnownValid.store(false, std::memory_order_relaxed);
         for (int axis = 0; axis < 3; ++axis)
         {
             g_halo4Camera.headPositionReference[axis].store(
@@ -49282,6 +49289,17 @@ void Game_Recenter()
 #endif
     VR_RequestRecenter();
 }
+// A recenter the PLAYER asked for (L3+R3, F3, the F1 button), as opposed to an automatic one (an unpause, a
+// theater exit). Halo 2's seat view re-aligns its heading to the vehicle's nose on this one only; an automatic
+// recenter keeps the view the player was looking along.
+void Game_RecenterManual()
+{
+#if HALOMCCVR_HALO2_STEREO6DOF
+    if (TitleAdapter_GetActiveTitle() == GameTitle::Halo2)
+        Halo2Observer6Dof_MarkManualRecenter();
+#endif
+    Game_Recenter();
+}
 void Game_FlipYaw()   { g_yawSign = -g_yawSign.load();   LOG("yaw sign %+.0f", g_yawSign.load()); }
 void Game_FlipPitch() { g_pitchSign = -g_pitchSign.load(); LOG("pitch sign %+.0f", g_pitchSign.load()); }
 void Game_ToggleUp()  { g_writeUp = !g_writeUp.load();   LOG("write up-vector %s", g_writeUp.load() ? "on" : "off"); }
@@ -50525,8 +50543,9 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
     // (roll-stable follow, occupied seat flags, turret seats). MCC keeps every
     // title's module loaded and reloads them all on each menu return, so that
     // state is not guaranteed to be clean just because Halo 4 is the active
-    // title - and a stale seat would silently re-origin Halo 4's aim. Halo 4
-    // has no vehicle work at all yet, so it takes the plain on-foot path.
+    // title - and a stale seat would silently re-origin Halo 4's aim. Halo 4's
+    // seats compose no vehicle frame here: its seat direct drive (below) writes
+    // world angles, and its seat state comes from its own camera hook's stamp.
     float hullYaw = 0.0f, hullPitch = 0.0f, followedAim[9];
     bool followedVehicleFrame = false;
     if (!halo4Aim && Halo3ReadRollStableFollow(hullYaw, hullPitch) &&
@@ -50818,6 +50837,10 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
     // A written axis held at a seat limit by the hook's latch: the reticle shows the game's aim at once, whichever
     // axes are written (the servo path's honest branch below reads it when only one is).
     bool seatLatchHeld = false;
+    // A seat with only its yaw written (a Halo 4 seat, or a pitch still checking or failed): whether the game's
+    // yaw stays off the hook's writes (a barrel's rate cap downstream of the record). The servo path's honest
+    // branch shows the game's aim while it does.
+    bool seatYawShort = false;
     // The turret servo below kept no account of frames the drive aimed for it: its last commands and its quantum
     // estimate would read the drive's motion as its own. Set when a written frame returns early; the servo then
     // starts afresh.
@@ -50925,6 +50948,26 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
                 seatWritten.pitch = live.pitch && seatAxes.pitch;
                 seatLatchHeld = seatWritten.any() && LegacyDriveSeatLimited(driveTitle);
             }
+            static seat_drive::OutcomeGate s_seatYawOutcome;
+            if (seatWritten.yaw && !seatWritten.pitch)
+            {
+                // Yaw only, measured as the both-axes gate below: against the nearer of the hook's last two
+                // writes, never this poll's target (the aim trails the newest write by up to a tick).
+                float wy[2]{}, wp[2]{};
+                bool wv[2]{};
+                float yawMiss = fabsf(WrapPi(desiredYaw - aimYaw));
+                if (LegacyDriveSeatWrites(driveTitle, wy, wp, wv))
+                {
+                    yawMiss = fabsf(WrapPi(aimYaw - wy[0]));
+                    if (wv[1])
+                        yawMiss = std::fmin(yawMiss, fabsf(WrapPi(aimYaw - wy[1])));
+                }
+                seatYawShort = s_seatYawOutcome.step(yawMiss, false, GetTickCount64());
+            }
+            else
+            {
+                s_seatYawOutcome.reset();
+            }
             // HONEST RETICLE BY OUTCOME. Written, the seat's aim can still fall short of the target: held at a
             // seat limit by the latch, or downstream of the record, where a gun's rate cap or an aiming clip
             // acts and no latch can see it. While the game's aim stays off the target (seat_drive::OutcomeGate),
@@ -51007,8 +51050,8 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
     const float errPitch = desiredPitch - aimPitch;
 
     // A turret's gun is a rate-capped machine, not the occupant's weapon.
-    // Both corrections below are scoped to exactly this seat. Halo 4 is
-    // on-foot only at this stage, and its seat state would be another title's.
+    // Both corrections below are scoped to exactly this seat. Halo 4's seats are
+    // read from its own stamp below; OccupiedTurretSeat's state is another title's.
     const bool turretSeat = !halo4Aim && OccupiedTurretSeat();
 
     // A passenger's weapon is bounded to a cone around the VEHICLE, not the
@@ -51026,8 +51069,10 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
     {
         static uint64_t stalledSinceMs = 0;
         static float previousErrorMagnitude = 0.0f;
+        // A yaw the drive writes is not this servo's lag (its own shortfall is seatYawShort / the latch).
+        const float stallYawErr = seatWritten.yaw ? 0.0f : errYaw;
         const float errorMagnitude =
-            sqrtf(errYaw * errYaw + errPitch * errPitch);
+            sqrtf(stallYawErr * stallYawErr + errPitch * errPitch);
         const uint64_t nowMs = GetTickCount64();
         bool halo4SeatedNow = false;
 #if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA
@@ -51086,7 +51131,7 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
         // logic (both guards below stay exactly as they were).
         const bool honestOnFoot =
             g_config.honest_reticle_onfoot && !turretSeat && !seated;
-        if (honestOnFoot || seatLatchHeld ||
+        if (honestOnFoot || seatLatchHeld || seatYawShort ||
             (turretSeat ? kAimServoTurretReticleRidesBarrel
                         : (stalledSinceMs && nowMs - stalledSinceMs >= stallMs)))
         {
@@ -53002,9 +53047,9 @@ bool Game_TitleOnFootPlayerControlled(GameTitle title)
 }
 
 // Whether the local player is in a vehicle seat, from each title's LAST KNOWN seat state (a pause stops the
-// samples, and the recenter that follows it must still see the seat). Unknown is "not seated". For the
-// recenter's standing lift (VR_RecenterStandingLiftM): a seat composes its own view, the player may well be
-// sitting in it, and nothing there pairs with the lift.
+// samples, and the recenter that follows it must still see the seat). With no seat sampler, or no answer yet,
+// it fails CLOSED: "seated", so no lift. For the recenter's standing lift (VR_RecenterStandingLiftM): a seat
+// composes its own view, the player may well be sitting in it, and nothing there pairs with the lift.
 bool Game_TitleSeated(GameTitle title)
 {
     if (title!=TitleAdapter_GetActiveTitle()) return false;
@@ -53015,12 +53060,17 @@ bool Game_TitleSeated(GameTitle title)
         case GameTitle::HaloCE:
         {
             HaloCELocalPlayerState player{};
-            return HaloCEControls_GetLocalPlayerState(player)&&player.hasControlledUnit&&!player.onFoot;
+            if (!HaloCEControls_GetLocalPlayerState(player)) return true;
+            return player.hasControlledUnit&&!player.onFoot;
         }
         case GameTitle::Halo3:
+            if (g_halo3VehicleBinding.load(std::memory_order_acquire)!=
+                static_cast<uint8_t>(Halo3VehicleBindingState::Installed)) return true;
             return g_halo3VehicleFpStable.load(std::memory_order_relaxed)==
                 static_cast<uint32_t>(Halo3VehicleState::Vehicle);
         case GameTitle::Halo3ODST:
+            if (g_odstVehicleBinding.load(std::memory_order_acquire)!=
+                static_cast<uint8_t>(OdstVehicleBindingState::Installed)) return true;
             return g_odstSeatedLastKnown.load(std::memory_order_relaxed);
         case GameTitle::HaloReach:
             // Only the camera-info sampler sees a mounted (type-6) turret; the unit_in_vehicle fallback
@@ -53036,6 +53086,7 @@ bool Game_TitleSeated(GameTitle title)
 #endif
 #if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA
         case GameTitle::Halo4:
+            if (!g_halo4SeatStamp.lastKnownValid.load(std::memory_order_relaxed)) return true;
             return g_halo4SeatStamp.lastKnownSeated.load(std::memory_order_relaxed);
 #endif
         default: return false;

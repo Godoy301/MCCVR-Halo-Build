@@ -111,6 +111,8 @@ void Halo2Observer6Dof_EndClassicFirstPersonEye() noexcept;
 // Atomic-only. The next valid sample becomes the new orientation/translation
 // reference; safe to call from the universal recenter path.
 void Halo2Observer6Dof_RequestRecenter() noexcept;
+// The next recenter is the player's own (Game_RecenterManual): a seat re-aligns to the vehicle's nose.
+void Halo2Observer6Dof_MarkManualRecenter() noexcept;
 
 // Atomic-only. Removes ownership when the VR runtime is gone.
 void Halo2Observer6Dof_ShutdownForVrFailure() noexcept;

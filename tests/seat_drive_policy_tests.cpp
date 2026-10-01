@@ -57,8 +57,8 @@ void TestPolicy()
     Check(!Decide(s, 1, true).any(), "level 1, stick steering: still the servo");
 
     // The latch reads no driver pitch (autolevel); every other seat latches.
-    Check(!seat_drive::PitchLatches(LookDriver()) && !seat_drive::PitchLatches(TankDriver()),
-          "a driver's pitch never latches");
+    Check(!seat_drive::PitchLatches(LookDriver()), "a look-steered driver's pitch never latches (autolevel)");
+    Check(seat_drive::PitchLatches(TankDriver()), "a tank driver's pitch latches at the turret's stop");
     Check(seat_drive::PitchLatches(Passenger()), "a passenger's pitch latches");
 
     // Seat keys change with the seat, the vehicle and the mount.

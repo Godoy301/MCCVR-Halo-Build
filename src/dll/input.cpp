@@ -190,7 +190,7 @@ namespace
             // resets every title's immersive camera reference and the OpenXR
             // room-fixed origin used by theatre; opening F1 on that edge then
             // places its head-locked panel from the newly centered pose.
-            Game_Recenter();
+            Game_RecenterManual();
             Menu_Toggle();
             LOG("L3+R3: recentered immersive/theatre space and toggled F1 menu");
         }

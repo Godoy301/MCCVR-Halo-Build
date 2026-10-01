@@ -146,6 +146,7 @@ struct LegacyDriveState
     std::atomic<uint32_t> otherCalls{0}, restores{0};
     std::atomic<uintptr_t> lastOtherRet{0};
     uint64_t stintSampleMs = 0;              // the publication the stint last judged (a repeat is no evidence)
+    uint32_t stintStaleUpdates = 0;          // consecutive updates of this stint with no fresh publication
     // The last two seat writes (seqlock), for the input thread's honest-reticle gate: the game's aim lags the
     // latest write by up to a tick, so the gate measures it against whichever of the two is nearer.
     std::atomic<uint32_t> wroteSeq{0};
@@ -174,6 +175,9 @@ constexpr uint32_t kLegacyDriveAgreeUpdates = 30;
 constexpr uint32_t kLegacyDriveSeatPrimeUpdates = 2;
 // A second caller in the same tick puts back this tick's write only while it is this recent.
 constexpr uint64_t kLegacyDriveRestoreMs = 50;
+// A stint survives this many consecutive updates with no fresh publication of its seat (the input thread stops
+// publishing through a pause's fade and a tracking dropout): ~2 s of sim ticks. Longer, it ends.
+constexpr uint32_t kLegacyDriveStintStaleUpdates = 120;
 constexpr uint32_t kLegacyDriveAxisYaw = 1u, kLegacyDriveAxisPitch = 2u;
 
 bool LegacyDriveYawAgrees(bool fresh, float nativeYaw, float aimYaw)
@@ -196,6 +200,7 @@ void LegacyDriveForgetSeat(LegacyDriveState& st)
     st.stintActive = false;
     st.stintKey = 0;
     st.stintPitchFailCounted = false;
+    st.stintStaleUpdates = 0;
     // The input thread reads an axis as written while these are fresh (LegacyDriveSeatAxes): a stint that
     // is over stops claiming it at once, or the stick stays zeroed and the reticle reads "written" for up to
     // 150 ms over an aim nothing writes any more.
@@ -649,6 +654,14 @@ extern "C" void LegacyPcApplyForUser(int slot, int user, uintptr_t ret)
             seatKept = seatWrite;
             if (!onFoot && !seatWrite)
             {
+                // A STALE publication of this stint's own seat (a pause's fade, a tracking dropout -- the input
+                // thread stops publishing) is a gap, not the end of the seat: write nothing, keep the proven
+                // checks (no step: a gap is no evidence, and StintCheck counts a gap at most gap_ms), for a
+                // bounded run of updates. A fresh publication with no axes, another seat, or the game's own word
+                // that the unit is on foot still ends it.
+                if (!fresh && st.stintActive && (!coherent || (seatedSet && seatKey == st.stintKey)) &&
+                    !LegacyDriveLocalOnFoot(slot) && ++st.stintStaleUpdates <= kLegacyDriveStintStaleUpdates)
+                    seatKept = true;
                 st.seatedSkips.fetch_add(1, std::memory_order_relaxed);
                 st.agree = 0;
                 break;
@@ -666,6 +679,7 @@ extern "C" void LegacyPcApplyForUser(int slot, int user, uintptr_t ret)
                     st.stintKey = seatKey;
                     st.seatStints.fetch_add(1, std::memory_order_relaxed);
                 }
+                st.stintStaleUpdates = 0;
                 const bool yawWas = st.stint.yaw_ok, pitchWas = st.stint.pitch_ok;
                 const bool newSample = setMs != st.stintSampleMs;
                 st.stintSampleMs = setMs;
@@ -674,7 +688,8 @@ extern "C" void LegacyPcApplyForUser(int slot, int user, uintptr_t ret)
                     st.seatYawChecks.fetch_add(1, std::memory_order_relaxed);
                 if (!pitchWas && st.stint.pitch_ok)
                     st.seatPitchChecks.fetch_add(1, std::memory_order_relaxed);
-                if (st.stint.pitch_failed && !st.stintPitchFailCounted)
+                // Counted only where the seat wants its pitch (a Halo 4 seat never does).
+                if (st.stint.pitch_failed && !st.stintPitchFailCounted && (wantAxes & kLegacyDriveAxisPitch))
                 {
                     st.stintPitchFailCounted = true;
                     st.seatPitchFails.fetch_add(1, std::memory_order_relaxed);
@@ -710,7 +725,12 @@ extern "C" void LegacyPcApplyForUser(int slot, int user, uintptr_t ret)
                 writePitch = (wantAxes & kLegacyDriveAxisPitch) && st.stint.yaw_ok && st.stint.pitch_ok;
                 if (!writeYaw && !writePitch)
                 {
-                    st.seatUnverified.fetch_add(1, std::memory_order_relaxed);
+                    // Waiting on a check only while one is pending; a pitch that failed its check is on the
+                    // servo for the stint, which is not a wait.
+                    const bool pending = ((wantAxes & kLegacyDriveAxisYaw) && !st.stint.yaw_ok) ||
+                        ((wantAxes & kLegacyDriveAxisPitch) && !st.stint.pitch_ok && !st.stint.pitch_failed);
+                    if (pending)
+                        st.seatUnverified.fetch_add(1, std::memory_order_relaxed);
                     break;
                 }
             }

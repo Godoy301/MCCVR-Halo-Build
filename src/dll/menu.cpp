@@ -419,7 +419,7 @@ namespace
             {
             case VK_F1: Menu_Toggle(); return 0;
             case VK_F2: Game_ToggleHeadTracking(); return 0;
-            case VK_F3: Game_Recenter(); return 0;
+            case VK_F3: Game_RecenterManual(); return 0;
             case VK_F6: Game_TogglePositional(); return 0;
             case VK_F8: Game_PitchTrim(-1); return 0;
             case VK_F9: Game_PitchTrim(+1); return 0;
@@ -576,7 +576,7 @@ namespace
                     RuntimeModeName(TitleAdapter_GetRuntimeMode()));
         if (ImGui::Button("Re-center headset and screen"))
         {
-            Game_Recenter();
+            Game_RecenterManual();
         }
         ImGui::SameLine();
         if (ImGui::Button(VR_IsPausePresentation()
@@ -1152,7 +1152,8 @@ namespace
             ImGui::TextDisabled("ON (with Direct drive): a seat's aim is written as on foot, once the seat has\n"
                                 "checked its own aim (a moment after you sit down). Every title needs its\n"
                                 "first-person seat view: in Halo 3 and ODST with \"Hide my character in the seat\"\n"
-                                "on; in Halo 2 also with \"View follows the vehicle\" off. Halo 4 seats write the\n"
+                                "on; in Halo 2 also with \"Virtual steering wheel\" on and \"View follows the\n"
+                                "vehicle\" off. Halo 4 seats write the\n"
                                 "heading only. OFF: the stick steers the aim in every seat.");
             if (g_config.reach_vehicle_aim <= 0)
             {

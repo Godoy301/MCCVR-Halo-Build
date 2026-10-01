@@ -109,6 +109,7 @@ namespace
     std::atomic<bool> g_levelLive{false};
     std::atomic<bool> g_teardownRequested{false};
     std::atomic<bool> g_recenterRequested{true};
+    std::atomic<bool> g_manualRecenterRequested{false};   // the next recenter is the player's own
     std::atomic<bool> g_referenceValid{false};
     std::atomic<uint32_t> g_generation{0};
     std::atomic<uint32_t> g_vrFailureGeneration{0};
@@ -1184,7 +1185,12 @@ namespace
             // A seat keeps its heading through a recenter (Suspend): every unpause and theater exit recenters,
             // and the stock heading it would re-take is, under the seat drive, the hand's last aim.
             g_vehicleView.Suspend();
-            g_vehicleView.FoldResume(headTurn);
+            // The player's own recenter re-aligns the seat to the vehicle's nose (where they now face is
+            // forward); an automatic one (an unpause, a theater exit) keeps the view they were looking along.
+            if (g_manualRecenterRequested.exchange(false, std::memory_order_acq_rel))
+                g_vehicleView.ReseedResume(g_vehicleView.lastHullYaw);
+            else
+                g_vehicleView.FoldResume(headTurn);
             // Under direct drive a recentre re-takes the view's heading from the body (the hand's aim), as
             // Halo 3's re-seeds its game yaw from the stock heading; UpdateFootView takes it again below.
             g_footView.Release();
@@ -6618,8 +6624,11 @@ bool Halo2Observer6Dof_OnFootFresh() noexcept
 // The last seat sample said seated, however old (a pause stops the samples; Game_TitleSeated).
 bool Halo2Observer6Dof_LastKnownSeated() noexcept
 {
+    // No answer (the observer is down, no sample yet) fails closed: seated (Game_TitleSeated -> no lift).
     const uint64_t sample = g_vehicleSeatSample.load(std::memory_order_acquire);
-    return Halo2Observer6Dof_Armed() && sample != 0 && (sample & 1u) != 0;
+    if (!Halo2Observer6Dof_Armed() || sample == 0)
+        return true;
+    return (sample & 1u) != 0;
 }
 
 bool Halo2Observer6Dof_VehicleControlActive() noexcept
@@ -6946,6 +6955,11 @@ void Halo2Observer6Dof_RequestRecenter() noexcept
     g_recenterRequested.store(true, std::memory_order_release);
 }
 
+void Halo2Observer6Dof_MarkManualRecenter() noexcept
+{
+    g_manualRecenterRequested.store(true, std::memory_order_release);
+}
+
 void Halo2Observer6Dof_RequestRecovery(uint32_t generation) noexcept
 { g_manualRecoveryGeneration = generation; }
 bool Halo2Observer6Dof_RecoveryPending() noexcept
@@ -7100,6 +7114,7 @@ bool Halo2Observer6Dof_ReadPacketBuildCamera(
 bool Halo2Observer6Dof_BeginClassicFirstPersonEye() noexcept { return false; }
 void Halo2Observer6Dof_EndClassicFirstPersonEye() noexcept {}
 void Halo2Observer6Dof_RequestRecenter() noexcept {}
+void Halo2Observer6Dof_MarkManualRecenter() noexcept {}
 void Halo2Observer6Dof_ShutdownForVrFailure() noexcept {}
 bool Halo2DiagnosticReadPrimaryWeapon(uint32_t& unitOut, uint32_t& weaponOut,
     uint32_t& detailOut, bool* primaryAbsentOut) noexcept

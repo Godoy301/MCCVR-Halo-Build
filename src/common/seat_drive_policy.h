@@ -9,8 +9,8 @@
 // below says the hand owns that axis. Reach's per-seat rules (Game_ReachDirectDriveAimWhy) are the model:
 //   * a passenger, a gunner, a turret, or a driver whose vehicle does NOT steer by the look (a tank: the
 //     look aims the turret) -- the hand owns both axes;
-//   * a driver whose vehicle steers toward the look (Warthog, Ghost, Banshee...) -- the hand owns the
-//     heading only at level 2 ("drivers aim with the hand"); level 1 leaves that seat on the servo;
+//   * a driver whose vehicle steers toward the look (Warthog, Ghost, Banshee...) -- the hand owns both axes
+//     only at level 2 ("drivers aim with the hand"); level 1 leaves that seat on the servo;
 //   * the same driver while the stick or wheel steers (vehicle_view_follow): the heading is the steering
 //     author's, never written; the climb/dive (pitch) still follows the hand, unless both hands are on the
 //     wheel, which aims nothing;
@@ -60,10 +60,11 @@ inline Axes Decide(const Seat& s, int level, bool seat_drive_on)
     return a;
 }
 
-// Whether the seat-limit latch may read the game's pitch moves as a limit. A driver's pitch is levelled by
-// the accumulator itself as the vehicle moves (autolevel, speed-scaled), which the latch would take for a
-// limit and hold the aim short; a driver's pitch has no cone to hold it at. Every other seat latches.
-inline bool PitchLatches(const Seat& s) { return !s.driver; }
+// Whether the seat-limit latch may read the game's pitch moves as a limit. A look-steered driver's pitch is
+// levelled by the accumulator itself as the vehicle moves (autolevel, speed-scaled), which the latch would
+// take for a limit and hold the aim short. A tank driver's look aims a turret with a real pitch stop, like a
+// gunner's (Reach latches those too): it latches, as every other seat does.
+inline bool PitchLatches(const Seat& s) { return !s.driver || !s.look_steered; }
 
 // One seat stint, as the hook sees it: a key that changes when the occupant changes seat or vehicle, so a
 // check passed in one seat is never carried into the next.

@@ -38,6 +38,11 @@ struct Halo2VehicleViewState
     {
         if(resumeValid&&std::isfinite(headTurn)) resumeYaw=std::remainder(resumeYaw+headTurn,6.28318530718f);
     }
+    // The player's own recenter: the seat resumes looking along `yaw` (the vehicle's nose).
+    void ReseedResume(float yaw) noexcept
+    {
+        if(resumeValid&&std::isfinite(yaw)) {resumeYaw=yaw;resumeHullYaw=lastHullYaw;}
+    }
 
     // `seedYaw`: the heading a new occupation starts from when the view already had its own -- a seat
     // taken from on foot under direct drive (halo2_foot_view.h), where the stock heading is the HAND's.

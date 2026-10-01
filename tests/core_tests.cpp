@@ -316,6 +316,14 @@ int main()
             Check(fold.Build(key,basis(2.0f),basis(0),false,49000,out)&&
                 std::fabs(std::atan2(out.forward[1],out.forward[0])-.7f)<1e-5f,
                 "H2 recenter: the head's turn from the old reference is kept");
+            // The player's own recenter re-aligns the seat to the vehicle's nose.
+            Halo2VehicleViewState nose;
+            Check(nose.Build(key,basis(.4f),basis(1.1f),false,50000,out),"H2 manual recenter: seated");
+            nose.Suspend();
+            nose.ReseedResume(nose.lastHullYaw);
+            Check(nose.Build(key,basis(2.0f),basis(1.1f),false,59000,out)&&
+                std::fabs(std::atan2(out.forward[1],out.forward[0])-1.1f)<1e-5f,
+                "H2 manual recenter: the seat looks along the vehicle's nose");
         }
         const auto saved=reference;auto bad=basis(0);bad.forward[0]=NAN;
         Check(!state.Build(key,bad,basis(0),false,2010,reference)&&!state.active&&
