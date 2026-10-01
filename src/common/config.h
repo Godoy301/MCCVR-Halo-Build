@@ -739,7 +739,8 @@ struct Config
     // DEV BUILD ONLY (parsed and saved only in dev builds; the hooks are compiled out of player builds): 1 = log
     // the type-13 pilot controllers, Reach's Sabre/Seraph (haloreach+0x64828) and Halo 4's Broadsword
     // (halo4+0xAA524) -- src/dll/type13_flight_log.inl, docs/TYPE13-FLIGHT-CONTROLLERS-2026-10-01.md Phase B.
-    // The hooks write nothing to the game; at 0 they are pure pass-throughs. Read at startup. Leave at 0 for play.
+    // The hooks write nothing to the game; at 0 they are not installed at all (no detour: a true control run).
+    // Read at startup. Leave at 0 for play.
     int type13_log = 0;
     // DEV BUILD ONLY, headless tests: 1 = the synthetic gamepad. Scripts dropped as halomccvr_pad.txt in the
     // mod folder press its buttons (tools/Send-MccPad.ps1; the language is src/common/dev_pad_script.h).

@@ -11,6 +11,7 @@
 // a slew cap), the forced-steer/redirect windows, the roll mode, the time arguments, the tag limits, Halo
 // 4's biped physics mode and runtime type override, and which dispatcher callers run in a tick.
 //
+// Nothing is hooked unless type13_log = 1 (read at startup): a 0 run carries no detour, so it is a true control.
 // The detours write NOTHING to the game. They run the native unchanged (through CallNativeWithSpareSlots:
 // seven arguments, three of them on the stack; tools/audit_caller_area.py 64828:11:v and aa524:11:v clean,
 // 6 slots a violation at entry+0x38), read under SEH before and after it, and push POD events into a
@@ -643,6 +644,12 @@ __declspec(noinline) void ReachType13Detour(int user, uint32_t vehicle, float ya
 bool ReachType13LogInstall(uintptr_t base, size_t size, uint32_t generation)
 {
     auto& lane = g_t13Reach;
+    if (!g_config.type13_log)
+    {
+        // Read at startup only, so a 0 run never carries the detour: it is the true control arm.
+        LOG("REACH SF: type13_log 0: type-13 pilot controller +0x%X not hooked (no detour)", kT13ReachEntryRva);
+        return false;
+    }
     if (g_reachT13Target)
     {
         if (lane.base == base)
@@ -1046,6 +1053,12 @@ __declspec(noinline) void Halo4Type13Detour(int user, uint32_t vehicle, float ya
 bool Halo4Type13LogInstall(uintptr_t base, size_t size, uint32_t generation)
 {
     auto& lane = g_t13Halo4;
+    if (!g_config.type13_log)
+    {
+        // As Reach's: a 0 run never carries the detour (Halo4Type13LogRemove has nothing to remove).
+        LOG("H4 T13: type13_log 0: type-13 pilot controller +0x%X not hooked (no detour)", kT13Halo4EntryRva);
+        return false;
+    }
     if (lane.target)
     {
         if (lane.base == base)
