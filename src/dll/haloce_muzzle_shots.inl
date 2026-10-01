@@ -47,11 +47,14 @@ bool ApplyMuzzleMarker(uint32_t object,int16_t count,void* markers,int16_t capac
     if(!Finite(shot.position)||!Finite(shot.direction))return false;
     // SHOTS FROM THE MUZZLE (sight_layer.h): keep the origin the obstruction check left, but fly through the
     // converged point instead of along the barrel. A refusal refuses the barrel shot: it leaves the eye.
+    // Only the barrel aim fires along the barrel: when this second read fails, or the keys changed since
+    // ReadMuzzle admitted the shot, the shot is refused (it leaves the eye), as in the other titles.
     {
         RenderContext context{};
-        if(HaloCE_GetGameplayContext(context)&&!context.tracking.controllers.gunBarrelAim&&
-            context.tracking.controllers.muzzleShots)
+        if(!HaloCE_GetGameplayContext(context))return false;
+        if(!context.tracking.controllers.gunBarrelAim)
         {
+            if(!context.tracking.controllers.muzzleShots)return false;
             Vec3 head{},dir{},eye{};
             if(context.tracking.controllers.controlsPresentationBlocked||
                 !BuildSightGeometry(context.camera,context.tracking,context.reference,
