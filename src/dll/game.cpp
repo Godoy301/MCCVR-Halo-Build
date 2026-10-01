@@ -34558,6 +34558,15 @@ namespace
     // camera is not a body under the player, and its glide back to the eye was being walked as one.
     std::atomic<uint64_t> g_halo4FirstPersonMs{0};
     inline constexpr uint64_t kHalo4FirstPersonFreshMs = 100;
+    // The skinning hook that stamps it belongs to the floating hands, an optional transaction that fails
+    // open (InstallHalo4Vrik). Without it there is no witness, and the admission stands as it was before
+    // the witness rather than refusing roomscale for the whole session.
+    std::atomic<bool> g_halo4FirstPersonWitnessHooked{false};
+    bool Halo4FirstPersonWitnessed(uint64_t now) noexcept
+    {
+        return !g_halo4FirstPersonWitnessHooked.load(std::memory_order_acquire) ||
+            WitnessFresh(g_halo4FirstPersonMs, now, kHalo4FirstPersonFreshMs);
+    }
 
     // =======================================================================
     // C-H4-7: Halo 4 stock-projection stereo geometry on C-H4-5's wrapper.
@@ -40923,8 +40932,7 @@ namespace
                     // On foot and player-controlled only; the hands rise with the view.
                     const float leash = g_config.head_leash_below_eye_m;
                     if (onFoot && headInput.positional && std::isfinite(leash) && leash >= 0.0f &&
-                        std::isfinite(beforeHead.position[2]) &&
-                        WitnessFresh(g_halo4FirstPersonMs, GetTickCount64(), kHalo4FirstPersonFreshMs))
+                        std::isfinite(beforeHead.position[2]) && Halo4FirstPersonWitnessed(GetTickCount64()))
                     {
                         const float floorZ = beforeHead.position[2] - leash * worldScale;
                         if (stock.position[2] < floorZ &&
@@ -41630,6 +41638,7 @@ namespace
                 "stock hands remain and camera core stays armed");
             return false;
         }
+        g_halo4FirstPersonWitnessHooked.store(true,std::memory_order_release);
         uint32_t epoch=g_halo4Camera.floatingHandsEpoch.fetch_add(
             1,std::memory_order_acq_rel)+1;
         if (!epoch)
@@ -42511,6 +42520,7 @@ namespace
         g_halo4Camera.setupTarget = nullptr;
         g_halo4Camera.wrapperTarget = nullptr;
         g_halo4Camera.modelSkinningTarget = nullptr;
+        g_halo4FirstPersonWitnessHooked.store(false,std::memory_order_release);
         g_halo4Camera.cuiReticleTarget = nullptr;
         g_halo4Camera.cuiReticleGameplayTarget = nullptr;
         g_halo4Camera.cuiReticleCleanupRequired = false;
@@ -49626,8 +49636,7 @@ bool Game_TitleOnFootPlayerControlled(GameTitle title)
             const auto* biped=Halo4ContactBiped(unit);
             // Existing H4EK-proven contact admission: unparented local biped -- and the camera at his eye
             // (the first-person witness): third person is on foot and player-controlled too.
-            return biped && *reinterpret_cast<const int32_t*>(biped+0x24)==-1 &&
-                WitnessFresh(g_halo4FirstPersonMs, now, kHalo4FirstPersonFreshMs);
+            return biped && *reinterpret_cast<const int32_t*>(biped+0x24)==-1 && Halo4FirstPersonWitnessed(now);
         }
 #endif
         default: return false;
