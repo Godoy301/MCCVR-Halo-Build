@@ -18205,6 +18205,83 @@ int main()
         Check(mx==0 && my==0 && std::fabs(follow.error[0])<1e-4f,
             "a debt larger than any play space is a tracking fault, never a long walk");
     }
+    // A tracking jump moves the REFERENCE: the view (head minus reference) does not jump with the fault,
+    // so the body stays under the player.
+    {
+        RoomscaleFollow follow;
+        float body[3]{}, head[3]{0,1.7f,0}, reference[3]{0,1.7f,0};
+        float mx=0,my=0; uint64_t now=100;
+        auto step=[&]{now+=11;return follow.Update(3,now,true,false,body,head,reference,0,-1,1,0,1.0f,mx,my);};
+        step();
+        const float viewBefore=head[0]-reference[0];
+        head[0]+=1.0f; step();
+        Check(std::fabs((head[0]-reference[0])-viewBefore)<1e-4f && std::fabs(follow.initialLean[0])<1e-6f,
+            "a head jump is folded into the reference: the view does not jump and nothing is baked into the lean");
+        // ...and a debt past kMaxDebtM puts the view back over the body.
+        for (int i=0;i<200 && follow.error[0]<RoomscaleFollow::kMaxDebtM-0.05f;++i) { head[0]+=0.05f; step(); }
+        head[0]+=0.1f; step();
+        Check(std::fabs((head[0]-reference[0])-follow.initialLean[0])<1e-4f,
+            "a debt larger than any play space returns the view over the body");
+    }
+    // A level's first admission puts the reference over the head (the title captured it earlier, tracked
+    // or not): nothing is baked into the lean.
+    {
+        RoomscaleFollow follow;
+        float body[3]{}, head[3]{0.55f,1.7f,-0.2f}, reference[3]{0,1.7f,0};
+        float mx=0,my=0;
+        Check(follow.Update(5,100,true,false,body,head,reference,0,-1,1,0,1.0f,mx,my) &&
+              reference[0]==0.55f && reference[2]==-0.2f && reference[1]==1.7f &&
+              follow.initialLean[0]==0 && follow.initialLean[1]==0 && mx==0 && my==0,
+            "a new generation's first seed moves the reference to the head, horizontally, without a walk");
+    }
+    // The first run after any re-seed other than a level start or a recenter is a probe; and while we push,
+    // travel against the push is never our step. Halo 4 leaving third person (user log 2026-09-30): the
+    // camera glides back to the eye while the follow pushes, and that glide was claimed as a walk.
+    {
+        RoomscaleFollow follow;
+        float body[3]{}, head[3]{0,1.7f,0}, reference[3]{0,1.7f,0};
+        float mx=0,my=0; uint64_t now=100;
+        auto step=[&]{now+=11;return follow.Update(3,now,true,false,body,head,reference,0,-1,1,0,1.0f,mx,my);};
+        step();
+        head[0]=0.3f; step();
+        Check(!follow.probing && (mx!=0 || my!=0), "fixture: a level's first run is an ordinary follow");
+        follow.Rebase(); step();
+        Check(follow.probing && (mx!=0 || my!=0), "after an admission change the first run is a probe");
+        const float kept=reference[0];
+        body[1]-=0.3f; step();   // the camera arrives back at the eye in one 30 cm chunk, the way it pushes
+        Check(reference[0]==kept && follow.stalled && follow.guard==RoomscaleFollow::Guard::NotOurs,
+            "a probe does not claim the camera's glide back to the eye");
+    }
+    {
+        RoomscaleFollow follow;
+        float body[3]{}, head[3]{0,1.7f,0}, reference[3]{0,1.7f,0};
+        float mx=0,my=0; uint64_t now=100;
+        auto step=[&]{now+=11;return follow.Update(3,now,true,false,body,head,reference,0,-1,1,0,1.0f,mx,my);};
+        step();
+        head[0]=0.4f; step();
+        for (int i=0;i<3;++i) { body[1]-=0.02f; step(); }   // walking toward the head: claimed
+        Check(reference[0]>0.05f && (mx!=0 || my!=0), "fixture: a running follow claims its walk");
+        const float kept=reference[0];
+        bool unclaimed=true;
+        for (int i=0;i<5;++i)
+        {
+            body[1]+=0.04f; step();   // pushed toward the head, the body point goes the other way
+            unclaimed&=reference[0]==kept && follow.guard==RoomscaleFollow::Guard::NotOurs;
+        }
+        Check(unclaimed && (mx!=0 || my!=0), "travel against the push while we push is not claimed; the follow keeps pushing");
+        // A body still coasting the old way just after the command turns IS ours: overshoot past the head.
+        RoomscaleFollow turn;
+        float tb[3]{}, th[3]{0,1.7f,0}, tr[3]{0,1.7f,0};
+        now=100;
+        auto tstep=[&]{now+=11;return turn.Update(3,now,true,false,tb,th,tr,0,-1,1,0,1.0f,mx,my);};
+        tstep();
+        th[0]=0.1f; tstep();
+        for (int i=0;i<5;++i) { tb[1]-=0.03f; tstep(); }   // 15 cm toward a 10 cm target: 5 cm past it
+        Check(turn.following && (mx<0 || my!=0), "fixture: an overshoot past the start band turns the command");
+        const float coastedFrom=tr[0];
+        tb[1]-=0.02f; tstep();                             // still coasting the old way as the command turns
+        Check(tr[0]>coastedFrom, "the body coasting the old way just after the command turns is still claimed");
+    }
     // The stopping tail is claimed only while the body keeps moving the way the follow walked: travel
     // against that direction (a platform, a knockback) ends the tail unclaimed.
     {

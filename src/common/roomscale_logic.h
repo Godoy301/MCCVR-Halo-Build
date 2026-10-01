@@ -50,8 +50,11 @@ struct RoomscaleFollow
     bool neutralValid=false;
     uint32_t neutralGeneration=0;
     // What is NOT owed: a tracking fault. A head that moves further between two consecutive updates
-    // than a person can (a jump) is folded into the neutral lean, and a debt larger than any play space
-    // is dropped. Neither is a walk.
+    // than a person can (a jump) is folded into the REFERENCE, and a debt larger than any play space is
+    // dropped the same way. Neither is a walk. Folding into the reference (not the neutral lean) keeps
+    // the view where it was -- the view is built from head minus reference -- so the player stays over
+    // the body; folding into the lean let the view jump with the fault while the legs stayed behind for
+    // good (the user, 2026-09-30: "my legs end up far away from me, and they don't roomscale back").
     static constexpr float kHeadJumpM=0.5f, kHeadMaxSpeed=6.0f, kMaxDebtM=3.0f;
     bool haveLastHead=false;
     uint64_t lastHeadMs=0;
@@ -95,8 +98,9 @@ struct RoomscaleFollow
     float body[2]{}, expectedReference[2]{}, initialLean[2]{};
     float headForward[2]{}, worldForward[2]{}, error[2]{}, velocity[2]{};
     // Tracking-space direction of the last nonzero command: the way the stopping tail must keep moving
-    // to be claimed as ours.
-    float tailDir[2]{};
+    // to be claimed as ours. priorTailDir is the one before it: a body still coasting the old way just
+    // after the command turns is still our step.
+    float tailDir[2]{}, priorTailDir[2]{};
 
     // Forget the follow in progress -- after an admission change its movement receipts cannot be
     // trusted -- but keep what is owed: the neutral lean, and the reference it was measured against
@@ -154,8 +158,19 @@ struct RoomscaleFollow
             std::hypot(position[0]-body[0],position[1]-body[1])/scale>0.35f;
         if (reset)
         {
-            // Only a new title generation or a recenter says the player is over the body now.
-            if (newGeneration || recentered)
+            // Only a new title generation or a recenter says the player is over the body now. A NEW
+            // GENERATION moves the reference to the head, as a position recenter does: the title captured
+            // its reference earlier -- at the level's first decodable pose, tracked or not, before a
+            // cutscene, before the headset came back on -- and whatever the head moved since then was
+            // being baked into the lean, legs off to one side until a manual recenter (Halo 4, user log
+            // 2026-09-30: 0.55 m baked at a level start; Halo 2 had its own re-seat for the same reason).
+            if (newGeneration)
+            {
+                reference[0]=head[0]; reference[2]=head[2];
+                initialLean[0]=initialLean[1]=0;
+                neutralValid=true; neutralGeneration=epoch;
+            }
+            else if (recentered)
             {
                 initialLean[0]=head[0]-reference[0];
                 initialLean[1]=head[2]-reference[2];
@@ -164,7 +179,12 @@ struct RoomscaleFollow
             commanded=settling=following=false; velocity[0]=velocity[1]=0;
             lastCommand=lastMotion=now; seeded=true;
             manualPaused=false;
-            stalled=probing=false; runProgress=windowProgress=0;
+            // After any OTHER re-seed -- an admission change, a stale camera, a tracking gap, a teleport --
+            // the first run is a probe: until it has moved the body the way it pushes, a jump or travel
+            // across the push is the game moving him. Halo 4 leaving third person re-admits while its
+            // camera is still gliding back to the eye; claimed as a walk, that glide moved the reference
+            // with it and left the view hanging back while the body walked off (user log 2026-09-30).
+            stalled=false; probing=!(newGeneration || recentered); runProgress=windowProgress=0;
             haveLastHead=false;   // no jump test across a re-seed: the head may really have moved
         }
         else if (haveLastHead && now>=lastHeadMs)
@@ -173,8 +193,9 @@ struct RoomscaleFollow
             const float limit=std::max(kHeadJumpM, kHeadMaxSpeed*float(now-lastHeadMs)*0.001f);
             if (std::hypot(jx,jz)>limit)
             {
-                // A tracking jump: fold it into the neutral lean, so it is never walked.
-                initialLean[0]+=jx; initialLean[1]+=jz;
+                // A tracking jump: fold it into the reference, so it is never walked and the view does
+                // not jump with it.
+                reference[0]+=jx; reference[2]+=jz;
                 velocity[0]=velocity[1]=0; following=false;
             }
         }
@@ -239,6 +260,15 @@ struct RoomscaleFollow
             {
                 settling=false; velocity[0]=velocity[1]=0;
             }
+            else if (commanded && along<-kStallStillM &&
+                tx*priorTailDir[0]+tz*priorTailDir[1]<-kStallStillM)
+            {
+                // Travel AGAINST the push while we push -- against the previous command's direction too,
+                // so it is not the body still coasting the old way after the command turned -- is the
+                // game moving him (a knockback, a camera settling back to the eye), never our step. Not
+                // claimed: the view carries it, and the follow keeps pushing toward the head.
+                velocity[0]=velocity[1]=0; guard=Guard::NotOurs;
+            }
             else
             {
                 reference[0]+=tx; reference[2]+=tz;
@@ -263,9 +293,10 @@ struct RoomscaleFollow
         const float distance=std::hypot(error[0],error[1]);
         if (distance>kMaxDebtM)
         {
-            // More than any play space: a tracking fault, never a long unattended walk.
-            initialLean[0]=head[0]-reference[0];
-            initialLean[1]=head[2]-reference[2];
+            // More than any play space: a tracking fault, never a long unattended walk. The reference
+            // takes it, so the view returns over the body instead of keeping the fault.
+            reference[0]=head[0]-initialLean[0];
+            reference[2]=head[2]-initialLean[1];
             error[0]=error[1]=0;velocity[0]=velocity[1]=0;settling=following=false;
         }
         else
@@ -296,7 +327,14 @@ struct RoomscaleFollow
                 // because the error itself has flipped and the command again points along it.
                 if(cx*error[0]+cz*error[1]<=0){cx=cz=0;}
                 const float magnitude=std::hypot(cx,cz);
-                if(magnitude>0){tailDir[0]=cx/magnitude;tailDir[1]=cz/magnitude;}
+                if(magnitude>0)
+                {
+                    priorTailDir[0]=tailDir[0];priorTailDir[1]=tailDir[1];
+                    tailDir[0]=cx/magnitude;tailDir[1]=cz/magnitude;
+                    // A run that starts from rest has no earlier direction to coast along; one that starts
+                    // while the last run's tail is still settling keeps that run's (an overshoot correction).
+                    if(!commanded&&!settling){priorTailDir[0]=tailDir[0];priorTailDir[1]=tailDir[1];}
+                }
                 if(magnitude>.8f){cx*=.8f/magnitude;cz*=.8f/magnitude;}
                 moveX=-cx*hz+cz*hx;
                 moveY=cx*hx+cz*hz;
