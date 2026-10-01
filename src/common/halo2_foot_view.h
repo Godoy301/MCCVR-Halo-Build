@@ -16,6 +16,9 @@ struct Halo2FootViewState
     uint32_t generation=0;
     float yaw=0.0f;          // Halo heading, radians: forward = (cos yaw, sin yaw, 0); left-positive
     bool snapLatched=true;   // a stick already held when the heading is taken must be let go first
+    // Counts each time the heading is taken: the caller's smooth-turn clock restarts on a change, so the
+    // first turn after the view engages does not inherit the whole idle span as one capped 0.1 s step.
+    uint32_t engagements=0;
 
     static float Wrap(float angle) noexcept
     { return std::remainder(angle,6.28318530718f); }
@@ -25,7 +28,7 @@ struct Halo2FootViewState
     {
         if(!gen || !std::isfinite(seedYaw)) return false;
         if(!active || generation!=gen) {
-            yaw=Wrap(seedYaw);generation=gen;active=true;snapLatched=true;
+            yaw=Wrap(seedYaw);generation=gen;active=true;snapLatched=true;++engagements;
         }
         return true;
     }

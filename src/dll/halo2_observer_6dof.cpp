@@ -1192,12 +1192,17 @@ namespace
             // Under direct drive the right stick turns the view's own heading, smooth or snap, and never
             // reaches the game (Game_VrOwnsLookStick); the body follows the hand through the drive. Smooth
             // turning runs at turn_smooth_deg_s, as in the other titles, on a sub-frame clock.
+            // The clock runs only while the view owns the heading, so it restarts at each engagement: leaving
+            // a seat or a cutscene, or the drive re-arming, must not turn by the whole idle span at once.
             static LARGE_INTEGER s_turnFrequency{}, s_lastTurn{};
+            static uint32_t s_turnEngagement = 0;
             if (!s_turnFrequency.QuadPart)
                 QueryPerformanceFrequency(&s_turnFrequency);
             LARGE_INTEGER turnNow{};
             QueryPerformanceCounter(&turnNow);
-            const float dt = s_lastTurn.QuadPart && s_turnFrequency.QuadPart
+            const bool sameEngagement = s_turnEngagement == g_footView.engagements;
+            s_turnEngagement = g_footView.engagements;
+            const float dt = sameEngagement && s_lastTurn.QuadPart && s_turnFrequency.QuadPart
                 ? static_cast<float>(turnNow.QuadPart - s_lastTurn.QuadPart) /
                       static_cast<float>(s_turnFrequency.QuadPart)
                 : 0.0f;
