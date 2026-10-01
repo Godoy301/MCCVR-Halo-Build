@@ -170,7 +170,7 @@ extern "C" void Halo3PcHook();
 extern "C" void OdstPcHook();
 extern "C" void Halo4PcHook();
 extern "C" { void* g_halo3PcOrig = nullptr; void* g_odstPcOrig = nullptr; void* g_halo4PcOrig = nullptr; }
-extern "C" void LegacyPcApplyForUser(int slot, int user, uintptr_t ret);
+extern "C" void LegacyPcApplyForUser(int slot, int user, uintptr_t ret, const uint8_t* entryRsp);
 bool LegacyDriveInstall(GameTitle title, uintptr_t base, size_t size);
 bool LegacyDriveRemove(GameTitle title);
 bool LegacyDriveLive(GameTitle title);
@@ -178,6 +178,7 @@ void LegacyDriveReport();
 #include "../common/aim_servo_logic.h"
 #include "../common/aim_solve_logic.h"
 #include "../common/aim_write_logic.h"
+#include "../common/aim_caller_logic.h"
 #include "../common/seat_drive_policy.h"
 #include "../common/log.h"
 #include "../common/config.h"
@@ -223,6 +224,140 @@ void LegacyDriveReport();
 #include "../common/scope_logic.h"
 #include "../common/two_hand_ik_logic.h"
 #include "gesture_melee_bindings.inl"
+
+// AIM CALLER SPLIT (aim_caller_logic.h), engine side, shared by the Halo 3 / ODST / Halo 4 accumulator hook
+// (legacy_direct_drive.inl) and Reach's (ReachPcApplyForUser).
+//
+// The dispatcher-frame proof: the .pdata entry that contains the dispatcher, then the engine-free proof over
+// it (the entry begins at the dispatcher and contains the accumulator's call past the prolog; the unwind
+// info and the prologue's own instructions decode to one fixed frame). `entryFrame`: where the dispatcher's
+// return sits relative to the accumulator's entry rsp. `why`: the first failing proof.
+static bool AimCallerProveDispatcher(uintptr_t base, size_t size, uint32_t dispatcherRva, uint32_t accCallRva,
+                                     uint32_t& entryFrame, const char*& why)
+{
+    entryFrame = 0;
+    why = nullptr;
+    DWORD64 imageBase = 0;
+    const PRUNTIME_FUNCTION function =
+        RtlLookupFunctionEntry(static_cast<DWORD64>(base + dispatcherRva), &imageBase, nullptr);
+    if (!function || imageBase != static_cast<DWORD64>(base))
+    {
+        why = "dispatcher .pdata entry";
+        return false;
+    }
+    return aim_caller::ProveDispatcherFrame(reinterpret_cast<const uint8_t*>(base), size, dispatcherRva,
+                                           function->BeginAddress, function->EndAddress, function->UnwindData,
+                                           accCallRva, entryFrame, why);
+}
+
+// The pattern matches at exactly base + rva and nowhere else in the module.
+static bool AimCallerUniqueAt(uintptr_t base, size_t size, uint32_t rva, const char* pattern)
+{
+    const uintptr_t first = sig::Find(base, size, pattern);
+    if (first != base + rva)
+        return false;
+    const uintptr_t next = first + 1;
+    return next >= base + size || !sig::Find(next, static_cast<size_t>(base + size - next), pattern);
+}
+
+// The `call` (E8 rel32) at `callRva` lands on `targetRva`: its return address, or 0.
+static uintptr_t AimCallerCallReturn(uintptr_t base, size_t size, uint32_t callRva, uint32_t targetRva)
+{
+    if (!callRva || static_cast<size_t>(callRva) + 5 > size)
+        return 0;
+    const auto* call = reinterpret_cast<const uint8_t*>(base + callRva);
+    int32_t rel = 0;
+    memcpy(&rel, call + 1, sizeof(rel));
+    if (call[0] != 0xE8 || static_cast<int64_t>(callRva) + 5 + rel != static_cast<int64_t>(targetRva))
+        return 0;
+    return base + callRva + 5;
+}
+
+// The put-back slot's safety cap runs on QPC (monotonic, sub-millisecond), not GetTickCount64 (~16 ms steps).
+static uint64_t AimCallerClockNow()
+{
+    LARGE_INTEGER now{};
+    QueryPerformanceCounter(&now);
+    return static_cast<uint64_t>(now.QuadPart);
+}
+
+static uint64_t AimCallerClockFromMs(uint64_t ms)
+{
+    LARGE_INTEGER frequency{};
+    QueryPerformanceFrequency(&frequency);
+    return static_cast<uint64_t>(frequency.QuadPart) * ms / 1000u;
+}
+
+// How long the last stick write may still be put back over an extra call. The real scope is "no stick call
+// since" (aim_caller::PutBack); this only bounds a pass with no stick call at all (Halo 4 can run the impulse
+// with its sway and stick skipped, and Halo 3's / ODST's no-unit calls -- put back as they always were -- run
+// with no stick call while the player is dead: their window was 50 ms of wall clock). 250 ms covers a catch-up
+// burst of ticks after a hitch (where 50 ms lapsed and a kick reached the latch) and keeps a dead player's
+// stick on the death camera within ~0.1 s of the servo taking it back (LegacyDriveLive: 150 ms).
+constexpr uint64_t kAimCallerPutBackCapMs = 250;
+
+#if HALOMCCVR_DEV_DIAGNOSTICS
+// Dev census: the sim tick counter, [[TLS + slot]] + field, for "stick calls per tick". Proven by the title's
+// own getter (unique; its TLS-index load must name the drive's own index; the slot imm32 at +0x10 and the
+// field disp8 at +0x1E are read from it) and by the per-tick incrementer (unique; the same slot, where its
+// bytes carry one, and the same field). Any failure: the census reports the tick as unreadable.
+// ADDR-HYGIENE: dev-only (census; nothing reads it to decide anything).
+struct AimCallerTickAnchors
+{
+    uint32_t getterRva;
+    const char* getter;
+    uint32_t incRva;
+    const char* inc;
+    uint8_t incSlotOff;    // 0xFF: the slot is set earlier, not in these bytes
+    uint8_t incFieldOff;
+};
+
+static bool AimCallerTickProof(uintptr_t base, size_t size, uintptr_t tlsIndexAddress, const AimCallerTickAnchors& a,
+                               uint32_t& slot, uint32_t& field)
+{
+    slot = field = 0;
+    if (!AimCallerUniqueAt(base, size, a.getterRva, a.getter) || !AimCallerUniqueAt(base, size, a.incRva, a.inc))
+        return false;
+    const auto* g = reinterpret_cast<const uint8_t*>(base + a.getterRva);
+    int32_t disp = 0;
+    memcpy(&disp, g + 2, sizeof(disp));
+    if (g[0] != 0x8B || g[1] != 0x0D ||
+        base + a.getterRva + 6 + static_cast<intptr_t>(disp) != tlsIndexAddress)
+        return false;
+    uint32_t getterSlot = 0;
+    memcpy(&getterSlot, g + 0x10, sizeof(getterSlot));
+    const uint8_t getterField = g[0x1E];
+    const auto* inc = reinterpret_cast<const uint8_t*>(base + a.incRva);
+    uint32_t incSlot = getterSlot;
+    if (a.incSlotOff != 0xFF)
+        memcpy(&incSlot, inc + a.incSlotOff, sizeof(incSlot));
+    if (incSlot != getterSlot || inc[a.incFieldOff] != getterField || getterSlot >= 0x1000 || getterField >= 0x80)
+        return false;
+    slot = getterSlot;
+    field = getterField;
+    return true;
+}
+
+// The tick through this (sim) thread's own TLS block: the same game-state copy as the record.
+static bool AimCallerReadTick(const uint8_t* tls, uint32_t slot, uint32_t field, uint32_t& tick)
+{
+    tick = 0;
+    if (!tls || !slot)
+        return false;
+    __try
+    {
+        const uintptr_t time = *reinterpret_cast<const uintptr_t*>(tls + slot);
+        if (!time)
+            return false;
+        tick = *reinterpret_cast<const uint32_t*>(time + field);
+        return true;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return false;
+    }
+}
+#endif
 
 #ifndef HALOMCCVR_EXPERIMENTAL_ODST_BRINGUP
 #define HALOMCCVR_EXPERIMENTAL_ODST_BRINGUP 0

@@ -4,21 +4,28 @@
 ; then clamps; see LegacyDrive in game.cpp for the RVAs and the anchors that guard them).
 ; Signature, as Reach's: ecx = user index, xmm1..xmm3 = floats, no stack arguments; the record is reached
 ; through the calling (sim) thread's own TLS, so the C callee re-derives it from the same thread.
-; Each detour runs the native update unchanged, then ALWAYS calls LegacyPcApplyForUser(slot, user, ret),
-; which decides (armed / fresh setpoint / validated record / on foot or a written seat) whether to
-; overwrite desired_angles. `ret` is this detour's own return address -- which caller ran the update. The
-; per-tick player-control update is one call site; Halo 3 and ODST also run the accumulator from a weapon's
-; pitch kick and from the no-unit path, which must not count as another tick (legacy_direct_drive.inl).
+; Each detour runs the native update unchanged, then ALWAYS calls
+; LegacyPcApplyForUser(slot, user, ret, entryRsp), which decides (which caller / armed / fresh setpoint /
+; validated record / on foot or a written seat) whether to overwrite desired_angles. `ret` is this detour's
+; own return address; `entryRsp` points at the slot holding it, i.e. the accumulator's ENTRY rsp. Halo 3 and
+; ODST call the accumulator directly from the stick update, the no-unit path and a weapon's pitch kick, so
+; `ret` names the caller. Halo 4 calls it from ONE site inside a dispatcher that one control pass runs up to
+; four times (impulse, sway, stick, no unit), so there `ret` names nothing and the C callee reads the
+; DISPATCHER's return address at entryRsp + its proven frame (0x100; aim_caller_logic.h,
+; legacy_direct_drive.inl). Only the stick call is the update.
 ; Naked so the native ABI (rcx + xmm1..xmm3; the natives return nothing meaningful -- each ends by storing
 ; its clamped pitch) is forwarded byte-exact. PROC FRAME + .allocstack give each an unwind entry, which an
 ; exception unwinding through it and the teardown's quiescence scan both need. The frame is unchanged by
-; the third argument: [rsp+38h] is the caller's return address, read after the native call returns.
+; the third and fourth arguments: [rsp+38h] is the caller's return address, read after the native call
+; returns, and lea r9,[rsp+38h] is its address -- the accumulator's entry rsp, because MinHook enters this
+; detour by a jmp from the accumulator's first instruction.
 option casemap:none
 
 EXTERN g_halo3PcOrig:QWORD
 EXTERN g_odstPcOrig:QWORD
 EXTERN g_halo4PcOrig:QWORD
-EXTERN LegacyPcApplyForUser:PROC          ; void LegacyPcApplyForUser(int slot /*ecx*/, int user /*edx*/, uintptr_t ret /*r8*/)
+EXTERN LegacyPcApplyForUser:PROC          ; void LegacyPcApplyForUser(int slot /*ecx*/, int user /*edx*/,
+                                          ;     uintptr_t ret /*r8*/, const uint8_t* entryRsp /*r9*/)
 
 .code
 Halo3PcHook PROC FRAME
@@ -30,6 +37,7 @@ Halo3PcHook PROC FRAME
     mov  QWORD PTR [rsp+28h], rax
     mov  rdx, QWORD PTR [rsp+30h]         ; user -> arg2
     mov  r8, QWORD PTR [rsp+38h]          ; our return address (the caller) -> arg3
+    lea  r9, QWORD PTR [rsp+38h]          ; the accumulator's entry rsp (where that return sits) -> arg4
     xor  ecx, ecx                         ; slot 0 = Halo 3
     call LegacyPcApplyForUser
     mov  rax, QWORD PTR [rsp+28h]
@@ -46,6 +54,7 @@ OdstPcHook PROC FRAME
     mov  QWORD PTR [rsp+28h], rax
     mov  rdx, QWORD PTR [rsp+30h]
     mov  r8, QWORD PTR [rsp+38h]
+    lea  r9, QWORD PTR [rsp+38h]
     mov  ecx, 1                           ; slot 1 = ODST
     call LegacyPcApplyForUser
     mov  rax, QWORD PTR [rsp+28h]
@@ -62,6 +71,7 @@ Halo4PcHook PROC FRAME
     mov  QWORD PTR [rsp+28h], rax
     mov  rdx, QWORD PTR [rsp+30h]
     mov  r8, QWORD PTR [rsp+38h]
+    lea  r9, QWORD PTR [rsp+38h]          ; the dispatcher's return is read through this (entry rsp + 0x100)
     mov  ecx, 2                           ; slot 2 = Halo 4
     call LegacyPcApplyForUser
     mov  rax, QWORD PTR [rsp+28h]
