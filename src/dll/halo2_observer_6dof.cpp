@@ -1283,15 +1283,18 @@ namespace
         }
         // THE LEASH BELOW THE CHARACTER'S EYE (Reach's ReachApplyHeadLook; Halo 3, ODST and Halo 4 alike): at
         // most head_leash_below_eye_m below his CURRENT eye, so a deep duck cannot take the view inside his
-        // chest and legs. On foot only. The published base rises with it -- the hands and the stereo core's
-        // re-composition of the eyes are built on it -- and viewLiftZ says by how much.
+        // chest and legs. On foot and in first person -- roomscale's admission (Game_TitleOnFootPlayerControlled):
+        // the first-person palette packet is the witness, so a death camera is not leashed. The published base
+        // rises with it -- the hands and the stereo core's re-composition of the eyes are built on it -- and
+        // viewLiftZ says by how much.
         {
             const float leash=g_config.head_leash_below_eye_m;
             if(!vehicle&&head.positional&&std::isfinite(leash)&&leash>=0.0f&&std::isfinite(characterEyeZ)&&
                 !VR_IsCutsceneTheaterActive())
             {
                 const float floorZ=characterEyeZ-leash*head.worldScale;
-                if(tracked.position[2]<floorZ&&Halo2Observer6Dof_OnFootFresh())
+                if(tracked.position[2]<floorZ&&Halo2Observer6Dof_OnFootFresh()&&
+                    Halo2Observer6Dof_FinalPaletteArmed())
                 {
                     const float lift=floorZ-tracked.position[2];
                     tracked.position[2]=floorZ;
