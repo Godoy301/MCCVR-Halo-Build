@@ -283,11 +283,10 @@ enum class VehicleTrimBank : uint8_t
 };
 int Game_VehicleSeatTrimSlotEx(VehicleTrimBank* outBank);
 const char* Game_VehicleSeatTrimName(int slot, VehicleTrimBank bank);
-// True while a vehicle seat's own angular limit is holding the weapon short of
-// where the hand points (a warthog rider seat authors yaw +/-90, pitch +/-45
-// relative to the hull). `outDir` then carries the engine's ACTUAL aim as a
-// VR-space unit vector so the floating reticle can sit on the gun instead of
-// promising a shot the engine will never take.
+// DEV ASSESSMENT ONLY (honest_reticle_assess): true while this input poll
+// published the engine's ACTUAL aim for the reticle to draw instead of the aim
+// point. `outDir` carries it as a VR-space unit vector. A player build never
+// publishes it: a seat's limit or a turret no longer moves the reticle.
 bool Game_GetClampedAimDirection(float outDir[3]);
 // Reach-only exact-frame reticle truth: returns the completed stereo pair's
 // native seated unit aim in that pair's final center-camera local axes.

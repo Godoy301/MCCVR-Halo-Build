@@ -1287,6 +1287,12 @@ void ConfigLoad(const wchar_t* path)
         if (!strcmp(key, "reach_collision_census")) { g_config.reach_collision_census=atoi(val); continue; }
         if (!strcmp(key, "sight_ray_census")) { g_config.sight_ray_census=atoi(val); continue; }
         if (!strcmp(key, "halo4_seat_converge")) { g_config.halo4_seat_converge=atoi(val)!=0?1:0; continue; }
+        if (!strcmp(key, "honest_reticle_assess"))
+        {
+            const int v = atoi(val);
+            g_config.honest_reticle_assess = v < 0 ? 0 : (v > 2 ? 2 : v);
+            continue;
+        }
         if (!strcmp(key, "type13_log")) { g_config.type13_log=atoi(val)!=0?1:0; continue; }
         if (!strcmp(key, "dev_synthetic_pad")) { g_config.dev_synthetic_pad=atoi(val)!=0?1:0; continue; }
         if (!strcmp(key, "reach_sight_fault")) { g_config.reach_sight_fault=(int)strtol(val,nullptr,0); continue; }
@@ -1298,7 +1304,19 @@ void ConfigLoad(const wchar_t* path)
             g_config.reach_vehicle_aim = v < 0 ? 0 : (v > 2 ? 2 : v);
             continue;
         }
-        if (!strcmp(key, "honest_reticle_onfoot")) { g_config.honest_reticle_onfoot=atoi(val)!=0; continue; }
+        if (!strcmp(key, "honest_reticle_onfoot"))
+        {
+            // Retired 2026-10-01: the player-facing honest reticle is gone (the crosshair stays on the converged
+            // point; the game's own tracers show where a held or slewing gun really fires). Dev builds have the
+            // assessment key honest_reticle_assess instead. Logged once a session when a cfg still sets it.
+            static bool s_loggedHonestOnFoot = false;
+            if (atoi(val) != 0 && !s_loggedHonestOnFoot)
+            {
+                s_loggedHonestOnFoot = true;
+                LOG("config: honest_reticle_onfoot is retired and ignored (the crosshair stays on the aim point)");
+            }
+            continue;
+        }
         if (!strcmp(key, "reticle_max_dist_m")) { g_config.reticle_max_dist_m=(float)atof(val); continue; }
         if (!strcmp(key, "reticle_surface_offset_m")) { g_config.reticle_surface_offset_m=(float)atof(val); continue; }
         if (!strcmp(key, "reticle_min_scale_dist_m")) { g_config.reticle_min_scale_dist_m=(float)atof(val); continue; }
@@ -2080,7 +2098,6 @@ void ConfigSave()
     fprintf(f, "# Shots leave the visible muzzle but fly through the converged aim's point (the reticle):\n"
                "# they land where the shot from the eye would have. Needs converged_aim; gun_barrel_aim wins.\n"
                "shots_from_muzzle = %d\n\n", g_config.shots_from_muzzle ? 1 : 0);
-    fprintf(f, "# DEMO: also show the crosshair at the game's REAL aim ON FOOT, not just in\n# seats. On foot the hand-ray crosshair leads the shot while you turn; this puts\n# it on the true (integrated) aim so the lag is visible. Off by default.\nhonest_reticle_onfoot = %d\n\n", g_config.honest_reticle_onfoot ? 1 : 0);
     fprintf(f, "# Floating VR-crosshair smoothing only; bullets stay raw.\n");
     fprintf(f, "# (default %.2f, range 0 to 0.95)\n", d.aim_stabilization);
     fprintf(f, "aim_stabilization = %.2f\n\n", g_config.aim_stabilization);
@@ -2175,6 +2192,10 @@ void ConfigSave()
     fprintf(f, "# DEV BUILD ONLY. Halo 4 seated convergence (stage 1): 1 = a seat converges like Halo 3's while\n");
     fprintf(f, "# every proof holds; the reticle stays honest where the shot cannot follow. 0 = seats as before.\n");
     fprintf(f, "halo4_seat_converge = %d\n\n", g_config.halo4_seat_converge);
+    fprintf(f, "# DEV BUILD ONLY. Assessment: draw the crosshair on the game's REAL aim instead of the aim point, to see\n");
+    fprintf(f, "# how far the game trails the hand. Moves the drawing only; shots, aim and convergence are unchanged.\n");
+    fprintf(f, "# 0 = off, 1 = on foot, 2 = everywhere. (default 0)\n");
+    fprintf(f, "honest_reticle_assess = %d\n\n", g_config.honest_reticle_assess);
     fprintf(f, "# DEV BUILD ONLY. 1 = log the type-13 pilot controllers (Reach Sabre, Halo 4 Broadsword): REACH SF and\n");
     fprintf(f, "# H4 T13 lines. Writes nothing to the game. Read at startup. Leave at 0.\n");
     fprintf(f, "type13_log = %d\n\n", g_config.type13_log);

@@ -812,13 +812,14 @@ struct Config
     float reticle_min_scale_dist_m = 0.7f;
     float reticle_min_scale = 0.001f;
 
-    // DEMO / comparison aid: also publish the crosshair at the game's REAL aim
-    // while ON FOOT, not only in the seated cases. On foot the closed-loop aim
-    // lags the hand through the game's turn-rate integrator, so the normal
-    // hand-ray crosshair LEADS the actual shot while you turn; with this on, the
-    // crosshair sits on the true aim instead, making that lag visible. Off by
-    // default. Live in the F1 menu (Crosshair) and via this cfg key.
-    bool honest_reticle_onfoot = false;
+    // DEV BUILD ONLY (parsed, saved and in the F1 menu only in dev builds): an ASSESSMENT aid that draws the
+    // crosshair on the game's REAL aim instead of the hand's point, to judge by eye how far the game trails the
+    // hand. 0 = off, 1 = on foot only, 2 = everywhere (seats and turrets too). It moves where the reticle is
+    // DRAWN, even over the traced reticle, and nothing else: the converged mark, the shots, the aim write and
+    // the drive mode never read it (converge::AssessDrawsGameAim). It replaces honest_reticle_onfoot (retired
+    // 2026-10-01, ignored with a log line): the player-facing honest reticle was a cue for judging the stick
+    // drive, and with convergence and direct drive in place the game's own tracers do that job. (default 0)
+    int honest_reticle_assess = 0;
 
     // How often the VR crosshair re-reads the game's own animated crosshair
     // art, in displayed frames. Halo 3's authored crosshair kicks when the

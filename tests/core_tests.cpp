@@ -13863,6 +13863,30 @@ int main()
         std::filesystem::remove(oldAimConfig);
         std::filesystem::remove(rollbackAimConfig);
     }
+#if !HALOMCCVR_DEV_DIAGNOSTICS
+    {
+        // 2026-10-01: the player-facing honest reticle is retired. A player build
+        // ignores the old key, never reads the dev assessment key, and saves
+        // neither, so no player cfg can move the reticle off the aim point.
+        const std::filesystem::path honestConfig = configDir / L"honest-reticle-retired.cfg";
+        {
+            std::ofstream file(honestConfig);
+            file << "honest_reticle_onfoot = 1\n";
+            file << "honest_reticle_assess = 2\n";
+        }
+        g_config.honest_reticle_assess = 0;
+        ConfigLoad(honestConfig.c_str());
+        Check(g_config.honest_reticle_assess == 0,
+            "A player build reads neither honest_reticle_onfoot nor the dev assessment key");
+        ConfigSave();
+        const std::string savedHonest = ReadTextFile(honestConfig);
+        Check(CountText(savedHonest, "honest_reticle_onfoot") == 0 &&
+                  CountText(savedHonest, "honest_reticle_assess") == 0,
+            "A player build saves neither honest-reticle key");
+        ConfigLoad(primary.c_str());
+        std::filesystem::remove(honestConfig);
+    }
+#endif
     {
         // Exercise the real installer merge followed by runtime parsing and
         // saving. Text-only installer assertions cannot catch new defaults

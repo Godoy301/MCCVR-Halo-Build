@@ -9492,12 +9492,47 @@ namespace
     // input thread's wheel update, read by the aim-stick author.
     std::atomic<float> g_halo3SteerAxis{0.0f};
     std::atomic<uint32_t> g_halo3WheelDriving{0};
-    // The engine's real aim, in VR space, published only while a seat's own
-    // angular limit is holding the gun short of where the hand points. The
-    // reticle consumes it so the crosshair never promises an impossible shot.
+    // The engine's real aim, in VR space, published by Game_ComputeAimStick only
+    // for the DEV assessment key honest_reticle_assess (converge_policy.h): the
+    // reticle draws it instead of the aim point so the game's lag can be judged
+    // by eye. Player builds never publish it -- a natural seat limit or turret
+    // no longer moves the reticle (2026-10-01). Written once per input poll by
+    // AimClampedPublication, on every return, and stamped so a poll that stops
+    // running (another title, the Reach provider path) cannot leave a stale
+    // direction behind.
     std::atomic<uint32_t> g_aimClampedValid{0};
     std::atomic<float> g_aimClampedVrYaw{0.0f};
     std::atomic<float> g_aimClampedVrPitch{0.0f};
+    std::atomic<uint64_t> g_aimClampedMs{0};
+    inline constexpr uint64_t kAimClampedFreshMs = 100;
+
+    // One input poll's publication. Constructed first thing in Game_ComputeAimStick, so EVERY return -- the
+    // early blocks, Halo 2's path, the drive's -- clears the flag unless this poll set a direction: a direction
+    // from another title or seat can never outlive the poll that computed it. Published once, at the end, so the
+    // render thread never sees a cleared flag between a clear and a set within one poll.
+    struct AimClampedPublication
+    {
+        bool valid = false;
+        float yaw = 0.0f, pitch = 0.0f;
+        void set(float vrYaw, float vrPitch)
+        {
+            if (!std::isfinite(vrYaw) || !std::isfinite(vrPitch))
+                return;
+            valid = true;
+            yaw = vrYaw;
+            pitch = vrPitch;
+        }
+        ~AimClampedPublication()
+        {
+            if (valid)
+            {
+                g_aimClampedVrYaw.store(yaw, std::memory_order_relaxed);
+                g_aimClampedVrPitch.store(pitch, std::memory_order_relaxed);
+                g_aimClampedMs.store(GetTickCount64(), std::memory_order_relaxed);
+            }
+            g_aimClampedValid.store(valid ? 1u : 0u, std::memory_order_release);
+        }
+    };
 #if HALOMCCVR_DEV_DIAGNOSTICS
     // The natural in-game causes that used to switch convergence off, counted per title for the dev line and
     // never read by a decision (converge_policy.h): [0] Halo 3, [1] ODST, [2] Halo 4, [3] Reach.
@@ -50964,6 +50999,8 @@ bool Game_ReachDdTestOwnsAim()
 #endif
 bool Game_ComputeAimStick(float& outRx, float& outRy)
 {
+    // Before any return: this poll's assessment direction (dev only), cleared unless set below.
+    AimClampedPublication clamped;
     // Preserve C-H2-43's rejected ON-FOOT hand-driven turning. A newly verified
     // native seated-local-unit sample admits the normal controller stick loop
     // only in vehicles/turrets, matching the established H3 control behavior.
@@ -51474,6 +51511,23 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
         converge::ClaimSeatedConverged(true, converge::AimFeedbackFinite(ax, ay, az));
     if (sightSeatedClaim)
         Sight_MarkConverged(sightSeatedTitle, g_worldScale.load(std::memory_order_relaxed));
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    // DEV ASSESSMENT (honest_reticle_assess): publish the game's REAL aim in VR space for the reticle to draw
+    // instead of the aim point -- back through the hull's frame when the view follows the vehicle
+    // (Halo3SeatAimToVrReticle), or on a slope it sits off the gun by the hull's pitch; Halo 4's aim is world
+    // angles. It moves the reticle only: nothing here reads it back.
+    const auto assessGameAim = [&](bool seatedNow) {
+        if (!converge::AssessDrawsGameAim(g_config.honest_reticle_assess, seatedNow))
+            return;
+        float vrYaw = headYawReference + g_yawSign.load() * WrapPi(aimYaw - gameYawReference);
+        float vrPitch = g_pitchSign.load() * aimPitch;
+        if (!halo4Aim &&
+            !Halo3SeatAimToVrReticle(aimForward, followedVehicleFrame, hullYaw, hullPitch, gameYawReference,
+                                     headYawReference, g_yawSign.load(), g_pitchSign.load(), vrYaw, vrPitch))
+            return;
+        clamped.set(vrYaw, vrPitch);
+    };
+#endif
     // DIRECT DRIVE, Halo 3 / ODST / Halo 4 (legacy_direct_drive.inl): hand the hook the final target -- the
     // converged aim when trace-and-reaim resolved it -- and the game's own aim for its checks. Once the hook
     // is armed and writing, the stick stands neutral on every axis it writes: the aim is written, not steered.
@@ -51581,12 +51635,13 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
                                seat_drive::PitchLatches(seatFacts), seatKey);
             if (!driveSeated && LegacyDriveLive(driveTitle))
             {
-                // The honest-reticle block below is skipped: the game's aim IS the written target now, so
-                // the reticle is the target's, never a direction a seat left behind. A converged target is
-                // then the game's aim itself, not one a servo is turning toward: the zoom may show it.
+                // The game's aim IS the written target now. A converged target is then the game's aim itself,
+                // not one a servo is turning toward: the zoom may show it.
                 if (sightOnFootConverged && sightOnFootTitle == driveTitle)
                     Sight_MarkAimWritten(driveTitle);
-                g_aimClampedValid.store(0, std::memory_order_release);
+#if HALOMCCVR_DEV_DIAGNOSTICS
+                assessGameAim(false);
+#endif
                 s_turretServoStale = true;
                 outRx = 0.0f;
                 outRy = 0.0f;
@@ -51662,8 +51717,8 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
                 // go there, as in flat Halo -- the reticle stays on the converged point.
                 if (sightSeatedClaim)
                     Sight_MarkAimWritten(sightSeatedTitle);
-                g_aimClampedValid.store(0, std::memory_order_release);
 #if HALOMCCVR_DEV_DIAGNOSTICS
+                assessGameAim(true);
                 if (const int slot = ConvergeNaturalSlot(driveTitle); slot >= 0)
                     g_convergeNatural[slot].note(natural);
 #endif
@@ -51700,6 +51755,8 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
     // C27 30f786f) or rides a turret's barrel (e4b8e07, 61ecf34): those were VR-only cues the user retired.
     // Nothing about the actuation changed: the direct drive's latch still holds a written axis at the seat's
     // clamp, and a turret still parks (turretSeat, below). The stall is still COUNTED, for the dev line only.
+    // A player build has nothing left to do here.
+#if HALOMCCVR_DEV_DIAGNOSTICS
     {
         const uint64_t nowMs = GetTickCount64();
         bool halo4SeatedNow = false;
@@ -51720,7 +51777,6 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
              || ReachVehicleFpActive()
 #endif
             );
-#if HALOMCCVR_DEV_DIAGNOSTICS
         {
             // The old stall check (0.12 rad held 250 ms while seated), as a witness. A yaw the drive writes is
             // not this servo's error.
@@ -51731,78 +51787,43 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
             if (const int slot = ConvergeNaturalSlot(TitleAdapter_GetActiveTitle()); slot >= 0 && seated)
                 g_convergeNatural[slot].note(natural);
         }
-#else
-        (void)nowMs;
-#endif
-        // DEMO (honest_reticle_onfoot): the true-aim reticle while ON FOOT, so the integrator's lag behind the
-        // hand is visible for capture.
-        const bool honestOnFoot =
-            g_config.honest_reticle_onfoot && !turretSeat && !seated;
-        if (honestOnFoot)
+        // DEV ASSESSMENT (honest_reticle_assess): the game's real aim instead of the aim point, so the
+        // integrator's lag behind the hand -- or a seat's stop, or a turret's slew -- is visible by eye.
+        assessGameAim(seated);
+#if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA
+        // A Halo 4 seat (stage 1, every proof holding): the shot leaves along its own line (the barrel's, or the
+        // aiming unit's aim), turned toward the point on the game's aim by at most the cap or not at all -- the
+        // assessment shows where it really goes, not the game's aim. A turret shows its barrel (the game's aim).
+        if (clamped.valid && halo4Aim && halo4SeatSight.seated && halo4SeatSight.solve && !turretSeat)
         {
-            // Invert the same mapping the desired angles came through, so the
-            // published direction is the engine's aim expressed in VR space: back
-            // through the hull's frame when the view follows the vehicle (as the
-            // seat-drive branch above does), or on a slope the reticle sits off the
-            // gun by the hull's pitch.
-            float vrYaw = headYawReference +
-                g_yawSign.load() * WrapPi(
-                    aimYaw - gameYawReference);
-            float vrPitch = g_pitchSign.load() * aimPitch;
-            if (followedVehicleFrame)
-                (void)Halo3SeatAimToVrReticle(aimForward, true, hullYaw, hullPitch,
-                    gameYawReference, headYawReference, g_yawSign.load(),
-                    g_pitchSign.load(), vrYaw, vrPitch);
-#if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA && HALOMCCVR_DEV_DIAGNOSTICS
-            // A Halo 4 seat (stage 1, every proof holding) held off its bend: the shot leaves along its own line
-            // (the barrel's, or the aiming unit's aim), turned toward the point on the game's aim by at most the
-            // cap or not at all -- show where it really goes, not the game's aim. A turret keeps riding its barrel.
-            if (halo4Aim && halo4SeatSight.seated && halo4SeatSight.solve && !turretSeat && !honestOnFoot)
+            bool shown = false;
+            if (halo4SeatAimHonest)
             {
-                bool shown = false;
-                if (halo4SeatAimHonest)
+                const float honestYaw = atan2f(halo4SeatAimHonestDir[1], halo4SeatAimHonestDir[0]);
+                const float honestPitch = asinf(Clamp(halo4SeatAimHonestDir[2], -1.0f, 1.0f));
+                const float yaw = headYawReference + g_yawSign.load() * WrapPi(honestYaw - gameYawReference);
+                const float pitch = g_pitchSign.load() * honestPitch;
+                if (std::isfinite(yaw) && std::isfinite(pitch))
                 {
-                    const float honestYaw = atan2f(halo4SeatAimHonestDir[1], halo4SeatAimHonestDir[0]);
-                    const float honestPitch = asinf(Clamp(halo4SeatAimHonestDir[2], -1.0f, 1.0f));
-                    const float yaw = headYawReference + g_yawSign.load() * WrapPi(honestYaw - gameYawReference);
-                    const float pitch = g_pitchSign.load() * honestPitch;
-                    if (std::isfinite(yaw) && std::isfinite(pitch))
-                    {
-                        vrYaw = yaw;
-                        vrPitch = pitch;
-                        shown = true;
-                    }
-                }
-                (shown ? g_h4SeatEyeWitness.honestAlongAim : g_h4SeatEyeWitness.honestGameAim)
-                    .fetch_add(1, std::memory_order_relaxed);
-            }
-#endif
-            g_aimClampedVrYaw.store(vrYaw, std::memory_order_relaxed);
-            g_aimClampedVrPitch.store(vrPitch, std::memory_order_relaxed);
-            g_aimClampedValid.store(1, std::memory_order_release);
-        }
-        else
-        {
-            g_aimClampedValid.store(0, std::memory_order_release);
-#if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA && HALOMCCVR_DEV_DIAGNOSTICS
-            // A Halo 4 seat whose shot cannot reach the point it aims through (the assist's cap, or no assist):
-            // the honest reticle sits where the real shot is at that range, seen from the rendered head.
-            if (halo4SeatHonest)
-            {
-                const float honestYaw = atan2f(halo4SeatHonestDir[1], halo4SeatHonestDir[0]);
-                const float honestPitch = asinf(Clamp(halo4SeatHonestDir[2], -1.0f, 1.0f));
-                const float vrYaw = headYawReference + g_yawSign.load() * WrapPi(honestYaw - gameYawReference);
-                const float vrPitch = g_pitchSign.load() * honestPitch;
-                if (std::isfinite(vrYaw) && std::isfinite(vrPitch))
-                {
-                    g_aimClampedVrYaw.store(vrYaw, std::memory_order_relaxed);
-                    g_aimClampedVrPitch.store(vrPitch, std::memory_order_relaxed);
-                    g_aimClampedValid.store(1, std::memory_order_release);
+                    clamped.set(yaw, pitch);
+                    shown = true;
                 }
             }
-#endif
+            (shown ? g_h4SeatEyeWitness.honestAlongAim : g_h4SeatEyeWitness.honestGameAim)
+                .fetch_add(1, std::memory_order_relaxed);
         }
+        // A Halo 4 seat whose shot cannot reach the point it aims through (the assist's cap, or no assist):
+        // the honest reticle sits where the real shot is at that range, seen from the rendered head.
+        if (halo4SeatHonest)
+        {
+            const float honestYaw = atan2f(halo4SeatHonestDir[1], halo4SeatHonestDir[0]);
+            const float honestPitch = asinf(Clamp(halo4SeatHonestDir[2], -1.0f, 1.0f));
+            clamped.set(headYawReference + g_yawSign.load() * WrapPi(honestYaw - gameYawReference),
+                        g_pitchSign.load() * honestPitch);
+        }
+#endif
     }
+#endif
 
     // Full deflection at ~4.8 deg of error (was ~10; user: vertical follow too
     // slow). The ceiling is the game's own turn rate â€” raising in-game look
@@ -51968,12 +51989,18 @@ bool Game_GetReachVehicleReticleAimDirection(
     return false;
 }
 
-// True while a seat's angular limit is holding the weapon short of the hand's
-// direction. `outDir` then carries the engine's ACTUAL aim as a VR-space unit
+// True while the dev assessment key published the engine's ACTUAL aim this
+// poll (AimClampedPublication). `outDir` then carries it as a VR-space unit
 // vector, in the same convention the reticle uses (yaw about +Y, -Z forward).
 bool Game_GetClampedAimDirection(float outDir[3])
 {
     if (!outDir || !g_aimClampedValid.load(std::memory_order_acquire))
+        return false;
+    // Only this poll's: a direction the input poll stopped refreshing (it no longer runs for this title or path)
+    // is never drawn.
+    const uint64_t clampedMs = g_aimClampedMs.load(std::memory_order_relaxed);
+    const uint64_t nowMs = GetTickCount64();
+    if (!clampedMs || nowMs < clampedMs || nowMs - clampedMs > kAimClampedFreshMs)
         return false;
 #if HALOMCCVR_EXPERIMENTAL_REACH_RENDER_CANDIDATE
     if (TitleAdapter_GetActiveTitle() == GameTitle::HaloReach &&
