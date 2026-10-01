@@ -134,10 +134,12 @@ int main()
 
     const auto controller = reinterpret_cast<ControllerFn>(&ControllerFixture);
     Scribble();
-    CallNativeWithSpareSlots(controller, 1, 0xE0010002u, -0.75f, 0.035f, &resultStorage, 0.0333f, 3.5e-2f);
+    // Four distinct floats, so a swap or an alias between any two float positions fails -- above all position 4
+    // (xmm3, the pitch delta) and position 7 ([rsp+0x30] at the call, entry+0x38), the pair the controllers read.
+    CallNativeWithSpareSlots(controller, 1, 0xE0010002u, -0.75f, 0.125f, &resultStorage, 0.0333f, 3.5e-2f);
     Check(seen.calls == 4 && seen.region == 1 && seen.event == reinterpret_cast<void*>(uintptr_t(0xE0010002u)) &&
-              seen.floats[0] == -0.75f && seen.floats[1] == 0.035f && seen.input == &resultStorage &&
-              seen.floats[2] == 0.0333f && seen.floats[3] == 3.5e-2f,
+              seen.target == (1u ^ 0xE0010002u) && seen.floats[0] == -0.75f && seen.floats[1] == 0.125f &&
+              seen.input == &resultStorage && seen.floats[2] == 0.0333f && seen.floats[3] == 3.5e-2f,
           "seven declared arguments (floats in positions 3, 4, 6 and 7) arrive unchanged");
     Check(SparesZero(4), "then four zeroed stack slots (entry+0x40 through +0x58)");
 
