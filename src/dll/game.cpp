@@ -48764,11 +48764,18 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
                         : (stalledSinceMs && nowMs - stalledSinceMs >= stallMs)))
         {
             // Invert the same mapping the desired angles came through, so the
-            // published direction is the engine's aim expressed in VR space.
-            const float vrYaw = headYawReference +
+            // published direction is the engine's aim expressed in VR space: back
+            // through the hull's frame when the view follows the vehicle (as the
+            // seat-drive branch above does), or on a slope the reticle sits off the
+            // gun by the hull's pitch.
+            float vrYaw = headYawReference +
                 g_yawSign.load() * WrapPi(
                     aimYaw - gameYawReference);
-            const float vrPitch = g_pitchSign.load() * aimPitch;
+            float vrPitch = g_pitchSign.load() * aimPitch;
+            if (followedVehicleFrame)
+                (void)Halo3SeatAimToVrReticle(aimForward, true, hullYaw, hullPitch,
+                    gameYawReference, headYawReference, g_yawSign.load(),
+                    g_pitchSign.load(), vrYaw, vrPitch);
             g_aimClampedVrYaw.store(vrYaw, std::memory_order_relaxed);
             g_aimClampedVrPitch.store(vrPitch, std::memory_order_relaxed);
             g_aimClampedValid.store(1, std::memory_order_release);
