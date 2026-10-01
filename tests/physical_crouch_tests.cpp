@@ -286,6 +286,27 @@ int main()
         c.Update(.2f,t);
         Check(c.Breaks()==1,"an unmeasured move inside a gap breaks continuity");
     }
+    // The usual order here: events are polled before present, the head is sampled after the wait, so a
+    // recenter that fell inside a tracking gap can be polled only after the sample that crossed it. No pair
+    // across a gap is absorbed (the step went in as motion), so the runtime's offset must still be taken.
+    {
+        CrouchHeightContinuity c;int64_t t=1'000'000'000;
+        auto at=[&](float raw){t+=frame;return c.Update(raw,t);};
+        at(.5f);at(.5f);
+        const int64_t before=t;
+        t+=100'000'000;
+        c.Update(.5f-.30f,t);
+        c.NoteSpaceChange(before+50'000'000,true,.30f);
+        Check(std::fabs(at(.5f-.30f)-.5f)<1e-5f&&c.Applied()==1&&c.Breaks()==0&&c.Unseen()==0,
+            "a recenter polled after the gap it fell in takes the runtime's offset");
+        for(int i=0;i<300;++i) at(.2f);
+        Check(std::fabs(at(.2f)-.5f)<1e-5f&&c.Unseen()==0,"and nothing is left pending to expire");
+        const int64_t before2=t;
+        t+=100'000'000;
+        c.Update(-.1f,t);
+        c.NoteSpaceChange(before2+50'000'000,false,0.f);
+        Check(c.Breaks()==1,"without an offset, a recenter in a crossed gap breaks continuity");
+    }
     {
         CrouchHeightContinuity c;int64_t t=1'000'000'000;
         auto at=[&](float raw){t+=frame;return c.Update(raw,t);};

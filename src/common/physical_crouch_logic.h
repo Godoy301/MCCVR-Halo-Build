@@ -49,11 +49,21 @@ public:
         if(lastAbsorbAt_&&std::llabs(changeTimeNs-lastAbsorbAt_)<=kLateNs&&
             (!poseValid||std::fabs(lastAbsorbStep_+dy)<=kMatch))
         {++late_;lastAbsorbAt_=0;return;}
+        // Polled after the frame already crossed the tracking gap it fell in (the events are polled before
+        // present, the head is sampled after the wait): no pair across a gap is ever absorbed, so its step
+        // went in as motion, and the samples since are in the new space. Take the runtime's word now; without
+        // its offset, nothing relates the two spaces.
+        if(gapEndAt_&&changeTimeNs>gapStartAt_&&changeTimeNs<=gapEndAt_)
+        {
+            if(poseValid) {carry_+=dy;++applied_;}
+            else ++breaks_;
+            gapEndAt_=0;return;
+        }
         if(pending_.active) ++unseen_;
         pending_={true,changeTimeNs,poseValid,poseValid?dy:0.f};
     }
     // The space was replaced outright (a new session): nothing relates the old heights to the new ones.
-    void Break() noexcept {have_=false;pending_={};lastAbsorbAt_=0;++breaks_;}
+    void Break() noexcept {have_=false;pending_={};lastAbsorbAt_=0;gapEndAt_=0;++breaks_;}
     // One TRACKED raw LOCAL head height at its display time (ns); returns it in the continuous frame.
     float Update(float raw,int64_t timeNs) noexcept
     {
@@ -88,6 +98,7 @@ public:
             }
         }
         else if(consecutive&&std::fabs(step)>motion) Absorb(step,timeNs,false);
+        if(!consecutive) {gapStartAt_=lastAt_;gapEndAt_=timeNs;}
         lastRaw_=raw;lastAt_=timeNs;
         return raw+carry_;
     }
@@ -110,7 +121,7 @@ private:
     }
     struct Pending {bool active{};int64_t at{};bool poseValid{};float dy{};};
     Pending pending_{};
-    int64_t lastAt_{},lastAbsorbAt_{};
+    int64_t lastAt_{},lastAbsorbAt_{},gapStartAt_{},gapEndAt_{};
     float lastRaw_{},carry_{},lastAbsorbStep_{};
     uint32_t breaks_{},announced_{},unannounced_{},applied_{},unseen_{},late_{};
     bool have_{};
