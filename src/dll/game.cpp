@@ -9543,42 +9543,25 @@ namespace
         }
     };
 #if HALOMCCVR_DEV_DIAGNOSTICS
-    // The natural in-game causes that used to switch convergence off, counted per title for the dev line and
-    // never read by a decision (converge_policy.h): [0] Halo 3, [1] ODST, [2] Halo 4, [3] Reach.
-    converge::NaturalWitness g_convergeNatural[4];
-    // The last poll (GetTickCount64) at which a natural cause held the game's aim off the converged point. The dev
-    // engine-trace witnesses skip those polls: the converged mark now stays on through them, and the game's line
-    // is off the point there by design, so comparing them would only inflate the miss statistics.
-    std::atomic<uint64_t> g_convergeNaturalHeldMs[4]{};
-    int ConvergeNaturalSlot(GameTitle title)
+    // The natural in-game causes that used to switch convergence off, counted per title for the dev line
+    // (Sight_ReportConverge: "SIGHT <title> natural (no switch-off)") and never read by a decision
+    // (converge_policy.h). The titles whose seats had such switch-offs: Halo 3, ODST, Halo 4 and Reach.
+    bool ConvergeNaturalTitle(GameTitle title)
     {
-        switch (title)
-        {
-        case GameTitle::Halo3: return 0;
-        case GameTitle::Halo3ODST: return 1;
-        case GameTitle::Halo4: return 2;
-        case GameTitle::HaloReach: return 3;
-        default: return -1;
-        }
+        return title == GameTitle::Halo3 || title == GameTitle::Halo3ODST || title == GameTitle::Halo4 ||
+               title == GameTitle::HaloReach;
     }
     void ConvergeNoteNatural(GameTitle title, const converge::NaturalEvents& e)
     {
-        const int slot = ConvergeNaturalSlot(title);
-        if (slot < 0)
-            return;
-        g_convergeNatural[slot].note(e);
-        if (converge::NaturalHoldsAimOff(e))
-            g_convergeNaturalHeldMs[slot].store(GetTickCount64(), std::memory_order_relaxed);
+        if (ConvergeNaturalTitle(title))
+            Sight_NoteNatural(title, e);
     }
-    // True while a natural cause held this title's aim off the converged point within the last 150 ms.
+    // True while a natural cause held this title's aim off the converged point within the last 150 ms. The dev
+    // engine-trace witnesses skip those polls: the converged mark now stays on through them, and the game's line
+    // is off the point there by design, so comparing them would only inflate the miss statistics.
     bool ConvergeNaturalHeld(GameTitle title)
     {
-        const int slot = ConvergeNaturalSlot(title);
-        if (slot < 0)
-            return false;
-        const uint64_t at = g_convergeNaturalHeldMs[slot].load(std::memory_order_relaxed);
-        const uint64_t now = GetTickCount64();
-        return at && now >= at && now - at <= 150;
+        return ConvergeNaturalTitle(title) && Sight_NaturalHeld(title, 150);
     }
 #endif
     std::atomic<uint32_t> g_halo3WheelSwallowsGrips{0};
@@ -46202,6 +46185,7 @@ namespace
             Roomscale_Report();
             // Trace-and-reaim outside Reach (sight_layer.h): traces, cost and converged polls, per title.
             Sight_Report();
+            Sight_ReportConverge();   // dev: converge-off edges + reasons, natural causes (empty in player builds)
             LegacySightReport();
             Sight_ReportEngineRays();
             Sight_ReportShots();
@@ -50516,6 +50500,15 @@ bool Game_ReachSightSample(ReachSightSample& out)
     return out.traceSampleMs != 0;
 }
 
+#if HALOMCCVR_DEV_DIAGNOSTICS
+void Game_ReachSightHealth(bool& flagsResolved, bool& faulted)
+{
+    int32_t mode = 0;
+    flagsResolved = ReachSightActiveFlags(mode) != 0;
+    faulted = g_reachSightTrace.faulted.load(std::memory_order_acquire);
+}
+#endif
+
 void Game_ReachNoteConvergedSample(const ReachSightSample& sample, float smoothedRangeWu)
 {
     // Every build: shots from the muzzle fly through this record's point (ReachAimMuzzleShot).
@@ -51373,6 +51366,10 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
     GameTitle sightSeatedTitle = GameTitle::None;
     bool sightOnFootConverged = false;
     GameTitle sightOnFootTitle = GameTitle::None;
+    // Why the converged aim is not in effect this poll, for the dev converge-off witness only (its first failing
+    // reason; converge_policy.h). Every one is our code's or a state convergence does not apply to: no natural
+    // in-game limit is among them. Nothing below decides on it.
+    converge::ConvergeOff convergeWhy = converge::ConvergeOff::None;
 #if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA && HALOMCCVR_DEV_DIAGNOSTICS
     // Halo 4 seated convergence (dev; halo4_seat_sight.inl): this poll's seat, eyes and proofs.
     Halo4SeatSightPoll halo4SeatSight{};
@@ -51405,6 +51402,9 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
                 memcpy(sightHead, center.translation, sizeof(sightHead));
                 memcpy(sightEye, body.translation, sizeof(sightEye));
             }
+            else if (sightTitle == GameTitle::Halo4)
+                convergeWhy = LegacySight(sightTitle).flags.load(std::memory_order_acquire)
+                    ? converge::ConvergeOff::RayStale : converge::ConvergeOff::NoTraceFlags;
 #if HALOMCCVR_DEV_DIAGNOSTICS
             // SEATED (dev): never the on-foot eyes -- in a seat the controller root is the placed head, not the
             // point the game's aim line starts from. The seated intent ray (the rendered head, the game's own
@@ -51415,6 +51415,10 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
                     LegacySight(sightTitle).flags.load(std::memory_order_acquire);
                 sightSeated = true;
                 sightSolve = halo4SeatSight.solve;
+                convergeWhy = sightSolve ? converge::ConvergeOff::None
+                                         : Halo4SeatSightOffReason(halo4SeatSight.why);
+                if (!sightEyes && sightSolve)
+                    convergeWhy = converge::ConvergeOff::NoTraceFlags;
                 sightVehicle = static_cast<int32_t>(halo4SeatSight.parent);
                 sightUnit = static_cast<int32_t>(halo4SeatSight.unit);
                 memcpy(sightHead, halo4SeatSight.head, sizeof(sightHead));
@@ -51438,15 +51442,19 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
             // the shot for an eye the seat does not fire from.
             if (seated && g_config.reach_vehicle_aim > 0)
             {
+                // (The witness's reason until a seat whose view is ours names its vehicle.)
+                convergeWhy = converge::ConvergeOff::SeatViewNotOwned;
                 if (sightTitle == GameTitle::Halo3 && Halo3VehicleFpActive() &&
                     g_halo3NativeSeatState.load(std::memory_order_acquire) ==
                         static_cast<uint32_t>(Halo3NativeSeatState::Active))
                 {
+                    convergeWhy = converge::ConvergeOff::SeatUnnamed;
                     Halo3SeatSnapshot seat;
                     if (Halo3ReadSeatSnapshot(seat) && seat.parentHandle != -1)
                     {
                         sightVehicle = seat.parentHandle;
                         sightCarrier = seat.carrierHandle;
+                        convergeWhy = converge::ConvergeOff::None;
                     }
                 }
 #if HALOMCCVR_EXPERIMENTAL_ODST_BRINGUP
@@ -51454,21 +51462,28 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
                          g_odstNativeSeatState.load(std::memory_order_acquire) ==
                              static_cast<uint32_t>(OdstNativeSeatState::Active))
                 {
+                    convergeWhy = converge::ConvergeOff::SeatUnnamed;
                     OdstSeatSnapshot seat;
                     if (OdstReadSeatSnapshot(seat) && seat.parentHandle != -1)
                     {
                         sightVehicle = seat.parentHandle;
                         sightCarrier = seat.carrierHandle;
+                        convergeWhy = converge::ConvergeOff::None;
                     }
                 }
 #endif
             }
+            else if (seated)
+                convergeWhy = converge::ConvergeOff::AimOff;   // reach_vehicle_aim = 0 keeps every seat's old aim
             sightSeated = seated;
             sightEyes = (!seated || sightVehicle != -1) &&
                 (sightTitle == GameTitle::Halo3 || sightTitle == GameTitle::Halo3ODST) &&
                 LegacySight(sightTitle).flags.load(std::memory_order_acquire) &&
                 g_camValid.load(std::memory_order_acquire) &&
                 g_baseCamValid.load(std::memory_order_acquire);
+            if (!sightEyes && convergeWhy == converge::ConvergeOff::None)
+                convergeWhy = LegacySight(sightTitle).flags.load(std::memory_order_acquire)
+                    ? converge::ConvergeOff::RayStale : converge::ConvergeOff::NoTraceFlags;
             if (sightEyes)
             {
                 sightHead[0] = g_camX.load(); sightHead[1] = g_camY.load(); sightHead[2] = g_camZ.load();
@@ -51514,7 +51529,7 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
             }
             // 1.45 rad: the pitch clamp of this servo target and of the direct drive's write.
             else if (Sight_ConvergedDirection(sightTitle, ray.generation, ray.head, ray.dir, ray.eye, bent,
-                                              1.45f * 57.29578f, &sightRangeWu))
+                                              1.45f * 57.29578f, &sightRangeWu, nullptr, &convergeWhy))
             {
                 desiredYaw = atan2f(bent[1], bent[0]);
                 desiredPitch = Clamp(asinf(Clamp(bent[2], -1.0f, 1.0f)), -1.45f, 1.45f);
@@ -51561,7 +51576,10 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
     if (sightSeatedConverged && sightSeatedTitle == GameTitle::Halo4 && halo4SeatSight.seated)
     {
         if (!halo4SeatPointValid)
+        {
             sightSeatedConverged = false;
+            convergeWhy = converge::ConvergeOff::NoRange;   // the point is not a finite position (our code)
+        }
         else
             Halo4SeatSightClaimWitness(halo4SeatSight, halo4SeatPoint);
     }
@@ -51623,6 +51641,24 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
         converge::ClaimSeatedConverged(true, converge::AimFeedbackFinite(ax, ay, az));
     if (sightSeatedClaim)
         Sight_MarkConverged(sightSeatedTitle, g_worldScale.load(std::memory_order_relaxed));
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    // THE CONVERGE-OFF WITNESS (Sight_ReportConverge): this poll is in gameplay with the aim running (every
+    // earlier return is a non-gameplay state), so say whether the converged aim is in effect and, if not, why.
+    // Two atomics and a byte; Halo 3, ODST and Halo 4 here (Reach notes from its provider).
+    {
+        const GameTitle witnessTitle = TitleAdapter_GetActiveTitle();
+        if (witnessTitle == GameTitle::Halo3 || witnessTitle == GameTitle::Halo3ODST ||
+            witnessTitle == GameTitle::Halo4)
+        {
+            const bool live = sightOnFootConverged || sightSeatedClaim;
+            if (!live && sightSeatedConverged && !sightSeatedClaim)
+                convergeWhy = converge::ConvergeOff::AimFeedbackInvalid;
+            if (!Sight_AimEnabled())
+                convergeWhy = converge::ConvergeOff::AimOff;
+            Sight_NoteConvergeState(witnessTitle, live, convergeWhy);
+        }
+    }
+#endif
 #if HALOMCCVR_DEV_DIAGNOSTICS
     // DEV ASSESSMENT (honest_reticle_assess): publish the game's REAL aim in VR space for the reticle to draw
     // instead of the aim point -- back through the hull's frame when the view follows the vehicle

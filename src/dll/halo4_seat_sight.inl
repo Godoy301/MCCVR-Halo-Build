@@ -1095,6 +1095,7 @@ struct Halo4SeatSightPoll
     bool shotKnown = false;                       // the line the assist turns (item 11) and the barrel are known
     float shotForward[3]{}, barrelOrigin[3]{};    // that line, and the barrel at E + the sample's offset
     uint32_t weapon = UINT32_MAX;                 // the shot's weapon (its observed cap)
+    unsigned why = ~0u;   // Halo4SeatSightWhy: the first proof that failed (~0u: Prepare did not judge a seat)
 };
 
 // Why a seat did not solve this poll: the first proof that failed (counted for the dev line).
@@ -1103,6 +1104,26 @@ enum Halo4SeatSightWhy : unsigned
     kH4SeatWhyView, kH4SeatWhyHead, kH4SeatWhySwitch, kH4SeatWhyEye, kH4SeatWhySample, kH4SeatWhyWitness,
     kH4SeatWhyClass, kH4SeatWhyRecord, kH4SeatWhyKey, kH4SeatWhySolved, kH4SeatWhyCount
 };
+
+// The converge-off witness's reason for a seat that did not solve (Sight_NoteConvergeState). None of these is a
+// natural limit: a view that is not ours, our proofs not holding yet, or a seat stage 1 does not cover.
+inline converge::ConvergeOff Halo4SeatSightOffReason(unsigned why)
+{
+    using converge::ConvergeOff;
+    switch (why)
+    {
+    case kH4SeatWhyView: return ConvergeOff::SeatViewNotOwned;
+    case kH4SeatWhyHead: return ConvergeOff::RayStale;
+    case kH4SeatWhySwitch: return ConvergeOff::AimOff;
+    case kH4SeatWhyEye:
+    case kH4SeatWhySample:
+    case kH4SeatWhyWitness:
+    case kH4SeatWhyRecord: return ConvergeOff::SeatProofPending;
+    case kH4SeatWhyClass:
+    case kH4SeatWhyKey: return ConvergeOff::SeatNotImplemented;
+    default: return ConvergeOff::None;
+    }
+}
 
 // The native assist's verdict on a converged seat aim (Game_ComputeAimStick, stage 1): a WITNESS only since
 // 2026-10-01 -- the claim no longer waits on it (a gun the assist cannot bring onto the point fires where it can,
@@ -1310,6 +1331,7 @@ bool Halo4SeatSightPrepare(Halo4SeatSightPoll& out, const float observerForward[
     else if (!recordSolvable) why = kH4SeatWhyRecord;
     else if (!key) why = kH4SeatWhyKey;   // every proof holds; only the stage-1 key is off
     w.why[why].fetch_add(1, std::memory_order_relaxed);
+    out.why = why;
     out.solve = why == kH4SeatWhySolved;
     if (out.solve && recordTilted)
         w.solvedTilted.fetch_add(1, std::memory_order_relaxed);

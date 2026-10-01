@@ -211,6 +211,9 @@ struct ReachSightSample
     uint64_t raySampleMs = 0, traceSampleMs = 0;
 };
 bool Game_ReachSightSample(ReachSightSample& out);
+// For the dev converge-off witness only: whether the crosshair trace's flags resolved on this build, and
+// whether the trace latched off on a native fault (the reasons Game_ReachSightSample can fail for good).
+void Game_ReachSightHealth(bool& flagsResolved, bool& faulted);
 void Game_ReachNoteConvergedSample(const ReachSightSample& sample, float smoothedRangeWu);
 // The traced reticle's range along that eye-anchored intent ray, for the compositor (any thread):
 // the latest fresh trace result -- the hit range in METRES, or hit=false on a miss -- and only while

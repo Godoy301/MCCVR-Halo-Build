@@ -163,6 +163,119 @@ void TestSeatMuzzleRefusal()
     // The refusal is a separate decision from the claim: the claim's signature takes neither input.
     Check(ClaimSeatedConverged(true, true), "the claim stands whatever the muzzle guard decides");
 }
+
+void TestConvergeOffWitness()
+{
+    ConvergeOffWitness w;
+    Check(w.current() == kConvergeStateNone, "nothing noted yet");
+    w.note(true, ConvergeOff::None);
+    w.note(true, ConvergeOff::TraceStale);   // a live poll ignores a reason handed with it
+    w.note(false, ConvergeOff::TraceStale);
+    w.note(false, ConvergeOff::TraceStale);
+    w.note(false, ConvergeOff::SeatUnnamed);   // off to off (another reason) is not an edge
+    w.note(true, ConvergeOff::None);
+    w.note(false, ConvergeOff::Count);         // out of range: unclassified
+    Check(ConvergeStateIsOff(w.current()) && ConvergeStateReason(w.current()) == ConvergeOff::None,
+          "the state byte holds the last reason (an out-of-range one is unclassified)");
+    const ConvergeOffCounts c = w.take();
+    Check(c.polls == 7 && c.live == 3 && c.off() == 4, "polls, live and off are counted");
+    Check(c.why[static_cast<size_t>(ConvergeOff::TraceStale)] == 2 &&
+              c.why[static_cast<size_t>(ConvergeOff::SeatUnnamed)] == 1 &&
+              c.why[static_cast<size_t>(ConvergeOff::None)] == 1,
+          "each off poll is counted under its first reason only");
+    Check(c.offEdges == 2 && c.onEdges == 1, "edges: on->off twice, off->on once");
+    const ConvergeOffCounts again = w.take();
+    Check(again.polls == 0 && again.offEdges == 0 && again.why[static_cast<size_t>(ConvergeOff::TraceStale)] == 0,
+          "taking resets the counts");
+    Check(ConvergeStateIsOff(w.current()), "...but not the state the edge log reads");
+
+    // THE REGRESSION GUARD at the witness: a seated poll beset by every natural cause, with our code healthy, is
+    // claimed -- and so noted LIVE. Natural events go to their own witness and cannot become a ConvergeOff.
+    ConvergeOffWitness seat;
+    NaturalWitness natural;
+    for (unsigned bits = 0; bits < 64; ++bits)
+    {
+        NaturalEvents e;
+        e.latchHeld = (bits & 1u) != 0;
+        e.outcomeMiss = (bits & 2u) != 0;
+        e.stall = (bits & 4u) != 0;
+        e.turretSlew = (bits & 8u) != 0;
+        e.reachLimited = (bits & 16u) != 0;
+        e.yawShortH4 = (bits & 32u) != 0;
+        natural.note(e);
+        seat.note(ClaimSeatedConverged(true, AimFeedbackFinite(1.0f, 0.0f, 0.0f)), ConvergeOff::None);
+    }
+    const ConvergeOffCounts seated = seat.take();
+    Check(seated.polls == 64 && seated.live == 64 && seated.offEdges == 0,
+          "natural causes leave every seated poll converged (no switch-off)");
+    Check(natural.take().polls == 64, "...and are witnessed on their own line");
+}
+
+void TestConvergeEdgeLog()
+{
+    ConvergeEdgeLog log;
+    uint8_t previous = 0;
+    Check(!log.observe(kConvergeStateNone, 1000, previous), "nothing noted: no line");
+    Check(!log.observe(kConvergeStateLive, 1000, previous), "first seen live: quiet");
+    Check(!log.observe(kConvergeStateLive, 1050, previous), "unchanged: no line");
+    const uint8_t stale = ConvergeOffState(ConvergeOff::TraceStale);
+    Check(log.observe(stale, 1100, previous) && previous == kConvergeStateLive, "live -> off: a line");
+    Check(log.observe(kConvergeStateLive, 1150, previous) && ConvergeStateReason(previous) == ConvergeOff::TraceStale,
+          "off -> live: a line naming what it was off for");
+    {
+        ConvergeEdgeLog first;
+        Check(first.observe(ConvergeOffState(ConvergeOff::SeatUnnamed), 10, previous) &&
+                  previous == kConvergeStateNone,
+              "first seen off: a line");
+    }
+    // A flicker: at most max_lines per window, the rest suppressed but still tracked.
+    ConvergeEdgeLog flicker;
+    flicker.observe(kConvergeStateLive, 0, previous);
+    unsigned lines = 0;
+    for (unsigned i = 0; i < 20; ++i)
+        lines += flicker.observe(i % 2 ? kConvergeStateLive : stale, 5000 + i * 10, previous) ? 1u : 0u;
+    Check(lines == flicker.max_lines, "a flicker logs at most max_lines in one window");
+    Check(flicker.take_suppressed() == 20 - flicker.max_lines && flicker.take_suppressed() == 0,
+          "the rest are counted as suppressed, once");
+    Check(flicker.logged == kConvergeStateLive, "suppressed edges still move the logged state");
+    Check(flicker.observe(stale, 5000 + 2000, previous), "a new window logs again");
+}
+
+void TestReachConvergeOffReason()
+{
+    ConvergeOff why = ConvergeOff::None;
+    ReachConvergePoll p;
+    p.live = true;
+    Check(ReachConvergeOffReason(p, why) && why == ConvergeOff::None, "live: counted, no reason");
+    p = {};
+    Check(ReachConvergeOffReason(p, why) && why == ConvergeOff::AimOff, "direct drive 3 or converged aim off");
+    p.aimOn = true;
+    p.aimWhy = 0x40;   // a cinematic
+    Check(!ReachConvergeOffReason(p, why), "non-gameplay states are not counted");
+    p.aimWhy = 0x04;   // our sampler's stamp went stale over a hitch
+    Check(!ReachConvergeOffReason(p, why), "a stale sampler stamp is not counted either");
+    p.aimWhy = 0x80;
+    Check(ReachConvergeOffReason(p, why) && why == ConvergeOff::SeatViewNotOwned, "seat camera not up");
+    p.aimWhy = 0x100;
+    Check(ReachConvergeOffReason(p, why) && why == ConvergeOff::SeatSteering, "the stick steers this seat");
+    p.aimWhy = 0x200;
+    Check(ReachConvergeOffReason(p, why) && why == ConvergeOff::AimOff, "reach_vehicle_aim leaves it on the servo");
+    p.aimWhy = 0;
+    Check(ReachConvergeOffReason(p, why) && why == ConvergeOff::DriveNotArmed, "the hook is not armed");
+    p.driveReady = true;
+    Check(ReachConvergeOffReason(p, why) && why == ConvergeOff::NoTraceFlags, "the trace's flags did not resolve");
+    p.flagsResolved = true;
+    p.traceFaulted = true;
+    Check(ReachConvergeOffReason(p, why) && why == ConvergeOff::TraceFaulted, "the trace faulted");
+    p.traceFaulted = false;
+    Check(ReachConvergeOffReason(p, why) && why == ConvergeOff::TraceStale, "no fresh ray or trace");
+    p.sightSample = true;
+    Check(ReachConvergeOffReason(p, why) && why == ConvergeOff::NoRange, "no range yet");
+    p.rangeKnown = true;
+    Check(ReachConvergeOffReason(p, why) && why == ConvergeOff::PitchRail, "a range and still declined: the rail");
+    // Reach's seat limit is not among the inputs: a held update stays converged (ReachStampUpdate).
+    Check(ReachStampUpdate(true, true, true).converged, "a seat limit is not a converge-off reason");
+}
 } // namespace
 
 int main()
@@ -174,6 +287,9 @@ int main()
     TestReachStamps();
     TestSeatMuzzleRefusal();
     TestNames();
+    TestConvergeOffWitness();
+    TestConvergeEdgeLog();
+    TestReachConvergeOffReason();
     std::printf("Converge policy: %u checks, %u failures\n", checks, failures);
     return failures ? 1 : 0;
 }

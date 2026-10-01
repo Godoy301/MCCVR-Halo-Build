@@ -20,6 +20,7 @@
 
 #include "../common/runtime_types.h"
 #include "../common/aim_solve_logic.h"
+#include "../common/converge_policy.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -107,9 +108,11 @@ bool Sight_AimWrittenLive(GameTitle title);
 // no fresh trace for this generation, no hit yet, or the geometry cannot resolve. A bent aim steeper than
 // `maxPitchDeg` (the steepest pitch the caller's actuation can reach) is HELD AT THAT PITCH and still
 // returned as converged (2026-10-01): a close ceiling or floor is natural geometry, not our code failing.
+// `outWhy`, when given, receives why it declined (our code's reasons only: converge::ConvergeOff).
 bool Sight_ConvergedDirection(GameTitle title, uint32_t generation, const float head[3], const float dir[3],
                               const float eye[3], float out[3], float maxPitchDeg = 90.0f,
-                              float* outRangeWu = nullptr, bool* outHit = nullptr);
+                              float* outRangeWu = nullptr, bool* outHit = nullptr,
+                              converge::ConvergeOff* outWhy = nullptr);
 
 // For the compositor (any thread): the active title's traced range along its eye-anchored intent ray, in
 // VR METRES, and whether it hit -- only while that title's aim in effect is converged. Never Reach
@@ -162,6 +165,23 @@ void Sight_NoteMuzzleShotHeld(GameTitle title);
 
 // Cold worker: one status line per title that is tracing, every 2 s.
 void Sight_Report();
+
+// CONVERGE-OFF WITNESS (dev; empty stubs in player builds, converge_policy.h). Natural in-game limits never
+// switch the converged aim off any more (2026-10-01); these lines are how a headset session proves it.
+// Sight_NoteConvergeState: each aim poll in gameplay (Halo 3, ODST and Halo 4 from Game_ComputeAimStick,
+// Reach from its provider) says whether the converged aim is in effect and, if not, the FIRST reason -- which
+// is always our code's or a state convergence does not apply to.
+// Sight_NoteNatural: the natural causes that USED to switch it off, counted only -- no decision reads them.
+// Sight_NaturalHeld: one of those held this title's aim off the point within `windowMs` (the dev engine-trace
+// witnesses skip such polls, so their miss statistics measure our solve, not a seat's stop).
+// Sight_ReportConverge (cold worker, every loop): an edge line when a title's converged aim goes off or comes
+// back (rate-limited), and every 2 s per title
+//   SIGHT <title> converge-off <off>/<polls> polls: <Reason>=<n>, ...
+//   SIGHT <title> natural (no switch-off) in <n> polls: latchHeld=.. outcomeMiss=.. stall=.. turret=.. ...
+void Sight_NoteConvergeState(GameTitle title, bool live, converge::ConvergeOff why);
+void Sight_NoteNatural(GameTitle title, const converge::NaturalEvents& events);
+bool Sight_NaturalHeld(GameTitle title, uint64_t windowMs);
+void Sight_ReportConverge();
 
 // SHOT WITNESS (dev; compiled out of player builds): a title's firing path reports each local shot's ray --
 // origin and direction in world units, as the engine adjusted them -- and the cold worker logs, per title

@@ -34,7 +34,7 @@ enum class ConvergeOff : uint8_t {
     TraceFaulted,        // the trace raised a native fault and latched off
     TraceStale,          // no fresh trace (a hitch, a load, a pause)
     RayStale,            // no fresh intent ray
-    NoRange,             // the trace returned no usable range
+    NoRange,             // no usable range: no hit yet since the traces restarted, or a point inside the range floor
     PitchRail,           // Reach only: the bent pitch would pass its rail (R13r; Halo 3/ODST/Halo 4 clamp at the
                          // rail and stay converged, aim_solve::converge_direction)
     SeatUnnamed,         // a seat whose vehicle the sampler could not name (the trace cannot look past it)
@@ -44,6 +44,8 @@ enum class ConvergeOff : uint8_t {
     CallerMapUnproven,   // the aim caller map is unproven (every call counts)
     AimFeedbackInvalid,  // the game's aim could not be read as a finite direction
     MarkStale,           // the converged mark is older than its freshness window
+    SeatProofPending,    // a seat whose own proofs (Halo 4's eye agreement, its record facts) do not hold yet
+    SeatSteering,        // Reach: a seat whose stick or wheel steers right now (the stick is not aiming)
     Count
 };
 
@@ -65,6 +67,8 @@ inline const char* ConvergeOffName(ConvergeOff why)
     case ConvergeOff::CallerMapUnproven: return "CallerMapUnproven";
     case ConvergeOff::AimFeedbackInvalid: return "AimFeedbackInvalid";
     case ConvergeOff::MarkStale: return "MarkStale";
+    case ConvergeOff::SeatProofPending: return "SeatProofPending";
+    case ConvergeOff::SeatSteering: return "SeatSteering";
     case ConvergeOff::Count: break;
     }
     return "?";
@@ -127,6 +131,147 @@ inline bool AimFeedbackFinite(float x, float y, float z)
 // It moves where the reticle is DRAWN and nothing else: the mark, the shots, the write and the drive mode
 // never read it.
 inline bool AssessDrawsGameAim(int assess, bool seated) { return assess >= 2 || (assess == 1 && !seated); }
+
+// ---- the converge-off witness (dev lines only) ------------------------------------------------------------
+
+// One title's converged state, poll by poll: how many polls it was live, why it was not on the others (the
+// FIRST failing reason, which is always our code's or a non-gameplay state's), and how often it went off and
+// came back. Written by the title's aim poll (one thread per title), taken by the cold worker. Lock-free. Only
+// polls in gameplay with the aim running are noted (the aim poll returns before the witness otherwise).
+struct ConvergeOffCounts {
+    uint32_t polls = 0, live = 0, offEdges = 0, onEdges = 0;
+    uint32_t why[static_cast<size_t>(ConvergeOff::Count)]{};
+    uint32_t off() const { return polls >= live ? polls - live : 0; }
+};
+
+// The state byte the poll leaves behind: 0 = never noted, 1 = live, 2 + reason = off for that reason.
+constexpr uint8_t kConvergeStateNone = 0;
+constexpr uint8_t kConvergeStateLive = 1;
+inline uint8_t ConvergeOffState(ConvergeOff why) { return static_cast<uint8_t>(2u + static_cast<unsigned>(why)); }
+inline bool ConvergeStateIsOff(uint8_t state) { return state >= 2; }
+inline ConvergeOff ConvergeStateReason(uint8_t state)
+{
+    const unsigned r = state >= 2 ? state - 2u : 0u;
+    return r < static_cast<unsigned>(ConvergeOff::Count) ? static_cast<ConvergeOff>(r) : ConvergeOff::None;
+}
+
+struct ConvergeOffWitness {
+    std::atomic<uint32_t> polls{0}, live{0}, offEdges{0}, onEdges{0};
+    std::atomic<uint32_t> why[static_cast<size_t>(ConvergeOff::Count)]{};
+    std::atomic<uint8_t> state{kConvergeStateNone};
+
+    // `isLive`: the converged aim is in effect this poll. Otherwise `reason` is the first thing that failed
+    // (None when the poll could not name it; logged as "Unclassified", which is itself a finding).
+    void note(bool isLive, ConvergeOff reason)
+    {
+        polls.fetch_add(1, std::memory_order_relaxed);
+        uint8_t now = kConvergeStateLive;
+        if (isLive)
+            live.fetch_add(1, std::memory_order_relaxed);
+        else
+        {
+            if (static_cast<unsigned>(reason) >= static_cast<unsigned>(ConvergeOff::Count))
+                reason = ConvergeOff::None;
+            why[static_cast<size_t>(reason)].fetch_add(1, std::memory_order_relaxed);
+            now = ConvergeOffState(reason);
+        }
+        const uint8_t before = state.exchange(now, std::memory_order_relaxed);
+        if (before == kConvergeStateLive && now != kConvergeStateLive)
+            offEdges.fetch_add(1, std::memory_order_relaxed);
+        else if (ConvergeStateIsOff(before) && now == kConvergeStateLive)
+            onEdges.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    uint8_t current() const { return state.load(std::memory_order_relaxed); }
+
+    ConvergeOffCounts take()
+    {
+        ConvergeOffCounts c;
+        c.polls = polls.exchange(0, std::memory_order_relaxed);
+        c.live = live.exchange(0, std::memory_order_relaxed);
+        c.offEdges = offEdges.exchange(0, std::memory_order_relaxed);
+        c.onEdges = onEdges.exchange(0, std::memory_order_relaxed);
+        for (size_t i = 0; i < static_cast<size_t>(ConvergeOff::Count); ++i)
+            c.why[i] = why[i].exchange(0, std::memory_order_relaxed);
+        return c;
+    }
+};
+
+// The cold worker's EDGE log for one title: one line when the state it sees differs from the one it last
+// logged (the converged aim went off, or came back), at most `max_lines` per `window_ms` so a flicker cannot
+// flood the log -- the 2 s summary still counts every edge the poll saw, including any between two looks.
+// A title first seen live logs nothing; one first seen off logs that.
+struct ConvergeEdgeLog {
+    uint8_t logged = kConvergeStateNone;
+    uint64_t window_ms = 2000;
+    uint32_t max_lines = 6;
+    uint64_t window_start_ms = 0;
+    uint32_t lines = 0, suppressed = 0;
+
+    // True: write an edge line for `current`; `previous` receives the state last logged. A suppressed edge still
+    // moves what is logged, so the next line describes a real change.
+    bool observe(uint8_t current, uint64_t now_ms, uint8_t& previous)
+    {
+        previous = logged;
+        if (current == kConvergeStateNone || current == logged)
+            return false;
+        logged = current;
+        if (previous == kConvergeStateNone && current == kConvergeStateLive)
+            return false;
+        if (!window_start_ms || now_ms < window_start_ms || now_ms - window_start_ms >= window_ms)
+        {
+            window_start_ms = now_ms ? now_ms : 1;
+            lines = 0;
+        }
+        if (lines >= max_lines)
+        {
+            ++suppressed;
+            return false;
+        }
+        ++lines;
+        return true;
+    }
+
+    uint32_t take_suppressed()
+    {
+        const uint32_t s = suppressed;
+        suppressed = 0;
+        return s;
+    }
+};
+
+// REACH, per aim poll of its provider: whether this poll is counted at all, and if so why the converged aim is
+// not live. False = not counted: the aim-write conditions 0x01-0x40 are non-gameplay states (another title, a
+// menu, a cinematic) or our sampler's stale stamps around a hitch. The order is the provider's own.
+struct ReachConvergePoll {
+    bool live = false;           // a WriteState actuation with a converged setpoint this poll
+    bool aimOn = false;          // reach_direct_drive == 3 and converged_aim
+    bool driveReady = false;     // the hook is armed and its heartbeat fresh
+    uint32_t aimWhy = 0;         // Game_ReachDirectDriveAimWhy()
+    bool flagsResolved = false;  // the crosshair trace's flags resolved
+    bool traceFaulted = false;   // the trace latched off on a native fault
+    bool sightSample = false;    // a fresh ray AND a fresh trace result this poll
+    bool rangeKnown = false;     // the solve had a range to converge on (else nothing to bend through yet)
+};
+inline bool ReachConvergeOffReason(const ReachConvergePoll& p, ConvergeOff& why)
+{
+    why = ConvergeOff::None;
+    if (p.live)
+        return true;
+    if (!p.aimOn) { why = ConvergeOff::AimOff; return true; }
+    if (p.aimWhy & 0x7Fu)
+        return false;
+    if (p.aimWhy & 0x80u) { why = ConvergeOff::SeatViewNotOwned; return true; }
+    if (p.aimWhy & 0x100u) { why = ConvergeOff::SeatSteering; return true; }
+    if (p.aimWhy & 0x200u) { why = ConvergeOff::AimOff; return true; }   // reach_vehicle_aim / seat_direct_drive
+    if (!p.driveReady) { why = ConvergeOff::DriveNotArmed; return true; }
+    if (!p.flagsResolved) { why = ConvergeOff::NoTraceFlags; return true; }
+    if (p.traceFaulted) { why = ConvergeOff::TraceFaulted; return true; }
+    if (!p.sightSample) { why = ConvergeOff::TraceStale; return true; }
+    // A fresh trace and still no converged setpoint: no range yet, or the bend passed Reach's rail (R13r).
+    why = p.rangeKnown ? ConvergeOff::PitchRail : ConvergeOff::NoRange;
+    return true;
+}
 
 // ---- natural causes: witnessed, never decided on -------------------------------------------------------
 
