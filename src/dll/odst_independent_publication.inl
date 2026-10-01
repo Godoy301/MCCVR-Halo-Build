@@ -26,7 +26,7 @@ void PublishOdstIndependentAimBody()
         if(!std::isfinite(scale)||scale<=0)return;
         const float sh=sinf(g_headYawRef),ch=cosf(g_headYawRef);
         const float cg=cosf(g_gameYawRef),sg=sinf(g_gameYawRef);
-        const float base[3]{g_baseCamX.load(),g_baseCamY.load(),g_baseCamZ.load()};
+        const float base[3]{g_baseCamX.load(),g_baseCamY.load(),BaseCamHandsZ()};
         for(int slot=0;slot<2;++slot)
         {
             // Tracking is already routed into primary/support roles by VR.

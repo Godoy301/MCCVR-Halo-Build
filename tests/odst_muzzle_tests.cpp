@@ -23,6 +23,7 @@ static struct {bool gun_barrel_aim=true,left_handed=false,independent_dual_aim=f
 static float Game_GetWorldScale(){return 1.f;}
 static std::atomic<bool> g_baseCamValid{true};
 static std::atomic<float> g_worldScale{1},g_baseCamX{0},g_baseCamY{0},g_baseCamZ{0};
+static float BaseCamHandsZ(){return g_baseCamZ.load();}
 static float g_headYawRef=0,g_gameYawRef=0,g_headPosRef[3]{};
 static void BuildTrackedGameBasisFromFrame(const float* orientation,bool,bool,int,int,float* basis)
 {std::memcpy(basis,orientation,12);basis[4]=basis[8]=1;}

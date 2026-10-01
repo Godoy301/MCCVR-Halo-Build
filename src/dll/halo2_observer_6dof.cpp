@@ -665,7 +665,8 @@ namespace
         const Halo2SynchronousVrRenderSnapshot& sample,
         const Halo2CameraBasis* vehicleReference=nullptr,
         const Halo2VehicleViewKey* vehicleKey=nullptr,
-        const Halo2CameraBasis* footReference=nullptr) noexcept
+        const Halo2CameraBasis* footReference=nullptr,
+        float viewLiftZ=0.0f) noexcept
     {
         g_publicationVersion.fetch_add(1, std::memory_order_acq_rel);
         g_publication.generation = generation;
@@ -678,6 +679,7 @@ namespace
         g_publication.vehicleReference=vehicleReference?*vehicleReference:Halo2CameraBasis{};
         g_publication.footReferenceValid=footReference!=nullptr;
         g_publication.footReference=footReference?*footReference:Halo2CameraBasis{};
+        g_publication.viewLiftZ=std::isfinite(viewLiftZ)?viewLiftZ:0.0f;
         g_publication.vehicleUnit=vehicleKey?vehicleKey->unit:UINT32_MAX;
         g_publication.vehicleParent=vehicleKey?vehicleKey->parent:UINT32_MAX;
         g_publication.vehicleSeat=vehicleKey?vehicleKey->seat:-1;
@@ -1226,10 +1228,16 @@ namespace
         head.positional = Game_IsPositionalTracking();
         head.worldScale = Game_GetWorldScale();
 
+        // The character's own eye this frame, before any correction of ours: the leash below is held
+        // against it, so it rides his crouch (as Reach's, Halo 3's, ODST's and Halo 4's do).
+        const float characterEyeZ=stock.position[2];
         Halo2ApplyPhysicalCrouchCamera(stock.position,
             -std::clamp(head.position[1]-head.referencePosition[1],
                 -kHalo2MaxHeadTranslationMeters,kHalo2MaxHeadTranslationMeters)*head.worldScale,
             head.positional&&!vehicle&&turnOwnsStick);
+        // What it gave back: stock now sits that far above the engine's eye (published as viewLiftZ).
+        float viewLiftZ=stock.position[2]-characterEyeZ;
+        if(!std::isfinite(viewLiftZ)||viewLiftZ<0.0f||viewLiftZ>1.5f) viewLiftZ=0.0f;
         Halo2CameraBasis viewBase=stock,hull{};
         // On foot under direct drive the stock camera follows the hand; the view takes its own heading.
         const bool ownsFootReference=g_footView.active&&g_footView.Basis(stock,viewBase);
@@ -1273,6 +1281,26 @@ namespace
                     g_reference.position, head.worldScale);
             }
         }
+        // THE LEASH BELOW THE CHARACTER'S EYE (Reach's ReachApplyHeadLook; Halo 3, ODST and Halo 4 alike): at
+        // most head_leash_below_eye_m below his CURRENT eye, so a deep duck cannot take the view inside his
+        // chest and legs. On foot only. The published base rises with it -- the hands and the stereo core's
+        // re-composition of the eyes are built on it -- and viewLiftZ says by how much.
+        {
+            const float leash=g_config.head_leash_below_eye_m;
+            if(!vehicle&&head.positional&&std::isfinite(leash)&&leash>=0.0f&&std::isfinite(characterEyeZ)&&
+                !VR_IsCutsceneTheaterActive())
+            {
+                const float floorZ=characterEyeZ-leash*head.worldScale;
+                if(tracked.position[2]<floorZ&&Halo2Observer6Dof_OnFootFresh())
+                {
+                    const float lift=floorZ-tracked.position[2];
+                    tracked.position[2]=floorZ;
+                    stock.position[2]+=lift;
+                    viewBase.position[2]+=lift;
+                    viewLiftZ+=lift;
+                }
+            }
+        }
         if (!WriteObserverPose(result, tracked))
         {
             g_unreadableSamples.fetch_add(1, std::memory_order_relaxed);
@@ -1285,7 +1313,7 @@ namespace
             g_generation.load(std::memory_order_acquire),
             snapshot.preparedSerial, stock, tracked, effectiveReference, snapshot,
             ownsVehicleReference?&viewBase:nullptr,ownsVehicleReference?&vehicleKey:nullptr,
-            ownsFootReference?&viewBase:nullptr);
+            ownsFootReference?&viewBase:nullptr,viewLiftZ);
         // Published at the view's own heading: from here the drive may write the hand's aim into the
         // record, and the right stick stops reaching the game.
         g_footViewEngagedMs.store(ownsFootReference ? GetTickCount64() : 0, std::memory_order_release);
@@ -3470,11 +3498,13 @@ namespace
         const float length = std::sqrt(lengthSquared);
         if (!std::isfinite(length) || length < 1.0e-4f)
             return false;
+        // The engine eye is the stock camera WITHOUT the view's lift (physical crouch give-back, leash):
+        // that is where Halo 2 fires from.
+        Halo2EngineEyePosition(publication, eye);
         for (int axis = 0; axis < 3; ++axis)
         {
             head[axis] = publication.tracked.position[axis];
             dir[axis] = rightCarrier.forward[axis] / length;
-            eye[axis] = publication.stock.position[axis];
             if (!std::isfinite(head[axis]) || !std::isfinite(dir[axis]) ||
                 !std::isfinite(eye[axis]))
                 return false;
@@ -3599,8 +3629,10 @@ namespace
         const float range = std::clamp(
             g_config.crosshair_distance_m, 2.0f, 50.0f) *
             Game_GetWorldScale();
+        float engineEye[3]{};
+        Halo2EngineEyePosition(publication, engineEye);
         return Halo2BuildControllerShotDirection(
-            publication.stock.position, rightCarrier, range, direction);
+            engineEye, rightCarrier, range, direction);
     }
 
     __declspec(noinline) uint64_t __fastcall Halo2NativeAimUpdateDetour(
@@ -6378,14 +6410,16 @@ bool Halo2Observer6Dof_BuildScopeCamera(Halo2CameraBasis& camera) noexcept
     // SCOPE CONVERGENCE (F1 > Scope): the lens moves to the rendered eye and looks along the intent ray, which
     // leaves that same eye (Halo2SightGeometry's head is p.tracked), like every other title's. Otherwise the
     // earlier lens: the engine eye, steered through the hand ray at the crosshair distance.
-    const float* origin=p.stock.position;
+    float engineEye[3]{};
+    Halo2EngineEyePosition(p,engineEye);
+    const float* origin=engineEye;
     float head[3]{},dir[3]{},eye[3]{};
     if(Halo2SightGeometry(p,primary,head,dir,eye)&&Sight_ScopeConvergedLive(GameTitle::Halo2))
     {
         memcpy(direction,dir,sizeof(direction));
         origin=p.tracked.position;
     }
-    else if(!Halo2BuildControllerShotDirection(p.stock.position,primary,
+    else if(!Halo2BuildControllerShotDirection(engineEye,primary,
         std::clamp(g_config.crosshair_distance_m,2.f,50.f)*Game_GetWorldScale(),direction))return false;
     memcpy(basis,primary.forward,12);memcpy(basis+6,primary.up,12);
     ScopeCameraPose pose{};

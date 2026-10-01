@@ -1701,10 +1701,25 @@ struct Halo2ObserverPosePublication
     // (halo2_foot_view.h): the stock camera's position at that heading, level.
     bool footReferenceValid=false;
     Halo2CameraBasis footReference{};
+    // How far stock and footReference sit ABOVE the engine's own eye, straight up (world units): the physical
+    // crouch give-back plus the leash below the character's eye. The view and the hands are built on them
+    // and want it; the engine eye -- where Halo 2 fires from, the sight trace's origin -- is stock minus this
+    // (Halo2EngineEyePosition). Before 2026-09-30 the give-back sat in stock with nothing to take it back
+    // out, so a physical crouch aimed every converged shot from up to half a metre above the real eye.
+    float viewLiftZ=0.0f;
     float referenceOrientation[4]{0.0f, 0.0f, 0.0f, 1.0f};
     float referencePosition[3]{};
     Halo2ObserverPoseSnapshot snapshot{};
 };
+
+// The engine's own eye in a publication: the stock camera without the view's lift.
+inline void Halo2EngineEyePosition(const Halo2ObserverPosePublication& publication, float eye[3]) noexcept
+{
+    eye[0] = publication.stock.position[0];
+    eye[1] = publication.stock.position[1];
+    eye[2] = publication.stock.position[2] -
+        (std::isfinite(publication.viewLiftZ) ? publication.viewLiftZ : 0.0f);
+}
 
 inline const Halo2CameraBasis& Halo2ControllerReference(
     const Halo2ObserverPosePublication& publication) noexcept

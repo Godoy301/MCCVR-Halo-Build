@@ -14,6 +14,9 @@ uint32_t Game_VrActionTransport(vr_mapping::Action action, uint64_t nowMs);
 
 // Camera-thread admission, using each title's existing native on-foot evidence.
 bool Game_RoomscaleCameraAllowed(GameTitle title);
+// That on-foot, player-controlled evidence alone (no roomscale setting or presentation gates): the
+// head leash below the character's eye holds the view only while this is true.
+bool Game_TitleOnFootPlayerControlled(GameTitle title);
 
 // Monotonic counters written by render/palette hooks and sampled at OpenXR
 // frame boundaries. Hooks only touch relaxed atomics; formatting and file I/O

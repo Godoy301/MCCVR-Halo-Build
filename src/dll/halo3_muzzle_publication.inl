@@ -69,7 +69,7 @@ void Halo3PublishMuzzlePalette(uint16_t tag,const FpInterpolationContext& contex
             transform.axis[2]={-cg*ch+sg*sh,-sg*ch-cg*sh,0};
             const auto reference=transform.World({g_headPosRef[0],g_headPosRef[1],g_headPosRef[2]});
             transform.origin={g_baseCamX.load()-reference.x,g_baseCamY.load()-reference.y,
-                g_baseCamZ.load()-reference.z};
+                BaseCamHandsZ()-reference.z};
             VR_PublishWeaponReticleRay(GameTitle::Halo3,uint8_t(context.slot),palette.barrels[0],transform);
         }
     }

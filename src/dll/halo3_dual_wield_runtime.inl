@@ -83,7 +83,7 @@ void PublishHalo3DualAimBody()
         if (!std::isfinite(scale) || scale <= 0) return;
         const float sh = sinf(g_headYawRef), ch = cosf(g_headYawRef);
         const float cg = cosf(g_gameYawRef), sg = sinf(g_gameYawRef);
-        const float base[3]{g_baseCamX.load(), g_baseCamY.load(), g_baseCamZ.load()};
+        const float base[3]{g_baseCamX.load(), g_baseCamY.load(), BaseCamHandsZ()};
         for (int slot = 0; slot < 2; ++slot)
         {
             const auto& hand = tracking.hands[slot == 0 ? 1 : 0];

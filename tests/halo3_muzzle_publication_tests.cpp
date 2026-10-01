@@ -14,6 +14,7 @@ static std::atomic<uint32_t> g_halo3RuntimeGeneration{7};
 static weapon_muzzle::Store g_halo3Muzzles;
 static std::atomic<bool> g_baseCamValid{true};
 static std::atomic<float> g_worldScale{1},g_baseCamX{0},g_baseCamY{0},g_baseCamZ{0};
+static float BaseCamHandsZ(){return g_baseCamZ.load();}
 static float g_headYawRef=0,g_gameYawRef=0,g_headPosRef[3]{};
 static unsigned reticlePublications{};
 static void VR_PublishWeaponReticleRay(GameTitle title,uint8_t slot,

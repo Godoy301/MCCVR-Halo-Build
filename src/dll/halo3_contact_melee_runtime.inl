@@ -349,7 +349,7 @@ void Halo3PublishContactHand(int hand,const FpInterpolationContext& context,
     frame.transform.axis[2]={-cg*ch+sg*sh,-sg*ch-cg*sh,0};
     const auto reference=frame.transform.World({g_headPosRef[0],g_headPosRef[1],g_headPosRef[2]});
     frame.transform.origin={g_baseCamX.load()-reference.x,g_baseCamY.load()-reference.y,
-                            g_baseCamZ.load()-reference.z};
+                            BaseCamHandsZ()-reference.z};
     if(poseValid && tracking.referenceEpoch)
     {
         uint64_t epoch=(14695981039346656037ull^tracking.referenceEpoch)*1099511628211ull;

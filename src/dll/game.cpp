@@ -401,6 +401,15 @@ namespace
     // head (which mixes samples and shortens apparent reach).
     std::atomic<float> g_baseCamX{0}, g_baseCamY{0}, g_baseCamZ{0};
     std::atomic<bool> g_baseCamValid{false};
+    // What the head-look added to the VIEW on top of that origin, straight up, that is not the head: the
+    // physical crouch give-back (the view follows the real head instead of dropping a second time with the
+    // character's crouch) plus the leash (the view held below the character's eye). The hands, the gun and
+    // everything else mapped from tracking space onto g_baseCam rise by it too, or they sink away from the
+    // eyes by exactly that much when physical crouch engages (Halo 3/ODST, user report 2026-09-30). The
+    // engine's own eye -- where shots leave -- does not. Halo 3 and ODST only (both publish g_baseCam);
+    // world units; 0 in a seat, a cinematic, or without positional tracking.
+    std::atomic<float> g_baseCamViewLiftZ{0};
+    float BaseCamHandsZ() noexcept {return g_baseCamZ.load()+g_baseCamViewLiftZ.load();}
     std::atomic<float> g_camFwd[3] = {{1},{0},{0}};
     std::atomic<float> g_camUp[3] = {{0},{0},{1}};
     std::atomic<bool> g_camValid{false};
@@ -6540,7 +6549,7 @@ namespace
             off[1] = (sg*roomForward-cg*roomRight)*s;
             off[2] = dy*s;
         }
-        float cam[3] = {g_baseCamX.load(),g_baseCamY.load(),g_baseCamZ.load()};
+        float cam[3] = {g_baseCamX.load(),g_baseCamY.load(),BaseCamHandsZ()};
         // C21: in a first-person vehicle seat the engine camera source is the
         // occupant's own head marker, so using it here hangs the arms and gun
         // off the seated biped's FACE â€” rotate the view and they are dragged
@@ -6883,12 +6892,20 @@ namespace
 
     bool ApplyHeadLook(void* src)
     {
+        // Every exit publishes what this pass lifted the view by (g_baseCamViewLiftZ): 0 unless it is
+        // measured below.
         if (!src)
+        {
+            g_baseCamViewLiftZ.store(0.0f, std::memory_order_relaxed);
             return false;
+        }
 
         float q[4], hpos[3];
         if (!VR_GetHeadPose(q, hpos))
+        {
+            g_baseCamViewLiftZ.store(0.0f, std::memory_order_relaxed);
             return false;
+        }
         // Head forward (OpenXR: -Z forward, +Y up).
         const float x = q[0], y = q[1], z = q[2], w = q[3];
         const float hfx = -2.0f * (w * y + x * z);
@@ -6941,7 +6958,10 @@ namespace
                 GetTickCount64());
         }
         if (cinematic && VR_IsCutsceneTheaterActive())
+        {
+            g_baseCamViewLiftZ.store(0.0f, std::memory_order_relaxed);
             return false; // authored camera + stereo eye offsets only in theatre
+        }
         if (cinematic && (cinematicScene < 0 || cinematicShot < 0))
             g_halo3ShotlessFacingSamples.fetch_add(1, std::memory_order_relaxed);
         const bool cinematicBoundary = cinematicFacing.Observe(
@@ -7025,8 +7045,16 @@ namespace
             }
         }
 
+        // The character's own eye this frame, before any correction of ours. The leash below is held
+        // against it, so it rides his crouch (as Reach's does).
+        const float characterEyeZ = pos[2];
         Halo3ApplyPhysicalCrouchCamera(pos,
             -Clamp((hpos[1]-g_headPosRef[1])*g_worldScale.load(),-1.5f,1.5f),!cinematic);
+        // What it gave back (0 unless physical crouch holds a crouch): the view now follows the real head,
+        // so the hands, built on the engine's eye (g_baseCam), need the same lift.
+        float viewLiftZ = pos[2] - characterEyeZ;
+        if (!std::isfinite(viewLiftZ) || viewLiftZ < 0.0f || viewLiftZ > 1.5f)
+            viewLiftZ = 0.0f;
         Roomscale_Camera(GameTitle::Halo3, !cinematic && Game_RoomscaleCameraAllowed(GameTitle::Halo3),
             pos, hpos, q, fwd, g_headPosRef, g_worldScale.load());
 
@@ -7072,7 +7100,25 @@ namespace
             }
             ox = Clamp(ox, -1.5f, 1.5f); oy = Clamp(oy, -1.5f, 1.5f); oz = Clamp(oz, -1.5f, 1.5f);
             pos[0] += ox; pos[1] += oy; pos[2] += oz;
+            // THE LEASH BELOW THE CHARACTER'S EYE (Reach's, ReachApplyHeadLook; CampE's heightleash). A
+            // duck deeper than the character's own crouch takes the view inside his chest and legs: the
+            // crouch give-back above lets the view follow the real head all the way down, and without
+            // physical crouch a duck simply goes there. Hold it at most head_leash_below_eye_m below his
+            // CURRENT eye, so the limit drops with him when he crouches. On foot and player-controlled only
+            // (a seat or a cinematic composes its own view), and the hands rise with the view.
+            const float leash = g_config.head_leash_below_eye_m;
+            if (std::isfinite(leash) && leash >= 0.0f && std::isfinite(characterEyeZ))
+            {
+                const float floorZ = characterEyeZ - leash * s;
+                if (pos[2] < floorZ && !cinematic &&
+                    Game_TitleOnFootPlayerControlled(GameTitle::Halo3))
+                {
+                    viewLiftZ += floorZ - pos[2];
+                    pos[2] = floorZ;
+                }
+            }
         }
+        g_baseCamViewLiftZ.store(viewLiftZ, std::memory_order_relaxed);
 
         // M2 alternate-eye proof: offset only the render camera by half the
         // measured PSVR2 IPD. Halo right in the horizontal plane is
@@ -9773,6 +9819,7 @@ namespace
         {
             g_camValid.store(false);
             g_baseCamValid.store(false);
+            g_baseCamViewLiftZ.store(0.0f, std::memory_order_relaxed);
         }
 
         void* result=g_origCamCopy(dst,src);
@@ -11695,6 +11742,13 @@ namespace
 
     void OdstApplyHeadLook(void* source)
     {
+        // Every exit publishes what this pass lifted the view by (g_baseCamViewLiftZ, as Halo 3's
+        // ApplyHeadLook): 0 unless it is measured below.
+        struct ViewLiftPublisher
+        {
+            float value = 0.0f;
+            ~ViewLiftPublisher() {g_baseCamViewLiftZ.store(value, std::memory_order_relaxed);}
+        } viewLift;
         if (!source)
             return;
         float quaternion[4], headPosition[3];
@@ -11865,8 +11919,16 @@ namespace
                 memcpy(position, anchor, sizeof(anchor));
         }
 
+        // The character's own eye this frame, before any correction of ours: the leash below is held
+        // against it, so it rides his crouch (as Halo 3's and Reach's do).
+        const float characterEyeZ = position[2];
         OdstApplyPhysicalCrouchCamera(position,
             -Clamp((headPosition[1]-g_headPosRef[1])*kOdstWorldUnitsPerMeter,-1.5f,1.5f),!cinematic);
+        // What it gave back (0 unless physical crouch holds a crouch): the hands, built on the engine's
+        // eye (g_baseCam), rise by it with the view.
+        float viewLiftZ = position[2] - characterEyeZ;
+        if (!std::isfinite(viewLiftZ) || viewLiftZ < 0.0f || viewLiftZ > 1.5f)
+            viewLiftZ = 0.0f;
         Roomscale_Camera(GameTitle::Halo3ODST, !cinematic && Game_RoomscaleCameraAllowed(GameTitle::Halo3ODST),
             position, headPosition, quaternion, forward, g_headPosRef, kOdstWorldUnitsPerMeter);
         if (g_positional.load(std::memory_order_relaxed))
@@ -11921,7 +11983,21 @@ namespace
                     -1.5f, 1.5f);
                 position[2] += Clamp(dy * scale, -1.5f, 1.5f);
             }
+            // THE LEASH BELOW THE CHARACTER'S EYE, as Halo 3's ApplyHeadLook: at most
+            // head_leash_below_eye_m below his CURRENT eye, on foot and player-controlled only.
+            const float leash = g_config.head_leash_below_eye_m;
+            if (std::isfinite(leash) && leash >= 0.0f && std::isfinite(characterEyeZ))
+            {
+                const float floorZ = characterEyeZ - leash * scale;
+                if (position[2] < floorZ && !cinematic &&
+                    Game_TitleOnFootPlayerControlled(GameTitle::Halo3ODST))
+                {
+                    viewLiftZ += floorZ - position[2];
+                    position[2] = floorZ;
+                }
+            }
         }
+        viewLift.value = viewLiftZ;
     }
 
     // O1: ODST vehicle evidence probe. Read-only and inert â€” it publishes
@@ -12512,6 +12588,7 @@ namespace
         {
             g_camValid.store(false, std::memory_order_release);
             g_baseCamValid.store(false, std::memory_order_release);
+            g_baseCamViewLiftZ.store(0.0f, std::memory_order_relaxed);
         }
         else if (OdstCamCopyRequestsTeardown(
                      g_odstCamera.armed.load(std::memory_order_acquire),
@@ -17519,6 +17596,7 @@ namespace
             valid.store(false, std::memory_order_release);
         g_camValid.store(false, std::memory_order_release);
         g_baseCamValid.store(false, std::memory_order_release);
+        g_baseCamViewLiftZ.store(0.0f, std::memory_order_relaxed);
         g_zoomFactor.store(1.0f, std::memory_order_release);
         g_enabled.store(false, std::memory_order_release);
         g_positional.store(true, std::memory_order_release);
@@ -17607,6 +17685,7 @@ namespace
             valid.store(false, std::memory_order_release);
         g_camValid.store(false, std::memory_order_release);
         g_baseCamValid.store(false, std::memory_order_release);
+        g_baseCamViewLiftZ.store(0.0f, std::memory_order_relaxed);
         g_zoomFactor.store(1.0f, std::memory_order_release);
         g_odstCamera.sawValidCamera.store(false, std::memory_order_release);
         g_odstCamera.captureFailures.store(0, std::memory_order_release);
@@ -23339,7 +23418,7 @@ namespace
             transform.axis[2]={-cg*ch+sg*sh,-sg*ch-cg*sh,0};
             const auto reference=transform.World({g_headPosRef[0],g_headPosRef[1],g_headPosRef[2]});
             transform.origin={g_baseCamX.load()-reference.x,g_baseCamY.load()-reference.y,
-                g_baseCamZ.load()-reference.z};
+                BaseCamHandsZ()-reference.z};
         }
         VR_PublishReloadTarget(title,generation,identity,serial,transform,point);
     }
@@ -30114,6 +30193,7 @@ namespace
             g_aimSeen.store(false, std::memory_order_release);
             g_camValid.store(false, std::memory_order_release);
             g_baseCamValid.store(false, std::memory_order_release);
+            g_baseCamViewLiftZ.store(0.0f, std::memory_order_relaxed);
         }
 
         // The worker has no Reach engine TLS and must never chase tag storage.
@@ -30212,6 +30292,7 @@ namespace
             g_aimSeen.store(false, std::memory_order_release);
             g_camValid.store(false, std::memory_order_release);
             g_baseCamValid.store(false, std::memory_order_release);
+            g_baseCamViewLiftZ.store(0.0f, std::memory_order_relaxed);
         }
 
         g_reachCamera.innerTarget = nullptr;
@@ -32657,6 +32738,7 @@ namespace
         g_aimSeen.store(false, std::memory_order_release);
         g_camValid.store(false, std::memory_order_release);
         g_baseCamValid.store(false, std::memory_order_release);
+        g_baseCamViewLiftZ.store(0.0f, std::memory_order_relaxed);
         g_reachCamera.armed.store(false, std::memory_order_release);
         g_reachCamera.teardownRequested.store(
             false, std::memory_order_release);
@@ -35101,6 +35183,12 @@ namespace
     // The body/aim frame before Halo 4's HMD pose is composed onto the camera.
     // Controller ownership uses this frame, never the post-HMD camera frame.
     Halo4CenterRoot g_halo4ControllerRoot;
+    // What the stereo transaction lifted the VIEW by on top of that frame, straight up (world units), that
+    // is not the head: the physical crouch give-back plus the leash below the character's eye. The hands
+    // are placed from the controller root, so they rise by it too, or they sink away from the eyes by that
+    // much when physical crouch engages (user report 2026-09-30). Published with the controller root;
+    // the root itself stays the engine's eye, which the sight trace and the scope shoot from.
+    std::atomic<float> g_halo4HandsLiftZ{0.0f};
     // Exact active-eye render roots. E-H4-22: the producer composes the two
     // WEAPON records through this camera, so the weapon carry uses it to
     // express a model-frame hand motion in the weapon's own world frame. The
@@ -36990,6 +37078,7 @@ namespace
             root.rotation[3+axis]=left[axis];
             root.rotation[6+axis]=up[axis];
         }
+        root.translation[2]+=g_halo4HandsLiftZ.load(std::memory_order_relaxed);
         return NormalizedBasis(root,root.rotation);
     }
 
@@ -37896,6 +37985,7 @@ namespace
                     std::memory_order_relaxed);
             frame.common.bodyOrigin[axis]=preHmd.translation[axis];
         }
+        frame.common.bodyOrigin[2]+=g_halo4HandsLiftZ.load(std::memory_order_relaxed);
         frame.common.headYawReference=g_halo4Camera.headYawReference.load(
             std::memory_order_relaxed);
         frame.common.gameYawReference=g_halo4Camera.gameYawReference.load(
@@ -40639,6 +40729,8 @@ namespace
         // the eyes still render from the engine's camera. It never drops a pair.
         const float worldScale = g_worldScale.load(std::memory_order_acquire);
         bool headTracked = false;
+        // The view's lift on top of the engine's eye that the hands share (g_halo4HandsLiftZ).
+        float handsLiftZ = 0.0f;
         if (!authoredTheater && snapshot.headPoseValid)
         {
             Halo4HeadPoseInput headInput{};
@@ -40751,13 +40843,34 @@ namespace
                 const Halo4CameraBasis beforeHead = stock;
                 if (Halo4ApplyHeadPose(stock, headInput))
                 {
-                    {
-                        Halo4VehicleInputState seat{};
-                        g_halo4OnFootMs.store(Halo4ReadVehicleInput(seat) && !seat.seated &&
-                            seat.parent == UINT32_MAX ? GetTickCount64() : 0, std::memory_order_release);
-                    }
+                    Halo4VehicleInputState seat{};
+                    const bool onFoot = Halo4ReadVehicleInput(seat) && !seat.seated &&
+                        seat.parent == UINT32_MAX;
+                    g_halo4OnFootMs.store(onFoot ? GetTickCount64() : 0, std::memory_order_release);
+                    // Unlike Halo 3 and Reach, the give-back lands after the head pose here; measure it on
+                    // its own, not against beforeHead (which would include the head's own height change).
+                    const float beforeCrouchZ = stock.position[2];
                     ApplyCachedPhysicalCrouch(GameTitle::Halo4,stock.position,
                         -Clamp((snapshot.headPosition[1]-headInput.headPositionReference[1])*worldScale,-1.5f,1.5f),true);
+                    handsLiftZ = stock.position[2] - beforeCrouchZ;
+                    if (!std::isfinite(handsLiftZ) || handsLiftZ < 0.0f || handsLiftZ > 1.5f)
+                        handsLiftZ = 0.0f;
+                    // THE LEASH BELOW THE CHARACTER'S EYE (Reach's ReachApplyHeadLook, Halo 3's ApplyHeadLook):
+                    // at most head_leash_below_eye_m below his CURRENT eye -- beforeHead, the engine camera
+                    // with his crouch in it -- so a deep duck cannot take the view inside his chest and legs.
+                    // On foot and player-controlled only; the hands rise with the view.
+                    const float leash = g_config.head_leash_below_eye_m;
+                    if (onFoot && headInput.positional && std::isfinite(leash) && leash >= 0.0f &&
+                        std::isfinite(beforeHead.position[2]))
+                    {
+                        const float floorZ = beforeHead.position[2] - leash * worldScale;
+                        if (stock.position[2] < floorZ &&
+                            ReadHalo4CinematicControl() == CinematicControlState::PlayerControlled)
+                        {
+                            handsLiftZ += floorZ - stock.position[2];
+                            stock.position[2] = floorZ;
+                        }
+                    }
                     headTracked = true;
                     g_halo4Camera.headTrackedFrames.fetch_add(
                         1, std::memory_order_relaxed);
@@ -40787,6 +40900,7 @@ namespace
                     // Restore the engine's camera exactly. A refused head
                     // transform must not leave a half-rotated basis behind.
                     stock = beforeHead;
+                    handsLiftZ = 0.0f;
                 }
             }
         }
@@ -40848,7 +40962,10 @@ namespace
         if (Halo4ValidateCameraBasis(stock))
             Halo4PublishCenterRoot(stock);
         if (Halo4ValidateCameraBasis(controllerRoot))
+        {
+            g_halo4HandsLiftZ.store(handsLiftZ, std::memory_order_relaxed);
             Halo4PublishControllerRoot(controllerRoot);
+        }
 
         // C-H4-8: solve each eye's raster cover from the runtime's own reported
         // frustum. Nothing here names a headset. Halo 4's stock cover is
@@ -49352,6 +49469,14 @@ bool Game_RoomscaleCameraAllowed(GameTitle title)
         !VR_IsStereoEnabled() || Menu_IsOpen() || VR_IsPausePresentation() ||
         VR_IsPausePresentationTarget() || VR_IsCutsceneTheaterActive() ||
         TitleAdapter_GetRuntimeMode()!=RuntimeMode::Gameplay) return false;
+    return Game_TitleOnFootPlayerControlled(title);
+}
+
+// Each title's own proof that the local player is on foot and player-controlled (no seat, no cinematic).
+// Roomscale adds its setting and presentation gates on top; the head leash uses it as it is.
+bool Game_TitleOnFootPlayerControlled(GameTitle title)
+{
+    if (title!=TitleAdapter_GetActiveTitle()) return false;
     const auto now=GetTickCount64();
     __try
     {
