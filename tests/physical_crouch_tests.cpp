@@ -138,6 +138,15 @@ int main()
         Check(std::fabs(r.Baseline()-standing)<.02f,"(setup) standing for ten seconds lifts it again");
         for(int i=0;i<620;++i) step(kneel);
         Check(std::fabs(r.Baseline()-kneel)<.02f,"a reference lifted by a few seconds' standing falls back in a minute");
+        // ...however the stand-up looks. Confirmed seated for over a minute, then an ordinary one-second
+        // stand-up: the median climbs a few centimetres a sample, never a release band at once, and the
+        // reference must still count as new.
+        for(int i=0;i<700;++i) step(kneel);
+        for(int i=1;i<=10;++i) step(kneel+(standing-kneel)*float(i)/10.f);
+        for(int i=0;i<100;++i) step(standing);
+        Check(std::fabs(r.Baseline()-standing)<.02f,"(setup) a gradual stand-up lifts it");
+        for(int i=0;i<620;++i) step(kneel);
+        Check(std::fabs(r.Baseline()-kneel)<.02f,"a gradual stand-up is a new reference too: it falls back in a minute");
     }
     {
         PhysicalCrouchReference r;uint64_t now=5000;

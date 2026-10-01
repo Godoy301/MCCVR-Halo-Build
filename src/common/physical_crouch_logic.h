@@ -160,7 +160,7 @@ public:
         {
             valid_=true;calibrated_=calibrate;calibration_=calibration;continuity_=continuity;
             baseline_=seed_=height;riseCapped_=false;riseSince_=0;count_=0;next_=0;sampleAt_=0;
-            standingAt_=now;heardAt_=0;confirmedMs_=0;++seeds_;
+            standingAt_=now;heardAt_=0;confirmedMs_=0;confirmedBase_=height;++seeds_;
             return;
         }
         const float threshold=Threshold(depth);
@@ -212,20 +212,22 @@ private:
         const float median=*mid;
         if(median>baseline_+kRiseSteady)
         {
-            // A rise the old posture would read as a crouch under (seated to standing) is a new reference:
-            // it has to earn its confirmation again.
-            if(median-baseline_>Release(threshold)) confirmedMs_=0;
             baseline_=median;
+            // A rise the posture its confirmation was earned at would read as a crouch under (seated to
+            // standing) is a new reference: it has to earn its confirmation again. Measured from where that
+            // confirmation was earned, never per sample: through an ordinary one-second stand-up the median
+            // climbs a few centimetres a sample, never a whole release band at once.
+            if(baseline_-confirmedBase_>Release(threshold)) {confirmedMs_=0;confirmedBase_=baseline_;}
         }
         else if(now>=standingAt_&&
                 now-standingAt_>=(confirmedMs_>=kConfirmedMs?kStaleLowConfirmedMs:kStaleLowMs))
-        {baseline_=median;standingAt_=now;confirmedMs_=0;}
+        {baseline_=median;standingAt_=now;confirmedMs_=0;confirmedBase_=baseline_;}
     }
 
     std::array<float,kWindowSamples> window_{};
     size_t count_{},next_{};
     uint64_t riseSince_{},sampleAt_{},standingAt_{},heardAt_{},confirmedMs_{};
-    float baseline_{},seed_{},riseValue_{};
+    float baseline_{},seed_{},riseValue_{},confirmedBase_{};
     uint32_t calibration_{},continuity_{},seeds_{};
     bool valid_{},calibrated_{},riseCapped_{};
 };
