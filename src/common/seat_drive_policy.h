@@ -75,66 +75,96 @@ inline unsigned SeatKey(int parent_handle, int seat_index, bool mounted)
 }
 
 // PER-AXIS SEAT CHECK -- each seat stint proves, axis by axis, that its record holds the aim the game
-// shows before that axis is written. Yaw passes on `needed` consecutive updates within `tol`. Pitch passes
-// on `needed` SETTLED updates within `tol` (the game's aim pitch moved less than `settle` since the last
-// update: a rate-capped barrel still slewing is not a disagreement) within `budget_ms` of updates after yaw
-// passed; a pitch that has not passed by then stays on the servo for the rest of the stint. Pitch is never
-// verified before yaw, and a slow yaw never uses up pitch's budget (a pitch that agreed all along passes the
-// moment yaw does). The budget counts only time the game is updating (a gap -- a pause menu -- adds at most
-// `gap_ms`). A REPEATED aim sample (the sim ticking faster than the aim is published) is not evidence: it
-// neither counts nor resets.
+// shows before that axis is written. Only SETTLED samples are evidence: a sample is settled on an axis when
+// both the game's aim and the record moved less than `settle` on that axis since the last judged sample. The
+// record and the published aim are read on different clocks, so while either is moving -- a rate-capped
+// barrel slewing, a vehicle turning, an impulse under fire, rough driving, flight -- the gap between them is
+// the motion, not a disagreement. An unsettled sample neither counts nor resets (the user's rule, 2026-10-01:
+// natural motion never switches the drive off). A SETTLED disagreement still resets that axis's count, so a
+// record that really holds another aim -- a Halo 3 driver+gunner's pitch ~13 deg off the gun -- never passes:
+// it agrees on no settled sample.
+//   * Yaw passes on `needed` settled agreeing samples with no settled disagreement between them.
+//   * Pitch passes the same way, never before yaw. Its BUDGET counts only settled time after yaw passed
+//     (`budget_ms`), so a hand that keeps aiming does not use it up; when it runs out the pitch stays on the
+//     servo, and the check RETRIES `retry_ms` of updates later (a stint used to stay on the servo for good).
+//     A pitch that agreed all along passes the moment yaw does.
+// Time counts only while the game is updating (a gap -- a pause menu -- adds at most `gap_ms`). A REPEATED
+// aim sample (the sim ticking faster than the aim is published), a stale one or a non-finite one is no
+// evidence: it neither counts nor resets.
 struct StintCheck {
     float tol = 0.03f;          // 1.7 deg
-    float settle = 0.00175f;    // 0.1 deg per update
+    float settle = 0.00175f;    // 0.1 deg per sample
     unsigned needed = 30;
-    unsigned long long budget_ms = 3000;
+    unsigned long long budget_ms = 3000;   // settled time after yaw passed
+    unsigned long long retry_ms = 5000;    // after a failed pitch check, of updating time
     unsigned long long gap_ms = 100;
 
     bool yaw_ok = false, pitch_ok = false, pitch_failed = false;
-    unsigned yaw_count = 0, pitch_count = 0;
-    unsigned long long elapsed_ms = 0, last_ms = 0, yaw_ok_at_ms = 0;
+    unsigned yaw_count = 0, pitch_count = 0, pitch_fails = 0;
+    unsigned long long elapsed_ms = 0, last_ms = 0, yaw_ok_at_ms = 0, pitch_settled_ms = 0, pitch_failed_at_ms = 0;
     bool have_last = false;
-    float last_aim_pitch = 0.0f;
+    float last_aim_yaw = 0.0f, last_aim_pitch = 0.0f, last_native_yaw = 0.0f, last_native_pitch = 0.0f;
 
     void reset()
     {
         yaw_ok = pitch_ok = pitch_failed = false;
-        yaw_count = pitch_count = 0;
-        elapsed_ms = last_ms = yaw_ok_at_ms = 0;
+        yaw_count = pitch_count = pitch_fails = 0;
+        elapsed_ms = last_ms = yaw_ok_at_ms = pitch_settled_ms = pitch_failed_at_ms = 0;
         have_last = false;
-        last_aim_pitch = 0.0f;
+        last_aim_yaw = last_aim_pitch = last_native_yaw = last_native_pitch = 0.0f;
     }
+
+    static float wrap(float a) { return std::remainder(a, 6.28318531f); }
 
     // One update of the stint. `fresh`: the aim was published recently. `new_sample`: the aim is not the one
     // the previous update already judged. Yaw differences wrap.
     void step(bool fresh, float native_yaw, float native_pitch, float aim_yaw, float aim_pitch,
               unsigned long long now_ms, bool new_sample = true)
     {
+        unsigned long long dt = 0;
         if (last_ms && now_ms >= last_ms)
-            elapsed_ms += (now_ms - last_ms) < gap_ms ? (now_ms - last_ms) : gap_ms;
+            dt = (now_ms - last_ms) < gap_ms ? (now_ms - last_ms) : gap_ms;
+        elapsed_ms += dt;
         last_ms = now_ms ? now_ms : 1;
         const bool finite = fresh && std::isfinite(native_yaw) && std::isfinite(native_pitch) &&
                             std::isfinite(aim_yaw) && std::isfinite(aim_pitch);
-        if (!yaw_ok && (new_sample || !finite)) {
-            const bool agree = finite && std::fabs(std::remainder(native_yaw - aim_yaw, 6.28318531f)) < tol;
+        const bool judged = finite && new_sample && have_last;
+        const bool yaw_settled = judged && std::fabs(wrap(aim_yaw - last_aim_yaw)) < settle &&
+                                 std::fabs(wrap(native_yaw - last_native_yaw)) < settle;
+        const bool pitch_settled = judged && std::fabs(aim_pitch - last_aim_pitch) < settle &&
+                                   std::fabs(native_pitch - last_native_pitch) < settle;
+        if (!yaw_ok && yaw_settled) {
+            const bool agree = std::fabs(wrap(native_yaw - aim_yaw)) < tol;
             yaw_count = agree ? yaw_count + 1 : 0;
             if (yaw_count >= needed) {
                 yaw_ok = true;
                 yaw_ok_at_ms = elapsed_ms;
             }
         }
+        if (pitch_failed && elapsed_ms - pitch_failed_at_ms >= retry_ms) {
+            pitch_failed = false;   // a fresh attempt: the count and the budget start again
+            pitch_count = 0;
+            pitch_settled_ms = 0;
+        }
         if (!pitch_ok && !pitch_failed) {
-            const bool settled = finite && new_sample && have_last && std::fabs(aim_pitch - last_aim_pitch) < settle;
-            if (settled) {
+            if (pitch_settled) {
                 const bool agree = std::fabs(native_pitch - aim_pitch) < tol;
                 pitch_count = agree ? pitch_count + 1 : 0;
+                if (yaw_ok) pitch_settled_ms += dt;
             }
             if (yaw_ok && pitch_count >= needed) pitch_ok = true;
-            else if (yaw_ok && elapsed_ms - yaw_ok_at_ms > budget_ms) pitch_failed = true;
+            else if (yaw_ok && pitch_settled_ms > budget_ms) {
+                pitch_failed = true;
+                pitch_failed_at_ms = elapsed_ms;
+                ++pitch_fails;
+            }
         }
         if (finite && new_sample) {
             have_last = true;
+            last_aim_yaw = aim_yaw;
             last_aim_pitch = aim_pitch;
+            last_native_yaw = native_yaw;
+            last_native_pitch = native_pitch;
         }
     }
 };

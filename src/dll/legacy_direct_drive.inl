@@ -36,9 +36,11 @@
 // the AXES the hand owns there (seat_drive::Decide: a passenger, gunner or turret both; a look-steered
 // driver both at reach_vehicle_aim 2, the pitch only while the stick or wheel steers, none at 1; Halo 4 seats
 // the heading only (game.cpp); nothing in a seat whose view is not ours). Each seat stint then proves its own
-// record axis by axis before that axis is written (seat_drive::StintCheck: yaw on 30 agreeing updates, pitch
-// on 30 SETTLED ones within 3 s of yaw passing, never before yaw -- a Halo 3 driver+gunner's pitch
-// sits ~13 deg off the gun and stays on the servo). The write goes through Reach's seat-limit latch
+// record axis by axis before that axis is written (seat_drive::StintCheck: yaw on 30 SETTLED agreeing samples,
+// pitch the same within 3 s of settled samples after yaw passed, never before yaw; a sample where the aim or the
+// record moved is no evidence either way, so a turn, a slewing barrel or rough driving neither proves nor resets
+// it. A failed pitch retries every 5 s; a Halo 3 driver+gunner's pitch sits ~13 deg off the gun and keeps
+// failing, so it stays on the servo). The write goes through Reach's seat-limit latch
 // (aim_write::LimitLatch), pitch excepted for a LOOK-STEERED driver, whose pitch the accumulator levels as the vehicle
 // moves. A seat may also ARM the hook, on yaw agreement alone: a checkpoint that loads in a vehicle.
 //
@@ -1060,12 +1062,15 @@ extern "C" void LegacyPcApplyForUser(int slot, int user, uintptr_t ret, const ui
                     st.seatYawChecks.fetch_add(1, std::memory_order_relaxed);
                 if (!pitchWas && st.stint.pitch_ok)
                     st.seatPitchChecks.fetch_add(1, std::memory_order_relaxed);
-                // Counted only where the seat wants its pitch (a Halo 4 seat never does).
+                // Counted only where the seat wants its pitch (a Halo 4 seat never does); each failed attempt
+                // once (the check retries every 5 s).
                 if (st.stint.pitch_failed && !st.stintPitchFailCounted && (wantAxes & kLegacyDriveAxisPitch))
                 {
                     st.stintPitchFailCounted = true;
                     st.seatPitchFails.fetch_add(1, std::memory_order_relaxed);
                 }
+                else if (!st.stint.pitch_failed)
+                    st.stintPitchFailCounted = false;
             }
             if (!st.armed.load(std::memory_order_acquire))
             {
@@ -1098,7 +1103,7 @@ extern "C" void LegacyPcApplyForUser(int slot, int user, uintptr_t ret, const ui
                 if (!writeYaw && !writePitch)
                 {
                     // Waiting on a check only while one is pending; a pitch that failed its check is on the
-                    // servo for the stint, which is not a wait.
+                    // servo until its retry, which is not a wait.
                     const bool pending = ((wantAxes & kLegacyDriveAxisYaw) && !st.stint.yaw_ok) ||
                         ((wantAxes & kLegacyDriveAxisPitch) && !st.stint.pitch_ok && !st.stint.pitch_failed);
                     if (pending)
@@ -1265,12 +1270,12 @@ void LegacyDriveReport()
                            yawChecks = st.seatYawChecks.exchange(0), pitchChecks = st.seatPitchChecks.exchange(0),
                            pitchFails = st.seatPitchFails.exchange(0), held = st.seatHeld.exchange(0);
             if (stints || yawWrites || pitchWrites || unverified || yawChecks || pitchChecks || pitchFails || held)
-                LOG("DRIVE %s seats: new stints %u; checks passed yaw %u pitch %u, pitch left on the servo %u; writes "
+                LOG("DRIVE %s seats: new stints %u; checks passed yaw %u pitch %u, pitch checks failed %u (retried after 5 s); writes "
                     "yaw %u pitch %u (held at a seat limit %u); updates waiting on a check %u; this stint yaw %s, "
                     "pitch %s",
                     name, stints, yawChecks, pitchChecks, pitchFails, yawWrites, pitchWrites, held, unverified,
                     st.stint.yaw_ok ? "proven" : "checking",
-                    st.stint.pitch_ok ? "proven" : st.stint.pitch_failed ? "servo" : "checking");
+                    st.stint.pitch_ok ? "proven" : st.stint.pitch_failed ? "servo until its retry" : "checking");
         }
 #if HALOMCCVR_DEV_DIAGNOSTICS
         // THE CENSUS: calls per sim tick and per caller. "stick per tick" is frames per tick (2.00 at 120 fps
