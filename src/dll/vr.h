@@ -907,8 +907,32 @@ void VR_GetStatus(VrStatus& out);
 
 // Lock-free physical tracking/focus freshness for optional native walking.
 bool VR_RoomscaleTrackingFresh() noexcept;
+// The physical crouch's standing-reference sample count (0 = none yet): the epoch the input side
+// publishes its crouch request in, and every title's crouch camera correction checks it against.
 uint64_t VR_PhysicalCrouchEpoch() noexcept;
+// The menu's Calibrate button: take the player's current head height as their own standing (or seated)
+// height. Nothing else re-samples it -- not a recenter, a level load or a title change.
 void VR_RecalibratePhysicalCrouch() noexcept;
+// What the physical crouch reads, published by the OpenXR frame thread with every head pose: the head
+// height and the standing reference, both in one frame that runtime recenters do not move
+// (physical_crouch_logic.h). valid = a tracked head in a focused session, sampled in the last 100 ms.
+// reference = the reference's sample count (VR_PhysicalCrouchEpoch). calibrated = the player pressed
+// Calibrate (otherwise the reference is learned); riseCapped = a calibrated reference saw them stand
+// taller than it learns on its own.
+struct VrPhysicalCrouchSample
+{
+    float height=0.0f,baseline=0.0f;
+    uint64_t reference=0;
+    bool valid=false,calibrated=false,riseCapped=false;
+};
+bool VR_GetPhysicalCrouchSample(VrPhysicalCrouchSample& out) noexcept;
+// Diagnostics (the CROUCH line): the continuous frame's carry (m) and how each discontinuity was met.
+struct VrCrouchContinuityStats
+{
+    float carry=0.0f;
+    uint32_t announced=0,unannounced=0,applied=0,unseen=0,late=0,breaks=0;
+};
+void VR_GetCrouchContinuityStats(VrCrouchContinuityStats& out) noexcept;
 
 // --- Optional NVIDIA DLSS eye resolve (config.upscaler = 1) ---------------
 // A title's eye render hook publishes the exact camera it rasterized with:

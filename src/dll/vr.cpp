@@ -7,6 +7,7 @@
 #include "../common/title_runtime_state.h"
 #include <windows.h>
 #include "../common/virtual_stock_logic.h"
+#include "../common/physical_crouch_logic.h"
 #include <tlhelp32.h>
 #include <d3d11.h>
 #include <dxgi1_2.h>
@@ -850,7 +851,20 @@ namespace
     // Recenter requests can originate on the input/game camera threads. Only
     // Present owns g_haveCenter and the OpenXR locate used to replace it.
     std::atomic<bool> g_recenterRequested{false};
+    // The menu's Calibrate count. The standing reference below re-samples (as the player's own word) when
+    // it changes; nothing else changes it.
     std::atomic<uint32_t> g_crouchCalibrationEpoch{1};
+    // Physical crouch (physical_crouch_logic.h): the head height in one continuous frame, and the player's
+    // standing height in it. Owned by Present, which both polls OpenXR events (a runtime recenter is
+    // announced there) and captures the head pose; published under g_headCs. A new session replaces the
+    // LOCAL space outright, which InitSession reports through the flag.
+    CrouchHeightContinuity g_crouchContinuity;
+    PhysicalCrouchReference g_crouchReference;
+    std::atomic<bool> g_crouchContinuityBreak{false};
+    std::atomic<uint64_t> g_crouchReferenceSerial{0};
+    VrPhysicalCrouchSample g_crouchSample;     // g_headCs
+    uint64_t g_crouchSampleAtMs = 0;           // g_headCs
+    VrCrouchContinuityStats g_crouchStats;     // g_headCs
 
     // Screen placement while head tracking is on. World-locked (default) reads
     // as natural because turning your head shifts the screen in your view to
@@ -7509,6 +7523,15 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                     // would allow a later origin jump to look like a punch.
                     g_contactSpaceChangeAtNs.store(change.changeTime, std::memory_order_release);
                     g_contactSpaceEpoch.fetch_add(1, std::memory_order_acq_rel);
+                    // The physical crouch keeps its standing height through a recenter: the runtime says
+                    // where the new origin sits in the old space (when it knows), and the continuity frame
+                    // absorbs the step instead of re-sampling the player mid-duck.
+                    g_crouchContinuity.NoteSpaceChange(change.changeTime, change.poseValid != XR_FALSE,
+                        change.poseInPreviousSpace.position.y);
+                    LOG("XR LOCAL space change pending at %lld (offset %s: %+.3f m up); the physical crouch "
+                        "carries its standing height across it",
+                        static_cast<long long>(change.changeTime), change.poseValid ? "given" : "not given",
+                        change.poseValid ? change.poseInPreviousSpace.position.y : 0.0f);
                 }
                 break;
             }
@@ -7749,6 +7772,42 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
 #endif
         g_roomscaleHeadSampleMs.store(physicallyTracked ? GetTickCount64() : 0,
             std::memory_order_release);
+
+        // Physical crouch: the RAW head height (never the smoothed pose, which would spread a recenter's
+        // step over several frames and hide it) in the continuous frame, every tracked frame -- focused or
+        // not, since a recenter made from the runtime's own menu lands while the session is only visible --
+        // and the standing reference, learned only from a focused session's head.
+        {
+            if (g_crouchContinuityBreak.exchange(false, std::memory_order_acq_rel))
+                g_crouchContinuity.Break();
+            const bool focused = g_sessionStateShared.load(std::memory_order_acquire) ==
+                XR_SESSION_STATE_FOCUSED;
+            const float crouchHeight = physicallyTracked
+                ? g_crouchContinuity.Update(loc.pose.position.y, time) : NAN;
+            const uint64_t crouchNowMs = GetTickCount64();
+            g_crouchReference.Update(crouchHeight,
+                g_crouchCalibrationEpoch.load(std::memory_order_acquire), g_crouchContinuity.Breaks(),
+                crouchNowMs, physicallyTracked && focused, g_config.physical_crouch_depth_m);
+            const uint64_t referenceSerial = g_crouchReference.Valid() ? g_crouchReference.Seeds() : 0;
+            g_crouchReferenceSerial.store(referenceSerial, std::memory_order_release);
+            EnterCriticalSection(&g_headCs);
+            g_crouchSample.valid = physicallyTracked && focused && g_crouchReference.Valid() &&
+                std::isfinite(crouchHeight);
+            g_crouchSample.height = crouchHeight;
+            g_crouchSample.baseline = g_crouchReference.Baseline();
+            g_crouchSample.reference = referenceSerial;
+            g_crouchSample.calibrated = g_crouchReference.Calibrated();
+            g_crouchSample.riseCapped = g_crouchReference.RiseCapped();
+            g_crouchSampleAtMs = crouchNowMs;
+            g_crouchStats.carry = g_crouchContinuity.Carry();
+            g_crouchStats.announced = g_crouchContinuity.Announced();
+            g_crouchStats.unannounced = g_crouchContinuity.Unannounced();
+            g_crouchStats.applied = g_crouchContinuity.Applied();
+            g_crouchStats.unseen = g_crouchContinuity.Unseen();
+            g_crouchStats.late = g_crouchContinuity.Late();
+            g_crouchStats.breaks = g_crouchContinuity.Breaks();
+            LeaveCriticalSection(&g_headCs);
+        }
 
         // Runtime proof for headset logs: successful pose sampling must equal
         // the OpenXR/game presentation rate. Camera-copy transforms are logged
@@ -10355,6 +10414,9 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         }
         g_contactSpaceChangeAtNs.store(0, std::memory_order_release);
         g_contactSpaceEpoch.fetch_add(1, std::memory_order_acq_rel);
+        // A new LOCAL space has no known relation to the last one: the physical crouch learns the
+        // player's standing height again.
+        g_crouchContinuityBreak.store(true, std::memory_order_release);
         rsci.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_VIEW;
         if (XR_FAILED(xrCreateReferenceSpace(g_session, &rsci, &g_viewSpace)))
         {
@@ -15958,7 +16020,9 @@ void VR_AfterResizeBuffers(IDXGISwapChain*)
 
 void VR_RequestRecenter()
 {
-    VR_RecalibratePhysicalCrouch();
+    // A recenter does NOT re-sample the physical crouch's standing height. Most recenters are automatic
+    // (an unpause, the end of a cutscene, a seat) and catch the player in whatever posture they happen to
+    // be in; the reference is learned, and the crouch menu's Calibrate button is the deliberate way.
     g_recenterRequested.store(true, std::memory_order_release);
 }
 
@@ -18909,8 +18973,27 @@ bool VR_RoomscaleTrackingFresh() noexcept
 }
 uint64_t VR_PhysicalCrouchEpoch() noexcept
 {
-    return (uint64_t(g_crouchCalibrationEpoch.load(std::memory_order_acquire))<<32)|
-        uint32_t(g_contactSpaceEpoch.load(std::memory_order_acquire));
+    return g_crouchReferenceSerial.load(std::memory_order_acquire);
 }
 void VR_RecalibratePhysicalCrouch() noexcept
 {g_crouchCalibrationEpoch.fetch_add(1,std::memory_order_acq_rel);}
+bool VR_GetPhysicalCrouchSample(VrPhysicalCrouchSample& out) noexcept
+{
+    out={};
+    if(!g_headCsInit) return false;
+    EnterCriticalSection(&g_headCs);
+    out=g_crouchSample;
+    const uint64_t at=g_crouchSampleAtMs;
+    LeaveCriticalSection(&g_headCs);
+    const uint64_t now=GetTickCount64();
+    if(!at||now<at||now-at>100) out.valid=false;
+    return out.valid;
+}
+void VR_GetCrouchContinuityStats(VrCrouchContinuityStats& out) noexcept
+{
+    out={};
+    if(!g_headCsInit) return;
+    EnterCriticalSection(&g_headCs);
+    out=g_crouchStats;
+    LeaveCriticalSection(&g_headCs);
+}

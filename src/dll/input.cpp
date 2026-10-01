@@ -76,11 +76,12 @@ namespace
         std::atomic<uint64_t> atMs{0}, epoch{0};
         std::atomic<uint32_t> title{0}, gates{0}, pressed{0}, transport{0}, generation{0}, onFootWhy{0};
         std::atomic<float> head{0.0f}, base{0.0f};
+        std::atomic<bool> calibrated{false};
     } g_crouchStatus;
 
     void PublishPhysicalCrouch(uint64_t now, GameTitle title, bool tracking, bool nativeReady, bool onFoot,
-                               uint32_t onFootWhy, float head, const PhysicalCrouch& g, uint32_t pressed,
-                               uint32_t transport, uint64_t epoch, uint32_t generation)
+                               uint32_t onFootWhy, const VrPhysicalCrouchSample& sample, const PhysicalCrouch& g,
+                               uint32_t pressed, uint32_t transport, uint32_t generation)
     {
         g_crouchStatus.title.store(static_cast<uint32_t>(title), std::memory_order_relaxed);
         g_crouchStatus.gates.store((tracking ? 1u : 0u) | (nativeReady ? 2u : 0u) | (onFoot ? 4u : 0u) |
@@ -90,9 +91,10 @@ namespace
         g_crouchStatus.pressed.store(pressed, std::memory_order_relaxed);
         g_crouchStatus.transport.store(transport, std::memory_order_relaxed);
         g_crouchStatus.generation.store(generation, std::memory_order_relaxed);
-        g_crouchStatus.epoch.store(epoch, std::memory_order_relaxed);
-        g_crouchStatus.head.store(head, std::memory_order_relaxed);
-        g_crouchStatus.base.store(g.Baseline(), std::memory_order_relaxed);
+        g_crouchStatus.epoch.store(sample.reference, std::memory_order_relaxed);
+        g_crouchStatus.head.store(sample.height, std::memory_order_relaxed);
+        g_crouchStatus.base.store(sample.baseline, std::memory_order_relaxed);
+        g_crouchStatus.calibrated.store(sample.calibrated, std::memory_order_relaxed);
         g_crouchStatus.atMs.store(now, std::memory_order_release);
     }
 #endif
@@ -343,7 +345,10 @@ namespace
         const bool nativeReady=(semanticMode||physicalCrouchEnabled)&&gameplayMode&&
             Game_ReadVrActionBindings(nativeActions,inputNow);
         const bool nativeMapping=semanticMode&&nativeReady;
-        float crouchHeadQuat[4]{},crouchHeadPos[3]{};
+        // The head height and the standing reference come from the OpenXR frame thread, in one frame a
+        // runtime recenter does not move (VR_GetPhysicalCrouchSample): every input thread, title and level
+        // shares that one reference, so none of them re-samples the player in whatever posture they are in.
+        VrPhysicalCrouchSample crouchSample{};
         // Reach publishes RuntimeMode Gameplay in a seat too, so the shared mode gate alone let a
         // physical duck press crouch while seated. Require Reach's own on-foot, player-controlled proof
         // there -- the predicate direct drive and the roomscale camera already use.
@@ -366,28 +371,24 @@ namespace
         const bool crouchTracking=physicalCrouchEnabled&&inputMode==RuntimeMode::Gameplay&&
             gameplayMode&&crouchOnFoot&&Game_IsHeadTracking()&&Game_IsPositionalTracking()&&
             VR_IsStereoEnabled()&&VR_RoomscaleTrackingFresh()&&
-            VR_GetHeadPose(crouchHeadQuat,crouchHeadPos);
-        // A new calibration/tracking-space epoch reaches the gesture only once the head is steady
-        // (CrouchEpochSettle, physical_crouch_logic.h); until then the gesture is unavailable.
-        static thread_local CrouchEpochSettle s_crouchEpochSettle;
-        const float crouchHeadY=crouchHeadPos[1];
-        s_crouchEpochSettle.Update(VR_PhysicalCrouchEpoch(),crouchTracking,crouchHeadY,inputNow);
-        const bool crouchEpochSettled=s_crouchEpochSettle.Settled();
-        const uint64_t crouchEpoch=s_crouchEpochSettle.Epoch();
+            VR_GetPhysicalCrouchSample(crouchSample);
+        const float crouchHeadY=crouchSample.height;
+        const uint64_t crouchEpoch=crouchSample.reference;
         const uint32_t crouchButtons=g_physicalCrouchInput.Update(currentTitle,
-            TitleAdapter_GetGeneration(currentTitle),crouchHeadY,crouchEpoch,inputNow,
-            physicalCrouchEnabled,crouchTracking&&nativeReady&&crouchEpochSettled,g_config.physical_crouch_depth_m,
+            TitleAdapter_GetGeneration(currentTitle),crouchHeadY,crouchSample.baseline,crouchEpoch,inputNow,
+            physicalCrouchEnabled,crouchTracking&&nativeReady,g_config.physical_crouch_depth_m,
             nativeActions[vr_mapping::Crouch]);
         PhysicalCrouchCamera_Publish(currentTitle,TitleAdapter_GetGeneration(currentTitle),
-            crouchEpoch,inputNow,physicalCrouchEnabled&&crouchTracking&&nativeReady&&crouchEpochSettled,
+            crouchEpoch,inputNow,physicalCrouchEnabled&&crouchTracking&&nativeReady,
             crouchButtons!=0);
-        g_physicalCrouchRiseCapped.store(physicalCrouchEnabled&&g_physicalCrouchInput.Gesture().RiseCapped(),
-            std::memory_order_relaxed);
+        if(crouchSample.reference)
+            g_physicalCrouchRiseCapped.store(physicalCrouchEnabled&&crouchSample.riseCapped,
+                std::memory_order_relaxed);
 #if HALOMCCVR_DEV_DIAGNOSTICS
         if(physicalCrouchEnabled&&inputMode==RuntimeMode::Gameplay&&gameplayMode)
             PublishPhysicalCrouch(inputNow,currentTitle,crouchTracking,nativeReady,crouchOnFoot,crouchOnFootWhy,
-                crouchHeadY,g_physicalCrouchInput.Gesture(),crouchButtons,nativeActions[vr_mapping::Crouch],
-                crouchEpoch,TitleAdapter_GetGeneration(currentTitle));
+                crouchSample,g_physicalCrouchInput.Gesture(),crouchButtons,nativeActions[vr_mapping::Crouch],
+                TitleAdapter_GetGeneration(currentTitle));
 #else
         (void)crouchOnFootWhy;
 #endif
@@ -1101,11 +1102,19 @@ void Input_ReportPhysicalCrouch(uint64_t now)
     const int mk = g_mccCrouchLockMk.load(std::memory_order_relaxed);
     if (pad < 0) strcpy_s(lockPad, "-1"); else sprintf_s(lockPad, "0x%X", unsigned(pad));
     if (mk < 0) strcpy_s(lockMk, "-1"); else sprintf_s(lockMk, "0x%X", unsigned(mk));
-    // epoch = calibration count : tracking-space count, as handed to the gesture (a new one is held back
-    // until the head is steady). why = the on-foot predicate's failing bits (Reach; 0 = on foot).
+    // head/base are in the continuous frame (raw LOCAL height + carry); ref = how the standing reference
+    // was set (learned = the median of the last 10 s, calibrated = the player's Calibrate) and its sample
+    // count. recenters = how each LOCAL discontinuity was met: seen = an announced recenter absorbed at
+    // its step, unseen-step = an unannounced step absorbed (relocalisation), given = the runtime's offset
+    // applied (too small to see, or inside a gap), late = announced after its step was absorbed,
+    // missed = announced but never seen, breaks = the reference had to be re-learned.
+    // why = the on-foot predicate's failing bits (Reach; 0 = on foot).
+    VrCrouchContinuityStats continuity{};
+    VR_GetCrouchContinuityStats(continuity);
     LOG("CROUCH: title=%u gate(tracking=%d native=%d onfoot=%d why=0x%X) head=%.3f base=%.3f down=%.3f "
         "init=%d active=%d suspended=%d pressed=0x%X transport=0x%X unitCrouched=%d nativeDrop=%s%.0fmm "
-        "(miss 0x%X) applied=%s%.0fmm mccCrouchLock(pad=%s mk=%s) epoch=%u:%u gen=%u",
+        "(miss 0x%X) applied=%s%.0fmm mccCrouchLock(pad=%s mk=%s) ref=%s#%llu carry=%+.3f "
+        "recenters(seen=%u unseen-step=%u given=%u late=%u missed=%u breaks=%u) gen=%u",
         title, (gates & 1u) ? 1 : 0, (gates & 2u) ? 1 : 0, (gates & 4u) ? 1 : 0,
         g_crouchStatus.onFootWhy.load(std::memory_order_relaxed), head, base, base - head,
         (gates & 8u) ? 1 : 0, (gates & 16u) ? 1 : 0, (gates & 32u) ? 1 : 0,
@@ -1113,7 +1122,10 @@ void Input_ReportPhysicalCrouch(uint64_t now)
         g_crouchStatus.transport.load(std::memory_order_relaxed), unit, nativeDropFresh ? "" : "stale:",
         double(nativeDropWu) * 3048.0, PhysicalCrouchCamera_NativeMiss(static_cast<GameTitle>(title), 1500),
         appliedFresh ? "" : "stale:", double(appliedWu) * 3048.0, lockPad, lockMk,
-        unsigned(epoch >> 32), unsigned(epoch), g_crouchStatus.generation.load(std::memory_order_relaxed));
+        g_crouchStatus.calibrated.load(std::memory_order_relaxed) ? "calibrated" : "learned",
+        static_cast<unsigned long long>(epoch), double(continuity.carry), continuity.announced,
+        continuity.unannounced, continuity.applied, continuity.late, continuity.unseen, continuity.breaks,
+        g_crouchStatus.generation.load(std::memory_order_relaxed));
 #else
     (void)now;
 #endif

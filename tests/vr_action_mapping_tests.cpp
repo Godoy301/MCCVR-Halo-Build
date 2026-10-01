@@ -87,31 +87,34 @@ void CheckPhysicalCrouchInput()
         {
             PhysicalCrouchInput crouch;
             uint64_t now=1;
-            auto tick=[&](float y,bool available=true,uint64_t epoch=0x12345678ABCDEF01ull,uint32_t generation=0xABCDEF01u) {
-                return crouch.Update(title,generation,y,epoch,now++,true,available,.22f,mask);
+            // The standing reference is handed in (the OpenXR frame thread learns it), with its sample count.
+            float baseline=1.7f;uint64_t reference=0x12345678ABCDEF01ull;
+            auto tick=[&](float y,bool available=true,uint32_t generation=0xABCDEF01u) {
+                return crouch.Update(title,generation,y,baseline,reference,now++,true,available,.22f,mask);
             };
             Overrides unbound{};unbound.fill(Unbound);
             Transports native{};native[Crouch]=mask;
             Mapper mapper;mapper.Apply(0,unbound,native,1,true);
-            Check(tick(1.7f)==0,"physical crouch first sample calibrates without pressing");
+            Check(tick(1.7f)==0,"physical crouch first sample at the reference does not press");
             const auto buttons=mapper.Apply(Bit(LeftClick),unbound,native,1,true)|tick(1.4f);
             Check(buttons==mask,"physical crouch emits verified transport even when VR crouch button is Unbound");
             Check(tick(1.53f)==mask&&tick(1.56f)==0,"physical crouch output uses hysteresis and releases while standing");
             tick(1.4f);crouch.Suspend(true);
             Check(tick(1.4f)==0&&tick(1.4f)==0,"menu/pointer/focus suspension cannot replay held crouch");
             Check(tick(1.7f)==0&&tick(1.4f)==mask,"standing re-admits physical gesture after suspension");
-            Check(tick(1.4f,true,0x12345678ABCDEF02ull)==0,"full tracking/recenter epoch resets physical crouch calibration");
-            Check(tick(1.1f,true,0x12345678ABCDEF02ull)==mask,"fresh crouch after recenter uses new standing height");
-            Check(tick(1.1f,true,0x12345678ABCDEF02ull,0xABCDEF02u)==0,"title generation independently resets physical crouch");
-            Check(crouch.Update(title,2,1.7f,9,now++,false,true,.22f,mask)==0,
+            reference=0x12345678ABCDEF02ull;baseline=1.4f;
+            Check(tick(1.4f)==0,"a new standing reference re-arms physical crouch released");
+            Check(tick(1.1f)==mask,"fresh crouch measured from the new standing height");
+            Check(tick(1.1f,true,0xABCDEF02u)==0,"title generation independently re-arms physical crouch");
+            Check(crouch.Update(title,2,1.7f,1.7f,9,now++,false,true,.22f,mask)==0,
                 "explicit feature disable clears physical crouch output");
-            Check(crouch.Update(title,2,1.4f,9,now++,true,true,.22f,mask)==0,
-                "feature re-enable calibrates instead of replaying old crouch");
+            Check(crouch.Update(title,2,1.4f,1.7f,9,now++,true,true,.22f,mask)==0,
+                "feature re-enable with the head already low stands first instead of replaying old crouch");
         }
     }
     PhysicalCrouchInput unavailable;
-    Check(unavailable.Update(GameTitle::Halo3,1,1.7f,1,1,true,true,.22f,0)==0&&
-        unavailable.Update(GameTitle::Halo3,1,1.4f,1,2,true,true,.22f,0)==0,
+    Check(unavailable.Update(GameTitle::Halo3,1,1.7f,1.7f,1,1,true,true,.22f,0)==0&&
+        unavailable.Update(GameTitle::Halo3,1,1.4f,1.7f,1,2,true,true,.22f,0)==0,
         "native crouch without proven transport cannot inject a guessed button");
 }
 int main()

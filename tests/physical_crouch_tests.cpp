@@ -51,11 +51,13 @@ int main()
         }
         Check(!read(nullptr,definition,reduction)&&!read(unit,nullptr,reduction),"missing native storage leaves camera unchanged");
     }
+    // The gesture, against a reference it is handed (the OpenXR frame thread owns the reference).
     for(float normal:{.9f,1.2f,1.7f,2.0f}) for(float depth:{.08f,.22f,.65f})
     {
         PhysicalCrouch crouch;uint64_t now=1000;
-        auto step=[&](float height,bool ready=true,uint64_t epoch=7){now+=20;return crouch.Update(height,epoch,now,ready,depth);};
-        Check(!step(normal),"first normal standing or seated height calibrates without a press");
+        auto step=[&](float height,bool ready=true,uint64_t reference=7)
+        {now+=20;return crouch.Update(height,normal,reference,now,ready,depth);};
+        Check(!step(normal),"first sample at the reference starts released");
         Check(!step(normal-depth*.9f),"movement above threshold does not crouch");
         Check(step(normal-depth*1.1f),"lowering beyond selected depth presses crouch");
         Check(step(normal-depth*.8f),"hysteresis prevents boundary chatter");
@@ -65,108 +67,231 @@ int main()
         Check(!step(normal-depth*1.1f),"resume cannot replay a crouch held during exclusion");
         Check(!step(normal),"standing rearms without a press");
         Check(step(normal-depth*1.1f),"fresh crouch after resume works");
-        Check(!step(normal-depth*1.1f,true,8),"recenter samples new reference without crouching");
+        Check(!step(normal-depth*1.1f,true,8),"a new reference sample re-arms released");
+        Check(!step(normal-depth*1.1f,true,8),"and a head already below release must stand first");
+        Check(!step(normal,true,8),"standing under the new reference");
+        Check(step(normal-depth*1.1f,true,8),"then crouches against it");
         crouch.Reset();Check(!step(normal),"disable and re-enable starts neutral");
         now+=300;Check(!step(normal-depth*1.1f),"stale sample cannot become a crouch");
         Check(!step(normal),"stale tracking rearms upright");
         Check(step(normal-depth*1.1f),"fresh tracked crouch after gap works");
         Check(!step(std::numeric_limits<float>::quiet_NaN()),"nonfinite tracking releases input");
         Check(!step(normal-depth*1.1f),"nonfinite recovery requires standing again");
+        Check(!crouch.Update(normal-depth*1.1f,normal,0,now+20,true,depth),"no reference yet: no crouch");
     }
-    PhysicalCrouch state;
-    Check(!state.Update(1.7f,1,1000,true,.22f),"calibration starts neutral");
-    Check(!state.Update(1.7f,1,1020,true,.4f),"sensitivity edit cannot create a crouch edge");
-    Check(!state.Update(1.7f,1,1040,true,std::numeric_limits<float>::infinity()),"invalid sensitivity uses finite default and recalibrates");
-    Check(state.Update(1.4f,1,1060,true,.22f),"finite fallback still permits physical crouching");
+    {
+        PhysicalCrouch state;
+        Check(!state.Update(1.7f,1.7f,1,1000,true,.22f),"first sample starts neutral");
+        Check(!state.Update(1.7f,1.7f,1,1020,true,.4f),"sensitivity edit cannot create a crouch edge");
+        Check(!state.Update(1.7f,1.7f,1,1040,true,std::numeric_limits<float>::infinity()),
+            "invalid sensitivity uses the finite default");
+        Check(state.Update(1.4f,1.7f,1,1060,true,.22f),"finite fallback still permits physical crouching");
+    }
 
-    // Learned standing height (only rises). Steps are 20 ms; a rise needs 1 s held steady.
+    // A LEARNED reference (the first head, or a break) rises to the median of the last 10 s once 5 s exist.
     {
-        PhysicalCrouch c;uint64_t now=5000;const float normal=1.7f,depth=.22f;
-        auto step=[&](float h){now+=20;return c.Update(h,9,now,true,depth);};
-        Check(!step(normal-.10f),"calibration taken slouched");
-        for(int i=0;i<60;++i) step(normal);   // stand tall for 1.2 s
-        Check(std::fabs(c.Baseline()-normal)<.001f,"standing tall for a second raises the baseline");
-        Check(step(normal-depth*1.1f),"a crouch is measured from the learned standing height");
-        Check(!step(normal),"and releases on standing");
+        PhysicalCrouchReference r;uint64_t now=5000;const float seated=1.2f,standing=1.75f;
+        auto step=[&](float h){now+=11;r.Update(h,1,0,now,true,.22f);};
+        step(seated);
+        Check(r.Valid()&&!r.Calibrated()&&r.Seeds()==1&&std::fabs(r.Baseline()-seated)<.001f,
+            "the first tracked head is sampled as a learned reference");
+        for(int i=0;i<300;++i) step(standing);
+        Check(std::fabs(r.Baseline()-seated)<.001f,"three seconds are not enough to move it");
+        for(int i=0;i<300;++i) step(standing);
+        Check(std::fabs(r.Baseline()-standing)<.001f,"the window's median lifts a seated sample to standing");
+        Check(r.Seeds()==1,"learning is not a new sample");
     }
-    // The learned rise is capped below the release margin (0.7 x depth - 2 cm = 13.4 cm here), so the
-    // posture the player calibrated in never reads as a crouch afterwards.
     {
-        PhysicalCrouch c;uint64_t now=5000;const float normal=1.7f,depth=.22f;
-        auto step=[&](float h){now+=20;return c.Update(h,9,now,true,depth);};
-        const float cap=depth*.70f-.02f;
-        Check(!step(normal-.20f),"calibration taken deeply slouched");
-        Check(!c.RiseCapped(),"nothing capped yet");
+        PhysicalCrouchReference r;uint64_t now=5000;const float standing=1.7f;
+        auto step=[&](float h){now+=11;r.Update(h,1,0,now,true,.22f);};
+        step(standing);
+        for(int i=0;i<600;++i) step(standing);
+        for(int i=0;i<300;++i) step(standing+.6f);
+        Check(std::fabs(r.Baseline()-standing)<.02f,"a headset held up for a few seconds does not move it");
+        for(int i=0;i<900;++i) step(standing-.5f);
+        Check(std::fabs(r.Baseline()-standing)<.02f,"a long crouch never drags it down");
+    }
+    {
+        PhysicalCrouchReference r;uint64_t now=5000;const float standing=1.7f;
+        auto step=[&](float h){now+=11;r.Update(h,1,0,now,true,.22f);};
+        step(standing);
+        for(int i=0;i<1000;++i) step(standing+.5f);
+        Check(r.Baseline()>standing+.4f,"(setup) a long hold does lift a learned reference");
+        for(int i=0;i<5000;++i) step(standing);
+        Check(r.Baseline()>standing+.4f,"under a minute below its release line keeps it");
+        for(int i=0;i<1000;++i) step(standing);
+        Check(std::fabs(r.Baseline()-standing)<.02f,"a minute below the release line falls back to the median");
+    }
+    {
+        PhysicalCrouchReference r;uint64_t now=5000;
+        r.Update(1.7f,1,0,now+=20,true,.22f);
+        r.Update(1.0f,1,1,now+=20,true,.22f);
+        Check(r.Seeds()==2&&!r.Calibrated()&&std::fabs(r.Baseline()-1.f)<.001f,
+            "a continuity break re-samples a learned reference");
+        r.Update(1.0f,2,1,now+=20,true,.22f);
+        Check(r.Calibrated()&&r.Seeds()==3,"Calibrate re-samples it as the player's word");
+        r.Update(1.6f,2,2,now+=20,true,.22f);
+        Check(!r.Calibrated()&&r.Seeds()==4,"a break after Calibrate falls back to learning (the frame moved)");
+        r.Update(std::numeric_limits<float>::quiet_NaN(),2,2,now+=20,true,.22f);
+        Check(r.Seeds()==4,"a non-finite head samples nothing");
+        r.Update(1.0f,3,2,now+=20,false,.22f);
+        Check(r.Seeds()==4,"an unavailable head samples nothing, even after Calibrate");
+        r.Update(1.0f,3,2,now+=20,true,.22f);
+        Check(r.Calibrated()&&r.Seeds()==5,"the pending Calibrate lands on the next available head");
+    }
+
+    // A CALIBRATED reference rises only to a height held for a second, by at most 0.7 x depth - 2 cm
+    // (13.4 cm here), and ignores a head more than 30 cm above the calibration.
+    {
+        PhysicalCrouchReference r;uint64_t now=5000;const float normal=1.7f,depth=.22f;uint32_t calibration=1;
+        auto step=[&](float h){now+=20;r.Update(h,calibration,0,now,true,depth);};
+        step(normal+.3f);
+        calibration=2;step(normal-.10f);
+        Check(r.Calibrated()&&r.Seeds()==2&&std::fabs(r.Baseline()-(normal-.10f))<.001f,
+            "Calibrate samples the current head");
         for(int i=0;i<60;++i) step(normal);
-        Check(std::fabs(c.Baseline()-(normal-.20f+cap))<.001f,"a rise beyond the cap is learned only up to the cap");
-        Check(c.RiseCapped(),"a capped rise is reported, so the menu can suggest recalibrating standing");
-        Check(!step(normal-.20f),"the calibrated posture still reads standing");
+        Check(std::fabs(r.Baseline()-normal)<.001f,"standing tall for a second raises it");
+    }
+    {
+        PhysicalCrouchReference r;uint64_t now=5000;const float normal=1.7f,depth=.22f;uint32_t calibration=1;
+        auto step=[&](float h){now+=20;r.Update(h,calibration,0,now,true,depth);};
+        const float cap=depth*.70f-.02f;
+        step(normal);calibration=2;step(normal-.20f);
+        Check(!r.RiseCapped(),"nothing capped yet");
+        for(int i=0;i<60;++i) step(normal);
+        Check(std::fabs(r.Baseline()-(normal-.20f+cap))<.001f,"a rise beyond the cap is learned only up to the cap");
+        Check(r.RiseCapped(),"a capped rise is reported, so the menu can suggest calibrating standing");
     }
     // Seated play: calibrate seated, stand up, half-rise, sit back down -- never a crouch while seated.
-    // The half-rise (25 cm) is deeper than the activation depth (22 cm), so without the cap sitting back
-    // down would read as a crouch.
     {
-        PhysicalCrouch c;uint64_t now=5000;const float seated=1.2f,depth=.22f;
-        auto step=[&](float h){now+=20;return c.Update(h,9,now,true,depth);};
-        Check(!step(seated),"calibrated seated");
-        for(int i=0;i<100;++i) step(seated+.5f);   // stands up for 2 s: beyond kMaxRise, not learned
-        Check(std::fabs(c.Baseline()-seated)<.001f,"standing up from a seated calibration is not learned");
+        PhysicalCrouchReference r;PhysicalCrouch g;uint64_t now=5000;const float seated=1.2f,depth=.22f;
+        uint32_t calibration=1;
+        auto step=[&](float h)
+        {now+=20;r.Update(h,calibration,0,now,true,depth);return g.Update(h,r.Baseline(),r.Seeds(),now,true,depth);};
+        step(seated);calibration=2;step(seated);
+        Check(r.Calibrated(),"calibrated seated");
+        for(int i=0;i<100;++i) step(seated+.5f);
+        Check(std::fabs(r.Baseline()-seated)<.001f,"standing up from a seated calibration is not learned");
         Check(!step(seated),"sitting back down is not a crouch");
-        for(int i=0;i<60;++i) step(seated+.25f);   // a half-rise held for 1.2 s
-        Check(c.Baseline()>seated+.1f&&c.Baseline()<seated+depth*.70f,"a half-rise is learned, capped below release");
+        for(int i=0;i<60;++i) step(seated+.25f);
+        Check(r.Baseline()>seated+.1f&&r.Baseline()<seated+depth*.70f,"a half-rise is learned, capped below release");
         bool seatedCrouch=false;
         for(int i=0;i<60;++i) seatedCrouch|=step(seated);
         Check(!seatedCrouch,"sitting back down after a half-rise deeper than the depth is still not a crouch");
-        Check(step(c.Baseline()-depth*1.1f),"a real crouch below the learned line still works");
-    }
-    // A new epoch reaches the gesture only once the head has held its height for 300 ms.
-    {
-        CrouchEpochSettle s;
-        s.Update(0,true,1.7f,1000);
-        Check(s.Settled()&&s.Epoch()==0,"the initial epoch (0) is settled as it is");
-        s.Update(7,true,1.7f,1020);
-        Check(!s.Settled()&&s.Epoch()==0,"a new epoch is held back at first");
-        s.Update(7,true,1.71f,1200);
-        Check(!s.Settled()&&s.Epoch()==0,"still held within the settle window");
-        s.Update(7,true,1.71f,1321);
-        Check(s.Settled()&&s.Epoch()==7,"a head steady within 2 cm for 300 ms settles it");
-        s.Update(7,false,0.f,1400);
-        Check(s.Settled()&&s.Epoch()==7,"a later tracking gap does not unsettle a settled epoch");
-        s.Update(8,true,1.7f,1500);
-        s.Update(8,true,1.6f,1700);   // still moving: 10 cm since the epoch changed
-        s.Update(8,true,1.6f,1950);
-        Check(!s.Settled()&&s.Epoch()==7,"a head still moving restarts the window");
-        s.Update(8,false,0.f,2000);
-        s.Update(8,true,1.6f,2100);
-        s.Update(8,true,1.6f,2350);
-        Check(!s.Settled()&&s.Epoch()==7,"a tracking gap restarts the window too");
-        s.Update(8,true,1.6f,2400);
-        Check(s.Settled()&&s.Epoch()==8,"then it settles 300 ms after the head stopped");
+        Check(step(r.Baseline()-depth*1.1f),"a real crouch below the learned line still works");
     }
     {
-        PhysicalCrouch c;uint64_t now=5000;const float normal=1.7f,depth=.22f;
-        auto step=[&](float h){now+=20;return c.Update(h,9,now,true,depth);};
-        Check(!step(normal),"calibrated standing");
-        for(int i=0;i<30;++i) step(normal+.10f);   // 0.6 s: too brief
+        PhysicalCrouchReference r;uint64_t now=5000;const float normal=1.7f,depth=.22f;uint32_t calibration=1;
+        auto step=[&](float h){now+=20;r.Update(h,calibration,0,now,true,depth);};
+        step(normal);calibration=2;step(normal);
+        for(int i=0;i<30;++i) step(normal+.10f);
         step(normal);
-        Check(std::fabs(c.Baseline()-normal)<.001f,"a brief rise does not move the baseline");
-        for(int i=0;i<100;++i) step(normal+.80f);  // headset lifted off the head, held still for 2 s
-        Check(std::fabs(c.Baseline()-normal)<.001f,"a rise beyond the cap (headset lifted) is ignored");
-        Check(step(normal-depth*1.1f),"crouch still measured from the true standing height");
+        Check(std::fabs(r.Baseline()-normal)<.001f,"a brief rise does not move a calibrated reference");
+        for(int i=0;i<100;++i) step(normal+.80f);
+        Check(std::fabs(r.Baseline()-normal)<.001f,"a rise beyond 30 cm (headset lifted) is ignored");
+        for(int i=0;i<100;++i) step(normal-depth*1.5f);
+        Check(std::fabs(r.Baseline()-normal)<.001f,"a long crouch never drags it down");
+        for(int i=0;i<60;++i) step(normal+.05f);
+        Check(std::fabs(r.Baseline()-(normal+.05f))<.001f,"standing taller later still raises it");
+    }
+
+    // Height continuity: a runtime recenter moves the LOCAL space under the player; the frame absorbs it.
+    const int64_t frame=11'111'111;
+    {
+        CrouchHeightContinuity c;int64_t t=1'000'000'000;
+        auto at=[&](float raw){t+=frame;return c.Update(raw,t);};
+        Check(std::fabs(at(.5f)-.5f)<1e-6f,"the first sample is its own height");
+        for(int i=0;i<10;++i) at(.5f-.002f*float(i));
+        Check(std::fabs(at(.48f)-.48f)<1e-6f,"real motion is not absorbed");
+        c.NoteSpaceChange(t+2*frame,true,.55f);
+        Check(std::fabs(at(.47f)-.47f)<1e-6f,"before the change, old-space heights pass");
+        Check(std::fabs(at(.47f-.55f)-.47f)<1e-5f,"the switch frame is absorbed exactly (the runtime's offset)");
+        Check(c.Announced()==1&&c.Breaks()==0,"counted as seen, no break");
+        Check(std::fabs(at(-.10f)-(-.10f+.55f))<1e-5f,"later heights stay in the continuous frame");
     }
     {
-        PhysicalCrouch c;uint64_t now=5000;const float normal=1.7f,depth=.22f;
-        auto step=[&](float h){now+=20;return c.Update(h,9,now,true,depth);};
-        Check(!step(normal),"calibrated standing");
-        Check(step(normal-depth*1.5f),"crouched");
-        for(int i=0;i<100;++i) step(normal-depth*1.5f);  // a long crouch
-        Check(std::fabs(c.Baseline()-normal)<.001f,"a long crouch never drags the line down");
-        Check(!step(normal),"stands");
-        for(int i=0;i<60;++i) step(normal+.05f);          // standing taller later
-        Check(std::fabs(c.Baseline()-(normal+.05f))<.001f,"standing taller later still raises it");
-        // Raised line = 1.75 - 0.22 = 1.53; old line was 1.48. A head at 1.50 is past the raised line
-        // (crouches) but would not have been past the old one.
-        Check(step(normal-depth+.02f),"the raised line triggers higher, as learned");
+        CrouchHeightContinuity c;int64_t t=1'000'000'000;
+        auto at=[&](float raw){t+=frame;return c.Update(raw,t);};
+        float raw=.5f,cont=0;at(raw);
+        c.NoteSpaceChange(t+frame,true,.55f);
+        for(int i=0;i<40;++i) {raw-=.02f;if(i==1) raw-=.55f;cont=at(raw);}
+        Check(std::fabs(cont-(.5f-.80f))<1e-4f,"a duck straight through a recenter reads as the duck alone");
+    }
+    {
+        CrouchHeightContinuity c;int64_t t=1'000'000'000;
+        auto at=[&](float raw){t+=frame;return c.Update(raw,t);};
+        at(.5f);at(.5f);
+        c.NoteSpaceChange(t+frame,false,0.f);
+        at(.5f);
+        Check(std::fabs(at(-.05f)-.5f)<1e-5f,"a recenter without an offset is absorbed from its step");
+        at(-.05f);
+        Check(std::fabs(at(-.05f+.12f)-.5f)<1e-5f,"an unannounced tracking step is absorbed");
+        Check(c.Unannounced()==1&&c.Announced()==1,"each counted");
+        c.NoteSpaceChange(t,true,-.12f);
+        Check(c.Late()==1,"a late announcement of an absorbed step is recognised");
+        for(int i=0;i<300;++i) at(.07f);
+        Check(std::fabs(at(.07f)-.5f)<1e-5f,"and the frame does not move a second time");
+    }
+    {
+        CrouchHeightContinuity c;int64_t t=1'000'000'000;
+        c.Update(.5f,t);
+        c.NoteSpaceChange(t+5*frame,true,.55f);
+        t+=500'000'000;
+        Check(std::fabs(c.Update(.5f-.55f,t)-.5f)<1e-5f,"a recenter inside a tracking gap takes the runtime's offset");
+        Check(c.Applied()==1&&c.Breaks()==0,"applied, no break");
+        c.NoteSpaceChange(t+5*frame,false,0.f);
+        t+=500'000'000;
+        c.Update(.2f,t);
+        Check(c.Breaks()==1,"an unmeasured move inside a gap breaks continuity");
+    }
+    {
+        CrouchHeightContinuity c;int64_t t=1'000'000'000;
+        auto at=[&](float raw){t+=frame;return c.Update(raw,t);};
+        at(.5f);
+        c.NoteSpaceChange(t+2*frame,true,.01f);
+        at(.5f);
+        Check(std::fabs(at(.49f)-.5f)<1e-5f,"a 1 cm recenter is applied at its change time");
+        Check(c.Applied()==1,"counted as given");
+        Check(std::fabs(c.Update(5.f,t)-(5.f+.01f))<1e-5f&&c.Unannounced()==0,"a repeated display time is not a step");
+    }
+    {
+        CrouchHeightContinuity c;int64_t t=1'000'000'000;
+        auto at=[&](float raw){t+=frame;return c.Update(raw,t);};
+        at(.5f);
+        c.NoteSpaceChange(t+frame,true,.40f);
+        for(int i=0;i<200;++i) at(.5f);
+        Check(c.Unseen()==1&&std::fabs(at(.5f)-.5f)<1e-5f,"a recenter never seen moves nothing and is counted");
+    }
+    {
+        CrouchHeightContinuity c;
+        c.Update(.5f,1'000'000'000);
+        c.Break();
+        Check(c.Breaks()==1,"a new session breaks continuity");
+        c.Update(-.3f,2'000'000'000);
+        Check(c.Breaks()==1,"the first sample after a break starts the new frame");
+    }
+    // End to end, the Halo 4 log of 2026-09-30: sampled bent over, then standing at 0.5 m in the old space;
+    // a runtime recenter puts the head at 0.0 and the player ducks straight away. The reference must stay
+    // at standing, and the duck must crouch at the activation depth.
+    {
+        CrouchHeightContinuity c;PhysicalCrouchReference r;PhysicalCrouch g;
+        int64_t t=1'000'000'000;uint64_t ms=10'000;const float depth=.22f;bool crouched=false;
+        auto at=[&](float raw)
+        {
+            t+=frame;ms+=11;const float h=c.Update(raw,t);r.Update(h,1,c.Breaks(),ms,true,depth);
+            crouched=g.Update(h,r.Baseline(),r.Seeds(),ms,true,depth);
+        };
+        at(.07f);
+        // Stands up over half a second (a step of 43 cm in one frame would be the space moving, not him).
+        for(int i=1;i<=45;++i) at(.07f+.43f*float(i)/45.f);
+        Check(std::fabs(c.Carry())<1e-6f,"standing up is motion, never absorbed");
+        for(int i=0;i<700;++i) at(.5f);
+        Check(std::fabs(r.Baseline()-.5f)<.01f,"a low first sample heals to standing");
+        c.NoteSpaceChange(t+frame,true,.5f);
+        float raw=.5f;
+        for(int i=0;i<60;++i) {raw-=.015f;if(i==1) raw-=.5f;at(raw);}
+        Check(std::fabs(r.Baseline()-.5f)<.01f&&r.Seeds()==1,"a recenter mid-duck keeps the standing reference");
+        Check(crouched,"and the duck crouches at the activation depth");
     }
     std::printf("Physical crouch: %u checks passed\n",checks);
 }
