@@ -104,9 +104,9 @@ bool Sight_AimWrittenLive(GameTitle title);
 
 // One-shot convergence for a title that aims with a direction: bend `dir` (unit, world) from `head`
 // through the point at the smoothed traced range, as seen from `eye`. False (out untouched) when there is
-// no fresh trace for this generation, no hit yet, or the geometry cannot resolve -- including a bent aim
-// steeper than `maxPitchDeg`, which must be the steepest pitch the caller's actuation can reach (a
-// clamped aim is not a converged one).
+// no fresh trace for this generation, no hit yet, or the geometry cannot resolve. A bent aim steeper than
+// `maxPitchDeg` (the steepest pitch the caller's actuation can reach) is HELD AT THAT PITCH and still
+// returned as converged (2026-10-01): a close ceiling or floor is natural geometry, not our code failing.
 bool Sight_ConvergedDirection(GameTitle title, uint32_t generation, const float head[3], const float dir[3],
                               const float eye[3], float out[3], float maxPitchDeg = 90.0f,
                               float* outRangeWu = nullptr, bool* outHit = nullptr);

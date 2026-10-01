@@ -35,7 +35,8 @@ enum class ConvergeOff : uint8_t {
     TraceStale,          // no fresh trace (a hitch, a load, a pause)
     RayStale,            // no fresh intent ray
     NoRange,             // the trace returned no usable range
-    PitchRail,           // the bent pitch would pass the aim's pitch rail (Reach keeps its rail; see aim_solve)
+    PitchRail,           // Reach only: the bent pitch would pass its rail (R13r; Halo 3/ODST/Halo 4 clamp at the
+                         // rail and stay converged, aim_solve::converge_direction)
     SeatUnnamed,         // a seat whose vehicle the sampler could not name (the trace cannot look past it)
     SeatViewNotOwned,    // a seat whose first-person view is not ours (a chase camera)
     SeatNotImplemented,  // a seat this title does not converge yet

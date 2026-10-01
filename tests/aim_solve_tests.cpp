@@ -413,10 +413,58 @@ static void test_converge_direction() {
         CHECK(!converge_direction(Vec3{0.1f, 0, 0}, Vec3{0, 0, 0}, 1.0f, kCm, r, a) && near(a.x, 9.0f, 1e-6f));
         CHECK(!converge_direction(Vec3{0.1f, 0, 0}, Vec3{1, 0, 0}, 1.0f, 0.0f, r, a) && near(a.x, 9.0f, 1e-6f));
     }
-    {   // a bend steeper than the record accepts declines
+    {   // a bend steeper than the record accepts is HELD AT THE RAIL and stays converged (2026-10-01; it used to
+        // decline, handing the write the unbent steer and switching convergence off)
         ConvergeRails steep{}; steep.max_pitch_deg = 1.45f * 57.29578f;
         Vec3 a{9, 9, 9};
-        CHECK(!converge_direction(Vec3{0.1f, 0, 0.9f}, Vec3{0, 0, 1}, 0.2f, kCm, steep, a) && near(a.x, 9.0f, 1e-6f));
+        CHECK(converge_direction(Vec3{0.1f, 0, 0.9f}, Vec3{0, 0, 1}, 0.2f, kCm, steep, a));
+        float ay = 0, ap = 0;
+        CHECK(angles_from_dir(a, ay, ap) && near(ap, 83.08f, 0.01f) && near(ay, 0.0f, 1e-3f));
+        CHECK(near(a.x * a.x + a.y * a.y + a.z * a.z, 1.0f, 1e-5f));
+        // downward: held at -rail
+        CHECK(converge_direction(Vec3{0.1f, 0, -0.9f}, Vec3{0, 0, -1}, 0.2f, kCm, steep, a));
+        CHECK(angles_from_dir(a, ay, ap) && near(ap, -83.08f, 0.01f) && near(ay, 0.0f, 1e-3f));
+        // both the bend and the hand exactly vertical: no heading at all, cannot resolve (out untouched)
+        Vec3 b{9, 9, 9};
+        CHECK(!converge_direction(Vec3{0, 0, 0.9f}, Vec3{0, 0, 1}, 0.2f, kCm, steep, b) && near(b.x, 9.0f, 1e-6f));
+    }
+    {   // continuous at the rail: a bend just under it and one just over it keep (nearly) the bent heading, even
+        // with the hand's heading 30 deg away
+        ConvergeRails steep{}; steep.max_pitch_deg = 1.45f * 57.29578f;
+        const float D = 0.0174532925f;
+        const Vec3 u{std::cos(80.0f * D), 0, std::sin(80.0f * D)};   // the hand: 80 deg up, heading 0
+        // Pick delta so the bent aim is at 82.9 / 83.2 deg pitch, heading 30 deg: t = a_dir * L, delta = t - u.
+        float yaws[2]{}, pitches[2]{};
+        const float wantPitch[2]{82.9f, 83.2f};
+        for (int i = 0; i < 2; ++i) {
+            const float p = wantPitch[i] * D, h = 30.0f * D;
+            const Vec3 t{std::cos(p) * std::cos(h), std::cos(p) * std::sin(h), std::sin(p)};
+            const Vec3 delta{t.x - u.x, t.y - u.y, t.z - u.z};
+            Vec3 a{};
+            CHECK(converge_direction(delta, u, 1.0f, kCm, steep, a));
+            CHECK(angles_from_dir(a, yaws[i], pitches[i]));
+        }
+        CHECK(near(pitches[0], 82.9f, 0.01f) && near(pitches[1], 83.08f, 0.01f));
+        CHECK(near(yaws[0], 30.0f, 0.01f) && near(yaws[1], 30.0f, 1.5f));
+    }
+    {   // NEAR THE POLE the bent heading whips through every direction at the smallest change; the held aim
+        // takes the hand's instead, so it stays put
+        ConvergeRails steep{}; steep.max_pitch_deg = 1.45f * 57.29578f;
+        const float D = 0.0174532925f;
+        const Vec3 u{std::cos(80.0f * D), 0, std::sin(80.0f * D)};   // the hand: 80 deg up, heading 0
+        float lo = 1e9f, hi = -1e9f;
+        for (int k = 0; k < 16; ++k) {
+            // the bend's horizontal: 3 mm (in a 1 wu range) in sixteen directions -- within 0.2 deg of the pole
+            const float h = k * 22.5f * D;
+            const Vec3 delta{-u.x + 0.003f * std::cos(h), 0.003f * std::sin(h), 0.0f};
+            Vec3 a{};
+            CHECK(converge_direction(delta, u, 1.0f, kCm, steep, a));
+            float ay = 0, ap = 0;
+            CHECK(angles_from_dir(a, ay, ap) && near(ap, 83.08f, 0.01f));
+            lo = ay < lo ? ay : lo;
+            hi = ay > hi ? ay : hi;
+        }
+        CHECK(hi - lo < 0.5f);   // the bent aim's own heading swept all 360 deg
     }
 }
 

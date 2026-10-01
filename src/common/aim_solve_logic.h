@@ -104,7 +104,8 @@ struct ConvergeRails {
                                       // converged: nothing to bend, and it counts as converged
     float range_floor_cm    = 1.0f;   // degenerate guard only: a hit this close defines no direction
     float max_pitch_deg     = 90.0f;  // the steepest aim the title's control record accepts; a bend
-                                      // past it cannot be actuated exactly, so it declines
+                                      // past it cannot be actuated exactly: converge_trace_reaim (Reach)
+                                      // declines, converge_direction clamps and stays converged
 };
 
 // Range smoothing. The correction goes as 1/range, so sweeping off a near wall onto a far one would
@@ -175,7 +176,9 @@ inline bool converge_trace_reaim(float& yaw_deg, float& pitch_deg,
     const float np = std::asin(c) * R2D;
     if (!std::isfinite(ny) || !std::isfinite(np)) return false;
     // The one physical limit: an aim steeper than the control record accepts would be clamped on the
-    // way in and miss, so it cannot resolve here.
+    // way in and miss, so it cannot resolve here. Reach (the only caller of this angle form) keeps this
+    // decline on purpose (R13r, 2026-10-01): its fallback relocates the hand shot exactly, which lands a close
+    // floor or ceiling shot better than a clamped converged aim. converge_direction clamps instead.
     if (std::fabs(np) > r.max_pitch_deg) return false;
 
     yaw_deg = ny;
@@ -190,6 +193,40 @@ inline bool converge_trace_reaim(float& yaw_deg, float& pitch_deg,
 // `dir` need not be exactly unit length; it is normalized first. Same contract as converge_trace_reaim:
 // true when the aim converges (bent, or the offset is below min_divergence_cm, which returns `dir`
 // itself); false, `out` untouched, only when it cannot resolve.
+//
+// THE PITCH RAIL CLAMPS here (2026-10-01; Halo 3, ODST and Halo 4 -- the H2/CE callers pass 90, where it is
+// inert). A bend steeper than max_pitch_deg -- a close ceiling or floor with the head well off the engine eye --
+// cannot be actuated exactly, but it is natural geometry, not our code failing, so it no longer declines (which
+// handed the write the unbent steer, a jump by the whole bend, and switched convergence off). The aim is held
+// AT the rail and stays converged. Its heading: the bent aim's own near the rail (continuous with the unclamped
+// bend), handing over to the intent ray's as the bent aim nears the pole, where atan2 of a vanishing horizontal
+// whips through any heading at the smallest change. Weight w^2, w = |bent horizontal| / cos(rail). Reach's angle
+// form keeps its decline (its fallback relocates the shot exactly; see converge_trace_reaim).
+inline bool clamp_to_pitch_rail(const Vec3& bent, const Vec3& intent, float max_pitch_deg, Vec3& out) {
+    constexpr float D2R = 0.017453292519943295f;
+    const float cr = std::cos(max_pitch_deg * D2R), sr = std::sin(max_pitch_deg * D2R);
+    if (!(cr > 1.0e-6f)) return false;
+    const float bh = std::sqrt(bent.x * bent.x + bent.y * bent.y);
+    const float uh = std::sqrt(intent.x * intent.x + intent.y * intent.y);
+    float w = bh / cr;
+    w = w > 1.0f ? 1.0f : w;
+    w *= w;
+    float mx = 0.0f, my = 0.0f;
+    if (bh > 1.0e-6f) { mx += w * bent.x / bh; my += w * bent.y / bh; }
+    if (uh > 1.0e-6f) { mx += (1.0f - w) * intent.x / uh; my += (1.0f - w) * intent.y / uh; }
+    float ml = std::sqrt(mx * mx + my * my);
+    if (!(ml > 1.0e-4f)) {
+        // The two headings cancel (the bend went over the pole): the intent ray's, else the bent aim's.
+        if (uh > 1.0e-6f) { mx = intent.x / uh; my = intent.y / uh; }
+        else if (bh > 1.0e-6f) { mx = bent.x / bh; my = bent.y / bh; }
+        else return false;   // both vertical: no heading at all
+        ml = 1.0f;
+    }
+    if (!std::isfinite(ml)) return false;
+    out = Vec3{cr * mx / ml, cr * my / ml, bent.z < 0.0f ? -sr : sr};
+    return true;
+}
+
 inline bool converge_direction(const Vec3& delta, const Vec3& dir, float range, float cm_per_unit,
                                const ConvergeRails& r, Vec3& out) {
     if (!std::isfinite(cm_per_unit) || !(cm_per_unit > 0.0f)) return false;
@@ -206,7 +243,8 @@ inline bool converge_direction(const Vec3& delta, const Vec3& dir, float range, 
     if (!std::isfinite(len) || !(len * cm_per_unit > 1.0f)) return false;
     const Vec3 a{t.x / len, t.y / len, t.z / len};
     float c = a.z; c = c < -1.0f ? -1.0f : (c > 1.0f ? 1.0f : c);
-    if (std::fabs(std::asin(c) * 57.295779513082320f) > r.max_pitch_deg) return false;
+    if (std::fabs(std::asin(c) * 57.295779513082320f) > r.max_pitch_deg)
+        return clamp_to_pitch_rail(a, u, r.max_pitch_deg, out);   // held at the rail, still converged
     out = a;
     return true;
 }
