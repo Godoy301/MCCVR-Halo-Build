@@ -91,6 +91,20 @@ struct ArmGate {
     // Leave the armed state without counting a failure (the mode was switched off, the provider stopped
     // wanting a state write). A later re-arm must re-prove the address from scratch.
     void release() { armed = false; streak = 0; record = 0; }
+
+    // A NEW SESSION: the hook was reinstalled or torn down (a new title module, a reload), so the record must
+    // be proven from scratch AND the failures counted against the old one no longer apply. "Give up for the
+    // session" means the session the disarms happened in, never the rest of the process: without this, three
+    // disarms in one level left direct drive off until MCC itself restarted. Returns whether a give-up was
+    // cleared, so the caller can say so.
+    bool reset_session() {
+        const bool cleared = given_up;
+        release();
+        given_up = false;
+        disarms = 0;
+        retry_at_ms = 0;
+        return cleared;
+    }
 };
 
 // SEAT LIMITS -- keep a state write inside the limits the game clamps the record to.

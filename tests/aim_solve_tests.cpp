@@ -304,6 +304,41 @@ static void test_arm_gate() {
         CHECK(g.step(true, A, 0, 10) == Ev::None && g.step(true, A, 0, 11) == Ev::None);
         CHECK(g.step(true, A, 0, 12) == Ev::Armed);
     }
+    {   // release() alone never clears a give-up: that is the session's verdict
+        ArmGate g;
+        uint64_t t = 0; unsigned mm = 0;
+        for (int round = 0; round < 3; ++round) {
+            for (int i = 0; i < 3; ++i) g.step(true, A, mm, t++);
+            g.step(true, 0, ++mm, t);
+            t += 6000;
+        }
+        CHECK(g.given_up);
+        g.release();
+        CHECK(g.given_up && !g.wants_evidence(t));
+    }
+    {   // reset_session(): a new session (reinstall / teardown) clears the give-up, the disarm count and the
+        // backoff, and the record must be proven from scratch (plan 2.E: no process-long give-up)
+        ArmGate g;
+        uint64_t t = 0; unsigned mm = 0;
+        for (int round = 0; round < 3; ++round) {
+            for (int i = 0; i < 3; ++i) g.step(true, A, mm, t++);
+            g.step(true, 0, ++mm, t);
+            t += 6000;
+        }
+        CHECK(g.given_up && g.disarms == 3);
+        CHECK(g.reset_session());                                            // reports the cleared give-up
+        CHECK(!g.given_up && !g.armed && g.disarms == 0 && g.record == 0 && g.retry_at_ms == 0);
+        CHECK(g.wants_evidence(t));
+        CHECK(g.step(true, B, mm, t) == Ev::None && g.step(true, B, mm, t + 1) == Ev::None);
+        CHECK(g.step(true, B, mm, t + 2) == Ev::Armed && g.record == B);     // re-proven, on the new record
+        CHECK(!g.reset_session() && !g.armed);                               // nothing to clear: reports false
+    }
+    {   // reset_session() mid-backoff: the new session re-validates at once, without the old backoff
+        ArmGate g;
+        for (int i = 0; i < 3; ++i) g.step(true, A, 0, i);
+        CHECK(g.step(true, 0, 1, 100) == Ev::Disarmed && !g.wants_evidence(200));
+        CHECK(!g.reset_session() && g.wants_evidence(200) && g.disarms == 0);
+    }
 }
 
 // Reach's mapping into the core (src/common/reach_aim_basis.h): the frame the core cannot check itself.

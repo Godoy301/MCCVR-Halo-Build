@@ -28406,7 +28406,7 @@ namespace
         case Ev::GaveUp:
             ReachDriveDisarm();
             LOG("REACHDRIVE: disarmed %d times -- the sim and render threads disagree about player_control on "
-                "this build; direct drive OFF for this session (stick servo aims)", gate.disarms);
+                "this build; direct drive OFF until the hook is next reinstalled (stick servo aims)", gate.disarms);
             break;
         case Ev::None:
             break;
@@ -28421,12 +28421,16 @@ namespace
     {
         static bool s_faulted = false;
         static unsigned s_seenReset = 0;
-        // Teardown / reinstall resets arrive here, on the thread that owns the gate object.
+        // Teardown / reinstall resets arrive here, on the thread that owns the gate object. Each one starts a
+        // NEW session (plan 2.E): the record is re-proven from scratch, and a give-up after repeated disarms is
+        // forgotten with the session it happened in, rather than holding direct drive off until MCC restarts.
         const unsigned reset = g_reachDriveResetSeq.load(std::memory_order_acquire);
         if (reset != s_seenReset)
         {
             s_seenReset = reset;
-            g_reachDriveGate.release();
+            if (g_reachDriveGate.reset_session())
+                LOG("REACHDRIVE: new session -- the previous session's give-up is cleared; the arm-gate "
+                    "re-validates player_control from scratch");
         }
         if (!active)
         {
