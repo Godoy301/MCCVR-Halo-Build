@@ -5,6 +5,30 @@ activation code remains in `launcher.cpp`. A new menu selects an installation
 and calls that same launch path only when the user selects **Launch MCC**.
 Installation and update discovery do not start MCC.
 
+**Unattended launch (`--headless`, dev builds only).** A launcher built with
+`HALOMCCVR_DEV_DIAGNOSTICS` (the `dev` preset) accepts
+`HaloMCCVRLauncher.exe --headless`: it skips the menu and launches the mod in
+the launcher's OWN folder (the menu's Launch always targets
+`<game>\Halo_MCC_VR`, so a side-by-side test install is launched this way). It
+never shows a dialog: every message, including what a dialog would have said,
+goes to `HaloMCCVRLauncher.log`, and the exit code reports the result: 0 = the
+game is running after 12 s, 2 = Steam edition and no `steam.exe` process, 1 =
+any other failure. It never offers VR recovery for a running game, and on the
+Store edition it does not wait for a manual start if activation fails. The FA
+harness (`tools/Enter-Reach-FA.ps1`) uses it so an unattended run cannot leave a
+modal box on someone's desktop. Because this launcher's manifest asks for
+administrator rights, the harness starts it unelevated with
+`__COMPAT_LAYER=RunAsInvoker` (launching an installed mod needs no elevation);
+the launcher removes that variable before it starts the game. A player build
+never parses the switch, and `tools/verify-qol-package.py` refuses a packaged
+launcher that contains it.
+
+The exit code 2 for a missing Steam applies in every build. So does logging:
+every message box shown while a launch runs writes its full text to the log
+(`ERROR shown to user: ...`, `NOTICE shown to user: ...`). Boxes shown before
+a launch starts (the update helper, a failure of the menu itself) are not
+logged, because the log belongs to the mod folder being launched.
+
 Package layout:
 
 ```

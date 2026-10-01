@@ -382,7 +382,9 @@ add_executable(halo3xr_launcher WIN32 src/launcher/launcher.cpp
 set_target_properties(halo3xr_launcher PROPERTIES
     OUTPUT_NAME "HaloMCCVRLauncher")
 target_compile_definitions(halo3xr_launcher PRIVATE
-    UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
+    UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN
+    # --headless, the FA harness's unattended launch, is a headless-test hook: dev builds only.
+    HALOMCCVR_DEV_DIAGNOSTICS=$<BOOL:${HALOMCCVR_DEV_DIAGNOSTICS}>)
 # IApplicationActivationManager: the Microsoft Store edition is a packaged app
 # and can only be started through packaged activation.
 target_link_libraries(halo3xr_launcher PRIVATE ole32 bcrypt advapi32 winhttp crypt32 shell32 uxtheme)
