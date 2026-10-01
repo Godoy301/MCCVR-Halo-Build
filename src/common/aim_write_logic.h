@@ -110,31 +110,42 @@ struct ArmGate {
 //   * the target comes back inside the limit: release.
 // apply() returns true while an axis is held short of its target by more than the probe step -- the aim
 // is limited, and a converged shot cannot be claimed. Yaw differences wrap.
+// `enabled` (optional, per axis): an axis the caller does not latch this tick -- it is not written, or it
+// is written as is -- gives back `native` in `out`, forgets its latch, and reads no limit on the next tick
+// (what the game did to it meanwhile was not a clamp of ours). Both axes on is exactly the old behaviour.
 struct LimitLatch {
     float eps      = 0.0044f;   // 0.25 deg: the game moving our value by less is not a clamp
     float probe    = 0.0087f;   // 0.5 deg: the first step past a latched limit
     float max_step = 1.0f;      // cap on the doubling probe
 
-    bool  have_last = false;
+    bool  have_last[2]{};       // per axis: last tick wrote this axis through the latch
     float last[2]{};
     bool  latched[2]{};
     float limit[2]{};
     float side[2]{};            // +1: the limit is a maximum; -1: a minimum
     float step[2]{};
+    bool  skipped[2]{};         // this tick's apply() left the axis alone: wrote() does not record it
 
     // Nothing written last tick (the write stopped, or it is not a seat): forget everything.
     void reset() {
-        have_last = false;
+        have_last[0] = have_last[1] = false;
         latched[0] = latched[1] = false;
     }
 
     // `native`: the record after the game's own update this tick. `target`: the aim to write. Writes the
     // values to write into `out` (the caller still puts yaw on the game's branch and clamps pitch).
-    bool apply(const float native[2], const float target[2], float out[2]) {
+    bool apply(const float native[2], const float target[2], float out[2], const bool* enabled = nullptr) {
         bool limited = false;
         for (int a = 0; a < 2; ++a) {
+            skipped[a] = enabled && !enabled[a];
+            if (skipped[a]) {
+                out[a] = native[a];
+                latched[a] = false;
+                have_last[a] = false;
+                continue;
+            }
             const auto wrap = [a](float v) { return a == 0 ? std::remainder(v, kTwoPi) : v; };
-            if (have_last && std::isfinite(native[a])) {
+            if (have_last[a] && std::isfinite(native[a])) {
                 const float moved = wrap(native[a] - last[a]);
                 if (std::fabs(moved) > eps) {          // the game clamped last tick's write: that is the limit
                     latched[a] = true;
@@ -161,11 +172,14 @@ struct LimitLatch {
         return limited;
     }
 
-    // What was actually written this tick (after the caller's branch and pitch handling).
+    // What was actually written this tick (after the caller's branch and pitch handling). An axis this
+    // tick's apply() skipped is not recorded.
     void wrote(const float written[2]) {
-        last[0] = written[0];
-        last[1] = written[1];
-        have_last = true;
+        for (int a = 0; a < 2; ++a) {
+            if (skipped[a]) continue;
+            last[a] = written[a];
+            have_last[a] = true;
+        }
     }
 };
 

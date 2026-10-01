@@ -500,6 +500,39 @@ static void test_limit_latch() {
         const float native[2]{0.0f, 0.5f}, target[2]{0.0f, 0.0f};
         CHECK(!l.apply(native, target, out) && near(out[1], 0.0f, 1e-6f));
     }
+    {   // per axis: a disabled pitch gives back the game's value and never reads the game's own pitch
+        // moves (a driver's autolevel) as a clamp; yaw keeps latching as before
+        LimitLatch l; float out[2]{};
+        const bool yawOnly[2]{true, false};
+        const float wrote[2]{0.0f, 0.0f};
+        l.wrote(wrote);
+        for (int t = 0; t < 5; ++t) {
+            const float native[2]{0.0f, 0.05f * (t + 1)};                 // the game levels pitch every tick
+            const float target[2]{0.0f, -0.4f};
+            CHECK(!l.apply(native, target, out, yawOnly));
+            CHECK(near(out[1], native[1], 1e-6f) && !l.latched[1] && !l.have_last[1]);
+            const float pair[2]{out[0], out[1]};
+            l.wrote(pair);
+            CHECK(l.have_last[0] && !l.have_last[1]);                     // wrote() skipped pitch
+        }
+        // pitch switched back on: judged afresh (no stale last), so the game's move is not a limit
+        const bool both[2]{true, true};
+        const float native[2]{0.0f, 0.9f}, target[2]{0.0f, -0.4f};
+        CHECK(!l.apply(native, target, out, both) && near(out[1], -0.4f, 1e-6f) && !l.latched[1]);
+    }
+    {   // per axis: a latched axis that is switched off forgets the latch
+        LimitLatch l; float pair[2]{0.0f, -0.1f}, out[2]{};
+        const float target[2]{0.2f, -35.0f * kD};
+        for (int t = 0; t < 5; ++t) {
+            float native[2]; game(pair, native);
+            l.apply(native, target, out);
+            pair[0] = out[0]; pair[1] = out[1]; l.wrote(pair);
+        }
+        CHECK(l.latched[1]);
+        const bool yawOnly[2]{true, false};
+        float native[2]; game(pair, native);
+        CHECK(!l.apply(native, target, out, yawOnly) && !l.latched[1] && near(out[1], native[1], 1e-6f));
+    }
 }
 
 // Shots from the muzzle (aim_solve::muzzle_shot_direction): normalize(P - M), up re-orthogonalized, and
