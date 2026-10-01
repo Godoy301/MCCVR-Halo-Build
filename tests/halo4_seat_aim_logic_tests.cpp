@@ -67,7 +67,7 @@ void TestEye()
     Check(Near(EyeToleranceM(20.0f), 1.30f, 1e-5f), "20 m/s: 30 cm + a tick and a half");
     Check(Near(EyeToleranceM(400.0f), 2.30f, 1e-5f), "speed clamped to 40 m/s");
     Check(Near(EyeToleranceM(-5.0f), 0.30f, 1e-6f), "negative speed is rest");
-    Check(Near(EyeToleranceM(std::nanf("")), 2.30f, 1e-5f), "an unknown speed is the widest rail, not a crash");
+    Check(Near(EyeToleranceM(std::nanf("")), 2.30f, 1e-5f), "the rail alone: NaN is the widest, not a crash (JudgeEye never asks it with NaN)");
 
     Check(JudgeEye(1, true, 0.1f, 0.0f) == EyeEvidence::Agree, "first person, close: agree");
     Check(JudgeEye(1, true, 0.5f, 0.0f) == EyeEvidence::Disagree, "first person, 50 cm at rest: disagree");
@@ -76,6 +76,13 @@ void TestEye()
     Check(JudgeEye(-1, true, 0.0f, 0.0f) == EyeEvidence::Disagree, "no witness proves nothing");
     Check(JudgeEye(1, false, 0.0f, 0.0f) == EyeEvidence::Disagree, "another seat proves nothing");
     Check(JudgeEye(1, true, std::nanf(""), 0.0f) == EyeEvidence::Disagree, "a non-finite gap proves nothing");
+    // An unmeasured speed: the gap is no evidence (not the widest 2.3 m rail), but the witness still is.
+    Check(JudgeEye(1, true, 0.1f, std::nanf("")) == EyeEvidence::None, "unknown speed, close: no evidence");
+    Check(JudgeEye(1, true, 2.0f, std::nanf("")) == EyeEvidence::None,
+          "unknown speed, 2 m off: no evidence, never agreement on the widest rail");
+    Check(JudgeEye(0, true, 0.0f, std::nanf("")) == EyeEvidence::Chase, "unknown speed: a chase sample still unproves");
+    Check(JudgeEye(-1, true, 0.0f, std::nanf("")) == EyeEvidence::Disagree, "unknown speed: no witness still disagrees");
+    Check(JudgeEye(1, false, 0.0f, std::nanf("")) == EyeEvidence::Disagree, "unknown speed: another seat disagrees");
 
     SeatEyeAgreement a;
     unsigned long long t = 1000;

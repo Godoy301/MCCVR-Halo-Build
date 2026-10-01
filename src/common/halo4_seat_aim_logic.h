@@ -105,7 +105,10 @@ enum class EyeEvidence : uint8_t { None, Agree, Disagree, Chase };
 
 // One simulation sample against the solve's eye. witness: 1 = the selector proved the first-person aim
 // camera, 0 = it proved the chase camera, -1 = no proof (not called, called more than once, another unit,
-// or the unit's camera override bit). sameSeat: the sample is this occupant, vehicle and seat.
+// or the unit's camera override bit). sameSeat: the sample is this occupant, vehicle and seat. speedMps:
+// the camera's speed, or NaN when the sample could not measure it (the first of a stint, or after a pause):
+// then the gap is no evidence either way -- neither the widest rail (which would let a 2 m error agree) nor
+// the rest rail (which would fail a fast vehicle). The witness still counts: a chase sample unproves.
 inline EyeEvidence JudgeEye(int witness, bool sameSeat, float gapM, float speedMps)
 {
     if (!sameSeat)
@@ -114,6 +117,8 @@ inline EyeEvidence JudgeEye(int witness, bool sameSeat, float gapM, float speedM
         return EyeEvidence::Chase;
     if (witness < 0)
         return EyeEvidence::Disagree;
+    if (!std::isfinite(speedMps))
+        return EyeEvidence::None;
     return std::isfinite(gapM) && gapM <= EyeToleranceM(speedMps) ? EyeEvidence::Agree : EyeEvidence::Disagree;
 }
 

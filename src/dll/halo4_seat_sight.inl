@@ -68,7 +68,8 @@ struct Halo4SeatAimSample
     float origin[3]{}, camera[3]{}, dir[3]{};   // 0x1DC9E4's outputs: the eye (chase: pushed), the camera, its aim
     int8_t witness = -1;                        // 1 exact first person, 0 the selector chose chase, -1 no proof
     bool pushed = false;                        // the chase push moved the eye off the camera
-    float speedMps = -1.0f;                     // the camera's speed over the last sample, metres/s (-1 unknown)
+    float speedMps = -1.0f;                     // the camera's speed over the last tick, metres/s (-1 unknown:
+                                                // the first sample of a stint, or after a pause or hitch)
     bool flagsKnown = false;
     uint32_t flags = 0;
     uint32_t controlled = UINT32_MAX;
@@ -358,6 +359,10 @@ bool Halo4SeatSightArmAimCamera(uintptr_t caller)
     return true;
 }
 
+// Armed view calls closer than this to the speed's reference sample belong to the same simulation tick: one
+// tick spaces them by microseconds, while ticks are ~33 ms apart (17 ms even at 60 Hz).
+inline constexpr double kHalo4SeatSameTickS = 0.008;
+
 // The muzzle's view detour, after the native call and BEFORE any barrel substitution touches the outputs.
 void Halo4SeatSightNoteAimCamera(uint32_t unit, const float* origin, const float* dir, const float* camera)
 {
@@ -384,18 +389,31 @@ void Halo4SeatSightNoteAimCamera(uint32_t unit, const float* origin, const float
         f.writerBusy.fetch_add(1, std::memory_order_relaxed);
         return;
     }
-    // The camera's speed since this writer's previous sample of the same occupant and seat (same clock).
+    // The camera's speed since this writer's previous sample of the same occupant and seat (same clock). One
+    // tick makes several armed view calls microseconds apart (0x1DB840's own, the live target track's
+    // 0x1DBCB0 -> 0x1DBDB1, and the dispatcher's second 0x1DB840 at 0xA3723), and the input thread reads the
+    // LAST of them: a call this close to the reference sample is the same tick, so it carries the reference's
+    // speed and never becomes the reference itself (a same-tick pair measures no travel over no time).
+    bool sameTick = false;
     if (f.lastQpc && f.last.unit == s.unit && f.last.parent == s.parent && f.last.seat == s.seat &&
-        frequency.QuadPart > 0 && qpc.QuadPart > static_cast<LONGLONG>(f.lastQpc))
+        frequency.QuadPart > 0 && qpc.QuadPart >= static_cast<LONGLONG>(f.lastQpc))
     {
         const double dt = double(qpc.QuadPart - static_cast<LONGLONG>(f.lastQpc)) / double(frequency.QuadPart);
         const float d[3]{s.camera[0] - f.last.camera[0], s.camera[1] - f.last.camera[1],
                          s.camera[2] - f.last.camera[2]};
-        if (dt > 0.001 && dt < 0.5)
+        if (dt < kHalo4SeatSameTickS)
+        {
+            sameTick = true;
+            s.speedMps = f.last.speedMps;
+        }
+        else if (dt < 0.5)
             s.speedMps = static_cast<float>(std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]) * 3.048 / dt);
     }
-    f.last = s;
-    f.lastQpc = static_cast<uint64_t>(qpc.QuadPart);
+    if (!sameTick)
+    {
+        f.last = s;
+        f.lastQpc = static_cast<uint64_t>(qpc.QuadPart);
+    }
     s.sequence = f.sampleVersion.load(std::memory_order_relaxed) / 2u + 1u;
     f.sampleVersion.fetch_add(1, std::memory_order_acq_rel);   // odd: writing
     memcpy(&f.sample, &s, sizeof(s));
@@ -937,14 +955,17 @@ bool Halo4SeatSightPrepare(Halo4SeatSightPoll& out, const float observerForward[
                              sample.camera[2] - out.eye[2]};
             gapM = std::sqrt(g[0] * g[0] + g[1] * g[1] + g[2] * g[2]) * 3.048f;
         }
+        // An unmeasured speed (the stint's first sample, or after a pause) makes the gap no evidence either way.
         const float speed = sample.speedMps >= 0.0f ? sample.speedMps : std::numeric_limits<float>::quiet_NaN();
         const auto evidence = halo4_seat_aim::JudgeEye(sample.witness, sameSeat && out.eyeKnown, gapM, speed);
         s_state.agreement.step(evidence, now);
         w.evidence[static_cast<unsigned>(evidence) & 3u].fetch_add(1, std::memory_order_relaxed);
-        if (sameSeat && out.eyeKnown)
+        if (sameSeat && out.eyeKnown && std::isfinite(speed) && std::isfinite(gapM) &&
+            gapM * 1000.0f > w.maxGapMm.load(std::memory_order_relaxed))
         {
-            Halo4SeatSightStoreMax(w.maxGapMm, gapM * 1000.0f);
-            w.speedMps.store(sample.speedMps, std::memory_order_relaxed);
+            // The largest gap that was judged, and the speed it was judged at (the dev line pairs them).
+            w.maxGapMm.store(gapM * 1000.0f, std::memory_order_relaxed);
+            w.speedMps.store(speed, std::memory_order_relaxed);
         }
         // The game's aim direction on the tick against the observer forward the render transaction read.
         if (sameSeat && observerForward)
@@ -1109,8 +1130,8 @@ void Halo4SeatSightReport()
             snprintf(upText, sizeof(upText), "unknown");
         LOG("SIGHT Halo 4 seat eye: %llu sim samples (first person %llu, chase %llu, no witness %llu; chase pushes "
             "%llu; faults %llu, writer busy %llu); seat flags %s, class %s, controls %s, aiming unit carries the "
-            "player %s, barrel %s, vehicle up.z %s; eye vs sim: agree %u disagree %u chase %u, max |E_sim - "
-            "E_render| %.0f mm at %.1f m/s, E_render - head [along,right,up] %.0f,%.0f,%.0f mm, sim aim vs "
+            "player %s, barrel %s, vehicle up.z %s; eye vs sim: agree %u disagree %u chase %u unmeasured speed %u, "
+            "max |E_sim - E_render| %.0f mm at %.1f m/s, E_render - head [along,right,up] %.0f,%.0f,%.0f mm, sim aim vs "
             "observer forward max %.2f deg; %llu polls, eye proven in %llu; not solved: view %llu, head %llu, "
             "switches %llu, eye %llu, sample %llu, witness %llu, class %llu, tilted record %llu, key off %llu; "
             "SOLVED %llu; claimed %llu, not claimed: turret %llu, shot unknown %llu, no assist %llu, beyond the cap "
@@ -1121,8 +1142,8 @@ void Halo4SeatSightReport()
             static_cast<unsigned long long>(f.writerBusy.exchange(0)), flagText,
             halo4_seat_aim::SeatClassName(static_cast<halo4_seat_aim::SeatClass>(f.lastClass.load())),
             kControlled[f.lastControlledKind.load() & 3u], assisted == 2 ? "unknown" : assisted ? "yes" : "NO",
-            f.lastBarrel.load() ? "known" : "unknown", upText, evidence[1], evidence[2], evidence[3],
-            double(w.maxGapMm.exchange(0.0f)), double(w.speedMps.load()), double(w.eyeFromHead[0].load()),
+            f.lastBarrel.load() ? "known" : "unknown", upText, evidence[1], evidence[2], evidence[3], evidence[0],
+            double(w.maxGapMm.exchange(0.0f)), double(w.speedMps.exchange(0.0f)), double(w.eyeFromHead[0].load()),
             double(w.eyeFromHead[1].load()), double(w.eyeFromHead[2].load()), double(w.maxDirDeg.exchange(0.0f)),
             static_cast<unsigned long long>(polls), static_cast<unsigned long long>(w.provenPolls.exchange(0)),
             static_cast<unsigned long long>(why[kH4SeatWhyView]), static_cast<unsigned long long>(why[kH4SeatWhyHead]),
