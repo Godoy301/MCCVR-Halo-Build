@@ -19,7 +19,7 @@ static constexpr size_t kOdstTlsObjectTableOffset=0x20;
 static std::atomic<uint32_t> g_odstRuntimeGeneration{7};
 static std::atomic<bool> g_vrAim{true},g_enabled{true},g_odstMuzzleBindingsReady{true};
 static struct {bool gun_barrel_aim=true,left_handed=false,independent_dual_aim=false;
-    float crosshair_distance_m=10,gun_yaw_deg=0,gun_pitch_deg=0,gun_roll_deg=0;} g_config;
+    float crosshair_distance_m=10,gun_yaw_deg=0,gun_pitch_deg=0,gun_roll_deg=0;bool shots_from_muzzle=false;} g_config;
 static float Game_GetWorldScale(){return 1.f;}
 static std::atomic<bool> g_baseCamValid{true};
 static std::atomic<float> g_worldScale{1},g_baseCamX{0},g_baseCamY{0},g_baseCamZ{0};
@@ -49,6 +49,13 @@ static bool OdstContactObject(uint32_t handle)
     return *reinterpret_cast<const uint16_t*>(entry)==uint16_t(handle>>16)&&*reinterpret_cast<const void* const*>(entry+0x10);
 }
 static GameTitle TitleAdapter_GetActiveTitle(){return title;}
+static uint32_t TitleAdapter_GetGeneration(GameTitle){return 7;}
+// Shots from the muzzle (sight_layer.h): admitted only with the barrel aim off; the converged point itself is
+// sight_layer's (aim_solve_tests), so here it keeps the barrel's direction and counts the asks.
+static unsigned muzzleAimCalls=0;static bool muzzleAimRefuses=false;
+static bool Sight_MuzzleShotsConverge(){return g_config.shots_from_muzzle&&!g_config.gun_barrel_aim;}
+static bool Sight_AimMuzzleShot(GameTitle,uint32_t,const float*,const float*,float*,float*)
+{++muzzleAimCalls;return !muzzleAimRefuses;}
 static bool VR_IsStereoEnabled(){return stereo;}
 static CinematicControlState ReadOdstCinematicControl(int32_t&,int32_t&)
 {return cinematic?CinematicControlState::AuthoredLocked:CinematicControlState::PlayerControlled;}

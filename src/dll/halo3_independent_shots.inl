@@ -69,7 +69,7 @@ __declspec(noinline) void __fastcall Halo3IndependentQueryDetour(
     // A TLS record is usable only on this same native thread at firing time.
     const bool capture=feature.enabled.load(std::memory_order_acquire) &&
         !feature.faulted.load(std::memory_order_acquire) &&
-        (g_config.independent_dual_aim || g_config.gun_barrel_aim) &&
+        (g_config.independent_dual_aim || g_config.gun_barrel_aim || g_config.shots_from_muzzle) &&
         inputUser>=0 && inputUser<4 && !(flags&1) && direction && control && targeting;
     g_halo3QueryCapture.active=capture;
     __try

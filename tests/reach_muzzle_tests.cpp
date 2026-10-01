@@ -24,7 +24,7 @@ static struct {
     int32_t(*playerUnitByOutputUser)(int32_t)=Player;bool(*unitInVehicle)(int32_t)=Seated;
 } g_reachCamera;
 static std::atomic<bool> g_vrAim{true},g_enabled{true},g_reachBarrelBindingsReady{true},g_reachCinematicLocked{false},g_reachVehicleShotRedirectEnabled{true};
-static struct {bool gun_barrel_aim=true,left_handed=false;} g_config;
+static struct {bool gun_barrel_aim=true,left_handed=false,shots_from_muzzle=false;} g_config;
 static weapon_muzzle::Store g_reachBarrelMuzzles;
 static thread_local bool g_legacyCollisionOwnedQuery=false;
 static alignas(8) uint8_t tlsBytes[0x700]{},users[0x53A8]{},unitBytes[0x400]{},replacementBytes[0x400]{},
@@ -39,6 +39,12 @@ static unsigned char* ReachVehicleObjectData(int32_t handle,uint8_t& kind)
 }
 static GameTitle title=GameTitle::HaloReach;
 static GameTitle TitleAdapter_GetActiveTitle(){return title;}
+// Shots from the muzzle (sight_layer.h): admitted only with the barrel aim off; the converged point itself is
+// sight_layer's (aim_solve_tests), so here it keeps the barrel's direction and counts the asks.
+static unsigned muzzleAimCalls=0;static bool muzzleAimRefuses=false;
+static bool Sight_MuzzleShotsConverge(){return g_config.shots_from_muzzle&&!g_config.gun_barrel_aim;}
+static bool ReachAimMuzzleShot(const float*,const float*,float*,float*){++muzzleAimCalls;return !muzzleAimRefuses;}
+static void ReachSightMeasureShot(int32_t,const float*,const float*,const float*,uint8_t,uint8_t){}
 static bool VR_IsStereoEnabled(){return stereo;}
 struct VrContactTrackingSnapshot
 {uint64_t serial=11,referenceEpoch=3;int64_t timeNs=1000000000;struct {bool valid=true;} hands[2];};

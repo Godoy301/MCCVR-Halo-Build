@@ -1817,7 +1817,8 @@ namespace
 
     uint64_t Halo2ObserveReloadModel(uint32_t tag,uint32_t nodes,bool observePrimary=true) noexcept
     {
-        if((!g_config.manual_reload&&!g_config.per_gun_alignment&&!g_config.gun_barrel_aim)||tag==UINT32_MAX||!nodes) return 0;
+        if((!g_config.manual_reload&&!g_config.per_gun_alignment&&!g_config.gun_barrel_aim&&!g_config.shots_from_muzzle)||
+            tag==UINT32_MAX||!nodes) return 0;
         const auto get=reinterpret_cast<Halo2GraphDefinitionGetFn>(
             g_graphDefinitionGet.load(std::memory_order_acquire));
         const auto slot=reinterpret_cast<unsigned char**>(
@@ -1853,7 +1854,7 @@ namespace
         if(context.valid&&handsMatrices&&gunMatrices)
         {
             const uint64_t identity=Halo2ObserveReloadModel(gunRenderModelTag,context.gunCount);
-            if(g_config.gun_barrel_aim)
+            if(g_config.gun_barrel_aim||g_config.shots_from_muzzle)
             {
                 Halo2PublishMuzzlePalette(context,0,identity,gunMatrices,context.gunCount);
                 const uint64_t secondaryIdentity=secondaryMatrices
@@ -4255,6 +4256,47 @@ namespace
     }
 
     #include "halo2_contact_melee_runtime.inl"
+    // SHOTS FROM THE MUZZLE (sight_layer.h), for halo2_muzzle_shots.inl: the newest publication's intent ray
+    // (rendered eye along the aiming hand's carrier) and engine eye, through Sight_AimMuzzleShotFromRay.
+    // `distance` is how far along the new direction the converged point lies.
+    bool Halo2AimMuzzleShot(const float before[3], const float position[3], float direction[3], float up[3],
+                            float& distance) noexcept
+    {
+        distance = 0.0f;
+        const uint32_t generation = g_generation.load(std::memory_order_acquire);
+        Halo2ObserverPosePublication publication{};
+        Halo2CameraBasis primary{}, secondary{};
+        float head[3]{}, dir[3]{}, eye[3]{};
+        if (!generation || !Halo2Observer6Dof_ReadPublishedPose(publication) ||
+            !Halo2ObserverControllerSnapshotUsable(publication, generation) ||
+            !BuildStableFirstPersonCarriers(publication, generation, primary, secondary) ||
+            !Halo2SightGeometry(publication, primary, head, dir, eye))
+        {
+            Sight_NoteMuzzleShotUnconverged(GameTitle::Halo2);
+            return false;
+        }
+        if (!Sight_AimMuzzleShotFromRay(GameTitle::Halo2, TitleAdapter_GetGeneration(GameTitle::Halo2), head, dir,
+                                        eye, before, position, direction, up))
+            return false;
+        // The point lies on the new direction: its distance is the projection of (P - M) onto it, which the
+        // shot helper just normalised. Recover P the same way it did.
+        SightTrace trace{};
+        if (!Sight_ReadTrace(GameTitle::Halo2, TitleAdapter_GetGeneration(GameTitle::Halo2), kSightFreshMs, trace))
+            return true;
+        const float length = std::sqrt(dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]);
+        if (!std::isfinite(length) || length < 1.0e-3f)
+            return true;
+        float d2 = 0.0f;
+        for (int axis = 0; axis < 3; ++axis)
+        {
+            const float p = head[axis] + dir[axis] / length * trace.AimRangeWu();
+            d2 += (p - position[axis]) * (p - position[axis]);
+        }
+        if (std::isfinite(d2) && d2 > 0.0f)
+            distance = std::sqrt(d2);
+        return true;
+    }
+
     #include "halo2_dual_wield_runtime.inl"
 
     bool InstallHalo2WorldCollision(

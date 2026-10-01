@@ -149,15 +149,17 @@ bool ReachConvergedShotLive(uint64_t nowMs)
     return at && nowMs >= at && nowMs - at <= 100;
 }
 
-#if HALOMCCVR_DEV_DIAGNOSTICS
-// The exact sample + smoothed range the provider last actuated as a converged aim, so the shot check
-// measures the solver against what it aimed, not against a later sample (dev builds only).
+// The exact sample + smoothed range the provider last actuated as a converged aim. The shot check (dev)
+// measures the solver against what it aimed, not a later sample; shots from the muzzle (every build) fly
+// through its point.
 struct ReachSightActuatedPublication
 {
     std::atomic<uint32_t> sequence{0};
     std::atomic<uint64_t> atMs{0};
     std::atomic<float> ox{0}, oy{0}, oz{0}, dx{0}, dy{0}, dz{0}, ex{0}, ey{0}, ez{0}, hx{0}, hy{0}, hz{0}, rangeWu{0};
 } g_reachSightActuated;
+
+#if HALOMCCVR_DEV_DIAGNOSTICS
 
 // Set while a render transaction has the HEAD camera committed into the game's own camera state
 // (between ReachMainRenderView's commit and its restore), with that thread's id. The shot check
@@ -629,6 +631,8 @@ struct ReachSightShotStats
     std::atomic<uint32_t> lastRangeMm{0}, lastMissMm{0};
 } g_reachSightShots;
 
+#endif
+
 // What the provider AIMED at: the ray (o, u), the engine eye e, the rendered head h and the smoothed
 // range it actuated -- not a later sample. False unless one coherent record younger than 150 ms exists.
 bool ReachSightReadActuated(uint64_t now, float o[3], float u[3], float e[3], float h[3], float& rangeWu)
@@ -650,7 +654,21 @@ bool ReachSightReadActuated(uint64_t now, float o[3], float u[3], float e[3], fl
     }
     return coherent && atMs && now >= atMs && now - atMs <= 150 && std::isfinite(rangeWu) && rangeWu > 0.0f;
 }
-#endif
+
+// SHOTS FROM THE MUZZLE (sight_layer.h), Reach: the converged point is the one the direct drive last wrote
+// (ReachConvergedShotLive), the intent ray at the range the provider actuated. Firing-site thread.
+bool ReachAimMuzzleShot(const float before[3], const float position[3], float direction[3], float up[3])
+{
+    const uint64_t now = GetTickCount64();
+    float o[3]{}, u[3]{}, e[3]{}, h[3]{}, rangeWu = 0.0f;
+    if (!ReachConvergedShotLive(now) || !ReachSightReadActuated(now, o, u, e, h, rangeWu))
+    {
+        Sight_NoteMuzzleShotUnconverged(GameTitle::HaloReach);
+        return false;
+    }
+    const float point[3]{o[0] + u[0] * rangeWu, o[1] + u[1] * rangeWu, o[2] + u[2] * rangeWu};
+    return Sight_AimMuzzleShotThrough(GameTitle::HaloReach, point, u, e, before, position, direction, up);
+}
 
 void ReachSightMeasureShot(int32_t unitIndex, const float* origin, const float* direction,
                            const float* cameraPoint, uint8_t firesFromCamera, uint8_t useUnitAim)

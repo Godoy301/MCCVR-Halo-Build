@@ -1314,6 +1314,13 @@ namespace
                                 "and the right stick turns your view; OFF keeps the earlier Halo 2 aim (the shot\n"
                                 "follows the hand, the body follows the stick). Halo CE always writes its aim\n"
                                 "directly. Both switches are live.");
+            changed |= ImGui::Checkbox("Shots leave the visible muzzle", &g_config.shots_from_muzzle);
+            ImGui::TextDisabled("ON: on foot, each shot starts at your gun's visible muzzle and flies through the\n"
+                                "point your converged aim is on (the reticle), so it lands where the shot from your\n"
+                                "eye would have while tracers and projectiles come out of the barrel. Needs Converged\n"
+                                "aim. If the muzzle is inside a wall your eye sees past, or the aim is not converged,\n"
+                                "the shot leaves your eye as before. \"Aim from the visible gun barrel\" (Crosshair\n"
+                                "page), when on, wins and keeps the barrel's own direction. Live.");
             ImGui::TextDisabled("Both cover vehicle seats too. Every seat you aim from converges (Halo 3 and ODST\n"
                                 "in first-person seats; Reach with Direct drive). With Direct drive, a Reach seat,\n"
                                 "and a Halo 3 or ODST seat that fires your own weapon, has its aim written too;\n"

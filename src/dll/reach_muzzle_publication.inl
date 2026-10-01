@@ -1,6 +1,6 @@
 bool ReachCaptureMuzzleOwner(int view,int slot,uint32_t& unit,uint32_t& weapon) noexcept
 {
-    if(!g_config.gun_barrel_aim||!g_reachBarrelBindingsReady.load(std::memory_order_acquire)||view!=0||slot<0||slot>1||
+    if(!(g_config.gun_barrel_aim||g_config.shots_from_muzzle)||!g_reachBarrelBindingsReady.load(std::memory_order_acquire)||view!=0||slot<0||slot>1||
         !g_reachCamera.playerUnitByOutputUser||!g_reachCamera.unitInVehicle)return false;
     __try
     {
@@ -18,7 +18,7 @@ bool ReachCaptureMuzzleOwner(int view,int slot,uint32_t& unit,uint32_t& weapon) 
 }
 void ReachPublishMuzzlePalette(uint16_t tag,const ReachFpInterpolationContext& context,const BoneMatrix* destination) noexcept
 {
-    if(!g_config.gun_barrel_aim||!g_reachBarrelBindingsReady.load(std::memory_order_acquire)||
+    if(!(g_config.gun_barrel_aim||g_config.shots_from_muzzle)||!g_reachBarrelBindingsReady.load(std::memory_order_acquire)||
         !context.valid||context.interpolationView!=0||context.interpolationSlot!=0||!destination||
         !g_reachFpPairScope.armed||!context.generation||context.generation!=g_reachCamera.generation.load()||
         context.preparedSerial!=g_reachFpPairScope.preparedSerial)return;

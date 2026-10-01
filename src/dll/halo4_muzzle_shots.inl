@@ -59,7 +59,7 @@ __declspec(noinline) void __fastcall Halo4MuzzleQueryDetour(int32_t inputUser,ui
 {
     auto& feature=g_halo4Barrel;feature.callbacks.fetch_add(1,std::memory_order_acq_rel);
     const auto previous=g_halo4BarrelCapture;g_halo4BarrelCapture={};
-    const bool capture=feature.enabled.load()&&!feature.faulted.load()&&g_config.gun_barrel_aim&&
+    const bool capture=feature.enabled.load()&&!feature.faulted.load()&&(g_config.gun_barrel_aim||Sight_MuzzleShotsConverge())&&
         inputUser>=0&&inputUser<4&&!(flags&1)&&direction&&control&&targeting;
     g_halo4BarrelCapture.active=capture;
     __try
@@ -109,7 +109,7 @@ bool AcquireHalo4MuzzleTarget(const weapon_muzzle::Receipt& muzzle,NativeShotTar
 bool ApplyHalo4MuzzleMarker(uint32_t object,uint64_t count,void* markers,int16_t capacity)
 {
     auto& feature=g_halo4Barrel;const auto request=g_halo4BarrelRequest;
-    if(!feature.enabled.load()||feature.faulted.load()||!g_config.gun_barrel_aim||
+    if(!feature.enabled.load()||feature.faulted.load()||!(g_config.gun_barrel_aim||Sight_MuzzleShotsConverge())||
         exclusive_input::Active()||!g_vrAim.load()||!g_enabled.load()||!VR_IsStereoEnabled()||
         TitleAdapter_GetActiveTitle()!=GameTitle::Halo4||feature.generation!=g_halo4Camera.generation.load()||
         !request.lease||request.lease->active||request.barrel<0||request.barrel>=2||
@@ -126,11 +126,16 @@ bool ApplyHalo4MuzzleMarker(uint32_t object,uint64_t count,void* markers,int16_t
         context.unit,request.weapon,tracking.referenceEpoch,now,tracking.timeNs,uint8_t(slot),uint8_t(request.barrel),
         g_config.left_handed,muzzle))return false;
     float velocity[3]{},direction[3]{};std::memcpy(direction,muzzle.ray.direction,12);
+    float before[3]{};std::memcpy(before,muzzle.ray.position,12);
     const bool previous=g_halo4MuzzleOwnedQuery;g_halo4MuzzleOwnedQuery=true;
     __try {feature.aimOriginal(context.unit,muzzle.ray.position,direction,velocity,nullptr,nullptr,0,0,request.simulation);}
     __finally {g_halo4MuzzleOwnedQuery=previous;}
     for(int axis=0;axis<3;++axis)
         if(!std::isfinite(muzzle.ray.position[axis])||!std::isfinite(direction[axis]))return false;
+    // SHOTS FROM THE MUZZLE (sight_layer.h): keep the origin the obstruction check left, but fly through the
+    // converged point instead of along the barrel. A refusal refuses the barrel shot: it leaves the eye.
+    if(!g_config.gun_barrel_aim&&!Sight_AimMuzzleShot(GameTitle::Halo4,TitleAdapter_GetGeneration(GameTitle::Halo4),
+        before,muzzle.ray.position,muzzle.ray.direction,muzzle.ray.up))return false;
     if(!AcquireHalo4MuzzleTarget(muzzle,*request.lease))return false;
     const auto& ray=muzzle.ray;auto* bytes=static_cast<uint8_t*>(markers);
     const float side[3]{ray.up[1]*ray.direction[2]-ray.up[2]*ray.direction[1],

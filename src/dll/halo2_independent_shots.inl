@@ -13,7 +13,7 @@ thread_local Halo2IndependentShotScope g_halo2IndependentShot;
 
 void RecordHalo2IndependentQuery()
 {
-    if(g_config.independent_dual_aim || g_config.gun_barrel_aim)
+    if(g_config.independent_dual_aim || g_config.gun_barrel_aim || g_config.shots_from_muzzle)
         g_halo2IndependentQueryContext={Halo2OwnedUnit(),g_generation.load(),GetTickCount64()};
 }
 

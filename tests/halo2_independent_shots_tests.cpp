@@ -20,7 +20,14 @@ static void Check(bool value,const char* name)
 static constexpr uint32_t owner=0x12340001,primary=0x56780002,secondary=0x789A0003;
 static constexpr uint32_t kOwnedUser=0;
 static std::atomic<uint32_t> g_generation{7};
-static struct {bool independent_dual_aim=true;float crosshair_distance_m=10;bool gun_barrel_aim=false,left_handed=false;} g_config;
+static struct {bool independent_dual_aim=true;float crosshair_distance_m=10;bool gun_barrel_aim=false,left_handed=false,
+    shots_from_muzzle=false;} g_config;
+// Shots from the muzzle (sight_layer.h): admitted only with the barrel aim off; the converged point itself is
+// sight_layer's (aim_solve_tests), so here it keeps the barrel's direction and counts the asks.
+static unsigned muzzleAimCalls=0;static bool muzzleAimRefuses=false;
+static bool Sight_MuzzleShotsConverge(){return g_config.shots_from_muzzle&&!g_config.gun_barrel_aim;}
+static bool Halo2AimMuzzleShot(const float*,const float*,float*,float*,float& distance)
+{++muzzleAimCalls;distance=0;return !muzzleAimRefuses;}
 static bool controller=true,palette=true,direct=true,owned=true,publicationValid=true,trackingValid=true,carrierValid=true;
 static bool storageReplaced=false,queryFault=false,fireFault=false,omitLocation=false,omitView=false,
     changeWeapons=false,changeGeneration=false,replaceStorage=false,changeNativeTarget=false,nested=false;

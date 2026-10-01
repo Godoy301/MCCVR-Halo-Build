@@ -18,7 +18,7 @@ static bool seated=false,stereo=true,validTracking=true,cinematic=false;
 static struct {std::atomic<uint32_t> generation{7};std::atomic<bool> armed{true};} g_halo4Camera;
 static struct {std::atomic<bool> ready{true};} g_halo4VehicleInput;
 static std::atomic<bool> g_vrAim{true},g_enabled{true};
-static struct {bool gun_barrel_aim=true,left_handed=false;} g_config;
+static struct {bool gun_barrel_aim=true,left_handed=false,shots_from_muzzle=false;} g_config;
 static thread_local bool g_halo4MuzzleOwnedQuery=false;
 static alignas(8) uint8_t tlsBytes[0x700]{},users[0x5F48]{},unitBytes[0x700]{},replacementBytes[0x700]{},
     primaryBytes[0x700]{},secondaryBytes[0x700]{},targetBytes[0x700]{},table[0x80]{},entries[6*0x18]{};
@@ -31,6 +31,19 @@ static CinematicControlState ReadHalo4CinematicControl()
 {return cinematic?CinematicControlState::Unknown:CinematicControlState::PlayerControlled;}
 static GameTitle title=GameTitle::Halo4;
 static GameTitle TitleAdapter_GetActiveTitle(){return title;}
+static uint32_t TitleAdapter_GetGeneration(GameTitle){return 7;}
+// Shots from the muzzle (sight_layer.h): admitted only with the barrel aim off; the converged point itself is
+// sight_layer's (aim_solve_tests), so here it keeps the barrel's direction and counts the asks.
+static unsigned muzzleAimCalls=0;static bool muzzleAimRefuses=false;
+static bool Sight_MuzzleShotsConverge(){return g_config.shots_from_muzzle&&!g_config.gun_barrel_aim;}
+static bool Sight_AimMuzzleShot(GameTitle t,uint32_t generation,const float* before,const float* position,
+    float* direction,float* up)
+{
+    ++muzzleAimCalls;
+    Check(t==GameTitle::Halo4&&generation==7&&before[1]==3&&position[1]==2.5f&&direction[1]==1&&up[2]==1,
+        "shots from the muzzle ask after the obstruction check, with the authored muzzle before it");
+    return !muzzleAimRefuses;
+}
 static bool VR_IsStereoEnabled(){return stereo;}
 struct VrContactTrackingSnapshot
 {uint64_t serial=11,referenceEpoch=3;int64_t timeNs=1000000000;struct {bool valid=true;} hands[2];};
@@ -164,6 +177,18 @@ static void ShotTests()
         case 24:g_halo4BarrelQueryContext.sampleMs=GetTickCount64()+1000;break;case 25:title=GameTitle::Halo3;break;}
         Shoot();Check(fireCalls==1&&!g_halo4BarrelShot.active&&!g_halo4Barrel.callbacks,"failed optional ownership never replays native fire");
     }
+    Reset();g_config.gun_barrel_aim=false;g_config.shots_from_muzzle=true;muzzleAimCalls=0;muzzleAimRefuses=false;Shoot();
+    Check(fireCalls==1&&muzzleAimCalls==1&&*reinterpret_cast<uint32_t*>(unitBytes+0x5B0)==0x44440007,
+        "shots from the muzzle take the barrel shot through the converged point");
+    Reset();g_config.gun_barrel_aim=false;g_config.shots_from_muzzle=true;muzzleAimCalls=0;muzzleAimRefuses=true;
+    expectMuzzle=false;Shoot();
+    Check(fireCalls==1&&muzzleAimCalls==1&&!g_halo4BarrelShot.active&&
+        *reinterpret_cast<uint32_t*>(unitBytes+0x5B0)==0x44440007,"a refused converged point leaves the shot at the eye");
+    muzzleAimRefuses=false;
+    Reset();g_config.shots_from_muzzle=true;muzzleAimCalls=0;Shoot();
+    Check(fireCalls==1&&muzzleAimCalls==0,"the barrel aim, when on, wins over shots from the muzzle");
+    Reset();g_config.gun_barrel_aim=false;muzzleAimCalls=0;expectMuzzle=false;Shoot();
+    Check(fireCalls==1&&muzzleAimCalls==0&&!g_halo4BarrelShot.active,"neither key: no barrel shot at all");
     Reset();queryFault=true;expectMuzzle=false;Shoot();Check(g_halo4Barrel.faulted&&!g_halo4MuzzleOwnedQuery,"query exception isolated with collision ownership restored");
     Reset();preflightFault=true;expectMuzzle=false;Shoot();Check(g_halo4Barrel.faulted&&!g_halo4MuzzleOwnedQuery,"native preflight failure stays feature-local");
     Reset();markerFault=true;Check(FaultingShot()&&fireCalls==1&&!g_halo4Barrel.callbacks,"native marker exception propagates without replay");

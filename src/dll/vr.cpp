@@ -11658,6 +11658,7 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                 rig.visualRightHandOffset[2]=g_config.right_hand_mesh_z_m;
                 rig.visualPitchDeg=g_config.barrel_pitch_deg;
                 rig.gunBarrelAim=g_config.gun_barrel_aim;
+                rig.muzzleShots=Sight_MuzzleShotsConverge();
                 rig.visualYawDeg=g_config.barrel_yaw_deg;
                 rig.visualRollDeg=g_config.barrel_roll_deg;
                 rig.supportMountPitchDeg=g_config.gun_pitch_deg;

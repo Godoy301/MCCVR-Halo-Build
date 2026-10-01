@@ -130,6 +130,30 @@ bool Game_SightReticleRange(float& outRangeM, bool& outHit);
 bool Sight_ScopeConvergedLive(GameTitle title);
 bool Sight_ScopeConvergedDirection(GameTitle title, float outDir[3]);
 
+// SHOTS FROM THE MUZZLE (the player key shots_from_muzzle; aim_solve::muzzle_shot_direction). Each title's
+// barrel-shot transaction already moves a shot's origin to the visible muzzle and runs it through the
+// title's own obstruction check (that is the barrel aim, gun_barrel_aim, which also takes the barrel's
+// direction). With this key instead, the shot keeps that origin but flies through the CONVERGED POINT --
+// the intent ray's point at the range the converged aim is bent through -- so it lands where the shot from
+// the engine eye would have, and the tracer and projectile come out of the gun.
+// Sight_MuzzleShotsConverge: the key is on and the barrel aim (which wins) is off.
+// Sight_AimMuzzleShot: after the title's obstruction check moved the muzzle from `before` to `position`,
+// replace `direction` and `up` and return true; false leaves all three untouched, and the title then
+// refuses the barrel shot, so it leaves the eye exactly as before -- when the aim in effect is not
+// converged, the ray or trace is stale, or the geometry fails a rail. The intent ray and engine eye are
+// the published ray's (Halo 3, ODST, Halo 4), the caller's own (...FromRay: Halo 2, CE), or the caller's
+// converged point itself (...Through: Reach, whose aim lane is its own). Any thread; counted per title.
+bool Sight_MuzzleShotsConverge();
+bool Sight_AimMuzzleShot(GameTitle title, uint32_t generation, const float before[3], const float position[3],
+                         float direction[3], float up[3]);
+bool Sight_AimMuzzleShotFromRay(GameTitle title, uint32_t generation, const float head[3], const float dir[3],
+                                const float eye[3], const float before[3], const float position[3],
+                                float direction[3], float up[3]);
+bool Sight_AimMuzzleShotThrough(GameTitle title, const float point[3], const float rayDir[3], const float eye[3],
+                                const float before[3], const float position[3], float direction[3], float up[3]);
+// A title that could not even ask (no converged point of its own): counted with the rest.
+void Sight_NoteMuzzleShotUnconverged(GameTitle title);
+
 // Cold worker: one status line per title that is tracing, every 2 s.
 void Sight_Report();
 

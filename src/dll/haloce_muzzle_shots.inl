@@ -3,7 +3,7 @@ void CaptureMuzzleQuery(int32_t input,int16_t zoom,bool direct)
     HaloCELocalPlayerState state{};RenderContext context{};
     if(muzzleInstalled.load()&&!muzzleFaulted.load()&&HaloCEControls_GetLocalPlayerState(state)&&
         input==state.inputUser&&LocalOnFootShooter(state.unit)&&HaloCE_GetGameplayContext(context)&&
-        context.tracking.controllers.gunBarrelAim)
+        (context.tracking.controllers.gunBarrelAim||context.tracking.controllers.muzzleShots))
         muzzleQueryContext={generation.load(),state.unit,input,zoom,direct,GetTickCount64()};
 }
 __declspec(noinline) void __fastcall MuzzleQueryHook(int32_t input,int16_t zoom,Vec3* control,void* target)
@@ -36,7 +36,7 @@ bool ApplyMuzzleMarker(uint32_t object,int16_t count,void* markers,int16_t capac
         query.at<muzzleInstalledAt||now<query.at||now-query.at>100||
         !modernRayHook.original||!targetInstalled.load()||targetRetiring.load())return false;
     weapon_muzzle::Receipt receipt{};
-    if(!ReadMuzzle(query.unit,request.weapon,request.barrel,receipt))return false;
+    if(!ReadMuzzle(query.unit,request.weapon,request.barrel,receipt,true))return false;
     void* storage=MuzzleTargetStorage(query.unit);if(!storage)return false;
     auto& shot=muzzleShot;shot={};shot.active=true;shot.unit=query.unit;
     std::memcpy(&shot.position,receipt.ray.position,12);std::memcpy(&shot.direction,receipt.ray.direction,12);
@@ -45,6 +45,25 @@ bool ApplyMuzzleMarker(uint32_t object,int16_t count,void* markers,int16_t capac
     // with native camera projection and weapon offset disabled for this ray.
     reinterpret_cast<ModernRayFn>(modernRayHook.original)(query.unit,&shot.position,&shot.direction,&velocity,nullptr,false,false);
     if(!Finite(shot.position)||!Finite(shot.direction))return false;
+    // SHOTS FROM THE MUZZLE (sight_layer.h): keep the origin the obstruction check left, but fly through the
+    // converged point instead of along the barrel. A refusal refuses the barrel shot: it leaves the eye.
+    {
+        RenderContext context{};
+        if(HaloCE_GetGameplayContext(context)&&!context.tracking.controllers.gunBarrelAim&&
+            context.tracking.controllers.muzzleShots)
+        {
+            Vec3 head{},dir{},eye{};
+            if(context.tracking.controllers.controlsPresentationBlocked||
+                !BuildSightGeometry(context.camera,context.tracking,context.reference,
+                    context.tracking.controllers.primaryAim,context.unitsPerMeter,context.positional,head,dir,eye))
+            {Sight_NoteMuzzleShotUnconverged(GameTitle::HaloCE);return false;}
+            const float h[3]{head.x,head.y,head.z},d[3]{dir.x,dir.y,dir.z},e[3]{eye.x,eye.y,eye.z};
+            float through[3]{shot.direction.x,shot.direction.y,shot.direction.z};
+            if(!Sight_AimMuzzleShotFromRay(GameTitle::HaloCE,TitleAdapter_GetGeneration(GameTitle::HaloCE),h,d,e,
+                receipt.ray.position,&shot.position.x,through,receipt.ray.up))return false;
+            shot.direction={through[0],through[1],through[2]};
+        }
+    }
     alignas(8) unsigned char target[0x10]{};Vec3 control{};shot.query=true;
     __try
     {

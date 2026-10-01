@@ -258,4 +258,55 @@ inline TracedReticle traced_reticle_placement(bool hit, float range_m, float cap
     return out;
 }
 
+// SHOTS FROM THE MUZZLE (the player key shots_from_muzzle). A shot that leaves the visible muzzle M and
+// passes through the converged point P -- the point the converged aim's own line from the engine eye
+// passes through -- lands where that aim lands, while its tracer and projectile come out of the gun:
+// out = normalize(P - M), and `up` is re-orthogonalized against it. Refused (false, out and up untouched,
+// so the shot leaves the eye exactly as before) when the geometry is not that of a gun this player holds:
+//   - the muzzle more than max_from_eye_cm from the engine eye (a stale or foreign muzzle);
+//   - the title's own obstruction check pulled the muzzle back more than max_clamp_cm (the gun is through
+//     a surface the eye sees past: from the muzzle the shot would hit that surface);
+//   - P less than min_ahead_cm ahead of the muzzle along the intent ray (a point behind or beside the gun);
+//   - any non-finite input.
+// Distances in the title's own units, converted by cm_per_unit.
+struct MuzzleShotRails {
+    float max_from_eye_cm = 150.0f;
+    float max_clamp_cm    = 5.0f;
+    float min_ahead_cm    = 10.0f;
+};
+inline bool muzzle_shot_direction(const Vec3& muzzle_before_clamp, const Vec3& muzzle, const Vec3& point,
+                                  const Vec3& ray_dir, const Vec3& eye, float cm_per_unit,
+                                  const MuzzleShotRails& r, Vec3& out, Vec3& up) {
+    if (!std::isfinite(cm_per_unit) || !(cm_per_unit > 0.0f)) return false;
+    const auto len = [](const Vec3& v) { return std::sqrt(v.x * v.x + v.y * v.y + v.z * v.z); };
+    const Vec3 clamp{muzzle.x - muzzle_before_clamp.x, muzzle.y - muzzle_before_clamp.y,
+                     muzzle.z - muzzle_before_clamp.z};
+    const Vec3 fromEye{muzzle.x - eye.x, muzzle.y - eye.y, muzzle.z - eye.z};
+    const Vec3 toPoint{point.x - muzzle.x, point.y - muzzle.y, point.z - muzzle.z};
+    const float clampLen = len(clamp), eyeLen = len(fromEye), pointLen = len(toPoint), dirLen = len(ray_dir);
+    if (!std::isfinite(clampLen) || !std::isfinite(eyeLen) || !std::isfinite(pointLen) ||
+        !std::isfinite(dirLen) || !(dirLen > 1.0e-6f) || !(pointLen > 1.0e-6f))
+        return false;
+    if (eyeLen * cm_per_unit > r.max_from_eye_cm || clampLen * cm_per_unit > r.max_clamp_cm) return false;
+    const float ahead = (toPoint.x * ray_dir.x + toPoint.y * ray_dir.y + toPoint.z * ray_dir.z) / dirLen;
+    if (!std::isfinite(ahead) || ahead * cm_per_unit < r.min_ahead_cm) return false;
+    const Vec3 f{toPoint.x / pointLen, toPoint.y / pointLen, toPoint.z / pointLen};
+    // Up keeps its own lean, minus whatever now lies along the new forward; a degenerate one (up along the
+    // shot) falls back to the up nearest world +Z.
+    const float d = up.x * f.x + up.y * f.y + up.z * f.z;
+    Vec3 u{up.x - f.x * d, up.y - f.y * d, up.z - f.z * d};
+    float ul = len(u);
+    if (!std::isfinite(ul) || !(ul > 1.0e-4f)) {
+        u = Vec3{-f.x * f.z, -f.y * f.z, 1.0f - f.z * f.z};
+        ul = len(u);
+        if (!std::isfinite(ul) || !(ul > 1.0e-4f)) {
+            u = Vec3{1.0f, 0.0f, 0.0f};
+            ul = 1.0f;
+        }
+    }
+    out = f;
+    up = Vec3{u.x / ul, u.y / ul, u.z / ul};
+    return true;
+}
+
 } // namespace aim_solve

@@ -59,6 +59,8 @@ struct Stats
 {
     std::atomic<uint64_t> rays{0}, traces{0}, hits{0}, misses{0}, faults{0}, converged{0}, declined{0}, written{0};
     std::atomic<uint64_t> costTicks{0}, costMaxTicks{0};
+    // Shots from the muzzle: aimed through the converged point, refused by a rail, or without a point.
+    std::atomic<uint64_t> muzzleAimed{0}, muzzleRefused{0}, muzzleUnconverged{0};
 };
 
 RayPublication g_rays[kTitleSlots];
@@ -306,6 +308,80 @@ bool Sight_ConvergedDirection(GameTitle title, uint32_t generation, const float 
     if (outRangeWu) *outRangeWu = trace.convergeRangeWu;
     if (outHit) *outHit = trace.hit;
     return true;
+}
+
+bool Sight_MuzzleShotsConverge()
+{
+    return g_config.shots_from_muzzle && !g_config.gun_barrel_aim && Sight_AimEnabled();
+}
+
+void Sight_NoteMuzzleShotUnconverged(GameTitle title)
+{
+    g_stats[Slot(title)].muzzleUnconverged.fetch_add(1, std::memory_order_relaxed);
+}
+
+bool Sight_AimMuzzleShotThrough(GameTitle title, const float point[3], const float rayDir[3], const float eye[3],
+                                const float before[3], const float position[3], float direction[3], float up[3])
+{
+    if (!point || !rayDir || !eye || !before || !position || !direction || !up)
+        return false;
+    aim_solve::Vec3 out{}, newUp{up[0], up[1], up[2]};
+    if (!aim_solve::muzzle_shot_direction(aim_solve::Vec3{before[0], before[1], before[2]},
+                                          aim_solve::Vec3{position[0], position[1], position[2]},
+                                          aim_solve::Vec3{point[0], point[1], point[2]},
+                                          aim_solve::Vec3{rayDir[0], rayDir[1], rayDir[2]},
+                                          aim_solve::Vec3{eye[0], eye[1], eye[2]}, kSightCmPerWorldUnit,
+                                          aim_solve::MuzzleShotRails{}, out, newUp))
+    {
+        g_stats[Slot(title)].muzzleRefused.fetch_add(1, std::memory_order_relaxed);
+        return false;
+    }
+    direction[0] = out.x; direction[1] = out.y; direction[2] = out.z;
+    up[0] = newUp.x; up[1] = newUp.y; up[2] = newUp.z;
+    g_stats[Slot(title)].muzzleAimed.fetch_add(1, std::memory_order_relaxed);
+    return true;
+}
+
+bool Sight_AimMuzzleShotFromRay(GameTitle title, uint32_t generation, const float head[3], const float dir[3],
+                                const float eye[3], const float before[3], const float position[3],
+                                float direction[3], float up[3])
+{
+    // The point the converged aim in effect is bent through: the intent ray at the smoothed range the aim
+    // path converged on (SightTrace::AimRangeWu), so the shot from the muzzle lands where the shot from the
+    // engine eye would have.
+    SightTrace trace{};
+    if (!head || !dir || !Sight_ConvergedLive(title) || !Sight_ReadTrace(title, generation, kSightFreshMs, trace) ||
+        !(trace.AimRangeWu() > 0.0f))
+    {
+        Sight_NoteMuzzleShotUnconverged(title);
+        return false;
+    }
+    const float length = std::sqrt(dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]);
+    if (!std::isfinite(length) || length < 1.0e-3f)
+    {
+        Sight_NoteMuzzleShotUnconverged(title);
+        return false;
+    }
+    const float range = trace.AimRangeWu();
+    float u[3]{}, point[3]{};
+    for (int axis = 0; axis < 3; ++axis)
+    {
+        u[axis] = dir[axis] / length;
+        point[axis] = head[axis] + u[axis] * range;
+    }
+    return Sight_AimMuzzleShotThrough(title, point, u, eye, before, position, direction, up);
+}
+
+bool Sight_AimMuzzleShot(GameTitle title, uint32_t generation, const float before[3], const float position[3],
+                         float direction[3], float up[3])
+{
+    SightRay ray{};
+    if (!Sight_ReadRay(title, generation, kSightRayFreshMs, ray))
+    {
+        Sight_NoteMuzzleShotUnconverged(title);
+        return false;
+    }
+    return Sight_AimMuzzleShotFromRay(title, generation, ray.head, ray.dir, ray.eye, before, position, direction, up);
 }
 
 bool Sight_ScopeConvergedLive(GameTitle title)
@@ -638,6 +714,15 @@ void Sight_Report()
         const uint64_t written = s.written.exchange(0, std::memory_order_relaxed);
         const uint64_t declined = s.declined.exchange(0, std::memory_order_relaxed);
         const uint64_t faults = s.faults.exchange(0, std::memory_order_relaxed);
+        const uint64_t muzzleAimed = s.muzzleAimed.exchange(0, std::memory_order_relaxed);
+        const uint64_t muzzleRefused = s.muzzleRefused.exchange(0, std::memory_order_relaxed);
+        const uint64_t muzzleUnconverged = s.muzzleUnconverged.exchange(0, std::memory_order_relaxed);
+        if (muzzleAimed || muzzleRefused || muzzleUnconverged)
+            LOG("SHOTS FROM THE MUZZLE %s: %llu aimed through the converged point, %llu refused by a rail (the "
+                "muzzle far from the eye, pulled back by the obstruction check, or the point not ahead of it), "
+                "%llu without a converged point; every refusal left from the eye as before",
+                TitleName(static_cast<GameTitle>(i)), (unsigned long long)muzzleAimed,
+                (unsigned long long)muzzleRefused, (unsigned long long)muzzleUnconverged);
         if (!rays && !traces && !converged && !declined && !faults)
             continue;
         const uint64_t hits = s.hits.exchange(0, std::memory_order_relaxed);

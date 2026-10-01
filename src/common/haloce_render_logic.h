@@ -117,6 +117,10 @@ struct ControllerRig
     bool turnSmooth{true},controlsPresentationBlocked{true};
     bool vehicleSmoothTurn{};
     bool gunBarrelAim{};
+    // Shots from the muzzle (shots_from_muzzle, and the barrel aim off): the barrel shot keeps the muzzle
+    // origin but flies through the converged point. Its own flag, because gunBarrelAim also moves CE's
+    // continuous target acquisition onto the barrel, which this mode must not.
+    bool muzzleShots{};
     bool roomscaleEnabled{};
     bool vehicleMotion{true},vehicleViewFollow{};
     float turnSnapDeg{30.0f},turnSmoothDegS{120.0f};

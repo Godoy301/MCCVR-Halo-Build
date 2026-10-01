@@ -502,6 +502,64 @@ static void test_limit_latch() {
     }
 }
 
+// Shots from the muzzle (aim_solve::muzzle_shot_direction): normalize(P - M), up re-orthogonalized, and
+// every rail refuses with the outputs untouched.
+static void test_muzzle_shot_direction() {
+    const float kCm = 304.8f;                       // a Blam world unit is 10 ft, 304.8 cm
+    const MuzzleShotRails r{};
+    const Vec3 eye{0, 0, 0}, dir{1, 0, 0};
+    const Vec3 muzzle{0.6f / 3.048f, -0.25f / 3.048f, -0.30f / 3.048f};   // 60 cm ahead, right and low
+    const Vec3 point{10.0f, 0, 0};                                        // ~30 m down the intent ray
+    {
+        Vec3 out{9, 9, 9}, up{0, 0, 1};
+        CHECK(muzzle_shot_direction(muzzle, muzzle, point, dir, eye, kCm, r, out, up));
+        const float lx = point.x - muzzle.x, ly = point.y - muzzle.y, lz = point.z - muzzle.z;
+        const float l = std::sqrt(lx * lx + ly * ly + lz * lz);
+        CHECK(near(out.x, lx / l, 1e-5f) && near(out.y, ly / l, 1e-5f) && near(out.z, lz / l, 1e-5f));
+        // The shot from the muzzle along out passes through P.
+        const float t = l;
+        CHECK(near(muzzle.x + out.x * t, point.x, 1e-4f) && near(muzzle.y + out.y * t, point.y, 1e-4f) &&
+              near(muzzle.z + out.z * t, point.z, 1e-4f));
+        CHECK(near(up.x * out.x + up.y * out.y + up.z * out.z, 0.0f, 1e-5f));
+        CHECK(near(std::sqrt(up.x * up.x + up.y * up.y + up.z * up.z), 1.0f, 1e-5f) && up.z > 0.9f);
+    }
+    {   // A clamp of 3 cm passes; 6 cm (the gun through a wall the eye sees past) refuses, untouched.
+        Vec3 out{9, 9, 9}, up{0, 0, 1};
+        const Vec3 before3{muzzle.x + 0.03f / 3.048f, muzzle.y, muzzle.z};
+        CHECK(muzzle_shot_direction(before3, muzzle, point, dir, eye, kCm, r, out, up));
+        out = Vec3{9, 9, 9}; up = Vec3{0, 0, 1};
+        const Vec3 before6{muzzle.x + 0.06f / 3.048f, muzzle.y, muzzle.z};
+        CHECK(!muzzle_shot_direction(before6, muzzle, point, dir, eye, kCm, r, out, up));
+        CHECK(near(out.x, 9.0f, 1e-6f) && near(up.z, 1.0f, 1e-6f));
+    }
+    {   // A muzzle 2 m from the eye is not this player's gun.
+        Vec3 out{9, 9, 9}, up{0, 0, 1};
+        const Vec3 far{0.0f, 2.0f / 3.048f, 0.0f};
+        CHECK(!muzzle_shot_direction(far, far, point, dir, eye, kCm, r, out, up) && near(out.x, 9.0f, 1e-6f));
+    }
+    {   // A converged point 5 cm ahead of the muzzle (a wall at the gun) refuses; 20 cm passes.
+        Vec3 out{9, 9, 9}, up{0, 0, 1};
+        const Vec3 close{muzzle.x + 0.05f / 3.048f, muzzle.y, muzzle.z};
+        CHECK(!muzzle_shot_direction(muzzle, muzzle, close, dir, eye, kCm, r, out, up));
+        const Vec3 ok{muzzle.x + 0.20f / 3.048f, muzzle.y, muzzle.z};
+        CHECK(muzzle_shot_direction(muzzle, muzzle, ok, dir, eye, kCm, r, out, up) && near(out.x, 1.0f, 1e-5f));
+    }
+    {   // A point behind the gun refuses.
+        Vec3 out{9, 9, 9}, up{0, 0, 1};
+        const Vec3 behind{-1.0f, 0, 0};
+        CHECK(!muzzle_shot_direction(muzzle, muzzle, behind, dir, eye, kCm, r, out, up));
+    }
+    {   // An up along the shot falls back to the up nearest world +Z; non-finite input refuses.
+        Vec3 out{}, up{1, 0, 0};
+        CHECK(muzzle_shot_direction(Vec3{0, 0, 0}, Vec3{0, 0, 0}, point, dir, eye, kCm, r, out, up));
+        CHECK(near(out.x, 1.0f, 1e-6f) && near(up.z, 1.0f, 1e-5f));
+        Vec3 out2{9, 9, 9}, up2{0, 0, 1};
+        const Vec3 nan{std::nanf(""), 0, 0};
+        CHECK(!muzzle_shot_direction(muzzle, muzzle, nan, dir, eye, kCm, r, out2, up2) && near(out2.x, 9.0f, 1e-6f));
+        CHECK(!muzzle_shot_direction(muzzle, muzzle, point, dir, eye, 0.0f, r, out2, up2));
+    }
+}
+
 int main() {
     test_selectors();
     test_angles_from_dir();
@@ -515,6 +573,7 @@ int main() {
     test_converge_direction();
     test_chase_camera_line();
     test_limit_latch();
+    test_muzzle_shot_direction();
     if (g_fail == 0) std::printf("aim_solve_tests: OK\n");
     return g_fail == 0 ? 0 : 1;
 }

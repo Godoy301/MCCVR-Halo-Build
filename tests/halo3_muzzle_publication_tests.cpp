@@ -8,7 +8,7 @@ static unsigned checks{};
 static void Check(bool value,const char* name)
 {++checks;if(!value){std::fprintf(stderr,"FAIL: %s\n",name);std::exit(1);}}
 static constexpr uint32_t owner=0x12340001,primary=0x56780002,secondary=0x789A0003;
-static struct {bool gun_barrel_aim=true,left_handed=false;} g_config;
+static struct {bool gun_barrel_aim=true,left_handed=false,shots_from_muzzle=false;} g_config;
 static std::atomic<bool> g_halo3MuzzleBindingsReady{true};
 static std::atomic<uint32_t> g_halo3RuntimeGeneration{7};
 static weapon_muzzle::Store g_halo3Muzzles;

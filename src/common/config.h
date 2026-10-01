@@ -607,6 +607,13 @@ struct Config
     // Optional per-controller firing for an owned native dual-wield pair.
     bool independent_dual_aim = false;
     bool gun_barrel_aim = false;
+    // SHOTS FROM THE MUZZLE (default off, live): each on-foot barrel shot leaves the visible muzzle, as the
+    // barrel aim's does, but flies through the point the converged aim is bent through (the reticle's
+    // point) instead of along the barrel: it lands where the shot from the eye would have, and its tracer
+    // and projectile come out of the gun. Only while the converged aim is in effect; a muzzle the game's
+    // own obstruction check pulls back (the gun through a wall the eye sees past) and every other refusal
+    // leave from the eye as before. gun_barrel_aim, when on, wins. sight_layer.h: Sight_AimMuzzleShot.
+    bool shots_from_muzzle = false;
 
     // EXPERIMENTAL (dev): route this title's aim through the game-agnostic aim-solve core + per-game
     // provider (src/common/aim_solve_logic.h, aim_provider.h). 0 = off (shipped path untouched).

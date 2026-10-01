@@ -698,7 +698,7 @@ __declspec(noinline) void __fastcall PrepareHook(int16_t user)
         local.output=reinterpret_cast<NodeMatrix*>(users+0x1088);
         local.valid=true;
         HaloCELocalPlayerState state{};
-        if(local.context.tracking.controllers.gunBarrelAim&&
+        if((local.context.tracking.controllers.gunBarrelAim||local.context.tracking.controllers.muzzleShots)&&
             HaloCEControls_GetLocalPlayerState(state)&&LocalOnFootShooter(state.unit))
         {local.muzzleUnit=state.unit;local.muzzleWeapon=state.weapon;}
     }

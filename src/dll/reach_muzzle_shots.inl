@@ -58,7 +58,7 @@ __declspec(noinline) void __fastcall ReachMuzzleQueryDetour(int32_t inputUser,ui
 {
     auto& feature=g_reachBarrel;feature.callbacks.fetch_add(1,std::memory_order_acq_rel);
     const auto previous=g_reachBarrelCapture;g_reachBarrelCapture={};
-    const bool capture=feature.enabled.load()&&!feature.faulted.load()&&g_config.gun_barrel_aim&&
+    const bool capture=feature.enabled.load()&&!feature.faulted.load()&&(g_config.gun_barrel_aim||Sight_MuzzleShotsConverge())&&
         inputUser>=0&&inputUser<4&&!(flags&1)&&direction&&control&&targeting;
     g_reachBarrelCapture.active=capture;
     __try
@@ -108,7 +108,7 @@ bool AcquireReachMuzzleTarget(const weapon_muzzle::Receipt& muzzle,NativeShotTar
 bool ApplyReachMuzzleMarker(uint32_t object,uint64_t count,void* markers,int16_t capacity)
 {
     auto& feature=g_reachBarrel;const auto request=g_reachBarrelRequest;
-    if(!feature.enabled.load()||feature.faulted.load()||!g_config.gun_barrel_aim||
+    if(!feature.enabled.load()||feature.faulted.load()||!(g_config.gun_barrel_aim||Sight_MuzzleShotsConverge())||
         exclusive_input::Active()||!g_vrAim.load()||!g_enabled.load()||!VR_IsStereoEnabled()||
         TitleAdapter_GetActiveTitle()!=GameTitle::HaloReach||feature.generation!=g_reachCamera.generation.load()||
         !request.lease||request.lease->active||request.barrel<0||request.barrel>=2||
@@ -125,11 +125,17 @@ bool ApplyReachMuzzleMarker(uint32_t object,uint64_t count,void* markers,int16_t
         context.unit,request.weapon,tracking.referenceEpoch,now,tracking.timeNs,uint8_t(slot),uint8_t(request.barrel),
         g_config.left_handed,muzzle))return false;
     float velocity[3]{},direction[3]{};std::memcpy(direction,muzzle.ray.direction,12);
+    float before[3]{};std::memcpy(before,muzzle.ray.position,12);
     const bool previous=g_legacyCollisionOwnedQuery;g_legacyCollisionOwnedQuery=true;
     __try {g_origReachUnitAdjust(int32_t(context.unit),muzzle.ray.position,direction,velocity,nullptr,nullptr,0,0,1,request.simulation);}
     __finally {g_legacyCollisionOwnedQuery=previous;}
     for(int axis=0;axis<3;++axis)
         if(!std::isfinite(muzzle.ray.position[axis])||!std::isfinite(direction[axis]))return false;
+    // SHOTS FROM THE MUZZLE (sight_layer.h): keep the origin the obstruction check left, but fly through the
+    // converged point instead of along the barrel. A refusal refuses the barrel shot: it leaves the eye.
+    // Reach's converged point is the one its direct drive last wrote (ReachAimMuzzleShot).
+    if(!g_config.gun_barrel_aim&&!ReachAimMuzzleShot(before,muzzle.ray.position,muzzle.ray.direction,muzzle.ray.up))
+        return false;
     if(!AcquireReachMuzzleTarget(muzzle,*request.lease))return false;
     const auto& ray=muzzle.ray;auto* bytes=static_cast<uint8_t*>(markers);
     const float side[3]{ray.up[1]*ray.direction[2]-ray.up[2]*ray.direction[1],
@@ -166,6 +172,8 @@ bool ReachApplyBarrelAim(int32_t unit,float* origin,float* direction,const float
     std::memcpy(origin,shot.position,12);std::memcpy(direction,shot.direction,12);
     g_origReachUnitAdjust(unit,origin,direction,velocity,nullptr,nullptr,0,0,collision,simulation);
     if(std::isfinite(origin[0])&&std::isfinite(origin[1])&&std::isfinite(origin[2]))std::memcpy(shot.position,origin,12);
+    // The shot witness (dev): a barrel shot used to skip it, so a muzzle shot's landing went unmeasured.
+    ReachSightMeasureShot(unit,origin,direction,nullptr,0,0);
     return true;
 }
 __declspec(noinline) void __fastcall ReachMuzzleFireDetour(uint32_t weapon,int16_t barrel,void* data,uint8_t simulation)

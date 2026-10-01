@@ -23,7 +23,8 @@ static bool cinematic=false,seated=false,stereo=true,owned=true,validTracking=tr
 static uint32_t localUnit=owner,liveWeapons[2]{primary,secondary};
 static std::atomic<uint32_t> g_halo3RuntimeGeneration{7};
 static std::atomic<bool> g_vrAim{true},g_enabled{true};
-static struct {float crosshair_distance_m=10;bool independent_dual_aim=true,gun_barrel_aim=false,left_handed=false;} g_config;
+static struct {float crosshair_distance_m=10;bool independent_dual_aim=true,gun_barrel_aim=false,left_handed=false,
+    shots_from_muzzle=false;} g_config;
 struct VrContactTrackingSnapshot
 {uint64_t referenceEpoch=3;int64_t timeNs=1000000000;struct {bool valid=true;} hands[2];};
 static VrContactTrackingSnapshot tracking;
@@ -35,6 +36,13 @@ static bool Seated(int32_t){return seated;}
 static auto g_halo3PlayerUnitGetter=&Player;
 static auto g_halo3UnitInVehicle=&Seated;
 static GameTitle TitleAdapter_GetActiveTitle(){return title;}
+static uint32_t TitleAdapter_GetGeneration(GameTitle){return 7;}
+// Shots from the muzzle (sight_layer.h): admitted only with the barrel aim off; the converged point itself is
+// sight_layer's (aim_solve_tests), so here it keeps the barrel's direction and counts the asks.
+static unsigned muzzleAimCalls=0;static bool muzzleAimRefuses=false;
+static bool Sight_MuzzleShotsConverge(){return g_config.shots_from_muzzle&&!g_config.gun_barrel_aim;}
+static bool Sight_AimMuzzleShot(GameTitle,uint32_t,const float*,const float*,float*,float*)
+{++muzzleAimCalls;return !muzzleAimRefuses;}
 static bool VR_IsStereoEnabled(){return stereo;}
 static float Game_GetWorldScale(){return 1;}
 static CinematicControlState ReadCinematicControl(int32_t&,int32_t&)

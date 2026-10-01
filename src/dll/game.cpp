@@ -47906,7 +47906,7 @@ bool Game_ReachSightSample(ReachSightSample& out)
 
 void Game_ReachNoteConvergedSample(const ReachSightSample& sample, float smoothedRangeWu)
 {
-#if HALOMCCVR_DEV_DIAGNOSTICS
+    // Every build: shots from the muzzle fly through this record's point (ReachAimMuzzleShot).
     auto& a = g_reachSightActuated;
     a.sequence.fetch_add(1, std::memory_order_acq_rel);
     a.ox.store(sample.origin[0], std::memory_order_relaxed);
@@ -47924,9 +47924,6 @@ void Game_ReachNoteConvergedSample(const ReachSightSample& sample, float smoothe
     a.rangeWu.store(smoothedRangeWu, std::memory_order_relaxed);
     a.atMs.store(GetTickCount64(), std::memory_order_relaxed);
     a.sequence.fetch_add(1, std::memory_order_release);
-#else
-    (void)sample; (void)smoothedRangeWu;
-#endif
 }
 
 bool Game_ReachScopeConvergedDirection(float outDir[3])

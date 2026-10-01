@@ -6,7 +6,7 @@
 #include <cstring>
 #include <limits>
 
-struct {bool manual_reload=true;bool per_gun_alignment=false;bool gun_barrel_aim=false;} g_config;
+struct {bool manual_reload=true;bool per_gun_alignment=false;bool gun_barrel_aim=false;bool shots_from_muzzle=false;} g_config;
 struct BoneMatrix {float unused;};
 struct Context {const BoneMatrix* source{};uint32_t generation{};bool valid{};} g_fpInterpolationContexts[2];
 uint32_t observedGeneration{},observations{},fixtureChecksum{};
