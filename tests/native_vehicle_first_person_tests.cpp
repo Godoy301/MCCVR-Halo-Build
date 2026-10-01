@@ -3,11 +3,13 @@
 #include <cstdio>
 #include <cstdlib>
 #include <limits>
+#include <thread>
 
 static GameTitle activeTitle=GameTitle::None;
 static uint32_t activeGeneration=7;
 static NativeVehicleCameraOwner owned{7,0x12340001,0x56780002,0,0x10000};
-static bool ownedValid=true,changeSeat=false,changeParent=false,changeGeneration=false,markerFault=false;
+static bool ownedValid=true,changeSeat=false,changeParent=false,changeGeneration=false,markerFault=false,
+    stockNonfinite=false;
 static int nativeMode=2,nativeResult=1,markerCount=1,checks=0,stockCalls=0;
 static float markerX=10.0f;
 static unsigned removedHooks=0,disabledHooks=0;
@@ -22,6 +24,9 @@ const TitleDescriptor* TitleRegistry_Find(GameTitle) {return nullptr;}
 float Game_GetWorldScale() {return 0.5f;}
 bool Game_ReadVehicleCameraOwner(GameTitle title,NativeVehicleCameraOwner& output) noexcept
 {output=owned;return ownedValid&&title==activeTitle;}
+#if HALOMCCVR_DEV_DIAGNOSTICS
+void Game_Halo4CameraOwnerReport() noexcept {}
+#endif
 namespace sig {uintptr_t Find(uintptr_t,size_t,const char*) {return 0;}}
 bool WaitForNativeDetourQuiescence(const void* const* functions,const void* const*,size_t count,
     const std::atomic<uint32_t>& callbacks)
@@ -45,7 +50,8 @@ template<unsigned I> uint32_t __fastcall StockSelector(uint32_t,Mode<I>* mode)
 void __fastcall StockCamera(uint32_t,const void*,void* result)
 {
     ++stockCalls;std::memset(result,0x5a,128);
-    const float point[3]{-10,-20,-30};std::memcpy(static_cast<uint8_t*>(result)+4,point,12);
+    const float point[3]{stockNonfinite?std::numeric_limits<float>::quiet_NaN():-10.0f,-20,-30};
+    std::memcpy(static_cast<uint8_t*>(result)+4,point,12);
 }
 int16_t FillMarker(void* output)
 {
@@ -86,6 +92,57 @@ template<unsigned I> void Run()
     Check(SelectHook<I>(owned.unit,&mode)==0&&mode==2,"occupied seat chooses first person");
     camera();Check(position[0]==10&&position[1]==20&&position[2]==30,"camera at occupant head after native evaluation");
     for(unsigned j=0;j<128;++j) if(j<4||j>=16) Check(result[j]==0x5a,"all other camera fields preserved");
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    if constexpr(I==2) {
+        // Stage 0's native seat eye: the native point the override replaced, as an offset from the placed point.
+        NativeVehicleSeatEyeDelta eye{};
+        Check(NativeVehicleFirstPerson_SeatEyeDelta(activeTitle,eye)&&eye.parent==owned.parent&&eye.seat==owned.seat&&
+            eye.generation==7&&eye.delta[0]==-20&&eye.delta[1]==-40&&eye.delta[2]==-60&&eye.ms,
+            "H4 native seat eye is the native point minus the placed head, read before the overwrite");
+        activeTitle=GameTitle::Halo2;
+        Check(!NativeVehicleFirstPerson_SeatEyeDelta(GameTitle::Halo2,eye)&&!NativeVehicleFirstPerson_SeatEyeDelta(
+            GameTitle::Halo4,eye),"the seat eye answers only for Halo 4 while it is the active title");
+        activeTitle=GameTitle::Halo4;
+        const auto published=r.eyePublished.load();
+        stockNonfinite=true;camera();stockNonfinite=false;
+        Check(r.eyePublished.load()==published&&NativeVehicleFirstPerson_SeatEyeDelta(activeTitle,eye)&&
+            eye.delta[0]==-20,"a non-finite native point publishes nothing and keeps the last offset");
+        nativeMode=0;camera();nativeMode=2;
+        Check(r.eyePublished.load()==published,"a seat view that is not ours publishes no offset");
+        (void)r.eyeWriting.test_and_set();camera();
+        Check(r.eyePublished.load()==published&&r.eyeSkipped.load()==1,"a busy writer skips rather than tear");
+        r.eyeWriting.clear();camera();
+        Check(r.eyePublished.load()==published+1,"the next free writer publishes");
+        activeGeneration=8;
+        Check(!NativeVehicleFirstPerson_SeatEyeDelta(activeTitle,eye),"an offset from another generation is no answer");
+        activeGeneration=7;r.faulted=true;
+        Check(!NativeVehicleFirstPerson_SeatEyeDelta(activeTitle,eye),"a faulted feature publishes no eye");
+        r.faulted=false;
+        // The first-person witness: armed, the selector hook records what it decided for this thread.
+        NativeVehicleFirstPerson_ArmSelectWitness();
+        Check(NativeVehicleFirstPerson_TakeSelectWitness().calls==0,"an armed witness with no selector call is empty");
+        // Taken (disarmed) and NOT re-armed: arming would clear whatever the unarmed call wrote, so the check
+        // could never fail. Take again and the witness must still be empty.
+        (void)SelectHook<I>(owned.unit,&mode);
+        Check(NativeVehicleFirstPerson_TakeSelectWitness().calls==0,"an unarmed selector call is not recorded");
+        NativeVehicleFirstPerson_ArmSelectWitness();
+        (void)SelectHook<I>(owned.unit,&mode);(void)NativeVehicleFirstPerson_TakeSelectWitness();
+        (void)SelectHook<I>(owned.unit,&mode);
+        Check(NativeVehicleFirstPerson_TakeSelectWitness().calls==1,"a call after the take is not added to the taken one");
+        NativeVehicleFirstPerson_ArmSelectWitness();
+        (void)SelectHook<I>(owned.unit,&mode);
+        auto w=NativeVehicleFirstPerson_TakeSelectWitness();
+        Check(w.calls==1&&w.unit==owned.unit&&w.nativeResult==1&&w.result==0&&w.overridden&&w.mode==2,
+            "the witness records the override taking the seat to first person");
+        nativeMode=1;NativeVehicleFirstPerson_ArmSelectWitness();
+        (void)SelectHook<I>(owned.unit,&mode);(void)SelectHook<I>(owned.unit,&mode);
+        w=NativeVehicleFirstPerson_TakeSelectWitness();nativeMode=2;
+        Check(w.calls==2&&w.result==1&&!w.overridden&&w.mode==1,"a native chase answer is recorded, and every call counted");
+        std::thread other([]{NativeVehicleFirstPerson_ArmSelectWitness();});other.join();
+        (void)SelectHook<I>(owned.unit,&mode);
+        Check(NativeVehicleFirstPerson_TakeSelectWitness().calls==2,"another thread's arming does not arm this one");
+    }
+#endif
     g_config.vehicle_cam_forward_m=0.2f;g_config.vehicle_cam_up_m=0.4f;g_config.vehicle_cam_right_m=0.6f;
     camera();Check(std::fabs(position[0]-10.1f)<0.0001f&&std::fabs(position[1]-19.7f)<0.0001f&&
         std::fabs(position[2]-30.2f)<0.0001f,"universal seat trims use verified marker axes and world scale");

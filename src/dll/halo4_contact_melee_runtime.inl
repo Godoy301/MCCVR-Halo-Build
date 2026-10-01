@@ -239,6 +239,12 @@ void Halo4SightTraceTick(uint32_t unit,void* instance)
         static_cast<uint64_t>(after.QuadPart-before.QuadPart));
 }
 
+#if HALOMCCVR_DEV_DIAGNOSTICS
+// The SEATED trace (halo4_seat_sight.inl, dev builds only: stage 0 counts, the dev key halo4_seat_converge
+// publishes). Its own cheap pre-gate, before the shared 30 ms rate limit, keeps every other unit out.
+void Halo4SightTraceSeated(uint32_t unit,void* instance);
+#endif
+
 __declspec(noinline) uint8_t __fastcall Halo4ContactUpdateDetour(void* instance)
 {
     g_halo4Contact.callbacks.fetch_add(1,std::memory_order_acq_rel);
@@ -256,6 +262,11 @@ __declspec(noinline) uint8_t __fastcall Halo4ContactUpdateDetour(void* instance)
         __except(EXCEPTION_EXECUTE_HANDLER) { unit=UINT32_MAX; }
         if(g_halo4Contact.updateOriginal) result=g_halo4Contact.updateOriginal(instance);
         if(unit!=UINT32_MAX) Halo4ContactTick(unit,instance);
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        // Seated first: its pre-gate passes only for the seated local unit, which the on-foot trace would refuse
+        // only after taking the rate limit's slot.
+        if(unit!=UINT32_MAX) Halo4SightTraceSeated(unit,instance);
+#endif
         if(unit!=UINT32_MAX) Halo4SightTraceTick(unit,instance);
     }
     __finally { g_halo4Contact.callbacks.fetch_sub(1,std::memory_order_acq_rel); }
