@@ -328,11 +328,23 @@ inline bool Normalize(Vec3 a, Vec3& out)
     return true;
 }
 
-// The seated assist's minimum limit, 0.36651915 rad (module constant 0x...D954F4; the weapon's own angle can
-// only widen it, so judging against this one is the conservative side).
+// The seated assist's minimum limit, 0.36651915 rad (module constant 0x...D954F4). The real limit is
+// max(this, the weapon's own angle -- what 0x1DC2F4 leaves at out+4, read at 0x1DCD5D): a max() can only
+// WIDEN it, never narrow it. So 21 deg is the safe side for the CLAIM (the assist reaches at least that far),
+// but for the HONEST reticle beyond it, a line turned 21 deg is only a lower bound of the real turn: a weapon
+// with a wider angle turns its shot further toward the point than that line shows.
 inline constexpr float kSeatAssistCapRad = 0.36651915f;
 // Converged is claimed only this far inside the cap.
 inline constexpr float kSeatClaimMarginRad = 2.0f * 0.017453293f;
+
+// The cap to judge a weapon against: 21 deg, widened to the widest turn the native assist has been SEEN to make
+// for that weapon (every turn it makes is inside its real cap, so the widest is still a lower bound of it --
+// safe for the claim, and closer to the truth for the honest line). A non-finite observation widens nothing.
+inline float SeatAssistCap(float widestObservedRad)
+{
+    return std::isfinite(widestObservedRad) && widestObservedRad > kSeatAssistCapRad ? widestObservedRad
+                                                                                      : kSeatAssistCapRad;
+}
 
 struct BarrelVerdict {
     bool valid = false;       // the geometry resolved

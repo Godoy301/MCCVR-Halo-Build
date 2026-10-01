@@ -259,6 +259,18 @@ void TestBarrel()
         Check(NearV(v.shot, {std::cos(kSeatAssistCapRad), 0, std::sin(kSeatAssistCapRad)}, 1e-5f),
               "the capped shot turns 21 deg toward the point, in its plane");
     }
+    {   // a weapon whose own angle widens the cap (seen turning 30 deg): judged against what was seen
+        const float cap = SeatAssistCap(30 * kDeg);
+        Check(Near(cap, 30 * kDeg, 1e-6f), "an observed 30 deg turn widens the cap to 30 deg");
+        Check(Near(SeatAssistCap(10 * kDeg), kSeatAssistCapRad, 1e-7f), "a narrower turn never narrows it");
+        Check(Near(SeatAssistCap(std::nanf("")), kSeatAssistCapRad, 1e-7f), "nothing seen: 21 deg");
+        const auto v = JudgeBarrel({1, 0, 0}, origin, {std::cos(25 * kDeg), std::sin(25 * kDeg), 0}, true, cap);
+        Check(v.valid && v.claim && NearV(v.shot, {std::cos(25 * kDeg), std::sin(25 * kDeg), 0}, 1e-5f),
+              "25 deg with a 30 deg cap: reached and claimed");
+        const auto w = JudgeBarrel({1, 0, 0}, origin, {std::cos(40 * kDeg), 0, std::sin(40 * kDeg)}, true, cap);
+        Check(!w.claim && NearV(w.shot, {std::cos(30 * kDeg), 0, std::sin(30 * kDeg)}, 1e-5f),
+              "40 deg with a 30 deg cap: the honest line turns the 30 deg seen, not 21");
+    }
     {   // unassisted (the aim unit carries no player): along the barrel, never claimed
         const auto v = JudgeBarrel({0, 2, 0}, origin, {0, 10, 0}, false);
         Check(v.valid && !v.claim && NearV(v.shot, {0, 1, 0}, 1e-5f), "no assist: the barrel's own line");

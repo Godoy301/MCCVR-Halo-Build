@@ -123,6 +123,9 @@ struct Halo4SeatSightRuntime
     void* assistTarget = nullptr;
     Halo4SeatAssistFn assistOriginal = nullptr;
     std::atomic<uint32_t> assistCallbacks{0};
+    // The widest turn the native seated assist was seen to make for one weapon: the weapon's handle in the low
+    // half, the angle's float bits in the high half (a lower bound of that weapon's real cap).
+    std::atomic<uint64_t> widestTurn{0};
     // The sample: a seqlock with a try-lock writer (two per-tick targeting sites, one thread in practice).
     std::atomic_flag sampleWriting = ATOMIC_FLAG_INIT;
     std::atomic<uint32_t> sampleVersion{0};
@@ -914,10 +917,53 @@ void Halo4SeatSightClearShot()
     t_halo4SeatShot = {};
 }
 
+// THE WEAPON'S OWN CAP. The native limit is max(21 deg, the weapon's own angle 0x1DC2F4 leaves at out+4), and the
+// mod cannot read that angle; but every turn the assist makes is inside it, so the widest turn seen for a weapon
+// is a lower bound of its cap. One weapon at a time (the seat's): another weapon's turn starts over.
+void Halo4SeatNoteAssistTurn(uint32_t weapon, float turnRad)
+{
+    if (weapon == UINT32_MAX || !std::isfinite(turnRad) || turnRad <= 0.0f)
+        return;
+    auto& slot = g_h4SeatSight.widestTurn;
+    uint64_t prior = slot.load(std::memory_order_relaxed);
+    for (;;)
+    {
+        float widest = 0.0f;
+        const uint32_t bits = static_cast<uint32_t>(prior >> 32);
+        memcpy(&widest, &bits, sizeof(widest));
+        if (static_cast<uint32_t>(prior) == weapon && prior && widest >= turnRad)
+            return;
+        uint32_t next = 0;
+        memcpy(&next, &turnRad, sizeof(next));
+        if (slot.compare_exchange_weak(prior, (uint64_t(next) << 32) | weapon, std::memory_order_relaxed))
+            return;
+    }
+}
+
+// The cap to judge `weapon` against (halo4_seat_aim::SeatAssistCap): 21 deg, or the widest turn seen for it.
+float Halo4SeatAssistCapFor(uint32_t weapon)
+{
+    const uint64_t v = g_h4SeatSight.widestTurn.load(std::memory_order_relaxed);
+    float widest = std::numeric_limits<float>::quiet_NaN();
+    if (v && weapon != UINT32_MAX && static_cast<uint32_t>(v) == weapon)
+    {
+        const uint32_t bits = static_cast<uint32_t>(v >> 32);
+        memcpy(&widest, &bits, sizeof(widest));
+    }
+    return halo4_seat_aim::SeatAssistCap(widest);
+}
+
 void Halo4SeatSightMeasureShot(const float pre[3], const float post[3], const float origin[3])
 {
     const auto dot = [](const float* a, const float* b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; };
     const float preLength = std::sqrt(dot(pre, pre)), postLength = std::sqrt(dot(post, post));
+    if (std::isfinite(preLength) && preLength > 1.0e-6f && std::isfinite(postLength) && postLength > 1.0e-6f)
+    {
+        // The turn the assist made bounds this weapon's cap from below (it is the fire routine's own weapon).
+        float c0 = dot(pre, post) / (preLength * postLength);
+        c0 = c0 > 1.0f ? 1.0f : (c0 < -1.0f ? -1.0f : c0);
+        Halo4SeatNoteAssistTurn(g_halo4BarrelRequest.weapon, std::acos(c0));
+    }
     auto& w = g_halo4SeatShots;
     const uint32_t generation = TitleAdapter_GetGeneration(GameTitle::Halo4);
     SightRay ray{};
@@ -1046,6 +1092,7 @@ struct Halo4SeatSightPoll
     bool assistKnown = false, assisted = false;   // the shot's aiming unit carries the player (the native assist)
     bool shotKnown = false;                       // the line the assist turns (item 11) and the barrel are known
     float shotForward[3]{}, barrelOrigin[3]{};    // that line, and the barrel at E + the sample's offset
+    uint32_t weapon = UINT32_MAX;                 // the shot's weapon (its observed cap)
 };
 
 // Why a seat did not solve this poll: the first proof that failed (counted for the dev line).
@@ -1245,6 +1292,7 @@ bool Halo4SeatSightPrepare(Halo4SeatSightPoll& out, const float observerForward[
     out.shotKnown = sameSeat && out.eyeKnown && sample.barrelKnown && sample.shotKnown;
     if (out.shotKnown)
     {
+        out.weapon = sample.weapon;
         memcpy(out.shotForward, sample.shotForward, sizeof(out.shotForward));
         for (int axis = 0; axis < 3; ++axis)
             out.barrelOrigin[axis] = out.eye[axis] + sample.barrelOffset[axis];
@@ -1255,7 +1303,8 @@ bool Halo4SeatSightPrepare(Halo4SeatSightPoll& out, const float observerForward[
 // Stage 1, Game_ComputeAimStick, after the aim was bent through `point` (the intent ray at the converged range):
 // may the converged aim be CLAIMED (verifier items 11 and 12)? The native seated assist turns the shot from its
 // shot line (the barrel's forward, or the aiming unit's aim under the unit-aim flag) toward the crosshair point
-// by at most 21 deg, and only while the shot's aiming unit carries the player; claimed only with 2 deg to spare.
+// by at most max(21 deg, the weapon's own angle), and only while the shot's aiming unit carries the player;
+// claimed only with 2 deg to spare inside 21 deg or the widest turn seen for the weapon.
 // Otherwise honestDir is the world direction from the rendered head to where the real shot is at the point's
 // range, when that is known. An unknown shot line (no fire of this weapon yet) claims nothing and substitutes
 // no reticle.
@@ -1274,9 +1323,11 @@ bool Halo4SeatSightClaim(const Halo4SeatSightPoll& seat, const float point[3], b
     {
         const Vec3 barrelOrigin{seat.barrelOrigin[0], seat.barrelOrigin[1], seat.barrelOrigin[2]};
         const Vec3 target{point[0], point[1], point[2]};
+        // Against 21 deg, or the widest turn the assist was seen to make for this weapon (a lower bound of its
+        // real cap max(21 deg, the weapon's own angle)): beyond it the honest line is a lower bound of the turn.
         const auto verdict = halo4_seat_aim::JudgeBarrel(
             {seat.shotForward[0], seat.shotForward[1], seat.shotForward[2]}, barrelOrigin, target,
-            seat.assisted);
+            seat.assisted, Halo4SeatAssistCapFor(seat.weapon));
         if (!verdict.valid)
             why = kH4ClaimUnknown;
         else
@@ -1422,9 +1473,14 @@ void Halo4SeatSightReport()
     if (shots.shots || shots.unmeasured || shots.unassisted || fires)
     {
         const float n = shots.shots ? float(shots.shots) : 1.0f;
+        const uint64_t widest = f.widestTurn.load(std::memory_order_relaxed);
+        float widestRad = 0.0f;
+        const uint32_t widestBits = static_cast<uint32_t>(widest >> 32);
+        memcpy(&widestRad, &widestBits, sizeof(widestRad));
         LOG("SHOT Halo 4 seated: %u shot(s) through the native seated assist (+%u unmeasured; %u while converged; "
             "%u against the published smoothed range, the rest against the seated trace's own last hit), turned "
-            "avg %.2f / max %.2f deg from the shot line, %u at the 21 deg cap; the final line misses the point under "
+            "avg %.2f / max %.2f deg from the shot line, %u at or past the 21 deg minimum cap (widest turn seen for "
+            "the current weapon %.2f deg: its cap is at least that); the final line misses the point under "
             "the reticle by avg %.0f / max %.0f mm (last %.0f mm at %.2f m); the last left [along,right,up] "
             "%+.0f,%+.0f,%+.0f mm from the solve's eye; %u seated fire(s) aimed by our vehicle (no assist: the "
             "shot line itself); fires handed the assist the barrel's forward %u, the aiming unit's aim +0x4EC %u / "
@@ -1432,7 +1488,7 @@ void Halo4SeatSightReport()
             "a different form",
             shots.shots, shots.unmeasured, shots.converged, shots.smoothed, double(shots.turnSumDeg / n),
             double(shots.turnMaxDeg),
-            shots.capBound, double(shots.missSumMm / n), double(shots.missMaxMm), double(shots.lastMissMm),
+            shots.capBound, double(widestRad) * 57.29578, double(shots.missSumMm / n), double(shots.missMaxMm), double(shots.lastMissMm),
             double(shots.lastRangeM), double(shots.lastStart[0]), double(shots.lastStart[1]),
             double(shots.lastStart[2]), shots.unassisted, shots.fires[0], shots.fires[1], shots.fires[2],
             shots.fires[3], shots.lineCompared, double(shots.lineMaxDeg), shots.lineChanged);
@@ -1504,6 +1560,7 @@ void InstallHalo4SeatSight(uintptr_t base, size_t size, uint32_t generation)
     f.sampleVersion.store(0, std::memory_order_release);
     f.lastQpc = 0;
     f.last = {};
+    f.widestTurn.store(0, std::memory_order_relaxed);   // handles of another level say nothing about this one
     g_halo4SeatEyeRoot.ms.store(0, std::memory_order_release);
     uint32_t ready = 0;
     // The muzzle lane proved these entries at exactly these addresses.
