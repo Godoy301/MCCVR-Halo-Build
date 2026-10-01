@@ -42,10 +42,24 @@ struct Runtime
     std::atomic<uint32_t> modeSeen[6]{};
     std::atomic<uint32_t> ownerWhy[7]{};
     std::atomic<uint32_t> lastSelectorUnit{},lastOwnerUnit{};
+    // The native seat eye's offset from the placed point (NativeVehicleFirstPerson_SeatEyeDelta). Seqlock with
+    // a try-lock writer: PositionOwned runs from every caller of the camera evaluator, on threads nobody has
+    // proven are one, so a second writer skips rather than tear the record (the trim publication's rule).
+    std::atomic_flag eyeWriting=ATOMIC_FLAG_INIT;
+    std::atomic<uint32_t> eyeVersion{},eyeGeneration{},eyeParent{UINT32_MAX};
+    std::atomic<int> eyeSeat{-1};
+    std::atomic<float> eyeDelta[3]{};
+    std::atomic<uint64_t> eyeMs{},eyePublished{},eyeSkipped{};
 #endif
     uint64_t reportAt{};
 };
 Runtime runtime[3];
+#if HALOMCCVR_DEV_DIAGNOSTICS
+// The first-person witness (NativeVehicleFirstPerson_ArmSelectWitness): armed and taken by one caller on its own
+// thread around one native call; Halo 4's selector hook records into it only while it is armed.
+thread_local NativeVehicleSelectWitness t_selectWitness{};
+thread_local bool t_selectWitnessArmed=false;
+#endif
 using CameraFn=void(__fastcall*)(uint32_t,const void*,void*);
 bool Current(unsigned i) noexcept
 {
@@ -158,9 +172,33 @@ template<unsigned I> void PositionOwned(uint32_t unit,void* result) noexcept
         if (mode!=2) return;
         if (!Head(I,before,point)) {runtime[I].missingMarker.fetch_add(1,std::memory_order_relaxed);return;}
         if (!Owner(I,unit,after)||before!=after) return;
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        // The native camera point, before the override replaces it (NativeVehicleFirstPerson_SeatEyeDelta).
+        [[maybe_unused]] float native[3]{};
+        if constexpr (I==2) std::memcpy(native,static_cast<const uint8_t*>(result)+4,12);
+#endif
         // After the full native evaluation, including any slave-turret marker.
         std::memcpy(static_cast<uint8_t*>(result)+4,point,12);
         auto& r=runtime[I];
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        if constexpr (I==2) {
+            const float delta[3]{native[0]-point[0],native[1]-point[1],native[2]-point[2]};
+            if (std::isfinite(delta[0])&&std::isfinite(delta[1])&&std::isfinite(delta[2])) {
+                if (!r.eyeWriting.test_and_set(std::memory_order_acquire)) {
+                    r.eyeVersion.fetch_add(1,std::memory_order_acq_rel);   // odd: writing
+                    r.eyeGeneration.store(before.generation,std::memory_order_relaxed);
+                    r.eyeParent.store(before.parent,std::memory_order_relaxed);
+                    r.eyeSeat.store(before.seat,std::memory_order_relaxed);
+                    for (unsigned axis=0;axis<3;++axis) r.eyeDelta[axis].store(delta[axis],std::memory_order_relaxed);
+                    r.eyeMs.store(GetTickCount64(),std::memory_order_relaxed);
+                    r.eyeVersion.fetch_add(1,std::memory_order_release);   // even: published
+                    r.eyeWriting.clear(std::memory_order_release);
+                    r.eyePublished.fetch_add(1,std::memory_order_relaxed);
+                }
+                else r.eyeSkipped.fetch_add(1,std::memory_order_relaxed);
+            }
+        }
+#endif
         // Menu edits the last positively identified seat in this generation.
         // Opening F1 pauses native ownership, so a time expiry would otherwise
         // silently rebind a slider to the per-game base during a drag.
@@ -186,7 +224,20 @@ template<unsigned I> uint32_t __fastcall SelectHook(uint32_t unit,Mode<I>* mode)
     uint32_t result=0;
     __try {
         result=reinterpret_cast<SelectorFn<I>>(r.original[Selector])(unit,mode);
-        if (SelectOwned<I>(unit,mode)) {result=0;r.selected.fetch_add(1,std::memory_order_relaxed);}
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        const uint32_t nativeResult=result;
+#endif
+        const bool owned=SelectOwned<I>(unit,mode);
+        if (owned) {result=0;r.selected.fetch_add(1,std::memory_order_relaxed);}
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        if constexpr (I==2) {
+            if (t_selectWitnessArmed) {
+                auto& w=t_selectWitness;
+                ++w.calls;w.unit=unit;w.nativeResult=nativeResult;w.result=result;
+                w.mode=mode?int32_t(*mode):-1;w.overridden=owned;
+            }
+        }
+#endif
     } __finally {r.callbacks.fetch_sub(1,std::memory_order_release);}
     return result;
 }
@@ -285,6 +336,38 @@ bool NativeVehicleFirstPerson_TrimTarget(GameTitle title,uint64_t& identity,int&
     }
     return false;
 }
+#if HALOMCCVR_DEV_DIAGNOSTICS
+bool NativeVehicleFirstPerson_SeatEyeDelta(GameTitle title,NativeVehicleSeatEyeDelta& out) noexcept
+{
+    constexpr unsigned i=2;   // Halo 4 only
+    if (title!=kBindings[i].title||title!=TitleAdapter_GetActiveTitle()) return false;
+    const auto& r=runtime[i];
+    if (!r.requested.load(std::memory_order_acquire)||r.faulted.load(std::memory_order_acquire)) return false;
+    for (int attempt=0;attempt<2;++attempt) {
+        const uint32_t before=r.eyeVersion.load(std::memory_order_acquire);
+        if (!before||(before&1u)) continue;
+        NativeVehicleSeatEyeDelta d{};
+        d.generation=r.eyeGeneration.load(std::memory_order_relaxed);
+        d.parent=r.eyeParent.load(std::memory_order_relaxed);
+        d.seat=static_cast<int16_t>(r.eyeSeat.load(std::memory_order_relaxed));
+        for (unsigned axis=0;axis<3;++axis) d.delta[axis]=r.eyeDelta[axis].load(std::memory_order_relaxed);
+        d.ms=r.eyeMs.load(std::memory_order_relaxed);
+        std::atomic_thread_fence(std::memory_order_acquire);
+        if (r.eyeVersion.load(std::memory_order_relaxed)!=before) continue;
+        if (!d.ms||d.generation!=TitleAdapter_GetGeneration(title)||d.parent==UINT32_MAX||d.seat<0) return false;
+        out=d;return true;
+    }
+    return false;
+}
+void NativeVehicleFirstPerson_ArmSelectWitness() noexcept
+{
+    t_selectWitness={};t_selectWitnessArmed=true;
+}
+NativeVehicleSelectWitness NativeVehicleFirstPerson_TakeSelectWitness() noexcept
+{
+    t_selectWitnessArmed=false;return t_selectWitness;
+}
+#endif
 void NativeVehicleFirstPerson_Poll()
 {
     const auto active=TitleAdapter_GetActiveTitle();const uint64_t now=GetTickCount64();
@@ -323,7 +406,15 @@ void NativeVehicleFirstPerson_Poll()
                 "generation %u, no seat %u",unsigned(title),modes[0],modes[1],modes[2],modes[3],modes[4],modes[5],
                 why[OwnerOk],why[OwnerNotCurrent],why[OwnerBadUnit],why[OwnerRead],why[OwnerUnitMismatch],
                 r.lastSelectorUnit.load(),r.lastOwnerUnit.load(),why[OwnerGeneration],why[OwnerNoSeat]);
-            if (title==GameTitle::Halo4) Game_Halo4CameraOwnerReport();
+            if (title==GameTitle::Halo4) {
+                Game_Halo4CameraOwnerReport();
+                const uint64_t published=r.eyePublished.exchange(0,std::memory_order_relaxed);
+                const uint64_t skipped=r.eyeSkipped.exchange(0,std::memory_order_relaxed);
+                if (published||skipped)
+                    LOG("Vehicle first person title=%u: native seat eye offsets published %llu (a concurrent "
+                        "writer skipped %llu)",unsigned(title),static_cast<unsigned long long>(published),
+                        static_cast<unsigned long long>(skipped));
+            }
 #endif
         }
     }

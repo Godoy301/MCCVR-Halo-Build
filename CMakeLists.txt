@@ -664,6 +664,13 @@ if(BUILD_TESTING)
     target_include_directories(halomccvr_native_vehicle_fp_tests PRIVATE "${minhook_SOURCE_DIR}/include")
     target_compile_definitions(halomccvr_native_vehicle_fp_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
     add_test(NAME halomccvr_native_vehicle_fp_tests COMMAND halomccvr_native_vehicle_fp_tests)
+    # The same production detours with the dev-only seat-eye and first-person witnesses compiled in (the
+    # target above is the player-build flavour).
+    add_executable(halomccvr_native_vehicle_fp_dev_tests tests/native_vehicle_first_person_tests.cpp src/common/config.cpp)
+    target_include_directories(halomccvr_native_vehicle_fp_dev_tests PRIVATE "${minhook_SOURCE_DIR}/include")
+    target_compile_definitions(halomccvr_native_vehicle_fp_dev_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN
+        HALOMCCVR_DEV_DIAGNOSTICS=1)
+    add_test(NAME halomccvr_native_vehicle_fp_dev_tests COMMAND halomccvr_native_vehicle_fp_dev_tests)
     add_executable(halomccvr_odst_seat_lifetime_tests tests/odst_seat_lifetime_tests.cpp)
     target_compile_definitions(halomccvr_odst_seat_lifetime_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
     add_test(NAME halomccvr_odst_seat_lifetime_tests COMMAND halomccvr_odst_seat_lifetime_tests)
