@@ -77,23 +77,49 @@ bool Halo2DriveYawPitch(const float direction[3], float& yaw, float& pitch) noex
     return std::isfinite(yaw) && std::isfinite(pitch);
 }
 
-// The local player's unit is a biped in no seat (seats keep their own aim: the vehicle servo).
-bool Halo2DriveLocalOnFoot() noexcept
+// The local player's unit is a biped: -1 unknown (fails closed), 0 on foot, 1 seated (`parent`, `seat` set).
+int Halo2DriveOccupancy(uint32_t& parent, int16_t& seat) noexcept
 {
+    parent = UINT32_MAX;
+    seat = -1;
     if (!g_vehicleSeatVerified.load(std::memory_order_acquire))
-        return false;
+        return -1;
     const uint32_t owned = Halo2OwnedUnit();
     if (owned == UINT32_MAX)
-        return false;
+        return -1;
     const auto* unit = static_cast<const uint8_t*>(Halo2ObjectFromIndex(owned));
-    return unit && unit[0xAA] == 0 &&
-        *reinterpret_cast<const int16_t*>(unit + kHalo2UnitParentSeatOffset) == -1;
+    if (!unit || unit[0xAA] != 0)
+        return -1;
+    seat = *reinterpret_cast<const int16_t*>(unit + kHalo2UnitParentSeatOffset);
+    if (seat == -1)
+        return 0;
+    parent = *reinterpret_cast<const uint32_t*>(unit + 0x14);
+    return seat >= 0 && parent != UINT32_MAX ? 1 : -1;
+}
+
+// The first writes of a seat's yaw read no limit off the record (the stick servo may still be deflecting the
+// stick until the input thread sees the seat written), as the other titles' seats.
+constexpr uint32_t kHalo2SeatPrimeUpdates = 2;
+
+// Sim thread: the seat stint is over (left the seat, the seat stopped qualifying, a disarm or a fault).
+void Halo2DriveForgetSeat(Halo2DriveState& st) noexcept
+{
+    st.stint.reset();
+    st.stintActive = false;
+    st.stintKey = 0;
+    st.stintPitchFailCounted = false;
+    st.yawLatch.reset();
+    st.yawTicks = 0;
+    st.seatYawMs.store(0, std::memory_order_release);
+    st.seatPitchMs.store(0, std::memory_order_release);
 }
 
 void Halo2DriveApply(int user, uint64_t returnAddress) noexcept
 {
     auto& st = g_halo2Drive;
     st.callbacks.fetch_add(1, std::memory_order_acq_rel);
+    bool seatKept = false;    // this update continued a seat stint (its checks survive)
+    bool seatWrote = false;   // ...and wrote it (the yaw latch keeps its last value only then)
     __try
     {
         do
@@ -103,6 +129,8 @@ void Halo2DriveApply(int user, uint64_t returnAddress) noexcept
             if (returnAddress != st.controlReturn)
             {
                 st.kicks.fetch_add(1, std::memory_order_relaxed);
+                seatKept = st.stintActive;   // another caller: not an update of the seat, nor its end
+                seatWrote = seatKept;
                 break;
             }
             st.calls.fetch_add(1, std::memory_order_relaxed);
@@ -124,15 +152,10 @@ void Halo2DriveApply(int user, uint64_t returnAddress) noexcept
             const float nativeYaw = pair[0], nativePitch = pair[1];
             st.nativeYaw.store(nativeYaw, std::memory_order_relaxed);
             st.nativePitch.store(nativePitch, std::memory_order_relaxed);
-            if (!Halo2DriveLocalOnFoot())
-            {
-                st.seated.fetch_add(1, std::memory_order_relaxed);
-                st.agree = 0;
-                break;
-            }
+            uint32_t seatParent = UINT32_MAX;
+            int16_t seatIndex = -1;
+            const int occupancy = Halo2DriveOccupancy(seatParent, seatIndex);
             const uint64_t now = GetTickCount64();
-            // The player's control update runs for an on-foot unit: the observer may take the view's heading.
-            st.footControlMs.store(now, std::memory_order_release);
             // The game's own aim: the stock camera, which the game builds from this record.
             Halo2ObserverPosePublication publication{};
             const uint32_t generation = g_generation.load(std::memory_order_acquire);
@@ -145,6 +168,139 @@ void Halo2DriveApply(int user, uint64_t returnAddress) noexcept
                 st.aimYaw.store(aimYaw, std::memory_order_relaxed);
                 st.aimPitch.store(aimPitch, std::memory_order_relaxed);
             }
+            if (occupancy != 0)
+            {
+                // SEATED. Every seat aims from this same record, written after this same call (mapped
+                // 2026-10-01; the seat's limits are applied inside the accumulator). The hand owns the seat as
+                // seat_drive::Decide says -- Halo 2's roles are not mapped, so every seat is taken as a driver
+                // whose look steers: both axes at reach_vehicle_aim 2, the servo at 1. Never while the view
+                // follows the vehicle: the hand's frame would turn with the hull it steers. And only while the
+                // observer publishes THIS seat's own view (the vehicle reference, whose heading never reads the
+                // native look): written without it, the stock camera -- built from this record -- would turn
+                // the view with the hand.
+                st.seated.fetch_add(1, std::memory_order_relaxed);
+                const uint64_t seatViewAt = g_seatViewEngagedMs.load(std::memory_order_acquire);
+                seat_drive::Seat facts{};
+                facts.identified = occupancy > 0;
+                facts.view_owned = havePublication && publication.vehicleReferenceValid &&
+                    publication.vehicleUnit == Halo2OwnedUnit() && publication.vehicleParent == seatParent &&
+                    publication.vehicleSeat == seatIndex && seatViewAt && now >= seatViewAt &&
+                    now - seatViewAt <= 100;
+                facts.driver = facts.look_steered = true;
+                const seat_drive::Axes axes = g_config.vehicle_view_follow ? seat_drive::Axes{}
+                    : seat_drive::Decide(facts, g_config.reach_vehicle_aim, g_config.seat_direct_drive != 0);
+                if (!axes.any())
+                {
+                    st.agree = 0;
+                    break;
+                }
+                seatKept = true;
+                const uint32_t key = seat_drive::SeatKey(static_cast<int>(seatParent), seatIndex, false);
+                if (!st.stintActive || st.stintKey != key)
+                {
+                    Halo2DriveForgetSeat(st);
+                    st.stintActive = true;
+                    st.stintKey = key;
+                    st.seatStints.fetch_add(1, std::memory_order_relaxed);
+                }
+                const bool yawWas = st.stint.yaw_ok, pitchWas = st.stint.pitch_ok;
+                st.stint.step(aimValid, nativeYaw, nativePitch, aimYaw, aimPitch, now);
+                if (!yawWas && st.stint.yaw_ok)
+                    st.seatYawChecks.fetch_add(1, std::memory_order_relaxed);
+                if (!pitchWas && st.stint.pitch_ok)
+                    st.seatPitchChecks.fetch_add(1, std::memory_order_relaxed);
+                if (st.stint.pitch_failed && !st.stintPitchFailCounted)
+                {
+                    st.stintPitchFailCounted = true;
+                    st.seatPitchFails.fetch_add(1, std::memory_order_relaxed);
+                }
+                if (!st.armed.load(std::memory_order_acquire))
+                {
+                    // A seat may arm the drive on yaw agreement alone (a level that starts in a vehicle).
+                    const bool agrees = aimValid && std::isfinite(nativeYaw) &&
+                        std::fabs(std::remainder(nativeYaw - aimYaw, 6.28318531f)) < kHalo2DriveAgreeRad;
+                    st.agree = agrees ? st.agree + 1 : 0;
+                    if (st.agree >= kHalo2DriveAgreeUpdates)
+                    {
+                        st.expected.store(pc, std::memory_order_release);
+                        st.armed.store(true, std::memory_order_release);
+                        st.arms.fetch_add(1, std::memory_order_relaxed);
+                    }
+                    break;
+                }
+                if (pc != st.expected.load(std::memory_order_acquire))
+                {
+                    st.armed.store(false, std::memory_order_release);
+                    st.agree = 0;
+                    seatKept = false;
+                    st.disarms.fetch_add(1, std::memory_order_relaxed);
+                    break;
+                }
+                // The hand's aim: the steer from the engine eye through the hand ray at the reticle distance.
+                // Never a converged aim here: there is no seated trace yet, and an on-foot one could still be
+                // fresh for 150 ms after sitting down.
+                float direction[3]{};
+                float yaw = 0.0f, pitch = 0.0f;
+                const bool handAim = Game_Halo2ControllerAimActive() &&
+                    BuildPublishedControllerAimDirection(direction, nullptr, false) &&
+                    Halo2DriveYawPitch(direction, yaw, pitch);
+                const bool writeYaw = axes.yaw && st.stint.yaw_ok && handAim;
+                const bool writePitch = axes.pitch && st.stint.yaw_ok && st.stint.pitch_ok && handAim;
+                if (!writeYaw && !writePitch)
+                {
+                    st.seatWaits.fetch_add(1, std::memory_order_relaxed);
+                    break;
+                }
+                // Yaw: the seat-limit latch reads the seat's yaw clamp (a cone about the seat marker) off last
+                // update's write and holds this one at it, after a short prime. Then [0, 2pi), as the native.
+                float y = aim_write::unwrap_to_branch(yaw, nativeYaw);
+                bool limited = false;
+                if (writeYaw)
+                {
+                    const bool latch[2]{st.yawTicks >= kHalo2SeatPrimeUpdates, false};
+                    const float native[2]{nativeYaw, nativePitch}, target[2]{y, nativePitch};
+                    float held[2]{};
+                    limited = st.yawLatch.apply(native, target, held, latch);
+                    if (latch[0])
+                        y = aim_write::unwrap_to_branch(held[0], nativeYaw);
+                }
+                y = std::fmod(y, 6.28318531f);
+                if (y < 0.0f)
+                    y += 6.28318531f;
+                if (!(y < 6.28318531f))
+                    y = 0.0f;
+                // Pitch: exactly the record's own seat limits, which the accumulator has just eased toward the
+                // seat camera's (hull tilt included). Never latched: the accumulator's speed-scaled autolevel
+                // moves the pitch as the vehicle drives, which is not a limit.
+                const float low = *reinterpret_cast<const float*>(pc + kHalo2PcPitchLow);
+                const float high = *reinterpret_cast<const float*>(pc + kHalo2PcPitchHigh);
+                const float p = std::isfinite(low) && std::isfinite(high) && low <= high
+                    ? std::clamp(pitch, low, high)
+                    : std::clamp(pitch, -kHalo2DrivePitchClip, kHalo2DrivePitchClip);
+                if (!std::isfinite(y) || !std::isfinite(p))
+                    break;
+                if (writeYaw)
+                    pair[0] = y;
+                if (writePitch)
+                    pair[1] = p;
+                seatWrote = true;
+                const float written[2]{y, p};
+                const bool recorded[2]{writeYaw, false};
+                st.yawLatch.wrote(written, recorded);
+                st.yawTicks = writeYaw ? (st.yawTicks < kHalo2SeatPrimeUpdates ? st.yawTicks + 1 : st.yawTicks) : 0;
+                st.seatYawMs.store(writeYaw ? now : 0, std::memory_order_release);
+                st.seatPitchMs.store(writePitch ? now : 0, std::memory_order_release);
+                st.seatWrites.fetch_add(1, std::memory_order_relaxed);
+                if (limited)
+                    st.seatHeld.fetch_add(1, std::memory_order_relaxed);
+                st.wroteYaw.store(y, std::memory_order_relaxed);
+                st.wrotePitch.store(p, std::memory_order_relaxed);
+                st.writes.fetch_add(1, std::memory_order_relaxed);
+                break;
+            }
+            // ON FOOT. The player's control update runs for an on-foot unit: the observer may take the view's
+            // heading.
+            st.footControlMs.store(now, std::memory_order_release);
             if (!st.armed.load(std::memory_order_acquire))
             {
                 const bool agrees = aimValid && std::isfinite(nativeYaw) && std::isfinite(nativePitch) &&
@@ -213,7 +369,22 @@ void Halo2DriveApply(int user, uint64_t returnAddress) noexcept
     __except (EXCEPTION_EXECUTE_HANDLER)
     {
         st.armed.store(false, std::memory_order_release);
+        seatKept = false;
+        seatWrote = false;
         st.faults.fetch_add(1, std::memory_order_relaxed);
+    }
+    // A seat stint ends with any update that did not continue it (on foot, a seat the hand does not own, a
+    // disarm, a fault); the yaw latch forgets with any update that did not write through it.
+    if (!seatKept)
+    {
+        Halo2DriveForgetSeat(st);
+    }
+    else if (!seatWrote)
+    {
+        st.yawLatch.reset();
+        st.yawTicks = 0;
+        st.seatYawMs.store(0, std::memory_order_release);
+        st.seatPitchMs.store(0, std::memory_order_release);
     }
     st.callbacks.fetch_sub(1, std::memory_order_acq_rel);
 }
@@ -255,6 +426,7 @@ bool InstallHalo2Drive(uintptr_t base, size_t size) noexcept
     st.armed.store(false, std::memory_order_release);
     st.expected.store(0, std::memory_order_release);
     st.agree = 0;
+    Halo2DriveForgetSeat(st);
     st.footControlMs.store(0, std::memory_order_release);
     st.handAimMs.store(0, std::memory_order_release);
     st.liveMs.store(0, std::memory_order_release);
@@ -335,4 +507,12 @@ void ReportHalo2Drive() noexcept
         st.disarms.exchange(0), st.seated.exchange(0), st.faults.exchange(0), st.nativeYaw.load(),
         st.nativePitch.load(), st.aimYaw.load(), st.aimPitch.load(), st.wroteYaw.load(), st.wrotePitch.load(),
         g_footViewEngages.exchange(0), g_footViewReleases.exchange(0), g_footViewFolds.exchange(0));
+    const uint32_t stints = st.seatStints.exchange(0), seatWrites = st.seatWrites.exchange(0),
+                   seatWaits = st.seatWaits.exchange(0), yawChecks = st.seatYawChecks.exchange(0),
+                   pitchChecks = st.seatPitchChecks.exchange(0), pitchFails = st.seatPitchFails.exchange(0),
+                   held = st.seatHeld.exchange(0);
+    if (stints || seatWrites || seatWaits || yawChecks || pitchChecks || pitchFails || held)
+        LOG("Halo 2 DRIVE seats: new stints %u; checks passed yaw %u pitch %u, pitch left on the servo %u; "
+            "writes %u (yaw held at a seat limit %u), waited for the hand or a check %u",
+            stints, yawChecks, pitchChecks, pitchFails, seatWrites, held, seatWaits);
 }

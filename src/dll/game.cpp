@@ -48301,7 +48301,26 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
     if (!VR_GetHeadPose(hq, hp))
         return blocked(5, "headset not tracked");
     if (halo2Aim)
-        return ComputeHalo2ControllerAimStick(q, p, hq, hp, outRx, outRy);
+    {
+        const bool servo = ComputeHalo2ControllerAimStick(q, p, hq, hp, outRx, outRy);
+        // A seat axis the direct drive writes (halo2_direct_drive.inl) is not steered as well: both written,
+        // the stick is neutral; one written, the servo keeps only the other.
+        bool seatYaw = false, seatPitch = false;
+        if (Halo2Observer6Dof_SeatDriveAxes(seatYaw, seatPitch))
+        {
+            if (seatYaw && seatPitch)
+            {
+                outRx = 0.0f;
+                outRy = 0.0f;
+                return true;
+            }
+            if (servo && seatYaw)
+                outRx = 0.0f;
+            if (servo && seatPitch)
+                outRy = 0.0f;
+        }
+        return servo;
+    }
     lastAimBlock = 0;
 
     // Controller forward from the shared, mount-calibrated aim pose. The

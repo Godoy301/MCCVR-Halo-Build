@@ -11,6 +11,8 @@
 #include "../common/halo2_snap_turn_logic.h"
 #include "../common/halo2_vehicle_view.h"
 #include "../common/halo2_foot_view.h"
+#include "../common/aim_write_logic.h"
+#include "../common/seat_drive_policy.h"
 #include "../common/halo2_vehicle_identity.h"
 #include "contact_melee_queue.h"
 #include "hook_quiescence.h"
@@ -805,6 +807,18 @@ namespace
             disarms{0}, seated{0}, faults{0};
         std::atomic<float> nativeYaw{0.0f}, nativePitch{0.0f}, aimYaw{0.0f}, aimPitch{0.0f},
             wroteYaw{0.0f}, wrotePitch{0.0f};
+        // SEATS (halo2_direct_drive.inl). Sim thread: this seat stint's per-axis check and the yaw latch (pitch is
+        // clamped exactly to the record's own seat limits instead). Read by the input thread: when each axis
+        // was last written, so the stick servo stands down on it.
+        seat_drive::StintCheck stint{};
+        bool stintActive = false;
+        uint32_t stintKey = 0;
+        bool stintPitchFailCounted = false;
+        aim_write::LimitLatch yawLatch{};
+        uint32_t yawTicks = 0;
+        std::atomic<uint64_t> seatYawMs{0}, seatPitchMs{0};
+        std::atomic<uint32_t> seatWrites{0}, seatHeld{0}, seatWaits{0}, seatStints{0}, seatYawChecks{0},
+            seatPitchChecks{0}, seatPitchFails{0};
     };
     Halo2DriveState g_halo2Drive;
     // The view's own heading on foot under the drive (halo2_foot_view.h). Observer thread only.
@@ -817,6 +831,10 @@ namespace
     // hand), and while it is fresh the right stick turns that heading instead of reaching the game.
     std::atomic<uint64_t> g_footViewEngagedMs{0};
     std::atomic<uint32_t> g_footViewEngages{0}, g_footViewReleases{0}, g_footViewFolds{0};
+    // The same for a seat: the observer last published the seat's own view (Halo2VehicleViewState, the
+    // vehicle reference), whose heading never reads the native look. The seat drive writes only while this
+    // is fresh: without it the view is the stock camera, which the record turns.
+    std::atomic<uint64_t> g_seatViewEngagedMs{0};
 
     bool Halo2DriveArmedForView() noexcept
     {
@@ -1343,6 +1361,7 @@ namespace
         // Published at the view's own heading: from here the drive may write the hand's aim into the
         // record, and the right stick stops reaching the game.
         g_footViewEngagedMs.store(ownsFootReference ? GetTickCount64() : 0, std::memory_order_release);
+        g_seatViewEngagedMs.store(ownsVehicleReference ? GetTickCount64() : 0, std::memory_order_release);
         g_appliedPoses.fetch_add(1, std::memory_order_relaxed);
     }
 
@@ -3625,9 +3644,10 @@ namespace
     // The direction the owned on-foot unit aims along. Trace-and-reaim whenever it can resolve: the line
     // from the stock camera through the point the eye-anchored intent ray hits (`converged`). Without a
     // fresh trace, the older fixed-range steer: the stock camera's line through the hand ray at the
-    // reticle distance, which is right at that one distance only.
+    // reticle distance, which is right at that one distance only. `allowConverged` false always takes the
+    // steer: a seat has no seated trace yet, and a range measured on foot 150 ms ago must not bend it.
     bool BuildPublishedControllerAimDirection(float direction[3],
-        bool* converged = nullptr) noexcept
+        bool* converged = nullptr, bool allowConverged = true) noexcept
     {
         if (converged)
             *converged = false;
@@ -3645,7 +3665,7 @@ namespace
             return false;
         }
         float head[3]{}, dir[3]{}, eye[3]{}, bent[3]{};
-        if (Halo2SightGeometry(publication, rightCarrier, head, dir, eye) &&
+        if (allowConverged && Halo2SightGeometry(publication, rightCarrier, head, dir, eye) &&
             Sight_ConvergedDirection(GameTitle::Halo2, generation, head, dir, eye, bent))
         {
             std::memcpy(direction, bent, sizeof(bent));
@@ -4783,6 +4803,7 @@ namespace
         if (!RemoveHalo2Drive())
             return false;
         g_footViewEngagedMs.store(0, std::memory_order_release);
+        g_seatViewEngagedMs.store(0, std::memory_order_release);
         if (g_nativeAimTarget)
         {
             const MH_STATUS disabled = MH_DisableHook(g_nativeAimTarget);
@@ -6304,6 +6325,16 @@ bool Halo2Observer6Dof_FootViewEngaged() noexcept
     return at && now >= at && now - at <= 100;
 }
 
+bool Halo2Observer6Dof_SeatDriveAxes(bool& yaw, bool& pitch) noexcept
+{
+    const uint64_t now = GetTickCount64();
+    const auto fresh = [now](uint64_t at) { return at && now >= at && now - at <= 150; };
+    const bool armed = g_halo2Drive.armed.load(std::memory_order_acquire);
+    yaw = armed && fresh(g_halo2Drive.seatYawMs.load(std::memory_order_acquire));
+    pitch = armed && fresh(g_halo2Drive.seatPitchMs.load(std::memory_order_acquire));
+    return yaw || pitch;
+}
+
 void Halo2Observer6Dof_SnapTurnSettled(uint32_t generation, float targetYaw) noexcept
 {
     if (!generation || !std::isfinite(targetYaw)) return;
@@ -6704,6 +6735,7 @@ void Halo2Observer6Dof_RequestRecovery(uint32_t) noexcept {}
 bool Halo2Observer6Dof_RecoveryPending() noexcept { return false; }
 bool Halo2Observer6Dof_Armed() noexcept { return false; }
 bool Halo2Observer6Dof_FootViewEngaged() noexcept { return false; }
+bool Halo2Observer6Dof_SeatDriveAxes(bool& yaw, bool& pitch) noexcept { yaw = pitch = false; return false; }
 void Halo2Observer6Dof_SnapTurnSettled(uint32_t, float) noexcept {}
 bool Halo2Observer6Dof_DirectWeaponAimArmed() noexcept { return false; }
 bool Halo2Observer6Dof_FinalPaletteArmed() noexcept { return false; }

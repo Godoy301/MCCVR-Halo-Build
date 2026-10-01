@@ -22,7 +22,7 @@ std::atomic<bool> g_armed{},g_teardownRequested{},g_finalPaletteReady{},g_vehicl
     g_vehicleFrameVerified{},g_passCamerasSet{},g_installed{},g_referenceValid{},g_recenterRequested{};
 std::atomic<uintptr_t> g_objectDatumAccessor{},g_interpolatorResetAddress{},g_observerResult{},g_moduleBase{};
 std::atomic<uint32_t> g_weaponTickIndex{},g_weaponTickPreviousIndex{},g_weaponTickGeneration{},g_generation{};
-std::atomic<uint64_t> g_packetBuilderLastAppliedMs{},g_vehicleSeatSample{},g_footViewEngagedMs{};
+std::atomic<uint64_t> g_packetBuilderLastAppliedMs{},g_vehicleSeatSample{},g_footViewEngagedMs{},g_seatViewEngagedMs{};
 struct Context { bool valid{}; };
 Context g_visibleConsumerContext{},g_finalPaletteContext{},g_aimAssistControllerRayScope{};
 std::array<Context,4> g_slotCache{};
@@ -130,11 +130,11 @@ int main()
     optionalReady=true;Check(RemoveCore("optional retry"),"optional dependency retry");
     // The direct-drive hook retires with the live cleanup (it outlived the module before), ahead of the
     // unit-aim hook it reads through; a drive that cannot retire yet keeps the core.
-    Reset();driveReady=false;g_footViewEngagedMs=5;
+    Reset();driveReady=false;g_footViewEngagedMs=5;g_seatViewEngagedMs=5;
     Check(!RemoveCore("drive still busy")&&g_target&&g_nativeAimTarget&&g_footViewEngagedMs==5,
         "a drive refusal retains the core");
     driveReady=true;{const unsigned before=driveRemoves;
-    Check(RemoveCore("drive retry")&&driveRemoves>before&&g_footViewEngagedMs==0&&!g_nativeAimTarget,
+    Check(RemoveCore("drive retry")&&driveRemoves>before&&g_footViewEngagedMs==0&&g_seatViewEngagedMs==0&&!g_nativeAimTarget,
         "the live cleanup retires the drive and drops the foot view's engagement");}
     Reset();for(int i=0;i<12;++i){enabled[i]=false;exists[i]=false;}
     Check(RemoveCore("already removed")&&g_generation==0,"absent entries converge safely");
