@@ -18195,6 +18195,21 @@ int main()
         step(true);
         Check(mx==0 && my==0 && std::fabs(follow.error[0])<1e-4f, "a recenter clears what is owed");
     }
+    // ...over the body at THAT instant. A recenter that lands while the follow is not admitted (F1, a seat, a
+    // pause; ODST recenters at every unpause) bakes nothing into the lean: the step after it is owed.
+    {
+        RoomscaleFollow follow;
+        float body[3]{}, head[3]{0,1.7f,0}, reference[3]{0,1.7f,0};
+        float mx=0,my=0; uint64_t now=100;
+        auto step=[&](bool enabled){now+=11;return follow.Update(3,now,enabled,false,body,head,reference,0,-1,1,0,1.0f,mx,my);};
+        step(true);
+        head[0]=0.2f; step(false);
+        reference[0]=head[0]; reference[2]=head[2];                  // the recenter, while not admitted
+        for (int i=0;i<20;++i) { head[0]+=0.02f; step(false); }     // then a 0.4 m step before admission returns
+        step(true);
+        Check(std::fabs(follow.initialLean[0])<1e-6f && std::fabs(follow.error[0]-0.4f)<1e-4f && (mx!=0 || my!=0),
+            "a recenter noticed late bakes nothing into the lean: the step after it is owed and walked");
+    }
     // A tracking fault is not owed. A head that jumps further between two updates than a person can
     // is folded into the neutral lean; a debt larger than any play space is dropped.
     {

@@ -172,8 +172,11 @@ struct RoomscaleFollow
             }
             else if (recentered)
             {
-                initialLean[0]=head[0]-reference[0];
-                initialLean[1]=head[2]-reference[2];
+                // A recenter put the reference on the head at that instant: the player was over the body
+                // THEN, so the lean is zero. Noticed late -- it landed while the follow was not admitted
+                // (F1, a seat, a pause; ODST recenters at every unpause) -- whatever the head moved since is
+                // owed like any other walk. Capturing head - reference here baked that into the lean for good.
+                initialLean[0]=initialLean[1]=0;
                 neutralValid=true; neutralGeneration=epoch;
             }
             commanded=settling=following=false; velocity[0]=velocity[1]=0;
