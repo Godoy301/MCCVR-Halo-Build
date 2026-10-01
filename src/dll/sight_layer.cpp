@@ -344,7 +344,7 @@ bool Sight_AimMuzzleShotThrough(GameTitle title, const float point[3], const flo
 
 bool Sight_AimMuzzleShotFromRay(GameTitle title, uint32_t generation, const float head[3], const float dir[3],
                                 const float eye[3], const float before[3], const float position[3],
-                                float direction[3], float up[3])
+                                float direction[3], float up[3], float* pointDistance)
 {
     // The point the converged aim in effect is bent through: the intent ray at the smoothed range the aim
     // path converged on (SightTrace::AimRangeWu), so the shot from the muzzle lands where the shot from the
@@ -369,7 +369,16 @@ bool Sight_AimMuzzleShotFromRay(GameTitle title, uint32_t generation, const floa
         u[axis] = dir[axis] / length;
         point[axis] = head[axis] + u[axis] * range;
     }
-    return Sight_AimMuzzleShotThrough(title, point, u, eye, before, position, direction, up);
+    if (!Sight_AimMuzzleShotThrough(title, point, u, eye, before, position, direction, up))
+        return false;
+    if (pointDistance)
+    {
+        float d2 = 0.0f;
+        for (int axis = 0; axis < 3; ++axis)
+            d2 += (point[axis] - position[axis]) * (point[axis] - position[axis]);
+        *pointDistance = std::isfinite(d2) ? std::sqrt(d2) : 0.0f;
+    }
+    return true;
 }
 
 bool Sight_AimMuzzleShot(GameTitle title, uint32_t generation, const float before[3], const float position[3],

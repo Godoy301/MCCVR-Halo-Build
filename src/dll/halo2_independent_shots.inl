@@ -97,8 +97,11 @@ bool Halo2ReadIndependentWeapons(uint32_t unit,uint32_t (&weapons)[2],bool requi
 bool Halo2ReadIndependentPair(uint32_t unit,uint32_t (&weapons)[2])
 {return Halo2ReadIndependentWeapons(unit,weapons,true);}
 
+// `distance` (world units, >0): the acquisition aims at that point along the carrier instead of the
+// crosshair distance -- a shot from the muzzle through the converged point aims at the point itself. It must
+// be set before the query below, the only consumer of shot.distance on a muzzle shot.
 bool AcquireHalo2IndependentShot(uint32_t weapon,NativeShotTargetLease<0x24>& lease,
-    const weapon_muzzle::Receipt* muzzle=nullptr)
+    const weapon_muzzle::Receipt* muzzle=nullptr,float distance=0.0f)
 {
     auto& feature=g_halo2Dual;
     const auto query=reinterpret_cast<Halo2AimAssistCalculateFn>(g_aimAssistOriginal.load());
@@ -136,7 +139,8 @@ bool AcquireHalo2IndependentShot(uint32_t weapon,NativeShotTargetLease<0x24>& le
         carrier=slot==0?primary:secondary;
     }
     g_halo2IndependentShot={true,true,false,context.unit,slot,carrier,
-        std::clamp(g_config.crosshair_distance_m,2.0f,50.0f)*Game_GetWorldScale(),muzzle!=nullptr};
+        std::isfinite(distance)&&distance>0.0f ? distance
+            : std::clamp(g_config.crosshair_distance_m,2.0f,50.0f)*Game_GetWorldScale(),muzzle!=nullptr};
     const auto previousRay=g_aimAssistControllerRayScope;
     g_aimAssistControllerRayScope={};
     g_aimAssistControllerRayScope.active=true;

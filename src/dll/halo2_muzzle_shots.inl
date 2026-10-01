@@ -68,15 +68,15 @@ bool ApplyHalo2MuzzleMarker(uint32_t object,uint16_t count,void* markers,int16_t
     // SHOTS FROM THE MUZZLE (sight_layer.h): keep the origin the obstruction check left, but fly through the
     // converged point instead of along the barrel. A refusal refuses the barrel shot: it leaves the eye.
     // The second gun under independent dual aim follows its own controller (the shot that lane prepared).
-    // The firing assist aims at the carrier's point `distance` along it, so that point is set to the
-    // converged point itself.
+    // The firing assist's acquisition aims at the carrier's point `distance` along it, so that point is the
+    // converged point itself -- handed to the acquisition, which runs the query that consumes it.
     float throughDistance=0.0f;
     if(!g_config.gun_barrel_aim &&
         ((slot==1&&g_config.independent_dual_aim) ||
          !Halo2AimMuzzleShot(before,muzzle.ray.position,muzzle.ray.direction,muzzle.ray.up,throughDistance)))
         return false;
-    if(!AcquireHalo2IndependentShot(request.weapon,*request.lease,&muzzle))return false;
-    if(!g_config.gun_barrel_aim&&throughDistance>0.0f)g_halo2IndependentShot.distance=throughDistance;
+    if(!AcquireHalo2IndependentShot(request.weapon,*request.lease,&muzzle,
+        g_config.gun_barrel_aim?0.0f:throughDistance))return false;
     // Preserve the native local matrix, node/region identity, scale and flags.
     // Its world orientation/position now matches the verified visible marker.
     auto* bytes=static_cast<uint8_t*>(markers);

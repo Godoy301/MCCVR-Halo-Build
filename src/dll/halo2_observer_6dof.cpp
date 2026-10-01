@@ -4283,26 +4283,10 @@ namespace
             Sight_NoteMuzzleShotUnconverged(GameTitle::Halo2);
             return false;
         }
-        if (!Sight_AimMuzzleShotFromRay(GameTitle::Halo2, TitleAdapter_GetGeneration(GameTitle::Halo2), head, dir,
-                                        eye, before, position, direction, up))
-            return false;
-        // The point lies on the new direction: its distance is the projection of (P - M) onto it, which the
-        // shot helper just normalised. Recover P the same way it did.
-        SightTrace trace{};
-        if (!Sight_ReadTrace(GameTitle::Halo2, TitleAdapter_GetGeneration(GameTitle::Halo2), kSightFreshMs, trace))
-            return true;
-        const float length = std::sqrt(dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]);
-        if (!std::isfinite(length) || length < 1.0e-3f)
-            return true;
-        float d2 = 0.0f;
-        for (int axis = 0; axis < 3; ++axis)
-        {
-            const float p = head[axis] + dir[axis] / length * trace.AimRangeWu();
-            d2 += (p - position[axis]) * (p - position[axis]);
-        }
-        if (std::isfinite(d2) && d2 > 0.0f)
-            distance = std::sqrt(d2);
-        return true;
+        // The firing assist aims at the point `distance` along the shot: the converged point itself, from the
+        // same trace sample the direction was built from.
+        return Sight_AimMuzzleShotFromRay(GameTitle::Halo2, TitleAdapter_GetGeneration(GameTitle::Halo2), head,
+                                          dir, eye, before, position, direction, up, &distance);
     }
 
     #include "halo2_dual_wield_runtime.inl"

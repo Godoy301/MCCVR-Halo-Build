@@ -143,12 +143,15 @@ bool Sight_ScopeConvergedDirection(GameTitle title, float outDir[3]);
 // converged, the ray or trace is stale, or the geometry fails a rail. The intent ray and engine eye are
 // the published ray's (Halo 3, ODST, Halo 4), the caller's own (...FromRay: Halo 2, CE), or the caller's
 // converged point itself (...Through: Reach, whose aim lane is its own). Any thread; counted per title.
+// ...FromRay's pointDistance, when given, receives how far that point lies from the muzzle (world units) on
+// success: a title whose firing assist aims at a point along the shot (Halo 2) aims at that one, from the
+// same trace sample the direction was built from.
 bool Sight_MuzzleShotsConverge();
 bool Sight_AimMuzzleShot(GameTitle title, uint32_t generation, const float before[3], const float position[3],
                          float direction[3], float up[3]);
 bool Sight_AimMuzzleShotFromRay(GameTitle title, uint32_t generation, const float head[3], const float dir[3],
                                 const float eye[3], const float before[3], const float position[3],
-                                float direction[3], float up[3]);
+                                float direction[3], float up[3], float* pointDistance = nullptr);
 bool Sight_AimMuzzleShotThrough(GameTitle title, const float point[3], const float rayDir[3], const float eye[3],
                                 const float before[3], const float position[3], float direction[3], float up[3]);
 // A title that could not even ask (no converged point of its own): counted with the rest.
