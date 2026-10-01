@@ -26414,6 +26414,18 @@ namespace
             entry + kReachObjectEntryDataOffset);
     }
 
+    // SHOTS FROM THE MUZZLE, seated (plan 2.D, critic M3): true -- and counted as "held off" -- while the seat
+    // points the gun away from the converged point by a natural cause (Game_SeatMuzzleRefusal), so the title's
+    // barrel-shot transaction refuses the redirect and the shot leaves as the game fires it. Defensive: no
+    // seated muzzle palette is known to publish. It never touches the claim, the reticle or the write.
+    bool SeatMuzzleShotHeld(GameTitle title)
+    {
+        if (Game_SeatMuzzleRefusal(title) == converge::SeatMuzzleRefusal::None)
+            return false;
+        Sight_NoteMuzzleShotHeld(title);
+        return true;
+    }
+
     #include "reach_sight_trace.inl"
     #include "legacy_sight_trace.inl"
     #include "reach_contact_melee_runtime.inl"
@@ -51072,6 +51084,27 @@ bool Game_ReachDdTestOwnsAim()
 #if HALOMCCVR_DEV_DIAGNOSTICS
 #include "type13_flight_log.inl"
 #endif
+
+converge::SeatMuzzleRefusal Game_SeatMuzzleRefusal(GameTitle title)
+{
+    bool held = false, turret = false;
+    switch (title)
+    {
+    case GameTitle::Halo3:
+    case GameTitle::Halo3ODST:
+        held = LegacyDriveSeatLimited(title);
+        // Critic M3: their muzzle owner checks rely on unit_in_vehicle, which answers false in a stationary
+        // turret, so a walk-up turret is the one seat a redirect could reach. Only while that title is active.
+        turret = TitleAdapter_GetActiveTitle() == title && OccupiedTurretSeat();
+        break;
+    case GameTitle::Halo4:
+        held = LegacyDriveSeatLimited(title);   // its owner check already refuses a parented unit
+        break;
+    default:
+        break;
+    }
+    return converge::SeatMuzzleRefuses(held, turret);
+}
 bool Game_ComputeAimStick(float& outRx, float& outRy)
 {
     // Before any return: this poll's assessment direction (dev only), cleared unless set below.

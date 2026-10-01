@@ -152,6 +152,17 @@ void TestReachStamps()
     Check(!StampLive(1000, 1101, 100), "past the window");
     Check(!StampLive(1000, 999, 100), "a clock that went backwards is not live");
 }
+
+void TestSeatMuzzleRefusal()
+{
+    Check(SeatMuzzleRefuses(false, false) == SeatMuzzleRefusal::None, "free seat: the redirect may run");
+    Check(SeatMuzzleRefuses(true, false) == SeatMuzzleRefusal::HeldAtLimit, "held at the stop: refused");
+    Check(SeatMuzzleRefuses(false, true) == SeatMuzzleRefusal::Turret,
+          "a turret refuses even when not latched (a rate cap is not a latch)");
+    Check(SeatMuzzleRefuses(true, true) == SeatMuzzleRefusal::Turret, "a held turret reports the turret");
+    // The refusal is a separate decision from the claim: the claim's signature takes neither input.
+    Check(ClaimSeatedConverged(true, true), "the claim stands whatever the muzzle guard decides");
+}
 } // namespace
 
 int main()
@@ -161,6 +172,7 @@ int main()
     TestAssessment();
     TestStallWitness();
     TestReachStamps();
+    TestSeatMuzzleRefusal();
     TestNames();
     std::printf("Converge policy: %u checks, %u failures\n", checks, failures);
     return failures ? 1 : 0;

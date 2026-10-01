@@ -160,8 +160,10 @@ bool ApplyOdstMuzzleMarker(uint32_t object,uint64_t count,void* markers,int16_t 
     // SHOTS FROM THE MUZZLE (sight_layer.h): keep the origin the obstruction check left, but fly through the
     // converged point instead of along the barrel. A refusal refuses the barrel shot: it leaves the eye.
     // The second gun under independent dual aim follows its own controller (the shot that lane prepared).
+    // A seat held at its stop or a turret (unit_in_vehicle reads false there) refuses it: SeatMuzzleShotHeld.
     if(!g_config.gun_barrel_aim&&
         ((slot==1&&kEnableOdstIndependentAim&&g_config.independent_dual_aim)||
+         SeatMuzzleShotHeld(GameTitle::Halo3ODST)||
          !Sight_AimMuzzleShot(GameTitle::Halo3ODST,TitleAdapter_GetGeneration(GameTitle::Halo3ODST),
             before,muzzle.ray.position,muzzle.ray.direction,muzzle.ray.up)))return false;
     if(!AcquireOdstMuzzleTarget(muzzle,*request.lease))return false;

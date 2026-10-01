@@ -99,6 +99,21 @@ inline ReachUpdateStamps ReachStampUpdate(bool wrote, bool drivenConverged, bool
     return s;
 }
 
+// SHOTS FROM THE MUZZLE in a seat (defensive: no title is known to publish a seated muzzle palette, but Halo 3
+// and ODST only refuse a unit in a VEHICLE, and unit_in_vehicle answers false in a stationary turret). The
+// redirect bends a shot through the converged point from the muzzle, which is right only while the gun points
+// at that point. A seat held at its stop, or a rate-capped turret still slewing toward the hand, points
+// elsewhere -- naturally, as in flat Halo -- so the redirect stands down and the shot leaves as the game fires
+// it. A turret refuses even when it is not slewing: a rate cap is not latched, so "held" cannot see it.
+// Only the REDIRECT is refused; the convergence claim, the reticle and the write are untouched.
+enum class SeatMuzzleRefusal : uint8_t { None, HeldAtLimit, Turret };
+inline SeatMuzzleRefusal SeatMuzzleRefuses(bool heldAtLimit, bool turretSeat)
+{
+    if (turretSeat) return SeatMuzzleRefusal::Turret;
+    if (heldAtLimit) return SeatMuzzleRefusal::HeldAtLimit;
+    return SeatMuzzleRefusal::None;
+}
+
 // The game's aim feedback as a direction: finite and not degenerate.
 inline bool AimFeedbackFinite(float x, float y, float z)
 {

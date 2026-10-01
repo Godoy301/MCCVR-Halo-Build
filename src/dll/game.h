@@ -2,6 +2,7 @@
 
 #include <cstdint>
 
+#include "../common/converge_policy.h"
 #include "../common/halo3_vehicle_logic.h"
 #include "../common/runtime_types.h"
 #include "../common/support_grip_logic.h"
@@ -147,6 +148,11 @@ void Game_ToggleVrAim();        // Insert: right controller steers the weapon ai
 // the right-stick deflection (-1..1) that turns the game's aim toward the
 // right controller ray; false = leave the player's real stick alone.
 bool Game_ComputeAimStick(float& outRx, float& outRy);
+// Shots from the muzzle, seated (defensive; converge::SeatMuzzleRefuses): whether the local player's seat
+// points the gun away from the converged point by a natural cause right now -- the direct drive held at the
+// seat's stop (Halo 3, ODST, Halo 4), or a rate-capped turret (Halo 3, ODST, where the muzzle owner check
+// cannot see a stationary turret). Refuses the redirect only; nothing else reads it. Any thread.
+converge::SeatMuzzleRefusal Game_SeatMuzzleRefusal(GameTitle title);
 // DEV (reach_direct_drive=4): true while the MASTER desired_angles persistence test owns Reach's aim;
 // the XInput hook then holds the aim stick neutral. Defined only in experimental Reach builds.
 bool Game_ReachDdTestOwnsAim();
