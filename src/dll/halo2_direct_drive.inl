@@ -291,8 +291,11 @@ bool RemoveHalo2Drive() noexcept
         LOG("Halo 2 DRIVE: disable failed (%d); ownership retained for cleanup", static_cast<int>(disabled));
         return false;
     }
+    // The asm thunk and the body it reaches. Not the extern "C" entry in between: it compiles to a bare tail
+    // jump with no unwind entry, which the quiescence scan cannot resolve, so listing it failed every
+    // retirement (verified in the built DLL). A thread there has already left the trampoline.
     const void* functions[]{reinterpret_cast<const void*>(&Halo2PcHook),
-                            reinterpret_cast<const void*>(&Halo2PcApplyForUser)};
+                            reinterpret_cast<const void*>(&Halo2DriveApply)};
     const void* trampolines[]{g_halo2PcOrig, nullptr};
     if (!WaitForNativeDetourQuiescence(functions, trampolines, 2, st.callbacks))
     {
