@@ -11208,6 +11208,10 @@ namespace
     OdstVehicleTransform g_odstVehicleTransform;
     std::atomic<uint64_t> g_odstVehicleSampleMs{0};
     std::atomic<uint64_t> g_odstRoomscaleOnFootMs{0};
+    // The sampler's raw "in a seat" (a seat word and a parent), whatever the seat's anchor: a mounted gunner
+    // or an unknown vehicle has no anchor, so the debounced first-person state reads it as on foot. Last
+    // known: a pause leaves it (Game_TitleSeated).
+    std::atomic<bool> g_odstSeatedLastKnown{false};
     std::atomic<uint32_t> g_odstVehicleFpStable{
         static_cast<uint32_t>(Halo3VehicleState::Unknown)};
     Halo3VehicleDebounce g_odstVehicleFpDebounce;
@@ -12036,6 +12040,7 @@ namespace
             g_odstVehicleFpStable.store(
                 static_cast<uint32_t>(Halo3VehicleState::Unknown),
                 std::memory_order_relaxed);
+            g_odstSeatedLastKnown.store(false, std::memory_order_relaxed);
             g_odstVehicleBinding.store(
                 static_cast<uint8_t>(OdstVehicleBindingState::StockFallback),
                 std::memory_order_release);
@@ -12050,6 +12055,7 @@ namespace
             ? nowMs : 0, std::memory_order_release);
         const bool seated = unit != -1 &&
             !OdstSeatWordMeansUnseated(seat) && parentObjectData != nullptr;
+        g_odstSeatedLastKnown.store(seated, std::memory_order_relaxed);
 
         // Identity. A mounted-turret gunner is not resolved in this candidate:
         // ODST's object parent-node byte is not yet proven (O-E2 open gap), so
@@ -35785,6 +35791,9 @@ namespace
         std::atomic<uint32_t> unit{UINT32_MAX}, parent{UINT32_MAX};
         std::atomic<int32_t> seat{-1};
         std::atomic<bool> seated{false};
+        // The last answer a VALID read gave (a failed read -- a cinematic, a refused gate -- leaves it): what
+        // Game_TitleSeated reports, so a recenter after a cutscene still sees the seat. Reset per level.
+        std::atomic<bool> lastKnownSeated{false};
     };
     Halo4SeatStamp g_halo4SeatStamp;
     void Halo4PublishSeatStamp(bool valid, const Halo4VehicleInputState& seat) noexcept
@@ -35797,6 +35806,8 @@ namespace
         s.seated.store(valid && seat.seated, std::memory_order_relaxed);
         s.ms.store(valid ? GetTickCount64() : 0, std::memory_order_relaxed);
         s.seq.fetch_add(1, std::memory_order_release);
+        if (valid)
+            s.lastKnownSeated.store(seat.seated, std::memory_order_relaxed);
     }
     // Any thread: the camera hook's last seat read, if it is fresh (150 ms) and was not torn.
     bool Halo4ReadSeatStamp(Halo4VehicleInputState& out) noexcept
@@ -42489,6 +42500,9 @@ namespace
         // it against the level's own camera.
         g_halo4Camera.headReferenceValid.store(false, std::memory_order_release);
         g_halo4Camera.headYawReference.store(0.0f, std::memory_order_relaxed);
+        // Nor does the seat carry across a load (Game_TitleSeated reads the last known one).
+        Halo4PublishSeatStamp(false, Halo4VehicleInputState{});
+        g_halo4SeatStamp.lastKnownSeated.store(false, std::memory_order_relaxed);
         for (int axis = 0; axis < 3; ++axis)
         {
             g_halo4Camera.headPositionReference[axis].store(
@@ -42795,6 +42809,12 @@ namespace
             Halo4HeadOrientation head{};
             const bool decoded =
                 Halo4DecodeHeadOrientation(snapshot.headOrientation, head);
+            // The seat, read on this engine thread BEFORE the recenter below captures: its standing lift asks
+            // whether the player is seated (Game_TitleSeated), and must see this frame's answer, not the last
+            // frame's. Published for the input threads (Halo4ReadSeatStamp).
+            Halo4VehicleInputState frameSeat{};
+            const bool frameSeatRead = Halo4ReadVehicleInput(frameSeat);
+            Halo4PublishSeatStamp(frameSeatRead, frameSeat);
             const bool manualRecenter =
                 decoded && g_needRecenter.exchange(false);
             const bool positionOnlyRecenter =
@@ -42900,11 +42920,9 @@ namespace
                 const Halo4CameraBasis beforeHead = stock;
                 if (Halo4ApplyHeadPose(stock, headInput))
                 {
-                    Halo4VehicleInputState seat{};
-                    const bool seatRead = Halo4ReadVehicleInput(seat);
-                    const bool onFoot = seatRead && !seat.seated && seat.parent == UINT32_MAX;
+                    // This frame's seat (read and published above, before the recenter).
+                    const bool onFoot = frameSeatRead && !frameSeat.seated && frameSeat.parent == UINT32_MAX;
                     g_halo4OnFootMs.store(onFoot ? GetTickCount64() : 0, std::memory_order_release);
-                    Halo4PublishSeatStamp(seatRead, seat);
                     // Unlike Halo 3 and Reach, the give-back lands after the head pose here; measure it on
                     // its own, not against beforeHead (which would include the head's own height change).
                     const float beforeCrouchZ = stock.position[2];
@@ -52970,9 +52988,13 @@ bool Game_TitleSeated(GameTitle title)
             return g_halo3VehicleFpStable.load(std::memory_order_relaxed)==
                 static_cast<uint32_t>(Halo3VehicleState::Vehicle);
         case GameTitle::Halo3ODST:
-            return g_odstVehicleFpStable.load(std::memory_order_relaxed)==
-                static_cast<uint32_t>(Halo3VehicleState::Vehicle);
+            return g_odstSeatedLastKnown.load(std::memory_order_relaxed);
         case GameTitle::HaloReach:
+            // Only the camera-info sampler sees a mounted (type-6) turret; the unit_in_vehicle fallback
+            // reports it on foot. Without the sampler no seat state can be vouched for: seated, so no lift.
+            if (g_reachCamera.vehicleCameraBindingState.load(std::memory_order_acquire) !=
+                static_cast<uint8_t>(ReachVehicleCameraBindingState::Installed))
+                return true;
             return g_reachVehicleInputSnapshot.load(std::memory_order_acquire)==ReachVehicleInputSnapshot(
                 TitleAdapter_GetGeneration(title),ReachVehicleInputState::Vehicle);
 #if HALOMCCVR_HALO2_STEREO6DOF
@@ -52981,7 +53003,7 @@ bool Game_TitleSeated(GameTitle title)
 #endif
 #if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA
         case GameTitle::Halo4:
-            return g_halo4SeatStamp.seated.load(std::memory_order_relaxed);
+            return g_halo4SeatStamp.lastKnownSeated.load(std::memory_order_relaxed);
 #endif
         default: return false;
         }

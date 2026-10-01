@@ -128,7 +128,10 @@ int main()
         PhysicalCrouchReference r;uint64_t now=5000;const float standing=1.7f,kneel=1.2f;
         auto step=[&](float h){now+=100;r.Update(h,1,0,now,true,.22f);};
         step(standing);
-        for(int i=0;i<700;++i) step(standing);
+        for(int i=0;i<100;++i) step(standing);
+        Check(!r.Confirmed(),"ten seconds of standing do not confirm a learned reference (a recenter lift waits)");
+        for(int i=0;i<600;++i) step(standing);
+        Check(r.Confirmed(),"a minute of standing near it confirms it");
         for(int i=0;i<1200;++i) step(kneel);
         Check(std::fabs(r.Baseline()-standing)<.02f,"a confirmed reference holds through a two-minute kneel");
         for(int i=0;i<1900;++i) step(kneel);
@@ -136,6 +139,7 @@ int main()
         // A seated player who stood up briefly is unconfirmed again: the minute's fallback applies.
         for(int i=0;i<100;++i) step(standing);
         Check(std::fabs(r.Baseline()-standing)<.02f,"(setup) standing for ten seconds lifts it again");
+        Check(!r.Confirmed(),"a reference lifted by a few seconds' standing is not confirmed");
         for(int i=0;i<620;++i) step(kneel);
         Check(std::fabs(r.Baseline()-kneel)<.02f,"a reference lifted by a few seconds' standing falls back in a minute");
         // ...however the stand-up looks. Confirmed seated for over a minute, then an ordinary one-second

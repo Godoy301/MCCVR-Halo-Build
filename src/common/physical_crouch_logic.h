@@ -183,8 +183,10 @@ public:
     // Counts every (re)sampling: a gesture re-arms (released, standing first) when it changes.
     uint32_t Seeds() const noexcept {return seeds_;}
     bool Calibrated() const noexcept {return calibrated_;}
-    // The reference is the player's height for good: calibrated, or confirmed by kConfirmedMs of standing near
-    // it. A merely learned one may still fall back (kStaleLowMs), so nothing that outlives it may be built on it.
+    // The reference is the player's height: calibrated, or confirmed by kConfirmedMs of standing near it. A
+    // merely learned one may fall back within kStaleLowMs, so nothing that outlives it is built on it. (A
+    // confirmed one can still fall back, after kStaleLowConfirmedMs low, and Calibrate re-seeds; what was built
+    // on the old one -- a recenter's standing lift -- lasts until the next recenter.)
     bool Confirmed() const noexcept {return calibrated_||confirmedMs_>=kConfirmedMs;}
     // A calibrated reference saw a steady height above what it may learn: it now sits below the player's
     // standing height, and calibrating again standing tall gives them the full depth back.
