@@ -1111,6 +1111,9 @@ enum Halo4SeatClaimWhy : unsigned
 struct Halo4SeatEyeWitness
 {
     std::atomic<uint64_t> polls{0}, provenPolls{0}, why[kH4SeatWhyCount]{}, claim[kH4ClaimCount]{};
+    // Polls whose honest reticle showed the game's actual aim (stall, latch, short yaw): composed from the shot's
+    // line (Halo4SeatSightHonestAlongAim), or left on the game's aim because that could not be composed.
+    std::atomic<uint64_t> honestAlongAim{0}, honestGameAim{0};
     std::atomic<float> maxGapMm{0.0f}, speedMps{0.0f}, eyeFromHead[3]{}, maxDirDeg{0.0f}, maxBarrelDeg{0.0f};
     std::atomic<uint32_t> evidence[4]{};   // halo4_seat_aim::EyeEvidence counts over new samples
 } g_h4SeatEyeWitness;
@@ -1353,6 +1356,44 @@ bool Halo4SeatSightClaim(const Halo4SeatSightPoll& seat, const float point[3], b
     return why == kH4ClaimYes;
 }
 
+// Stage 1, the servo's honest branches that publish the game's ACTUAL aim -- a stall at a seat limit, the seat
+// drive's latch, a short yaw -- for a seat whose proofs all hold (verifier item 11). There the aim is not where it
+// was bent, and the game's aim is not the shot's line either: the native assist's crosshair trace runs from the
+// game's eye E along the unit's actual aim, and the shot turns from its own line (the barrel's, or the aiming
+// unit's aim) toward that point by at most the cap -- or not at all, unassisted. The point is taken on the actual
+// aim at the converged point's range (the native trace's own range is not known; the range only moves the
+// parallax between H, E and the barrel). honestDir: from the rendered head H to where that shot is at the range.
+// False -- the caller keeps the game's aim, as before -- for a turret (its reticle rides the barrel), or with the
+// shot line, the assist or the eye unknown.
+bool Halo4SeatSightHonestAlongAim(const Halo4SeatSightPoll& seat, const float point[3], const float aimForward[3],
+                                  float honestDir[3])
+{
+    using halo4_seat_aim::Vec3;
+    if (seat.turret || !seat.shotKnown || !seat.assistKnown || !seat.eyeKnown || !point || !aimForward)
+        return false;
+    const Vec3 eye{seat.eye[0], seat.eye[1], seat.eye[2]};
+    Vec3 aim{};
+    if (!halo4_seat_aim::Normalize({aimForward[0], aimForward[1], aimForward[2]}, aim))
+        return false;
+    const Vec3 toPoint = halo4_seat_aim::Sub({point[0], point[1], point[2]}, eye);
+    const float range = std::sqrt(halo4_seat_aim::Dot(toPoint, toPoint));
+    if (!std::isfinite(range) || !(range > 1.0e-3f))
+        return false;
+    const Vec3 target = halo4_seat_aim::Add(eye, halo4_seat_aim::Scale(aim, range));
+    const Vec3 barrelOrigin{seat.barrelOrigin[0], seat.barrelOrigin[1], seat.barrelOrigin[2]};
+    const auto verdict = halo4_seat_aim::JudgeBarrel({seat.shotForward[0], seat.shotForward[1], seat.shotForward[2]},
+        barrelOrigin, target, seat.assisted, Halo4SeatAssistCapFor(seat.weapon));
+    Vec3 dir{};
+    if (!verdict.valid ||
+        !halo4_seat_aim::ShotReticleDirection({seat.head[0], seat.head[1], seat.head[2]}, barrelOrigin,
+                                              verdict.shot, target, dir))
+        return false;
+    honestDir[0] = dir.x;
+    honestDir[1] = dir.y;
+    honestDir[2] = dir.z;
+    return true;
+}
+
 // Cold worker, every 2 s: the three dev lines.
 void Halo4SeatSightReport()
 {
@@ -1404,7 +1445,8 @@ void Halo4SeatSightReport()
             "observer forward max %.2f deg; %llu polls, eye proven in %llu; not solved: view %llu, head %llu, "
             "switches %llu, eye %llu, sample %llu, witness %llu, class %llu, tilted record %llu, key off %llu; "
             "SOLVED %llu; claimed %llu, not claimed: turret %llu, shot unknown %llu, no assist %llu, beyond the cap "
-            "%llu (max barrel->point %.1f deg)",
+            "%llu (max shot line->point %.1f deg); aim held off the bend (stall/latch/short yaw): honest reticle on "
+            "the shot %llu, on the game's aim %llu",
             static_cast<unsigned long long>(samples), static_cast<unsigned long long>(f.firstPerson.exchange(0)),
             static_cast<unsigned long long>(f.chase.exchange(0)), static_cast<unsigned long long>(f.noWitness.exchange(0)),
             static_cast<unsigned long long>(f.pushes.exchange(0)), static_cast<unsigned long long>(f.sampleFaults.exchange(0)),
@@ -1425,7 +1467,9 @@ void Halo4SeatSightReport()
             static_cast<unsigned long long>(w.claim[kH4ClaimTurret].exchange(0)),
             static_cast<unsigned long long>(w.claim[kH4ClaimUnknown].exchange(0)),
             static_cast<unsigned long long>(w.claim[kH4ClaimUnassisted].exchange(0)),
-            static_cast<unsigned long long>(w.claim[kH4ClaimCap].exchange(0)), double(w.maxBarrelDeg.exchange(0.0f)));
+            static_cast<unsigned long long>(w.claim[kH4ClaimCap].exchange(0)), double(w.maxBarrelDeg.exchange(0.0f)),
+            static_cast<unsigned long long>(w.honestAlongAim.exchange(0)),
+            static_cast<unsigned long long>(w.honestGameAim.exchange(0)));
     }
     const uint64_t seatedUpdates = f.seatedUpdates.exchange(0, std::memory_order_relaxed);
     const uint64_t traces = f.traces.exchange(0, std::memory_order_relaxed);

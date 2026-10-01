@@ -50869,6 +50869,15 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
     {
         sightSeatedConverged = false;
     }
+    // ...and for the servo's honest branches that show the game's ACTUAL aim (a stall at a seat limit, the drive's
+    // latch, a short yaw): there the aim is not where it was bent, and for an unassisted or capped vehicle gun the
+    // game's aim is not where the shot goes either. Where that shot really is, composed from the shot's own line
+    // toward the point on the game's aim (Halo4SeatSightHonestAlongAim); unknown keeps the game's aim, as before.
+    bool halo4SeatAimHonest = false;
+    float halo4SeatAimHonestDir[3]{};
+    if (halo4SeatPointValid && halo4SeatSight.seated && halo4SeatSight.solve)
+        halo4SeatAimHonest = Halo4SeatSightHonestAlongAim(halo4SeatSight, halo4SeatPoint, halo4AimForward,
+                                                          halo4SeatAimHonestDir);
 #endif
 #if HALOMCCVR_EXPERIMENTAL_REACH_RENDER_CANDIDATE
     // Record the final game-basis aim -- exactly the target the servo below chases. The Reach aim
@@ -51244,6 +51253,30 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
                 (void)Halo3SeatAimToVrReticle(aimForward, true, hullYaw, hullPitch,
                     gameYawReference, headYawReference, g_yawSign.load(),
                     g_pitchSign.load(), vrYaw, vrPitch);
+#if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA && HALOMCCVR_DEV_DIAGNOSTICS
+            // A Halo 4 seat (stage 1, every proof holding) held off its bend: the shot leaves along its own line
+            // (the barrel's, or the aiming unit's aim), turned toward the point on the game's aim by at most the
+            // cap or not at all -- show where it really goes, not the game's aim. A turret keeps riding its barrel.
+            if (halo4Aim && halo4SeatSight.seated && halo4SeatSight.solve && !turretSeat && !honestOnFoot)
+            {
+                bool shown = false;
+                if (halo4SeatAimHonest)
+                {
+                    const float honestYaw = atan2f(halo4SeatAimHonestDir[1], halo4SeatAimHonestDir[0]);
+                    const float honestPitch = asinf(Clamp(halo4SeatAimHonestDir[2], -1.0f, 1.0f));
+                    const float yaw = headYawReference + g_yawSign.load() * WrapPi(honestYaw - gameYawReference);
+                    const float pitch = g_pitchSign.load() * honestPitch;
+                    if (std::isfinite(yaw) && std::isfinite(pitch))
+                    {
+                        vrYaw = yaw;
+                        vrPitch = pitch;
+                        shown = true;
+                    }
+                }
+                (shown ? g_h4SeatEyeWitness.honestAlongAim : g_h4SeatEyeWitness.honestGameAim)
+                    .fetch_add(1, std::memory_order_relaxed);
+            }
+#endif
             g_aimClampedVrYaw.store(vrYaw, std::memory_order_relaxed);
             g_aimClampedVrPitch.store(vrPitch, std::memory_order_relaxed);
             g_aimClampedValid.store(1, std::memory_order_release);
