@@ -56,10 +56,10 @@
 // the put-back it always had -- this frame's write, the same record, no context or plausibility test -- and
 // one thing changed, the window: a KICK (it runs in this frame's ticks, after the stick call) is put back while
 // no stick call has run since, under the 250 ms QPC cap, where it was 50 ms of GetTickCount64 (a catch-up burst
-// of ticks after a hitch outlasted that and left the kick for the seat latch); the NO-UNIT call and any caller
-// the map does not know run with no stick call at all while the player is dead, so they keep the 50 ms window,
-// now on QPC (kLegacyDrivePutBackNoStickMs). An unproven stick site leaves every call counting as the update,
-// as before.
+// of ticks after a hitch outlasted that and left the kick for the seat latch); the NO-UNIT call runs with no
+// stick call at all while the player is dead, so it keeps the 50 ms window, now on QPC
+// (kLegacyDrivePutBackNoStickMs), as does any caller the map does not know (the no-unit call reads that way if
+// its own proof fails). An unproven stick site leaves every call counting as the update, as before.
 // "Updates" are therefore stick calls, and the control pass runs once per MAIN-LOOP ITERATION -- a rendered
 // frame -- ahead of that frame's 0..N sim ticks: ~120 per second at 120 fps, not the sim's 60 Hz.
 
