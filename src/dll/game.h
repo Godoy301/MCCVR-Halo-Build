@@ -166,7 +166,11 @@ bool Game_ReachDirectDriveAimWritable();
 uint32_t Game_ReachDirectDriveAimWhy();      // failing aim-write conditions as bits (0 = writable)
 bool Game_ReachDirectDriveSeated();
 int Game_ReachUnitCrouchState();             // native crouch state 0/1, -1 unknown/stale (diagnostics)
-bool Game_Halo4OnFoot();                     // the local Halo 4 unit is unseated and unparented (input thread)
+bool Game_Halo4OnFoot();
+// Diagnostics (the CROUCH line): what the view was last lifted by over the engine's eye -- the physical
+// crouch give-back plus the leash -- which the title's hands share (world units; 0 when none or unknown).
+// Halo 3 / ODST / Halo 4 / Halo 2; Reach keeps its own per-frame lift on the render thread (0 here).
+float Game_ViewLiftWu(GameTitle title);                     // the local Halo 4 unit is unseated and unparented (input thread)
 // `converged` = the core bent this setpoint through a freshly traced point. The sim-thread hook records
 // it with every write, and the firing site stands the hand shot ray down only while the angles
 // actually in desired_angles are converged ones. `seated` = the aim is a seat's: the hook then keeps its

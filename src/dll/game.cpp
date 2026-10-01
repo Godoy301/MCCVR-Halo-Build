@@ -34517,6 +34517,13 @@ namespace
     // Halo 4's on-foot verdict for the physical crouch, stamped by the camera hook (an engine thread, where
     // Halo 4's per-thread TLS is readable) and read from the XInput poll (Game_Halo4OnFoot).
     std::atomic<uint64_t> g_halo4OnFootMs{0};
+    // FIRST-PERSON WITNESS: stamped every time the first-person view model is skinned (the return site
+    // below), which Halo 4 stops doing whenever its camera leaves the eye -- the Thruster Pack, the
+    // Hardlight Shield, the death camera ("0 exact first-person calls" through every such window of the user's
+    // 2026-09-30 log). Roomscale and the head leash are admitted only while it is fresh: a third-person
+    // camera is not a body under the player, and its glide back to the eye was being walked as one.
+    std::atomic<uint64_t> g_halo4FirstPersonMs{0};
+    inline constexpr uint64_t kHalo4FirstPersonFreshMs = 100;
 
     // =======================================================================
     // C-H4-7: Halo 4 stock-projection stereo geometry on C-H4-5's wrapper.
@@ -38578,6 +38585,11 @@ namespace
                     flagA,flagB,totalNodeMatrixCount,skinning);
                 return;
             }
+            // The first-person witness (g_halo4FirstPersonMs), before the hands gate so it holds with the VR
+            // hands off.
+            if (reinterpret_cast<uintptr_t>(_ReturnAddress())==
+                    g_halo4Camera.base+kHalo4FirstPersonSkinningReturnRva)
+                g_halo4FirstPersonMs.store(GetTickCount64(),std::memory_order_release);
             if (!g_halo4Camera.teardownRequested.load(std::memory_order_acquire) &&
                 g_halo4Camera.armed.load(std::memory_order_acquire) &&
                 // C-H4-32: `arm_ik` is NO LONGER A GATE. There is no arm IK in
@@ -49449,6 +49461,29 @@ void* Game_ReloadPolicyWeapon(GameTitle title, uint32_t weapon)
 // XInput poll, which is NOT always the engine thread: reading Halo 4's per-thread TLS from there passed only
 // when the poll happened to land on it, so the gate flickered about once a second and let go of every duck
 // (FA, Forge, 2026-09-29). The camera hook stamps the verdict instead; a stale stamp is "not on foot".
+float Game_ViewLiftWu(GameTitle title)
+{
+    switch (title)
+    {
+    case GameTitle::Halo3:
+    case GameTitle::Halo3ODST:
+        return g_baseCamValid.load(std::memory_order_acquire) ? g_baseCamViewLiftZ.load(std::memory_order_relaxed) : 0.0f;
+#if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA
+    case GameTitle::Halo4:
+        return g_halo4HandsLiftZ.load(std::memory_order_relaxed);
+#endif
+#if HALOMCCVR_HALO2_STEREO6DOF
+    case GameTitle::Halo2:
+    {
+        Halo2ObserverPosePublication publication{};
+        return Halo2Observer6Dof_ReadPublishedPose(publication) ? publication.viewLiftZ : 0.0f;
+    }
+#endif
+    default:
+        return 0.0f;
+    }
+}
+
 bool Game_Halo4OnFoot()
 {
 #if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA
@@ -49534,8 +49569,11 @@ bool Game_TitleOnFootPlayerControlled(GameTitle title)
             const auto unit=*reinterpret_cast<const uint32_t*>(
                 fp.record+kHalo4FirstPersonRecordUnitOffset);
             const auto* biped=Halo4ContactBiped(unit);
-            // Existing H4EK-proven contact admission: unparented local biped.
-            return biped && *reinterpret_cast<const int32_t*>(biped+0x24)==-1;
+            // Existing H4EK-proven contact admission: unparented local biped -- and the camera at his eye
+            // (the first-person witness): third person is on foot and player-controlled too.
+            const auto firstPerson=g_halo4FirstPersonMs.load(std::memory_order_acquire);
+            return biped && *reinterpret_cast<const int32_t*>(biped+0x24)==-1 &&
+                firstPerson && now>=firstPerson && now-firstPerson<=kHalo4FirstPersonFreshMs;
         }
 #endif
         default: return false;

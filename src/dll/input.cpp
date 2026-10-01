@@ -1113,7 +1113,7 @@ void Input_ReportPhysicalCrouch(uint64_t now)
     VR_GetCrouchContinuityStats(continuity);
     LOG("CROUCH: title=%u gate(tracking=%d native=%d onfoot=%d why=0x%X) head=%.3f base=%.3f down=%.3f "
         "init=%d active=%d suspended=%d pressed=0x%X transport=0x%X unitCrouched=%d nativeDrop=%s%.0fmm "
-        "(miss 0x%X) applied=%s%.0fmm mccCrouchLock(pad=%s mk=%s) ref=%s#%llu carry=%+.3f "
+        "(miss 0x%X) applied=%s%.0fmm handsLift=%.0fmm mccCrouchLock(pad=%s mk=%s) ref=%s#%llu carry=%+.3f "
         "recenters(seen=%u unseen-step=%u given=%u late=%u missed=%u breaks=%u) gen=%u",
         title, (gates & 1u) ? 1 : 0, (gates & 2u) ? 1 : 0, (gates & 4u) ? 1 : 0,
         g_crouchStatus.onFootWhy.load(std::memory_order_relaxed), head, base, base - head,
@@ -1121,7 +1121,8 @@ void Input_ReportPhysicalCrouch(uint64_t now)
         g_crouchStatus.pressed.load(std::memory_order_relaxed),
         g_crouchStatus.transport.load(std::memory_order_relaxed), unit, nativeDropFresh ? "" : "stale:",
         double(nativeDropWu) * 3048.0, PhysicalCrouchCamera_NativeMiss(static_cast<GameTitle>(title), 1500),
-        appliedFresh ? "" : "stale:", double(appliedWu) * 3048.0, lockPad, lockMk,
+        appliedFresh ? "" : "stale:", double(appliedWu) * 3048.0,
+        double(Game_ViewLiftWu(static_cast<GameTitle>(title))) * 3048.0, lockPad, lockMk,
         g_crouchStatus.calibrated.load(std::memory_order_relaxed) ? "calibrated" : "learned",
         static_cast<unsigned long long>(epoch), double(continuity.carry), continuity.announced,
         continuity.unannounced, continuity.applied, continuity.late, continuity.unseen, continuity.breaks,
