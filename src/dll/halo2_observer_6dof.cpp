@@ -636,6 +636,11 @@ namespace
     std::atomic<bool> g_vehicleIdentityVerified{false};
     std::atomic<uint64_t> g_vehicleViewApplied{0},g_vehicleViewRefused{0};
     bool ReadVehicleViewFrame(Halo2VehicleViewKey&,Halo2CameraBasis&) noexcept;
+    // Roomscale re-seats of the reference (ApplyHeadPose): how many, and how far
+    // the head had moved from the reference between its capture and the follow's
+    // first admission -- the offset that used to stay between view and legs.
+    std::atomic<uint64_t> g_roomscaleReseats{0};
+    std::atomic<uint32_t> g_roomscaleReseatMovedBits{0};
     std::atomic<uint64_t> g_snapTurns{0};
     std::atomic<uint64_t> g_snapSettled{0};
     std::atomic<uint32_t> g_ringVersion[kPublicationRing]{};
@@ -754,6 +759,9 @@ namespace
     // Written and read only from the owned detour, which the engine calls on
     // one thread inside observer_update_all.
     HeadReference g_reference{};
+    // Set when g_reference is captured; cleared once roomscale's follow first
+    // admits after it (ApplyHeadPose). Same thread as g_reference.
+    bool g_referenceAwaitingFollow = false;
 
     HMODULE g_moduleReference = nullptr;
     void* g_target = nullptr;
@@ -967,9 +975,41 @@ namespace
                 g_reference.position, snapshot.headPosition,
                 sizeof(g_reference.position));
             g_referenceValid.store(true, std::memory_order_release);
+            g_referenceAwaitingFollow = true;
             g_snapTurn={};
             g_vehicleView={};
             g_snapSettled.store(0,std::memory_order_release);
+        }
+
+        // ROOMSCALE TAKES "THE BODY IS UNDER ME" AT ITS FIRST ADMISSION, so the
+        // reference has to be there too. It is captured above when the observer
+        // installs (every level load) or on a recentre, but the follow treats its
+        // own first admitted update as the moment the player stands over the body
+        // (roomscale_logic.h, initialLean), and admission comes later: on foot,
+        // palette armed, fresh input -- about 3 s after a load (user log,
+        // 2026-09-30). Whatever the player moved in between stayed between the
+        // view and the legs until an L3+R3 recentre: 0.45-0.79 m that session.
+        // So the first admission after a capture re-seats the reference on the
+        // head: one step of the view onto the body, as a recentre makes.
+        const bool roomscaleAllowed = g_config.roomscale_movement &&
+            Game_RoomscaleCameraAllowed(GameTitle::Halo2);
+        if (roomscaleAllowed && g_referenceAwaitingFollow)
+        {
+            float moved = 0.0f;
+            for (int axis = 0; axis < 3; ++axis)
+            {
+                const float d = snapshot.headPosition[axis] - g_reference.position[axis];
+                moved += d * d;
+            }
+            moved = std::sqrt(moved);
+            uint32_t movedBits = 0;
+            std::memcpy(&movedBits, &moved, sizeof(movedBits));
+            g_roomscaleReseatMovedBits.store(movedBits, std::memory_order_relaxed);
+            g_roomscaleReseats.fetch_add(1, std::memory_order_relaxed);
+            std::memcpy(
+                g_reference.position, snapshot.headPosition,
+                sizeof(g_reference.position));
+            g_referenceAwaitingFollow = false;
         }
 
         const float stockYaw=std::atan2(stock.forward[1],stock.forward[0]);
@@ -1043,7 +1083,7 @@ namespace
         if (g_config.roomscale_movement)
         {
             const HeadReference beforeRoomscale = g_reference;
-            Roomscale_Camera(GameTitle::Halo2, Game_RoomscaleCameraAllowed(GameTitle::Halo2),
+            Roomscale_Camera(GameTitle::Halo2, roomscaleAllowed,
                 stock.position, snapshot.headPosition, snapshot.headOrientation, tracked.forward,
                 g_reference.position, head.worldScale);
             memcpy(head.referencePosition, g_reference.position, sizeof(head.referencePosition));
@@ -5513,6 +5553,20 @@ namespace
             return;
         g_lastReportMs = now;
         ReportHalo2ContactMelee();
+        static uint64_t s_reportedReseats = 0;
+        const uint64_t reseats = g_roomscaleReseats.load(std::memory_order_relaxed);
+        if (reseats != s_reportedReseats)
+        {
+            s_reportedReseats = reseats;
+            const uint32_t movedBits =
+                g_roomscaleReseatMovedBits.load(std::memory_order_relaxed);
+            float moved = 0.0f;
+            std::memcpy(&moved, &movedBits, sizeof(moved));
+            LOG("Halo 2 roomscale: reference re-seated on the head at the follow's first "
+                "admission (%llu so far); the head had moved %.3f m from it since it was "
+                "captured, which would otherwise have stayed between the view and the legs",
+                static_cast<unsigned long long>(reseats), moved);
+        }
         LOG("Halo 2 dual aim: enabled=%d fault=%d primaryRays=%llu secondaryRays=%llu refused=%llu",
             g_halo2Dual.enabled.load()?1:0, g_halo2Dual.faulted.load()?1:0,
             g_halo2Dual.primaryRays.exchange(0),
