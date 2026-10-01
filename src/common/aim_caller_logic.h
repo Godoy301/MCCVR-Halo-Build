@@ -424,16 +424,18 @@ inline void AtomicMaxU32(std::atomic<uint32_t>& slot, uint32_t v)
 // calls that saw one tick value are one tick's worth of frames: stick calls per tick = frames per tick
 // (2.0 at 120 fps over a 60 Hz sim). note() runs on the hook's (sim) thread; take() on the cold worker. The
 // working state of the current tick is the sim thread's alone and is folded into the atomics on each tick
-// change (`!=`: a checkpoint revert or a new map sends the tick back). A tick with more than kStalledCalls
-// calls is a pause or a load (the counter freezes while no tick runs): counted as stalled and kept out of
-// the means.
+// change (`!=`: a checkpoint revert or a new map sends the tick back). A tick with more than kStalledPasses
+// PASSES (a pass ends at its stick or no-unit call: one per frame), or more than kStalledCalls calls of any
+// kind, is a pause or a load (the counter freezes while no tick runs): counted as stalled and kept out of the
+// means. Passes, not calls: a 144 fps Halo 4 frame under fire runs impulse, sway and stick, so a tick of three
+// frames is nine calls and no stall.
 struct CensusTotals {
     uint32_t calls[2][kCallerCount]{};  // [seated][role], every call
     uint32_t ticks = 0;                 // folded ticks that were not stalled
     uint32_t sticks = 0;                // stick calls in those ticks
     uint32_t max_calls = 0;             // in one folded tick
-    uint32_t extra_before_stick = 0;    // ticks in which an extra call ran ahead of a stick call
-    uint32_t extra_passes = 0;          // stick calls with an extra call ahead of them in the same pass
+    uint32_t extra_before_stick = 0;    // ticks in which an extra call ran ahead of a stick call (extras_lead)
+    uint32_t extra_passes = 0;          // stick calls with an extra call ahead of them in the same pass (ditto)
     uint32_t no_stick = 0;              // ticks with no stick call
     uint32_t stalled = 0;
     uint32_t went_back = 0;
@@ -441,13 +443,18 @@ struct CensusTotals {
 };
 
 struct TickCensus {
-    static constexpr uint32_t kStalledCalls = 8;
+    static constexpr uint32_t kStalledPasses = 8;   // 8 frames in one tick: 480 fps over a 60 Hz sim
+    static constexpr uint32_t kStalledCalls = 32;   // a stall that runs only extra calls (no pass ends)
 
-    // Sim thread only. A PASS (one control update) ends at its stick or no-unit call; its extra calls come
-    // first (measured), and the tick cannot change inside a pass (the ticks run after it).
+    // Sim thread only. A PASS (one control update) ends at its stick or no-unit call, and the tick cannot change
+    // inside a pass (the ticks run after it). `extras_lead`: the title's extra calls come FIRST in their pass
+    // (dispatcher mode, measured: Halo 4's impulse and sway, Reach's impulse), so an extra call ahead of a stick
+    // call is that pass's own. In direct mode (Halo 3 / ODST) the kick runs in a tick AFTER its stick call, so
+    // it would be counted ahead of the next frame's stick: the order is not measured there (restart()).
+    bool extras_lead = true;
     bool have = false;
     uint32_t tick = 0;
-    uint32_t group_calls = 0, group_sticks = 0;
+    uint32_t group_calls = 0, group_passes = 0, group_sticks = 0;
     bool group_extra_first = false;
     bool pass_extra = false;
 
@@ -456,11 +463,12 @@ struct TickCensus {
     std::atomic<uint32_t> ticks{0}, sticks{0}, max_calls{0}, extra_before_stick{0}, extra_passes{0}, no_stick{0};
     std::atomic<uint32_t> stalled{0}, went_back{0}, unreadable{0};
 
-    void restart()
+    void restart(bool extras_lead_in)
     {
+        extras_lead = extras_lead_in;
         have = false;
         tick = 0;
-        group_calls = group_sticks = 0;
+        group_calls = group_passes = group_sticks = 0;
         group_extra_first = false;
         pass_extra = false;
     }
@@ -468,12 +476,13 @@ struct TickCensus {
     void note(bool tick_ok, uint32_t tick_now, Caller c, bool seated)
     {
         calls[seated ? 1 : 0][static_cast<int>(c)].fetch_add(1, std::memory_order_relaxed);
-        const bool extra = c == Caller::Impulse || c == Caller::Sway || c == Caller::Kick;
+        const bool extra = extras_lead && (c == Caller::Impulse || c == Caller::Sway || c == Caller::Kick);
         const bool stick = c == Caller::Stick;
+        const bool pass_end = stick || c == Caller::NoUnit;
         if (stick && pass_extra) extra_passes.fetch_add(1, std::memory_order_relaxed);
         const bool extra_ahead = stick && pass_extra;
         if (extra) pass_extra = true;
-        else if (stick || c == Caller::NoUnit) pass_extra = false;
+        else if (pass_end) pass_extra = false;
         if (!tick_ok) {
             unreadable.fetch_add(1, std::memory_order_relaxed);
             return;
@@ -487,6 +496,7 @@ struct TickCensus {
             tick = tick_now;
         }
         ++group_calls;
+        if (pass_end) ++group_passes;
         if (stick) ++group_sticks;
         if (extra_ahead) group_extra_first = true;
     }
@@ -511,7 +521,7 @@ struct TickCensus {
 private:
     void fold()
     {
-        if (group_calls > kStalledCalls) {
+        if (group_passes > kStalledPasses || group_calls > kStalledCalls) {
             stalled.fetch_add(1, std::memory_order_relaxed);
         } else if (group_calls) {
             ticks.fetch_add(1, std::memory_order_relaxed);
@@ -520,7 +530,7 @@ private:
             if (group_extra_first) extra_before_stick.fetch_add(1, std::memory_order_relaxed);
             if (!group_sticks) no_stick.fetch_add(1, std::memory_order_relaxed);
         }
-        group_calls = group_sticks = 0;
+        group_calls = group_passes = group_sticks = 0;
         group_extra_first = false;
     }
 };

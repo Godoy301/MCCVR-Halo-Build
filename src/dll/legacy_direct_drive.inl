@@ -566,7 +566,7 @@ bool LegacyDriveInstall(GameTitle title, uintptr_t base, size_t size)
     st.callers = callers;
     st.callerMode.store(callers.stick_proven() ? (callers.dispatcher_mode() ? 2 : 1) : 0, std::memory_order_release);
 #if HALOMCCVR_DEV_DIAGNOSTICS
-    st.census.restart();
+    st.census.restart(callers.dispatcher_mode());   // pass order is measured where the extra calls lead
     st.tickSlot = tickOk ? tickSlot : 0;
     st.tickField = tickOk ? tickField : 0;
 #endif
@@ -1285,11 +1285,19 @@ void LegacyDriveReport()
         if (any)
         {
             const auto role = [](aim_caller::Caller c) { return static_cast<int>(c); };
+            // The pass order is measured only where the extra calls lead their pass (Halo 4's dispatcher); Halo
+            // 3's / ODST's kick runs in a tick after its stick call (aim_caller::TickCensus::extras_lead).
+            char order[112];
+            if (mode == 2)
+                snprintf(order, sizeof(order), "ticks with an extra call before a stick %u (stick calls with one "
+                         "ahead %u)", t.extra_before_stick, t.extra_passes);
+            else
+                snprintf(order, sizeof(order), "extra call before a stick n/a (direct callers: a kick follows its "
+                         "stick)");
             LOG("DRIVE %s callers/tick (dev): ticks %u, stick %u (%.2f per tick), impulse %u, sway %u, kick %u, "
                 "no-unit %u, unknown %u (last unknown %s +0x%llX); seated of those: stick %u, impulse %u, sway %u, "
-                "kick %u, no-unit %u, unknown %u; put back %u; max calls in one tick %u; ticks with an extra call "
-                "before a stick %u (stick calls with one ahead %u); ticks with no stick %u; stalled ticks %u; tick "
-                "went back %u; tick unreadable %u",
+                "kick %u, no-unit %u, unknown %u; put back %u; max calls in one tick %u; %s; ticks with no stick "
+                "%u; stalled ticks %u; tick went back %u; tick unreadable %u",
                 name, t.ticks, byRole[role(aim_caller::Caller::Stick)],
                 t.ticks ? static_cast<double>(t.sticks) / t.ticks : 0.0, byRole[role(aim_caller::Caller::Impulse)],
                 byRole[role(aim_caller::Caller::Sway)], byRole[role(aim_caller::Caller::Kick)],
@@ -1298,8 +1306,8 @@ void LegacyDriveReport()
                 t.calls[1][role(aim_caller::Caller::Stick)], t.calls[1][role(aim_caller::Caller::Impulse)],
                 t.calls[1][role(aim_caller::Caller::Sway)], t.calls[1][role(aim_caller::Caller::Kick)],
                 t.calls[1][role(aim_caller::Caller::NoUnit)], t.calls[1][role(aim_caller::Caller::Unknown)],
-                st.censusPutBacks.exchange(0, std::memory_order_relaxed), t.max_calls, t.extra_before_stick,
-                t.extra_passes, t.no_stick, t.stalled, t.went_back, t.unreadable);
+                st.censusPutBacks.exchange(0, std::memory_order_relaxed), t.max_calls, order, t.no_stick, t.stalled,
+                t.went_back, t.unreadable);
             const auto deg = [](std::atomic<uint32_t>& bits) {
                 return aim_caller::BitsToFloat(bits.exchange(0, std::memory_order_relaxed));
             };

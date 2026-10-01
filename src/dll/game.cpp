@@ -50573,7 +50573,7 @@ extern "C" void ReachPcApplyForUser(int user, const uint8_t* entryRsp)
                 s_putBack.max_age = AimCallerClockFromMs(kAimCallerPutBackCapMs);
                 s_stickSeq = 0;
 #if HALOMCCVR_DEV_DIAGNOSTICS
-                g_reachCensus.restart();
+                g_reachCensus.restart(g_reachCallerMap.dispatcher_mode());
 #endif
             }
             const uintptr_t ret = entryRsp ? *reinterpret_cast<const uintptr_t*>(entryRsp) : 0;

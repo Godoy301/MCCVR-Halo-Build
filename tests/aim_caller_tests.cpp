@@ -532,11 +532,91 @@ void TestCensus()
     census.note(false, 0, Caller::Stick, false);
     t = census.take();
     Check(t.unreadable == 1 && t.calls[0][0] == 1, "an unreadable tick still counts the call");
-    census.restart();
+    census.restart(true);
     census.note(true, 50, Caller::Stick, false);
     census.note(true, 51, Caller::Stick, false);
     t = census.take();
     Check(t.ticks == 1 && t.went_back == 0, "restart forgets the previous tick");
+}
+
+void TestCensusPasses()
+{
+    // Halo 4 at 144 fps over the 60 Hz sim, under fire with a swaying weapon: impulse, sway and stick on every
+    // frame. 2.4 frames per tick, so a tick of three frames runs nine calls -- three passes, not a stall.
+    aim_caller::TickCensus h4;
+    h4.restart(true);
+    for (uint32_t frame = 0; frame < 720; ++frame)
+    {
+        const uint32_t tick = 100 + frame * 60 / 144;
+        h4.note(true, tick, Caller::Impulse, false);
+        h4.note(true, tick, Caller::Sway, false);
+        h4.note(true, tick, Caller::Stick, false);
+    }
+    auto t = h4.take();
+    Check(t.stalled == 0 && t.ticks == 299 && t.max_calls == 9,
+          "144 fps, three calls a pass: a nine-call tick of three frames is no stall");
+    Check(std::fabs(static_cast<double>(t.sticks) / t.ticks - 2.4) < 0.01, "2.4 stick calls per tick at 144 fps");
+    Check(t.extra_before_stick == 299 && t.extra_passes == 720, "every Halo 4 pass leads with its extra calls");
+
+    // The stall bound is on passes (one per frame): eight frames in one tick are not a stall, nine are.
+    aim_caller::TickCensus bound;
+    bound.restart(true);
+    for (int i = 0; i < 8; ++i)
+        bound.note(true, 10, Caller::Stick, false);
+    for (int i = 0; i < 9; ++i)
+        bound.note(true, 11, Caller::Stick, false);
+    bound.note(true, 12, Caller::Stick, false);
+    t = bound.take();
+    Check(t.ticks == 1 && t.sticks == 8 && t.stalled == 1, "eight passes in a tick count; nine are a stall");
+
+    // Paused while dead: only the no-unit pass runs while the tick is frozen. Passes, not stick calls, find it.
+    aim_caller::TickCensus dead;
+    dead.restart(true);
+    for (int i = 0; i < 40; ++i)
+        dead.note(true, 700, Caller::NoUnit, false);
+    dead.note(true, 701, Caller::NoUnit, false);
+    t = dead.take();
+    Check(t.stalled == 1 && t.ticks == 0 && t.no_stick == 0, "a frozen tick of no-unit passes is a stall");
+    // A frozen tick that runs only extra calls (no pass ends): the call backstop.
+    dead.restart(true);
+    for (int i = 0; i < 40; ++i)
+        dead.note(true, 800, Caller::Impulse, false);
+    dead.note(true, 801, Caller::Stick, false);
+    t = dead.take();
+    Check(t.stalled == 1 && t.ticks == 0, "a frozen tick of extra calls alone is a stall");
+}
+
+void TestCensusDirectOrder()
+{
+    // Halo 3 / ODST fire at 120 fps over the 60 Hz sim: each frame's stick call, then -- on the frames that run
+    // a tick -- the tick's weapon kick, AFTER the stick call. Read as dispatcher order, every kick would be
+    // counted ahead of the NEXT frame's stick (the Halo 4 / Reach fault signature, where no such order exists).
+    const auto fire = [](aim_caller::TickCensus& census) {
+        uint32_t tick = 500;
+        for (uint32_t frame = 0; frame < 200; ++frame)
+        {
+            census.note(true, tick, Caller::Stick, false);
+            if (frame % 2 == 1)
+            {
+                census.note(true, tick, Caller::Kick, false);
+                ++tick;
+            }
+        }
+    };
+    aim_caller::TickCensus direct;
+    direct.restart(false);
+    fire(direct);
+    auto t = direct.take();
+    Check(t.extra_before_stick == 0 && t.extra_passes == 0,
+          "direct mode: a kick that follows its stick call is never counted ahead of the next one");
+    Check(t.calls[0][static_cast<int>(Caller::Kick)] == 100 && t.ticks == 99 && t.stalled == 0,
+          "direct mode: the kicks are still counted per caller");
+    Check(std::fabs(static_cast<double>(t.sticks) / t.ticks - 2.0) < 1e-9, "direct mode: two stick calls per tick");
+    aim_caller::TickCensus misread;
+    misread.restart(true);
+    fire(misread);
+    t = misread.take();
+    Check(t.extra_passes == 99, "read in dispatcher order, every kick but the last is counted ahead of a stick");
 }
 
 void TestAtomicMax()
@@ -576,6 +656,8 @@ int main()
     TestLimitLatchPass();
     TestStintPass();
     TestCensus();
+    TestCensusPasses();
+    TestCensusDirectOrder();
     TestAtomicMax();
     TestNames();
     std::printf("aim caller tests: %u checks, %u failures\n", checks, failures);
