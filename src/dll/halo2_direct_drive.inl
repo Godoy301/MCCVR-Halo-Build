@@ -301,7 +301,10 @@ bool RemoveHalo2Drive() noexcept
     }
     const MH_STATUS removed = MH_RemoveHook(st.target);
     if (removed != MH_OK && removed != MH_ERROR_NOT_CREATED)
+    {
+        LOG("Halo 2 DRIVE: remove failed (%d); ownership retained for cleanup", static_cast<int>(removed));
         return false;
+    }
     st.target = nullptr;
     g_halo2PcOrig = nullptr;
     st.slot = 0;

@@ -4503,6 +4503,7 @@ namespace
         return true;
     }
 
+    bool RemoveHalo2Drive() noexcept;   // halo2_direct_drive.inl; the live RemoveCore retires it
     #include "halo2_observer_cleanup.inl"
 
     // Preserved old counter-only retirement for evidence; no callers.
