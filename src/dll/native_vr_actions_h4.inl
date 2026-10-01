@@ -126,7 +126,8 @@ void* __fastcall ReaderHook(void* state,unsigned action) {
     } __finally {runtime.callbacks.fetch_sub(1,std::memory_order_release);}
     return result;
 }
-void* const hooks[]{reinterpret_cast<void*>(&ConverterHook),reinterpret_cast<void*>(&ReaderHook)};
+// The reader is entered through a register-preserving asm thunk (native_vr_reader_thunks.asm).
+void* const hooks[]{reinterpret_cast<void*>(&ConverterHook),reinterpret_cast<void*>(&NativeVrReaderThunkHalo4)};
 bool ProveConsumerBounds(uintptr_t base) {
     DWORD64 imageBase=0;
     const auto* entry=RtlLookupFunctionEntry(base+consumerBegin,&imageBase,nullptr);
@@ -142,10 +143,10 @@ bool Retire() {
         if(status!=MH_OK && status!=MH_ERROR_DISABLED) return false;
         runtime.enabled[i]=false;
     }
-    const void* functions[]{hooks[0],hooks[1],reinterpret_cast<void*>(&ReadOwned),reinterpret_cast<void*>(&Current),
-        reinterpret_cast<void*>(&ReadController),reinterpret_cast<void*>(&ReadFrames)};
-    const void* trampolines[]{runtime.original[0],runtime.original[1],nullptr,nullptr,nullptr,nullptr};
-    if(!WaitForNativeDetourQuiescence(functions,trampolines,6,runtime.callbacks)) return false;
+    const void* functions[]{hooks[0],hooks[1],reinterpret_cast<void*>(&ReaderHook),reinterpret_cast<void*>(&ReadOwned),
+        reinterpret_cast<void*>(&Current),reinterpret_cast<void*>(&ReadController),reinterpret_cast<void*>(&ReadFrames)};
+    const void* trampolines[]{runtime.original[0],runtime.original[1],nullptr,nullptr,nullptr,nullptr,nullptr};
+    if(!WaitForNativeDetourQuiescence(functions,trampolines,7,runtime.callbacks)) return false;
     for(unsigned i=0;i<2;++i) if(runtime.target[i]) {
         if(MH_RemoveHook(runtime.target[i])!=MH_OK) return false;
         runtime.target[i]=runtime.original[i]=nullptr;

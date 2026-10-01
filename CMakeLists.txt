@@ -351,6 +351,9 @@ target_link_libraries(halo3xr PRIVATE
 target_sources(halo3xr PRIVATE src/dll/native_subtitles.cpp)
 target_sources(halo3xr PRIVATE src/dll/physical_crouch_camera.cpp)
 target_sources(halo3xr PRIVATE src/dll/native_vr_actions.cpp)
+# The bridge's native readers are entered through register-preserving thunks (LTCG callers keep
+# volatile registers live across those leaf calls; see the .asm).
+target_sources(halo3xr PRIVATE src/dll/native_vr_reader_thunks.asm)
 target_sources(halo3xr PRIVATE src/dll/bloom_override.cpp)
 if(HALOMCCVR_EXPERIMENTAL_REACH_RENDER_CANDIDATE)
     target_link_libraries(halo3xr PRIVATE bcrypt)
@@ -423,10 +426,16 @@ if(BUILD_TESTING)
     target_compile_features(halo4_contact_backend_tests PRIVATE cxx_std_20)
     target_compile_options(halo4_contact_backend_tests PRIVATE /W4 /EHsc)
     add_test(NAME halo4_contact_backend COMMAND halo4_contact_backend_tests)
-    add_executable(native_vr_actions_runtime_tests tests/native_vr_actions_runtime_tests.cpp)
+    add_executable(native_vr_actions_runtime_tests tests/native_vr_actions_runtime_tests.cpp
+        src/dll/native_vr_reader_thunks.asm)
     target_include_directories(native_vr_actions_runtime_tests PRIVATE "${minhook_SOURCE_DIR}/include")
     target_compile_definitions(native_vr_actions_runtime_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
     add_test(NAME native_vr_actions_runtime COMMAND native_vr_actions_runtime_tests)
+    # The reader thunks must keep every volatile register but rax across the C++ hook (an asm probe
+    # plays the LTCG caller; the hook clobbers everything).
+    add_executable(native_vr_reader_thunk_tests tests/native_vr_reader_thunk_tests.cpp
+        tests/native_vr_reader_thunk_probe.asm src/dll/native_vr_reader_thunks.asm)
+    add_test(NAME native_vr_reader_thunks COMMAND native_vr_reader_thunk_tests)
     add_test(NAME halomccvr_physical_crouch_tests COMMAND halomccvr_physical_crouch_tests)
     add_executable(halomccvr_physical_crouch_camera_tests tests/physical_crouch_camera_tests.cpp src/dll/physical_crouch_camera.cpp)
     add_test(NAME halomccvr_physical_crouch_camera_tests COMMAND halomccvr_physical_crouch_camera_tests)

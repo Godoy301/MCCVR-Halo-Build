@@ -12,6 +12,17 @@
 #include <MinHook.h>
 #include <atomic>
 
+// The hooked native READERS are leaves whose LTCG callers keep volatile registers live across the call
+// (tools/audit_caller_area.py), which a C++ detour clobbers: Halo 3 then wrote through r10 = 0 at every
+// level load. Each reader hook is therefore entered through native_vr_reader_thunks.asm, which saves every
+// volatile register but rax and calls the C++ hook through these pointers (defined below).
+extern "C" {
+void NativeVrReaderThunkReach();
+void NativeVrReaderThunkHalo3();
+void NativeVrReaderThunkOdst();
+void NativeVrReaderThunkHalo4();
+}
+
 namespace {
 #include "gesture_binding_reader.inl"
 // Reach is admitted independently: its kit has distinct generic-use and
@@ -172,7 +183,8 @@ void* __fastcall ReaderHook(void* state,unsigned action) {
     } __finally {runtime.callbacks.fetch_sub(1,std::memory_order_release);}
     return result;
 }
-void* const hooks[]{reinterpret_cast<void*>(&ConverterHook),reinterpret_cast<void*>(&ReaderHook)};
+// The reader is entered through a register-preserving asm thunk (native_vr_reader_thunks.asm).
+void* const hooks[]{reinterpret_cast<void*>(&ConverterHook),reinterpret_cast<void*>(&NativeVrReaderThunkReach)};
 bool Prove(uintptr_t base,size_t size,uintptr_t rva,const char* pattern) {
     const auto found=sig::Find(base,size,pattern);
     return rva<size && found==base+rva && !sig::Find(found+1,size-(found+1-base),pattern);
@@ -192,10 +204,10 @@ bool Retire() {
         if(status!=MH_OK && status!=MH_ERROR_DISABLED) return false;
         runtime.enabled[i]=false;
     }
-    const void* functions[]{hooks[0],hooks[1],reinterpret_cast<void*>(&ReadOwned),reinterpret_cast<void*>(&Current),
-        reinterpret_cast<void*>(&ReadController),reinterpret_cast<void*>(&ReadFrames)};
-    const void* trampolines[]{runtime.original[0],runtime.original[1],nullptr,nullptr,nullptr,nullptr};
-    if(!WaitForNativeDetourQuiescence(functions,trampolines,6,runtime.callbacks)) return false;
+    const void* functions[]{hooks[0],hooks[1],reinterpret_cast<void*>(&ReaderHook),reinterpret_cast<void*>(&ReadOwned),
+        reinterpret_cast<void*>(&Current),reinterpret_cast<void*>(&ReadController),reinterpret_cast<void*>(&ReadFrames)};
+    const void* trampolines[]{runtime.original[0],runtime.original[1],nullptr,nullptr,nullptr,nullptr,nullptr};
+    if(!WaitForNativeDetourQuiescence(functions,trampolines,7,runtime.callbacks)) return false;
     for(unsigned i=0;i<2;++i) if(runtime.target[i]) {
         if(MH_RemoveHook(runtime.target[i])!=MH_OK) return false;
         runtime.target[i]=runtime.original[i]=nullptr;
@@ -229,6 +241,12 @@ uint32_t GenerationForTitle(GameTitle requested) noexcept {
 }
 }
 
+extern "C" {
+void* (*g_nativeVrReaderReach)(void*,unsigned)=&ReaderHook;
+void* (*g_nativeVrReaderHalo3)(void*,unsigned)=&native_h3::ReaderHook;
+void* (*g_nativeVrReaderOdst)(void*,unsigned)=&native_odst::ReaderHook;
+void* (*g_nativeVrReaderHalo4)(void*,unsigned)=&native_h4::ReaderHook;
+}
 void NativeVrActions_BeginPoll() noexcept {
     pollPublished=false;
 }
