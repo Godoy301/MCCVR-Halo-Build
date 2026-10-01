@@ -137,9 +137,14 @@ public:
     static constexpr uint64_t kSampleMs=100;
     static constexpr size_t kWindowSamples=100,kMinSamples=50;
     // A learned reference the head has stayed below the release line for this long (ms) was learned too
-    // high (a headset lifted up and held there, say) and falls back to the median, so a mistake there
-    // cannot hold a crouch forever. A player's own Calibrate is never second-guessed.
+    // high (a headset lifted up and held there, a seated player who stood up for a few seconds) and falls
+    // back to the median, so a mistake there cannot hold a crouch forever. A player's own Calibrate is
+    // never second-guessed.
     static constexpr uint64_t kStaleLowMs=60'000;
+    // ...but a reference CONFIRMED by kConfirmedMs of standing near it is the player's height: a kneel
+    // behind cover for longer than a minute is a crouch, not a mistake. It falls back only after
+    // kStaleLowConfirmedMs, so even a seated player who stood for a while is not held crouched for good.
+    static constexpr uint64_t kConfirmedMs=60'000,kStaleLowConfirmedMs=300'000;
 
     static float Threshold(float depth) noexcept {return std::isfinite(depth)?std::clamp(depth,.08f,.65f):.22f;}
     static float Release(float threshold) noexcept {return threshold*.70f;}
@@ -155,7 +160,7 @@ public:
         {
             valid_=true;calibrated_=calibrate;calibration_=calibration;continuity_=continuity;
             baseline_=seed_=height;riseCapped_=false;riseSince_=0;count_=0;next_=0;sampleAt_=0;
-            standingAt_=now;++seeds_;
+            standingAt_=now;heardAt_=0;confirmedMs_=0;++seeds_;
             return;
         }
         const float threshold=Threshold(depth);
@@ -189,7 +194,12 @@ private:
     }
     void LearnFromWindow(float height,uint64_t now,float threshold) noexcept
     {
-        if(height>=baseline_-Release(threshold)) standingAt_=now;
+        if(height>=baseline_-Release(threshold))
+        {
+            standingAt_=now;
+            if(heardAt_&&now>heardAt_) confirmedMs_+=std::min<uint64_t>(now-heardAt_,250);
+        }
+        heardAt_=now;
         if(sampleAt_&&now>=sampleAt_&&now-sampleAt_<kSampleMs) return;
         sampleAt_=now;
         window_[next_]=height;next_=(next_+1)%kWindowSamples;
@@ -200,13 +210,21 @@ private:
         const auto mid=sorted.begin()+count_/2;
         std::nth_element(sorted.begin(),mid,sorted.begin()+count_);
         const float median=*mid;
-        if(median>baseline_+kRiseSteady) baseline_=median;
-        else if(now>=standingAt_&&now-standingAt_>=kStaleLowMs) {baseline_=median;standingAt_=now;}
+        if(median>baseline_+kRiseSteady)
+        {
+            // A rise the old posture would read as a crouch under (seated to standing) is a new reference:
+            // it has to earn its confirmation again.
+            if(median-baseline_>Release(threshold)) confirmedMs_=0;
+            baseline_=median;
+        }
+        else if(now>=standingAt_&&
+                now-standingAt_>=(confirmedMs_>=kConfirmedMs?kStaleLowConfirmedMs:kStaleLowMs))
+        {baseline_=median;standingAt_=now;confirmedMs_=0;}
     }
 
     std::array<float,kWindowSamples> window_{};
     size_t count_{},next_{};
-    uint64_t riseSince_{},sampleAt_{},standingAt_{};
+    uint64_t riseSince_{},sampleAt_{},standingAt_{},heardAt_{},confirmedMs_{};
     float baseline_{},seed_{},riseValue_{};
     uint32_t calibration_{},continuity_{},seeds_{};
     bool valid_{},calibrated_{},riseCapped_{};

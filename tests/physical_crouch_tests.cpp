@@ -122,6 +122,23 @@ int main()
         for(int i=0;i<1000;++i) step(standing);
         Check(std::fabs(r.Baseline()-standing)<.02f,"a minute below the release line falls back to the median");
     }
+    // A reference CONFIRMED by a minute of standing is the player's height: a two-minute kneel behind cover
+    // stays a crouch, and it falls back only after kStaleLowConfirmedMs.
+    {
+        PhysicalCrouchReference r;uint64_t now=5000;const float standing=1.7f,kneel=1.2f;
+        auto step=[&](float h){now+=100;r.Update(h,1,0,now,true,.22f);};
+        step(standing);
+        for(int i=0;i<700;++i) step(standing);
+        for(int i=0;i<1200;++i) step(kneel);
+        Check(std::fabs(r.Baseline()-standing)<.02f,"a confirmed reference holds through a two-minute kneel");
+        for(int i=0;i<1900;++i) step(kneel);
+        Check(std::fabs(r.Baseline()-kneel)<.02f,"...and falls back only after kStaleLowConfirmedMs");
+        // A seated player who stood up briefly is unconfirmed again: the minute's fallback applies.
+        for(int i=0;i<100;++i) step(standing);
+        Check(std::fabs(r.Baseline()-standing)<.02f,"(setup) standing for ten seconds lifts it again");
+        for(int i=0;i<620;++i) step(kneel);
+        Check(std::fabs(r.Baseline()-kneel)<.02f,"a reference lifted by a few seconds' standing falls back in a minute");
+    }
     {
         PhysicalCrouchReference r;uint64_t now=5000;
         r.Update(1.7f,1,0,now+=20,true,.22f);
