@@ -173,10 +173,12 @@ struct LimitLatch {
     }
 
     // What was actually written this tick (after the caller's branch and pitch handling). An axis this
-    // tick's apply() skipped is not recorded.
-    void wrote(const float written[2]) {
+    // tick's apply() skipped is not recorded -- unless `axes` (optional, per axis) names exactly the axes to
+    // record: an axis written through the latch's prime, unlatched this tick, is still a value the next tick
+    // can read a limit off.
+    void wrote(const float written[2], const bool* axes = nullptr) {
         for (int a = 0; a < 2; ++a) {
-            if (skipped[a]) continue;
+            if (axes ? !axes[a] : skipped[a]) continue;
             last[a] = written[a];
             have_last[a] = true;
         }

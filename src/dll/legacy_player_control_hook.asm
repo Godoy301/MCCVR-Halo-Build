@@ -4,17 +4,21 @@
 ; then clamps; see LegacyDrive in game.cpp for the RVAs and the anchors that guard them).
 ; Signature, as Reach's: ecx = user index, xmm1..xmm3 = floats, no stack arguments; the record is reached
 ; through the calling (sim) thread's own TLS, so the C callee re-derives it from the same thread.
-; Each detour runs the native update unchanged, then ALWAYS calls LegacyPcApplyForUser(slot, user), which
-; decides (armed / fresh setpoint / validated record / on foot) whether to overwrite desired_angles.
+; Each detour runs the native update unchanged, then ALWAYS calls LegacyPcApplyForUser(slot, user, ret),
+; which decides (armed / fresh setpoint / validated record / on foot or a written seat) whether to
+; overwrite desired_angles. `ret` is this detour's own return address -- which caller ran the update. The
+; per-tick player-control update is one call site; Halo 3 and ODST also run the accumulator from a weapon's
+; pitch kick and from the no-unit path, which must not count as another tick (legacy_direct_drive.inl).
 ; Naked so the native ABI (rcx + xmm1..xmm3; the natives return nothing meaningful -- each ends by storing
 ; its clamped pitch) is forwarded byte-exact. PROC FRAME + .allocstack give each an unwind entry, which an
-; exception unwinding through it and the teardown's quiescence scan both need.
+; exception unwinding through it and the teardown's quiescence scan both need. The frame is unchanged by
+; the third argument: [rsp+38h] is the caller's return address, read after the native call returns.
 option casemap:none
 
 EXTERN g_halo3PcOrig:QWORD
 EXTERN g_odstPcOrig:QWORD
 EXTERN g_halo4PcOrig:QWORD
-EXTERN LegacyPcApplyForUser:PROC          ; void LegacyPcApplyForUser(int slot /*ecx*/, int user /*edx*/)
+EXTERN LegacyPcApplyForUser:PROC          ; void LegacyPcApplyForUser(int slot /*ecx*/, int user /*edx*/, uintptr_t ret /*r8*/)
 
 .code
 Halo3PcHook PROC FRAME
@@ -25,6 +29,7 @@ Halo3PcHook PROC FRAME
     call QWORD PTR [g_halo3PcOrig]
     mov  QWORD PTR [rsp+28h], rax
     mov  rdx, QWORD PTR [rsp+30h]         ; user -> arg2
+    mov  r8, QWORD PTR [rsp+38h]          ; our return address (the caller) -> arg3
     xor  ecx, ecx                         ; slot 0 = Halo 3
     call LegacyPcApplyForUser
     mov  rax, QWORD PTR [rsp+28h]
@@ -40,6 +45,7 @@ OdstPcHook PROC FRAME
     call QWORD PTR [g_odstPcOrig]
     mov  QWORD PTR [rsp+28h], rax
     mov  rdx, QWORD PTR [rsp+30h]
+    mov  r8, QWORD PTR [rsp+38h]
     mov  ecx, 1                           ; slot 1 = ODST
     call LegacyPcApplyForUser
     mov  rax, QWORD PTR [rsp+28h]
@@ -55,6 +61,7 @@ Halo4PcHook PROC FRAME
     call QWORD PTR [g_halo4PcOrig]
     mov  QWORD PTR [rsp+28h], rax
     mov  rdx, QWORD PTR [rsp+30h]
+    mov  r8, QWORD PTR [rsp+38h]
     mov  ecx, 2                           ; slot 2 = Halo 4
     call LegacyPcApplyForUser
     mov  rax, QWORD PTR [rsp+28h]
