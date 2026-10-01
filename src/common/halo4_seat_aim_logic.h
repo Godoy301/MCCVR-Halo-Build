@@ -268,7 +268,8 @@ SeatTraceResult TraceLookingPast(float lengthWu, float skipWu, float stepWu, int
 // the fire routine hands that call its unit-aim flag (argument 8: the weapon's owner is its own aiming unit,
 // owner+0x694 == -1; barrel flag bit 15 clear; no actor veto 0x7BB3F8). Then 0x5F3510 replaces it with the
 // AIMING UNIT's aim vector (+0x4EC; +0x4E0 for a simulation-1 fire), and the shot turns from that line. A
-// Warthog passenger's own gun is the usual case: the biped owns it and nobody controls the biped.
+// Warthog passenger's own gun is the expected case: the biped owns it and nobody controls the biped (whether
+// its barrel leaves bit 15 clear is the tag's, which is why the flag is recorded rather than derived).
 //
 // The mod does not re-derive the flag (bit 15 lives in the weapon tag's barrel block): it records the flag
 // the native call was actually handed, per fire, and applies it to the per-tick sample of the SAME weapon,
