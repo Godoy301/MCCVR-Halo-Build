@@ -18,10 +18,13 @@
 //     transaction hands the solve, and the exact first-person witness that must back it;
 //   * the seated trace's IGNORE list and its LOOK-PAST of our own vehicle (three own-vehicle passes = a MISS);
 //   * the SHOT LINE the native assist turns: the one the last fire of this weapon and aiming unit was handed;
-//   * the BARREL CLAIM: converged only while the shot line reaches the point inside its cap (minus a margin);
-//     otherwise the honest reticle sits on the line the capped shot really flies;
-//   * the RECORD-FRAME GATE: until the record rebase 0x5F97DC is ported, a seat is converged only while its
-//     record is in world angles (flag bit 4) or its vehicle is level.
+//   * the BARREL VERDICT: whether the shot line reaches the point inside its cap (minus a margin), and the line
+//     the capped shot really flies. Since 2026-10-01 a WITNESS only: the converged claim no longer waits on it
+//     (a gun that cannot reach the point fires where it can, as in flat Halo); the line is drawn only by the
+//     dev assessment reticle (honest_reticle_assess);
+//   * the RECORD-FRAME GATE: the seat's flags read and, without flag bit 4, the vehicle's frame anchor (its up)
+//     readable. A TILT is natural and never refuses (SeatRecordIsWorld counts it until the 0x5F97DC rebase is
+//     ported; R11, 2026-10-01).
 //
 // Zero engine dependencies.
 
@@ -375,7 +378,7 @@ inline float SeatAssistCap(float widestObservedRad)
 
 struct BarrelVerdict {
     bool valid = false;       // the geometry resolved
-    bool claim = false;       // the shot reaches the point: the converged aim may be claimed
+    bool claim = false;       // the shot reaches the point inside the cap (a witness: nothing waits on it)
     float angleRad = 0.0f;    // shot line to (point - barrel origin)
     Vec3 shot{};              // the direction the shot really leaves the barrel along
 };
@@ -418,8 +421,8 @@ inline BarrelVerdict JudgeBarrel(Vec3 shotForward, Vec3 barrelOrigin, Vec3 point
     return v;
 }
 
-// Where the honest reticle points from the rendered eye H: at the point the real shot reaches at the range
-// of the converged point, Q = B + shot * |P - B|.
+// Where the dev assessment reticle (honest_reticle_assess) points from the rendered eye H: at the point the real
+// shot reaches at the range of the converged point, Q = B + shot * |P - B|.
 inline bool ShotReticleDirection(Vec3 head, Vec3 barrelOrigin, Vec3 shot, Vec3 point, Vec3& out)
 {
     const Vec3 toPoint = Sub(point, barrelOrigin);
