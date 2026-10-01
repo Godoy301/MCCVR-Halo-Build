@@ -889,6 +889,7 @@ bool Halo4SeatSightPrepare(Halo4SeatSightPoll& out, const float observerForward[
         uint32_t unit = UINT32_MAX, parent = UINT32_MAX, generation = 0, sampleSequence = 0;
         int16_t seat = -1;
         uint64_t lastSeatedMs = 0;   // the last seated poll of this stint
+        bool turret = false;         // a fresh sample of this stint classed the seat a slaved turret (latched)
         halo4_seat_aim::SeatEyeAgreement agreement{};
     };
     static State s_state;   // Game_ComputeAimStick's thread only, like the servo's own statics
@@ -1029,8 +1030,15 @@ bool Halo4SeatSightPrepare(Halo4SeatSightPoll& out, const float observerForward[
     w.why[why].fetch_add(1, std::memory_order_relaxed);
     out.solve = why == kH4SeatWhySolved;
     // A slaved turret's aim camera IS its barrel's line (0x124DE6): the reticle rides the barrel, whatever the
-    // eye proofs say, and nothing is ever claimed there (verifier item 14).
-    out.turret = key && out.ray && Sight_AimEnabled() && seatClass == halo4_seat_aim::SeatClass::SlavedTurret;
+    // eye proofs say, and nothing is ever claimed there (verifier item 14). The class is LATCHED for the stint:
+    // set by a fresh sample of this seat that says bit 7, released only by a fresh sample of this seat with
+    // another known class (or a new stint) -- never because this poll's sample was stale or its read collided,
+    // which would flip the servo's turret mode (resetting its measured quantum and logging armed/released) and
+    // drop the reticle off the barrel for that poll. Nor does it wait on the rendered head: the turret's
+    // reticle and servo use the game's own aim, so only the switches and our seat view gate it.
+    if (sameSeat && seatClass != halo4_seat_aim::SeatClass::Unknown)
+        s_state.turret = seatClass == halo4_seat_aim::SeatClass::SlavedTurret;
+    out.turret = key && viewOwned && g_config.reach_vehicle_aim > 0 && Sight_AimEnabled() && s_state.turret;
     // The shot side's facts for the claim (stage 1).
     out.assistKnown = sameSeat && sample.aimUnitKnown;
     out.assisted = out.assistKnown && sample.assisted;
