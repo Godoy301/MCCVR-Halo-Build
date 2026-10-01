@@ -771,8 +771,9 @@ struct Config
     // The write drives the seat's look (desired_angles), and Reach aims every seat's weapon from it: it
     // traces its crosshair from its OWN camera along that look and fires the barrel at what the trace
     // hits (HREK aim_assist). So the aim is bent to put that camera line through the point the intent ray
-    // hits. A seat's own limits (a turret's pitch stop, a passenger's cone) are respected: the aim holds
-    // at the limit, and there the old fixed-distance shot redirect takes over. A seat whose stick is
+    // hits. A seat's own limits (a turret's pitch stop, a passenger's cone) are respected: the write holds
+    // at the limit and the converged aim stays claimed, so the barrel fires along its stop as in flat Reach
+    // (2026-10-01; the old fixed-distance shot redirect no longer takes over there). A seat whose stick is
     // steering (a vehicle_view_follow driver) always keeps the stick.
     //   0 = off: vehicles keep the stick servo and the fixed-distance shot redirect, as before.
     //   1 = gunner and passenger seats, and drivers whose gun turns apart from the hull (Scorpion,
@@ -785,8 +786,10 @@ struct Config
     // SEATED DIRECT DRIVE, every title with direct drive (Reach, Halo 3, ODST, Halo 4, Halo 2): 1 = with
     // aim_direct_drive = 1, a seat's aim is written as on foot -- in the seats reach_vehicle_aim names, axis by
     // axis once that seat's own aim record has checked out -- instead of the stick steering it at the game's
-    // turn rate. The seat's limits (a passenger's cone) still hold: the write stops at the limit, where the
-    // reticle shows the gun's real aim. A driver whose stick or wheel steers keeps it for the heading. Every
+    // turn rate. The seat's limits (a passenger's cone) still hold: the write stops at the limit and the gun
+    // fires where it can, as in flat Halo, while the reticle stays on the converged point (2026-10-01: a
+    // natural limit never switches convergence or direct drive off). A driver whose stick or wheel steers
+    // keeps it for the heading. Every
     // title needs its first-person seat view (vehicle_first_person; Halo 3 / ODST also vehicle_hide_body, whose
     // native seat patch holds the camera; Halo 2 also vehicle_vr_controls, and nothing is written there with
     // vehicle_view_follow on). Halo 4 and Halo 2 seat roles are not mapped, so every seat there counts as a
@@ -936,8 +939,9 @@ struct Config
     // the shot to (Halo: Campaign Evolved's scope rule), from your eye, so its centre is the reticle's point
     // however far you stand from the character. 0 = each title's earlier zoom camera, which looks along the
     // game's aim and so runs parallel to your sight line, off by the distance between you and the character.
-    // Needs Converged aim; with the aim not converged (off, a seat limit, no trace) the zoom is the earlier
-    // one either way. (default 1)
+    // Needs Converged aim, and the aim WRITTEN (direct drive; in a seat, both axes): with Converged aim off, no
+    // fresh trace, or the stick servo turning the aim, the zoom is the earlier one either way. A seat held at
+    // its stop keeps it (2026-10-01: a natural limit no longer switches convergence off). (default 1)
     int scope_converge = 1;
     float scope_zoom = 24.0f;
     float scope_screen_width_m = 0.159f;

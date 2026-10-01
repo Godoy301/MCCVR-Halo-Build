@@ -264,8 +264,9 @@ struct LegacyDriveState
     uint32_t stintStaleUpdates = 0;          // consecutive updates of this stint with no fresh publication
     bool stintTitleSeated = false;           // Halo 3 / ODST: unit_in_vehicle said seated when the stint began
                                              // (a walk-up turret reads on foot: its word decides nothing then)
-    // The last two seat writes (seqlock), for the input thread's honest-reticle gate: the game's aim lags the
-    // latest write by up to a tick, so the gate measures it against whichever of the two is nearer.
+    // The last two seat writes (seqlock), for the input thread's dev outcome witness (it switched the reticle
+    // to the gun until 2026-10-01): the game's aim lags the latest write by up to a tick, so the witness
+    // measures it against whichever of the two is nearer.
     std::atomic<uint32_t> wroteSeq{0};
     std::atomic<float> wroteYaw[2]{}, wrotePitch[2]{};
     std::atomic<bool> wroteValid[2]{};

@@ -169,10 +169,13 @@ struct StintCheck {
     }
 };
 
-// HONEST RETICLE BY OUTCOME. A written seat's aim can still fall short downstream of the record (a gun's
-// rate cap, an aiming clip), where the seat-limit latch cannot see it. While the game's aim misses the
-// written target by more than `enter` for `hold_ms`, the reticle shows the game's aim and no converged
-// shot is claimed; it returns to the target once the miss is under `exit`. A latch hold is honest at once.
+// OUTCOME WITNESS (dev lines only since 2026-10-01). A written seat's aim can still fall short downstream of
+// the record (a gun's rate cap, an aiming clip), where the seat-limit latch cannot see it. While the game's
+// aim misses the written target by more than `enter` for `hold_ms` the gate reads `honest` (a latch hold at
+// once), and it clears once the miss is under `exit`. Until 2026-10-01 that put the reticle on the game's aim
+// and withheld the converged claim; both were natural limits, and the user's decision is that they never
+// switch convergence off (converge_policy.h). Game_ComputeAimStick now feeds it only to COUNT the miss for the
+// dev witness (outcomeMiss, yawShortH4); no decision reads it.
 struct OutcomeGate {
     float enter = 0.035f;       // 2 deg
     float exit = 0.0175f;       // 1 deg

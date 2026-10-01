@@ -44,7 +44,9 @@ inline float clamp_pitch(float pitch, float limit) {
 // Policy: arm after `agree_needed` consecutive agreements about the same record (then `record` holds
 // what was proven); while armed, ANY new mismatch disarms at once and backs off `backoff_ms` before
 // re-validating; after `max_disarms` disarms, give up for the session (the two ways of locating the
-// record disagree by design on this build -- fail closed and say so).
+// record disagree by design on this build -- fail closed and say so). A session ends when the hook is
+// reinstalled or torn down (reset_session), never at the end of the process. This is OUR code's fallback:
+// nothing natural in the game disarms it.
 struct ArmGate {
     int      agree_needed = 3;
     uint64_t backoff_ms   = 5000;

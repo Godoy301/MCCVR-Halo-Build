@@ -44,9 +44,14 @@
 //    and a 15 deg/s gun is not stalled - it is converging, one degree at a
 //    time, which actively resets the stall timer every frame. So the reticle
 //    kept promising the hand's direction for seconds on end.
+//    (2026-10-01: that half of the fix -- the turret reticle riding the
+//    barrel -- is reversed by the user's decision. The reticle stays on the
+//    hand's point and the game's own tracers show a slewing gun, as in flat
+//    Halo; see the note at the end of this file and converge_policy.h.)
 //
-// This header holds the pure, testable half of the fix. Both parts are scoped
-// to turret seats: no other seat, title, or on-foot case reaches them.
+// This header holds the pure, testable half of the fix: the servo's rest
+// hysteresis, scoped to turret seats -- no other seat, title, or on-foot case
+// reaches it.
 
 // ---- 1. Rest hysteresis --------------------------------------------------
 //

@@ -2206,7 +2206,8 @@ void ConfigSave()
     fprintf(f, "# Vehicle seats: which seats your hand aims. With aim_direct_drive = 1 the seat's aim is written\n");
     fprintf(f, "# as on foot (Reach, Halo 3, ODST, Halo 4, Halo 2); Halo 3 and ODST seats also converge whenever\n");
     fprintf(f, "# converged_aim is on (0 here keeps their old seat aim). A turret's or passenger seat's limits\n");
-    fprintf(f, "# still hold. A driver whose stick or wheel steers keeps it for steering. 0 = off (vehicles\n");
+    fprintf(f, "# still hold: past them the gun fires where it can, as in flat Halo, and the crosshair stays on\n");
+    fprintf(f, "# your aim point. A driver whose stick or wheel steers keeps it for steering. 0 = off (vehicles\n");
     fprintf(f, "# keep the old stick aim), 1 = gunners, passengers, and drivers whose gun turns apart from the\n");
     fprintf(f, "# hull (a driver whose look steers the vehicle keeps the stick; Halo 4 and Halo 2 cannot tell a\n");
     fprintf(f, "# seat's role yet, so 1 keeps every seat there on the stick), 2 = every seat you aim,\n");
@@ -2516,7 +2517,8 @@ void ConfigSave()
     fprintf(f, "# The zoom looks AT the point your converged aim sends the shot to, from your eye, so the\n");
     fprintf(f, "# reticle's point is its centre however far you stand from the character. 0 = the earlier\n");
     fprintf(f, "# zoom, along the game's aim: parallel to your sight line, off by that distance. Needs\n");
-    fprintf(f, "# converged_aim. Live in F1 > Scope. (default %d)\n", d.scope_converge);
+    fprintf(f, "# converged_aim and the aim written (direct drive). Live in F1 > Scope. (default %d)\n",
+            d.scope_converge);
     fprintf(f, "scope_converge = %d\n\n", g_config.scope_converge);
     fprintf(f, "# Default experimental magnification used for every weapon.\n");
     fprintf(f, "# Initial zoom restored whenever R3 opens the scope; right-stick Y adjusts it.\n");

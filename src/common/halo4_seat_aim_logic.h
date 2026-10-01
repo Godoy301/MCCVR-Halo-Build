@@ -303,7 +303,7 @@ SeatTraceResult TraceLookingPast(float lengthWu, float skipWu, float stepWu, int
 // The mod does not re-derive the flag (bit 15 lives in the weapon tag's barrel block): it records the flag
 // the native call was actually handed, per fire, and applies it to the per-tick sample of the SAME weapon,
 // owner and aiming unit -- the three inputs the flag depends on at runtime. Before the first fire of that
-// combination the line is unknown: no claim, and no honest reticle is substituted.
+// combination the line is unknown, and the dev witness counts it so (the claim does not wait on it).
 enum class ShotLine : uint8_t { Unknown, Barrel, UnitAim, Substituted };
 
 inline const char* ShotLineName(ShotLine l)
@@ -360,16 +360,17 @@ inline bool Normalize(Vec3 a, Vec3& out)
 
 // The seated assist's minimum limit, 0.36651915 rad (module constant 0x...D954F4). The real limit is
 // max(this, the weapon's own angle -- what 0x1DC2F4 leaves at out+4, read at 0x1DCD5D): a max() can only
-// WIDEN it, never narrow it. So 21 deg is the safe side for the CLAIM (the assist reaches at least that far),
-// but for the HONEST reticle beyond it, a line turned 21 deg is only a lower bound of the real turn: a weapon
-// with a wider angle turns its shot further toward the point than that line shows.
+// WIDEN it, never narrow it. So 21 deg is the safe side for the witness's "the assist reaches" count (it
+// reaches at least that far), but for the dev assessment line beyond it, a line turned 21 deg is only a lower
+// bound of the real turn: a weapon with a wider angle turns its shot further toward the point than that shows.
 inline constexpr float kSeatAssistCapRad = 0.36651915f;
-// Converged is claimed only this far inside the cap.
+// The witness counts "reaches" only this far inside the cap (the converged claim no longer waits on it).
 inline constexpr float kSeatClaimMarginRad = 2.0f * 0.017453293f;
 
 // The cap to judge a weapon against: 21 deg, widened to the widest turn the native assist has been SEEN to make
 // for that weapon (every turn it makes is inside its real cap, so the widest is still a lower bound of it --
-// safe for the claim, and closer to the truth for the honest line). A non-finite observation widens nothing.
+// safe for the witness, and closer to the truth for the assessment line). A non-finite observation widens
+// nothing.
 inline float SeatAssistCap(float widestObservedRad)
 {
     return std::isfinite(widestObservedRad) && widestObservedRad > kSeatAssistCapRad ? widestObservedRad
