@@ -59,8 +59,9 @@ struct Stats
 {
     std::atomic<uint64_t> rays{0}, traces{0}, hits{0}, misses{0}, faults{0}, converged{0}, declined{0}, written{0};
     std::atomic<uint64_t> costTicks{0}, costMaxTicks{0};
-    // Shots from the muzzle: aimed through the converged point, refused by a rail, or without a point.
-    std::atomic<uint64_t> muzzleAimed{0}, muzzleRefused{0}, muzzleUnconverged{0};
+    // Shots from the muzzle: aimed through the converged point, refused by a rail, or without a point; and
+    // (defensive) held off because the gun points elsewhere, naturally -- a seat held at its stop, a turret.
+    std::atomic<uint64_t> muzzleAimed{0}, muzzleRefused{0}, muzzleUnconverged{0}, muzzleHeld{0};
 };
 
 RayPublication g_rays[kTitleSlots];
@@ -318,6 +319,11 @@ bool Sight_MuzzleShotsConverge()
 void Sight_NoteMuzzleShotUnconverged(GameTitle title)
 {
     g_stats[Slot(title)].muzzleUnconverged.fetch_add(1, std::memory_order_relaxed);
+}
+
+void Sight_NoteMuzzleShotHeld(GameTitle title)
+{
+    g_stats[Slot(title)].muzzleHeld.fetch_add(1, std::memory_order_relaxed);
 }
 
 bool Sight_AimMuzzleShotThrough(GameTitle title, const float point[3], const float rayDir[3], const float eye[3],
@@ -726,12 +732,15 @@ void Sight_Report()
         const uint64_t muzzleAimed = s.muzzleAimed.exchange(0, std::memory_order_relaxed);
         const uint64_t muzzleRefused = s.muzzleRefused.exchange(0, std::memory_order_relaxed);
         const uint64_t muzzleUnconverged = s.muzzleUnconverged.exchange(0, std::memory_order_relaxed);
-        if (muzzleAimed || muzzleRefused || muzzleUnconverged)
+        const uint64_t muzzleHeld = s.muzzleHeld.exchange(0, std::memory_order_relaxed);
+        if (muzzleAimed || muzzleRefused || muzzleUnconverged || muzzleHeld)
             LOG("SHOTS FROM THE MUZZLE %s: %llu aimed through the converged point, %llu refused by a rail (the "
                 "muzzle far from the eye, pulled back by the obstruction check, or the point not ahead of it), "
-                "%llu without a converged point; every refusal left from the eye as before",
+                "%llu without a converged point, %llu held off (a seat held at its stop, or a turret: the gun "
+                "points elsewhere); every refusal left from the eye as before",
                 TitleName(static_cast<GameTitle>(i)), (unsigned long long)muzzleAimed,
-                (unsigned long long)muzzleRefused, (unsigned long long)muzzleUnconverged);
+                (unsigned long long)muzzleRefused, (unsigned long long)muzzleUnconverged,
+                (unsigned long long)muzzleHeld);
         if (!rays && !traces && !converged && !declined && !faults)
             continue;
         const uint64_t hits = s.hits.exchange(0, std::memory_order_relaxed);

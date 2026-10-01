@@ -17861,7 +17861,7 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                                     else
                                         LOG("%s traced placement off: the crosshair is back on the "
                                             "controller ray at %.1f m (the aim is not converging: off, a "
-                                            "seat limit, or no fresh trace)", tag,
+                                            "seat not converged yet, or no fresh trace)", tag,
                                             g_config.crosshair_distance_m);
                                 }
                             }

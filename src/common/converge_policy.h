@@ -75,6 +75,30 @@ inline const char* ConvergeOffName(ConvergeOff why)
 // takes part: those are natural, and the game shows them itself.
 inline bool ClaimSeatedConverged(bool solved, bool aimFeedbackFinite) { return solved && aimFeedbackFinite; }
 
+// A timestamp (GetTickCount64) still inside its freshness window. 0 = never stamped.
+inline bool StampLive(uint64_t at_ms, uint64_t now_ms, uint64_t window_ms)
+{
+    return at_ms && now_ms >= at_ms && now_ms - at_ms <= window_ms;
+}
+
+// REACH, on the sim thread, after each stick update of desired_angles: what the update now in effect claims.
+// `converged` (the traced reticle, the scope's convergence, and Reach's shot fallbacks standing down) follows
+// the write and the converged setpoint ONLY -- a seat limit the game clamped the write to does not withdraw it,
+// as in every other title (in flat Reach a stopped gun's shots already go where the crosshair is not).
+// `heldAtLimit` is recorded separately and read only DEFENSIVELY: the muzzle redirect refuses while it is live,
+// and the dev engine-trace witness skips those updates. Neither ever changes the claim or the write.
+struct ReachUpdateStamps {
+    bool converged = false;
+    bool heldAtLimit = false;
+};
+inline ReachUpdateStamps ReachStampUpdate(bool wrote, bool drivenConverged, bool limited)
+{
+    ReachUpdateStamps s;
+    s.converged = wrote && drivenConverged;
+    s.heldAtLimit = wrote && limited;
+    return s;
+}
+
 // The game's aim feedback as a direction: finite and not degenerate.
 inline bool AimFeedbackFinite(float x, float y, float z)
 {

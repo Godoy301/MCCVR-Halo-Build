@@ -113,9 +113,14 @@ static std::atomic<bool>               g_reachDriveValid{false};
 // Trace-and-reaim: whether the published setpoint is a converged one, and -- recorded by the SIM-thread
 // hook as it writes desired_angles -- when a converged setpoint was last actually written (0 = the last
 // write was not converged, or nothing was written). The firing site reads the latter, so the hand shot
-// ray stands down exactly while the angles in effect are converged.
+// ray stands down exactly while the angles in effect are converged. A seat limit does not clear it
+// (2026-10-01, converge::ReachStampUpdate): the game's own clamp is natural, as in every other title.
 static std::atomic<bool>               g_reachDriveConverged{false};
 static std::atomic<unsigned long long> g_reachWrittenConvergedMs{0};
+// When the last stick update wrote an aim the seat-limit latch held short of the setpoint (0 = it did not).
+// Read only defensively: the muzzle redirect refuses while it is live, and the dev engine-trace witness
+// skips those updates. It never withdraws the converged stamp above and never shapes the write.
+static std::atomic<unsigned long long> g_reachHeldAtLimitMs{0};
 // Whether the published setpoint is for a SEAT: there the game's own update clamps the record to the
 // seat's limits before the hook writes, and the hook keeps its write inside them (aim_write::LimitLatch).
 static std::atomic<bool>               g_reachDriveSeated{false};
@@ -31264,6 +31269,7 @@ namespace
         g_reachDriveValid.store(false, std::memory_order_release);
         g_reachDriveConverged.store(false, std::memory_order_release);
         g_reachWrittenConvergedMs.store(0, std::memory_order_release);
+        g_reachHeldAtLimitMs.store(0, std::memory_order_release);
         ReachDriveDisarm();
         g_reachDriveResetSeq.fetch_add(1, std::memory_order_acq_rel);
 #if HALOMCCVR_DEV_DIAGNOSTICS
@@ -50816,6 +50822,7 @@ extern "C" void ReachPcApplyForUser(int user, const uint8_t* entryRsp)
             s_seatLimit.reset();
             s_putBack.invalidate();
             g_reachWrittenConvergedMs.store(0, std::memory_order_release);
+            g_reachHeldAtLimitMs.store(0, std::memory_order_release);
         }
         else
         {
@@ -50892,10 +50899,27 @@ extern "C" void ReachPcApplyForUser(int user, const uint8_t* entryRsp)
             // Trace-and-reaim: record whether the angles now in effect are converged ones (first local
             // player only -- the other slots' calls must not clear it). The firing site reads this on this
             // same thread, so its stand-down tracks the write, not a publish. An aim held at a seat's limit
-            // is not the converged one, so it is not claimed.
+            // STAYS claimed (2026-10-01; this reverses the earlier "a held aim is not the converged one"): the
+            // seat's stop is the game's own, the barrel fires along it as it does in flat Reach, and pulling
+            // the claim brought back the R-V22 seated redirect, which bent shots PAST the stop, and a reticle
+            // depth pop at every stop. The hold is recorded on its own, for the muzzle redirect's refusal and
+            // the dev witness only (converge::ReachStampUpdate).
             if (user == 0)
-                g_reachWrittenConvergedMs.store((wrote && drivenConverged && !limited) ? tick : 0,
-                                                std::memory_order_release);
+            {
+                const converge::ReachUpdateStamps stamps =
+                    converge::ReachStampUpdate(wrote != 0, drivenConverged, limited != 0);
+                g_reachWrittenConvergedMs.store(stamps.converged ? tick : 0, std::memory_order_release);
+                g_reachHeldAtLimitMs.store(stamps.heldAtLimit ? tick : 0, std::memory_order_release);
+#if HALOMCCVR_DEV_DIAGNOSTICS
+                if (wrote && drivenSeated)
+                {
+                    // Reach's "polls" are its seated stick updates (two atomics each, dev builds only).
+                    converge::NaturalEvents natural;
+                    natural.reachLimited = stamps.heldAtLimit;
+                    ConvergeNoteNatural(GameTitle::HaloReach, natural);
+                }
+#endif
+            }
         }
     }
     __except (EXCEPTION_EXECUTE_HANDLER)

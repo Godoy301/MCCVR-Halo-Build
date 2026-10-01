@@ -127,6 +127,31 @@ void TestNames()
         all = all && ConvergeOffName(static_cast<ConvergeOff>(i))[0] != '?';
     Check(all, "every ConvergeOff reason has a name");
 }
+
+void TestReachStamps()
+{
+    // The converged stamp follows the write and the converged setpoint; a seat limit never withdraws it.
+    unsigned changed = 0;
+    for (int wrote = 0; wrote < 2; ++wrote)
+        for (int conv = 0; conv < 2; ++conv)
+        {
+            const ReachUpdateStamps free = ReachStampUpdate(wrote != 0, conv != 0, false);
+            const ReachUpdateStamps held = ReachStampUpdate(wrote != 0, conv != 0, true);
+            if (free.converged != held.converged)
+                ++changed;
+            Check(free.converged == (wrote && conv), "Reach: converged = wrote and a converged setpoint");
+            Check(!free.heldAtLimit, "Reach: not limited, not held");
+            Check(held.heldAtLimit == (wrote != 0), "Reach: held only when this update wrote");
+        }
+    Check(changed == 0, "Reach: a seat limit does not change the converged claim (2026-10-01)");
+    Check(ReachStampUpdate(true, true, true).converged, "Reach: held at a seat's stop and still converged");
+    Check(!ReachStampUpdate(false, true, true).converged, "Reach: nothing written, nothing claimed");
+
+    Check(!StampLive(0, 1000, 100), "a stamp never set is not live");
+    Check(StampLive(1000, 1100, 100), "inside the window");
+    Check(!StampLive(1000, 1101, 100), "past the window");
+    Check(!StampLive(1000, 999, 100), "a clock that went backwards is not live");
+}
 } // namespace
 
 int main()
@@ -135,6 +160,7 @@ int main()
     TestAimFeedback();
     TestAssessment();
     TestStallWitness();
+    TestReachStamps();
     TestNames();
     std::printf("Converge policy: %u checks, %u failures\n", checks, failures);
     return failures ? 1 : 0;

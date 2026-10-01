@@ -109,7 +109,9 @@ struct ArmGate {
 //     step doubles, so the aim catches up with the target in a few ticks;
 //   * the target comes back inside the limit: release.
 // apply() returns true while an axis is held short of its target by more than the probe step -- the aim
-// is limited, and a converged shot cannot be claimed. Yaw differences wrap.
+// is limited. That shapes the WRITE only: callers record it for their logs and the defensive muzzle-redirect
+// refusal, and it never withdraws a converged claim (converge_policy.h: a seat's stop is natural, the game
+// shows it as flat Halo does). Yaw differences wrap.
 // `enabled` (optional, per axis): an axis the caller does not latch this tick -- it is not written, or it
 // is written as is -- gives back `native` in `out`, forgets its latch, and reads no limit on the next tick
 // (what the game did to it meanwhile was not a clamp of ours). Both axes on is exactly the old behaviour.

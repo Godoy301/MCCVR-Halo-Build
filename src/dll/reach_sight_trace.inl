@@ -9,7 +9,8 @@
 // at whatever the trace hits. So E is a point of that camera line (the one nearest the seat, which stays
 // put as the chase camera orbits), the intent ray still starts at the rendered eye, and the trace ignores
 // the player's own vehicle. The seat's limits clamp the record before our write; the hook keeps its write
-// inside them (aim_write::LimitLatch) and then does not claim a converged shot.
+// inside them (aim_write::LimitLatch) and STILL claims the converged aim (2026-10-01): a seat's stop is the
+// game's own, and the barrel fires along it as in flat Reach. Only the muzzle redirect stands down there.
 //
 // The player points along the intent ray: from their rendered EYE, along the controller's direction --
 // Halo: Campaign Evolved's geometry, so the reticle drawn on it reads true at any depth. Reach decides
@@ -142,11 +143,19 @@ inline constexpr uint64_t kReachSightTraceIntervalMs = 30;
 // True while the angles the direct-drive hook last wrote into desired_angles were converged ones,
 // written within the last 100 ms (the hook runs every sim tick). Recorded by the hook itself on the
 // sim thread (g_reachWrittenConvergedMs), which is the thread the firing site runs on, so the stand-
-// down follows the write that is actually in effect -- a decline or a release clears it at once.
+// down follows the write that is actually in effect -- a decline or a release clears it at once. A seat
+// limit does NOT clear it (converge::ReachStampUpdate): natural, as in every other title.
 bool ReachConvergedShotLive(uint64_t nowMs)
 {
-    const uint64_t at = g_reachWrittenConvergedMs.load(std::memory_order_acquire);
-    return at && nowMs >= at && nowMs - at <= 100;
+    return converge::StampLive(g_reachWrittenConvergedMs.load(std::memory_order_acquire), nowMs, 100);
+}
+
+// True while the last stick update wrote an aim the seat-limit latch held short of the setpoint (within
+// 100 ms). DEFENSIVE ONLY: the muzzle redirect refuses and the dev engine-trace witness skips. The converged
+// claim above is untouched by it.
+bool ReachHeldAtLimit(uint64_t nowMs)
+{
+    return converge::StampLive(g_reachHeldAtLimitMs.load(std::memory_order_acquire), nowMs, 100);
 }
 
 // The exact sample + smoothed range the provider last actuated as a converged aim. The shot check (dev)
@@ -666,6 +675,13 @@ bool ReachAimMuzzleShot(const float before[3], const float position[3], float di
         Sight_NoteMuzzleShotUnconverged(GameTitle::HaloReach);
         return false;
     }
+    // Defensive (Reach publishes no muzzle palette in a seat today): a seat held at its stop points the barrel
+    // elsewhere, so a shot bent through the point from it would follow neither line. Left as the game fires it.
+    if (ReachHeldAtLimit(now))
+    {
+        Sight_NoteMuzzleShotHeld(GameTitle::HaloReach);
+        return false;
+    }
     const float point[3]{o[0] + u[0] * rangeWu, o[1] + u[1] * rangeWu, o[2] + u[2] * rangeWu};
     return Sight_AimMuzzleShotThrough(GameTitle::HaloReach, point, u, e, before, position, direction, up);
 }
@@ -772,6 +788,9 @@ struct ReachEngineTraceRing
     std::atomic<uint32_t> written{0};
     ReachEngineTraceRecord records[kReachEngineTraceRingSize];
     uint32_t printed = 0;   // cold worker only
+    // Crosshair traces skipped while a seat held the write at its stop: the converged claim stays on there
+    // (2026-10-01), but Reach's line is off the point by design, so they are not misses of the solve.
+    std::atomic<uint32_t> heldSkips{0};
 } g_reachEngineTraceRing;
 #endif
 
@@ -786,6 +805,11 @@ void ReachSightNoteEngineTrace(uint64_t flags, const float* start, const float* 
     const uint64_t now = GetTickCount64();
     if (!ReachConvergedShotLive(now))
         return;
+    if (ReachHeldAtLimit(now))
+    {
+        g_reachEngineTraceRing.heldSkips.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
     float o[3]{}, u[3]{}, e[3]{}, h[3]{}, rangeWu = 0.0f;
     if (!ReachSightReadActuated(now, o, u, e, h, rangeWu))
         return;
@@ -1056,6 +1080,10 @@ void ReportReachSightTrace()
         }
         if (ring.printed != written)
             ring.printed = written;
+        const uint32_t heldSkips = ring.heldSkips.exchange(0, std::memory_order_relaxed);
+        if (heldSkips)
+            LOG("REACHSIGHT engine trace: %u more skipped (a seat held the write at its stop: still converged, "
+                "and Reach's line follows the gun there, not the point)", heldSkips);
     }
     if (!g_config.reach_collision_census)
         return;

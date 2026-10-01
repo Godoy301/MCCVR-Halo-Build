@@ -156,6 +156,9 @@ bool Sight_AimMuzzleShotThrough(GameTitle title, const float point[3], const flo
                                 const float before[3], const float position[3], float direction[3], float up[3]);
 // A title that could not even ask (no converged point of its own): counted with the rest.
 void Sight_NoteMuzzleShotUnconverged(GameTitle title);
+// A seated redirect refused DEFENSIVELY because the gun points elsewhere, naturally (a seat held at its stop,
+// a rate-capped turret): the shot leaves as the game fires it. The convergence claim is not touched.
+void Sight_NoteMuzzleShotHeld(GameTitle title);
 
 // Cold worker: one status line per title that is tracing, every 2 s.
 void Sight_Report();
