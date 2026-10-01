@@ -457,6 +457,9 @@ if(BUILD_TESTING)
     add_executable(native_vr_reader_thunk_tests tests/native_vr_reader_thunk_tests.cpp
         tests/native_vr_reader_thunk_probe.asm src/dll/native_vr_reader_thunks.asm)
     add_test(NAME native_vr_reader_thunks COMMAND native_vr_reader_thunk_tests)
+    # HaloMCCVR.log keeps the previous launch as .prev even while another process holds the old log.
+    add_executable(halomccvr_log_rotation_tests tests/log_rotation_tests.cpp src/common/log.cpp)
+    add_test(NAME halomccvr_log_rotation COMMAND halomccvr_log_rotation_tests)
     add_test(NAME halomccvr_physical_crouch_tests COMMAND halomccvr_physical_crouch_tests)
     add_executable(halomccvr_physical_crouch_camera_tests tests/physical_crouch_camera_tests.cpp src/dll/physical_crouch_camera.cpp)
     add_test(NAME halomccvr_physical_crouch_camera_tests COMMAND halomccvr_physical_crouch_camera_tests)
