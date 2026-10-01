@@ -24,6 +24,7 @@
 #include "../common/scope_action_input.h"
 #include "../common/physical_crouch_input.h"
 #include "physical_crouch_camera.h"
+#include "native_vr_actions.h"
 #include "dev_pad.h"
 #include "halo2_observer_6dof.h"
 
@@ -303,13 +304,20 @@ namespace
                     gameplayMode)
                 {
                     vr_mapping::Transports native{};
-                    const bool ready=Game_ReadVrActionBindings(native,GetTickCount64());
+                    const uint64_t now=GetTickCount64();
+                    const bool direct=NativeVrActions_CanRoute(title,now);
+                    const bool ready=Game_ReadVrActionBindings(native,now)||direct;
+                    if(direct) for(unsigned action=0;action<vr_mapping::Count;++action)
+                        native[action]=NativeVrActions_GestureBit(static_cast<vr_mapping::Action>(action));
                     if(scopeAvailable) native[vr_mapping::Zoom]=0;
-                    const uint32_t mapped=g_vrActionMapper.Apply(collectedSources,
+                    const auto actions=g_vrActionMapper.ApplyDetailed(collectedSources,
                         g_config.vr_bindings[index],native,
                         (uint64_t(TitleAdapter_GetGeneration(title))<<32)|(uint64_t(title)<<24)|pad.profileEpoch,
                         ready,g_config.disable_flashlight_input||
                             (g_config.flashlight_suppress_on_two_hand&&pad.supportAimActive));
+                    const uint32_t mapped=direct?0:actions.transports;
+                    NativeVrActions_Publish(state,title,now,actions.actions&
+                        ~(scopeAvailable?(1u<<vr_mapping::Zoom):0u),direct);
                     state->Gamepad.wButtons=static_cast<WORD>(mapped);
                     if(mapped&(1u<<16)) state->Gamepad.bLeftTrigger=255;
                     if(mapped&(1u<<17)) state->Gamepad.bRightTrigger=255;
@@ -341,9 +349,17 @@ namespace
         const uint64_t inputNow=GetTickCount64();
         vr_mapping::Transports nativeActions{};
         const bool semanticMode=g_config.vr_action_mapping&&mappingTitle>=0&&gameplayMode;
+        // Never reinterpret an old transport-encoded weapon pulse as a named
+        // action. A transition sample keeps the previous route until it drains.
+        const bool directActions=semanticMode&&NativeVrActions_CanRoute(currentTitle,inputNow)&&
+            !(pad.weaponButtons&0x3FFFFu);
+        static thread_local bool previousDirectActions=false;
+        if(previousDirectActions!=directActions)
+            g_physicalCrouchInput.Suspend(g_config.physical_crouch);
+        previousDirectActions=directActions;
         const bool physicalCrouchEnabled=g_config.physical_crouch;
         const bool nativeReady=(semanticMode||physicalCrouchEnabled)&&gameplayMode&&
-            Game_ReadVrActionBindings(nativeActions,inputNow);
+            (Game_ReadVrActionBindings(nativeActions,inputNow)||directActions);
         const bool nativeMapping=semanticMode&&nativeReady;
         // The head height and the standing reference come from the OpenXR frame thread, in one frame a
         // runtime recenter does not move (VR_GetPhysicalCrouchSample): every input thread, title and level
@@ -374,10 +390,12 @@ namespace
             VR_GetPhysicalCrouchSample(crouchSample);
         const float crouchHeadY=crouchSample.height;
         const uint64_t crouchEpoch=crouchSample.reference;
+        const uint32_t crouchTransport=
+            directActions?NativeVrActions_GestureBit(vr_mapping::Crouch):nativeActions[vr_mapping::Crouch];
         const uint32_t crouchButtons=g_physicalCrouchInput.Update(currentTitle,
             TitleAdapter_GetGeneration(currentTitle),crouchHeadY,crouchSample.baseline,crouchEpoch,inputNow,
             physicalCrouchEnabled,crouchTracking&&nativeReady,g_config.physical_crouch_depth_m,
-            nativeActions[vr_mapping::Crouch]);
+            crouchTransport);
         PhysicalCrouchCamera_Publish(currentTitle,TitleAdapter_GetGeneration(currentTitle),
             crouchEpoch,inputNow,physicalCrouchEnabled&&crouchTracking&&nativeReady,
             crouchButtons!=0);
@@ -387,7 +405,7 @@ namespace
 #if HALOMCCVR_DEV_DIAGNOSTICS
         if(physicalCrouchEnabled&&inputMode==RuntimeMode::Gameplay&&gameplayMode)
             PublishPhysicalCrouch(inputNow,currentTitle,crouchTracking,nativeReady,crouchOnFoot,crouchOnFootWhy,
-                crouchSample,g_physicalCrouchInput.Gesture(),crouchButtons,nativeActions[vr_mapping::Crouch],
+                crouchSample,g_physicalCrouchInput.Gesture(),crouchButtons,crouchTransport,
                 TitleAdapter_GetGeneration(currentTitle));
 #else
         (void)crouchOnFootWhy;
@@ -398,11 +416,16 @@ namespace
         if(scopeAvailable) nativeActions[vr_mapping::Zoom]=0;
         if(wheelGesture) actionSources&=~(vr_mapping::Bit(vr_mapping::PrimaryGrip)|vr_mapping::Bit(vr_mapping::SupportGrip));
         const vr_mapping::Overrides emptyMappings{};
-        const uint32_t semanticButtons=g_vrActionMapper.Apply(actionSources,
-            mappingTitle>=0?g_config.vr_bindings[mappingTitle]:emptyMappings,nativeActions,
+        auto mappingTransports=nativeActions;
+        if(directActions) for(unsigned action=0;action<vr_mapping::Count;++action)
+            mappingTransports[action]=NativeVrActions_GestureBit(static_cast<vr_mapping::Action>(action));
+        auto semanticActions=g_vrActionMapper.ApplyDetailed(actionSources,
+            mappingTitle>=0?g_config.vr_bindings[mappingTitle]:emptyMappings,mappingTransports,
             (uint64_t(TitleAdapter_GetGeneration(currentTitle))<<32)|(uint64_t(currentTitle)<<24)|pad.profileEpoch,
             nativeMapping,g_config.disable_flashlight_input||
                 (g_config.flashlight_suppress_on_two_hand&&pad.supportAimActive));
+        if(scopeAvailable) semanticActions.actions&=~(1u<<vr_mapping::Zoom);
+        const uint32_t semanticButtons=directActions?0:semanticActions.transports;
         const bool xPressed=pad.x;
         const float leftTrigger=pad.trigL;
 
@@ -448,6 +471,8 @@ namespace
         }
         const bool weaponGesture=pad.weaponConsumeSupport||pad.weaponConsumePrimary||pad.weaponButtons;
         const uint32_t gestureMelee=weaponGesture?0:Game_GestureMeleeInput(inputNow);
+        if(semanticMode) NativeVrActions_Publish(state,currentTitle,inputNow,
+            semanticActions.actions | ((crouchButtons|gestureMelee|pad.weaponButtons)>>18),directActions);
         btn |= static_cast<WORD>(gestureMelee & 0xFFFF);
         btn |= static_cast<WORD>(pad.weaponButtons & 0xFFFF);
         state->Gamepad.wButtons = btn;
@@ -476,12 +501,16 @@ namespace
 
         const bool physicalMove = std::abs(int(state->Gamepad.sThumbLX)) > 7849 ||
             std::abs(int(state->Gamepad.sThumbLY)) > 7849;
+        float locomotionX=pad.moveX,locomotionY=pad.moveY;
+        const bool running=!dpadMode&&!Menu_IsOpen()&&!VR_IsPausePresentation()&&
+            !VR_IsPausePresentationTarget()&&!VR_IsCutsceneTheaterActive()&&
+            Game_MoveStickIsLocomotion()&&PhysicalRunning_Move(locomotionX,locomotionY);
         Roomscale_Input(RoomscaleGameplayEligible(TitleAdapter_GetActiveTitle(),
             TitleAdapter_GetRuntimeMode()) && !dpadMode && !physicalMove &&
             Game_IsHeadTracking() && Game_IsPositionalTracking() &&
             VR_IsStereoEnabled() && !VR_IsPausePresentation() &&
             !VR_IsPausePresentationTarget() && !VR_IsCutsceneTheaterActive(),
-            pad.moveX, pad.moveY);
+            locomotionX, locomotionY);
 
         if (dpadMode)
         {
@@ -549,10 +578,10 @@ namespace
             // each axis floored past MCC's inner deadzone so small corrections
             // still move. This path runs only while the game is actually using
             // the stick to move the character.
-            float mx = pad.moveX, my = pad.moveY;
-            const bool roomscale = Roomscale_Move(mx, my);
+            float mx = locomotionX, my = locomotionY;
+            const bool roomscale = !running&&Roomscale_Move(mx, my);
             Game_MapMoveStick(mx, my);
-            if ((roomscale && mx * mx + my * my > 1e-6f) ||
+            if (((roomscale||running) && mx * mx + my * my > 1e-6f) ||
                 mx * mx + my * my > 0.02f)
             {
                 RadialMoveStick(mx,my,state->Gamepad.sThumbLX,state->Gamepad.sThumbLY);
@@ -686,6 +715,10 @@ namespace
     {
         if (user != 0 || !state)
             return r;
+        NativeVrActions_BeginPoll();
+        struct NativeActionPollScope {
+            ~NativeActionPollScope() noexcept {NativeVrActions_EndPoll();}
+        } nativeActionPollScope;
         // Scope exit covers both tracked-controller and physical-pad-only
         // branches, after all gesture pulses and pad merging have completed.
         struct FlashlightFilterScope

@@ -13,6 +13,8 @@ CoreState g_coreState=CoreState::Installed;
 constexpr bool kHalo2DebugGlobalAimAssistOverrideEnabled=false;
 void Game_Halo2RestoreAimAssist(){}
 bool optionalReady=true;
+bool hapticReady=true;
+bool RemoveHalo2WeaponHaptics(){return hapticReady;}
 bool RemoveHalo2ContactMelee(){return optionalReady;}
 bool RemoveHalo2DualAim(){return optionalReady;}
 bool RemoveHalo2WorldCollision(){return optionalReady;}
@@ -100,7 +102,7 @@ void Reset()
         *counters[i]=0;enabled[i]=exists[i]=true;quiesced[i]=false;}
     g_coreState=CoreState::Installed;g_armed=true;g_teardownRequested=false;g_finalPaletteReady=true;
     g_generation=7;g_moduleBase=0x123000;g_installed=true;g_moduleReference=reinterpret_cast<HMODULE>(0x123000);
-    g_objectDatumAccessor=0x456000;g_referenceValid=true;optionalReady=true;driveReady=true;
+    g_objectDatumAccessor=0x456000;g_referenceValid=true;optionalReady=true;hapticReady=true;driveReady=true;
     failDisable=failRemove=ingress=-1;removes=0;
 }
 }
@@ -128,6 +130,10 @@ int main()
     Reset();optionalReady=false;
     Check(!RemoveCore("optional feature still busy")&&g_target&&g_originalAddress,"optional dependency refusal retains core");
     optionalReady=true;Check(RemoveCore("optional retry"),"optional dependency retry");
+    Reset();hapticReady=false;
+    Check(!RemoveCore("haptic ingress busy")&&g_generation==7&&g_objectDatumAccessor==0x456000,
+        "haptic retirement preserves weapon-reader and module dependencies until drained");
+    hapticReady=true;Check(RemoveCore("haptic retry"),"haptic retirement retry completes before core teardown");
     // The direct-drive hook retires with the live cleanup (it outlived the module before), ahead of the
     // unit-aim hook it reads through; a drive that cannot retire yet keeps the core.
     Reset();driveReady=false;g_footViewEngagedMs=5;g_seatViewEngagedMs=5;

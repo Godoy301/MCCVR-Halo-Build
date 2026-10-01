@@ -10,7 +10,6 @@ Package layout:
 ```
 HaloMCCVRLauncher.exe
 ModFiles/
-  HaloMCCVRLauncher.exe
   HaloMCCVR.dll
   halomccvr.cfg
   INSTALL-MANIFEST.sha256
@@ -21,8 +20,13 @@ ModFiles/
   ...licenses, notes and other distributed assets...
 ```
 
-The top launcher and `ModFiles` launcher must have identical bytes. `ModFiles`
-remains the complete manual-install payload. Its manifest is UTF-8/ASCII, one
+The installer/updater executable is a separate player download beside
+`ModFiles`. The Windows manual archive includes the legacy game-launch/injection
+helper within `Halo_MCC_VR`, but does not include the installer/updater UI. The
+Linux compatible manual archive has the same payload files directly at ZIP root
+to avoid an extra extraction folder. `ModFiles` remains the payload for manual
+installation. Its
+manifest is UTF-8/ASCII, one
 `SHA256  relative/path` per file, excluding the manifest itself. Paths are
 relative to `ModFiles`; backslashes and forward slashes are supported. Do not
 list directories, duplicate names, absolute paths or the manifest itself.
@@ -38,7 +42,12 @@ fixed-drive XboxGames/XBOX fallback and Browse cover additional libraries.
 Each result must contain one of MCC's actual shipping executable layouts.
 The installer always targets that root's dedicated `Halo_MCC_VR` folder.
 It refuses active MCC processes, path junctions/symbolic links and corrupt
-payload hashes. It never modifies the game's original files or elevates itself.
+payload hashes. The launcher requests administrator access by default through
+its embedded Windows application manifest so protected Steam library folders
+can be written without a second manual elevation step. The launcher executable
+is installed as a separate file beside the mod payload inside `Halo_MCC_VR`;
+it is not part of the source `ModFiles` tree; the separately packaged manual
+archives provide the legacy launch helper for manual users.
 
 Existing files that are replaced are copied and verified under
 `Halo_MCC_VR/backups/<unique timestamp>`. A replacement failure restores earlier

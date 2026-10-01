@@ -1,6 +1,7 @@
 #include "../src/common/reach_wind_replay.h"
 int RunRoomscaleInputTests();
 #include "../src/common/roomscale_logic.h"
+#include "../src/common/controller_finger_input.h"
 #include "../src/common/vr_interaction_refinement_logic.h"
 #include "../src/common/menu_slider_logic.h"
 #include "../src/common/anatomical_palette_logic.h"
@@ -11,10 +12,12 @@ int RunRoomscaleInputTests();
 #include "../src/common/halo2_foot_view.h"
 #include "../src/common/halo2_datum_logic.h"
 #include "../src/common/halo3_melee_selection_logic.h"
+#include "../src/common/weapon_order_diagnostic_logic.h"
 #include "../src/common/contact_melee_motion.h"
 #include "../src/dll/contact_melee_queue.h"
 #include <array>
 #include <cstdlib>
+#include <cstdio>
 #include <cmath>
 #include <cstring>
 #include <filesystem>
@@ -29,6 +32,7 @@ int RunRoomscaleInputTests();
 
 #include "aim_servo_logic.h"
 #include "config.h"
+#include "installer_policy.h"
 #include "weapon_model_catalog.h"
 #include "coop_probe_logic.h"
 #include "cutscene_theater_logic.h"
@@ -778,6 +782,61 @@ int main()
                 ? ContactResult::NativeRejected : ContactResult::NoStrike),
                 "walls, native rejection and self-contact never turn into fallback melee attacks");
         }
+
+        struct WorldScene
+        {
+            unsigned applications=0;
+            bool Query(const Sweep&,Hit& hit) noexcept
+            {
+                hit.unit=UINT32_MAX; // BSP surfaces do not have object handles.
+                hit.position={0.05f,0,0}; hit.normal={-1,0,0}; hit.fraction=0.5f;
+                hit.kind=HitKind::WorldSurface;
+                hit.world.nativeType=1;
+                hit.world.nativeData[0]=0x120034u;
+                hit.world.nativeData[1]=0x000A0011u;
+                hit.world.material=2;
+                hit.world.valid=true;
+                return true;
+            }
+            bool Apply(uint32_t,const Hit& hit,const Sweep&) noexcept
+            {
+                if(hit.unit!=UINT32_MAX || hit.object ||
+                    hit.kind!=HitKind::WorldSurface || !hit.world.valid) return false;
+                ++applications;
+                return true;
+            }
+        } world;
+        Hand worldHand;
+        frame.serial++; frame.timeNs+=10'000'000;
+        frame.points[0].x=frame.points[1].x=0;
+        worldHand.Process(frame,5,world);
+        frame.serial++; frame.timeNs+=10'000'000;
+        frame.points[0].x=frame.points[1].x=0.06f;
+        Check(worldHand.Process(frame,5,world)==ContactResult::Applied &&
+              world.applications==1,
+              "explicit native world-surface identity can reach backend without a manufactured object handle");
+        Hit unverifiedWorld{};
+        unverifiedWorld.kind=HitKind::WorldSurface;
+        unverifiedWorld.world.nativeType=1;
+        unverifiedWorld.world.valid=false;
+        Check(!IsCandidate(unverifiedWorld,frame.unit),
+              "world contacts without a verified surface identity are rejected");
+        unverifiedWorld.world.nativeType=2;
+        unverifiedWorld.world.valid=true;
+        Check(IsCandidate(unverifiedWorld,frame.unit),
+              "shared world-contact contract leaves native type semantics to each title adapter");
+        Hit surfaceA{};
+        surfaceA.kind=HitKind::WorldSurface;
+        surfaceA.position={0.05f,0,0}; surfaceA.normal={-1,0,0}; surfaceA.fraction=0.5f;
+        surfaceA.world.nativeType=2; surfaceA.world.nativeData[0]=0x10203040;
+        surfaceA.world.material=7; surfaceA.world.valid=true;
+        Hit surfaceB=surfaceA;
+        surfaceB.position.x+=0.001f;
+        Check(SameWorldSurface(surfaceA,surfaceB),
+              "world revalidation accepts the same native surface within query precision");
+        surfaceB.world.nativeData[0]++;
+        Check(!SameWorldSurface(surfaceA,surfaceB),
+              "world revalidation rejects a different BSP/feature identity even at the same point");
     }
     {
         using namespace contact_melee;
@@ -989,6 +1048,103 @@ int main()
     Check(ReachShouldBindVisibleLeftHandToController(false) &&
               !ReachShouldBindVisibleLeftHandToController(true),
           "Reach binds the visible glove to the left controller only in free-hand mode and keeps the authored weapon grip during two-hand aim");
+    Check(ReachMayShowControllerTrackedArms(true,true,false,true,true,true) &&
+              !ReachMayShowControllerTrackedArms(false,true,false,true,true,true) &&
+              !ReachMayShowControllerTrackedArms(true,false,false,true,true,true) &&
+              !ReachMayShowControllerTrackedArms(true,true,false,false,true,true) &&
+              !ReachMayShowControllerTrackedArms(true,true,false,true,false,true) &&
+              !ReachMayShowControllerTrackedArms(true,true,false,true,true,false) &&
+              ReachMayShowControllerTrackedArms(true,true,true,true,false,true) &&
+              !ReachMayShowControllerTrackedArms(true,true,true,true,false,false),
+          "Reach exposes arms after complete solve, using the derived authored support endpoint when attached");
+    struct ReachPose2D { float angle=0.0f,x=0.0f,y=0.0f,scale=1.0f; };
+    const auto composeReachPose=[](const ReachPose2D& a,const ReachPose2D& b,
+                                   ReachPose2D& out) {
+        const float c=std::cos(a.angle),s=std::sin(a.angle);
+        out.angle=a.angle+b.angle;
+        out.x=a.x+a.scale*(c*b.x-s*b.y);
+        out.y=a.y+a.scale*(s*b.x+c*b.y);
+        out.scale=a.scale*b.scale;
+        return std::isfinite(out.angle)&&std::isfinite(out.x)&&
+            std::isfinite(out.y)&&std::isfinite(out.scale);
+    };
+    const auto invertReachPose=[&](const ReachPose2D& value,ReachPose2D& out) {
+        if(!std::isfinite(value.scale)||std::fabs(value.scale)<1.0e-5f)
+            return false;
+        out.angle=-value.angle;out.scale=1.0f/value.scale;
+        const float c=std::cos(out.angle),s=std::sin(out.angle);
+        out.x=-out.scale*(c*value.x-s*value.y);
+        out.y=-out.scale*(s*value.x+c*value.y);
+        return std::isfinite(out.x)&&std::isfinite(out.y);
+    };
+    const ReachPose2D reachRoot{0.6f,2.0f,-1.0f,1.2f};
+    const ReachPose2D reachStockRight{0.2f,0.3f,0.1f,1.0f};
+    const ReachPose2D reachDesiredRight{-0.4f,4.0f,3.0f,1.0f};
+    const ReachPose2D reachStockSupport{0.5f,-0.2f,0.8f,1.0f};
+    ReachPose2D reachSupportEndpoint{};
+    const bool reachEndpointBuilt=ReachBuildRigidCarriedSupportEndpoint(
+        reachRoot,reachStockRight,reachDesiredRight,reachStockSupport,
+        reachSupportEndpoint,composeReachPose,invertReachPose);
+    ReachPose2D reachStockRightWorld{},reachInverseRight{},reachDelta{};
+    ReachPose2D reachStockSupportWorld{},reachExpectedSupport{};
+    const bool reachExpectedBuilt=composeReachPose(reachRoot,reachStockRight,
+        reachStockRightWorld)&&invertReachPose(reachStockRightWorld,
+        reachInverseRight)&&composeReachPose(reachDesiredRight,
+        reachInverseRight,reachDelta)&&composeReachPose(reachRoot,
+        reachStockSupport,reachStockSupportWorld)&&composeReachPose(reachDelta,
+        reachStockSupportWorld,reachExpectedSupport);
+    Check(reachEndpointBuilt&&reachExpectedBuilt&&
+          std::fabs(reachSupportEndpoint.x-reachExpectedSupport.x)<1.0e-5f&&
+          std::fabs(reachSupportEndpoint.y-reachExpectedSupport.y)<1.0e-5f&&
+          std::fabs(reachSupportEndpoint.angle-reachExpectedSupport.angle)<1.0e-5f,
+          "Reach two-hand support wrist endpoint follows the exact right-hand/gun rigid delta");
+    ReachPose2D refusedEndpoint{};
+    Check(!ReachBuildRigidCarriedSupportEndpoint(ReachPose2D{},
+              ReachPose2D{0,0,0,0},reachDesiredRight,reachStockSupport,
+              refusedEndpoint,composeReachPose,invertReachPose),
+          "Reach refuses support-arm transaction when source wrist transform cannot be inverted");
+    Check(ReachFpPaletteVisibility(false,false,true,true,false)==
+              ReachFpVisibilityAction::Keep &&
+              ReachFpPaletteVisibility(false,false,true,false,true)==
+                  ReachFpVisibilityAction::Keep &&
+              ReachFpPaletteVisibility(false,false,false,true,false)==
+                  ReachFpVisibilityAction::CollapseAtLeftWrist &&
+              ReachFpPaletteVisibility(false,false,false,false,true)==
+                  ReachFpVisibilityAction::CollapseAtRightWrist &&
+              ReachFpPaletteVisibility(false,false,true,false,false)==
+                  ReachFpVisibilityAction::HideUnrelatedBody &&
+              ReachFpPaletteVisibility(true,false,false,false,false)==
+                  ReachFpVisibilityAction::Keep &&
+              ReachFpPaletteVisibility(false,true,false,false,false)==
+                  ReachFpVisibilityAction::Keep,
+          "Reach visibility keeps both controller-solved arms and hands/held models, while hiding unrelated first-person body nodes");
+    {
+        using namespace weapon_order_diagnostic;
+        const uint64_t packed = (uint64_t(10) << 32) | 7;
+        Check(CaptureProbePermission(
+                  true, true, packed, /*storedSession=*/5,
+                  /*currentSession=*/5, /*currentThread=*/7) ==
+                  kProbePermissionAllowed,
+              "Capture probe is authorized by title, generation, session and thread");
+        Check(CaptureProbePermission(
+                  true, true, packed, 5, /*currentSession=*/6, 7) ==
+                  kProbePermissionNoSafeThread,
+              "A new recording session never inherits the previous session's FP thread authorization even when the numeric thread id matches");
+        Check(CaptureProbePermission(
+                  true, true, /*storedPacked=*/0, 0, 5, 7) ==
+                  kProbePermissionNoSafeThread,
+              "No observed FP thread means no Capture probe attempt");
+        Check(CaptureProbePermission(
+                  false, true, packed, 5, 5, 7) ==
+                  kProbePermissionGuardRejected &&
+              CaptureProbePermission(true, false, packed, 5, 5, 7) ==
+                  kProbePermissionGuardRejected,
+              "Title or generation mismatch is a lifecycle guard rejection");
+        Check(CaptureProbePermission(
+                  true, true, packed, 5, 5, /*currentThread=*/8) ==
+                  kProbePermissionThreadMismatch,
+              "A foreign Capture thread is refused rather than reading TLS");
+    }
 
     {
         // sig::Find is memchr-anchored for speed (it is the dominant cost of
@@ -8827,6 +8983,9 @@ int main()
                 for (uint32_t i = 32; i <= 40; ++i) expectedRight |= 1ull << i;
                 Check(built && binding.valid && binding.leftWrist == 5 &&
                           binding.rightWrist == 6 &&
+                          binding.leftElbow == 3 && binding.rightElbow == 4 &&
+                          binding.leftShoulder == 1 &&
+                          binding.rightShoulder == 2 &&
                           binding.rigKind ==
                               Halo2FirstPersonRigKind::MasterChief &&
                           binding.leftArmAncestors ==
@@ -8848,6 +9007,44 @@ int main()
                           (binding.rightSubtree & (1ull << 2)) == 0,
                     "Halo 2 keeps only the right hand and gun on the right "
                     "controller, excluding both upper arms");
+
+                Halo2FirstPersonTransform armShoulder{},armElbow{},armStockWrist{},
+                    armDesiredWrist{};
+                armShoulder.scale=armElbow.scale=armStockWrist.scale=
+                    armDesiredWrist.scale=1.0f;
+                armShoulder.rotation[0]=armShoulder.rotation[4]=
+                    armShoulder.rotation[8]=1.0f;
+                armElbow.rotation[0]=armElbow.rotation[4]=
+                    armElbow.rotation[8]=1.0f;
+                armStockWrist.rotation[0]=armStockWrist.rotation[4]=
+                    armStockWrist.rotation[8]=1.0f;
+                armDesiredWrist.rotation[0]=armDesiredWrist.rotation[4]=
+                    armDesiredWrist.rotation[8]=1.0f;
+                armElbow.translation[0]=1.0f;
+                armStockWrist.translation[0]=2.0f;
+                armDesiredWrist.translation[0]=1.0f;
+                armDesiredWrist.translation[1]=1.0f;
+                Check(Halo2SolveFinalPacketArm(armShoulder,armElbow,
+                          armStockWrist,armDesiredWrist) &&
+                          std::fabs(std::sqrt(
+                              armElbow.translation[0]*armElbow.translation[0]+
+                              armElbow.translation[1]*armElbow.translation[1])-1.0f)<1.0e-4f,
+                      "H2 final-packet analytic arm solve preserves authored link lengths while reaching tracked wrist");
+                Halo2FirstPersonTransform refusedShoulder{},refusedElbow{};
+                refusedShoulder.scale=refusedElbow.scale=1.0f;
+                refusedShoulder.rotation[0]=refusedShoulder.rotation[4]=
+                    refusedShoulder.rotation[8]=1.0f;
+                refusedElbow.rotation[0]=refusedElbow.rotation[4]=
+                    refusedElbow.rotation[8]=1.0f;
+                refusedElbow.translation[0]=1.0f;
+                Halo2FirstPersonTransform refusedWrist=armStockWrist;
+                Halo2FirstPersonTransform unreachableWrist=armDesiredWrist;
+                unreachableWrist.translation[0]=6.0f;
+                unreachableWrist.translation[1]=0.0f;
+                Check(!Halo2SolveFinalPacketArm(refusedShoulder,refusedElbow,
+                          refusedWrist,unreachableWrist) &&
+                          refusedElbow.translation[0]==1.0f,
+                      "H2 arm solve refuses unreachable targets without partially changing its chain");
 
                 static Halo2FirstPersonSlotCache splitCache{};
                 splitCache = Halo2FirstPersonSlotCache{};
@@ -8904,6 +9101,8 @@ int main()
                 Check(Halo2BuildFirstPersonArmBinding(
                           eliteFlags, eliteParents, kElite, elite) &&
                           elite.leftWrist == 5 && elite.rightWrist == 6 &&
+                          elite.leftElbow == 3 && elite.rightElbow == 4 &&
+                          elite.leftShoulder == 1 && elite.rightShoulder == 2 &&
                           elite.rigKind == Halo2FirstPersonRigKind::Elite &&
                           (elite.leftSubtree & (1ull << 31)) == 0,
                     "C-H2-47 binds the 36-node Elite rig, whose weapon root is "
@@ -10259,6 +10458,28 @@ int main()
     Check(Halo4Adapter_RuntimeHooksPermitted(),
         "C-H4-3 permits the camera core's hooks; the install proof, not this "
         "flag, is what actually admits them");
+    // T6c: the prepared snapshot's owner-safe ordinary one-hand fallback is an
+    // immutable per-serial field consumed lock-free from the double buffer. A
+    // snapshot that never filled it must never look like a valid one-hand
+    // pose, and a copied record must carry it bit-exactly.
+    {
+        Halo4VrRenderSnapshot fallback{};
+        Check(!fallback.oneHandRightAimValid &&
+                  fallback.oneHandRightAimOrientation[0] == 0.0f &&
+                  fallback.oneHandRightAimOrientation[1] == 0.0f &&
+                  fallback.oneHandRightAimOrientation[2] == 0.0f &&
+                  fallback.oneHandRightAimOrientation[3] == 1.0f,
+            "an unfilled Halo 4 one-hand fallback is not a usable pose");
+        Halo4VrRenderSnapshot filled{};
+        filled.oneHandRightAimValid = true;
+        filled.oneHandRightAimOrientation[0] = 0.25f;
+        filled.oneHandRightAimOrientation[3] = 0.9682458f;
+        const Halo4VrRenderSnapshot copy = filled;
+        Check(copy.oneHandRightAimValid &&
+                  copy.oneHandRightAimOrientation[0] == 0.25f &&
+                  copy.oneHandRightAimOrientation[3] == 0.9682458f,
+            "the Halo 4 prepared one-hand fallback survives the snapshot copy");
+    }
 #else
     Check(Halo4Adapter_GetStage() ==
               Halo4AdapterStage::ControllerInputAndColdObservation,
@@ -11913,6 +12134,27 @@ int main()
                       std::numeric_limits<float>::quiet_NaN(), invalidReach),
             "Halo 4 refuses invalid arm-link or tracked-span inputs");
 
+        Check(!Halo4ShouldCollapseFloatingNode(
+                  Halo4FloatingNodeRole::CollapseAtRightWrist, false) &&
+                  !Halo4ShouldCollapseFloatingNode(
+                      Halo4FloatingNodeRole::CollapseAtLeftWrist, false) &&
+                  Halo4ShouldCollapseFloatingNode(
+                      Halo4FloatingNodeRole::Hidden, false) &&
+                  Halo4ShouldCollapseFloatingNode(
+                      Halo4FloatingNodeRole::CollapseAtRightWrist, true) &&
+                  Halo4ShouldCollapseFloatingNode(
+                      Halo4FloatingNodeRole::CollapseAtLeftWrist, true) &&
+                  !Halo4ShouldCollapseFloatingNode(
+                      Halo4FloatingNodeRole::RightHand, true) &&
+                  !Halo4ShouldCollapseFloatingNode(
+                      Halo4FloatingNodeRole::LeftHand, true),
+            "Halo 4 arms-with-hands shows only the solved chains; floating hands collapses both arms and preserves both hands");
+        Check(Halo4VisibleArmSolveCanCommit(true,true,true) &&
+                  !Halo4VisibleArmSolveCanCommit(true,false,true) &&
+                  !Halo4VisibleArmSolveCanCommit(true,true,false) &&
+                  !Halo4VisibleArmSolveCanCommit(false,true,true),
+            "Halo 4 preserves the hand-only fallback unless both visible-arm solves succeed");
+
         // The 28 helper/fixup/armour bones between the joints. The shared
         // solver writes only the shoulder, the elbow and the hand mask, so
         // these are carried separately; if the band tables ever drift out of
@@ -13512,6 +13754,8 @@ int main()
         Check(fresh.dpad_hand == 0 && fresh.dpad_head_radius == 0.30f &&
                   !fresh.quest_thumbrest_dpad,
             "D-pad defaults preserve the existing 30 cm left-hand head gesture and leave Quest thumb-rest mode off");
+        Check(fresh.two_hand_coherent_aim,
+            "Coherent committed-sample aim defaults on");
     }
 
     wchar_t tempPath[MAX_PATH]{};
@@ -13530,6 +13774,17 @@ int main()
     Check(std::filesystem::exists(primary), "Legacy config migration creates halomccvr.cfg");
     Check(std::filesystem::exists(legacy), "Legacy config migration retains halo3xr.cfg");
     Check(g_config.screen_width_m == 6.25f, "Legacy values survive migration");
+    Check(!g_config.hud_reveal_near_head&&g_config.hud_reveal_radius_m==.22f,
+        "HUD reveal is opt-in and cannot change existing hide behavior during upgrade");
+    g_config.hud_reveal_near_head=true;g_config.hud_reveal_radius_m=.31f;
+    ConfigSave();ConfigLoad(primary.c_str());
+    Check(g_config.hud_reveal_near_head&&std::fabs(g_config.hud_reveal_radius_m-.31f)<.0001f,
+        "HUD reveal choice and activation distance survive a real config roundtrip");
+    g_config.hud_reveal_near_head=false;g_config.hud_reveal_radius_m=.22f;ConfigSave();
+    g_config.dlss_preset=6;ConfigSave();ConfigLoad(primary.c_str());
+    Check(g_config.dlss_preset==6,
+        "DLSS E survives real config roundtrip instead of silently changing to M");
+    g_config.dlss_preset=0;ConfigSave();
     Check(g_config.haptic_intensity == 0.86f,
         "Malformed new values retain their individual default");
     Check(g_config.dpad_head_radius == 0.30f && !g_config.quest_thumbrest_dpad,
@@ -13537,10 +13792,126 @@ int main()
     const std::string organizedConfig = ReadTextFile(primary);
     Check(!g_config.independent_dual_aim && CountText(organizedConfig,
         "\nindependent_dual_aim = 0")==1,"independent dual aim defaults off in legacy configurations");
+    Check(g_config.two_hand_coherent_aim && CountText(organizedConfig,
+        "\ntwo_hand_coherent_aim = 1")==1,
+        "Coherent committed-sample aim defaults on and is persisted on for legacy configurations");
+    g_config.two_hand_coherent_aim=false;ConfigSave();
+    g_config.two_hand_coherent_aim=true;
+    ConfigLoad(primary.c_str());
+    Check(!g_config.two_hand_coherent_aim,
+        "Hidden coherent-aim key preserves OFF through a config round trip as a rollback/debug escape");
+    g_config.two_hand_coherent_aim=true;ConfigSave();
+    {
+        const std::filesystem::path oldAimConfig = configDir / L"coherent-aim-v5.cfg";
+        const std::filesystem::path rollbackAimConfig = configDir / L"coherent-aim-v6-rollback.cfg";
+        {
+            std::ofstream file(oldAimConfig);
+            file << "config_version = 5\n";
+            file << "two_hand_coherent_aim = 0\n";
+        }
+        ConfigLoad(oldAimConfig.c_str());
+        Check(g_config.two_hand_coherent_aim,
+            "Pre-v6 saved OFF is migrated to coherent committed-sample aim ON");
+        ConfigSave();
+        const std::string migratedAimConfig = ReadTextFile(oldAimConfig);
+        Check(g_config.config_version == 6 &&
+                  CountText(migratedAimConfig, "\nconfig_version = 6") == 1 &&
+                  CountText(migratedAimConfig, "\ntwo_hand_coherent_aim = 1") == 1,
+            "Saving the v5 coherent-aim migration persists version 6 and ON");
+        ConfigLoad(oldAimConfig.c_str());
+        Check(g_config.two_hand_coherent_aim,
+            "Reloading the saved v6 migration keeps coherent committed-sample aim ON");
+
+        {
+            std::ofstream file(rollbackAimConfig);
+            file << "config_version = 6\n";
+            file << "two_hand_coherent_aim = 0\n";
+        }
+        ConfigLoad(rollbackAimConfig.c_str());
+        Check(!g_config.two_hand_coherent_aim,
+            "A v6 config's explicit hidden OFF rollback remains honored");
+
+        // Restore the shared test config and ConfigSave destination after these
+        // isolated version-migration cases.
+        ConfigLoad(primary.c_str());
+        std::filesystem::remove(oldAimConfig);
+        std::filesystem::remove(rollbackAimConfig);
+    }
+    {
+        // Exercise the real installer merge followed by runtime parsing and
+        // saving. Text-only installer assertions cannot catch new defaults
+        // suppressing a ConfigLoad migration or inherited title calibration.
+        const auto mergedPath = configDir / L"installer-runtime-roundtrip.cfg";
+        const auto verifyMerged = [&](const std::string& previous,
+                                      auto&& valid, const char* message) {
+            {
+                std::ofstream file(mergedPath);
+                file << mcc_installer::MergeConfig(previous, organizedConfig).text;
+            }
+            ConfigLoad(mergedPath.c_str());
+            Check(valid(), message);
+            ConfigSave();
+            ConfigLoad(mergedPath.c_str());
+            Check(valid(), message);
+        };
+        verifyMerged("config_version=5\nvirtual_stock_rear_reference=1\n"
+                     "virtual_stock_strength=0.61\ntwo_hand_smoothing=1\n"
+                     "two_hand_coherent_aim=0\n", [] {
+            return g_config.virtual_stock_rear_reference == 1 &&
+                g_config.virtual_stock_standard_strength == .61f &&
+                g_config.virtual_stock_plus_strength == kVirtualStockPlusStrengthDefault &&
+                g_config.two_hand_smoothing_strength == 25.0f &&
+                g_config.two_hand_coherent_aim && g_config.config_version == 6;
+        }, "installer/runtime roundtrip migrates legacy Standard strength, smoothing and v5 coherent aim");
+        verifyMerged("config_version=5\nvirtual_stock_rear_reference=3\n"
+                     "virtual_stock_strength=0.44\ntwo_hand_smoothing=0\n", [] {
+            return g_config.virtual_stock_rear_reference == 3 &&
+                g_config.virtual_stock_plus_strength == .44f &&
+                g_config.virtual_stock_standard_strength == kVirtualStockStandardStrengthDefault &&
+                g_config.two_hand_smoothing_strength == 0.0f;
+        }, "installer/runtime roundtrip migrates legacy Plus strength and disabled smoothing");
+        verifyMerged("config_version=6\nvirtual_stock_rear_reference=3\n"
+                     "virtual_stock_strength=0.44\nvirtual_stock_plus_strength=0.77\n"
+                     "virtual_stock_standard_strength=0.91\ntwo_hand_smoothing=1\n"
+                     "two_hand_smoothing_strength=12.5\ntwo_hand_coherent_aim=0\n", [] {
+            return g_config.virtual_stock_plus_strength == .77f &&
+                g_config.virtual_stock_standard_strength == .91f &&
+                g_config.two_hand_smoothing_strength == 12.5f &&
+                !g_config.two_hand_coherent_aim;
+        }, "installer/runtime roundtrip preserves explicit new strengths and v6 coherent-aim rollback");
+        verifyMerged("config_version=6\ngun_scale=0.8\nhud_size=0.7\n"
+                     "barrel_pitch_deg=12\nhalo3_gun_scale=0.65\n", [] {
+            bool valid = g_config.base_tunables.gun_scale == .8f;
+            for (int i = 0; i < kTitleProfileCount; ++i) {
+                const auto& profile = g_config.title_profiles[i];
+                valid = valid && profile.gun_scale == (i == 0 ? .65f : .8f) &&
+                    profile.hud_size == .7f && profile.barrel_pitch_deg == 12.0f;
+            }
+            return valid;
+        }, "installer/runtime roundtrip inherits missing title calibrations and preserves explicit title override");
+        verifyMerged("hud_height=0.4\n", [] {
+            const float expected = (.30f - .4f * .1f) / .60f;
+            bool valid = std::abs(g_config.base_tunables.hud_curvature - expected) < .006f;
+            for (const auto& profile : g_config.title_profiles)
+                valid = valid && std::abs(profile.hud_curvature - expected) < .006f;
+            return valid;
+        }, "installer/runtime roundtrip preserves inherited legacy HUD curvature migration");
+        ConfigLoad(primary.c_str());
+        std::filesystem::remove(mergedPath);
+    }
     g_config.independent_dual_aim=true;ConfigSave();g_config.independent_dual_aim=false;
     ConfigLoad(primary.c_str());
     Check(g_config.independent_dual_aim,"independent dual aim persists through a config round trip");
     g_config.independent_dual_aim=false;ConfigSave();
+    Check(CountText(organizedConfig,"\ntwo_hand_switch_inherit = 0")==1,
+        "switched-weapon two-hand inheritance is written with its default off");
+    Check(!g_config.two_hand_switch_inherit,
+        "switched-weapon two-hand inheritance defaults off");
+    g_config.two_hand_switch_inherit=true;ConfigSave();
+    g_config.two_hand_switch_inherit=false;ConfigLoad(primary.c_str());
+    Check(g_config.two_hand_switch_inherit,
+        "switched-weapon two-hand inheritance persists through a config round trip");
+    g_config.two_hand_switch_inherit=false;ConfigSave();
     Check(!g_config.gun_barrel_aim && CountText(organizedConfig,"\ngun_barrel_aim = 0")==1,
         "barrel trajectory is separate and defaults off in legacy configurations");
     g_config.gun_barrel_aim=true;ConfigSave();g_config.gun_barrel_aim=false;
@@ -13548,6 +13919,758 @@ int main()
     Check(g_config.gun_barrel_aim&&!g_config.independent_dual_aim,
         "barrel trajectory persists independently of dual trajectories");
     g_config.gun_barrel_aim=false;ConfigSave();
+    Check(Config{}.virtual_stock == kVirtualStockEnabledDefault &&
+            !kVirtualStockEnabledDefault,
+        "virtual stock defaults off for backwards compatibility");
+    Check(Config{}.virtual_stock_standard_strength ==
+                kVirtualStockStandardStrengthDefault &&
+            Config{}.virtual_stock_plus_strength ==
+                kVirtualStockPlusStrengthDefault &&
+            Config{}.virtual_stock_rear_height_m == kVirtualStockRearHeightDefaultM &&
+            kVirtualStockStandardStrengthDefault == 0.95f &&
+            kVirtualStockPlusStrengthDefault == 0.80f &&
+            kVirtualStockRearHeightDefaultM == -0.220f,
+        "Standard and Plus use independent 95/80 percent defaults");
+    Check(Config{}.virtual_stock_proximity_release ==
+                kVirtualStockProximityReleaseDefault &&
+            Config{}.virtual_stock_proximity_full_m ==
+                kVirtualStockProximityFullDefaultM &&
+            Config{}.virtual_stock_proximity_release_m ==
+                kVirtualStockProximityReleaseDefaultM &&
+            kVirtualStockProximityFullDefaultM == 0.270f &&
+            kVirtualStockProximityReleaseDefaultM == 0.425f,
+        "proximity release defaults on with the 0.270/0.425 metre pair");
+    Check(Config{}.virtual_stock_rear_reference ==
+                kVirtualStockProductRearReferenceDefault &&
+            Config{}.virtual_stock_shoulder_back_m ==
+                kVirtualStockShoulderBackDefaultM &&
+            Config{}.virtual_stock_shoulder_side_m ==
+                kVirtualStockShoulderSideDefaultM &&
+            kVirtualStockShoulderBackDefaultM == 0.005f &&
+            kVirtualStockShoulderSideDefaultM == 0.015f &&
+            kVirtualStockProductRearReferenceDefault == 3,
+        "Virtual Stock defaults to Plus Centre with the accepted Shoulder offsets");
+    Check(Config{}.virtual_stock_chest_height_m ==
+                kVirtualStockChestHeightDefaultM &&
+            Config{}.virtual_stock_chest_back_m == kVirtualStockChestBackDefaultM &&
+            Config{}.virtual_stock_chest_side_m == kVirtualStockChestSideDefaultM &&
+            kVirtualStockChestHeightDefaultM == -0.320f &&
+            kVirtualStockChestBackDefaultM == 0.000f &&
+            kVirtualStockChestSideDefaultM == 0.015f,
+        "Chest defaults use the lower centered test seeds");
+    Check(Config{}.virtual_stock_adaptive_top_height_m ==
+                kVirtualStockAdaptiveTopHeightDefaultM &&
+            Config{}.virtual_stock_adaptive_bottom_height_m ==
+                kVirtualStockAdaptiveBottomHeightDefaultM &&
+            Config{}.virtual_stock_adaptive_top_half_width_m ==
+                kVirtualStockAdaptiveTopHalfWidthDefaultM &&
+            Config{}.virtual_stock_adaptive_bottom_half_width_m ==
+                kVirtualStockAdaptiveBottomHalfWidthDefaultM &&
+            kVirtualStockAdaptiveTopHeightDefaultM == -0.180f &&
+            kVirtualStockAdaptiveBottomHeightDefaultM == -0.450f &&
+            kVirtualStockAdaptiveTopHalfWidthDefaultM == 0.080f &&
+            kVirtualStockAdaptiveBottomHalfWidthDefaultM == 0.140f,
+        "Adaptive defaults use the broad coplanar coverage seed");
+    Check(Config{}.virtual_stock_hybrid_offhand_influence ==
+                kVirtualStockHybridOffhandInfluenceDefault &&
+            Config{}.virtual_stock_hybrid_ads_reference ==
+                kVirtualStockHybridAdsReferenceDefault &&
+            Config{}.virtual_stock_hybrid_seat_full_m ==
+                kVirtualStockProductHybridSeatFullDefaultM &&
+            Config{}.virtual_stock_hybrid_seat_release_m ==
+                kVirtualStockProductHybridSeatReleaseDefaultM &&
+            kVirtualStockHybridOffhandInfluenceDefault == 0.50f &&
+            kVirtualStockHybridAdsReferenceDefault == 0 &&
+            Config{}.virtual_stock_hybrid_horizontal_release &&
+            Config{}.virtual_stock_hybrid_horizontal_full_m == 0.330f &&
+            Config{}.virtual_stock_hybrid_horizontal_release_m == 0.475f &&
+            kVirtualStockProductHybridSeatFullDefaultM == 0.464f &&
+            kVirtualStockProductHybridSeatReleaseDefaultM == 0.474f,
+        "Plus defaults use accepted offhand, Centre, horizontal unloading, and broad safety values");
+    Check(!kVirtualStockHybridInverseNeckEnabledDefault &&
+            kVirtualStockHybridInverseNeckStrengthDefault == 0.0f &&
+            Config{}.two_hand_support_grip_pose,
+        "inverse-neck stays off while support-hand rotation reduction defaults on");
+    {
+        Config mode{};
+        Check(!mode.virtual_stock && VirtualStockUsesPlusMode(mode) &&
+                !VirtualStockUsesShoulderReference(mode),
+            "enabling a fresh Virtual Stock configuration starts in Plus Centre");
+        mode.virtual_stock = true;
+        Check(VirtualStockUsesPlusMode(mode),
+            "enabling Virtual Stock preserves the default Plus mode");
+        mode.virtual_stock_rear_reference = 1;
+        SetVirtualStockPlusMode(mode, true);
+        Check(VirtualStockUsesPlusMode(mode) &&
+                VirtualStockUsesShoulderReference(mode) &&
+                mode.virtual_stock_hybrid_ads_reference == 1,
+            "Standard Shoulder switches to Plus while preserving Shoulder");
+        SetVirtualStockPlusMode(mode, false);
+        Check(!VirtualStockUsesPlusMode(mode) &&
+                mode.virtual_stock_rear_reference == 1,
+            "Plus Shoulder switches back to Standard Shoulder");
+        SetVirtualStockShoulderReference(mode, false);
+        SetVirtualStockPlusMode(mode, true);
+        Check(VirtualStockUsesPlusMode(mode) &&
+                !VirtualStockUsesShoulderReference(mode),
+            "Standard Centre switches to Plus Centre");
+        mode.virtual_stock = false;
+        SetVirtualStockShoulderReference(mode, true);
+        mode.virtual_stock = true;
+        Check(VirtualStockUsesPlusMode(mode) &&
+                VirtualStockUsesShoulderReference(mode),
+            "turning Virtual Stock off and on preserves mode and rear reference");
+        mode.virtual_stock_plus_strength = 0.81f;
+        SetVirtualStockPlusMode(mode, false);
+        Check(VirtualStockActiveStrength(mode) == 0.95f,
+            "switching to Standard restores its independent strength");
+        VirtualStockActiveStrength(mode) = 0.93f;
+        Check(mode.virtual_stock_standard_strength == 0.93f &&
+                mode.virtual_stock_plus_strength == 0.81f,
+            "editing Standard strength does not change Plus strength");
+        SetVirtualStockPlusMode(mode, true);
+        Check(VirtualStockActiveStrength(mode) == 0.81f,
+            "switching to Plus restores its independent strength");
+        VirtualStockActiveStrength(mode) = 0.79f;
+        Check(mode.virtual_stock_standard_strength == 0.93f &&
+                mode.virtual_stock_plus_strength == 0.79f,
+            "editing Plus strength does not change Standard strength");
+    }
+    {
+        Config reset{};
+        reset.virtual_stock = true;
+        reset.virtual_stock_standard_strength = 0.12f;
+        reset.virtual_stock_plus_strength = 0.13f;
+        reset.virtual_stock_rear_reference = 1;
+        reset.virtual_stock_hybrid_ads_reference = 1;
+        reset.virtual_stock_hybrid_horizontal_release = false;
+        reset.virtual_stock_hybrid_horizontal_full_m = 0.20f;
+        reset.virtual_stock_hybrid_horizontal_release_m = 0.30f;
+        reset.virtual_stock_hybrid_seat_full_m = 0.10f;
+        reset.virtual_stock_hybrid_seat_release_m = 0.20f;
+        reset.virtual_stock_proximity_release = false;
+        reset.two_hand_support_grip_pose = false;
+        reset.gun_pitch_deg = 17.0f;
+        ResetVirtualStockSettings(reset);
+        const VirtualStockAimSettings settings = VirtualStockAimSettingsFromConfig(
+            reset, HybridDiagnosticOverride::Normal);
+        Check(reset.virtual_stock && settings.virtualStockEnabled &&
+                settings.virtualStockRearReference == 3 &&
+                settings.virtualStockHybridAdsReference == 0 &&
+                settings.virtualStockStrength == 0.80f &&
+                reset.virtual_stock_standard_strength == 0.95f &&
+                reset.virtual_stock_plus_strength == 0.80f &&
+                settings.virtualStockRearHeightM == -0.220f &&
+                settings.virtualStockHybridOffhandInfluence == 0.50f &&
+                settings.hybridHorizontalRearReleaseEnabled &&
+                settings.hybridHorizontalRearReleaseFullM == 0.330f &&
+                settings.hybridHorizontalRearReleaseReleaseM == 0.475f &&
+                settings.virtualStockHybridSeatFullM == 0.464f &&
+                settings.virtualStockHybridSeatReleaseM == 0.474f &&
+                settings.virtualStockProximityRelease &&
+                settings.virtualStockProximityFullM == 0.270f &&
+                settings.virtualStockProximityReleaseM == 0.425f &&
+                !settings.hybridInverseNeckEnabled &&
+                settings.hybridInverseNeckStrength ==
+                    kVirtualStockHybridInverseNeckStrengthDefault &&
+                settings.hybridInverseNeckForwardM ==
+                    kVirtualStockHybridInverseNeckForwardDefaultM &&
+                settings.hybridInverseNeckUpM ==
+                    kVirtualStockHybridInverseNeckUpDefaultM &&
+                settings.hybridInverseNeckLateralM ==
+                    kVirtualStockHybridInverseNeckLateralDefaultM,
+            "Virtual Stock reset restores the accepted Plus Centre composition with inverse-neck disabled");
+        Check(!reset.two_hand_support_grip_pose && reset.gun_pitch_deg == 17.0f,
+            "Virtual Stock reset preserves support-hand rotation reduction and unrelated aim settings");
+        reset.virtual_stock = false;
+        reset.virtual_stock_standard_strength = 0.12f;
+        reset.virtual_stock_plus_strength = 0.13f;
+        ResetVirtualStockSettings(reset);
+        Check(!reset.virtual_stock &&
+                reset.virtual_stock_standard_strength ==
+                    kVirtualStockStandardStrengthDefault &&
+                reset.virtual_stock_plus_strength ==
+                    kVirtualStockPlusStrengthDefault &&
+                !reset.two_hand_support_grip_pose &&
+                reset.gun_pitch_deg == 17.0f,
+            "Virtual Stock reset also preserves the disabled state and unrelated settings");
+    }
+    {
+        // Product resolution can never enable inverse-neck after the
+        // 2026-09-27 head-turn sway correction retirement. Standard rear
+        // references 0/1/2 and Plus rear reference 3 all resolve NK-off with
+        // zeroed knobs and an inactive diagnostic capture family.
+        for (const int rearReference : {0, 1, 2, 3})
+        {
+            Config product{};
+            product.virtual_stock = true;
+            product.virtual_stock_rear_reference = rearReference;
+            const VirtualStockAimSettings resolved =
+                VirtualStockAimSettingsFromConfig(
+                    product, HybridDiagnosticOverride::Normal);
+            Check(!resolved.hybridInverseNeckEnabled &&
+                    resolved.hybridInverseNeckStrength ==
+                        kVirtualStockHybridInverseNeckStrengthDefault &&
+                    resolved.hybridInverseNeckForwardM ==
+                        kVirtualStockHybridInverseNeckForwardDefaultM &&
+                    resolved.hybridInverseNeckUpM ==
+                        kVirtualStockHybridInverseNeckUpDefaultM &&
+                    resolved.hybridInverseNeckLateralM ==
+                        kVirtualStockHybridInverseNeckLateralDefaultM &&
+                    !VirtualStockHeadTurnCorrectionFamilyActive(resolved),
+                "product Virtual Stock resolution keeps inverse-neck disabled and the capture family inactive");
+        }
+        Config vsOff{};
+        vsOff.virtual_stock = false;
+        const VirtualStockAimSettings vsOffSettings =
+            VirtualStockAimSettingsFromConfig(
+                vsOff, HybridDiagnosticOverride::Normal);
+        Check(!vsOffSettings.hybridInverseNeckEnabled &&
+                !VirtualStockHeadTurnCorrectionFamilyActive(vsOffSettings),
+            "Virtual Stock OFF leaves inverse-neck disabled with no active capture family");
+        Config planted{};
+        planted.virtual_stock = true;
+        planted.virtual_stock_rear_reference = 0;
+        planted.virtual_stock_standard_strength = 0.95f;
+        planted.virtual_stock_proximity_release = true;
+        planted.virtual_stock_proximity_full_m = 0.270f;
+        planted.virtual_stock_proximity_release_m = 0.425f;
+        const VirtualStockAimSettings plantedCentre =
+            VirtualStockAimSettingsFromConfig(
+                planted, HybridDiagnosticOverride::Normal);
+        Check(!plantedCentre.virtualStockProximityRelease &&
+                plantedCentre.virtualStockStrength == 0.95f &&
+                plantedCentre.virtualStockRearReference == 0 &&
+                plantedCentre.hybridDiagnosticOverride ==
+                    HybridDiagnosticOverride::Normal,
+            "planted Standard Centre ignores legacy proximity with .95 strength and Normal diagnostic");
+        planted.virtual_stock_rear_reference = 1;
+        const VirtualStockAimSettings plantedShoulder =
+            VirtualStockAimSettingsFromConfig(
+                planted, HybridDiagnosticOverride::Normal);
+        Check(!plantedShoulder.virtualStockProximityRelease &&
+                plantedShoulder.virtualStockStrength == 0.95f &&
+                plantedShoulder.virtualStockRearReference == 1,
+            "planted Standard Shoulder ignores legacy proximity with .95 strength");
+        planted.virtual_stock_proximity_full_m = 0.31f;
+        planted.virtual_stock_proximity_release_m = 0.57f;
+        const VirtualStockAimSettings plantedVaried =
+            VirtualStockAimSettingsFromConfig(
+                planted, HybridDiagnosticOverride::Normal);
+        Check(!plantedVaried.virtualStockProximityRelease &&
+                plantedVaried.virtualStockProximityFullM == 0.31f &&
+                plantedVaried.virtualStockProximityReleaseM == 0.57f,
+            "persisted legacy thresholds stay stored but dormant for planted Standard");
+    }
+    Check(kVirtualStockStrengthMinimum == 0.0f &&
+            kVirtualStockStrengthMaximum == 1.0f &&
+            kVirtualStockRearHeightMinimumM == -0.30f &&
+            kVirtualStockRearHeightMaximumM == 0.10f &&
+            kVirtualStockShoulderBackMinimumM == 0.0f &&
+            kVirtualStockShoulderBackMaximumM == 0.25f &&
+            kVirtualStockShoulderSideMinimumM == 0.0f &&
+            kVirtualStockShoulderSideMaximumM == 0.20f &&
+            kVirtualStockHybridSeatFullMinimumM == 0.010f &&
+            kVirtualStockHybridSeatFullMaximumM == 0.600f &&
+            kVirtualStockHybridSeatReleaseMinimumM == 0.020f &&
+            kVirtualStockHybridSeatReleaseMaximumM == 0.800f &&
+            kVirtualStockHybridSeatMinimumSeparationM == 0.010f &&
+            kVirtualStockProximityFullMinimumM == 0.10f &&
+            kVirtualStockProximityFullMaximumM == 0.60f &&
+            kVirtualStockProximityReleaseMinimumM == 0.15f &&
+            kVirtualStockProximityReleaseMaximumM == 0.80f,
+        "neutral Virtual Stock bounds match the production parser and UI policy");
+    Check(CountText(organizedConfig,"\nvirtual_stock = 0")==1,
+        "virtual stock default is written to legacy configurations");
+    Check(CountText(organizedConfig,
+                "\nvirtual_stock_standard_strength = 0.95") == 1 &&
+            CountText(organizedConfig,
+                "\nvirtual_stock_plus_strength = 0.80") == 1 &&
+            CountText(organizedConfig,"\nvirtual_stock_strength = ") == 0 &&
+            CountText(organizedConfig,"\nvirtual_stock_rear_height_m = -0.220")==1,
+        "independent strength defaults replace the legacy shared key");
+    Check(CountText(organizedConfig,"\nvirtual_stock_proximity_release = 1")==1 &&
+            CountText(organizedConfig,"\nvirtual_stock_proximity_full_m = 0.270")==1 &&
+            CountText(organizedConfig,"\nvirtual_stock_proximity_release_m = 0.425")==1,
+        "proximity release defaults are written exactly once to legacy configurations");
+    Check(CountText(organizedConfig,
+                "virtual_stock_head_turn_sway_correction") == 0,
+        "the retired sway correction key is never written to generated configurations");
+    Check(CountText(organizedConfig,"\nvirtual_stock_rear_reference = 3")==1 &&
+            CountText(organizedConfig,"\nvirtual_stock_shoulder_back_m = 0.005")==1 &&
+            CountText(organizedConfig,"\nvirtual_stock_shoulder_side_m = 0.015")==1,
+        "Shoulder A/B defaults are written exactly once to legacy configurations");
+    Check(CountText(organizedConfig,"\nvirtual_stock_chest_height_m = -0.320")==1 &&
+            CountText(organizedConfig,"\nvirtual_stock_chest_back_m = 0.000")==1 &&
+            CountText(organizedConfig,"\nvirtual_stock_chest_side_m = 0.015")==1,
+        "Chest defaults are written exactly once to legacy configurations");
+    Check(CountText(organizedConfig,
+            "\nvirtual_stock_adaptive_top_height_m = -0.180") == 1 &&
+            CountText(organizedConfig,
+                "\nvirtual_stock_adaptive_bottom_height_m = -0.450") == 1 &&
+            CountText(organizedConfig,
+                "\nvirtual_stock_adaptive_top_half_width_m = 0.080") == 1 &&
+            CountText(organizedConfig,
+                "\nvirtual_stock_adaptive_bottom_half_width_m = 0.140") == 1,
+        "Adaptive defaults are written exactly once to legacy configurations");
+    Check(CountText(organizedConfig,
+            "\nvirtual_stock_hybrid_offhand_influence = 0.50") == 1 &&
+            CountText(organizedConfig,
+                "\nvirtual_stock_hybrid_ads_reference = 0") == 1 &&
+            CountText(organizedConfig,
+                "\nvirtual_stock_hybrid_seat_full_m = 0.464") == 1 &&
+            CountText(organizedConfig,
+                "\nvirtual_stock_hybrid_seat_release_m = 0.474") == 1 &&
+            CountText(organizedConfig,
+                "\nvirtual_stock_hybrid_horizontal_release = 1") == 1 &&
+            CountText(organizedConfig,
+                "\nvirtual_stock_hybrid_horizontal_full_m = 0.330") == 1 &&
+            CountText(organizedConfig,
+                "\nvirtual_stock_hybrid_horizontal_release_m = 0.475") == 1,
+        "Plus canonical keys are emitted exactly once with their defaults");
+    g_config.virtual_stock=true;
+    g_config.virtual_stock_standard_strength=0.93f;
+    g_config.virtual_stock_plus_strength=0.75f;
+    g_config.virtual_stock_rear_height_m=-0.05f;
+    ConfigSave();
+    g_config.virtual_stock=false;
+    g_config.virtual_stock_standard_strength=kVirtualStockStandardStrengthDefault;
+    g_config.virtual_stock_plus_strength=kVirtualStockPlusStrengthDefault;
+    g_config.virtual_stock_rear_height_m=-0.220f;
+    ConfigLoad(primary.c_str());
+    Check(g_config.virtual_stock &&
+            g_config.virtual_stock_standard_strength == 0.93f &&
+            g_config.virtual_stock_plus_strength == 0.75f &&
+            g_config.virtual_stock_rear_height_m == -0.05f,
+        "both mode strengths persist independently through a config round trip");
+    g_config.virtual_stock=false;
+    g_config.virtual_stock_standard_strength=kVirtualStockStandardStrengthDefault;
+    g_config.virtual_stock_plus_strength=kVirtualStockPlusStrengthDefault;
+    g_config.virtual_stock_rear_height_m=-0.220f;
+    ConfigSave();
+    g_config.virtual_stock_rear_reference=1;
+    g_config.virtual_stock_shoulder_back_m=0.135f;
+    g_config.virtual_stock_shoulder_side_m=0.175f;
+    ConfigSave();
+    g_config.virtual_stock_rear_reference=0;
+    g_config.virtual_stock_shoulder_back_m=0.005f;
+    g_config.virtual_stock_shoulder_side_m=0.015f;
+    ConfigLoad(primary.c_str());
+    Check(g_config.virtual_stock_rear_reference == 1 &&
+            g_config.virtual_stock_shoulder_back_m == 0.135f &&
+            g_config.virtual_stock_shoulder_side_m == 0.175f,
+        "Shoulder selector and offsets persist through a config round trip");
+    g_config.virtual_stock_rear_reference=0;
+    g_config.virtual_stock_shoulder_back_m=0.005f;
+    g_config.virtual_stock_shoulder_side_m=0.015f;
+    ConfigSave();
+    {
+        std::ofstream legacyChest(primary);
+        legacyChest << "virtual_stock_rear_reference = 2\n";
+        legacyChest << "virtual_stock_chest_height_m = -0.410\n";
+        legacyChest << "virtual_stock_chest_back_m = 0.135\n";
+        legacyChest << "virtual_stock_chest_side_m = 0.175\n";
+    }
+    ConfigLoad(primary.c_str());
+    Check(g_config.virtual_stock_rear_reference == 0 &&
+            g_config.virtual_stock_chest_height_m == -0.410f &&
+            g_config.virtual_stock_chest_back_m == 0.135f &&
+            g_config.virtual_stock_chest_side_m == 0.175f,
+        "legacy Chest sanitises to Standard Centre while retaining dormant settings");
+    g_config.virtual_stock_rear_reference=0;
+    g_config.virtual_stock_chest_height_m=-0.320f;
+    g_config.virtual_stock_chest_back_m=0.000f;
+    g_config.virtual_stock_chest_side_m=0.015f;
+    ConfigSave();
+    g_config.virtual_stock_rear_reference=3;
+    ConfigSave();
+    g_config.virtual_stock_rear_reference=0;
+    ConfigLoad(primary.c_str());
+    Check(g_config.virtual_stock_rear_reference == 3,
+        "Hybrid selector (numeric mode 3) persists through a config round trip");
+    for (const int reference : {0, 1, 3})
+    {
+        std::ofstream explicitReference(primary);
+        explicitReference << "virtual_stock_rear_reference = " << reference << "\n";
+        explicitReference.close();
+        ConfigLoad(primary.c_str());
+        Check(g_config.virtual_stock_rear_reference == reference,
+            "explicit product rear-reference selections load unchanged");
+    }
+    {
+        std::ofstream malformedProduct(primary);
+        malformedProduct << "virtual_stock_rear_reference = garbage\n";
+        malformedProduct << "virtual_stock_hybrid_horizontal_release = garbage\n";
+        malformedProduct << "two_hand_support_grip_pose = garbage\n";
+    }
+    ConfigLoad(primary.c_str());
+    Check(g_config.virtual_stock_rear_reference ==
+                kVirtualStockProductRearReferenceDefault &&
+            g_config.virtual_stock_hybrid_horizontal_release &&
+            g_config.two_hand_support_grip_pose,
+        "malformed product selectors retain their new-config defaults");
+    g_config.virtual_stock_rear_reference=0;
+    ConfigSave();
+    g_config.virtual_stock_adaptive_top_height_m=-0.210f;
+    g_config.virtual_stock_adaptive_bottom_height_m=-0.510f;
+    g_config.virtual_stock_adaptive_top_half_width_m=0.095f;
+    g_config.virtual_stock_adaptive_bottom_half_width_m=0.185f;
+    ConfigSave();
+    g_config.virtual_stock_adaptive_top_height_m=-0.180f;
+    g_config.virtual_stock_adaptive_bottom_height_m=-0.450f;
+    g_config.virtual_stock_adaptive_top_half_width_m=0.080f;
+    g_config.virtual_stock_adaptive_bottom_half_width_m=0.140f;
+    ConfigLoad(primary.c_str());
+    Check(g_config.virtual_stock_adaptive_top_height_m == -0.210f &&
+            g_config.virtual_stock_adaptive_bottom_height_m == -0.510f &&
+            g_config.virtual_stock_adaptive_top_half_width_m == 0.095f &&
+            g_config.virtual_stock_adaptive_bottom_half_width_m == 0.185f,
+        "Adaptive coverage settings persist through a config round trip");
+    g_config.virtual_stock_adaptive_top_height_m=-0.180f;
+    g_config.virtual_stock_adaptive_bottom_height_m=-0.450f;
+    g_config.virtual_stock_adaptive_top_half_width_m=0.080f;
+    g_config.virtual_stock_adaptive_bottom_half_width_m=0.140f;
+    ConfigSave();
+    g_config.virtual_stock_hybrid_offhand_influence=0.75f;
+    g_config.virtual_stock_hybrid_ads_reference=1;
+    g_config.virtual_stock_hybrid_seat_full_m=0.080f;
+    g_config.virtual_stock_hybrid_seat_release_m=0.220f;
+    ConfigSave();
+    g_config.virtual_stock_hybrid_offhand_influence=0.50f;
+    g_config.virtual_stock_hybrid_ads_reference=0;
+    g_config.virtual_stock_hybrid_seat_full_m=kVirtualStockProductHybridSeatFullDefaultM;
+    g_config.virtual_stock_hybrid_seat_release_m=kVirtualStockProductHybridSeatReleaseDefaultM;
+    ConfigLoad(primary.c_str());
+    Check(g_config.virtual_stock_hybrid_offhand_influence == 0.75f &&
+            g_config.virtual_stock_hybrid_ads_reference == 1 &&
+            g_config.virtual_stock_hybrid_seat_full_m == 0.080f &&
+            g_config.virtual_stock_hybrid_seat_release_m == 0.220f,
+        "Hybrid authority, ADS reference, and seating thresholds persist through a config round trip");
+    g_config.virtual_stock_hybrid_offhand_influence=0.50f;
+    g_config.virtual_stock_hybrid_ads_reference=0;
+    g_config.virtual_stock_hybrid_seat_full_m=kVirtualStockProductHybridSeatFullDefaultM;
+    g_config.virtual_stock_hybrid_seat_release_m=kVirtualStockProductHybridSeatReleaseDefaultM;
+    ConfigSave();
+    {
+        std::ofstream malformed(primary);
+        malformed << "virtual_stock_hybrid_offhand_influence = nan\n";
+        malformed << "virtual_stock_hybrid_ads_reference = 7\n";
+        malformed << "virtual_stock_hybrid_seat_full_m = inf\n";
+        malformed << "virtual_stock_hybrid_seat_release_m = 0.055\n";
+    }
+    ConfigLoad(primary.c_str());
+    Check(g_config.virtual_stock_hybrid_offhand_influence == 0.50f &&
+            g_config.virtual_stock_hybrid_ads_reference == 0 &&
+            g_config.virtual_stock_hybrid_seat_full_m ==
+                kVirtualStockProductHybridSeatFullDefaultM &&
+            g_config.virtual_stock_hybrid_seat_release_m ==
+                kVirtualStockProductHybridSeatReleaseDefaultM,
+        "Malformed Hybrid values and an invalid threshold pair normalize to safe defaults");
+    {
+        std::ofstream boundary(primary);
+        boundary << "virtual_stock_hybrid_seat_full_m = 0.050\n";
+        boundary << "virtual_stock_hybrid_seat_release_m = 0.060\n";
+    }
+    ConfigLoad(primary.c_str());
+    Check(g_config.virtual_stock_hybrid_seat_full_m == 0.050f &&
+            g_config.virtual_stock_hybrid_seat_release_m == 0.060f,
+        "Hybrid accepts the exact 0.010 metre seating-threshold separation");
+    ConfigSave();
+    const std::string boundaryConfig = ReadTextFile(primary);
+    Check(CountText(boundaryConfig,
+            "\nvirtual_stock_hybrid_seat_full_m = 0.050") == 1 &&
+            CountText(boundaryConfig,
+                "\nvirtual_stock_hybrid_seat_release_m = 0.060") == 1,
+        "Hybrid preserves the exact 0.050/0.060 seating pair when persisted");
+    ConfigLoad(primary.c_str());
+    Check(g_config.virtual_stock_hybrid_seat_full_m == 0.050f &&
+            g_config.virtual_stock_hybrid_seat_release_m == 0.060f,
+        "Hybrid retains the exact 0.050/0.060 seating pair after reload");
+    g_config.virtual_stock_hybrid_offhand_influence=2.0f;
+    g_config.virtual_stock_hybrid_ads_reference=-1;
+    g_config.virtual_stock_hybrid_seat_full_m=0.0f;
+    g_config.virtual_stock_hybrid_seat_release_m=1.0f;
+    ConfigSave();
+    ConfigLoad(primary.c_str());
+    Check(g_config.virtual_stock_hybrid_offhand_influence == 1.0f &&
+            g_config.virtual_stock_hybrid_ads_reference == 0 &&
+            g_config.virtual_stock_hybrid_seat_full_m == 0.010f &&
+            g_config.virtual_stock_hybrid_seat_release_m == 0.800f,
+        "Hybrid values clamp to the documented 0.010 metre minimum and conservative maxima");
+    g_config.virtual_stock_hybrid_offhand_influence=0.50f;
+    g_config.virtual_stock_hybrid_ads_reference=0;
+    g_config.virtual_stock_hybrid_seat_full_m=kVirtualStockProductHybridSeatFullDefaultM;
+    g_config.virtual_stock_hybrid_seat_release_m=kVirtualStockProductHybridSeatReleaseDefaultM;
+    ConfigSave();
+    g_config.virtual_stock_hybrid_horizontal_release=false;
+    g_config.virtual_stock_hybrid_horizontal_full_m=0.31f;
+    g_config.virtual_stock_hybrid_horizontal_release_m=0.57f;
+    ConfigSave();
+    g_config.virtual_stock_hybrid_horizontal_release=true;
+    g_config.virtual_stock_hybrid_horizontal_full_m=0.330f;
+    g_config.virtual_stock_hybrid_horizontal_release_m=0.475f;
+    ConfigLoad(primary.c_str());
+    Check(!g_config.virtual_stock_hybrid_horizontal_release &&
+            g_config.virtual_stock_hybrid_horizontal_full_m == 0.31f &&
+            g_config.virtual_stock_hybrid_horizontal_release_m == 0.57f,
+        "Plus horizontal unloading persists through the normal config path");
+    {
+        std::ofstream invalidHorizontal(primary);
+        invalidHorizontal << "virtual_stock_hybrid_horizontal_full_m = 0.50\n";
+        invalidHorizontal << "virtual_stock_hybrid_horizontal_release_m = 0.40\n";
+    }
+    ConfigLoad(primary.c_str());
+    Check(g_config.virtual_stock_hybrid_horizontal_full_m == 0.330f &&
+            g_config.virtual_stock_hybrid_horizontal_release_m == 0.475f,
+        "invalid Plus horizontal unloading pairs normalise to product defaults");
+    ConfigSave();
+    g_config.virtual_stock_proximity_release=true;
+    g_config.virtual_stock_proximity_full_m=0.31f;
+    g_config.virtual_stock_proximity_release_m=0.57f;
+    ConfigSave();
+    g_config.virtual_stock_proximity_release=true;
+    g_config.virtual_stock_proximity_full_m=0.270f;
+    g_config.virtual_stock_proximity_release_m=0.425f;
+    ConfigLoad(primary.c_str());
+    Check(g_config.virtual_stock_proximity_release &&
+            g_config.virtual_stock_proximity_full_m == 0.31f &&
+            g_config.virtual_stock_proximity_release_m == 0.57f,
+        "proximity release and both distances persist through a config round trip");
+    {
+        // Retired key inertness: an existing cfg carrying the old key must
+        // load without re-enabling inverse-neck, and must never be re-emitted.
+        std::ofstream retiredSway(primary);
+        retiredSway << "virtual_stock_head_turn_sway_correction = 1\n";
+    }
+    ConfigLoad(primary.c_str());
+    {
+        const VirtualStockAimSettings retiredKeySettings =
+            VirtualStockAimSettingsFromConfig(
+                g_config, HybridDiagnosticOverride::Normal);
+        Check(!retiredKeySettings.hybridInverseNeckEnabled &&
+                !VirtualStockHeadTurnCorrectionFamilyActive(retiredKeySettings),
+            "a legacy sway correction config key cannot re-enable inverse-neck");
+    }
+    ConfigSave();
+    Check(ReadTextFile(primary).find(
+                "virtual_stock_head_turn_sway_correction") == std::string::npos,
+        "the retired sway correction key is never re-emitted by ConfigSave");
+    g_config.virtual_stock_proximity_release=true;
+    g_config.virtual_stock_proximity_full_m=0.270f;
+    g_config.virtual_stock_proximity_release_m=0.425f;
+    ConfigSave();
+    {
+        const std::string profileConfigBefore = ReadTextFile(primary);
+        const VirtualStockAimSettings userSettingsBefore =
+            VirtualStockAimSettingsFromConfig(
+                g_config, HybridDiagnosticOverride::Normal);
+        const float headsetSmoothingBefore = g_config.headset_smoothing;
+        VirtualStockTestProfileState profileState;
+        profileState.Store(static_cast<VirtualStockTestProfile>(
+            kVirtualStockExperimentProfileFirstId + 1));
+        const VirtualStockAimSettings effective =
+            ResolveVirtualStockTestProfile(profileState.Load(), userSettingsBefore);
+        Check(effective.virtualStockEnabled &&
+                effective.virtualStockRearReference == 3 &&
+                effective.virtualStockStrength == 0.80f &&
+                effective.hybridInverseNeckEnabled &&
+                effective.hybridInverseNeckStrength == 1.0f,
+            "Runtime profile resolution produces effective settings without assigning Config fields");
+        const VirtualStockAimSettings userSettingsAfterResolve =
+            VirtualStockAimSettingsFromConfig(
+                g_config, HybridDiagnosticOverride::Normal);
+        Check(userSettingsAfterResolve.virtualStockEnabled ==
+                    userSettingsBefore.virtualStockEnabled &&
+                userSettingsAfterResolve.virtualStockStrength ==
+                    userSettingsBefore.virtualStockStrength &&
+                userSettingsAfterResolve.virtualStockRearHeightM ==
+                    userSettingsBefore.virtualStockRearHeightM &&
+                userSettingsAfterResolve.virtualStockRearReference ==
+                    userSettingsBefore.virtualStockRearReference &&
+                userSettingsAfterResolve.virtualStockHybridOffhandInfluence ==
+                    userSettingsBefore.virtualStockHybridOffhandInfluence &&
+                userSettingsAfterResolve.virtualStockHybridSeatFullM ==
+                    userSettingsBefore.virtualStockHybridSeatFullM &&
+                userSettingsAfterResolve.virtualStockHybridSeatReleaseM ==
+                    userSettingsBefore.virtualStockHybridSeatReleaseM &&
+                userSettingsAfterResolve.hybridHorizontalRearReleaseEnabled ==
+                    userSettingsBefore.hybridHorizontalRearReleaseEnabled &&
+                userSettingsAfterResolve.hybridHorizontalRearReleaseFullM ==
+                    userSettingsBefore.hybridHorizontalRearReleaseFullM &&
+                userSettingsAfterResolve.hybridHorizontalRearReleaseReleaseM ==
+                    userSettingsBefore.hybridHorizontalRearReleaseReleaseM &&
+                userSettingsAfterResolve.virtualStockProximityRelease ==
+                    userSettingsBefore.virtualStockProximityRelease &&
+                userSettingsAfterResolve.virtualStockProximityFullM ==
+                    userSettingsBefore.virtualStockProximityFullM &&
+                userSettingsAfterResolve.virtualStockProximityReleaseM ==
+                    userSettingsBefore.virtualStockProximityReleaseM &&
+                g_config.headset_smoothing == headsetSmoothingBefore,
+            "Selecting a runtime profile leaves the live Config values untouched");
+        ConfigSave();
+        Check(ReadTextFile(primary) == profileConfigBefore,
+            "Runtime profile selection leaves ConfigSave output unchanged");
+    }
+    Check(Config{}.two_hand_support_grip_pose &&
+            CountText(organizedConfig,"\ntwo_hand_support_grip_pose = 1")==1,
+        "support-hand rotation reduction defaults on in generated configurations");
+    Check(Config{}.persistent_support_grip &&
+            Config{}.two_hand_smoothing_strength ==
+                kTwoHandSmoothingStrengthDefault &&
+            Config{}.two_hand_offhand_influence ==
+                kTwoHandOffhandInfluenceDefault &&
+            kTwoHandOffhandInfluenceDefault == 0.50f &&
+            kTwoHandOffhandInfluenceMinimum == 0.0f &&
+            kTwoHandOffhandInfluenceMaximum == 1.0f &&
+            CountText(organizedConfig,
+                "\npersistent_support_grip = 1") == 1 &&
+            CountText(organizedConfig,
+                "\ntwo_hand_smoothing_strength = 0.00") == 1 &&
+            CountText(organizedConfig,
+                "\ntwo_hand_offhand_influence = 0.50") == 1,
+        "PG defaults on, the Two-Hand Smoothing strength slider defaults off at 0, and the free two-hand offhand influence defaults to half authority");
+    Check(TwoHandTransitionContinuityEnabled() &&
+            TwoHandTransitionContinuityAppliesToFrame(true) &&
+            !TwoHandTransitionContinuityAppliesToFrame(false) &&
+            CountText(organizedConfig,
+                "\ntwo_hand_transition_smoothing =") == 0,
+        "the fixed 200 ms VS-OFF latch continuity always resolves enabled with no control, so the retired key is never written");
+    Check(TwoHandLabTemporalEngagedFor(true, false, false) &&
+            !TwoHandLabTemporalEngagedFor(true, false, true) &&
+            !TwoHandLabTemporalEngagedFor(true, true, false) &&
+            !TwoHandLabTemporalEngagedFor(false, false, false),
+        "the Lab temporal correction engages only when Virtual Stock is off and the fixed product continuity does not own the frame, so the two 200 ms corrections can never stack");
+    {
+        std::ofstream settings(primary);
+        settings << "persistent_support_grip = 0\n"
+                    "two_hand_smoothing = 1\n"
+                    "two_hand_transition_smoothing = 0\n";
+    }
+    ConfigLoad(primary.c_str());
+    Check(!g_config.persistent_support_grip &&
+            g_config.two_hand_smoothing_strength ==
+                kTwoHandSmoothingStrengthMaximum &&
+            !g_config.two_hand_transition_smoothing &&
+            TwoHandTransitionContinuityEnabled(),
+        "the legacy boolean two_hand_smoothing = 1 migrates to the full 25 strength, never slider value 1; a historical two_hand_transition_smoothing = 0 is parsed into the dormant field and can never disable the fixed 200 ms continuity");
+    ConfigSave();
+    const std::string twoHandConfig = ReadTextFile(primary);
+    Check(CountText(twoHandConfig, "\npersistent_support_grip = 0") == 1 &&
+            CountText(twoHandConfig,
+                "\ntwo_hand_smoothing_strength = 25.00") == 1 &&
+            CountText(twoHandConfig,
+                "\ntwo_hand_transition_smoothing =") == 0 &&
+            CountText(twoHandConfig, "\ntwo_hand_smoothing =") == 0,
+        "the numeric strength is the only smoothing key saved; the legacy boolean and the retired transition key are not re-saved");
+    {
+        std::ofstream settings(primary);
+        settings << "two_hand_smoothing = 0\n";
+    }
+    ConfigLoad(primary.c_str());
+    Check(g_config.two_hand_smoothing_strength == 0.0f,
+        "the legacy boolean two_hand_smoothing = 0 migrates to strength 0");
+    {
+        std::ofstream settings(primary);
+        settings << "two_hand_smoothing = 1\n"
+                    "two_hand_smoothing_strength = 12.50\n";
+    }
+    ConfigLoad(primary.c_str());
+    Check(g_config.two_hand_smoothing_strength == 12.5f,
+        "an explicit numeric strength wins over the legacy boolean key");
+    ConfigSave();
+    const std::string strengthConfig = ReadTextFile(primary);
+    Check(CountText(strengthConfig,
+            "\ntwo_hand_smoothing_strength = 12.50") == 1,
+        "an intermediate strength round-trips through the canonical numeric key");
+    {
+        std::ofstream settings(primary);
+        settings << "two_hand_smoothing_strength = 100.00\n";
+    }
+    ConfigLoad(primary.c_str());
+    Check(g_config.two_hand_smoothing_strength ==
+            kTwoHandSmoothingStrengthMaximum,
+        "an out-of-range high strength clamps to 25");
+    {
+        std::ofstream settings(primary);
+        settings << "two_hand_smoothing_strength = -4\n";
+    }
+    ConfigLoad(primary.c_str());
+    Check(g_config.two_hand_smoothing_strength ==
+            kTwoHandSmoothingStrengthMinimum,
+        "an out-of-range negative strength clamps to 0");
+    {
+        std::ofstream settings(primary);
+        settings << "two_hand_smoothing_strength = not-a-number\n"
+                    "persistent_support_grip = 0\n";
+    }
+    ConfigLoad(primary.c_str());
+    Check(g_config.two_hand_smoothing_strength ==
+            kTwoHandSmoothingStrengthDefault,
+        "a malformed strength is ignored and keeps the 0 default");
+    {
+        std::ofstream settings(primary);
+        settings << "two_hand_smoothing_strength = 7.25\n";
+    }
+    ConfigLoad(primary.c_str());
+    Check(g_config.two_hand_smoothing_strength == 7.25f,
+        "an in-range fractional strength loads unchanged");
+    {
+        std::ofstream settings(primary);
+        settings << "two_hand_offhand_influence = 0.75\n";
+    }
+    ConfigLoad(primary.c_str());
+    Check(g_config.two_hand_offhand_influence == 0.75f,
+        "an in-range free two-hand offhand influence loads unchanged");
+    ConfigSave();
+    Check(CountText(ReadTextFile(primary),
+            "\ntwo_hand_offhand_influence = 0.75") == 1,
+        "the offhand influence round-trips through the canonical two-decimal key");
+    {
+        std::ofstream settings(primary);
+        settings << "two_hand_offhand_influence = 1.75\n";
+    }
+    ConfigLoad(primary.c_str());
+    Check(g_config.two_hand_offhand_influence ==
+            kTwoHandOffhandInfluenceMaximum,
+        "an out-of-range high offhand influence clamps to 1");
+    {
+        std::ofstream settings(primary);
+        settings << "two_hand_offhand_influence = -0.4\n";
+    }
+    ConfigLoad(primary.c_str());
+    Check(g_config.two_hand_offhand_influence ==
+            kTwoHandOffhandInfluenceMinimum,
+        "an out-of-range negative offhand influence clamps to 0");
+    {
+        std::ofstream settings(primary);
+        settings << "two_hand_offhand_influence = not-a-number\n";
+    }
+    ConfigLoad(primary.c_str());
+    Check(g_config.two_hand_offhand_influence ==
+            kTwoHandOffhandInfluenceDefault,
+        "a malformed offhand influence is ignored and keeps the 0.5 default");
+    ConfigSave();
+    Check(CountText(ReadTextFile(primary),
+            "\ntwo_hand_offhand_influence = 0.50") == 1,
+        "the clamped offhand influence default round-trips through ConfigSave");
+    {
+        std::ofstream legacySettings(primary);
+        legacySettings << "two_hand_support_grip_pose = 1\n";
+    }
+    ConfigLoad(primary.c_str());
+    Check(g_config.persistent_support_grip &&
+            g_config.two_hand_smoothing_strength ==
+                kTwoHandSmoothingStrengthDefault &&
+            TwoHandTransitionContinuityEnabled(),
+        "older configs with no new keys use defaults and still resolve the fixed continuity without migrating saved settings");
+    g_config.two_hand_smoothing_strength = 0.0f;
+    ConfigSave();
+    ConfigSave();
+    g_config.two_hand_support_grip_pose=false;ConfigSave();g_config.two_hand_support_grip_pose=true;
+    ConfigLoad(primary.c_str());
+    Check(!g_config.two_hand_support_grip_pose,
+        "support grip-pose aiming experiment persists through a config round trip");
+    g_config.two_hand_support_grip_pose=true;ConfigSave();
     Check(!Config{}.ce_anniversary_disable_lens_flares,"CE flare suppression is opt-in");
     g_config.ce_anniversary_disable_lens_flares=true;ConfigSave();
     g_config.ce_anniversary_disable_lens_flares=false;ConfigLoad(primary.c_str());
@@ -13721,7 +14844,26 @@ int main()
         "rain", "atmospheric_fog",
         "hud_size", "hud_aspect", "hud_curvature",
         "hud_vertical_offset", "motion_blur", "auto_vr", "left_handed", "two_handed_aim",
-        "two_hand_toggle", "left_hand_forward_m", "two_hand_zone_right_m",
+        "virtual_stock", "virtual_stock_standard_strength",
+        "virtual_stock_plus_strength", "virtual_stock_rear_height_m",
+        "virtual_stock_rear_reference", "virtual_stock_shoulder_back_m",
+        "virtual_stock_shoulder_side_m",
+         "virtual_stock_chest_height_m", "virtual_stock_chest_back_m",
+         "virtual_stock_chest_side_m",
+         "virtual_stock_adaptive_top_height_m",
+         "virtual_stock_adaptive_bottom_height_m",
+          "virtual_stock_adaptive_top_half_width_m",
+          "virtual_stock_adaptive_bottom_half_width_m",
+         "virtual_stock_hybrid_offhand_influence",
+         "virtual_stock_hybrid_ads_reference",
+         "virtual_stock_hybrid_seat_full_m",
+         "virtual_stock_hybrid_seat_release_m",
+          "virtual_stock_hybrid_horizontal_release",
+          "virtual_stock_hybrid_horizontal_full_m",
+          "virtual_stock_hybrid_horizontal_release_m",
+          "virtual_stock_proximity_release", "virtual_stock_proximity_full_m",
+        "virtual_stock_proximity_release_m",
+        "two_hand_support_grip_pose", "two_hand_toggle", "two_hand_offhand_influence", "left_hand_forward_m", "two_hand_zone_right_m",
         "left_grip_forward_m", "arm_ik", "floating_hands", "world_collision",
         "physical_melee", "gesture_melee", "physical_melee_swing_speed",
         "right_shoulder_drop", "shoulder_level", "body_wip", "weapon_probe",
@@ -13756,6 +14898,194 @@ int main()
         "Vehicle forward, height and lateral trims use the expanded safe ranges");
     Check(g_config.aa_mode == 4,
         "SMAA 1x plus FXAA Strong survives config loading");
+    {
+        {
+            std::ofstream file(primary);
+            file << "virtual_stock_strength = 0.5\n";
+            file << "virtual_stock_rear_height_m = -0.30\n";
+            file << "virtual_stock_rear_reference = 1\n";
+            file << "virtual_stock_shoulder_back_m = 0.08\n";
+            file << "virtual_stock_shoulder_side_m = 0.10\n";
+            file << "virtual_stock_chest_height_m = -0.32\n";
+            file << "virtual_stock_chest_back_m = 0.00\n";
+            file << "virtual_stock_chest_side_m = 0.015\n";
+        }
+        ConfigLoad(primary.c_str());
+        Check(g_config.virtual_stock_standard_strength == 0.5f &&
+                g_config.virtual_stock_plus_strength == 0.80f &&
+                g_config.virtual_stock_rear_height_m == -0.30f &&
+                g_config.virtual_stock_rear_reference == 1 &&
+                g_config.virtual_stock_shoulder_back_m == 0.08f &&
+                g_config.virtual_stock_shoulder_side_m == 0.10f &&
+                g_config.virtual_stock_chest_height_m == -0.32f &&
+                g_config.virtual_stock_chest_back_m == 0.0f &&
+                g_config.virtual_stock_chest_side_m == 0.015f,
+            "legacy shared strength migrates to active Standard and preserves the Plus default");
+        {
+            std::ofstream file(primary);
+            file << "virtual_stock_strength = 0.61\n";
+            file << "virtual_stock_rear_reference = 3\n";
+        }
+        ConfigLoad(primary.c_str());
+        Check(g_config.virtual_stock_standard_strength == 0.95f &&
+                g_config.virtual_stock_plus_strength == 0.61f,
+            "legacy shared strength migrates to active Plus and preserves the Standard default");
+        {
+            std::ofstream file(primary);
+            file << "virtual_stock_strength = 0.44\n";
+            file << "virtual_stock_standard_strength = 0.91\n";
+            file << "virtual_stock_plus_strength = 0.77\n";
+            file << "virtual_stock_rear_reference = 3\n";
+        }
+        ConfigLoad(primary.c_str());
+        Check(g_config.virtual_stock_standard_strength == 0.91f &&
+                g_config.virtual_stock_plus_strength == 0.77f,
+            "explicit per-mode strengths take precedence over the legacy shared key");
+        {
+            std::ofstream file(primary);
+            file << "virtual_stock_standard_strength = 9.0\n";
+            file << "virtual_stock_plus_strength = -9.0\n";
+            file << "virtual_stock_rear_height_m = -9.0\n";
+            file << "virtual_stock_rear_reference = 1\n";
+            file << "virtual_stock_shoulder_back_m = 9.0\n";
+            file << "virtual_stock_shoulder_side_m = -9.0\n";
+            file << "virtual_stock_chest_height_m = 9.0\n";
+            file << "virtual_stock_chest_back_m = 9.0\n";
+            file << "virtual_stock_chest_side_m = -9.0\n";
+        }
+        ConfigLoad(primary.c_str());
+        Check(g_config.virtual_stock_standard_strength == 1.0f &&
+                g_config.virtual_stock_plus_strength == 0.0f &&
+                g_config.virtual_stock_rear_height_m == -0.30f &&
+                g_config.virtual_stock_rear_reference == 1 &&
+                g_config.virtual_stock_shoulder_back_m == 0.25f &&
+                g_config.virtual_stock_shoulder_side_m == 0.0f &&
+                g_config.virtual_stock_chest_height_m == -0.220f &&
+                g_config.virtual_stock_chest_back_m == 0.25f &&
+                g_config.virtual_stock_chest_side_m == 0.0f,
+            "finite virtual-stock controls clamp to their configured ranges");
+        {
+            std::ofstream file(primary);
+            file << "virtual_stock_standard_strength = -9.0\n";
+            file << "virtual_stock_plus_strength = 9.0\n";
+            file << "virtual_stock_rear_height_m = 9.0\n";
+            file << "virtual_stock_rear_reference = 7\n";
+            file << "virtual_stock_shoulder_back_m = -9.0\n";
+            file << "virtual_stock_shoulder_side_m = 9.0\n";
+            file << "virtual_stock_chest_height_m = -9.0\n";
+            file << "virtual_stock_chest_back_m = -9.0\n";
+            file << "virtual_stock_chest_side_m = 9.0\n";
+        }
+        ConfigLoad(primary.c_str());
+        Check(g_config.virtual_stock_standard_strength == 0.0f &&
+                g_config.virtual_stock_plus_strength == 1.0f &&
+                g_config.virtual_stock_rear_height_m == 0.10f &&
+                g_config.virtual_stock_rear_reference == 3 &&
+                g_config.virtual_stock_shoulder_back_m == 0.0f &&
+                g_config.virtual_stock_shoulder_side_m == 0.20f &&
+                g_config.virtual_stock_chest_height_m == -0.50f &&
+                g_config.virtual_stock_chest_back_m == 0.0f &&
+                g_config.virtual_stock_chest_side_m == 0.20f,
+            "opposite virtual-stock range endpoints clamp independently");
+        {
+            std::ofstream file(primary);
+            file << "virtual_stock_standard_strength = nan\n";
+            file << "virtual_stock_plus_strength = inf\n";
+            file << "virtual_stock_rear_height_m = inf\n";
+            file << "virtual_stock_rear_reference = 1\n";
+            file << "virtual_stock_shoulder_back_m = nan\n";
+            file << "virtual_stock_shoulder_side_m = inf\n";
+            file << "virtual_stock_chest_height_m = nan\n";
+            file << "virtual_stock_chest_back_m = inf\n";
+            file << "virtual_stock_chest_side_m = nan\n";
+        }
+        ConfigLoad(primary.c_str());
+            Check(g_config.virtual_stock_standard_strength == 0.95f &&
+                g_config.virtual_stock_plus_strength == 0.80f &&
+                g_config.virtual_stock_rear_height_m == -0.220f &&
+                g_config.virtual_stock_rear_reference == 1 &&
+                g_config.virtual_stock_shoulder_back_m == 0.005f &&
+                g_config.virtual_stock_shoulder_side_m == 0.015f &&
+                g_config.virtual_stock_chest_height_m == -0.320f &&
+                g_config.virtual_stock_chest_back_m == 0.000f &&
+                g_config.virtual_stock_chest_side_m == 0.015f,
+            "non-finite virtual-stock controls are rejected and retain normal defaults");
+        {
+            std::ofstream file(primary);
+            file << "virtual_stock_adaptive_top_height_m = 0.0\n";
+            file << "virtual_stock_adaptive_bottom_height_m = -0.20\n";
+            file << "virtual_stock_adaptive_top_half_width_m = 0.020\n";
+            file << "virtual_stock_adaptive_bottom_half_width_m = 0.300\n";
+        }
+        ConfigLoad(primary.c_str());
+        Check(g_config.virtual_stock_adaptive_top_height_m == 0.0f &&
+                g_config.virtual_stock_adaptive_bottom_height_m == -0.20f &&
+                g_config.virtual_stock_adaptive_top_half_width_m == 0.020f &&
+                g_config.virtual_stock_adaptive_bottom_half_width_m == 0.300f,
+            "Adaptive coverage accepts its exact configured range endpoints");
+        {
+            std::ofstream file(primary);
+            file << "virtual_stock_adaptive_top_height_m = 9.0\n";
+            file << "virtual_stock_adaptive_bottom_height_m = 9.0\n";
+            file << "virtual_stock_adaptive_top_half_width_m = -9.0\n";
+            file << "virtual_stock_adaptive_bottom_half_width_m = 9.0\n";
+        }
+        ConfigLoad(primary.c_str());
+        Check(g_config.virtual_stock_adaptive_top_height_m == 0.0f &&
+                g_config.virtual_stock_adaptive_bottom_height_m == -0.20f &&
+                g_config.virtual_stock_adaptive_top_half_width_m == 0.020f &&
+                g_config.virtual_stock_adaptive_bottom_half_width_m == 0.300f,
+            "Adaptive coverage values clamp independently to their safe ranges");
+        {
+            std::ofstream file(primary);
+            file << "virtual_stock_adaptive_top_height_m = nan\n";
+            file << "virtual_stock_adaptive_bottom_height_m = inf\n";
+            file << "virtual_stock_adaptive_top_half_width_m = nan\n";
+            file << "virtual_stock_adaptive_bottom_half_width_m = inf\n";
+        }
+        ConfigLoad(primary.c_str());
+        Check(g_config.virtual_stock_adaptive_top_height_m == -0.180f &&
+                g_config.virtual_stock_adaptive_bottom_height_m == -0.450f &&
+                g_config.virtual_stock_adaptive_top_half_width_m == 0.080f &&
+                g_config.virtual_stock_adaptive_bottom_half_width_m == 0.140f,
+            "non-finite Adaptive coverage values retain their defaults");
+        {
+            std::ofstream file(primary);
+            file << "virtual_stock_proximity_full_m = -9.0\n";
+            file << "virtual_stock_proximity_release_m = 9.0\n";
+        }
+        ConfigLoad(primary.c_str());
+        Check(g_config.virtual_stock_proximity_full_m == 0.10f &&
+                g_config.virtual_stock_proximity_release_m == 0.80f,
+            "finite proximity distances clamp independently to their safe ranges");
+        {
+            std::ofstream file(primary);
+            file << "virtual_stock_proximity_release_m = 0.20\n";
+            file << "virtual_stock_proximity_full_m = 0.60\n";
+        }
+        ConfigLoad(primary.c_str());
+        Check(g_config.virtual_stock_proximity_full_m == 0.270f &&
+                g_config.virtual_stock_proximity_release_m == 0.425f,
+            "invalid proximity pair resets to defaults after complete parsing");
+        {
+            std::ofstream file(primary);
+            file << "virtual_stock_proximity_full_m = 0.60\n";
+            file << "virtual_stock_proximity_release_m = 0.20\n";
+        }
+        ConfigLoad(primary.c_str());
+        Check(g_config.virtual_stock_proximity_full_m == 0.270f &&
+                g_config.virtual_stock_proximity_release_m == 0.425f,
+            "proximity pair normalization is independent of config key order");
+        {
+            std::ofstream file(primary);
+            file << "virtual_stock_proximity_full_m = nan\n";
+            file << "virtual_stock_proximity_release_m = inf\n";
+        }
+        ConfigLoad(primary.c_str());
+        Check(g_config.virtual_stock_proximity_full_m == 0.270f &&
+                g_config.virtual_stock_proximity_release_m == 0.425f,
+            "non-finite proximity distances retain deterministic defaults");
+    }
     Check(g_config.cutscene_theater_enabled &&
               g_config.cutscene_theater_depth == 1.0f &&
               !g_config.cutscene_theater_flip_depth &&
@@ -13890,6 +15220,8 @@ int main()
         file << "physical_melee = 1\n";
         file << "left_handed = 1\n";
         file << "roomscale_movement = 1\n";
+        file << "physical_running = 1\nphysical_running_speed = 0.6\nphysical_running_sensitivity = 2\n";
+        file << "experimental_body_ik = 1\nbody_ik_hide_lower = 1\n";
         file << "physical_melee_swing_speed = 0.10\n";
     }
     ConfigLoad(primary.c_str());
@@ -13903,6 +15235,9 @@ int main()
     Check(g_config.world_collision,
         "the shared world-collision option survives a save/load round trip");
     Check(g_config.roomscale_movement, "roomscale survives config save/load");
+    Check(g_config.physical_running&&g_config.physical_running_speed==.6f&&
+        g_config.physical_running_sensitivity==2&&g_config.experimental_body_ik&&g_config.body_ik_hide_lower,
+        "physical running controls and separate avatar/lower-body toggles survive config save/load");
     Check(g_config.left_handed,
         "left-handed main-weapon mode survives a save/load round trip");
     Check(!g_config.experimental_hand_alignment,
@@ -17999,6 +19334,43 @@ int main()
           MenuSliderNudge(0.3f,0.3f,10,0.01,-1)==0.3f,
         "menu nudges round the shown value and preserve both slider endpoints");
 
+    // Free two-hand offhand influence (W3) F1 display: the stored 0..1
+    // authority is shown as a 0..100 percent label, so the 0.50 default reads
+    // "50%" and never the raw fraction.
+    {
+        const float defaultPercent = MenuSliderPercentFromUnit(
+            kTwoHandOffhandInfluenceDefault);
+        char influenceLabel[16]{};
+        std::snprintf(influenceLabel, sizeof(influenceLabel), "%.0f%%",
+            defaultPercent);
+        Check(defaultPercent == 50.0f &&
+              std::strcmp(influenceLabel, "50%") == 0 &&
+              kTwoHandOffhandInfluenceDefault == 0.50f,
+            "the free two-hand offhand influence default 0.50 displays as 50 percent, never as the raw fraction");
+        Check(MenuSliderPercentFromUnit(0.0f) == 0.0f &&
+              MenuSliderPercentFromUnit(0.25f) == 25.0f &&
+              MenuSliderPercentFromUnit(1.0f) == 100.0f,
+            "offhand influence 0..1 maps onto a 0..100 percent slider");
+        Check(MenuSliderPercentFromUnit(1.5f) == 100.0f &&
+              MenuSliderPercentFromUnit(-0.5f) == 0.0f &&
+              MenuSliderPercentFromUnit(
+                  std::numeric_limits<float>::quiet_NaN()) == 0.0f &&
+              MenuSliderPercentFromUnit(
+                  std::numeric_limits<float>::infinity()) == 0.0f,
+            "an out-of-range or non-finite offhand influence percent display clamps safely");
+        Check(MenuSliderUnitFromPercent(0.0f) == 0.0f &&
+              MenuSliderUnitFromPercent(50.0f) == 0.5f &&
+              MenuSliderUnitFromPercent(100.0f) == 1.0f &&
+              MenuSliderUnitFromPercent(101.0f) == 1.0f &&
+              MenuSliderUnitFromPercent(-1.0f) == 0.0f &&
+              MenuSliderUnitFromPercent(
+                  std::numeric_limits<float>::quiet_NaN()) == 0.0f,
+            "the offhand influence percent slider writes back the exact clamped 0..1 authority");
+        Check(MenuSliderUnitFromPercent(defaultPercent) ==
+                  kTwoHandOffhandInfluenceDefault,
+            "the offhand influence round-trips through the percent slider unchanged");
+    }
+
     // Roomscale uses observed native travel, never teleports the body or
     // consumes a requested step before the engine has actually moved.
     for (float scale : {0.1f, 0.328084f, 1.0f})
@@ -18520,6 +19892,25 @@ int main()
     }
     Check(!Config{}.roomscale_movement, "roomscale is opt-in for existing and new configurations");
 
+    {
+        ControllerFingerSample sample{9,123,7,false,
+            {MakeControllerFingerInput(true,.25f,true,.75f),MakeControllerFingerInput(true,.8f,true,.1f)}};
+        ControllerFingerInput hands[2]{};
+        Check(SelectControllerFingerInputs(sample,9,123,7,false,true,hands)&&
+            hands[0].trigger==.25f&&hands[1].trigger==.8f,"finger inputs preserve physical support/primary values");
+        sample.leftHanded=true;
+        Check(SelectControllerFingerInputs(sample,9,123,7,true,true,hands)&&
+            hands[0].grip==.1f&&hands[1].grip==.75f,"left-handed finger inputs follow the same roles as frozen hand poses");
+        for(unsigned stale=0;stale<5;++stale)
+            Check(!SelectControllerFingerInputs(sample,stale==4?10:9,stale==0?124:123,stale==1?8:7,stale!=2,stale!=3,hands)&&
+                !hands[0].valid&&!hands[1].valid,"stale time, space, handedness or tracking cannot replay finger input");
+        Check(!MakeControllerFingerInput(false,.5f,true,.5f).valid&&
+            !MakeControllerFingerInput(true,.5f,false,.5f).valid&&
+            !MakeControllerFingerInput(true,std::numeric_limits<float>::quiet_NaN(),true,.5f).valid&&
+            !MakeControllerFingerInput(true,.5f,true,2.f).valid,"missing or malformed finger axes retain authored poses");
+        const auto bounded=MakeControllerFingerInput(true,-.005f,true,1.005f);
+        Check(bounded.valid&&bounded.trigger==0&&bounded.grip==1,"small analog endpoint noise remains bounded");
+    }
     g_failures += RunRoomscaleInputTests();
     if (g_failures == 0)
         std::cout << "HaloMCCVR core tests passed\n";

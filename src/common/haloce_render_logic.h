@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include "controller_finger_input.h"
 
 // E-CE-1, docs/HALOCE-RENDER-EVIDENCE.md. CE-specific layout verified in
 // HCEEK and MCC CE; this is not an alias for another engine's camera.
@@ -105,6 +106,16 @@ struct ControllerRig
     // support is the other hand. Physical indices stay left=0, right=1.
     ControllerPose primaryAim,independentPrimaryAim,support,physical[2];
     bool leftHanded{},handAlignment{},twoHandAimActive{},padValid{};
+    // Persistent support grip: visible support presentation follows the valid
+    // weapon relationship for this invocation, not aim authority. The OpenXR
+    // prepared frame seeds it from `twoHandAimActive` (base behaviour); the CE
+    // first-person prepare freezes the per-invocation decision into its copied
+    // context. `primaryAimSupportDerived` is the provenance of the frozen
+    // `primaryAim`: true only when the solve that produced this exact pose
+    // accepted support-derived two-hand geometry. It is never re-sampled from
+    // the live relationship and is cleared when `primaryAim` is substituted
+    // with the independent one-hand carrier.
+    bool supportGripAttached{},primaryAimSupportDerived{};
     bool armIk{true},floatingHands{true},shoulderLevel{true};
     float gunScale{0.96f},supportScale{0.96f};
     float visualPitchDeg{},visualYawDeg{},visualRollDeg{};
@@ -122,6 +133,7 @@ struct ControllerRig
     // continuous target acquisition onto the barrel, which this mode must not.
     bool muzzleShots{};
     bool roomscaleEnabled{};
+    bool physicalRunningEnabled{};
     bool vehicleMotion{true},vehicleViewFollow{};
     float turnSnapDeg{30.0f},turnSmoothDegS{120.0f};
 };
@@ -139,6 +151,9 @@ struct Tracking
     Eye eyes[2];
     int64_t predictedDisplayTimeNs{};
     ControllerRig controllers;
+    // Same prepared sample, support/primary roles. Native first-person
+    // presentation may use this only for a verified free hand.
+    ControllerFingerInput controllerFingers[2]{};
     HudSettings hud;
     bool motionBlur{};
     bool disableAnniversaryLensFlares{};

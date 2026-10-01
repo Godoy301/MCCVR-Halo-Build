@@ -35,6 +35,28 @@ function Invoke-Tool([scriptblock]$Block) {
     try { & $Block } finally { $ErrorActionPreference = $saved }
 }
 
+function New-ManualPayloadArchive([string]$SourceDirectory, [string]$ArchivePath) {
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $sourceRoot = [IO.Path]::GetFullPath($SourceDirectory).TrimEnd('\') + '\'
+    $archive = [IO.Compression.ZipFile]::Open($ArchivePath, [IO.Compression.ZipArchiveMode]::Create)
+    try {
+        foreach ($item in @(Get-ChildItem -LiteralPath $SourceDirectory -File -Recurse | Sort-Object FullName)) {
+            if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+                    -not $item.FullName.StartsWith($sourceRoot, [StringComparison]::OrdinalIgnoreCase)) {
+                throw "Unsafe manual payload path: $($item.FullName)"
+            }
+            $relative = $item.FullName.Substring($sourceRoot.Length).Replace('\', '/')
+            $entry = $archive.CreateEntry("Halo_MCC_VR/$relative", [IO.Compression.CompressionLevel]::Optimal)
+            $inputStream = [IO.File]::OpenRead($item.FullName)
+            try {
+                $outputStream = $entry.Open()
+                try { $inputStream.CopyTo($outputStream) }
+                finally { $outputStream.Dispose() }
+            } finally { $inputStream.Dispose() }
+        }
+    } finally { $archive.Dispose() }
+}
+
 $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $candidateRoot = [IO.Path]::GetFullPath(
     (Join-Path $repoRoot 'out\candidates'))
@@ -449,6 +471,15 @@ try {
     if ($cache -notmatch '(?m)^HALOMCCVR_DEV_DIAGNOSTICS:BOOL=OFF\r?$') {
         throw 'Refusing to package: HALOMCCVR_DEV_DIAGNOSTICS is not OFF (dev tooling / test hooks compiled in).'
     }
+    $pythonMatch = [regex]::Match($cache,
+        '(?m)^HALOMCCVR_PACKAGE_PYTHON:FILEPATH=(?<path>.+)\r?$')
+    if (-not $pythonMatch.Success) {
+        throw 'Configured package Python interpreter is unavailable.'
+    }
+    $pythonPath = $pythonMatch.Groups['path'].Value.Trim()
+    if (-not (Test-Path -LiteralPath $pythonPath -PathType Leaf)) {
+        throw "Configured Python interpreter is missing: $pythonPath"
+    }
 
     # Incremental. A clean rebuild was recompiling the whole tree for every
     # candidate, which is minutes per iteration for no safety: the packaged
@@ -498,6 +529,11 @@ try {
     if ($LASTEXITCODE -ne 0) {
         throw 'Candidate staging failed.'
     }
+    Invoke-Tool { & cmake --install $packageBuildDir --config Release `
+        --prefix $packageDir --component launcher }
+    if ($LASTEXITCODE -ne 0) {
+        throw 'Launcher staging failed.'
+    }
 
     $configGenerator = Join-Path $repoRoot `
         "$packageBuildDir\Release\halomccvr-config-defaults.exe"
@@ -511,7 +547,7 @@ try {
     }
 
     $dllPath = Join-Path $payloadDir 'HaloMCCVR.dll'
-    $launcherPath = Join-Path $payloadDir 'HaloMCCVRLauncher.exe'
+    $launcherPath = Join-Path $packageDir 'HaloMCCVRLauncher.exe'
     foreach ($requiredPath in @(
             $dllPath,
             $launcherPath,
@@ -519,6 +555,7 @@ try {
             (Join-Path $payloadDir 'LICENSE'),
             (Join-Path $payloadDir 'MANUAL-README.txt'),
             (Join-Path $payloadDir 'nvngx_dlss.dll'),
+            (Join-Path $payloadDir 'TelemetryAnalyser/analyse_mccvr_telemetry.py'),
             (Join-Path $payloadDir 'licenses/NVIDIA-DLSS/LICENSE.txt'),
             (Join-Path $payloadDir 'assets/fonts/Oxanium.ttf'))) {
         if (-not (Test-Path -LiteralPath $requiredPath -PathType Leaf)) {
@@ -546,8 +583,22 @@ try {
     $configHash =
         (Get-FileHash -LiteralPath $configPath -Algorithm SHA256).Hash
 
+    $analyserSourcePath = Join-Path $repoRoot 'tools/telemetry_analyser/analyse_mccvr_telemetry.py'
+    $analyserPath = Join-Path $payloadDir 'TelemetryAnalyser/analyse_mccvr_telemetry.py'
+    $analyserSource = Get-Item -LiteralPath $analyserSourcePath
+    $analyser = Get-Item -LiteralPath $analyserPath
+    $expectedAnalyserHash = '053CF61671BE281551B89A459E0611490F29D0FFD00387B43668043793BAE5B4'
+    $analyserSourceHash = (Get-FileHash -LiteralPath $analyserSourcePath -Algorithm SHA256).Hash
+    $analyserHash = (Get-FileHash -LiteralPath $analyserPath -Algorithm SHA256).Hash
+    if ($analyserSource.Length -ne 395283 -or $analyser.Length -ne $analyserSource.Length -or
+            $analyserSourceHash -cne $expectedAnalyserHash -or $analyserHash -cne $analyserSourceHash) {
+        throw 'Telemetry analyser source or staged bytes differ from the pinned standalone analyser.'
+    }
+    Invoke-Tool { & $pythonPath -B $analyserPath --self-test }
+    if ($LASTEXITCODE -ne 0) { throw 'Staged telemetry analyser self-test failed.' }
+
     $manifest = [ordered]@{
-        schema_version = 55
+        schema_version = 56
         payload_directory = 'ModFiles'
         status = 'UNTESTED_LOCAL_CANDIDATE'
         accepted = $false
@@ -569,10 +620,17 @@ try {
         }
         deployment_policy = [ordered]@{
             automatic_after_package = $false
-            installer = 'HaloMCCVRLauncher.exe'
+            installer = 'HaloMCCVRLauncher.exe (launcher package root, separate from ModFiles)'
             launches_mcc = $false
             changes_config = $false
             interactive_installer_config_policy = 'retain-existing-and-append-missing-defaults-by-default; explicit-reset-available; backup-before-replacement'
+        }
+        launcher = [ordered]@{
+            path = 'HaloMCCVRLauncher.exe'
+            bytes = $launcher.Length
+            sha256 = $launcherHash
+            execution_level = 'requireAdministrator'
+            manual_payload_contains_launcher = $false
         }
         accepted_halo4_identity = [ordered]@{
             candidate = 'C-H4-56'
@@ -1111,10 +1169,6 @@ try {
                 bytes = $dll.Length
                 sha256 = $dllHash
             }
-            'HaloMCCVRLauncher.exe' = [ordered]@{
-                bytes = $launcher.Length
-                sha256 = $launcherHash
-            }
             'halomccvr.cfg' = [ordered]@{
                 bytes = $config.Length
                 sha256 = $configHash
@@ -1238,13 +1292,15 @@ try {
             headset_accepted = $false
         }
         ce_haptics = [ordered]@{
-            behavior = 'enable-existing-native-XInput-to-OpenXR-vibration-for-both-controllers'
+            behavior = 'source-tagged-native-weapon-envelopes-on-holding-hand; coupled-support-only-while-engaged; general-XInput-feedback-preserved'
             graphics = 'Original-and-Anniversary'
-            runtime_change = 'CE-descriptor-and-armed-runtime-Haptics-capability-only'
-            reference = 'unchanged-Halo3-motor-blend-short-pulse-intensity-and-stop-policy'
-            accepted_runtime_preserved = '5ac02f53a7896ffd6b8dff37ddc5bc4700890559'
-            evidence = 'docs/CE-HAPTICS-2026-09-15.md'
-            headset_accepted = $true
+            runtime_change = 'optional-exact-trigger-owner-and-firing-damage-scope; authored-vibration-queue-and-native-curve-evaluation'
+            reference = 'native-authored-envelope-scale-duration-and-frequency-band-blend; per-hand-tracking-stop-and-stale-pulse-retirement'
+            prior_headset_baseline = '5ac02f53a7896ffd6b8dff37ddc5bc4700890559'
+            evidence = 'docs/CONTINUATION-IMPLEMENTATION-2026-09-30.md'
+            pinned_verifier = 'tools/verify-ce-weapon-haptics.py'
+            other_title_recoil_routing = 'under-implementation-not-all-title-complete'
+            headset_accepted = $false
         }
         halo_ce_candidate = [ordered]@{
             previous_headset_result = '5ac02f5-all-campaign-runtime-user-accepted-as-flawless-except-absent-CE-haptics'
@@ -1286,7 +1342,7 @@ try {
             weapon_geometry_limit = 'stock-CE-physical-envelope-shared-deliberately-by-Original-and-Anniversary; triangle-exact-Saber-replacement-and-custom-model-surfaces-not-established; unknown-graphs-retain-logged-node-contact'
             native_reticle_verifier = 'tools/re/test_ce_reticle_blend_native.py'
             weapon_geometry_verifier = 'tools/re/verify_ce_weapon_mesh.py'
-            physical_roomscale_body_following = 'disabled-for-CE-deferred'
+            physical_roomscale_body_following = 'guarded-classic-and-anniversary-unaccepted'
             headset_accepted = $false
             editions = 'Steam-and-Microsoft-Store'
         }
@@ -1355,7 +1411,16 @@ try {
         }
         current_notes = 'RELEASE-NOTES.md'
         implementation_ledger = 'IMPLEMENTATION-STATUS.md'
-        launcher = [ordered]@{
+        experimental_avatar = [ordered]@{
+            enabled_by_default = $false
+            runtime_world_rigs = @('Halo 3 Chief/Elite/Arbiter', 'Halo 4 Chief')
+            halo2_world_avatar = 'unfinished: local world-palette and draw ownership unproven'
+            lower_body_hide = 'separate native regions only; H3 Elite/Arbiter require off'
+            finger_joint_identity = 'title/rig/palette/hand/digit-slot/joint/node; six supported titles'
+            contact_reactive_fingers = 'not implemented; per-joint query/response transport required'
+            headset_accepted = $false
+        }
+        update_launcher = [ordered]@{
             automatic_install = $false
             automatic_launch = $false
             auto_detect_editions = @('Steam', 'Microsoft Store')
@@ -1370,12 +1435,22 @@ try {
 
     }
 
-    Copy-Item -LiteralPath (Join-Path $repoRoot 'docs/QOL-RELEASE-NOTES-2026-09-23.md') -Destination (Join-Path $packageDir 'RELEASE-NOTES.md')
-    Copy-Item -LiteralPath (Join-Path $repoRoot 'docs/QOL-IMPLEMENTATION-STATUS-2026-09-23.md') -Destination (Join-Path $packageDir 'IMPLEMENTATION-STATUS.md')
+    Copy-Item -LiteralPath (Join-Path $repoRoot 'docs/QOL-RELEASE-NOTES-2026-09-30.md') -Destination (Join-Path $packageDir 'RELEASE-NOTES.md')
+    Copy-Item -LiteralPath (Join-Path $repoRoot 'docs/QOL-IMPLEMENTATION-STATUS-2026-09-30.md') -Destination (Join-Path $packageDir 'IMPLEMENTATION-STATUS.md')
+    Copy-Item -LiteralPath (Join-Path $repoRoot 'docs/QOL-IMPLEMENTATION-STATUS-2026-09-23.md') -Destination (Join-Path $packageDir 'PREVIOUS-IMPLEMENTATION-STATUS.md')
+    Copy-Item -LiteralPath (Join-Path $repoRoot 'docs/LINUX-PROTON-LOGIN-FOCUS-REVIEW-2026-09-30.md') -Destination (Join-Path $packageDir 'LINUX-LOGIN-REVIEW.md')
+    Copy-Item -LiteralPath (Join-Path $repoRoot 'docs/FINGER-JOINT-IDENTITY-2026-09-30.md') -Destination (Join-Path $packageDir 'FINGER-JOINT-IDENTITY.md')
     Copy-Item -LiteralPath (Join-Path $packageDir 'RELEASE-NOTES.md') -Destination $payloadDir
     Copy-Item -LiteralPath (Join-Path $packageDir 'IMPLEMENTATION-STATUS.md') -Destination $payloadDir
+    Copy-Item -LiteralPath (Join-Path $packageDir 'PREVIOUS-IMPLEMENTATION-STATUS.md') -Destination $payloadDir
+    Copy-Item -LiteralPath (Join-Path $packageDir 'LINUX-LOGIN-REVIEW.md') -Destination $payloadDir
+    Copy-Item -LiteralPath (Join-Path $packageDir 'FINGER-JOINT-IDENTITY.md') -Destination $payloadDir
+    foreach ($packageDoc in @('RELEASE-NOTES.md', 'IMPLEMENTATION-STATUS.md', 'PREVIOUS-IMPLEMENTATION-STATUS.md', 'LINUX-LOGIN-REVIEW.md', 'FINGER-JOINT-IDENTITY.md')) {
+        if (-not (Test-Path -LiteralPath (Join-Path $payloadDir $packageDoc) -PathType Leaf)) {
+            throw "Candidate package is missing its report ledger: $packageDoc"
+        }
+    }
     Copy-Item -LiteralPath (Join-Path $payloadDir 'MANUAL-README.txt') -Destination (Join-Path $packageDir 'README.txt')
-    Copy-Item -LiteralPath $launcherPath -Destination (Join-Path $packageDir 'HaloMCCVRLauncher.exe')
     [IO.File]::WriteAllLines((Join-Path $payloadDir 'BUILD-IDENTITY.txt'),
         @("source_commit=$commit", 'build_kind=UNTESTED_LOCAL_CANDIDATE', 'release_tag='),
         [Text.UTF8Encoding]::new($false))
@@ -1395,8 +1470,8 @@ try {
     }
     [IO.File]::WriteAllLines((Join-Path $payloadDir 'INSTALL-MANIFEST.sha256'),
         $installHashes, [Text.UTF8Encoding]::new($false))
-    if ((Get-FileHash -LiteralPath (Join-Path $packageDir 'HaloMCCVRLauncher.exe') -Algorithm SHA256).Hash -cne $launcherHash) {
-        throw 'Root and manual-payload launchers differ.'
+    if (Test-Path -LiteralPath (Join-Path $payloadDir 'HaloMCCVRLauncher.exe')) {
+        throw 'The manual drag-and-drop payload must not include the launcher executable.'
     }
 
     $manifestPath = Join-Path $packageDir 'CANDIDATE-MANIFEST.json'
@@ -1406,22 +1481,37 @@ try {
         $json + [Environment]::NewLine,
         [Text.UTF8Encoding]::new($false))
 
+    $installerTests = Join-Path $packageBuildDir 'Release/halomccvr_installer_tests.exe'
+    if (-not (Test-Path -LiteralPath $installerTests -PathType Leaf)) {
+        throw "Installer package verifier is missing: $installerTests"
+    }
+    Invoke-Tool { & $installerTests --verify-payload $payloadDir }
+    if ($LASTEXITCODE -ne 0) {
+        throw 'Synthetic Steam/Store package install verification failed.'
+    }
+
     $buildZip = Join-Path $candidateRoot ("HaloMCCVR-$packageId-Build.zip")
+    $manualZip = Join-Path $candidateRoot ("HaloMCCVR-$packageId-Manual-ModFiles.zip")
     $sourceZip = Join-Path $candidateRoot ("HaloMCCVR-$packageId-Source.zip")
     Compress-Archive -Path (Join-Path $packageDir '*') -DestinationPath $buildZip
+    New-ManualPayloadArchive $payloadDir $manualZip
     # Archive committed bytes, independent of this machine's Windows checkout
     # line-ending preference. This permits exact source/blob verification.
     Invoke-Tool { & git -c core.autocrlf=false -C $repoRoot archive --format=zip --prefix=Halo-MCC-VR/ `
         "--output=$sourceZip" $commit }
     if ($LASTEXITCODE -ne 0) { throw 'Matching source archive failed.' }
+    Invoke-Tool { & $pythonPath (Join-Path $repoRoot 'tools/verify-qol-package.py') `
+        $buildZip $sourceZip --manual-zip $manualZip --commit $commit }
+    if ($LASTEXITCODE -ne 0) { throw 'Build, manual payload and source ZIP verification failed.' }
     $hashLines = @("Source commit: $commit")
-    foreach ($archive in @($buildZip, $sourceZip)) {
+    foreach ($archive in @($buildZip, $manualZip, $sourceZip)) {
         $hashLines += (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash +
             '  ' + [IO.Path]::GetFileName($archive)
     }
     [IO.File]::WriteAllLines((Join-Path $candidateRoot ("HaloMCCVR-$packageId-SHA256.txt")),
         $hashLines, [Text.UTF8Encoding]::new($false))
     Write-Host "Build ZIP:  $buildZip"
+    Write-Host "Manual ZIP: $manualZip"
     Write-Host "Source ZIP: $sourceZip"
 
     Write-Host "Created untested candidate: $packageDir"

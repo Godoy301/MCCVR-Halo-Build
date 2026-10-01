@@ -29,6 +29,7 @@ $hudLayoutLogicPath = Join-Path $repoRoot 'src\common\hud_layout_logic.h'
 $agentsPath = Join-Path $repoRoot 'AGENTS.md'
 $packagePath = Join-Path $repoRoot 'tools\package-candidate.ps1'
 $installerPath = Join-Path $repoRoot 'tools\install-candidate.ps1'
+$cmakePath = Join-Path $repoRoot 'CMakeLists.txt'
 $game = [IO.File]::ReadAllText($gamePath)
 $vr = [IO.File]::ReadAllText($vrPath)
 $logic = [IO.File]::ReadAllText($logicPath)
@@ -39,6 +40,7 @@ $hudLayoutLogic = [IO.File]::ReadAllText($hudLayoutLogicPath)
 $agents = [IO.File]::ReadAllText($agentsPath)
 $package = [IO.File]::ReadAllText($packagePath)
 $installer = [IO.File]::ReadAllText($installerPath)
+$cmake = [IO.File]::ReadAllText($cmakePath)
 
 $forbidden = [ordered]@{
     'single Reach interpolation context' =
@@ -219,6 +221,32 @@ $installerContracts = @(
 foreach ($contract in $installerContracts) {
     if ($installer -notmatch $contract) {
         throw 'Reach candidate installer no longer enforces the active R-V23 vehicle contract.'
+    }
+}
+$packageVerifier = [IO.File]::ReadAllText((Join-Path $repoRoot 'tools/verify-qol-package.py'))
+# The current candidate uses schema 56 and the C++ installer, not the retired
+# PowerShell deployment path. Check the actual package verification contract.
+# Every installed payload file (including the analyser) is manifest-hashed by
+# that installer; synthetic package installs verify the complete file set.
+$analyserDeliveryContracts = [ordered]@{
+    'CMake dist staging' = @($cmake,
+        'DESTINATION\s+TelemetryAnalyser[\s\S]{0,80}COMPONENT\s+dist')
+    'package manifest schema' = @($package,
+        'schema_version\s*=\s*56')
+    'package analyser self-test' = @($package,
+        '\$analyserPath\s+--self-test')
+    'package analyser pinned hash' = @($package,
+        '053CF61671BE281551B89A459E0611490F29D0FFD00387B43668043793BAE5B4')
+    'package analyser pinned size' = @($package,
+        'analyserSource\.Length\s+-ne\s+395283')
+    'archive analyser pinned identity' = @($packageVerifier,
+        'len\(analyser\)\s*==\s*395283\s+and\s+sha256\(analyser\)\s*==\s*ANALYSER_SHA256')
+    'archive analyser pinned hash' = @($packageVerifier,
+        '053cf61671be281551b89a459e0611490f29d0ffd00387b43668043793bae5b4')
+}
+foreach ($contract in $analyserDeliveryContracts.GetEnumerator()) {
+    if ($contract.Value[0] -notmatch $contract.Value[1]) {
+        throw "Candidate analyser delivery contract missing: $($contract.Key)."
     }
 }
 Write-Host 'Reach consistency check passed: no disproven Reach-only architecture reintroduced, Reach capabilities intact, evidence constants and candidate manifest present.'

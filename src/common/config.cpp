@@ -14,6 +14,7 @@
 #include "config.h"
 #include "weapon_interaction_logic.h"
 #include "flashlight_input.h"
+#include "dlss_logic.h"
 #include "log.h"
 
 Config g_config;
@@ -100,6 +101,36 @@ static bool ParseFloatSetting(const char* key, const char* text, float& destinat
         return false;
     }
     destination = parsed;
+    return true;
+}
+
+static bool ParseIntSetting(
+    const char* key, const char* text, int minimum, int maximum,
+    int& destination)
+{
+    char* end = nullptr;
+    errno = 0;
+    const long parsed = strtol(text, &end, 10);
+    while (end && isspace(static_cast<unsigned char>(*end)))
+        ++end;
+    if (end == text || !end || *end != 0 || errno == ERANGE ||
+        parsed < minimum || parsed > maximum)
+    {
+        LOG("config: malformed value for '%s' ignored; keeping %d", key,
+            destination);
+        return false;
+    }
+    destination = static_cast<int>(parsed);
+    return true;
+}
+
+static bool ParseBoolSetting(
+    const char* key, const char* text, bool& destination)
+{
+    int parsed = destination ? 1 : 0;
+    if (!ParseIntSetting(key, text, 0, 1, parsed))
+        return false;
+    destination = parsed != 0;
     return true;
 }
 
@@ -277,37 +308,9 @@ static bool FileExists(const wchar_t* path)
         (attributes & FILE_ATTRIBUTE_DIRECTORY) == 0;
 }
 
-struct VirtualStockField {const char* key;float Config::*value;float minimum,maximum;};
-static constexpr VirtualStockField kVirtualStockFields[]{
-    {"virtual_stock_strength",&Config::virtual_stock_strength,0.f,1.f},
-    {"virtual_stock_rear_height_m",&Config::virtual_stock_rear_height_m,-.30f,.10f},
-    {"virtual_stock_shoulder_back_m",&Config::virtual_stock_shoulder_back_m,0.f,.25f},
-    {"virtual_stock_shoulder_side_m",&Config::virtual_stock_shoulder_side_m,0.f,.20f},
-    {"virtual_stock_chest_height_m",&Config::virtual_stock_chest_height_m,-.5f,-.22f},
-    {"virtual_stock_chest_back_m",&Config::virtual_stock_chest_back_m,0.f,.25f},
-    {"virtual_stock_chest_side_m",&Config::virtual_stock_chest_side_m,0.f,.20f},
-    {"virtual_stock_adaptive_top_height_m",&Config::virtual_stock_adaptive_top_height_m,-.35f,0.f},
-    {"virtual_stock_adaptive_bottom_height_m",&Config::virtual_stock_adaptive_bottom_height_m,-.65f,-.20f},
-    {"virtual_stock_adaptive_top_half_width_m",&Config::virtual_stock_adaptive_top_half_width_m,.02f,.25f},
-    {"virtual_stock_adaptive_bottom_half_width_m",&Config::virtual_stock_adaptive_bottom_half_width_m,.02f,.30f},
-    {"virtual_stock_proximity_full_m",&Config::virtual_stock_proximity_full_m,.10f,.60f},
-    {"virtual_stock_proximity_release_m",&Config::virtual_stock_proximity_release_m,.15f,.80f},
-};
-
 static void Clamp()
 {
-    const Config stockDefaults{};
-    for(const auto& field:kVirtualStockFields)
-    {
-        float& value=g_config.*field.value;
-        value=std::isfinite(value)?std::clamp(value,field.minimum,field.maximum):stockDefaults.*field.value;
-    }
-    g_config.virtual_stock_rear_reference=std::clamp(g_config.virtual_stock_rear_reference,0,3);
-    if(g_config.virtual_stock_proximity_release_m<=g_config.virtual_stock_proximity_full_m)
-    {g_config.virtual_stock_proximity_full_m=.270f;g_config.virtual_stock_proximity_release_m=.425f;}
-    if(g_config.virtual_stock_adaptive_top_height_m<=g_config.virtual_stock_adaptive_bottom_height_m)
-    {g_config.virtual_stock_adaptive_top_height_m=-.180f;g_config.virtual_stock_adaptive_bottom_height_m=-.450f;}
-    g_config.config_version = 5;
+    g_config.config_version = 6;
     g_config.haptic_intensity = std::clamp(g_config.haptic_intensity, 0.0f, 1.0f);
     g_config.dpad_head_radius = std::clamp(g_config.dpad_head_radius, 0.10f, 0.50f);
     g_config.headset_smoothing = std::clamp(g_config.headset_smoothing, 0.0f, 0.10f);
@@ -477,6 +480,146 @@ static void Clamp()
     g_config.left_hand_forward_m = std::clamp(g_config.left_hand_forward_m, -0.15f, 0.30f);
     g_config.two_hand_zone_right_m = std::clamp(g_config.two_hand_zone_right_m, -0.10f, 0.10f);
     g_config.left_grip_forward_m = std::clamp(g_config.left_grip_forward_m, -0.05f, 0.25f);
+    g_config.virtual_stock_standard_strength =
+        std::isfinite(g_config.virtual_stock_standard_strength)
+            ? std::clamp(g_config.virtual_stock_standard_strength,
+                         kVirtualStockStrengthMinimum,
+                         kVirtualStockStrengthMaximum)
+            : kVirtualStockStandardStrengthDefault;
+    g_config.virtual_stock_plus_strength =
+        std::isfinite(g_config.virtual_stock_plus_strength)
+            ? std::clamp(g_config.virtual_stock_plus_strength,
+                         kVirtualStockStrengthMinimum,
+                         kVirtualStockStrengthMaximum)
+            : kVirtualStockPlusStrengthDefault;
+    g_config.two_hand_smoothing_strength =
+        std::isfinite(g_config.two_hand_smoothing_strength)
+            ? std::clamp(g_config.two_hand_smoothing_strength,
+                         kTwoHandSmoothingStrengthMinimum,
+                         kTwoHandSmoothingStrengthMaximum)
+            : kTwoHandSmoothingStrengthDefault;
+    g_config.two_hand_offhand_influence =
+        std::isfinite(g_config.two_hand_offhand_influence)
+            ? std::clamp(g_config.two_hand_offhand_influence,
+                         kTwoHandOffhandInfluenceMinimum,
+                         kTwoHandOffhandInfluenceMaximum)
+            : kTwoHandOffhandInfluenceDefault;
+    g_config.virtual_stock_rear_height_m = std::isfinite(g_config.virtual_stock_rear_height_m)
+        ? std::clamp(g_config.virtual_stock_rear_height_m,
+                     kVirtualStockRearHeightMinimumM,
+                     kVirtualStockRearHeightMaximumM)
+        : kVirtualStockRearHeightDefaultM;
+    g_config.virtual_stock_rear_reference =
+        g_config.virtual_stock_rear_reference >= kVirtualStockRearReferenceMinimum &&
+                g_config.virtual_stock_rear_reference <= kVirtualStockRearReferenceMaximum
+            ? g_config.virtual_stock_rear_reference
+            : kVirtualStockProductRearReferenceDefault;
+    // Chest was an experimental mode and is no longer a product selection.
+    if (g_config.virtual_stock_rear_reference == 2)
+        g_config.virtual_stock_rear_reference = 0;
+    g_config.virtual_stock_shoulder_back_m =
+        std::isfinite(g_config.virtual_stock_shoulder_back_m)
+            ? std::clamp(g_config.virtual_stock_shoulder_back_m,
+                         kVirtualStockShoulderBackMinimumM,
+                         kVirtualStockShoulderBackMaximumM)
+            : kVirtualStockShoulderBackDefaultM;
+    g_config.virtual_stock_shoulder_side_m =
+        std::isfinite(g_config.virtual_stock_shoulder_side_m)
+            ? std::clamp(g_config.virtual_stock_shoulder_side_m,
+                         kVirtualStockShoulderSideMinimumM,
+                         kVirtualStockShoulderSideMaximumM)
+            : kVirtualStockShoulderSideDefaultM;
+    g_config.virtual_stock_chest_height_m =
+        std::isfinite(g_config.virtual_stock_chest_height_m)
+            ? std::clamp(g_config.virtual_stock_chest_height_m,
+                         kVirtualStockChestHeightMinimumM,
+                         kVirtualStockChestHeightMaximumM)
+            : kVirtualStockChestHeightDefaultM;
+    g_config.virtual_stock_chest_back_m =
+        std::isfinite(g_config.virtual_stock_chest_back_m)
+            ? std::clamp(g_config.virtual_stock_chest_back_m,
+                         kVirtualStockChestBackMinimumM,
+                         kVirtualStockChestBackMaximumM)
+            : kVirtualStockChestBackDefaultM;
+    g_config.virtual_stock_chest_side_m =
+        std::isfinite(g_config.virtual_stock_chest_side_m)
+            ? std::clamp(g_config.virtual_stock_chest_side_m,
+                         kVirtualStockChestSideMinimumM,
+                         kVirtualStockChestSideMaximumM)
+            : kVirtualStockChestSideDefaultM;
+    g_config.virtual_stock_adaptive_top_height_m =
+        std::isfinite(g_config.virtual_stock_adaptive_top_height_m)
+            ? std::clamp(g_config.virtual_stock_adaptive_top_height_m,
+                         kVirtualStockAdaptiveTopHeightMinimumM,
+                         kVirtualStockAdaptiveTopHeightMaximumM)
+            : kVirtualStockAdaptiveTopHeightDefaultM;
+    g_config.virtual_stock_adaptive_bottom_height_m =
+        std::isfinite(g_config.virtual_stock_adaptive_bottom_height_m)
+            ? std::clamp(g_config.virtual_stock_adaptive_bottom_height_m,
+                         kVirtualStockAdaptiveBottomHeightMinimumM,
+                         kVirtualStockAdaptiveBottomHeightMaximumM)
+            : kVirtualStockAdaptiveBottomHeightDefaultM;
+    g_config.virtual_stock_adaptive_top_half_width_m =
+        std::isfinite(g_config.virtual_stock_adaptive_top_half_width_m)
+            ? std::clamp(g_config.virtual_stock_adaptive_top_half_width_m,
+                         kVirtualStockAdaptiveTopHalfWidthMinimumM,
+                         kVirtualStockAdaptiveTopHalfWidthMaximumM)
+            : kVirtualStockAdaptiveTopHalfWidthDefaultM;
+    g_config.virtual_stock_adaptive_bottom_half_width_m =
+        std::isfinite(g_config.virtual_stock_adaptive_bottom_half_width_m)
+            ? std::clamp(g_config.virtual_stock_adaptive_bottom_half_width_m,
+                         kVirtualStockAdaptiveBottomHalfWidthMinimumM,
+                         kVirtualStockAdaptiveBottomHalfWidthMaximumM)
+            : kVirtualStockAdaptiveBottomHalfWidthDefaultM;
+    g_config.virtual_stock_hybrid_offhand_influence =
+        std::isfinite(g_config.virtual_stock_hybrid_offhand_influence)
+            ? std::clamp(g_config.virtual_stock_hybrid_offhand_influence,
+                         kVirtualStockHybridOffhandInfluenceMinimum,
+                         kVirtualStockHybridOffhandInfluenceMaximum)
+            : kVirtualStockHybridOffhandInfluenceDefault;
+    g_config.virtual_stock_hybrid_ads_reference =
+        g_config.virtual_stock_hybrid_ads_reference >=
+                kVirtualStockHybridAdsReferenceMinimum &&
+                g_config.virtual_stock_hybrid_ads_reference <=
+                    kVirtualStockHybridAdsReferenceMaximum
+            ? g_config.virtual_stock_hybrid_ads_reference
+            : kVirtualStockHybridAdsReferenceDefault;
+    g_config.virtual_stock_hybrid_seat_full_m =
+        std::isfinite(g_config.virtual_stock_hybrid_seat_full_m)
+            ? std::clamp(g_config.virtual_stock_hybrid_seat_full_m,
+                         kVirtualStockHybridSeatFullMinimumM,
+                         kVirtualStockHybridSeatFullMaximumM)
+            : kVirtualStockProductHybridSeatFullDefaultM;
+    g_config.virtual_stock_hybrid_seat_release_m =
+        std::isfinite(g_config.virtual_stock_hybrid_seat_release_m)
+            ? std::clamp(g_config.virtual_stock_hybrid_seat_release_m,
+                         kVirtualStockHybridSeatReleaseMinimumM,
+                         kVirtualStockHybridSeatReleaseMaximumM)
+            : kVirtualStockProductHybridSeatReleaseDefaultM;
+    g_config.virtual_stock_hybrid_horizontal_full_m =
+        std::isfinite(g_config.virtual_stock_hybrid_horizontal_full_m)
+            ? std::clamp(g_config.virtual_stock_hybrid_horizontal_full_m,
+                         kVirtualStockProximityFullMinimumM,
+                         kVirtualStockProximityFullMaximumM)
+            : kVirtualStockProductHybridHorizontalFullDefaultM;
+    g_config.virtual_stock_hybrid_horizontal_release_m =
+        std::isfinite(g_config.virtual_stock_hybrid_horizontal_release_m)
+            ? std::clamp(g_config.virtual_stock_hybrid_horizontal_release_m,
+                         kVirtualStockProximityReleaseMinimumM,
+                         kVirtualStockProximityReleaseMaximumM)
+            : kVirtualStockProductHybridHorizontalReleaseDefaultM;
+    g_config.virtual_stock_proximity_full_m =
+        std::isfinite(g_config.virtual_stock_proximity_full_m)
+            ? std::clamp(g_config.virtual_stock_proximity_full_m,
+                         kVirtualStockProximityFullMinimumM,
+                         kVirtualStockProximityFullMaximumM)
+            : kVirtualStockProximityFullDefaultM;
+    g_config.virtual_stock_proximity_release_m =
+        std::isfinite(g_config.virtual_stock_proximity_release_m)
+            ? std::clamp(g_config.virtual_stock_proximity_release_m,
+                         kVirtualStockProximityReleaseMinimumM,
+                         kVirtualStockProximityReleaseMaximumM)
+            : kVirtualStockProximityReleaseDefaultM;
     g_config.physical_melee_swing_speed = std::clamp(
         g_config.physical_melee_swing_speed, kPhysicalMeleeSpeedMin, kPhysicalMeleeSpeedMax);
     g_config.right_shoulder_drop = std::clamp(g_config.right_shoulder_drop, 0.0f, 0.3f);
@@ -506,6 +649,50 @@ static void Clamp()
     g_config.scope_screen_up_m = std::clamp(g_config.scope_screen_up_m, -0.20f, 0.30f);
     g_config.scope_screen_forward_m = std::clamp(g_config.scope_screen_forward_m, 0.05f, 0.80f);
     g_config.scope_refresh_divisor = std::clamp(g_config.scope_refresh_divisor, 1, 4);
+}
+
+// Pair validation belongs after the complete file has been parsed. Key order
+// must not change the result when a hand-edited config contains both values.
+static void NormalizeVirtualStockProximityPair()
+{
+    if (!(g_config.virtual_stock_proximity_release_m >
+          g_config.virtual_stock_proximity_full_m))
+    {
+        g_config.virtual_stock_proximity_full_m =
+            kVirtualStockProximityFullDefaultM;
+        g_config.virtual_stock_proximity_release_m =
+            kVirtualStockProximityReleaseDefaultM;
+    }
+}
+
+// Hybrid seating uses its own authority fade rather than the legacy proximity
+// strength attenuation. Keep the pair deterministic after the complete config
+// file has been parsed, with a 10 mm minimum interval matching the UI policy.
+static void NormalizeVirtualStockHybridSeatPair()
+{
+    if (g_config.virtual_stock_hybrid_seat_release_m +
+            kVirtualStockHybridSeatComparisonEpsilon <
+        g_config.virtual_stock_hybrid_seat_full_m +
+            kVirtualStockHybridSeatMinimumSeparationM)
+    {
+        g_config.virtual_stock_hybrid_seat_full_m =
+            kVirtualStockProductHybridSeatFullDefaultM;
+        g_config.virtual_stock_hybrid_seat_release_m =
+            kVirtualStockProductHybridSeatReleaseDefaultM;
+    }
+}
+
+static void NormalizeVirtualStockHybridHorizontalPair()
+{
+    if (!(g_config.virtual_stock_hybrid_horizontal_release_m >=
+          g_config.virtual_stock_hybrid_horizontal_full_m +
+              kVirtualStockHybridHorizontalRearReleaseMinimumSeparationM))
+    {
+        g_config.virtual_stock_hybrid_horizontal_full_m =
+            kVirtualStockProductHybridHorizontalFullDefaultM;
+        g_config.virtual_stock_hybrid_horizontal_release_m =
+            kVirtualStockProductHybridHorizontalReleaseDefaultM;
+    }
 }
 
 
@@ -754,6 +941,13 @@ void ConfigLoad(const wchar_t* path)
     bool loadedHolsterRadius = false;
     bool flashlightMappingV2 = false;
     bool aimDirectDriveSeen = false;
+    bool loadedLegacyVirtualStockStrength = false;
+    bool loadedStandardVirtualStockStrength = false;
+    bool loadedPlusVirtualStockStrength = false;
+    float legacyVirtualStockStrength = kVirtualStockPlusStrengthDefault;
+    bool loadedTwoHandSmoothingStrength = false;
+    bool loadedLegacyTwoHandSmoothing = false;
+    float legacyTwoHandSmoothingStrength = kTwoHandSmoothingStrengthDefault;
     while (fgets(line, sizeof(line), f))
     {
         if (char* hash = strchr(line, '#'))
@@ -801,6 +995,17 @@ void ConfigLoad(const wchar_t* path)
                 vrBindingKey=true;break;
             }
         if(vrBindingKey) continue;
+        if(!strcmp(key,"experimental_body_ik")) {g_config.experimental_body_ik=atoi(val)!=0;continue;}
+        if(!strcmp(key,"body_ik_hide_lower")) {g_config.body_ik_hide_lower=atoi(val)!=0;continue;}
+        if(!strcmp(key,"physical_running")) {g_config.physical_running=atoi(val)!=0;continue;}
+        if(!strcmp(key,"physical_running_speed")) {
+            ParseFloatSetting(key,val,g_config.physical_running_speed);
+            g_config.physical_running_speed=std::clamp(g_config.physical_running_speed,.1f,1.f);continue;
+        }
+        if(!strcmp(key,"physical_running_sensitivity")) {
+            ParseFloatSetting(key,val,g_config.physical_running_sensitivity);
+            g_config.physical_running_sensitivity=std::clamp(g_config.physical_running_sensitivity,.25f,3.f);continue;
+        }
         if(!strcmp(key,"physical_crouch")) {g_config.physical_crouch=atoi(val)!=0;continue;}
 #if HALOMCCVR_DEV_DIAGNOSTICS   // headless-test hook: a player build never reads it
         if(!strcmp(key,"test_accept_untracked_head")) {g_config.test_accept_untracked_head=atoi(val)!=0;continue;}
@@ -841,7 +1046,7 @@ void ConfigLoad(const wchar_t* path)
         if(!strcmp(key,"upscaler")) {g_config.upscaler=atoi(val)==1?1:0;continue;}
         if(!strcmp(key,"dlss_mode")) {g_config.dlss_mode=std::clamp(atoi(val),0,4);continue;}
         if(!strcmp(key,"dlss_jitter")) {g_config.dlss_jitter=atoi(val)!=0;continue;}
-        if(!strcmp(key,"dlss_preset")) {g_config.dlss_preset=std::clamp(atoi(val),0,5);continue;}
+        if(!strcmp(key,"dlss_preset")) {g_config.dlss_preset=std::clamp(atoi(val),0,dlss::kPresetMax);continue;}
         if(!strcmp(key,"dlss_debug_view")) {g_config.dlss_debug_view=atoi(val)!=0;continue;}
         if(!strcmp(key,"vr_gameplay_subtitles")) {g_config.vr_gameplay_subtitles=atoi(val)!=0;continue;}
         if(!strcmp(key,"vr_gameplay_subtitle_anchor")) {g_config.vr_gameplay_subtitle_anchor=atoi(val)==1?1:0;continue;}
@@ -863,12 +1068,97 @@ void ConfigLoad(const wchar_t* path)
         }
         if(subtitleKey) continue;
         if(!strcmp(key,"virtual_stock")) {g_config.virtual_stock=atoi(val)!=0;continue;}
+        if(!strcmp(key,"virtual_stock_standard_strength"))
+        {
+            loadedStandardVirtualStockStrength = ParseFloatSetting(
+                key, val, g_config.virtual_stock_standard_strength);
+            continue;
+        }
+        if(!strcmp(key,"virtual_stock_plus_strength"))
+        {
+            loadedPlusVirtualStockStrength = ParseFloatSetting(
+                key, val, g_config.virtual_stock_plus_strength);
+            continue;
+        }
+        if(!strcmp(key,"virtual_stock_strength"))
+        {
+            loadedLegacyVirtualStockStrength = ParseFloatSetting(
+                key, val, legacyVirtualStockStrength);
+            continue;
+        }
+        if(!strcmp(key,"virtual_stock_rear_reference"))
+        {
+            ParseIntSetting(key, val, kVirtualStockRearReferenceMinimum,
+                kVirtualStockRearReferenceMaximum,
+                g_config.virtual_stock_rear_reference);
+            continue;
+        }
+        if(!strcmp(key,"virtual_stock_hybrid_ads_reference"))
+        {
+            ParseIntSetting(key, val,
+                kVirtualStockHybridAdsReferenceMinimum,
+                kVirtualStockHybridAdsReferenceMaximum,
+                g_config.virtual_stock_hybrid_ads_reference);
+            continue;
+        }
         if(!strcmp(key,"virtual_stock_proximity_release")) {g_config.virtual_stock_proximity_release=atoi(val)!=0;continue;}
-        if(!strcmp(key,"virtual_stock_rear_reference")) {g_config.virtual_stock_rear_reference=std::clamp(atoi(val),0,3);continue;}
-        bool stockKey=false;
-        for(const auto& field:kVirtualStockFields) if(!strcmp(key,field.key))
-        {ParseFloatSetting(key,val,g_config.*field.value);stockKey=true;break;}
-        if(stockKey) continue;
+        if(!strcmp(key,"virtual_stock_hybrid_horizontal_release"))
+        {
+            ParseBoolSetting(key, val,
+                g_config.virtual_stock_hybrid_horizontal_release);
+            continue;
+        }
+        if(!strcmp(key,"two_hand_support_grip_pose"))
+        {
+            ParseBoolSetting(key, val, g_config.two_hand_support_grip_pose);
+            continue;
+        }
+        if(!strcmp(key,"persistent_support_grip"))
+        {
+            ParseBoolSetting(key, val, g_config.persistent_support_grip);
+            continue;
+        }
+        if(!strcmp(key,"two_hand_smoothing_strength"))
+        {
+            loadedTwoHandSmoothingStrength = ParseFloatSetting(
+                key, val, g_config.two_hand_smoothing_strength);
+            continue;
+        }
+        if(!strcmp(key,"two_hand_offhand_influence"))
+        {
+            ParseFloatSetting(key, val, g_config.two_hand_offhand_influence);
+            continue;
+        }
+        if(!strcmp(key,"two_hand_smoothing"))
+        {
+            // Previous-candidate boolean key. It is only a migration source and
+            // is not re-saved; true means the old full-strength speed-25
+            // filter, never slider value 1.
+            bool enabled = false;
+            if(ParseBoolSetting(key, val, enabled))
+            {
+                loadedLegacyTwoHandSmoothing = true;
+                legacyTwoHandSmoothingStrength = enabled
+                    ? kTwoHandSmoothingStrengthMaximum
+                    : kTwoHandSmoothingStrengthMinimum;
+            }
+            continue;
+        }
+        if(!strcmp(key,"two_hand_transition_smoothing"))
+        {
+            // Retired 2026-09-29: the 200 ms VS-OFF acquire/release continuity
+            // is fixed-on product behaviour (TwoHandTransitionContinuityEnabled()
+            // in virtual_stock_settings.h). This legacy key is still parsed so
+            // historical files load quietly, but the value is dormant and is
+            // never resolved by any product or telemetry path.
+            ParseBoolSetting(key, val, g_config.two_hand_transition_smoothing);
+            continue;
+        }
+        if(!strcmp(key,"two_hand_switch_inherit"))
+        {
+            ParseBoolSetting(key, val, g_config.two_hand_switch_inherit);
+            continue;
+        }
         // Keep new keys outside the already-at-limit legacy else-if chain.
         bool weaponButtonKey = false;
         for (unsigned i=0;i<weapon_interaction::kTitleCount;++i)
@@ -960,7 +1250,14 @@ void ConfigLoad(const wchar_t* path)
             continue;
         }
         if (!strcmp(key, "hide_hud")) { g_config.hide_hud=atoi(val)!=0; continue; }
+        if (!strcmp(key, "hud_reveal_near_head")) { ParseBoolSetting(key,val,g_config.hud_reveal_near_head); continue; }
+        if (!strcmp(key, "hud_reveal_radius_m")) {
+            if(ParseFloatSetting(key,val,g_config.hud_reveal_radius_m))
+                g_config.hud_reveal_radius_m=std::clamp(g_config.hud_reveal_radius_m,.10f,.40f);
+            continue;
+        }
         if (!strcmp(key, "independent_dual_aim")) { g_config.independent_dual_aim=atoi(val)!=0; continue; }
+        if (!strcmp(key, "two_hand_coherent_aim")) { g_config.two_hand_coherent_aim=atoi(val)!=0; continue; }
         if (!strcmp(key, "gun_barrel_aim")) { g_config.gun_barrel_aim=atoi(val)!=0; continue; }
         if (!strcmp(key, "shots_from_muzzle")) { g_config.shots_from_muzzle=atoi(val)!=0; continue; }
         if (!strcmp(key, "aim_provider")) { g_config.aim_provider=atoi(val); continue; }
@@ -1034,6 +1331,32 @@ void ConfigLoad(const wchar_t* path)
         {
             struct FloatKey { const char* name; float* destination; };
             const FloatKey kFloatKeys[] = {
+                {"virtual_stock_rear_height_m", &g_config.virtual_stock_rear_height_m},
+                {"virtual_stock_shoulder_back_m", &g_config.virtual_stock_shoulder_back_m},
+                {"virtual_stock_shoulder_side_m", &g_config.virtual_stock_shoulder_side_m},
+                {"virtual_stock_chest_height_m", &g_config.virtual_stock_chest_height_m},
+                {"virtual_stock_chest_back_m", &g_config.virtual_stock_chest_back_m},
+                {"virtual_stock_chest_side_m", &g_config.virtual_stock_chest_side_m},
+                {"virtual_stock_adaptive_top_height_m",
+                 &g_config.virtual_stock_adaptive_top_height_m},
+                {"virtual_stock_adaptive_bottom_height_m",
+                 &g_config.virtual_stock_adaptive_bottom_height_m},
+                {"virtual_stock_adaptive_top_half_width_m",
+                 &g_config.virtual_stock_adaptive_top_half_width_m},
+                 {"virtual_stock_adaptive_bottom_half_width_m",
+                  &g_config.virtual_stock_adaptive_bottom_half_width_m},
+                 {"virtual_stock_hybrid_offhand_influence",
+                  &g_config.virtual_stock_hybrid_offhand_influence},
+                 {"virtual_stock_hybrid_seat_full_m",
+                  &g_config.virtual_stock_hybrid_seat_full_m},
+                 {"virtual_stock_hybrid_seat_release_m",
+                   &g_config.virtual_stock_hybrid_seat_release_m},
+                 {"virtual_stock_hybrid_horizontal_full_m",
+                  &g_config.virtual_stock_hybrid_horizontal_full_m},
+                 {"virtual_stock_hybrid_horizontal_release_m",
+                  &g_config.virtual_stock_hybrid_horizontal_release_m},
+                 {"virtual_stock_proximity_full_m", &g_config.virtual_stock_proximity_full_m},
+                {"virtual_stock_proximity_release_m", &g_config.virtual_stock_proximity_release_m},
                 {"left_hand_mesh_x_m", &g_config.left_hand_mesh_x_m},
                 {"left_hand_mesh_y_m", &g_config.left_hand_mesh_y_m},
                 {"left_hand_mesh_z_m", &g_config.left_hand_mesh_z_m},
@@ -1093,8 +1416,8 @@ void ConfigLoad(const wchar_t* path)
             else
             {
                 loadedConfigVersion = static_cast<int>(parsed);
-                if (parsed > 5)
-                    LOG("config: version %ld is newer than supported version 5; known keys will be loaded", parsed);
+                if (parsed > 6)
+                    LOG("config: version %ld is newer than supported version 6; known keys will be loaded", parsed);
             }
         }
         else if (!strcmp(key, "haptic_intensity"))
@@ -1412,6 +1735,23 @@ void ConfigLoad(const wchar_t* path)
             LOG("config: unknown key '%s' ignored", key);
     }
     fclose(f);
+    if (loadedLegacyVirtualStockStrength)
+    {
+        if (VirtualStockUsesPlusMode(g_config))
+        {
+            if (!loadedPlusVirtualStockStrength)
+                g_config.virtual_stock_plus_strength = legacyVirtualStockStrength;
+        }
+        else if (!loadedStandardVirtualStockStrength)
+        {
+            g_config.virtual_stock_standard_strength = legacyVirtualStockStrength;
+        }
+    }
+    // Previous-candidate boolean two_hand_smoothing: false/absent keeps the
+    // 0.0 default, true migrates to the full 25.0 strength. An explicit
+    // numeric key always wins, and the numeric key is what gets saved.
+    if (loadedLegacyTwoHandSmoothing && !loadedTwoHandSmoothingStrength)
+        g_config.two_hand_smoothing_strength = legacyTwoHandSmoothingStrength;
     if(!flashlightMappingV2) {
         for(auto& button:g_config.flashlight_button)
             if(button==0) button=flashlight_input::kGripDefault;
@@ -1444,6 +1784,11 @@ void ConfigLoad(const wchar_t* path)
         g_config.scope_zoom *= 1.75f;
         LOG("config: migrated scope zoom to the tighter world-only lens");
     }
+    if (loadedConfigVersion < 6 && !g_config.two_hand_coherent_aim)
+    {
+        g_config.two_hand_coherent_aim = true;
+        LOG("config: migrated two_hand_coherent_aim to enabled for v6; set two_hand_coherent_aim = 0 to restore the legacy path");
+    }
     if (loadedLegacyCurvature)
     {
         // Version 1 stored a signed value whose physical delta was value*0.1.
@@ -1457,6 +1802,9 @@ void ConfigLoad(const wchar_t* path)
         g_config.aim_direct_drive = (g_config.legacy_direct_drive || g_config.reach_direct_drive == 3) ? 1 : 0;
     Config_ApplyAimModes();
     Clamp();
+    NormalizeVirtualStockProximityPair();
+    NormalizeVirtualStockHybridSeatPair();
+    NormalizeVirtualStockHybridHorizontalPair();
     ResolveTitleProfiles();
     LOG("config: loaded (screen %.2fm wide at %.2fm)", g_config.screen_width_m, g_config.screen_distance_m);
 }
@@ -1497,6 +1845,9 @@ void ConfigSave()
         return;
     Config_ApplyWeaponProfile(g_observedWeaponIdentity);
     Clamp();
+    NormalizeVirtualStockProximityPair();
+    NormalizeVirtualStockHybridSeatPair();
+    NormalizeVirtualStockHybridHorizontalPair();
     // C-TITLE-1: whatever the player just tuned belongs to the active
     // title's profile (or the shared defaults when no game is active).
     Config_StoreLiveTunables();
@@ -1712,6 +2063,9 @@ void ConfigSave()
             d.halo4_helmet ? 1 : 0);
     fprintf(f, "halo4_helmet = %d\n\n", g_config.halo4_helmet ? 1 : 0);
     fprintf(f, "# Hide gameplay HUD and VR reticle; menus remain available.\nhide_hud = %d\n\n", g_config.hide_hud ? 1 : 0);
+    fprintf(f, "# Temporarily reveal a hidden HUD with an empty support hand near your head.\n"
+        "hud_reveal_near_head = %d\nhud_reveal_radius_m = %.3f\n\n",
+        g_config.hud_reveal_near_head?1:0,g_config.hud_reveal_radius_m);
     fprintf(f, "# Optional CE Anniversary lens-flare suppression. Does not alter world lighting.\nce_anniversary_disable_lens_flares = %d\n\n", g_config.ce_anniversary_disable_lens_flares ? 1 : 0);
     fprintf(f, "# Each owned dual-wielded gun follows its own controller.\nindependent_dual_aim = %d\n\n", g_config.independent_dual_aim ? 1 : 0);
     fprintf(f, "# Use verified visible weapon muzzle origin and orientation.\ngun_barrel_aim = %d\n\n", g_config.gun_barrel_aim ? 1 : 0);
@@ -2318,6 +2672,9 @@ void ConfigSave()
     fprintf(f,"# Halo Reach on foot: the most the view may drop below the character's own eye (game metres),\n"
               "# so a deep physical duck cannot put it inside his body. Rides his crouch. -1 = off. (default 0.10)\n");
     fprintf(f,"head_leash_below_eye_m = %.3f\n",g_config.head_leash_below_eye_m);
+    fprintf(f,"# Arm-swing locomotion: speed is a fraction of native maximum movement.\n");
+    fprintf(f,"physical_running = %d\nphysical_running_speed = %.3f\nphysical_running_sensitivity = %.3f\n",
+        g_config.physical_running?1:0,g_config.physical_running_speed,g_config.physical_running_sensitivity);
     fprintf(f,"vr_action_mapping = %d\nflashlight_suppress_on_two_hand = %d\n",
         g_config.vr_action_mapping?1:0,g_config.flashlight_suppress_on_two_hand?1:0);
     for(unsigned title=0;title<weapon_interaction::kTitleCount;++title)
@@ -2336,17 +2693,166 @@ void ConfigSave()
     fprintf(f,"vr_theatre_subtitle_scale = %.3f\nvr_theatre_subtitle_x = %.3f\nvr_theatre_subtitle_y = %.3f\nvr_theatre_subtitle_anchor = %d\n",
         g_config.vr_theatre_subtitle_scale,g_config.vr_theatre_subtitle_x,g_config.vr_theatre_subtitle_y,g_config.vr_theatre_subtitle_anchor);
     fprintf(f,"\n# Optional DLSS (0=off, 1=on); modes: DLAA/Quality/Balanced/Performance/Ultra Performance.\n");
+    fprintf(f,"# Model preset: 0=runtime default, 1=F, 2=J, 3=K, 4=L, 5=M, 6=E.\n");
     fprintf(f,"upscaler = %d\ndlss_mode = %d\ndlss_jitter = %d\ndlss_preset = %d\ndlss_debug_view = %d\n",
         g_config.upscaler,g_config.dlss_mode,g_config.dlss_jitter?1:0,g_config.dlss_preset,g_config.dlss_debug_view?1:0);
     fprintf(f,"\n");
-    fprintf(f, "# Two-handed aiming: put your left hand on the gun front and use the\n");
-    fprintf(f, "# left grip to steady aim along the two-hand line. 1 = on.\n");
+    fprintf(f, "# Two-handed aiming: support hand on the gun front acquires in the barrel grab zone;\n");
+    fprintf(f, "# aim follows the two-hand line. 1 = on. Engage style is Toggle (grip click) or Hold (held grip).\n");
     fprintf(f, "# (default %d)\n", d.two_handed_aim ? 1 : 0);
     fprintf(f, "two_handed_aim = %d\n\n", g_config.two_handed_aim ? 1 : 0);
-    fprintf(f,"# Optional virtual stock: rear reference 0=head,1=shoulder,2=chest,3=adaptive.\n");
-    fprintf(f,"virtual_stock = %d\nvirtual_stock_rear_reference = %d\nvirtual_stock_proximity_release = %d\n",
-        g_config.virtual_stock?1:0,g_config.virtual_stock_rear_reference,g_config.virtual_stock_proximity_release?1:0);
-    for(const auto& field:kVirtualStockFields) fprintf(f,"%s = %.4f\n",field.key,g_config.*field.value);
+    fprintf(f, "# Experimental: consume the latest committed coherent Aim/Grip/head sample in XInput aim.\n");
+    fprintf(f, "# (default %d)\n", d.two_hand_coherent_aim ? 1 : 0);
+    fprintf(f, "two_hand_coherent_aim = %d\n\n",
+        g_config.two_hand_coherent_aim ? 1 : 0);
+    fprintf(f, "# Virtual stock changes only the base engaged two-hand orientation using the configured\n");
+    fprintf(f, "# rear-reference blend. Base position/roll stay primary-controller owned;\n");
+    fprintf(f, "# verified barrel-origin substitution (gun_barrel_aim) remains separate.\n");
+    fprintf(f, "# (default %d)\n", d.virtual_stock ? 1 : 0);
+    fprintf(f, "virtual_stock = %d\n", g_config.virtual_stock ? 1 : 0);
+    fprintf(f, "# Standard and Plus remember independent rear-reference influence values.\n");
+    fprintf(f, "# 0 = exact controller-to-controller solver; 1 = fully anchored stock.\n");
+    fprintf(f, "# (Standard default %.2f, Plus default %.2f, range %.2f to %.2f)\n",
+        d.virtual_stock_standard_strength,
+        d.virtual_stock_plus_strength,
+        kVirtualStockStrengthMinimum,
+        kVirtualStockStrengthMaximum);
+    fprintf(f, "virtual_stock_standard_strength = %.2f\n",
+        g_config.virtual_stock_standard_strength);
+    fprintf(f, "virtual_stock_plus_strength = %.2f\n",
+        g_config.virtual_stock_plus_strength);
+    fprintf(f, "# Tracking-space vertical offset for the virtual rear reference, in meters.\n");
+    fprintf(f, "# 0.000 = headset height. Negative values lower the virtual rear reference.\n");
+    fprintf(f, "# (default %.3f, range %.2f to %.2f)\n",
+        d.virtual_stock_rear_height_m,
+        kVirtualStockRearHeightMinimumM,
+        kVirtualStockRearHeightMaximumM);
+    fprintf(f, "virtual_stock_rear_height_m = %.3f\n", g_config.virtual_stock_rear_height_m);
+    fprintf(f, "# Virtual Stock mode/reference: 3 = Plus; 0 = Standard Centre; 1 = Standard Shoulder.\n");
+    fprintf(f, "# Legacy Chest value 2 loads as Standard Centre.\n");
+    fprintf(f, "# (default %d)\n", d.virtual_stock_rear_reference);
+    fprintf(f, "virtual_stock_rear_reference = %d\n", g_config.virtual_stock_rear_reference);
+    fprintf(f, "# Shoulder offsets in meters: back from the head rear target and toward\n");
+    fprintf(f, "# the semantic firing-hand side.\n");
+    fprintf(f, "# (defaults %.3f / %.3f, ranges %.3f..%.3f / %.3f..%.3f)\n",
+        d.virtual_stock_shoulder_back_m, d.virtual_stock_shoulder_side_m,
+        kVirtualStockShoulderBackMinimumM, kVirtualStockShoulderBackMaximumM,
+        kVirtualStockShoulderSideMinimumM, kVirtualStockShoulderSideMaximumM);
+    fprintf(f, "virtual_stock_shoulder_back_m = %.3f\n", g_config.virtual_stock_shoulder_back_m);
+    fprintf(f, "virtual_stock_shoulder_side_m = %.3f\n", g_config.virtual_stock_shoulder_side_m);
+    fprintf(f, "# Legacy Chest compatibility values; not exposed by the product UI.\n");
+    fprintf(f, "# (defaults %.3f / %.3f / %.3f, ranges %.3f..%.3f / %.3f..%.3f / %.3f..%.3f)\n",
+        d.virtual_stock_chest_height_m, d.virtual_stock_chest_back_m,
+        d.virtual_stock_chest_side_m,
+        kVirtualStockChestHeightMinimumM, kVirtualStockChestHeightMaximumM,
+        kVirtualStockChestBackMinimumM, kVirtualStockChestBackMaximumM,
+        kVirtualStockChestSideMinimumM, kVirtualStockChestSideMaximumM);
+    fprintf(f, "virtual_stock_chest_height_m = %.3f\n", g_config.virtual_stock_chest_height_m);
+    fprintf(f, "virtual_stock_chest_back_m = %.3f\n", g_config.virtual_stock_chest_back_m);
+    fprintf(f, "virtual_stock_chest_side_m = %.3f\n", g_config.virtual_stock_chest_side_m);
+    fprintf(f, "# Legacy adaptive-sheet compatibility values; not exposed by the product UI.\n");
+    fprintf(f, "# (defaults %.3f / %.3f / %.3f / %.3f, ranges %.3f..%.3f / %.3f..%.3f / %.3f..%.3f / %.3f..%.3f)\n",
+        d.virtual_stock_adaptive_top_height_m,
+        d.virtual_stock_adaptive_bottom_height_m,
+        d.virtual_stock_adaptive_top_half_width_m,
+        d.virtual_stock_adaptive_bottom_half_width_m,
+        kVirtualStockAdaptiveTopHeightMinimumM,
+        kVirtualStockAdaptiveTopHeightMaximumM,
+        kVirtualStockAdaptiveBottomHeightMinimumM,
+        kVirtualStockAdaptiveBottomHeightMaximumM,
+        kVirtualStockAdaptiveTopHalfWidthMinimumM,
+        kVirtualStockAdaptiveTopHalfWidthMaximumM,
+        kVirtualStockAdaptiveBottomHalfWidthMinimumM,
+        kVirtualStockAdaptiveBottomHalfWidthMaximumM);
+    fprintf(f, "virtual_stock_adaptive_top_height_m = %.3f\n",
+        g_config.virtual_stock_adaptive_top_height_m);
+    fprintf(f, "virtual_stock_adaptive_bottom_height_m = %.3f\n",
+        g_config.virtual_stock_adaptive_bottom_height_m);
+    fprintf(f, "virtual_stock_adaptive_top_half_width_m = %.3f\n",
+        g_config.virtual_stock_adaptive_top_half_width_m);
+    fprintf(f, "virtual_stock_adaptive_bottom_half_width_m = %.3f\n",
+        g_config.virtual_stock_adaptive_bottom_half_width_m);
+    fprintf(f, "# Plus internal support authority, retained for config compatibility.\n");
+    fprintf(f, "# (default %.2f, range %.2f to %.2f)\n",
+        d.virtual_stock_hybrid_offhand_influence,
+        kVirtualStockHybridOffhandInfluenceMinimum,
+        kVirtualStockHybridOffhandInfluenceMaximum);
+    fprintf(f, "virtual_stock_hybrid_offhand_influence = %.2f\n",
+        g_config.virtual_stock_hybrid_offhand_influence);
+    fprintf(f, "# Plus rear reference: 0 = Centre (internal Head), 1 = Shoulder.\n");
+    fprintf(f, "# (default %d)\n", d.virtual_stock_hybrid_ads_reference);
+    fprintf(f, "virtual_stock_hybrid_ads_reference = %d\n",
+        g_config.virtual_stock_hybrid_ads_reference);
+    fprintf(f, "# Plus broad safety distances in meters. The 0.010 m minimum\n");
+    fprintf(f, "# threshold interval keeps a finite transition and accepts normal VR seating.\n");
+    fprintf(f, "# (defaults %.3f / %.3f, ranges %.3f..%.3f / %.3f..%.3f m)\n",
+        d.virtual_stock_hybrid_seat_full_m,
+        d.virtual_stock_hybrid_seat_release_m,
+        kVirtualStockHybridSeatFullMinimumM,
+        kVirtualStockHybridSeatFullMaximumM,
+        kVirtualStockHybridSeatReleaseMinimumM,
+        kVirtualStockHybridSeatReleaseMaximumM);
+    fprintf(f, "virtual_stock_hybrid_seat_full_m = %.3f\n",
+        g_config.virtual_stock_hybrid_seat_full_m);
+    fprintf(f, "virtual_stock_hybrid_seat_release_m = %.3f\n",
+        g_config.virtual_stock_hybrid_seat_release_m);
+    fprintf(f, "# Plus horizontal unloading. These are product defaults and are not normal UI tuning.\n");
+    fprintf(f, "virtual_stock_hybrid_horizontal_release = %d\n",
+        g_config.virtual_stock_hybrid_horizontal_release ? 1 : 0);
+    fprintf(f, "virtual_stock_hybrid_horizontal_full_m = %.3f\n",
+        g_config.virtual_stock_hybrid_horizontal_full_m);
+    fprintf(f, "virtual_stock_hybrid_horizontal_release_m = %.3f\n",
+        g_config.virtual_stock_hybrid_horizontal_release_m);
+    fprintf(f, "# Stateless proximity release: 1 fades virtual stock as the raw primary hand\n");
+    fprintf(f, "# moves away from the full rear target. 0 preserves the current solver.\n");
+    fprintf(f, "# (default %d)\n", d.virtual_stock_proximity_release ? 1 : 0);
+    fprintf(f, "virtual_stock_proximity_release = %d\n", g_config.virtual_stock_proximity_release ? 1 : 0);
+    fprintf(f, "# Full stock through this distance; release reaches zero at the second value.\n");
+    fprintf(f, "# (defaults %.3f / %.3f, ranges %.2f..%.2f / %.2f..%.2f m)\n",
+        d.virtual_stock_proximity_full_m, d.virtual_stock_proximity_release_m,
+        kVirtualStockProximityFullMinimumM,
+        kVirtualStockProximityFullMaximumM,
+        kVirtualStockProximityReleaseMinimumM,
+        kVirtualStockProximityReleaseMaximumM);
+    fprintf(f, "virtual_stock_proximity_full_m = %.3f\n", g_config.virtual_stock_proximity_full_m);
+    fprintf(f, "virtual_stock_proximity_release_m = %.3f\n\n",
+        g_config.virtual_stock_proximity_release_m);
+    fprintf(f, "# Reduce support-hand rotation while preserving support-position steering.\n");
+    fprintf(f, "# (default %d)\n", d.two_hand_support_grip_pose ? 1 : 0);
+    fprintf(f, "two_hand_support_grip_pose = %d\n\n", g_config.two_hand_support_grip_pose ? 1 : 0);
+    fprintf(f, "# Durable owner-bound support grip; off restores spatial-only support behaviour.\n");
+    fprintf(f, "# (default %d)\n", d.persistent_support_grip ? 1 : 0);
+    fprintf(f, "persistent_support_grip = %d\n\n", g_config.persistent_support_grip ? 1 : 0);
+    fprintf(f, "# Pavlov-inspired controller-input smoothing strength: 0 = off/raw controller\n");
+    fprintf(f, "# input; 25 = the full fixed speed-25 quaternion-native filter; values between\n");
+    fprintf(f, "# wet/dry mix the filtered directional input copies over raw. Two-handed aim\n");
+    fprintf(f, "# with Virtual Stock on or off; raw poses and the weapon/base position are\n");
+    fprintf(f, "# never smoothed.\n");
+    fprintf(f, "# (default %.2f, range %.2f to %.2f)\n",
+        d.two_hand_smoothing_strength,
+        kTwoHandSmoothingStrengthMinimum,
+        kTwoHandSmoothingStrengthMaximum);
+    fprintf(f, "two_hand_smoothing_strength = %.2f\n\n",
+        g_config.two_hand_smoothing_strength);
+    fprintf(f, "# Free two-hand (VS-OFF) support-steering authority: 0 = the primary\n");
+    fprintf(f, "# controller's own aim is authoritative; 1 = the support controller's aim\n");
+    fprintf(f, "# carries equal authority. VS-OFF free two-hand aiming only; Virtual Stock\n");
+    fprintf(f, "# is unaffected.\n");
+    fprintf(f, "# (default %.2f, range %.2f to %.2f)\n",
+        d.two_hand_offhand_influence,
+        kTwoHandOffhandInfluenceMinimum,
+        kTwoHandOffhandInfluenceMaximum);
+    fprintf(f, "two_hand_offhand_influence = %.2f\n\n",
+        g_config.two_hand_offhand_influence);
+    // two_hand_transition_smoothing is retired: the fixed 200 ms VS-OFF
+    // acquire/release continuity is internal product behaviour and the key is
+    // no longer written. Historical files may still contain it; ConfigLoad
+    // parses it and ignores it.
+    fprintf(f, "# Persistent-grip switch option: 1 = a weapon switch while the grip is held\n");
+    fprintf(f, "# keeps the two-hand hold on the new weapon immediately (no re-orientation).\n");
+    fprintf(f, "# 0 = grip the new weapon normally; the grip button need not be released.\n");
+    fprintf(f, "# (default %d)\n", d.two_hand_switch_inherit ? 1 : 0);
+    fprintf(f, "two_hand_switch_inherit = %d\n\n", g_config.two_hand_switch_inherit ? 1 : 0);
     fprintf(f, "# Main weapon, aim and trigger on the physical left controller.\n");
     fprintf(f, "# Movement, turning and face buttons keep their physical bindings.\n");
     fprintf(f, "left_handed = %d\n\n", g_config.left_handed ? 1 : 0);
@@ -2356,16 +2862,16 @@ void ConfigSave()
     fprintf(f, "# Engage style: 1 = toggle (click grip on/off), 0 = hold.\n");
     fprintf(f, "# (default %d)\n", d.two_hand_toggle ? 1 : 0);
     fprintf(f, "two_hand_toggle = %d\n\n", g_config.two_hand_toggle ? 1 : 0);
-    fprintf(f, "# Left controller wrist-to-palm correction, shared by support-hand IK\n");
-    fprintf(f, "# and the two-hand aim point, in meters.\n");
+    fprintf(f, "# Left controller wrist-to-palm correction for support-hand seating/IK, in meters.\n");
+    fprintf(f, "# Excluded from the two-hand aim line, which uses raw tracked points.\n");
     fprintf(f, "# (default %.3f, range -0.15 to 0.30)\n", d.left_hand_forward_m);
     fprintf(f, "left_hand_forward_m = %.3f\n\n", g_config.base_tunables.left_hand_forward_m);
     fprintf(f, "# Sideways nudge of the two-hand grab zone (+ = player's right), so the\n");
     fprintf(f, "# grab line sits on the visible barrel, in meters.\n");
     fprintf(f, "# (default %.3f, range -0.10 to 0.10)\n", d.two_hand_zone_right_m);
     fprintf(f, "two_hand_zone_right_m = %.3f\n\n", g_config.two_hand_zone_right_m);
-    fprintf(f, "# Rendered left hand wrist-to-palm distance, in meters. Seats the\n");
-    fprintf(f, "# dual-wield gun in the palm and the grab line through it.\n");
+    fprintf(f, "# Support-controller-to-palm depth for two-hand grab acquisition only, in meters.\n");
+    fprintf(f, "# Does not change aim geometry, hand seating, or shots.\n");
     fprintf(f, "# (default %.3f, range -0.05 to 0.25)\n", d.left_grip_forward_m);
     fprintf(f, "left_grip_forward_m = %.3f\n\n", g_config.left_grip_forward_m);
     fprintf(f, "# VRIK arm IK: 1 = bend the arm to your controller (shoulder planted,\n");
@@ -2374,7 +2880,7 @@ void ConfigSave()
     fprintf(f, "# (default %d)\n", d.arm_ik ? 1 : 0);
     fprintf(f, "arm_ik = %d\n\n", g_config.arm_ik ? 1 : 0);
     fprintf(f, "# Floating hands: 1 = show only the hands and the guns they hold\n");
-    fprintf(f, "# (arms hidden); 0 = full arms. Pure render filter over VRIK.\n");
+    fprintf(f, "# (arms hidden); 0 = show arms where a verified tracked chain is available.\n");
     fprintf(f, "# (default %d)\n", d.floating_hands ? 1 : 0);
     fprintf(f, "floating_hands = %d\n\n", g_config.floating_hands ? 1 : 0);
     fprintf(f, "# World collision (experimental): hands and held weapons stop on\n");
@@ -2411,6 +2917,11 @@ void ConfigSave()
     fprintf(f, "# VRIK stage A1: show the player's game-animated body (experimental).\n");
     fprintf(f, "# (default %d)\n", d.body_wip ? 1 : 0);
     fprintf(f, "body_wip = %d\n\n", g_config.body_wip ? 1 : 0);
+    fprintf(f, "# Experimental H3/H4 tracked avatars and supported free-hand finger poses.\n");
+    fprintf(f, "# Overrides the legacy H3 body switch; unsupported rigs retain first-person hands.\n");
+    fprintf(f, "experimental_body_ik = %d\n", g_config.experimental_body_ik ? 1 : 0);
+    fprintf(f, "# Hide separate lower-body regions; H3 Elite/Arbiter require this off.\n");
+    fprintf(f, "body_ik_hide_lower = %d\n\n", g_config.body_ik_hide_lower ? 1 : 0);
     fprintf(f, "# -------------------------------------------------------------------\n");
     fprintf(f, "#  DEVELOPMENT DIAGNOSTICS\n");
     fprintf(f, "#  Leave these off unless a developer asks you to enable one.\n");
