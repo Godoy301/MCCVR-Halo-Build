@@ -4,6 +4,7 @@
 #include "aim_caller_logic.h"
 #include "aim_write_logic.h"
 #include "seat_drive_policy.h"
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -350,144 +351,275 @@ void TestPutBack()
     Check(h3.check(0x500, written, 3, 150, native) == Refusal::Invalid, "same frame: invalidated, nothing put back");
 }
 
-// One seated control pass, Halo 4 / Reach shape: [impulse] -> stick. The record is the yaw axis only (the
-// pitch is not written: a Halo 4 seat). `split`: the caller split; otherwise every call steps the latch and
-// writes, as before. Returns whether the stick call's write was held at a "limit".
+// THE HOOKS' DISPATCH, engine-free: the accumulator's entry stack (the hook's own return at [0], the
+// dispatcher's at [0x100]) -> DispatcherReturn -> classify -> ActionFor -- the path LegacyPcApplyForUser and
+// ReachPcApplyForUser take on every call (DispatcherMap's sites). `split` false is an UNPROVEN map (no stick
+// site): the fallback when rung 1 fails, and exactly the behaviour before the split -- every call is the update.
+constexpr uintptr_t kAccRet = 0xA898D, kStickRet = 0xA7779, kImpulseRet = 0xA34A3, kNoUnitRet = 0xA7A06;
+const Context kSeat{true, 1u, 1u, true};
+
+struct Dispatch
+{
+    CallerMap map;
+    alignas(8) uint8_t stack[0x120]{};
+
+    explicit Dispatch(bool split) : map(split ? DispatcherMap() : CallerMap{}) {}
+
+    Action operator()(uintptr_t dispatcherRet)
+    {
+        const uintptr_t accRet = kAccRet;
+        std::memcpy(stack, &accRet, sizeof(accRet));
+        std::memcpy(stack + 0x100, &dispatcherRet, sizeof(dispatcherRet));
+        return ActionFor(map, map.classify(accRet, aim_caller::DispatcherReturn(map, stack, accRet)));
+    }
+};
+
+// One seated control pass, Halo 4 / Reach shape: [impulse] -> stick, each call dispatched. The record is the yaw
+// axis only (the pitch is not written: a Halo 4 seat). The update steps the latch and writes; an extra call puts
+// the last write back (PutBack); the no-unit call ends the update.
 struct SeatSim
 {
+    Dispatch dispatch;
     aim_write::LimitLatch latch;
     PutBack slot;
     float record = 0.0f;
     uint32_t seq = 0;
     uint64_t now = 0;
     bool limitedOnStick = false;
-    unsigned limitedFrames = 0;
+    unsigned limitedFrames = 0, updates = 0;
 
-    SeatSim()
+    explicit SeatSim(bool split) : dispatch(split)
     {
         slot.max_age = 500;
         const float w[2]{0.0f, 0.0f};
         const bool rec[2]{true, false};
         latch.wrote(w, rec);   // primed: last frame wrote 0
-        const bool axes[2]{true, false};
-        slot.wrote(0x500, axes, w, Context{true, 1u, 1u, true}, seq, now);
+        slot.wrote(0x500, rec, w, kSeat, seq, now);
     }
 
-    bool step(float target)
+    // One accumulator call, whose native accumulation is already in `record`. Returns the update's latch verdict.
+    bool call(uintptr_t dispatcherRet, float target)
     {
-        const bool enabled[2]{true, false};
-        const float native[2]{record, 0.0f}, tgt[2]{target, 0.0f};
-        float out[2]{};
-        const bool limited = latch.apply(native, tgt, out, enabled);
-        record = out[0];
-        const float written[2]{record, 0.0f};
-        const bool rec[2]{true, false};
-        latch.wrote(written, rec);
-        return limited;
+        switch (dispatch(dispatcherRet))
+        {
+        case Action::StepAndWrite:
+        {
+            ++updates;
+            ++seq;
+            slot.invalidate();
+            const bool enabled[2]{true, false};
+            const float native[2]{record, 0.0f}, tgt[2]{target, 0.0f};
+            float out[2]{};
+            const bool limited = latch.apply(native, tgt, out, enabled);
+            record = out[0];
+            const float written[2]{record, 0.0f};
+            latch.wrote(written, enabled);
+            slot.wrote(0x500, enabled, written, kSeat, seq, now);
+            return limited;
+        }
+        case Action::RestoreOnly:
+        {
+            const float native[2]{record, 0.0f};
+            if (slot.check(0x500, kSeat, seq, now, native) == Refusal::None)
+                record = slot.value[0];
+            return false;
+        }
+        case Action::EndUpdate:
+            latch.reset();
+            slot.invalidate();
+            return false;
+        }
+        return false;
     }
 
-    void pass(float extraDelta, float target, bool split)
+    void pass(float extraDelta, float target)
     {
         now += 8;
         if (extraDelta != 0.0f)
         {
             record += extraDelta;   // the extra call's native accumulation
-            if (split)
-            {
-                const float native[2]{record, 0.0f};
-                if (slot.check(0x500, Context{true, 1u, 1u, true}, seq, now, native) == Refusal::None)
-                    record = slot.value[0];
-            }
-            else
-            {
-                step(target);       // before the split: the extra call was an update too
-            }
+            (void)call(kImpulseRet, target);
         }
-        ++seq;                      // the stick call
-        limitedOnStick = step(target);
+        limitedOnStick = call(kStickRet, target);
         if (limitedOnStick)
             ++limitedFrames;
-        const bool axes[2]{true, false};
-        const float w[2]{record, 0.0f};
-        slot.wrote(0x500, axes, w, Context{true, 1u, 1u, true}, seq, now);
     }
 };
 
 void TestLimitLatchPass()
 {
     // A 2 deg impulse ahead of the stick call, the hand still (target = last write).
-    SeatSim before;
-    before.pass(2.0f * kDeg, 0.0f, false);
+    SeatSim before(false);
+    before.pass(2.0f * kDeg, 0.0f);
+    Check(before.updates == 2, "before the split: the impulse call was an update too");
     Check(before.limitedOnStick, "before the split: an impulse ahead of the stick call latches a false seat limit");
     Check(std::fabs(before.record - 0.5f * kDeg) < 0.02f * kDeg,
           "before the split: that frame's stick write lands 0.5 deg short of the hand");
-    SeatSim after;
-    after.pass(2.0f * kDeg, 0.0f, true);
+    SeatSim after(true);
+    after.pass(2.0f * kDeg, 0.0f);
+    Check(after.updates == 1, "with the split: only the stick call is the update");
     Check(!after.limitedOnStick && after.record == 0.0f,
           "with the split: the impulse is put back and the stick write lands on the hand, unheld");
 
     // A weapon sway on every pass (Halo 4 0xA7751 in a moving vehicle), the hand sweeping slowly.
-    SeatSim swayBefore, swayAfter;
+    SeatSim swayBefore(false), swayAfter(true);
     for (int f = 0; f < 120; ++f)
     {
         const float sway = 2.5f * kDeg * std::sin(f * 0.7f);
         const float hand = 10.0f * kDeg * std::sin(f * 0.02f);
-        swayBefore.pass(sway, hand, false);
-        swayAfter.pass(sway, hand, true);
+        swayBefore.pass(sway, hand);
+        swayAfter.pass(sway, hand);
     }
+    Check(swayBefore.updates == 239 && swayAfter.updates == 120,
+          "a sway on 119 of 120 passes: 239 updates before the split, one per pass with it");
     Check(swayBefore.limitedFrames > 10, "before the split: a sway every pass keeps the seat 'held at a limit'");
     Check(swayAfter.limitedFrames == 0, "with the split: a sway every pass never reads as a seat limit");
     Check(std::fabs(swayAfter.record - 10.0f * kDeg * std::sin(119 * 0.02f)) < 1e-5f,
           "with the split: the record ends on the hand");
 }
 
+// The seat stint as the drive runs it, each call dispatched: the update judges the stint on the record (on a
+// fresh publication only -- a repeat is no evidence, LegacyPcApplyForUser's `newSample`) and, once yaw is
+// proven, writes the hand's yaw; an extra call puts the last write back; the no-unit call ends the stint. The
+// input thread publishes the game's aim once per frame, and the camera follows the record a frame late.
+struct StintSim
+{
+    Dispatch dispatch;
+    seat_drive::StintCheck stint;
+    PutBack slot;
+    float record = 0.3f, publishedAim = 0.3f, hand = 0.3f;
+    uint64_t now = 1000, publishedMs = 0, judgedMs = 0;
+    uint32_t seq = 0;
+    unsigned updates = 0, judgements = 0, stickJudgements = 0, putBacks = 0;
+    float maxStickDrift = 0.0f;   // |record - last write| as a stick update finds it
+
+    explicit StintSim(bool split) : dispatch(split) { slot.max_age = 500; }
+
+    void call(uintptr_t dispatcherRet)
+    {
+        switch (dispatch(dispatcherRet))
+        {
+        case Action::StepAndWrite:
+        {
+            ++updates;
+            if (slot.valid && dispatcherRet == kStickRet)
+                maxStickDrift = (std::max)(maxStickDrift, std::fabs(record - slot.value[0]));
+            ++seq;
+            slot.invalidate();
+            const bool newSample = publishedMs != judgedMs;
+            judgedMs = publishedMs;
+            if (newSample)
+            {
+                ++judgements;
+                if (dispatcherRet == kStickRet)
+                    ++stickJudgements;
+            }
+            stint.step(true, record, 0.0f, publishedAim, 0.0f, now, newSample);
+            if (stint.yaw_ok)
+            {
+                record = hand;
+                const bool axes[2]{true, false};
+                const float w[2]{record, 0.0f};
+                slot.wrote(0x500, axes, w, kSeat, seq, now);
+            }
+            break;
+        }
+        case Action::RestoreOnly:
+        {
+            const float native[2]{record, 0.0f};
+            if (slot.check(0x500, kSeat, seq, now, native) == Refusal::None)
+            {
+                record = slot.value[0];
+                ++putBacks;
+            }
+            break;
+        }
+        case Action::EndUpdate:
+            slot.invalidate();
+            stint.reset();
+            break;
+        }
+    }
+
+    // One frame: a fresh publication, then the control pass -- [impulse] -> stick, or the no-unit path.
+    void pass(float impulseRad, bool noUnit = false)
+    {
+        now += 8;
+        publishedMs = now;
+        if (impulseRad != 0.0f)
+        {
+            record += impulseRad;   // the impulse call's native accumulation
+            call(kImpulseRet);
+        }
+        call(noUnit ? kNoUnitRet : kStickRet);
+        publishedAim = record;      // the camera catches up next frame
+    }
+
+    // Passes until yaw is proven (at most 80): a 1 deg impulse under fire on every 5th, `bigDeg` on pass `bigPass`.
+    // Returns the pass it was proven on (-1: never). `onePerPass`: every pass was exactly one update, and its one
+    // judgement was the stick call's -- read off what the dispatch did, not assumed.
+    int untilYaw(float bigDeg, int bigPass, bool& onePerPass)
+    {
+        onePerPass = true;
+        for (int n = 1; n <= 80; ++n)
+        {
+            const float impulse = n == bigPass ? bigDeg * kDeg : (n % 5 == 0) ? 1.0f * kDeg : 0.0f;
+            const unsigned u = updates, j = judgements, sj = stickJudgements;
+            pass(impulse);
+            onePerPass = onePerPass && updates == u + 1 && judgements == j + 1 && stickJudgements == sj + 1;
+            if (stint.yaw_ok)
+                return n;
+        }
+        return -1;
+    }
+};
+
 void TestStintPass()
 {
     // The seat stint check (item 11 realism). While a stint is CHECKING nothing is written, so the put-back
     // slot is invalid and an impulse legitimately stays in the record; the game's published aim follows the
     // record a frame later. Only the stick call steps the check, once per pass.
-    const auto run = [](float bigImpulseDeg, int impulsePass, int& passedAt) {
-        seat_drive::StintCheck stint;
-        float record = 0.3f, publishedAim = 0.3f;
-        passedAt = -1;
-        for (int pass = 1; pass <= 80 && passedAt < 0; ++pass)
-        {
-            float delta = (pass % 5 == 0) ? 1.0f * kDeg : 0.0f;   // small impulses under fire
-            if (pass == impulsePass)
-                delta = bigImpulseDeg * kDeg;
-            record += delta;                                       // the extra call; nothing to put back
-            stint.step(true, record, 0.0f, publishedAim, 0.0f, 1000u + pass * 8u, true);   // the stick call
-            if (stint.yaw_ok)
-                passedAt = pass;
-            publishedAim = record;                                 // the camera catches up next frame
-        }
-    };
-    int passedAt = 0;
-    run(0.0f, 0, passedAt);
-    Check(passedAt == 30, "impulses under the 1.7 deg tolerance: yaw passes on the 30th stick call");
-    run(2.5f, 10, passedAt);
-    Check(passedAt == 40,
+    bool onePerPass = false;
+    StintSim fire(true);
+    Check(fire.untilYaw(0.0f, 0, onePerPass) == 30,
+          "impulses under the 1.7 deg tolerance: yaw passes on the 30th stick call");
+    Check(onePerPass, "with the split: one update per pass, and its judgement is the stick call's");
+    StintSim big(true);
+    Check(big.untilYaw(2.5f, 10, onePerPass) == 40,
           "a 2.5 deg impulse while checking resets yaw (the record leads the published aim): passes 30 later");
+    Check(onePerPass && big.putBacks == 0, "while checking nothing is written, so nothing is put back");
 
-    // Before the split, a pass with an extra call stepped twice: the extra call consumed the fresh publication
-    // (new_sample) and the stick call was never judged. Same verdict while checking, one judgement per pass.
-    seat_drive::StintCheck stint;
-    float record = 0.3f, aim = 0.3f;
-    int judged = 0;
-    for (int pass = 1; pass <= 29; ++pass)
+    // Proven: the stick call writes the hand, and every impulse ahead of it is put back -- the stick call finds
+    // the record exactly where it left it, and the camera stays on the hand.
+    const unsigned putBacksBefore = fire.putBacks;
+    for (int n = 1; n <= 40; ++n)
+        fire.pass((n % 5 == 0) ? 1.0f * kDeg : (n == 22) ? 4.0f * kDeg : 0.0f);
+    Check(fire.putBacks - putBacksBefore == 9, "proven: each of the 9 impulses is put back");
+    Check(fire.maxStickDrift == 0.0f && fire.record == fire.hand && fire.publishedAim == fire.hand,
+          "proven: no impulse reaches a stick call or the camera");
+    Check(fire.updates == 70 && fire.judgements == 70 && fire.stickJudgements == 70,
+          "proven: still one update and one stick judgement per pass");
+
+    // The no-unit pass (death) ends the update and the stint: the next stint proves yaw again from zero.
+    fire.pass(0.0f, true);
+    Check(!fire.stint.yaw_ok && !fire.slot.valid && fire.updates == 70, "the no-unit pass ends the stint, unstepped");
+    Check(fire.untilYaw(0.0f, 0, onePerPass) == 30 && onePerPass, "after it, yaw is proven again over 30 stick calls");
+
+    // Before the split (an unproven map: every call is the update), a pass with an extra call stepped twice: the
+    // extra call consumed the fresh publication and the stick call was never judged. Same verdict while
+    // checking, still one judgement per pass -- but on the impulse call.
+    StintSim before(false), after(true);
+    for (int n = 1; n <= 29; ++n)
     {
-        const bool impulse = pass % 2 == 0;
-        if (impulse)
-        {
-            record += 0.5f * kDeg;
-            stint.step(true, record, 0.0f, aim, 0.0f, 1000u + pass * 8u, true);   // the impulse call
-            ++judged;
-        }
-        stint.step(true, record, 0.0f, aim, 0.0f, 1000u + pass * 8u + 1u, !impulse);   // the stick call
-        judged += impulse ? 0 : 1;
-        aim = record;
+        const float impulse = n % 2 == 0 ? 0.5f * kDeg : 0.0f;
+        before.pass(impulse);
+        after.pass(impulse);
     }
-    Check(stint.yaw_count == 29 && judged == 29, "before the split: still one judgement per pass, on the first call");
+    Check(before.updates == 43 && before.judgements == 29 && before.stickJudgements == 15,
+          "before the split: 14 impulse passes stepped twice, and the impulse call took their judgement");
+    Check(after.updates == 29 && after.judgements == 29 && after.stickJudgements == 29,
+          "with the split: one update per pass, every judgement the stick call's");
+    Check(before.stint.yaw_count == 29 && after.stint.yaw_count == 29, "the same verdict while checking");
 }
 
 void TestCensus()
