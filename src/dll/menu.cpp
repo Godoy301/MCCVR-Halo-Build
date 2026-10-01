@@ -1307,7 +1307,10 @@ namespace
             ImGui::TextDisabled("ON (Reach, Halo 3, ODST, Halo 4): your aim writes the game's own aim, so it follows the\n"
                                 "controller at once instead of at the game's turn rate. It arms itself a moment after\n"
                                 "you switch it on. OFF: the aim steers the game's look like a right stick.\n"
-                                "Halo CE and Halo 2 always write their aim directly. Both switches are live.");
+                                "Halo 2 on foot: ON also writes the game's own aim, so your body faces where you aim\n"
+                                "and the right stick turns your view; OFF keeps the earlier Halo 2 aim (the shot\n"
+                                "follows the hand, the body follows the stick). Halo CE always writes its aim\n"
+                                "directly. Both switches are live.");
             ImGui::TextDisabled("Both cover vehicle seats too. Every seat you aim from converges (Halo 3 and ODST\n"
                                 "in first-person seats; Reach with Direct drive). With Direct drive, a Reach seat,\n"
                                 "and a Halo 3 or ODST seat that fires your own weapon, has its aim written too;\n"

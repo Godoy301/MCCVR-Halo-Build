@@ -44844,6 +44844,13 @@ bool Game_VrOwnsLookStick()
 {
     if (TitleAdapter_GetActiveTitle()==GameTitle::HaloCE)
         return Game_CeControllerFeaturesRequested()&&HaloCEControls_OwnsLookStick();
+#if HALOMCCVR_HALO2_STEREO6DOF
+    // Halo 2 on foot under direct drive: the view has its own heading and the stick turns it (the observer
+    // reads turnX itself), while the body follows the hand through player control. The stick must not also
+    // reach the game, or it would turn the body a second way.
+    if (TitleAdapter_GetActiveTitle()==GameTitle::Halo2 && Halo2Observer6Dof_FootViewEngaged())
+        return true;
+#endif
 #if HALOMCCVR_EXPERIMENTAL_ODST_BRINGUP
     if (OdstVrOwnsLookStick(
             OdstCameraOnlyContext(),

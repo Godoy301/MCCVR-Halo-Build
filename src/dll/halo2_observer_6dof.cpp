@@ -10,6 +10,7 @@
 #include "../common/halo2_contact_melee_logic.h"
 #include "../common/halo2_snap_turn_logic.h"
 #include "../common/halo2_vehicle_view.h"
+#include "../common/halo2_foot_view.h"
 #include "../common/halo2_vehicle_identity.h"
 #include "contact_melee_queue.h"
 #include "hook_quiescence.h"
@@ -50,6 +51,15 @@
 #endif
 
 #if HALOMCCVR_HALO2_OBSERVER_6DOF
+
+// Halo 2 direct drive (halo2_direct_drive.inl): halo2_player_control_hook.asm enters through Halo2PcHook,
+// runs the native accumulator through g_halo2PcOrig, then calls Halo2PcApplyForUser.
+extern "C"
+{
+    void* g_halo2PcOrig = nullptr;
+    void Halo2PcHook();
+    void Halo2PcApplyForUser(int user, uint64_t returnAddress);
+}
 
 namespace
 {
@@ -654,7 +664,8 @@ namespace
         const Halo2CameraBasis& tracked, const HeadReference& reference,
         const Halo2SynchronousVrRenderSnapshot& sample,
         const Halo2CameraBasis* vehicleReference=nullptr,
-        const Halo2VehicleViewKey* vehicleKey=nullptr) noexcept
+        const Halo2VehicleViewKey* vehicleKey=nullptr,
+        const Halo2CameraBasis* footReference=nullptr) noexcept
     {
         g_publicationVersion.fetch_add(1, std::memory_order_acq_rel);
         g_publication.generation = generation;
@@ -665,6 +676,8 @@ namespace
         g_publication.tracked = tracked;
         g_publication.vehicleReferenceValid=vehicleReference&&vehicleKey;
         g_publication.vehicleReference=vehicleReference?*vehicleReference:Halo2CameraBasis{};
+        g_publication.footReferenceValid=footReference!=nullptr;
+        g_publication.footReference=footReference?*footReference:Halo2CameraBasis{};
         g_publication.vehicleUnit=vehicleKey?vehicleKey->unit:UINT32_MAX;
         g_publication.vehicleParent=vehicleKey?vehicleKey->parent:UINT32_MAX;
         g_publication.vehicleSeat=vehicleKey?vehicleKey->seat:-1;
@@ -762,6 +775,87 @@ namespace
     // Set when g_reference is captured; cleared once roomscale's follow first
     // admits after it (ApplyHeadPose). Same thread as g_reference.
     bool g_referenceAwaitingFollow = false;
+
+    // HALO 2 DIRECT DRIVE (halo2_direct_drive.inl): the aim goes into player control's desired angles,
+    // right after the native accumulator. Its state is here because the observer reads it -- the view
+    // takes its own heading once the drive is armed -- while the hook, the arm gate and the install are in
+    // the .inl. The record: *slot + user * 0xB8, desired yaw +0x38 / pitch +0x3C (radians), the eased pitch
+    // limits +0xA8 (low) / +0xAC (high).
+    constexpr uintptr_t kHalo2PcStride = 0xB8;
+    constexpr uintptr_t kHalo2PcDesiredYaw = 0x38, kHalo2PcDesiredPitch = 0x3C;
+    constexpr uintptr_t kHalo2PcPitchLow = 0xA8, kHalo2PcPitchHigh = 0xAC;
+    struct Halo2DriveState
+    {
+        void* target = nullptr;
+        uintptr_t slot = 0;            // the record's global pointer (from the prologue's rip load)
+        uintptr_t controlReturn = 0;   // the control update's return address: the only call written after
+        std::atomic<bool> installed{false}, armed{false};
+        std::atomic<uintptr_t> expected{0};
+        uint32_t agree = 0;            // sim thread only
+        std::atomic<uint64_t> footControlMs{0};   // the control update last ran for an on-foot local unit
+        std::atomic<uint64_t> liveMs{0};          // the last write
+        std::atomic<uint32_t> callbacks{0};
+        std::atomic<uint32_t> calls{0}, kicks{0}, writes{0}, convergedWrites{0}, waits{0}, arms{0},
+            disarms{0}, seated{0}, faults{0};
+        std::atomic<float> nativeYaw{0.0f}, nativePitch{0.0f}, aimYaw{0.0f}, aimPitch{0.0f},
+            wroteYaw{0.0f}, wrotePitch{0.0f};
+    };
+    Halo2DriveState g_halo2Drive;
+    // The view's own heading on foot under the drive (halo2_foot_view.h). Observer thread only.
+    Halo2FootViewState g_footView{};
+    // A seat taken from it starts at that heading (Halo2VehicleViewState::Build's seed). Observer thread.
+    bool g_footSeatSeedValid = false;
+    float g_footSeatSeed = 0.0f;
+    // When the observer last published a view at its own heading. The drive writes only while this is
+    // fresh (written before it, the stock camera -- built from the record -- would swing the view with the
+    // hand), and while it is fresh the right stick turns that heading instead of reaching the game.
+    std::atomic<uint64_t> g_footViewEngagedMs{0};
+    std::atomic<uint32_t> g_footViewEngages{0}, g_footViewReleases{0}, g_footViewFolds{0};
+
+    bool Halo2DriveArmedForView() noexcept
+    {
+        return g_config.aim_direct_drive && g_halo2Drive.installed.load(std::memory_order_acquire) &&
+            g_halo2Drive.armed.load(std::memory_order_acquire);
+    }
+
+    // Within ~4 control ticks (the update runs every ~33 ms): a cutscene, which stops it, releases the
+    // heading after at most this long -- a pause or a hitch does not, because the camera is still the
+    // player's (UpdateFootView).
+    bool Halo2DriveFootControlFresh(uint64_t now) noexcept
+    {
+        const uint64_t at = g_halo2Drive.footControlMs.load(std::memory_order_acquire);
+        return at && now >= at && now - at <= 120;
+    }
+
+    // The stock camera is still the player's own: it looks where the record says (the game builds it from
+    // the record), within `tolerance` radians. A director camera (a cutscene, death) does not.
+    bool Halo2DriveCameraFollowsRecord(const Halo2CameraBasis& stock, float tolerance) noexcept
+    {
+        if (!g_halo2Drive.installed.load(std::memory_order_acquire) || !g_halo2Drive.slot)
+            return false;
+        float yaw = 0.0f, pitch = 0.0f;
+        __try
+        {
+            const uintptr_t globals = *reinterpret_cast<const volatile uintptr_t*>(g_halo2Drive.slot);
+            if (!globals)
+                return false;
+            const uintptr_t pc = globals + kOwnedUser * kHalo2PcStride;
+            yaw = *reinterpret_cast<const volatile float*>(pc + kHalo2PcDesiredYaw);
+            pitch = *reinterpret_cast<const volatile float*>(pc + kHalo2PcDesiredPitch);
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            return false;
+        }
+        const float horizontal = std::hypot(stock.forward[0], stock.forward[1]);
+        if (!std::isfinite(yaw) || !std::isfinite(pitch) || !std::isfinite(horizontal) ||
+            horizontal < 1.0e-4f)
+            return false;
+        const float cameraYaw = std::atan2(stock.forward[1], stock.forward[0]);
+        const float cameraPitch = std::atan2(stock.forward[2], horizontal);
+        return std::fabs(std::remainder(cameraYaw - yaw, 6.28318531f)) < tolerance &&
+            std::fabs(cameraPitch - pitch) < tolerance;
+    }
 
     HMODULE g_moduleReference = nullptr;
     void* g_target = nullptr;
@@ -939,6 +1033,58 @@ namespace
         return g_originalAddress.load(std::memory_order_acquire);
     }
 
+    // ON FOOT UNDER DIRECT DRIVE: whether the view keeps its own heading (halo2_foot_view.h) this frame.
+    // Taken once the drive is armed and the player's control update runs for an on-foot unit, from the
+    // heading the view has now (the stock one plus any snap still in flight, or the seat's when stepping
+    // out). Kept through a pause: the game stops ticking, but the camera is still the player's. Dropped for
+    // a seat, which starts from it; for a director camera (a cutscene, death), which the view follows as it
+    // always has; and when the drive disarms or is switched off, then folded into the reference so the view
+    // does not jump to the stock heading, which is the hand's last aim.
+    void UpdateFootView(uint32_t generation, const Halo2CameraBasis& stock, float stockYaw, bool vehicle,
+        uint64_t now) noexcept
+    {
+        const bool armed = Halo2DriveArmedForView();
+        const bool controls = Halo2DriveFootControlFresh(now);
+        const bool playerCamera = Halo2DriveCameraFollowsRecord(stock, 0.087f);
+        const bool sameGeneration = g_footView.active && g_footView.generation == generation;
+        const bool keep = armed && !vehicle && generation &&
+            (sameGeneration ? (controls || playerCamera) : controls);
+        if (keep)
+        {
+            g_footSeatSeedValid = false;
+            if (!sameGeneration)
+            {
+                const float seed = g_vehicleView.active ? g_vehicleView.lastYaw
+                    : stockYaw + g_snapTurn.ViewOffset(stockYaw);
+                if (g_footView.Engage(generation, seed))
+                {
+                    g_snapTurn = {};   // the seed took any snap still in flight
+                    g_footViewEngages.fetch_add(1, std::memory_order_relaxed);
+                }
+            }
+            return;
+        }
+        if (!g_footView.active)
+            return;
+        if (vehicle)
+        {
+            g_footSeatSeed = g_footView.yaw;
+            g_footSeatSeedValid = true;
+        }
+        else if (playerCamera && g_footView.generation == generation)
+        {
+            float folded[4]{};
+            if (Halo2SnapReference(g_reference.orientation,
+                    Halo2FootViewState::Wrap(g_footView.yaw - stockYaw), folded))
+            {
+                std::memcpy(g_reference.orientation, folded, sizeof(folded));
+                g_footViewFolds.fetch_add(1, std::memory_order_relaxed);
+            }
+        }
+        g_footView.Release();
+        g_footViewReleases.fetch_add(1, std::memory_order_relaxed);
+    }
+
     void ApplyHeadPose(uintptr_t result) noexcept
     {
         Halo2SynchronousVrRenderSnapshot snapshot{};
@@ -978,6 +1124,9 @@ namespace
             g_referenceAwaitingFollow = true;
             g_snapTurn={};
             g_vehicleView={};
+            // Under direct drive a recentre re-takes the view's heading from the body (the hand's aim), as
+            // Halo 3's re-seeds its game yaw from the stock heading; UpdateFootView takes it again below.
+            g_footView.Release();
             g_snapSettled.store(0,std::memory_order_release);
         }
 
@@ -1013,10 +1162,13 @@ namespace
         }
 
         const float stockYaw=std::atan2(stock.forward[1],stock.forward[0]);
+        const bool vehicle=Halo2Observer6Dof_VehicleControlActive();
+        UpdateFootView(g_generation.load(std::memory_order_acquire), stock, stockYaw, vehicle,
+            GetTickCount64());
         const uint64_t settled=g_snapSettled.exchange(0,std::memory_order_acq_rel);
         uint32_t targetBits=0;
         memcpy(&targetBits,&g_snapTurn.targetYaw,sizeof(targetBits));
-        if (g_snapTurn.pending && settled==
+        if (!g_footView.active && g_snapTurn.pending && settled==
                 ((uint64_t(snapshot.generation)<<32)|targetBits))
         {
             // Retain sub-deadzone residual in the reference so parking the
@@ -1029,12 +1181,30 @@ namespace
                 g_snapTurn.pending=false;
             }
         }
-        const bool vehicle=Halo2Observer6Dof_VehicleControlActive();
-        if (vehicle) g_snapTurn.pending=false;
+        if (vehicle || g_footView.active) g_snapTurn.pending=false;
         const bool turnOwnsStick=Game_IsHeadTracking() && VR_IsStereoEnabled() &&
             !Menu_IsOpen() && !VR_IsPausePresentation() &&
             !VR_IsCutsceneTheaterActive() && !vehicle;
-        if (g_snapTurn.Update(snapshot.generation,snapshot.preparedSerial,stockYaw,
+        if (g_footView.active)
+        {
+            // Under direct drive the right stick turns the view's own heading, smooth or snap, and never
+            // reaches the game (Game_VrOwnsLookStick); the body follows the hand through the drive. Smooth
+            // turning runs at turn_smooth_deg_s, as in the other titles, on a sub-frame clock.
+            static LARGE_INTEGER s_turnFrequency{}, s_lastTurn{};
+            if (!s_turnFrequency.QuadPart)
+                QueryPerformanceFrequency(&s_turnFrequency);
+            LARGE_INTEGER turnNow{};
+            QueryPerformanceCounter(&turnNow);
+            const float dt = s_lastTurn.QuadPart && s_turnFrequency.QuadPart
+                ? static_cast<float>(turnNow.QuadPart - s_lastTurn.QuadPart) /
+                      static_cast<float>(s_turnFrequency.QuadPart)
+                : 0.0f;
+            s_lastTurn = turnNow;
+            if (g_footView.Turn(turnOwnsStick && snapshot.turnPadValid, snapshot.turnX,
+                    !g_config.turn_smooth, g_config.turn_snap_deg, g_config.turn_smooth_deg_s, dt))
+                g_snapTurns.fetch_add(1,std::memory_order_relaxed);
+        }
+        else if (g_snapTurn.Update(snapshot.generation,snapshot.preparedSerial,stockYaw,
                 turnOwnsStick,!g_config.turn_smooth,snapshot.turnPadValid,
                 snapshot.turnX,g_config.turn_snap_deg))
             g_snapTurns.fetch_add(1,std::memory_order_relaxed);
@@ -1061,6 +1231,8 @@ namespace
                 -kHalo2MaxHeadTranslationMeters,kHalo2MaxHeadTranslationMeters)*head.worldScale,
             head.positional&&!vehicle&&turnOwnsStick);
         Halo2CameraBasis viewBase=stock,hull{};
+        // On foot under direct drive the stock camera follows the hand; the view takes its own heading.
+        const bool ownsFootReference=g_footView.active&&g_footView.Basis(stock,viewBase);
         Halo2VehicleViewKey vehicleKey{};
         bool ownsVehicleReference=false;
         const bool vehicleRequested=vehicle&&g_config.vehicle_motion&&Game_IsHeadTracking()&&VR_IsStereoEnabled()&&
@@ -1070,8 +1242,8 @@ namespace
             vehicleKey.space=snapshot.trackingSpaceEpoch;
             ownsVehicleReference=ReadVehicleViewFrame(vehicleKey,hull)&&
                 g_vehicleView.Build(vehicleKey,stock,hull,g_config.vehicle_view_follow,
-                    GetTickCount64(),viewBase);
-            if(ownsVehicleReference) g_vehicleViewApplied.fetch_add(1,std::memory_order_relaxed);
+                    GetTickCount64(),viewBase,g_footSeatSeedValid?&g_footSeatSeed:nullptr);
+            if(ownsVehicleReference) {g_footSeatSeedValid=false;g_vehicleViewApplied.fetch_add(1,std::memory_order_relaxed);}
             else {g_vehicleView={};g_vehicleViewRefused.fetch_add(1,std::memory_order_relaxed);}
         } else g_vehicleView={};
         Halo2CameraBasis tracked{};
@@ -1112,7 +1284,11 @@ namespace
         PublishPose(
             g_generation.load(std::memory_order_acquire),
             snapshot.preparedSerial, stock, tracked, effectiveReference, snapshot,
-            ownsVehicleReference?&viewBase:nullptr,ownsVehicleReference?&vehicleKey:nullptr);
+            ownsVehicleReference?&viewBase:nullptr,ownsVehicleReference?&vehicleKey:nullptr,
+            ownsFootReference?&viewBase:nullptr);
+        // Published at the view's own heading: from here the drive may write the hand's aim into the
+        // record, and the right stick stops reaching the game.
+        g_footViewEngagedMs.store(ownsFootReference ? GetTickCount64() : 0, std::memory_order_release);
         g_appliedPoses.fetch_add(1, std::memory_order_relaxed);
     }
 
@@ -4296,6 +4472,8 @@ namespace
         return true;
     }
 
+    #include "halo2_direct_drive.inl"
+
     bool RemoveCoreLegacy(const char* reason) noexcept
     {
         g_coreState = CoreState::CleanupRequired;
@@ -4516,6 +4694,10 @@ namespace
                 0, std::memory_order_release);
             g_aimAssistControllerRayScope = {};
         }
+        // The drive reads the unit through the accessor the unit-aim hook owns: retire it first.
+        if (!RemoveHalo2Drive())
+            return false;
+        g_footViewEngagedMs.store(0, std::memory_order_release);
         if (g_nativeAimTarget)
         {
             const MH_STATUS disabled = MH_DisableHook(g_nativeAimTarget);
@@ -5328,6 +5510,13 @@ namespace
         g_vehicleIdentityVerified.store(identityVerified,std::memory_order_release);
         LOG("Halo 2 persistent vehicle model identity: %s; unknown/ambiguous models retain per-game trims",
             identityVerified?"native chain verified":"unavailable");
+        // Halo 2 direct drive (halo2_direct_drive.inl): the aim into player control's desired angles. It
+        // reads the local unit through the accessor and seat check verified just above.
+        if (g_nativeAimOriginal.load(std::memory_order_acquire) && seatVerified)
+            (void)InstallHalo2Drive(base, size);
+        else
+            LOG("Halo 2 DRIVE: not installed: the unit aim and seat check it reads are not (aim=%d seat=%d)",
+                g_nativeAimOriginal.load(std::memory_order_acquire) ? 1 : 0, seatVerified ? 1 : 0);
         LOG("Halo 2 vehicle view reference: %s (parent/seat matches=%u); native aim feedback retained separately",
             frameVerified?"verified":"stock fallback",parentMatches);
         LOG("Halo 2 vehicle controller steering: %s (native seat predicate matches=%u); "
@@ -5553,6 +5742,7 @@ namespace
             return;
         g_lastReportMs = now;
         ReportHalo2ContactMelee();
+        ReportHalo2Drive();
         static uint64_t s_reportedReseats = 0;
         const uint64_t reseats = g_roomscaleReseats.load(std::memory_order_relaxed);
         if (reseats != s_reportedReseats)
@@ -5922,6 +6112,11 @@ namespace
     }
 }
 
+extern "C" void Halo2PcApplyForUser(int user, uint64_t returnAddress)
+{
+    Halo2DriveApply(user, returnAddress);
+}
+
 bool Halo2Observer6Dof_Poll(
     uintptr_t moduleBase, size_t moduleSize, uint32_t generation,
     bool activeAndRange, bool levelRunning, bool coldPassed,
@@ -6015,6 +6210,13 @@ bool Halo2Observer6Dof_Installed() noexcept
 bool Halo2Observer6Dof_Armed() noexcept
 {
     return g_armed.load(std::memory_order_acquire);
+}
+
+bool Halo2Observer6Dof_FootViewEngaged() noexcept
+{
+    const uint64_t at = g_footViewEngagedMs.load(std::memory_order_acquire);
+    const uint64_t now = GetTickCount64();
+    return at && now >= at && now - at <= 100;
 }
 
 void Halo2Observer6Dof_SnapTurnSettled(uint32_t generation, float targetYaw) noexcept
@@ -6414,6 +6616,7 @@ bool Halo2Observer6Dof_Installed() noexcept { return false; }
 void Halo2Observer6Dof_RequestRecovery(uint32_t) noexcept {}
 bool Halo2Observer6Dof_RecoveryPending() noexcept { return false; }
 bool Halo2Observer6Dof_Armed() noexcept { return false; }
+bool Halo2Observer6Dof_FootViewEngaged() noexcept { return false; }
 void Halo2Observer6Dof_SnapTurnSettled(uint32_t, float) noexcept {}
 bool Halo2Observer6Dof_DirectWeaponAimArmed() noexcept { return false; }
 bool Halo2Observer6Dof_FinalPaletteArmed() noexcept { return false; }

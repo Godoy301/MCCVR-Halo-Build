@@ -1830,7 +1830,9 @@ void ConfigSave()
     fprintf(f, "# aim writes the game's own aim instead of steering the right stick (which can only turn at the\n");
     fprintf(f, "# game's turn rate). It arms itself a moment after it is switched on, once the aim it found\n");
     fprintf(f, "# agrees with the game's (log: DRIVE ... armed=1, REACHDRIVE ARMED). Cutscenes and menus keep the\n");
-    fprintf(f, "# stick. Replaces reach_direct_drive = 3 and legacy_direct_drive = 1. 0 = off. (default %d)\n",
+    fprintf(f, "# stick. Halo 2 on foot: 1 also writes the game's own aim, so the body faces where you aim and\n");
+    fprintf(f, "# the right stick turns your view (log: Halo 2 DRIVE: armed=1); 0 keeps Halo 2's earlier aim.\n");
+    fprintf(f, "# Replaces reach_direct_drive = 3 and legacy_direct_drive = 1. 0 = off. (default %d)\n",
             d.aim_direct_drive);
     fprintf(f, "aim_direct_drive = %d\n\n", g_config.aim_direct_drive);
     fprintf(f, "# Every title but Reach, on foot. 1 = CONVERGED AIM: the game traces the ray from your eye\n");

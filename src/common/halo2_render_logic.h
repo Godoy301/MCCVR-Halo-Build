@@ -1696,6 +1696,11 @@ struct Halo2ObserverPosePublication
     uint32_t vehicleUnit=UINT32_MAX,vehicleParent=UINT32_MAX;
     int16_t vehicleSeat=-1;
     Halo2CameraBasis vehicleReference{};
+    // On foot under direct drive the stock camera follows the HAND (the drive writes player control's
+    // desired angles), so the view and the controller take the mod's own heading instead
+    // (halo2_foot_view.h): the stock camera's position at that heading, level.
+    bool footReferenceValid=false;
+    Halo2CameraBasis footReference{};
     float referenceOrientation[4]{0.0f, 0.0f, 0.0f, 1.0f};
     float referencePosition[3]{};
     Halo2ObserverPoseSnapshot snapshot{};
@@ -1704,7 +1709,35 @@ struct Halo2ObserverPosePublication
 inline const Halo2CameraBasis& Halo2ControllerReference(
     const Halo2ObserverPosePublication& publication) noexcept
 {
-    return publication.vehicleReferenceValid ? publication.vehicleReference : publication.stock;
+    return publication.vehicleReferenceValid ? publication.vehicleReference
+        : publication.footReferenceValid ? publication.footReference : publication.stock;
+}
+
+// A frame the observer did not publish is composed onto the camera in hand. On foot under direct drive the
+// player's own camera follows the HAND (the drive writes player control from it), so when the camera in hand
+// is that camera -- within ~10 deg of the newest publication's stock camera -- it takes the view's own
+// heading from that publication; its position stays this frame's. Any other camera (a director's, a scope's),
+// or a publication without that heading, is left as it is.
+inline Halo2CameraBasis Halo2SelfTrackBase(
+    bool published, const Halo2ObserverPosePublication& publication,
+    uint32_t generation, const Halo2CameraBasis& stock) noexcept
+{
+    Halo2CameraBasis base = stock;
+    if (!published || !publication.footReferenceValid || !generation ||
+        publication.generation != generation ||
+        !Halo2ValidateCameraBasis(publication.footReference))
+        return base;
+    const float dot = stock.forward[0] * publication.stock.forward[0] +
+        stock.forward[1] * publication.stock.forward[1] +
+        stock.forward[2] * publication.stock.forward[2];
+    if (!std::isfinite(dot) || dot < 0.9848f)
+        return base;
+    for (int axis = 0; axis < 3; ++axis)
+    {
+        base.forward[axis] = publication.footReference.forward[axis];
+        base.up[axis] = publication.footReference.up[axis];
+    }
+    return base;
 }
 
 inline bool Halo2ObserverControllerSnapshotUsable(

@@ -954,7 +954,8 @@ namespace
             std::memcpy(
                 head.referencePosition, reference.position,
                 sizeof(head.referencePosition));
-            return Halo2BuildTrackedCenterCamera(stock, head, center);
+            return Halo2BuildTrackedCenterCamera(
+                Halo2SelfTrackBase(published, publication, generation, stock), head, center);
         case Halo2PoseOwnerDecision::NoPose:
         default:
             g_telemetry.poseUnavailable.fetch_add(1, std::memory_order_relaxed);

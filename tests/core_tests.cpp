@@ -8,6 +8,7 @@ int RunRoomscaleInputTests();
 #include "../src/common/legacy_runtime_weapon_bounds.h"
 #include "../src/common/halo2_snap_turn_logic.h"
 #include "../src/common/halo2_vehicle_view.h"
+#include "../src/common/halo2_foot_view.h"
 #include "../src/common/halo2_datum_logic.h"
 #include "../src/common/halo3_melee_selection_logic.h"
 #include "../src/common/contact_melee_motion.h"
@@ -260,14 +261,98 @@ int main()
         Check(state.Build(key,basis(.6f),basis(0),false,2000,reference)&&
             std::fabs(std::atan2(reference.forward[1],reference.forward[0])-.6f)<1e-5f,
             "H2 stale observer gap reseeds the vehicle reference");
+        {
+            const float seed=-1.2f;
+            auto seated=key;seated.seat=3;
+            Check(state.Build(seated,basis(2.5f),basis(0),false,2004,reference,&seed)&&
+                std::fabs(std::atan2(reference.forward[1],reference.forward[0])+1.2f)<1e-5f,
+                "H2 a seat taken from the on-foot heading starts there, not at the stock (hand) heading");
+            const float later=0.9f;
+            Check(state.Build(seated,basis(2.5f),basis(0),false,2005,reference,&later)&&
+                std::fabs(std::atan2(reference.forward[1],reference.forward[0])+1.2f)<1e-5f,
+                "H2 a seed only starts an occupation; it does not move one");
+        }
         const auto saved=reference;auto bad=basis(0);bad.forward[0]=NAN;
         Check(!state.Build(key,bad,basis(0),false,2010,reference)&&!state.active&&
             std::memcmp(&saved,&reference,sizeof(saved))==0,"H2 invalid camera leaves output unchanged");
         Halo2ObserverPosePublication publication{};publication.stock=basis(.5f);
         publication.vehicleReference=basis(1.f);
         Check(&Halo2ControllerReference(publication)==&publication.stock,"H2 on-foot reference unchanged");
+        publication.footReference=basis(1.5f);
+        publication.footReferenceValid=true;
+        Check(&Halo2ControllerReference(publication)==&publication.footReference,
+              "H2 on foot under direct drive: the controller takes the mod's own heading");
         publication.vehicleReferenceValid=true;
         Check(&Halo2ControllerReference(publication)==&publication.vehicleReference,"H2 seated publication supplies shared reference");
+    }
+    {
+        // Halo 2 on foot under direct drive: the view's heading is the mod's own. It takes the heading the
+        // view had, then ignores the stock camera (which now follows the hand) and turns only with the stick.
+        auto basis=[](float yaw) {Halo2CameraBasis b{};b.forward[0]=std::cos(yaw);
+            b.forward[1]=std::sin(yaw);b.up[2]=1;return b;};
+        auto yawOf=[](const Halo2CameraBasis& b) {return std::atan2(b.forward[1],b.forward[0]);};
+        Halo2FootViewState foot;
+        Halo2CameraBasis out{};
+        Check(!foot.Basis(basis(.4f),out),"H2 foot heading: nothing until engaged");
+        Check(foot.Engage(3,.4f)&&foot.Basis(basis(.4f),out)&&std::fabs(yawOf(out)-.4f)<1e-6f,
+            "H2 foot heading: engaging keeps the view where it was");
+        // The hand turns the body (and so the stock camera) 2 rad away; the view base does not follow, and
+        // it keeps the stock camera's position and is level.
+        auto handTurned=basis(2.4f);handTurned.position[0]=5.f;handTurned.position[2]=1.f;
+        Check(foot.Basis(handTurned,out)&&std::fabs(yawOf(out)-.4f)<1e-6f&&out.position[0]==5.f&&
+                  out.position[2]==1.f&&out.forward[2]==0.f&&out.up[2]==1.f,
+              "H2 foot heading: the stock camera following the hand does not turn the view");
+        Check(foot.Engage(3,2.4f)&&std::fabs(foot.yaw-.4f)<1e-6f,
+              "H2 foot heading: re-engaging the same generation keeps the owned heading");
+        // Smooth: 90 deg/s for half a second turns right 45 deg; inside the dead zone nothing moves.
+        for(int i=0;i<50;++i) foot.Turn(true,1.f,false,30.f,90.f,0.01f);
+        Check(std::fabs(foot.yaw-(.4f-0.785398f))<1e-4f,"H2 foot heading: smooth turn right lowers the heading");
+        const float held=foot.yaw;
+        foot.Turn(true,.1f,false,30.f,90.f,0.01f);
+        foot.Turn(true,-1.f,false,30.f,90.f,0.5f);   // a 0.5 s hitch is capped at 0.1 s
+        Check(std::fabs(foot.yaw-(held+0.15708f))<1e-4f,"H2 foot heading: dead zone and the dt cap hold");
+        // Snap: one step per push, re-armed under 0.3; a push carried into snap mode does not snap.
+        Halo2FootViewState snap;snap.Engage(4,0.f);
+        Check(!snap.Turn(true,.9f,true,30.f,90.f,.01f),"H2 foot heading: a push held when the heading is taken does not snap");
+        snap.Turn(true,0.f,true,30.f,90.f,.01f);
+        Check(snap.Turn(true,.9f,true,30.f,90.f,.01f)&&std::fabs(snap.yaw+0.523599f)<1e-5f,
+              "H2 foot heading: a snap right turns 30 deg right");
+        Check(!snap.Turn(true,.9f,true,30.f,90.f,.01f)&&!snap.Turn(true,.5f,true,30.f,90.f,.01f),
+              "H2 foot heading: a held push snaps once");
+        snap.Turn(true,.2f,true,30.f,90.f,.01f);
+        Check(snap.Turn(true,-.7f,true,30.f,90.f,.01f)&&std::fabs(snap.yaw)<1e-5f,"H2 foot heading: snap left re-armed");
+        snap.Turn(true,0.f,true,30.f,90.f,.01f);
+        snap.Turn(true,.9f,false,30.f,90.f,0.f);   // held through a switch to snap
+        Check(!snap.Turn(true,.9f,true,30.f,90.f,.01f),"H2 foot heading: a push held across a switch to snap does not snap");
+        snap.Turn(true,0.f,true,30.f,90.f,.01f);
+        Check(!snap.Turn(false,.9f,true,30.f,90.f,.01f)&&!snap.Turn(true,.9f,true,30.f,90.f,.01f),
+              "H2 foot heading: an invalid pad sample latches the stick");
+        // A new generation (level load) re-seeds; release stops it; the yaw seam wraps.
+        Check(foot.Engage(5,1.f)&&std::fabs(foot.yaw-1.f)<1e-6f,"H2 foot heading: a new generation re-seeds");
+        foot.Release();
+        Check(!foot.Basis(basis(0.f),out)&&!foot.Turn(true,1.f,false,30.f,90.f,.01f),"H2 foot heading: released");
+        Halo2FootViewState seam;seam.Engage(6,-3.1f);
+        for(int i=0;i<20;++i) seam.Turn(true,1.f,false,30.f,90.f,.01f);
+        Check(std::fabs(seam.yaw-2.869026f)<1e-4f,"H2 foot heading: turning past -pi wraps");
+        Check(!seam.Engage(0,1.f)&&!seam.Engage(7,NAN),"H2 foot heading: refuses a bad seed");
+
+        // A frame the observer did not publish: the player's own camera (near the last published one) takes
+        // the published heading and keeps its own position; a director camera, or no heading, is untouched.
+        Halo2ObserverPosePublication published{};
+        published.generation=9;published.stock=basis(2.0f);
+        published.footReference=basis(.3f);published.footReferenceValid=true;
+        auto inHand=basis(2.05f);inHand.position[1]=7.f;
+        const auto self=Halo2SelfTrackBase(true,published,9,inHand);
+        Check(std::fabs(yawOf(self)-.3f)<1e-6f&&self.position[1]==7.f,
+              "H2 self-tracked frame on foot under the drive takes the view's own heading");
+        Check(std::fabs(yawOf(Halo2SelfTrackBase(true,published,9,basis(-1.0f)))+1.f)<1e-6f,
+              "H2 self-tracked director camera keeps its own heading");
+        Check(std::fabs(yawOf(Halo2SelfTrackBase(true,published,8,inHand))-2.05f)<1e-6f&&
+                  std::fabs(yawOf(Halo2SelfTrackBase(false,published,9,inHand))-2.05f)<1e-6f,
+              "H2 self-tracked frame needs a publication of this generation");
+        published.footReferenceValid=false;
+        Check(std::fabs(yawOf(Halo2SelfTrackBase(true,published,9,inHand))-2.05f)<1e-6f,
+              "H2 self-tracked frame without the drive's heading is untouched");
     }
     {
         for (float offset : {0.0f,0.17f,-0.17f,1.0f,-1.0f})

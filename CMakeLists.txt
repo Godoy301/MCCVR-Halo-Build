@@ -314,6 +314,10 @@ if(HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA)
 endif()
 # Halo 3 / ODST / Halo 4 direct drive (legacy_direct_drive): the control-update detours.
 target_sources(halo3xr PRIVATE src/dll/legacy_player_control_hook.asm)
+# Halo 2 direct drive (halo2_direct_drive.inl): its control-update detour, with the observer it reads.
+if(HALOMCCVR_HALO2_OBSERVER_6DOF)
+    target_sources(halo3xr PRIVATE src/dll/halo2_player_control_hook.asm)
+endif()
 # CE's saber bone-convert hook enters through a register-preserving thunk (haloce_first_person.cpp).
 target_sources(halo3xr PRIVATE src/dll/haloce_skin_convert_thunk.asm)
 set_target_properties(halo3xr PROPERTIES OUTPUT_NAME "HaloMCCVR")

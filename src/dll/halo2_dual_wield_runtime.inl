@@ -128,7 +128,7 @@ __declspec(noinline) void __fastcall Halo2DualAimDetour(uint32_t unit,
                     snapshot.leftControllerOrientation, g_config.gun_yaw_deg,
                     g_config.gun_pitch_deg, g_config.gun_roll_deg, orientation);
             if (!aimValid ||
-                !Halo2BuildStableControllerCarrier(publication.stock,
+                !Halo2BuildStableControllerCarrier(Halo2ControllerReference(publication),
                     publication.referenceOrientation, publication.referencePosition,
                     orientation, position,
                     Game_GetWorldScale(), 0.0f, carrier) ||

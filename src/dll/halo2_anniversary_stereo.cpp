@@ -670,7 +670,8 @@ namespace
             break;
         case Halo2PoseOwnerDecision::SelfTrack:
             g_poseSelfTracked.fetch_add(1, std::memory_order_relaxed);
-            centerOk = Halo2BuildTrackedCenterCamera(stock, head, tracked);
+            centerOk = Halo2BuildTrackedCenterCamera(
+                Halo2SelfTrackBase(published, publication, generation, stock), head, tracked);
             break;
         case Halo2PoseOwnerDecision::NoPose:
         default:

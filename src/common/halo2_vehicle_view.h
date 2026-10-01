@@ -20,9 +20,12 @@ struct Halo2VehicleViewState
     uint64_t timeMs{};
     float referenceYaw{},hullReferenceYaw{},lastYaw{};
 
+    // `seedYaw`: the heading a new occupation starts from when the view already had its own -- a seat
+    // taken from on foot under direct drive (halo2_foot_view.h), where the stock heading is the HAND's.
+    // Without it, a new occupation starts from the stock heading, as before.
     bool Build(const Halo2VehicleViewKey& next,const Halo2CameraBasis& stock,
         const Halo2CameraBasis& hull,bool followHull,uint64_t now,
-        Halo2CameraBasis& output) noexcept
+        Halo2CameraBasis& output,const float* seedYaw=nullptr) noexcept
     {
         if(!next.generation || next.unit==UINT32_MAX || next.parent==UINT32_MAX || next.root==UINT32_MAX || next.seat<0 ||
             !now || !Halo2ValidateCameraBasis(stock) || !Halo2ValidateCameraBasis(hull)) {
@@ -33,7 +36,7 @@ struct Halo2VehicleViewState
         const float hullYaw=std::atan2(hull.forward[1],hull.forward[0]);
         const bool same=active&&key==next&&now>=timeMs&&now-timeMs<=250;
         if(!same) {
-            referenceYaw=std::atan2(stock.forward[1],stock.forward[0]);
+            referenceYaw=seedYaw&&std::isfinite(*seedYaw)?*seedYaw:std::atan2(stock.forward[1],stock.forward[0]);
             hullReferenceYaw=hullYaw;
         } else if(follow!=followHull) {
             // Toggling follow preserves the current view at the toggle edge.

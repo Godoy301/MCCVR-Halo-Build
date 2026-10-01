@@ -33,6 +33,9 @@ bool Halo2Observer6Dof_Installed() noexcept;
 void Halo2Observer6Dof_RequestRecovery(uint32_t generation) noexcept;
 bool Halo2Observer6Dof_RecoveryPending() noexcept;
 bool Halo2Observer6Dof_Armed() noexcept;
+// Direct drive on foot: the observer published the view at its own heading within 100 ms
+// (halo2_direct_drive.inl). While it has, the right stick turns that heading instead of reaching the game.
+bool Halo2Observer6Dof_FootViewEngaged() noexcept;
 void Halo2Observer6Dof_SnapTurnSettled(uint32_t generation, float targetYaw) noexcept;
 // C-H2-43: independently installed firing-only direction hook. False keeps
 // controller weapon placement dormant; it never controls camera admission.
