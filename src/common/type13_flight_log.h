@@ -485,7 +485,8 @@ enum class StintEndReason : uint8_t
     Discontinuity,   // the tick went backwards or jumped
     Gap,             // no call for more than the stint gap
     Owner,           // another thread took the lane over
-    Fault            // a read faulted
+    Fault,           // a read faulted
+    Retired          // the hook was removed and is being reinstalled while the stint was still open
 };
 
 struct StintData
@@ -590,8 +591,9 @@ struct Event
 };
 static_assert(std::is_trivially_copyable_v<Event>);
 
-// THE PRODUCER: one per lane, touched only by the owner thread while it holds the lane's busy flag. Per call:
-// Begin (tick gate, stint begin/end), then the hook reads the tag if Begin asks, then Finish (per-tick events).
+// THE PRODUCER: one per lane, touched only by whoever holds the lane's busy flag -- the owner thread on each
+// call, and the cold worker to end a stint whose calls have stopped (EndIfStale). Per call: Begin (tick gate,
+// stint begin/end), then the hook reads the tag if Begin asks, then Finish (per-tick events).
 struct CallStep
 {
     bool newTick = false;      // the first call of a game tick (or of a stint)
@@ -628,6 +630,18 @@ public:
         e.u.stint = {thread_, stintTicks_, stintCalls_, static_cast<uint8_t>(reason)};
         ring.Push(e);
         active_ = false;
+    }
+
+    // The worker's half: a stint whose last call is more than kStintGapMs before nowMs is over (a landing,
+    // leaving the craft, the level ending), so it ends now with its last partial window, instead of at the next
+    // call, which may come much later or never. The same rule Begin applies, so the next call simply begins a
+    // new stint. True when it ended one; a clock that reads earlier than the last call ends nothing.
+    bool EndIfStale(uint64_t nowMs, SpscRing<Event, RingN>& ring)
+    {
+        if (!active_ || !(nowMs >= lastCallMs_ && nowMs - lastCallMs_ > kStintGapMs))
+            return false;
+        EndStint(StintEndReason::Gap, ring);
+        return true;
     }
 
     // A stint whose reads faulted observes nothing more until the next stint: true (and the stint kept

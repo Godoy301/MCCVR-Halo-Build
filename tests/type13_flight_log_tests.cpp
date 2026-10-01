@@ -463,6 +463,80 @@ void TestChangeLinesHeldBack()
         counted |= e.kind == Kind::Window && e.u.window.heldBack > 0;
     Check(counted, "the window summary counts the held-back ticks");
 }
+
+void TestStaleStint()
+{
+    // A flight that stops (the player lands or leaves the craft) inside a 2 s window: the worker ends the stint
+    // once the last call is more than 500 ms old, and the last partial window -- with the turn it measured --
+    // goes out with it, instead of waiting for the next flight.
+    static SpscRing<Event, 1024> ring;
+    Producer<1024> p(0);
+    TagFacts tag;
+    tag.valid = true;
+    tag.window = 1.0f;
+    const int kTicks = 80;                 // 2.64 s: one full window, then a 0.6 s partial one
+    const uint64_t t0 = 60000;
+    for (int i = 0; i < kTicks; ++i)
+    {
+        Sample s = Base(0xE00B000Bu, 3000 + i, t0 + 33ull * i);
+        // The first window flushes at tick 61 (2013 ms); a yaw turn of 0.01 rad per tick follows, in the last
+        // window only.
+        if (i >= 62)
+            s.pre[0] = s.post[0] = 0.2f + 0.01f * static_cast<float>(i - 61);
+        const CallStep step = p.Begin(s, 4, ring);
+        if (step.needTag)
+            p.SetTag(tag);
+        p.Finish(s, step, ring);
+    }
+    const uint64_t lastCall = t0 + 33ull * (kTicks - 1);
+    Drained d = Drain(ring);
+    Check(d.Count(Kind::Window) == 1 && d.Count(Kind::StintEnd) == 0, "one full window, and the stint is still open");
+    for (const auto& e : d.all)
+        if (e.kind == Kind::Window)
+            Check(e.u.window.maxYaw == 0.0f && e.u.window.maxTurn < 0.05f, "the full window saw no turn");
+
+    Check(!p.EndIfStale(lastCall + 500, ring) && p.Active() && ring.Size() == 0,
+          "500 ms after the last call the stint is not stale yet");
+    Check(!p.EndIfStale(lastCall - 10, ring) && p.Active(), "a clock earlier than the last call ends nothing");
+    Check(p.EndIfStale(lastCall + 501, ring) && !p.Active(), "501 ms after it, the worker ends the stint");
+    d = Drain(ring);
+    Check(d.all.size() == 2 && d.all[0].kind == Kind::Window && d.all[1].kind == Kind::StintEnd,
+          "its last window goes out, then its END");
+    if (d.all.size() == 2)
+    {
+        const WindowData& w = d.all[0].u.window;
+        const StintData& e = d.all[1].u.stint;
+        // 0.01 rad of yaw per 1/30 s tick: 0.3 rad/s of yaw, a little less of turn at pitch 0.1 (x cos 0.1).
+        Check(Near(w.maxYaw, 0.3f, 1e-3f) && Near(w.maxTurn, 0.3f * std::cos(0.1f), 1e-3f) && w.rateTicks == 18,
+              "the last window keeps the turn rate it measured, over its 18 ticks");
+        Check(w.seconds > 0.5f && w.seconds < 0.7f, "and says how long it ran (the 0.6 s since the last full window)");
+        Check(e.reason == static_cast<uint8_t>(StintEndReason::Gap) && e.ticks == kTicks &&
+                  e.calls == static_cast<uint32_t>(kTicks) && d.all[1].vehicle == 0xE00B000Bu,
+              "the END line: the gap reason, the stint's ticks and calls, its vehicle");
+    }
+    Check(!p.EndIfStale(lastCall + 5000, ring) && ring.Size() == 0, "an ended stint is not ended twice");
+
+    // The next flight begins a fresh stint and does not end the old one again.
+    {
+        Sample s = Base(0xE00B000Bu, 3000 + kTicks + 200, lastCall + 7000);
+        const CallStep step = p.Begin(s, 4, ring);
+        Check(step.stintBegan && step.needTag, "the next call begins a new stint");
+        p.SetTag(tag);
+        p.Finish(s, step, ring);
+        d = Drain(ring);
+        Check(d.Count(Kind::StintEnd) == 0 && d.Count(Kind::StintBegin) == 1, "with no second END");
+    }
+
+    // The install's close: an open stint ends as retired, and an ended one is left alone.
+    p.EndStint(StintEndReason::Retired, ring);
+    d = Drain(ring);
+    bool retired = false;
+    for (const auto& e : d.all)
+        retired |= e.kind == Kind::StintEnd && e.u.stint.reason == static_cast<uint8_t>(StintEndReason::Retired);
+    Check(retired && !p.Active(), "an install ends a stint still open as retired");
+    p.EndStint(StintEndReason::Retired, ring);
+    Check(ring.Size() == 0, "and pushes nothing when none is open");
+}
 } // namespace
 
 int main()
@@ -479,6 +553,7 @@ int main()
     TestProducer();
     TestProducerHalo4Fields();
     TestChangeLinesHeldBack();
+    TestStaleStint();
     std::printf("%s: %u type-13 flight log checks, %u failed\n", failures ? "FAIL" : "PASS", checks, failures);
     return failures ? 1 : 0;
 }

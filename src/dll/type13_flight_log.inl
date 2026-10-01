@@ -17,7 +17,9 @@
 // 6 slots a violation at entry+0x38), read under SEH before and after it, and push POD events into a
 // lock-free single-producer ring (src/common/type13_flight_log.h); the cold worker formats every line. Only
 // one owner thread observes a lane (claimed by compare_exchange, taken over after 500 ms of silence), and a
-// busy flag keeps the producer single-threaded even across a takeover. They never stamp g_reachPcLiveMs or
+// busy flag keeps the producer single-threaded even across a takeover. The worker takes the same flag, only
+// once a lane has had no call for 500 ms, to end the open stint: its END line and last partial window go out
+// then, not at the next flight's first call (or never). They never stamp g_reachPcLiveMs or
 // g_reachLastCamCopyMs, so the Reach heartbeat question (Phase A3) stays measurable.
 //
 // ADDR-HYGIENE: dev-only, guarded. Every RVA and offset below is a measurement of the retail Steam builds
@@ -69,6 +71,9 @@ struct T13Lane
     std::atomic<bool> busy{false};
     std::atomic<bool> resetPending{false};      // a new owner's reset, applied once it holds the busy flag
     std::atomic<uint32_t> previousOwner{0};
+    // The last observed call's time (written under the busy flag): the worker's cue to end a stale stint;
+    // 0 once it has found nothing open, until the next observed call.
+    std::atomic<uint64_t> lastObservedMs{0};
     t13::Producer<kT13RingSize> producer;
     t13::SpscRing<t13::Event, kT13RingSize> ring;
     // Counters (sim thread -> worker, every 2 s).
@@ -297,7 +302,19 @@ void T13Observe(T13Lane& lane, T13Call& call, ReadTag readTag)
         lane.snapMs.store(call.s.nowMs, std::memory_order_relaxed);
         lane.snapSeq.fetch_add(1, std::memory_order_release);
     }
+    lane.lastObservedMs.store(call.s.nowMs, std::memory_order_relaxed);
     T13Release(lane);
+}
+
+// Install (worker; the hook is created but not yet enabled, so nothing else touches the producer): a stint
+// left open by the previous install ends here with its last window, then the lane starts from nothing.
+void T13ResetForInstall(T13Lane& lane)
+{
+    lane.owner.Reset();
+    lane.busy.store(false, std::memory_order_release);
+    lane.producer.EndStint(t13::StintEndReason::Retired, lane.ring);
+    lane.producer.Reset();
+    lane.lastObservedMs.store(0, std::memory_order_relaxed);
 }
 
 t13::Vec3 T13Vec(const uint8_t* p) { return {reinterpret_cast<const float*>(p)[0], reinterpret_cast<const float*>(p)[1], reinterpret_cast<const float*>(p)[2]}; }
@@ -700,9 +717,7 @@ bool ReachType13LogInstall(uintptr_t base, size_t size, uint32_t generation)
     lane.instances = instances;
     lane.tlsIndex = reinterpret_cast<const uint32_t*>(tls);
     lane.generation.store(generation, std::memory_order_release);
-    lane.owner.Reset();
-    lane.busy.store(false, std::memory_order_release);
-    lane.producer.Reset();
+    T13ResetForInstall(lane);
     if (MH_EnableHook(target) != MH_OK)
     {
         MH_RemoveHook(target);
@@ -1115,9 +1130,7 @@ bool Halo4Type13LogInstall(uintptr_t base, size_t size, uint32_t generation)
     lane.instances = instances;
     lane.tlsIndex = g_halo4EngineTlsIndex;
     lane.generation.store(generation, std::memory_order_release);
-    lane.owner.Reset();
-    lane.busy.store(false, std::memory_order_release);
-    lane.producer.Reset();
+    T13ResetForInstall(lane);
     if (MH_EnableHook(target) != MH_OK)
     {
         MH_RemoveHook(target);
@@ -1176,6 +1189,7 @@ const char* T13EndReason(uint8_t reason)
     case t13::StintEndReason::Gap: return "no call for more than 500 ms";
     case t13::StintEndReason::Owner: return "another thread took the lane over";
     case t13::StintEndReason::Fault: return "a read faulted";
+    case t13::StintEndReason::Retired: return "the hook was removed and reinstalled";
     }
     return "?";
 }
@@ -1330,6 +1344,24 @@ void T13Format(const t13::Event& e)
     }
 }
 
+// A stint whose calls stopped (a landing, leaving the craft, the level ending) is ended here once its last
+// call is more than the stint gap old, so its END line and its last partial window (LINK 2s, RATE) go out
+// now. The busy flag makes the worker the producer for that moment; it is tried only after the lane has been
+// silent for the gap, so it never contends with a flight in progress (a first call landing in that instant
+// counts as `busy` and is skipped, and it begins a new stint either way).
+void T13EndStaleStint(T13Lane& lane, uint64_t now)
+{
+    const uint64_t last = lane.lastObservedMs.load(std::memory_order_relaxed);
+    if (!last || !(now >= last && now - last > t13::Producer<kT13RingSize>::kStintGapMs))
+        return;
+    if (lane.busy.exchange(true, std::memory_order_acquire))
+        return;   // a call is being observed right now: not stale
+    (void)lane.producer.EndIfStale(now, lane.ring);
+    if (!lane.producer.Active())
+        lane.lastObservedMs.store(0, std::memory_order_relaxed);   // nothing open: stop checking until a call
+    lane.busy.store(false, std::memory_order_release);
+}
+
 void T13Drain(T13Lane& lane)
 {
     t13::Event e;
@@ -1363,10 +1395,12 @@ T13Counts T13Take(T13Lane& lane)
 // Cold worker, every loop (after LegacyDriveReport).
 void Type13LogReport()
 {
+    const uint64_t now = GetTickCount64();
+    T13EndStaleStint(g_t13Reach, now);
+    T13EndStaleStint(g_t13Halo4, now);
     T13Drain(g_t13Reach);
     T13Drain(g_t13Halo4);
     static uint64_t s_last = 0;
-    const uint64_t now = GetTickCount64();
     if (now - s_last < 2000)
         return;
     s_last = now;
