@@ -203,6 +203,7 @@ bool Halo4Type13LogRemove();
 #include "../common/aim_write_logic.h"
 #include "../common/aim_caller_logic.h"
 #include "../common/seat_drive_policy.h"
+#include "../common/converge_policy.h"
 #include "../common/halo4_seat_aim_logic.h"
 #include "../common/log.h"
 #include "../common/config.h"
@@ -9497,6 +9498,22 @@ namespace
     std::atomic<uint32_t> g_aimClampedValid{0};
     std::atomic<float> g_aimClampedVrYaw{0.0f};
     std::atomic<float> g_aimClampedVrPitch{0.0f};
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    // The natural in-game causes that used to switch convergence off, counted per title for the dev line and
+    // never read by a decision (converge_policy.h): [0] Halo 3, [1] ODST, [2] Halo 4, [3] Reach.
+    converge::NaturalWitness g_convergeNatural[4];
+    int ConvergeNaturalSlot(GameTitle title)
+    {
+        switch (title)
+        {
+        case GameTitle::Halo3: return 0;
+        case GameTitle::Halo3ODST: return 1;
+        case GameTitle::Halo4: return 2;
+        case GameTitle::HaloReach: return 3;
+        default: return -1;
+        }
+    }
+#endif
     std::atomic<uint32_t> g_halo3WheelSwallowsGrips{0};
 
     void Halo3ApplySeatYawFollow()
@@ -51352,9 +51369,9 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
             {
                 desiredYaw = atan2f(bent[1], bent[0]);
                 desiredPitch = Clamp(asinf(Clamp(bent[2], -1.0f, 1.0f)), -1.45f, 1.45f);
-                // On foot the converged aim is in effect now. In a seat the seat's limits decide: the mark
-                // waits for the stall check below, so a seat holding the gun short of the target draws the
-                // honest reticle on the gun, never the traced one.
+                // On foot the converged aim is in effect now. In a seat too, as on foot (2026-10-01): the
+                // mark only waits for the game's aim feedback, read below, to be a direction it can claim
+                // (converge::ClaimSeatedConverged). A seat stop or a turret's rate cap never withholds it.
                 if (sightSeated)
                 {
                     sightSeatedConverged = true;
@@ -51447,6 +51464,16 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
     const float ax = aimForward[0], ay = aimForward[1], az = aimForward[2];
     const float aimYaw = atan2f(ay, ax);
     const float aimPitch = asinf(Clamp(az, -1.0f, 1.0f));
+    // THE SEATED CONVERGED CLAIM, Halo 3 / ODST / Halo 4: as on foot, the mark is placed as soon as the aim was
+    // solved through the traced point -- whichever way the aim is then actuated (written or steered), and
+    // whatever the seat's limits do to it. Natural causes (a seat stop, a turret's rate cap, the game's aim
+    // still turning toward the target) no longer withhold it: flat Halo shows those through its own tracers and
+    // impacts, and the reticle stays on the converged point (2026-10-01; reverses O4 81856ea, C27 30f786f and
+    // the turret rule of e4b8e07 / 61ecf34). Only an aim feedback we cannot read declines it (our code).
+    const bool sightSeatedClaim = sightSeatedConverged &&
+        converge::ClaimSeatedConverged(true, converge::AimFeedbackFinite(ax, ay, az));
+    if (sightSeatedClaim)
+        Sight_MarkConverged(sightSeatedTitle, g_worldScale.load(std::memory_order_relaxed));
     // DIRECT DRIVE, Halo 3 / ODST / Halo 4 (legacy_direct_drive.inl): hand the hook the final target -- the
     // converged aim when trace-and-reaim resolved it -- and the game's own aim for its checks. Once the hook
     // is armed and writing, the stick stands neutral on every axis it writes: the aim is written, not steered.
@@ -51460,13 +51487,12 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
     // before writing it and reports what it wrote; an axis it does not write stays on the servo below (or the
     // steering author), and the stick is zeroed only on the written ones (seatWritten).
     seat_drive::Axes seatWritten{};
-    // A written axis held at a seat limit by the hook's latch: the reticle shows the game's aim at once, whichever
-    // axes are written (the servo path's honest branch below reads it when only one is).
-    bool seatLatchHeld = false;
-    // A seat with only its yaw written (a Halo 4 seat, or a pitch still checking or failed): whether the game's
-    // yaw stays off the hook's writes (a barrel's rate cap downstream of the record). The servo path's honest
-    // branch shows the game's aim while it does.
-    bool seatYawShort = false;
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    // This poll's natural in-game causes that used to switch a seat's convergence off (the latch holding a
+    // written axis at the seat's clamp, the game's aim staying off the writes, a stall, a turret's rate cap).
+    // WITNESSED ONLY (converge_policy.h): no decision below reads them.
+    converge::NaturalEvents natural{};
+#endif
     // The turret servo below kept no account of frames the drive aimed for it: its last commands and its quantum
     // estimate would read the drive's motion as its own. Set when a written frame returns early; the servo then
     // starts afresh.
@@ -51572,101 +51598,75 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
                 const seat_drive::Axes live = LegacyDriveSeatAxes(driveTitle);
                 seatWritten.yaw = live.yaw && seatAxes.yaw;
                 seatWritten.pitch = live.pitch && seatAxes.pitch;
-                seatLatchHeld = seatWritten.any() && LegacyDriveSeatLimited(driveTitle);
             }
-            static seat_drive::OutcomeGate s_seatYawOutcome;
-            if (seatWritten.yaw && !seatWritten.pitch)
+#if HALOMCCVR_DEV_DIAGNOSTICS
+            // WITNESSES ONLY (2026-10-01): what used to put the reticle on the game's aim and withhold the converged
+            // mark here. The latch still holds the WRITE at the seat's clamp (legacy_direct_drive.inl); the reticle
+            // and the mark no longer follow it, nor the game's aim trailing the writes downstream of the record (a
+            // gun's rate cap, an aiming clip), nor a turret. Counted for the dev line, decided on by nothing.
+            natural.latchHeld = seatWritten.any() && LegacyDriveSeatLimited(driveTitle);
+            natural.turretSlew = seatWritten.any() && !halo4Aim && OccupiedTurretSeat();
             {
-                // Yaw only, measured as the both-axes gate below: against the nearer of the hook's last two
-                // writes, never this poll's target (the aim trails the newest write by up to a tick).
-                float wy[2]{}, wp[2]{};
-                bool wv[2]{};
-                // A yaw difference is an angle only at the horizon: scaled by cos(pitch), as the both-axes gate's
-                // true angular miss is (the thresholds would otherwise shrink as the aim pitches up or down).
-                const float yawToAngle = std::fmax(cosf(aimPitch), 0.05f);
-                float yawMiss = fabsf(WrapPi(desiredYaw - aimYaw)) * yawToAngle;
-                if (LegacyDriveSeatWrites(driveTitle, wy, wp, wv))
-                {
-                    yawMiss = fabsf(WrapPi(aimYaw - wy[0])) * yawToAngle;
-                    if (wv[1])
-                        yawMiss = std::fmin(yawMiss, fabsf(WrapPi(aimYaw - wy[1])) * yawToAngle);
-                }
-                seatYawShort = s_seatYawOutcome.step(yawMiss, false, GetTickCount64());
-            }
-            else
-            {
-                s_seatYawOutcome.reset();
-            }
-            // HONEST RETICLE BY OUTCOME. Written, the seat's aim can still fall short of the target: held at a
-            // seat limit by the latch, or downstream of the record, where a gun's rate cap or an aiming clip
-            // acts and no latch can see it. While the game's aim stays off the target (seat_drive::OutcomeGate),
-            // the reticle shows the game's aim and no converged shot is claimed. A turret's reticle always rides
-            // its barrel, as under the servo.
-            static seat_drive::OutcomeGate s_seatOutcome;
-            if (!(seatWritten.yaw && seatWritten.pitch))
-                s_seatOutcome.reset();
-            if (seatWritten.yaw && seatWritten.pitch)
-            {
-                // How far the game's aim is from a direction (yaw, pitch in the record's world angles).
-                const float aimLength = sqrtf(ax * ax + ay * ay + az * az);
-                const auto missTo = [&](float yaw, float pitch) {
-                    if (!std::isfinite(aimLength) || aimLength <= 1e-4f || !std::isfinite(yaw) || !std::isfinite(pitch))
-                        return std::numeric_limits<float>::quiet_NaN();
-                    const float c = cosf(pitch);
-                    const float target[3]{c * cosf(yaw), c * sinf(yaw), sinf(pitch)};
-                    const float cx = (ay * target[2] - az * target[1]) / aimLength;
-                    const float cyy = (az * target[0] - ax * target[2]) / aimLength;
-                    const float cz = (ax * target[1] - ay * target[0]) / aimLength;
-                    const float dot = (ax * target[0] + ay * target[1] + az * target[2]) / aimLength;
-                    return atan2f(sqrtf(cx * cx + cyy * cyy + cz * cz), dot);
-                };
-                // Measured against what the hook WROTE, not this poll's target: the game's aim trails the newest
-                // write by up to a tick (and render interpolation sits between the last two), so against the
-                // target every hand sweep read as a shortfall. The nearer of the last two writes is a real
-                // shortfall only when something downstream of the record holds the gun off it.
+                // The game's aim against the nearer of the hook's last two writes, never this poll's target (the
+                // aim trails the newest write by up to a tick): a miss held there is downstream of the record.
                 float writtenYaw[2]{}, writtenPitch[2]{};
                 bool writtenValid[2]{};
-                float miss = missTo(desiredYaw, desiredPitch);
-                if (LegacyDriveSeatWrites(driveTitle, writtenYaw, writtenPitch, writtenValid))
+                const bool haveWrites = seatWritten.any() &&
+                    LegacyDriveSeatWrites(driveTitle, writtenYaw, writtenPitch, writtenValid);
+                static seat_drive::OutcomeGate s_seatYawWitness, s_seatOutcomeWitness;
+                if (seatWritten.yaw && !seatWritten.pitch && haveWrites)
                 {
-                    miss = missTo(writtenYaw[0], writtenPitch[0]);
+                    // A yaw difference is an angle only at the horizon: scaled by cos(pitch).
+                    const float yawToAngle = std::fmax(cosf(aimPitch), 0.05f);
+                    float yawMiss = fabsf(WrapPi(aimYaw - writtenYaw[0])) * yawToAngle;
                     if (writtenValid[1])
-                        miss = std::fmin(miss, missTo(writtenYaw[1], writtenPitch[1]));
-                }
-                const bool turret = !halo4Aim && OccupiedTurretSeat() && kAimServoTurretReticleRidesBarrel;
-                const bool honest = s_seatOutcome.step(miss, LegacyDriveSeatLimited(driveTitle), GetTickCount64()) ||
-                    turret;
-                if (honest)
-                {
-                    // Back through the frame the target came through: Halo 3 / ODST through the hull's pitch when
-                    // the view follows the vehicle (Halo3SeatAimToVrReticle); Halo 4's seat aim is world angles.
-                    float vrYaw = headYawReference + g_yawSign.load() * WrapPi(aimYaw - gameYawReference);
-                    float vrPitch = g_pitchSign.load() * aimPitch;
-                    const bool mapped = halo4Aim ||
-                        Halo3SeatAimToVrReticle(aimForward, followedVehicleFrame, hullYaw, hullPitch,
-                                                gameYawReference, headYawReference, g_yawSign.load(),
-                                                g_pitchSign.load(), vrYaw, vrPitch);
-                    if (mapped && std::isfinite(vrYaw) && std::isfinite(vrPitch))
-                    {
-                        g_aimClampedVrYaw.store(vrYaw, std::memory_order_relaxed);
-                        g_aimClampedVrPitch.store(vrPitch, std::memory_order_relaxed);
-                        g_aimClampedValid.store(1, std::memory_order_release);
-                    }
-                    else
-                    {
-                        g_aimClampedValid.store(0, std::memory_order_release);
-                    }
+                        yawMiss = std::fmin(yawMiss, fabsf(WrapPi(aimYaw - writtenYaw[1])) * yawToAngle);
+                    natural.yawShortH4 = s_seatYawWitness.step(yawMiss, false, GetTickCount64());
                 }
                 else
                 {
-                    // The written aim is the target: a converged one is in effect, and it is the game's own.
-                    g_aimClampedValid.store(0, std::memory_order_release);
-                    if (sightSeatedConverged)
-                    {
-                        Sight_MarkConverged(sightSeatedTitle, g_worldScale.load(std::memory_order_relaxed));
-                        Sight_MarkAimWritten(sightSeatedTitle);
-                    }
+                    s_seatYawWitness.reset();
                 }
+                if (seatWritten.yaw && seatWritten.pitch && haveWrites)
+                {
+                    const float aimLength = sqrtf(ax * ax + ay * ay + az * az);
+                    const auto missTo = [&](float yaw, float pitch) {
+                        if (!std::isfinite(aimLength) || aimLength <= 1e-4f || !std::isfinite(yaw) ||
+                            !std::isfinite(pitch))
+                            return std::numeric_limits<float>::quiet_NaN();
+                        const float c = cosf(pitch);
+                        const float target[3]{c * cosf(yaw), c * sinf(yaw), sinf(pitch)};
+                        const float cx = (ay * target[2] - az * target[1]) / aimLength;
+                        const float cyy = (az * target[0] - ax * target[2]) / aimLength;
+                        const float cz = (ax * target[1] - ay * target[0]) / aimLength;
+                        const float dot = (ax * target[0] + ay * target[1] + az * target[2]) / aimLength;
+                        return atan2f(sqrtf(cx * cx + cyy * cyy + cz * cz), dot);
+                    };
+                    float miss = missTo(writtenYaw[0], writtenPitch[0]);
+                    if (writtenValid[1])
+                        miss = std::fmin(miss, missTo(writtenYaw[1], writtenPitch[1]));
+                    // The latch is a separate witness: only the miss itself is counted here.
+                    natural.outcomeMiss = std::isfinite(miss) && s_seatOutcomeWitness.step(miss, false, GetTickCount64());
+                }
+                else
+                {
+                    s_seatOutcomeWitness.reset();
+                }
+            }
+#endif
+            if (seatWritten.yaw && seatWritten.pitch)
+            {
+                // Both axes written: the stick stands neutral and the written aim is the game's own. A converged
+                // target was claimed above (as on foot); the zoom may follow it, since it is what was written.
+                // While the latch holds the write at a seat's stop the game's aim sits at that stop and the shots
+                // go there, as in flat Halo -- the reticle stays on the converged point.
+                if (sightSeatedClaim)
+                    Sight_MarkAimWritten(sightSeatedTitle);
+                g_aimClampedValid.store(0, std::memory_order_release);
+#if HALOMCCVR_DEV_DIAGNOSTICS
+                if (const int slot = ConvergeNaturalSlot(driveTitle); slot >= 0)
+                    g_convergeNatural[slot].note(natural);
+#endif
                 s_turretServoStale = true;
                 outRx = 0.0f;
                 outRy = 0.0f;
@@ -51678,43 +51678,35 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
     const float errYaw = WrapPi(desiredYaw - aimYaw);
     const float errPitch = desiredPitch - aimPitch;
 
-    // A turret's gun is a rate-capped machine, not the occupant's weapon.
-    // Both corrections below are scoped to exactly this seat. Halo 4's seats are
-    // read from its own stamp below; OccupiedTurretSeat's state is another title's.
+    // A turret's gun is a rate-capped machine, not the occupant's weapon: the
+    // servo below parks it instead of hunting (its reticle stays on the hand's
+    // point, 2026-10-01). Halo 4's seats are read from its own stamp below;
+    // OccupiedTurretSeat's state is another title's.
     bool turretSeat = !halo4Aim && OccupiedTurretSeat();
 #if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA && HALOMCCVR_DEV_DIAGNOSTICS
     // Stage 1 (dev key halo4_seat_converge): a Halo 4 slaved-turret seat (seat flag bit 7, whose aim camera IS
-    // the turret marker's line) is a turret here too -- its reticle rides the barrel, never a claimed point.
+    // the turret marker's line) is a turret here too -- for the servo's PARKING only (its pitch is on this servo);
+    // its reticle stays on the converged point like every other seat's.
     if (halo4Aim && halo4SeatSight.turret)
         turretSeat = true;
 #endif
 
-    // A passenger's weapon is bounded to a cone around the VEHICLE, not the
-    // world: the ODST/Halo 3 warthog rider seat authors yaw -90..+90 and pitch
-    // -45..+45 (docs/ODST-VEHICLE-EVIDENCE.md). Point a hand outside that cone
-    // -- easy with a world-locked view once the hull turns -- and the engine
-    // simply refuses to aim there. The closed loop then holds full deflection
-    // forever while the reticle keeps promising a shot that lands somewhere
-    // else, which is the reported "shots don't follow the crosshair".
-    //
-    // Nothing can make the gun exceed the seat's limit, so make the crosshair
-    // honest instead: once the error has stalled well past normal tracking lag,
-    // publish the game's REAL aim so the reticle sits on the gun. The reticle
-    // is documented as the truth; while clamped it is the only thing that is.
+    // SEAT LIMITS AND RATE-CAPPED TURRETS ARE THE GAME'S OWN (2026-10-01). A passenger's weapon is bounded to a
+    // cone around the VEHICLE (the ODST/Halo 3 Warthog rider seat authors yaw -90..+90 and pitch -45..+45,
+    // docs/ODST-VEHICLE-EVIDENCE.md), and a turret's barrel slews at an authored rate (the Shade 15 deg/s). Point
+    // the hand past either and the engine aims where the gun can: in flat Halo a stuck vehicle's shots go
+    // somewhere the reticle is not in exactly this way, and the game's tracers and impacts show it. So the
+    // reticle stays on the hand's (converged) point. It no longer jumps onto the gun after a stall (O4 81856ea,
+    // C27 30f786f) or rides a turret's barrel (e4b8e07, 61ecf34): those were VR-only cues the user retired.
+    // Nothing about the actuation changed: the direct drive's latch still holds a written axis at the seat's
+    // clamp, and a turret still parks (turretSeat, below). The stall is still COUNTED, for the dev line only.
     {
-        static uint64_t stalledSinceMs = 0;
-        static float previousErrorMagnitude = 0.0f;
-        // A yaw the drive writes is not this servo's lag (its own shortfall is seatYawShort / the latch).
-        const float stallYawErr = seatWritten.yaw ? 0.0f : errYaw;
-        const float errorMagnitude =
-            sqrtf(stallYawErr * stallYawErr + errPitch * errPitch);
         const uint64_t nowMs = GetTickCount64();
         bool halo4SeatedNow = false;
 #if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA
         if (halo4Aim)
         {
-            // A Halo 4 seat writes the heading only and leaves its pitch on this servo, so a pitch stop is
-            // seen here: the camera hook's seat stamp makes the stall check see the seat.
+            // The camera hook's seat stamp: a Halo 4 seat's pitch is on this servo.
             Halo4VehicleInputState stampSeat{};
             halo4SeatedNow = Halo4ReadSeatStamp(stampSeat) && stampSeat.seated;
         }
@@ -51728,47 +51720,25 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
              || ReachVehicleFpActive()
 #endif
             );
-        // ~7 degrees is far beyond the loop's ordinary lag, and a shrinking
-        // error means it is still converging, so neither counts as clamped.
-        constexpr float kAimStallRadians = 0.12f;
-        constexpr float kAimConvergingRadians = 0.005f;
-        // C27: a Halo 3 seat that fires the occupant's OWN weapon reports the
-        // truth as soon as the error stalls, instead of after a further
-        // quarter second. The user's report is that the passenger's shots stay
-        // misaligned even with C26's re-origin running (the log measured
-        // 55,572 corrected aim frames), and a quarter second at 120 fps is
-        // thirty frames in which the reticle keeps promising an angle the seat
-        // will never reach. Their own instruction was that limiting the
-        // character's rotation to make the gun agree is acceptable; this is
-        // the honest half of that - the crosshair stops leading the gun. Every
-        // other seat, title and on-foot case keeps the original 250 ms.
-        const uint64_t stallMs =
-            (!halo4Aim &&
-             Halo3SeatFiresPersonalWeapon(Halo3OccupiedSeatFlags())) ? 0u : 250u;
-        if (!seated || errorMagnitude < kAimStallRadians ||
-            errorMagnitude < previousErrorMagnitude - kAimConvergingRadians)
-            stalledSinceMs = 0;
-        else if (!stalledSinceMs)
-            stalledSinceMs = nowMs;
-        previousErrorMagnitude = errorMagnitude;
-        // A turret reports the truth ALWAYS, never on the stall timer. Its
-        // barrel is capped by authored seat data - 15 deg/s on both axes for
-        // the shade, so a hand flick outruns it for seconds - and a gun that
-        // is slowly converging is by definition not stalled, which reset the
-        // timer every single frame and left the reticle promising the hand's
-        // direction the whole time. That is the reported "the shots don't
-        // follow the covenant turret proper": the shots leave the BARREL, so
-        // the only reticle that can be honest about them is the one riding it.
-        // DEMO (honest_reticle_onfoot): force the true-aim reticle while ON FOOT
-        // too, so the integrator's lag behind the hand is visible for capture.
-        // On foot nothing is seated and the loop rarely stalls long enough, so
-        // publish unconditionally here; this never touches the seated/turret
-        // logic (both guards below stay exactly as they were).
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        {
+            // The old stall check (0.12 rad held 250 ms while seated), as a witness. A yaw the drive writes is
+            // not this servo's error.
+            static converge::StallWitness s_stallWitness;
+            const float stallYawErr = seatWritten.yaw ? 0.0f : errYaw;
+            natural.stall = s_stallWitness.step(seated, sqrtf(stallYawErr * stallYawErr + errPitch * errPitch), nowMs);
+            natural.turretSlew = natural.turretSlew || turretSeat;
+            if (const int slot = ConvergeNaturalSlot(TitleAdapter_GetActiveTitle()); slot >= 0 && seated)
+                g_convergeNatural[slot].note(natural);
+        }
+#else
+        (void)nowMs;
+#endif
+        // DEMO (honest_reticle_onfoot): the true-aim reticle while ON FOOT, so the integrator's lag behind the
+        // hand is visible for capture.
         const bool honestOnFoot =
             g_config.honest_reticle_onfoot && !turretSeat && !seated;
-        if (honestOnFoot || seatLatchHeld || seatYawShort ||
-            (turretSeat ? kAimServoTurretReticleRidesBarrel
-                        : (stalledSinceMs && nowMs - stalledSinceMs >= stallMs)))
+        if (honestOnFoot)
         {
             // Invert the same mapping the desired angles came through, so the
             // published direction is the engine's aim expressed in VR space: back
@@ -51814,13 +51784,10 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
         else
         {
             g_aimClampedValid.store(0, std::memory_order_release);
-            // A seat following the converged aim (no stall, not a turret): it is in effect now.
-            if (sightSeatedConverged)
-                Sight_MarkConverged(sightSeatedTitle, g_worldScale.load(std::memory_order_relaxed));
 #if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA && HALOMCCVR_DEV_DIAGNOSTICS
             // A Halo 4 seat whose shot cannot reach the point it aims through (the assist's cap, or no assist):
             // the honest reticle sits where the real shot is at that range, seen from the rendered head.
-            else if (halo4SeatHonest)
+            if (halo4SeatHonest)
             {
                 const float honestYaw = atan2f(halo4SeatHonestDir[1], halo4SeatHonestDir[0]);
                 const float honestPitch = asinf(Clamp(halo4SeatHonestDir[2], -1.0f, 1.0f));
@@ -51879,7 +51846,7 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
             LOG("Turret seat: aim servo armed. The gun is a rate-capped "
                 "machine (H3EK: shade 15 deg/s both axes, warthog turret "
                 "60 deg/s yaw and NO pitch cap), so the loop parks instead "
-                "of hunting and the reticle rides the barrel");
+                "of hunting; the reticle stays on the hand's point");
         }
         AimServoObserve(servoPitch, aimPitch, servoLastPitchCommand);
         AimServoObserve(servoYaw, aimYaw, servoLastYawCommand);

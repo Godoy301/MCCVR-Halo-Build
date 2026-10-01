@@ -2703,10 +2703,6 @@ int main()
             }
             Check(retook && std::fabs(moved - aim) < 0.012f,
                 "a real hand move breaks the park and the gun follows it");
-            // A 15 deg/s shade cannot be made to follow a hand flick by any
-            // gain, which is why its reticle must ride the barrel instead.
-            static_assert(kAimServoTurretReticleRidesBarrel,
-                          "a turret's reticle reports the gun, not the hand");
         }
         Check(kReachVehicleIdentityCount == kReachVehicleIdentityTrimCount &&
               kReachVehicleTrimCount == kReachVehicleIdentityCount + 1 &&

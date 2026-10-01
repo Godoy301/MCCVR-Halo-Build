@@ -190,11 +190,6 @@ inline void AimServoReset(AimServoAxis& axis)
 inline constexpr float kAimServoRestEnterRadians = 0.0060f; // ~0.34 deg
 inline constexpr float kAimServoRestExitRadians = 0.0180f;  // ~1.03 deg
 
-// ---- 2. Honest reticle on a rate-limited barrel ---------------------------
-//
-// A turret's shots leave the BARREL, never the occupant's eye, so no origin
-// substitution can make them follow a reticle the barrel is not pointing at.
-// The only honest reticle for a turret is the one that rides the gun: the
-// hand steers, the crosshair reports. That is unconditional in a turret seat
-// rather than stall-gated, because a slow gun converges instead of stalling.
-inline constexpr bool kAimServoTurretReticleRidesBarrel = true;
+// (A turret's reticle no longer rides its barrel: 2026-10-01, the reticle stays
+// on the hand's point and the game's own tracers show a slewing gun, as in flat
+// Halo -- src/common/converge_policy.h. The servo above still parks the gun.)
