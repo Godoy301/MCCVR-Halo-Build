@@ -119,7 +119,7 @@ static std::atomic<unsigned long long> g_reachWrittenConvergedMs{0};
 // Whether the published setpoint is for a SEAT: there the game's own update clamps the record to the
 // seat's limits before the hook writes, and the hook keeps its write inside them (aim_write::LimitLatch).
 static std::atomic<bool>               g_reachDriveSeated{false};
-static std::atomic<unsigned>           g_reachApplyLimited{0};   // ticks written held at a seat limit
+static std::atomic<unsigned>           g_reachApplyLimited{0};   // updates written held at a seat limit
 // Seqlock over the setpoint (yaw, pitch, converged, seated, publish time): the sim-thread hook must never pair
 // one publish's angles with another publish's converged bit, because the firing site's stand-down of
 // the hand shot ray follows that bit. One writer (the provider, on the input poll).
@@ -141,7 +141,7 @@ static std::atomic<bool>               g_reachDesiredFresh{false};
 static std::atomic<bool>               g_reachPcArmed{false};
 static std::atomic<uintptr_t>          g_reachPcExpected{0};
 static std::atomic<unsigned>           g_reachPcMismatch{0};
-// HEARTBEAT: the last tick the hook ran, armed, on the validated record -- i.e. it would write a
+// HEARTBEAT: the last time the hook ran, armed, on the validated record -- i.e. it would write a
 // setpoint if given one. "Installed" and "armed" both outlive the writer (a module reload, a patch,
 // a state where the sim stops calling it), so the WriteState rung requires this to be fresh.
 static std::atomic<unsigned long long> g_reachPcLiveMs{0};
@@ -157,7 +157,10 @@ static std::atomic<int>                g_reachUnitCrouchState{-1};
 static std::atomic<unsigned long long> g_reachUnitCrouchMs{0};
 static void* g_reachPcTarget = nullptr;
 static void ReachRecordDesiredAim(float gameYaw, float gamePitch);
-extern "C" void ReachPcApplyForUser(int user);
+extern "C" void ReachPcApplyForUser(int user, const uint8_t* entryRsp);
+// Which caller ran the accumulator (aim_caller_logic.h; defined beside ReachPcApplyForUser). Built at install,
+// before the hook is enabled.
+static bool ReachBuildCallerMap(uintptr_t base, size_t size);
 // player_control through the engine TLS, exactly as 0x6375C does it (mov edi,0xD8; lea rbx,[rsi+rsi*2];
 // shl rbx,7): globals = *(TLS + 0xD8); user entry = globals + user * 0x180. Both constants are verified
 // in place by the install's exact-byte anchors before the hook exists.
@@ -33842,6 +33845,8 @@ namespace
                 "0F 28 D0 F3 0F 58 94 1F 94 00 00 00 41 83 CB FF B8 10 00 00 00 F3 0F 11 94 1F 94 00 00 00");
             if (entryOk && tlsOk && accOk)
             {
+                // Which caller ran it (the dispatcher's return): built while no hook can run, logged inside.
+                (void)ReachBuildCallerMap(base, size);
                 void* target = reinterpret_cast<void*>(base + 0x6375C);
                 const MH_STATUS created = MH_CreateHook(
                     target, reinterpret_cast<void*>(&ReachPlayerControlHook),
@@ -50108,8 +50113,9 @@ bool Game_ReachTakeDesiredAim(float& yaw, float& pitch)
 
 // The state-write rung exists right now: the hook is installed, the arm-gate has proven the
 // player_control address, AND the hook has demonstrably run on that address within the last 150 ms
-// (the sim ticks it at 60 Hz). Installed is not running: without the heartbeat, a hook that stopped
-// running would leave the provider holding the stick neutral with nothing writing -- dead aim.
+// (the control pass runs it once per rendered frame, ahead of that frame's sim ticks -- not per 60 Hz
+// tick). Installed is not running: without the heartbeat, a hook that stopped running would leave the
+// provider holding the stick neutral with nothing writing -- dead aim.
 // (Whether the rung SHOULD be used is the provider's call: opt-in + on foot.)
 bool Game_ReachDirectDriveReady()
 {
@@ -50378,24 +50384,138 @@ bool Game_ReachSightReticleRange(float& outRangeM, bool& outHit)
     return false;
 }
 
+// WHICH CALLER RAN THE ACCUMULATOR (aim_caller_logic.h). 0x6375C has ONE call site, 0x6365E, inside the
+// per-user dispatcher 0x6350C, and one control pass (0x61A38, once per rendered frame) calls that dispatcher up
+// to three times: [an effect camera impulse 0x5EE43] -> the stick update 0x62467, or [impulse] -> the no-unit
+// path 0x628A3. Every call returns to 0x63663, so the caller is named by the DISPATCHER's return address, read
+// at the accumulator's entry rsp + 0x100 (0x6350C keeps a fixed 0xF8-byte frame, 7 pushes + 0xC0, no frame
+// register). Only the stick call is the update: before this split, the impulse call stepped the seat-limit
+// latch (a false limit whenever the vehicle was hit, which also cleared the converged stamp) and the counters.
+// ADDR-HYGIENE: guarded. The accumulator's call site, the dispatcher prologue and each caller site are exact
+// byte patterns that must be unique and match at their RVAs, every E8 must land on its target, and the frame
+// is proven from the dispatcher's .pdata/unwind info and its prologue (AimCallerProveDispatcher). Rung 1 is the
+// stick site: without it every call counts as the update (the behaviour before the split). A missing impulse
+// or no-unit site only reads as unknown (put back). Measured 2026-10-01 on the retail Steam module.
+static aim_caller::CallerMap g_reachCallerMap;            // written at install, before the hook is enabled
+static std::atomic<uint8_t>  g_reachCallerMode{0};        // for the cold worker: 0 not proven, 2 by dispatcher
+static std::atomic<unsigned> g_reachRoleCalls[aim_caller::kCallerCount]{};
+static std::atomic<unsigned> g_reachPutBacks{0}, g_reachPutBacksRefused{0};
+static std::atomic<uintptr_t> g_reachLastUnknownRet{0};
+#if HALOMCCVR_DEV_DIAGNOSTICS
+// Dev census: calls per sim tick ([[TLS+0xA0]]+0xC) and per caller, on foot vs seated (the published setpoint's
+// seat flag). The tick anchors: the getter 0x5C410 and the increment in the tick function 0x575AC.
+static aim_caller::TickCensus g_reachCensus;
+static uint32_t g_reachTickSlot = 0, g_reachTickField = 0;   // proven at install; 0 = unreadable
+static std::atomic<uint32_t> g_reachCensusPutBacks{0};
+static std::atomic<uint32_t> g_reachRefusals[aim_caller::kRefusalCount]{};
+static std::atomic<uint32_t> g_reachExtraDeltaMax[2][2]{}, g_reachStickDriftMax[2][2]{};
+static constexpr AimCallerTickAnchors kReachTickAnchors{
+    0x5C410, "8B 0D ?? ?? ?? ?? 65 48 8B 04 25 58 00 00 00 BA A0 00 00 00 48 8B 04 C8 48 8B 0C 10 8B 41 0C C3",
+    0x57A4C, "F6 44 24 7C 01 4C 89 3D ?? ?? ?? ?? 74 0C B8 A0 00 00 00 48 8B 04 18 FF 40 0C", 15, 25};
+#endif
+
+static bool ReachBuildCallerMap(uintptr_t base, size_t size)
+{
+    constexpr uint32_t kEntry = 0x6375C, kAccCallPat = 0x63651, kAccCall = 0x6365E, kDispatcher = 0x6350C;
+    struct ReachCallerSite { uint32_t patRva; const char* pat; uint8_t callOff; aim_caller::Caller role; };
+    static constexpr ReachCallerSite kSites[] = {
+        {0x6244A, "F3 0F 10 55 88 4C 8D 4C 24 70 F3 0F 10 4D 84 8B CF F3 0F 11 7C 24 28 F3 0F 11 74 24 20 "
+                  "E8 ?? ?? ?? ??", 0x1D, aim_caller::Caller::Stick},
+        {0x5EE1C, "4C 8D 0D ?? ?? ?? ?? F3 0F 10 55 34 41 0F 57 CE F3 44 0F 10 74 24 50 8B CB F3 44 0F 11 74 24 28 "
+                  "F3 44 0F 11 6C 24 20 E8 ?? ?? ?? ??", 0x27, aim_caller::Caller::Impulse},
+        {0x62885, "F3 0F 10 55 88 4C 8D 4C 24 70 F3 0F 10 4D 84 41 8B CD F3 0F 11 7C 24 28 F3 0F 11 74 24 20 "
+                  "E8 ?? ?? ?? ??", 0x1E, aim_caller::Caller::NoUnit},
+    };
+    aim_caller::CallerMap map;
+    const char* why = nullptr;
+    const uintptr_t accRet =
+        AimCallerUniqueAt(base, size, kAccCallPat,
+                          "F3 0F 10 5D 77 0F 28 D7 0F 28 CE 8B CF E8 ?? ?? ?? ?? F2 0F 10 43 14")
+            ? AimCallerCallReturn(base, size, kAccCall, kEntry) : 0;
+    uint32_t frame = 0;
+    if (!accRet)
+        why = "the accumulator's call site";
+    else if (!AimCallerUniqueAt(base, size, kDispatcher,
+                                "48 8B C4 55 53 57 41 54 41 55 41 56 41 57 48 8D 68 B1 48 81 EC C0 00 00 00 0F 29 70 B8 "
+                                "0F 29 78 A8"))
+        why = "the dispatcher prologue";
+    else
+        (void)AimCallerProveDispatcher(base, size, kDispatcher, kAccCall, frame, why);
+    char sites[200] = "";
+    size_t used = 0;
+    if (frame)
+    {
+        map.acc_ret = accRet;
+        map.dispatcher_frame = frame;
+        map.no_unit_action = aim_caller::Action::EndUpdate;
+        for (const auto& s : kSites)
+        {
+            const uintptr_t ret = AimCallerUniqueAt(base, size, s.patRva, s.pat)
+                ? AimCallerCallReturn(base, size, s.patRva + s.callOff, kDispatcher) : 0;
+            const bool ok = ret && map.add(ret, s.role);
+            const int n = ok
+                ? snprintf(sites + used, sizeof(sites) - used, "%s%s +0x%llX", used ? ", " : "",
+                           aim_caller::CallerName(s.role), static_cast<unsigned long long>(ret - base))
+                : snprintf(sites + used, sizeof(sites) - used, "%s%s NOT verified (reads unknown)", used ? ", " : "",
+                           aim_caller::CallerName(s.role));
+            if (n > 0)
+                used = (std::min)(sizeof(sites) - 1, used + static_cast<size_t>(n));
+        }
+        if (!map.stick_proven())
+            why = "the stick update's call";
+    }
+    const bool proven = frame && map.stick_proven();
+    if (!proven)
+        map.clear();
+    g_reachCallerMap = map;
+    g_reachCallerMode.store(proven ? 2 : 0, std::memory_order_release);
+    if (proven)
+        LOG("REACHDRIVE: caller map proven by the dispatcher's return (accumulator call +0x%X in dispatcher +0x%X, "
+            "frame 0x%X from its unwind info and prologue): %s. Only the stick call is the update; the impulse has "
+            "the last stick write put back, the no-unit call ends the update", kAccCall, kDispatcher, frame, sites);
+    else
+        LOG("REACHDRIVE: caller map NOT proven (%s); every call counts as the update (as before)",
+            why ? why : "dispatcher frame");
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    uint32_t tickSlot = 0, tickField = 0;
+    const bool tickOk = AimCallerTickProof(base, size, base + kReachEngineTlsIndexRva, kReachTickAnchors, tickSlot,
+                                           tickField);
+    g_reachTickSlot = tickOk ? tickSlot : 0;
+    g_reachTickField = tickOk ? tickField : 0;
+    LOG("REACHDRIVE (dev census): the sim tick %s",
+        tickOk ? "is proven (getter, TLS index and incrementer agree)" : "did NOT verify; the census reads it unreadable");
+#endif
+    return proven;
+}
+
 // Runs on the SIM thread from the naked detour, AFTER native 0x6375C updated desired_angles (stick
 // delta + clamps). Overwrites the pair with the published VR aim, but only for the first local player,
 // only while armed, only for a fresh aim, and only when THIS thread's TLS resolves to the MASTER
 // address the engine-thread arm-gate validated. SEH-guarded; skips on stale/NaN/out-of-range.
-extern "C" void ReachPcApplyForUser(int user)
+// Only the STICK call writes (g_reachCallerMap): the impulse call has the last stick write put back, and the
+// no-unit call ends the update; every call, whatever its caller, stamps the heartbeat first.
+extern "C" void ReachPcApplyForUser(int user, const uint8_t* entryRsp)
 {
-    // Sim thread, first local player only: the seat-limit guard's memory of what it wrote last tick.
+    // Sim thread, first local player only: the seat-limit guard's memory of what it wrote last update, the
+    // last stick write (put back over an impulse) and the stick sequence. Reset whenever the drive is reset
+    // (g_reachDriveResetSeq: every install and teardown), not only when the record changes.
     static aim_write::LimitLatch s_seatLimit;
+    static aim_caller::PutBack s_putBack;
+    static uint32_t s_stickSeq = 0;
+    static unsigned s_resetSeq = 0;
+    static bool s_initialised = false;
     int wrote = 0, valid = 0, same = 0, armed = 0, limited = 0;
     float yaw = 0.0f, pitch = 0.0f; unsigned long long age = 0;
     uintptr_t pc = 0;
+    aim_caller::Action action = aim_caller::Action::StepAndWrite;
     __try
     {
+        unsigned char* tls = nullptr;
         if (user == 0 && g_reachCamera.base)
         {
             auto** slots = reinterpret_cast<void**>(__readgsqword(0x58));
             const uint32_t index = *reinterpret_cast<const uint32_t*>(g_reachCamera.base + kReachEngineTlsIndexRva);
-            auto* tls = (slots && index < 0x200) ? reinterpret_cast<unsigned char*>(slots[index]) : nullptr;
+            tls = (slots && index < 0x200) ? reinterpret_cast<unsigned char*>(slots[index]) : nullptr;
             const uintptr_t globals = tls ? *reinterpret_cast<const uintptr_t*>(tls + kReachPlayerControlTlsOffset) : 0;
             pc = globals ? globals + static_cast<uintptr_t>(user) * kReachPlayerControlStride : 0;
         }
@@ -50416,13 +50536,13 @@ extern "C" void ReachPcApplyForUser(int user)
             // gameplay/loading and the camera core tore down, dropping VR to the flat loading view,
             // on every seat entry. (Inferred: in a third-person seat the game calls the evaluator
             // only while the stick turns the look.) This hook is the sim's own per-user control update
-            // on the validated player_control: it runs every tick the level runs, seated or not, and
-            // stops with the level (Save & Quit, unload).
+            // on the validated player_control: it runs every pass the level runs, seated or not, and
+            // stops with the level (Save & Quit, unload). Stamped on EVERY call, whatever its caller.
             g_reachLastCamCopyMs.store(tick, std::memory_order_release);
         }
         // One coherent setpoint (the seqlock in Game_ReachDirectDrivePublish): angles, publish time and
-        // the converged bit all from the same publish. A torn read retries once; still torn, this tick
-        // writes nothing and the game keeps last tick's angles.
+        // the converged bit all from the same publish. A torn read retries once; still torn, this update
+        // writes nothing and the game keeps the last angles.
         bool coherent = false, drivenConverged = false, drivenSeated = false;
         unsigned long long publishedMs = 0;
         for (int attempt = 0; attempt < 2 && !coherent; ++attempt)
@@ -50439,52 +50559,176 @@ extern "C" void ReachPcApplyForUser(int user)
         }
         valid = (coherent && g_reachDriveValid.load(std::memory_order_acquire)) ? 1 : 0;
         age = publishedMs && publishedMs <= tick ? tick - publishedMs : (publishedMs ? 0 : ~0ull);
-        if (same && armed && valid && age <= 200 &&
-            std::isfinite(yaw) && std::isfinite(pitch))
+        // WHICH CALLER (first local player only; the other slots never write).
+        if (user == 0)
         {
-            float* pair = reinterpret_cast<float*>(pc + 0x94);   // desired_angles: yaw, pitch
-            // In a seat, the game's update has just clamped the record to the seat's limits (a turret's
-            // pitch stop, a passenger's cone): keep the write inside them rather than carry the aim past
-            // (aim_write::LimitLatch). On foot there is no such clamp, and nothing changes.
-            float target[2]{yaw, pitch};
-            if (drivenSeated)
+            const unsigned resetSeq = g_reachDriveResetSeq.load(std::memory_order_acquire);
+            if (!s_initialised || resetSeq != s_resetSeq)
             {
-                const float native[2]{pair[0], pair[1]};
-                limited = s_seatLimit.apply(native, target, target) ? 1 : 0;
-            }
-            else
+                s_initialised = true;
+                s_resetSeq = resetSeq;
                 s_seatLimit.reset();
-            // Keep yaw on the branch the game's value is on (never a 2*pi jump between ticks, which an
-            // interpolated snapshot would render as a spin), and pitch inside the game's own clamp.
-            const float y = aim_write::unwrap_to_branch(target[0], pair[0]);
-            if (std::isfinite(y) && std::isfinite(target[1]))
+                s_putBack = aim_caller::PutBack{};
+                s_putBack.max_age = AimCallerClockFromMs(kAimCallerPutBackCapMs);
+                s_stickSeq = 0;
+#if HALOMCCVR_DEV_DIAGNOSTICS
+                g_reachCensus.restart();
+#endif
+            }
+            const uintptr_t ret = entryRsp ? *reinterpret_cast<const uintptr_t*>(entryRsp) : 0;
+            const uintptr_t dispatcherRet = aim_caller::DispatcherReturn(g_reachCallerMap, entryRsp, ret);
+            const aim_caller::Caller caller = g_reachCallerMap.classify(ret, dispatcherRet);
+            action = aim_caller::ActionFor(g_reachCallerMap, caller);
+            g_reachRoleCalls[static_cast<int>(caller)].fetch_add(1, std::memory_order_relaxed);
+            if (caller == aim_caller::Caller::Unknown && g_reachCallerMap.stick_proven())
+                g_reachLastUnknownRet.store(dispatcherRet, std::memory_order_relaxed);
+#if HALOMCCVR_DEV_DIAGNOSTICS
+            uint32_t simTick = 0;
+            const bool tickOk = AimCallerReadTick(tls, g_reachTickSlot, g_reachTickField, simTick);
+            g_reachCensus.note(tickOk, simTick, caller, drivenSeated);
+#endif
+        }
+        const aim_caller::Context context{drivenSeated != false, 0u, 0u, true};
+        if (user == 0 && action == aim_caller::Action::RestoreOnly)
+        {
+            // AN EXTRA CALL (the effect impulse, or a caller the map does not know): put the last stick write
+            // back over what it added, so the stick call that follows reads the record it left. Never steps the
+            // seat-limit latch, the converged stamp or the apply counters (the impulse is not an update).
+            aim_caller::Refusal why = aim_caller::Refusal::None;
+            if (!armed)
+                why = aim_caller::Refusal::Invalid;
+            else if (!same)
+                why = aim_caller::Refusal::Record;
+            else if (!valid)
+                why = aim_caller::Refusal::Context;
+            float* pair = reinterpret_cast<float*>(pc + 0x94);
+            float native[2]{};
+            if (why == aim_caller::Refusal::None)
             {
-                pair[0] = y;
-                pair[1] = aim_write::clamp_pitch(target[1], 1.45f);
-                wrote = 1;
+                native[0] = pair[0];
+                native[1] = pair[1];
+                why = s_putBack.check(pc, context, s_stickSeq, AimCallerClockNow(), native);
+            }
+            if (why == aim_caller::Refusal::None)
+            {
+#if HALOMCCVR_DEV_DIAGNOSTICS
+                for (int a = 0; a < 2; ++a)
+                {
+                    const float d = a == 0 ? std::remainder(native[a] - s_putBack.value[a], 6.28318531f)
+                                           : native[a] - s_putBack.value[a];
+                    aim_caller::AtomicMaxFloat(g_reachExtraDeltaMax[drivenSeated ? 1 : 0][a], std::fabs(d) * 57.29578f);
+                }
+                g_reachCensusPutBacks.fetch_add(1, std::memory_order_relaxed);
+#endif
+                pair[0] = s_putBack.value[0];
+                pair[1] = s_putBack.value[1];
+                g_reachPutBacks.fetch_add(1, std::memory_order_relaxed);
+            }
+            else if (armed)
+            {
+                g_reachPutBacksRefused.fetch_add(1, std::memory_order_relaxed);
+#if HALOMCCVR_DEV_DIAGNOSTICS
+                g_reachRefusals[static_cast<int>(why)].fetch_add(1, std::memory_order_relaxed);
+#endif
+            }
+        }
+        else if (user == 0 && action == aim_caller::Action::EndUpdate)
+        {
+            // THE NO-UNIT CALL: nothing is written this update. The latch forgets its last write, nothing is
+            // left to put back, and the angles in effect are no converged ones.
+            s_seatLimit.reset();
+            s_putBack.invalidate();
+            g_reachWrittenConvergedMs.store(0, std::memory_order_release);
+        }
+        else
+        {
+            // THE UPDATE: the stick call (or every call while the caller map is not proven).
+            uintptr_t previousPc = 0;
+            float previous[2]{};
+            bool hadPrevious = false;
+            if (user == 0)
+            {
+                hadPrevious = s_putBack.valid && s_putBack.stick_seq == s_stickSeq;
+                previousPc = s_putBack.pc;
+                previous[0] = s_putBack.value[0];
+                previous[1] = s_putBack.value[1];
+                ++s_stickSeq;
+                s_putBack.invalidate();
+            }
+            if (same && armed && valid && age <= 200 &&
+                std::isfinite(yaw) && std::isfinite(pitch))
+            {
+                float* pair = reinterpret_cast<float*>(pc + 0x94);   // desired_angles: yaw, pitch
+#if HALOMCCVR_DEV_DIAGNOSTICS
+                // What reached the record between our last write and this stick call (an impulse folded into
+                // the stick call itself would show here, under damage, with the stick neutral).
+                if (hadPrevious && previousPc == pc)
+                    for (int a = 0; a < 2; ++a)
+                    {
+                        const float d = a == 0 ? std::remainder(pair[a] - previous[a], 6.28318531f)
+                                               : pair[a] - previous[a];
+                        aim_caller::AtomicMaxFloat(g_reachStickDriftMax[drivenSeated ? 1 : 0][a],
+                                                   std::fabs(d) * 57.29578f);
+                    }
+#else
+                (void)hadPrevious;
+                (void)previousPc;
+                (void)previous;
+#endif
+                // In a seat, the game's update has just clamped the record to the seat's limits (a turret's
+                // pitch stop, a passenger's cone): keep the write inside them rather than carry the aim past
+                // (aim_write::LimitLatch). On foot there is no such clamp, and nothing changes.
+                float target[2]{yaw, pitch};
                 if (drivenSeated)
                 {
-                    const float written[2]{pair[0], pair[1]};
-                    s_seatLimit.wrote(written);
+                    const float native[2]{pair[0], pair[1]};
+                    limited = s_seatLimit.apply(native, target, target) ? 1 : 0;
                 }
+                else
+                    s_seatLimit.reset();
+                // Keep yaw on the branch the game's value is on (never a 2*pi jump between updates, which an
+                // interpolated snapshot would render as a spin), and pitch inside the game's own clamp.
+                const float y = aim_write::unwrap_to_branch(target[0], pair[0]);
+                if (std::isfinite(y) && std::isfinite(target[1]))
+                {
+                    pair[0] = y;
+                    pair[1] = aim_write::clamp_pitch(target[1], 1.45f);
+                    wrote = 1;
+                    if (drivenSeated)
+                    {
+                        const float written[2]{pair[0], pair[1]};
+                        s_seatLimit.wrote(written);
+                    }
+                    if (user == 0)
+                    {
+                        // What the impulse of a later pass may put back (aim_caller::PutBack).
+                        const bool axes[2]{true, true};
+                        const float written[2]{pair[0], pair[1]};
+                        s_putBack.wrote(pc, axes, written, context, s_stickSeq, AimCallerClockNow());
+                    }
+                }
+                else
+                    s_seatLimit.reset();
             }
-            else
+            else if (user == 0)
                 s_seatLimit.reset();
+            // Trace-and-reaim: record whether the angles now in effect are converged ones (first local
+            // player only -- the other slots' calls must not clear it). The firing site reads this on this
+            // same thread, so its stand-down tracks the write, not a publish. An aim held at a seat's limit
+            // is not the converged one, so it is not claimed.
+            if (user == 0)
+                g_reachWrittenConvergedMs.store((wrote && drivenConverged && !limited) ? tick : 0,
+                                                std::memory_order_release);
         }
-        else if (user == 0)
-            s_seatLimit.reset();
-        // Trace-and-reaim: record whether the angles now in effect are converged ones (first local
-        // player only -- the other slots' calls must not clear it). The firing site reads this on this
-        // same thread, so its stand-down tracks the write, not a publish. An aim held at a seat's limit
-        // is not the converged one, so it is not claimed.
-        if (user == 0)
-            g_reachWrittenConvergedMs.store((wrote && drivenConverged && !limited) ? tick : 0,
-                                            std::memory_order_release);
     }
-    __except (EXCEPTION_EXECUTE_HANDLER) {}
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        if (user == 0)
+            s_putBack.invalidate();
+    }
     // Counted here, logged by the cold worker (Game_ReachDirectDriveReport): no file I/O or log lock on
-    // the simulation thread.
-    if (user == 0)
+    // the simulation thread. Stick calls only: "calls" are the updates, one per rendered frame.
+    if (user == 0 && action == aim_caller::Action::StepAndWrite)
     {
         g_reachApplyCalls.fetch_add(1, std::memory_order_relaxed);
         g_reachApplyWrites.fetch_add(static_cast<unsigned>(wrote), std::memory_order_relaxed);
@@ -50496,22 +50740,96 @@ extern "C" void ReachPcApplyForUser(int user)
     }
 }
 
-// The direct-drive hook's once-a-second status, logged from the cold worker.
+// The direct-drive hook's once-a-second status, logged from the cold worker. "wrote N/M per s": M is the
+// stick calls -- the updates, one per rendered frame (~120 at 120 fps), not the sim's 60 Hz ticks.
 void Game_ReachDirectDriveReport()
 {
     static unsigned long long s_last = 0;
     const unsigned long long now = GetTickCount64();
     if (now - s_last < 1000) return;
     s_last = now;
+    unsigned roles[aim_caller::kCallerCount]{};
+    unsigned extra = 0;
+    for (int r = 0; r < aim_caller::kCallerCount; ++r)
+    {
+        roles[r] = g_reachRoleCalls[r].exchange(0, std::memory_order_relaxed);
+        if (r != static_cast<int>(aim_caller::Caller::Stick))
+            extra += roles[r];
+    }
+    const unsigned putBacks = g_reachPutBacks.exchange(0, std::memory_order_relaxed);
+    const unsigned refused = g_reachPutBacksRefused.exchange(0, std::memory_order_relaxed);
+    const uintptr_t unknownRet = g_reachLastUnknownRet.load(std::memory_order_relaxed);
+    const unsigned long long unknownRva =
+        unknownRet >= g_reachCamera.base && g_reachCamera.base ? unknownRet - g_reachCamera.base : 0;
+    const uint8_t mode = g_reachCallerMode.load(std::memory_order_acquire);
+    char callers[224];
+    snprintf(callers, sizeof(callers),
+             "callers%s: stick %u, impulse %u, no-unit %u, unknown %u (last dispatcher return +0x%llX); put back %u "
+             "(refused %u)",
+             mode ? "" : " (map not proven: every call is an update)", roles[static_cast<int>(aim_caller::Caller::Stick)],
+             roles[static_cast<int>(aim_caller::Caller::Impulse)], roles[static_cast<int>(aim_caller::Caller::NoUnit)],
+             roles[static_cast<int>(aim_caller::Caller::Unknown)], unknownRva, putBacks, refused);
     const unsigned calls = g_reachApplyCalls.exchange(0, std::memory_order_relaxed);
-    if (!calls) return;
-    const unsigned last = g_reachApplyLast.load(std::memory_order_relaxed);
-    LOG("REACHDRIVE apply user=0 armed=%d pcMatch=%d valid=%d age=%u yaw=%.3f pitch=%.3f wrote %u/%u per s "
-        "(held at a seat limit %u; mismatches %u)", (last & 1u) ? 1 : 0, (last & 2u) ? 1 : 0, (last & 4u) ? 1 : 0,
-        g_reachApplyAgeMs.load(std::memory_order_relaxed), g_reachApplyYaw.load(std::memory_order_relaxed),
-        g_reachApplyPitch.load(std::memory_order_relaxed), g_reachApplyWrites.exchange(0, std::memory_order_relaxed),
-        calls, g_reachApplyLimited.exchange(0, std::memory_order_relaxed),
-        g_reachPcMismatch.load(std::memory_order_relaxed));
+    if (calls)
+    {
+        const unsigned last = g_reachApplyLast.load(std::memory_order_relaxed);
+        LOG("REACHDRIVE apply user=0 armed=%d pcMatch=%d valid=%d age=%u yaw=%.3f pitch=%.3f wrote %u/%u per s "
+            "(held at a seat limit %u; mismatches %u); %s", (last & 1u) ? 1 : 0, (last & 2u) ? 1 : 0,
+            (last & 4u) ? 1 : 0, g_reachApplyAgeMs.load(std::memory_order_relaxed),
+            g_reachApplyYaw.load(std::memory_order_relaxed), g_reachApplyPitch.load(std::memory_order_relaxed),
+            g_reachApplyWrites.exchange(0, std::memory_order_relaxed), calls,
+            g_reachApplyLimited.exchange(0, std::memory_order_relaxed),
+            g_reachPcMismatch.load(std::memory_order_relaxed), callers);
+    }
+    else if (extra)
+    {
+        LOG("REACHDRIVE apply user=0: no stick update; %s", callers);
+    }
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    // THE CENSUS, every 2 s: calls per sim tick and per caller ("stick per tick" = frames per tick: 2.00 at
+    // 120 fps over the 60 Hz sim).
+    static unsigned long long s_lastCensus = 0;
+    if (now - s_lastCensus < 2000)
+        return;
+    s_lastCensus = now;
+    const aim_caller::CensusTotals t = g_reachCensus.take();
+    unsigned byRole[aim_caller::kCallerCount]{}, any = 0;
+    for (int r = 0; r < aim_caller::kCallerCount; ++r)
+    {
+        byRole[r] = t.calls[0][r] + t.calls[1][r];
+        any += byRole[r];
+    }
+    if (!any)
+        return;
+    const auto role = [](aim_caller::Caller c) { return static_cast<int>(c); };
+    LOG("REACHDRIVE callers/tick (dev): ticks %u, stick %u (%.2f per tick), impulse %u, no-unit %u, unknown %u "
+        "(last unknown dispatcher return +0x%llX); seated of those: stick %u, impulse %u, no-unit %u, unknown %u; put "
+        "back %u; max calls in one tick %u; ticks with an extra call before a stick %u (stick calls with one ahead "
+        "%u); ticks with no stick %u; stalled ticks %u; tick went back %u; tick unreadable %u",
+        t.ticks, byRole[role(aim_caller::Caller::Stick)], t.ticks ? static_cast<double>(t.sticks) / t.ticks : 0.0,
+        byRole[role(aim_caller::Caller::Impulse)], byRole[role(aim_caller::Caller::NoUnit)],
+        byRole[role(aim_caller::Caller::Unknown)], unknownRva, t.calls[1][role(aim_caller::Caller::Stick)],
+        t.calls[1][role(aim_caller::Caller::Impulse)], t.calls[1][role(aim_caller::Caller::NoUnit)],
+        t.calls[1][role(aim_caller::Caller::Unknown)], g_reachCensusPutBacks.exchange(0, std::memory_order_relaxed),
+        t.max_calls, t.extra_before_stick, t.extra_passes, t.no_stick, t.stalled, t.went_back, t.unreadable);
+    const auto deg = [](std::atomic<uint32_t>& bits) {
+        return aim_caller::BitsToFloat(bits.exchange(0, std::memory_order_relaxed));
+    };
+    uint32_t why[aim_caller::kRefusalCount]{};
+    for (int r = 0; r < aim_caller::kRefusalCount; ++r)
+        why[r] = g_reachRefusals[r].exchange(0, std::memory_order_relaxed);
+    const float e00 = deg(g_reachExtraDeltaMax[0][0]), e01 = deg(g_reachExtraDeltaMax[0][1]);
+    const float e10 = deg(g_reachExtraDeltaMax[1][0]), e11 = deg(g_reachExtraDeltaMax[1][1]);
+    const float d00 = deg(g_reachStickDriftMax[0][0]), d01 = deg(g_reachStickDriftMax[0][1]);
+    const float d10 = deg(g_reachStickDriftMax[1][0]), d11 = deg(g_reachStickDriftMax[1][1]);
+    LOG("REACHDRIVE deltas (dev): an extra call's |put back| max on foot yaw %.2f pitch %.2f, seated yaw %.2f pitch "
+        "%.2f deg; a stick call's |record - last write| max on foot yaw %.2f pitch %.2f, seated yaw %.2f pitch %.2f "
+        "deg; put-back refused: nothing written %u, record %u, stick since %u, context %u, age %u, implausible %u",
+        e00, e01, e10, e11, d00, d01, d10, d11, why[static_cast<int>(aim_caller::Refusal::Invalid)],
+        why[static_cast<int>(aim_caller::Refusal::Record)], why[static_cast<int>(aim_caller::Refusal::StickSince)],
+        why[static_cast<int>(aim_caller::Refusal::Context)], why[static_cast<int>(aim_caller::Refusal::Age)],
+        why[static_cast<int>(aim_caller::Refusal::Implausible)]);
+#endif
 }
 
 // True while the reach_direct_drive=4 persistence test owns Reach's aim: input.cpp then holds the
