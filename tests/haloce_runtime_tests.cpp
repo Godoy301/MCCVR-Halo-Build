@@ -26,7 +26,7 @@ static unsigned roomscaleCalls=0;
 static float roomscaleBody[3]{},roomscaleForward[3]{};
 bool Game_RoomscaleCameraAllowed(GameTitle) { return roomscaleAllowed; }
 uint64_t VR_PhysicalCrouchEpoch() noexcept { return 1; }
-float VR_RecenterStandingLiftM() noexcept { return 0.0f; }
+float VR_RecenterStandingLiftM(GameTitle) noexcept { return 0.0f; }
 float HaloCEControls_PhysicalCrouchCorrection(uint32_t,uint64_t,float,bool) noexcept { return 0; }
 bool HaloCEHud_HasCrosshairScope() noexcept { return naturalHudFrame; }
 void Roomscale_Camera(GameTitle title,bool allowed,const float* body,const float*,const float*,const float* forward,float* reference,float) noexcept {

@@ -499,7 +499,7 @@ namespace
                         sizeof(g_reference.orientation));
             std::memcpy(g_reference.position, snapshot.headPosition,
                         sizeof(g_reference.position));
-            g_reference.position[1] += VR_RecenterStandingLiftM();   // the standing height, as the observer's
+            g_reference.position[1] += VR_RecenterStandingLiftM(GameTitle::Halo2);   // the standing height, as the observer's
             g_referenceValid.store(true, std::memory_order_release);
         }
 

@@ -8486,6 +8486,7 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
             g_crouchSample.baseline = g_crouchReference.Baseline();
             g_crouchSample.reference = referenceSerial;
             g_crouchSample.calibrated = g_crouchReference.Calibrated();
+            g_crouchSample.confirmed = g_crouchReference.Confirmed();
             g_crouchSample.riseCapped = g_crouchReference.RiseCapped();
             g_crouchSampleAtMs = crouchNowMs;
             g_crouchStats.carry = g_crouchContinuity.Carry();
@@ -23641,11 +23642,11 @@ bool VR_GetPhysicalCrouchSample(VrPhysicalCrouchSample& out) noexcept
     if(!at||now<at||now-at>100) out.valid=false;
     return out.valid;
 }
-float VR_RecenterStandingLiftM() noexcept
+float VR_RecenterStandingLiftM(GameTitle title) noexcept
 {
-    if(!g_config.physical_crouch) return 0.0f;
+    if(!g_config.physical_crouch||Game_TitleSeated(title)) return 0.0f;
     VrPhysicalCrouchSample sample{};
-    if(!VR_GetPhysicalCrouchSample(sample)) return 0.0f;
+    if(!VR_GetPhysicalCrouchSample(sample)||!sample.confirmed) return 0.0f;
     // Both in the crouch's continuous frame, so a runtime recenter between them cannot fake a height; the
     // difference carries into whatever frame the caller's head position is in (each is a vertical
     // translation of the OpenXR LOCAL space).

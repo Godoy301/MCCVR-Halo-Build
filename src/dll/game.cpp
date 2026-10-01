@@ -7472,7 +7472,7 @@ namespace
             {
                 // The neutral height is the standing one (VR_RecenterStandingLiftM), not a crouch the
                 // recenter happened to catch.
-                g_headPosRef[0] = hpos[0]; g_headPosRef[1] = hpos[1] + VR_RecenterStandingLiftM();
+                g_headPosRef[0] = hpos[0]; g_headPosRef[1] = hpos[1] + VR_RecenterStandingLiftM(GameTitle::Halo3);
                 g_headPosRef[2] = hpos[2];
                 g_needPosRecenter = false;
                 LOG("head tracking recentered (game yaw %.1f deg)",
@@ -7494,7 +7494,7 @@ namespace
         {
             // Enabling leaning: capture the neutral head position only, so the
             // aim/yaw baseline is left untouched (no view snap).
-            g_headPosRef[0] = hpos[0]; g_headPosRef[1] = hpos[1] + VR_RecenterStandingLiftM();
+            g_headPosRef[0] = hpos[0]; g_headPosRef[1] = hpos[1] + VR_RecenterStandingLiftM(GameTitle::Halo3);
             g_headPosRef[2] = hpos[2];
         }
 
@@ -12391,7 +12391,7 @@ namespace
             if (manualRecenter)
             {
                 memcpy(g_headPosRef, headPosition, sizeof(g_headPosRef));
-                g_headPosRef[1] += VR_RecenterStandingLiftM();   // the standing height, not a caught crouch
+                g_headPosRef[1] += VR_RecenterStandingLiftM(GameTitle::Halo3ODST);   // the standing height, not a caught crouch
                 g_needPosRecenter.store(false, std::memory_order_release);
             }
             if (cinematicBoundary)
@@ -12409,7 +12409,7 @@ namespace
         else if (g_needPosRecenter.exchange(false, std::memory_order_acq_rel))
         {
             memcpy(g_headPosRef, headPosition, sizeof(g_headPosRef));
-            g_headPosRef[1] += VR_RecenterStandingLiftM();
+            g_headPosRef[1] += VR_RecenterStandingLiftM(GameTitle::Halo3ODST);
         }
 
         // Halo 3 parity: recentered yaw plus HMD-relative yaw; absolute HMD
@@ -22282,7 +22282,7 @@ namespace
             effectiveHeadYawRef=hy;
             memcpy(effectiveHeadPosRef,hpos,sizeof(effectiveHeadPosRef));
             // The standing height, not a crouch the seat entry happened to catch (VR_RecenterStandingLiftM).
-            effectiveHeadPosRef[1]+=VR_RecenterStandingLiftM();
+            effectiveHeadPosRef[1]+=VR_RecenterStandingLiftM(GameTitle::HaloReach);
             pendingSeatRecenter.valid=true;
             pendingSeatRecenter.key=*entryRecenterKey;
             pendingSeatRecenter.gameYaw=vehicleEntryYaw;
@@ -22297,14 +22297,14 @@ namespace
             if (manualRecenter)
             {
                 memcpy(g_headPosRef,hpos,sizeof(g_headPosRef));
-                g_headPosRef[1]+=VR_RecenterStandingLiftM();
+                g_headPosRef[1]+=VR_RecenterStandingLiftM(GameTitle::HaloReach);
                 g_needPosRecenter.store(false,std::memory_order_release);
             }
         }
         else if (g_needPosRecenter.exchange(false))
         {
             memcpy(g_headPosRef,hpos,sizeof(g_headPosRef));
-            g_headPosRef[1]+=VR_RecenterStandingLiftM();
+            g_headPosRef[1]+=VR_RecenterStandingLiftM(GameTitle::HaloReach);
         }
         if (!vehicleEntryRecenter)
         {
@@ -42808,7 +42808,7 @@ namespace
                     head.yaw, std::memory_order_relaxed);
                 // The neutral height is the standing one (VR_RecenterStandingLiftM), not a crouch the
                 // recenter happened to catch.
-                const float standingLift = VR_RecenterStandingLiftM();
+                const float standingLift = VR_RecenterStandingLiftM(GameTitle::Halo4);
                 for (int axis = 0; axis < 3; ++axis)
                 {
                     g_halo4Camera.headPositionReference[axis].store(
@@ -42826,7 +42826,7 @@ namespace
             {
                 // Enabling leaning captures the neutral head position only, so
                 // the yaw baseline is untouched and the view does not snap.
-                const float standingLift = VR_RecenterStandingLiftM();
+                const float standingLift = VR_RecenterStandingLiftM(GameTitle::Halo4);
                 for (int axis = 0; axis < 3; ++axis)
                 {
                     g_halo4Camera.headPositionReference[axis].store(
@@ -52889,6 +52889,45 @@ bool Game_TitleOnFootPlayerControlled(GameTitle title)
             // (the first-person witness): third person is on foot and player-controlled too.
             return biped && *reinterpret_cast<const int32_t*>(biped+0x24)==-1 && Halo4FirstPersonWitnessed(now);
         }
+#endif
+        default: return false;
+        }
+    }
+    __except(EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+
+// Whether the local player is in a vehicle seat, from each title's LAST KNOWN seat state (a pause stops the
+// samples, and the recenter that follows it must still see the seat). Unknown is "not seated". For the
+// recenter's standing lift (VR_RecenterStandingLiftM): a seat composes its own view, the player may well be
+// sitting in it, and nothing there pairs with the lift.
+bool Game_TitleSeated(GameTitle title)
+{
+    if (title!=TitleAdapter_GetActiveTitle()) return false;
+    __try
+    {
+        switch(title)
+        {
+        case GameTitle::HaloCE:
+        {
+            HaloCELocalPlayerState player{};
+            return HaloCEControls_GetLocalPlayerState(player)&&player.hasControlledUnit&&!player.onFoot;
+        }
+        case GameTitle::Halo3:
+            return g_halo3VehicleFpStable.load(std::memory_order_relaxed)==
+                static_cast<uint32_t>(Halo3VehicleState::Vehicle);
+        case GameTitle::Halo3ODST:
+            return g_odstVehicleFpStable.load(std::memory_order_relaxed)==
+                static_cast<uint32_t>(Halo3VehicleState::Vehicle);
+        case GameTitle::HaloReach:
+            return g_reachVehicleInputSnapshot.load(std::memory_order_acquire)==ReachVehicleInputSnapshot(
+                TitleAdapter_GetGeneration(title),ReachVehicleInputState::Vehicle);
+#if HALOMCCVR_HALO2_STEREO6DOF
+        case GameTitle::Halo2:
+            return Halo2Observer6Dof_LastKnownSeated();
+#endif
+#if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA
+        case GameTitle::Halo4:
+            return g_halo4SeatStamp.seated.load(std::memory_order_relaxed);
 #endif
         default: return false;
         }

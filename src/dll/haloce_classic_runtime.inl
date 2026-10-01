@@ -415,7 +415,7 @@ void ClassicGameRenderBody(float delta,float interpolation)
         reference.spaceEpoch!=tracking.spaceEpoch)
     {
         reference={tracking.headPosition,tracking.headOrientation,tracking.spaceEpoch,scope.generation};
-        reference.position.y+=VR_RecenterStandingLiftM();   // the standing height, not a caught crouch
+        reference.position.y+=VR_RecenterStandingLiftM(GameTitle::HaloCE);   // the standing height, not a caught crouch
     }
     scope.reference=reference;
     if (scope.revision==referenceRevision.load())

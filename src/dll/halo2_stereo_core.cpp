@@ -868,7 +868,7 @@ namespace
             }
             // The neutral height is the standing one, not a crouch the recenter happened to catch
             // (VR_RecenterStandingLiftM; the same height the observer's reference takes).
-            const float standingLift = VR_RecenterStandingLiftM();
+            const float standingLift = VR_RecenterStandingLiftM(GameTitle::Halo2);
             for (int axis = 0; axis < 3; ++axis)
             {
                 const float captured = position[axis] + (axis == 1 ? standingLift : 0.0f);

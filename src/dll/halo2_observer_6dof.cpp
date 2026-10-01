@@ -1163,11 +1163,13 @@ namespace
                 sizeof(g_reference.position));
             // The neutral height is the standing one, not a crouch the recenter happened to catch
             // (VR_RecenterStandingLiftM; the same height in every Halo 2 core, whenever each captures).
-            g_reference.position[1] += VR_RecenterStandingLiftM();
+            g_reference.position[1] += VR_RecenterStandingLiftM(GameTitle::Halo2);
             g_referenceValid.store(true, std::memory_order_release);
             g_referenceAwaitingFollow = true;
             g_snapTurn={};
-            g_vehicleView={};
+            // A seat keeps its heading through a recenter (Suspend): every unpause and theater exit recenters,
+            // and the stock heading it would re-take is, under the seat drive, the hand's last aim.
+            g_vehicleView.Suspend();
             // Under direct drive a recentre re-takes the view's heading from the body (the hand's aim), as
             // Halo 3's re-seeds its game yaw from the stock heading; UpdateFootView takes it again below.
             g_footView.Release();
@@ -1204,7 +1206,7 @@ namespace
                 sizeof(g_reference.position));
             // Its height stays the standing one the recenter took (VR_RecenterStandingLiftM), not a
             // crouch this step happened to catch.
-            g_reference.position[1] += VR_RecenterStandingLiftM();
+            g_reference.position[1] += VR_RecenterStandingLiftM(GameTitle::Halo2);
             g_referenceAwaitingFollow = false;
         }
 
@@ -6592,6 +6594,13 @@ bool Halo2Observer6Dof_OnFootFresh() noexcept
         !(sample & 1u) && at && now >= at && now - at <= 100;
 }
 
+// The last seat sample said seated, however old (a pause stops the samples; Game_TitleSeated).
+bool Halo2Observer6Dof_LastKnownSeated() noexcept
+{
+    const uint64_t sample = g_vehicleSeatSample.load(std::memory_order_acquire);
+    return Halo2Observer6Dof_Armed() && sample != 0 && (sample & 1u) != 0;
+}
+
 bool Halo2Observer6Dof_VehicleControlActive() noexcept
 {
     if (!Halo2Observer6Dof_DirectWeaponAimArmed() ||
@@ -7042,6 +7051,7 @@ bool Halo2Observer6Dof_RecoveryPending() noexcept { return false; }
 bool Halo2Observer6Dof_Armed() noexcept { return false; }
 bool Halo2Observer6Dof_FootViewEngaged() noexcept { return false; }
 bool Halo2Observer6Dof_SeatDriveAxes(bool& yaw, bool& pitch) noexcept { yaw = pitch = false; return false; }
+bool Halo2Observer6Dof_LastKnownSeated() noexcept { return false; }
 void Halo2Observer6Dof_SnapTurnSettled(uint32_t, float) noexcept {}
 bool Halo2Observer6Dof_DirectWeaponAimArmed() noexcept { return false; }
 bool Halo2Observer6Dof_FinalPaletteArmed() noexcept { return false; }

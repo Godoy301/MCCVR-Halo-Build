@@ -16,7 +16,7 @@ float Game_GetWorldScale() { return 1.0f/3.048f; }
 bool Game_IsPositionalTracking() { return true; }
 bool Game_RoomscaleCameraAllowed(GameTitle) { return false; }
 uint64_t VR_PhysicalCrouchEpoch() noexcept { return 1; }
-float VR_RecenterStandingLiftM() noexcept { return 0.0f; }
+float VR_RecenterStandingLiftM(GameTitle) noexcept { return 0.0f; }
 float HaloCEControls_PhysicalCrouchCorrection(uint32_t,uint64_t,float,bool) noexcept { return 0; }
 bool HaloCEHud_HasCrosshairScope() noexcept { return false; }
 void Roomscale_Camera(GameTitle,bool,const float*,const float*,const float*,const float*,float*,float) noexcept {}

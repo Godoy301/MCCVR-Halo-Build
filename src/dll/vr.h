@@ -1143,15 +1143,18 @@ struct VrPhysicalCrouchSample
     float height=0.0f,baseline=0.0f;
     uint64_t reference=0;
     bool valid=false,calibrated=false,riseCapped=false;
+    bool confirmed=false;   // PhysicalCrouchReference::Confirmed: calibrated, or a minute of standing near it
 };
 bool VR_GetPhysicalCrouchSample(VrPhysicalCrouchSample& out) noexcept;
 // For a recenter capturing the head as the view's neutral position: how far (room metres, >= 0) the head is
 // below the player's STANDING height now, to add to the captured height. With the physical crouch on, the
 // view's neutral height is then the standing height the crouch itself measures from, wherever the head was
-// when the recenter landed -- most recenters are automatic (an unpause, a cutscene's end, a seat, a level
-// load) and catch the player crouched or leaning, and the view kept that height as "standing" until the next
-// manual recenter. 0 with the physical crouch off or no standing height known yet: the head as it is.
-float VR_RecenterStandingLiftM() noexcept;
+// when the recenter landed -- most recenters are automatic (an unpause, a cutscene's end, a level load) and
+// catch the player crouched or leaning, and the view kept that height as "standing" until the next manual
+// recenter. 0 -- the head as it is -- with the physical crouch off; with no standing height CONFIRMED yet
+// (a learned one may still fall back, and the lift would outlive it); and in a vehicle seat (Game_TitleSeated):
+// a seat composes its own view, the player may well be sitting in it, and nothing there pairs with the lift.
+float VR_RecenterStandingLiftM(GameTitle title) noexcept;
 // Diagnostics (the CROUCH line): the continuous frame's carry (m) and how each discontinuity was met.
 struct VrCrouchContinuityStats
 {

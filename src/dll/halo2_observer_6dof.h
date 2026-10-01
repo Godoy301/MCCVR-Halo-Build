@@ -45,6 +45,8 @@ void Halo2Observer6Dof_SnapTurnSettled(uint32_t generation, float targetYaw) noe
 bool Halo2Observer6Dof_DirectWeaponAimArmed() noexcept;
 // Native local-unit update publishes seated state; expires after 100 ms.
 bool Halo2Observer6Dof_VehicleControlActive() noexcept;
+// The last seat sample said seated, however old (a pause stops the samples).
+bool Halo2Observer6Dof_LastKnownSeated() noexcept;
 // C-H2-50: optional final visible-palette transaction. The controller-owned
 // shot path is admitted only while this exact visual boundary is installed.
 bool Halo2Observer6Dof_FinalPaletteArmed() noexcept;

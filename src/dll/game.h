@@ -18,6 +18,8 @@ bool Game_RoomscaleCameraAllowed(GameTitle title);
 // That on-foot, player-controlled evidence alone (no roomscale setting or presentation gates): the
 // head leash below the character's eye holds the view only while this is true.
 bool Game_TitleOnFootPlayerControlled(GameTitle title);
+// The local player is in a vehicle seat, as last known (a pause, which stops the samples, keeps the answer).
+bool Game_TitleSeated(GameTitle title);
 
 // Monotonic counters written by render/palette hooks and sampled at OpenXR
 // frame boundaries. Hooks only touch relaxed atomics; formatting and file I/O
