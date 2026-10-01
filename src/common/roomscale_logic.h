@@ -98,8 +98,8 @@ struct RoomscaleFollow
     float body[2]{}, expectedReference[2]{}, initialLean[2]{};
     float headForward[2]{}, worldForward[2]{}, error[2]{}, velocity[2]{};
     // Tracking-space direction of the last nonzero command: the way the stopping tail must keep moving
-    // to be claimed as ours. priorTailDir is the one before it: a body still coasting the old way just
-    // after the command turns is still our step.
+    // to be claimed as ours. priorTailDir is the command before this run, kept for the whole run: a body
+    // still coasting the old way after the command turns is still our step.
     float tailDir[2]{}, priorTailDir[2]{};
 
     // Forget the follow in progress -- after an admission change its movement receipts cannot be
@@ -329,11 +329,18 @@ struct RoomscaleFollow
                 const float magnitude=std::hypot(cx,cz);
                 if(magnitude>0)
                 {
-                    priorTailDir[0]=tailDir[0];priorTailDir[1]=tailDir[1];
-                    tailDir[0]=cx/magnitude;tailDir[1]=cz/magnitude;
-                    // A run that starts from rest has no earlier direction to coast along; one that starts
-                    // while the last run's tail is still settling keeps that run's (an overshoot correction).
-                    if(!commanded&&!settling){priorTailDir[0]=tailDir[0];priorTailDir[1]=tailDir[1];}
+                    // The previous command for the against-push rule is taken when a run starts and kept
+                    // through it: MCC's deceleration spans a few 30 Hz body chunks, several updates each, so
+                    // a direction replaced every update stopped covering the coast after one. A run that
+                    // starts from rest has no earlier direction to coast along; one that starts while the last
+                    // run's tail is still settling keeps that run's (an overshoot correction).
+                    const float nx=cx/magnitude, nz=cz/magnitude;
+                    if(!commanded)
+                    {
+                        priorTailDir[0]=settling?tailDir[0]:nx;
+                        priorTailDir[1]=settling?tailDir[1]:nz;
+                    }
+                    tailDir[0]=nx;tailDir[1]=nz;
                 }
                 if(magnitude>.8f){cx*=.8f/magnitude;cz*=.8f/magnitude;}
                 moveX=-cx*hz+cz*hx;

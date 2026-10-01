@@ -18281,6 +18281,14 @@ int main()
         const float coastedFrom=tr[0];
         tb[1]-=0.02f; tstep();                             // still coasting the old way as the command turns
         Check(tr[0]>coastedFrom, "the body coasting the old way just after the command turns is still claimed");
+        bool coastClaimed=true;
+        for (int i=0;i<3;++i)
+        {
+            const float before=tr[0];
+            tb[1]-=0.01f; tstep();   // the game's deceleration spans several updates
+            coastClaimed&=tr[0]>before && turn.guard!=RoomscaleFollow::Guard::NotOurs;
+        }
+        Check(coastClaimed, "the coast stays claimed for as long as it lasts, not one update");
     }
     // The stopping tail is claimed only while the body keeps moving the way the follow walked: travel
     // against that direction (a platform, a knockback) ends the tail unclaimed.
