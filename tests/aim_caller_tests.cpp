@@ -323,6 +323,31 @@ void TestPutBack()
     PutBack noCap;
     noCap.wrote(0x500, both, w, foot, 1, 100);
     Check(noCap.check(0x500, foot, 1, 100000, w) == Refusal::None, "max_age 0 is no cap");
+    Check(noCap.check(0x500, foot, 1, 200, w, 50) == Refusal::Age &&
+              noCap.check(0x500, foot, 1, 150, w, 50) == Refusal::None,
+          "a call's own window replaces the slot's cap");
+
+    // Halo 3 / ODST (same_frame): their extra calls follow the stick call, so the slot is this frame's write and
+    // the filter is the one they always had -- the same record, no stick call since, inside the window -- with
+    // no context or plausibility test.
+    PutBack h3;
+    h3.max_age = 500;
+    h3.same_frame = true;
+    const Context written{true, 0x1234u, 1u, true}, changed{true, 0x1234u, 3u, false};
+    h3.wrote(0x500, both, w, written, 3, 100);
+    Check(h3.check(0x500, changed, 3, 150, native) == Refusal::None,
+          "same frame: an axis or latch change since the stick call refuses nothing (the kick is put back, as before)");
+    Check(h3.check(0x500, foot, 3, 150, far) == Refusal::None, "same frame: no plausibility test (as before)");
+    Check(h3.check(0x500, written, 3, 150, nan) == Refusal::None, "same frame: a non-finite record is put back over");
+    Check(h3.check(0x600, written, 3, 150, native) == Refusal::Record, "same frame: another record is never written");
+    Check(h3.check(0x500, written, 4, 150, native) == Refusal::StickSince, "same frame: a stick call since ends it");
+    Check(h3.check(0x500, written, 3, 400, native) == Refusal::None, "same frame: a kick inside the shared cap");
+    Check(h3.check(0x500, written, 3, 151, native, 50) == Refusal::Age,
+          "same frame: a no-unit call past its own 50 ms window is not put back");
+    Check(h3.check(0x500, written, 3, 150, native, 50) == Refusal::None, "same frame: a no-unit call in its window");
+    Check(h3.check(0x500, written, 3, 99, native, 50) == Refusal::Age, "same frame: a clock that went back ends it");
+    h3.invalidate();
+    Check(h3.check(0x500, written, 3, 150, native) == Refusal::Invalid, "same frame: invalidated, nothing put back");
 }
 
 // One seated control pass, Halo 4 / Reach shape: [impulse] -> stick. The record is the yaw axis only (the

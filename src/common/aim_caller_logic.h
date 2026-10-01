@@ -309,7 +309,10 @@ inline bool ProveDispatcherFrame(const uint8_t* image, size_t size, uint32_t dis
 //     never reverted);
 //   * a safety cap on a MONOTONIC clock (the owner's unit, e.g. QPC counts): Halo 4 can run the impulse with
 //     no stick call in the pass, and a pass with no stick at all must not hold an old write for long.
-// Halo 3 / ODST keep the meaning they always had (this frame's write, put back over a kick inside a tick).
+// Halo 3 / ODST (same_frame) keep the meaning they always had: their extra calls run AFTER the stick call that
+// wrote the slot (a kick in that frame's ticks), so the slot is this frame's write, and the filter is the one
+// they always had -- the same record, inside the window -- with no context or plausibility test. Only the window
+// is the owner's to choose per caller (check()'s `cap`).
 struct Context {
     bool seated = false;
     uint32_t seat_key = 0;
@@ -341,6 +344,7 @@ inline const char* RefusalName(Refusal r)
 struct PutBack {
     float max_delta = 0.1745f;  // 10 deg: an impulse, a sway or a kick moves the record less
     uint64_t max_age = 0;       // in the owner's clock units; 0 = no cap (the owner always sets one)
+    bool same_frame = false;    // direct mode (Halo 3 / ODST): this frame's write; no context or delta test
 
     bool valid = false;
     uintptr_t pc = 0;
@@ -370,11 +374,19 @@ struct PutBack {
     // Whether this extra call may put the slot back. `native`: the record after the extra call. Yaw wraps.
     Refusal check(uintptr_t record, const Context& c, uint32_t seq, uint64_t now, const float native[2]) const
     {
+        return check(record, c, seq, now, native, max_age);
+    }
+
+    // The same under this call's own window `cap` (0 = none). Same-frame slots ignore `c` and `native`.
+    Refusal check(uintptr_t record, const Context& c, uint32_t seq, uint64_t now, const float native[2],
+                  uint64_t cap) const
+    {
         if (!valid) return Refusal::Invalid;
         if (!record || record != pc) return Refusal::Record;
         if (seq != stick_seq) return Refusal::StickSince;
-        if (c != ctx) return Refusal::Context;
-        if (now < at || (max_age && now - at > max_age)) return Refusal::Age;
+        if (!same_frame && c != ctx) return Refusal::Context;
+        if (now < at || (cap && now - at > cap)) return Refusal::Age;
+        if (same_frame) return Refusal::None;
         for (int a = 0; a < 2; ++a) {
             if (!axis[a]) continue;
             if (!std::isfinite(native[a])) return Refusal::Implausible;

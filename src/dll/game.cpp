@@ -293,10 +293,11 @@ static uint64_t AimCallerClockFromMs(uint64_t ms)
 
 // How long the last stick write may still be put back over an extra call. The real scope is "no stick call
 // since" (aim_caller::PutBack); this only bounds a pass with no stick call at all (Halo 4 can run the impulse
-// with its sway and stick skipped, and Halo 3's / ODST's no-unit calls -- put back as they always were -- run
-// with no stick call while the player is dead: their window was 50 ms of wall clock). 250 ms covers a catch-up
-// burst of ticks after a hitch (where 50 ms lapsed and a kick reached the latch) and keeps a dead player's
-// stick on the death camera within ~0.1 s of the servo taking it back (LegacyDriveLive: 150 ms).
+// with its sway and stick skipped) and a catch-up burst of ticks after a hitch, where Halo 3's / ODST's kick
+// runs after its stick call (their old 50 ms lapsed there and the kick reached the seat latch). Halo 3's /
+// ODST's no-unit calls run with no stick call at all while the player is dead, so they keep their own 50 ms
+// (kLegacyDrivePutBackNoStickMs): this cap outlasts LegacyDriveLive's 150 ms and would erase the death
+// camera's stick input once the servo takes it back.
 constexpr uint64_t kAimCallerPutBackCapMs = 250;
 
 #if HALOMCCVR_DEV_DIAGNOSTICS

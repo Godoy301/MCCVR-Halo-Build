@@ -52,8 +52,14 @@
 // unwind info and its prologue). Only the stick call counts updates, checks seats, steps the arm gate and
 // feeds the latch. An extra call (impulse, sway, kick, or any caller the map does not know, once the stick is
 // proven) has the last stick write put back over what it added; Halo 4's no-unit call ends the update
-// (nothing was written: the latch and the seat stint are over); Halo 3's and ODST's keep the put-back they
-// always had. An unproven stick site leaves every call counting as the update, as before.
+// (nothing was written: the latch and the seat stint are over). Halo 3's and ODST's every non-stick call keeps
+// the put-back it always had -- this frame's write, the same record, no context or plausibility test -- and
+// one thing changed, the window: a KICK (it runs in this frame's ticks, after the stick call) is put back while
+// no stick call has run since, under the 250 ms QPC cap, where it was 50 ms of GetTickCount64 (a catch-up burst
+// of ticks after a hitch outlasted that and left the kick for the seat latch); the NO-UNIT call and any caller
+// the map does not know run with no stick call at all while the player is dead, so they keep the 50 ms window,
+// now on QPC (kLegacyDrivePutBackNoStickMs). An unproven stick site leaves every call counting as the update,
+// as before.
 // "Updates" are therefore stick calls, and the control pass runs once per MAIN-LOOP ITERATION -- a rendered
 // frame -- ahead of that frame's 0..N sim ticks: ~120 per second at 120 fps, not the sim's 60 Hz.
 
@@ -230,8 +236,10 @@ struct LegacyDriveState
     bool stintPitchFailCounted = false;
     std::atomic<uint64_t> seatYawWriteMs{0}, seatPitchWriteMs{0}, seatLimitedMs{0};
     // The last stick call's write (sim thread), put back over what a later extra call adds (aim_caller::
-    // PutBack: no stick call since, same record and publication context, a plausible record, a QPC cap).
+    // PutBack: no stick call since, same record, a QPC cap; Halo 4 also the same publication context and a
+    // plausible record; Halo 3 / ODST same_frame, as they always were).
     aim_caller::PutBack putBack{};
+    uint64_t putBackNoStickCap = 0;          // Halo 3 / ODST no-unit and unknown callers: 50 ms in QPC counts
     uint32_t stickSeq = 0;                   // sim thread: steps on every stick call
     // Status (sim thread counts, cold worker logs). `calls`: stick calls (the updates).
     std::atomic<uint32_t> calls{0}, writes{0}, arms{0}, disarms{0}, seatedSkips{0}, faults{0};
@@ -285,6 +293,13 @@ constexpr uint32_t kLegacyDriveSeatPrimeUpdates = 2;
 // publishing through a pause's fade and a tracking dropout): ~1 s at 120 fps, ~2 s at 60. Longer, it ends.
 constexpr uint32_t kLegacyDriveStintStaleUpdates = 120;
 constexpr uint32_t kLegacyDriveAxisYaw = 1u, kLegacyDriveAxisPitch = 2u;
+// Halo 3 / ODST: the put-back window of a call that runs with NO stick call since the write -- the no-unit path
+// while the player is dead, and any caller the map does not know (the no-unit path reads that way if its own
+// proof fails). "No stick call since" never ends those, so only this window does: the 50 ms it always was,
+// which closes long before the servo takes the aim back (LegacyDriveLive, 150 ms) and so never erases the
+// death camera's stick input. A kick keeps the shared cap (kAimCallerPutBackCapMs): "no stick call since"
+// scopes it to this frame's ticks.
+constexpr uint64_t kLegacyDrivePutBackNoStickMs = 50;
 
 bool LegacyDriveYawAgrees(bool fresh, float nativeYaw, float aimYaw)
 {
@@ -544,6 +559,9 @@ bool LegacyDriveInstall(GameTitle title, uintptr_t base, size_t size)
     // The hook is not enabled yet (or was removed after its quiescence): the sim-thread state is ours to reset.
     st.putBack = aim_caller::PutBack{};
     st.putBack.max_age = AimCallerClockFromMs(kAimCallerPutBackCapMs);
+    // Direct mode (Halo 3 / ODST): the extra calls follow the stick call, so the slot is this frame's write.
+    st.putBack.same_frame = !callers.dispatcher_mode();
+    st.putBackNoStickCap = AimCallerClockFromMs(kLegacyDrivePutBackNoStickMs);
     st.stickSeq = 0;
     st.callers = callers;
     st.callerMode.store(callers.stick_proven() ? (callers.dispatcher_mode() ? 2 : 1) : 0, std::memory_order_release);
@@ -776,15 +794,16 @@ void LegacyDriveRefused(LegacyDriveState& st, aim_caller::Refusal why)
 }
 
 // Sim thread, an EXTRA call (aim_caller::Action::RestoreOnly -- Halo 4's effect impulse and weapon sway, Halo 3
-// / ODST's weapon kick, any caller the map does not know): put the last stick write back over what this call
-// accumulated, on the axes that write wrote, so the next stick call reads the record it left -- no count, no
-// seat check, no arm-gate step, no latch. On foot this keeps what the hook did before (it rewrote the setpoint
-// on every call, cancelling the kick); a seat no longer reads an impulse or a sway as a limit. Halo 4's extra
-// calls PRECEDE the stick call, so the slot holds the previous frame's write: it is honoured only while no
-// stick call has run since, on the same record, under the same publication context, and while the record
-// sits within an impulse of it (aim_caller::PutBack::check). Halo 3's / ODST's kick runs in the tick after
-// the stick call: this frame's write, as before.
-void LegacyDrivePutBack(LegacyDriveState& st, const LegacyDriveSite& site, int user)
+// / ODST's weapon kick and no-unit path, any caller the map does not know): put the last stick write back over
+// what this call accumulated, on the axes that write wrote, so the next stick call reads the record it left --
+// no count, no seat check, no arm-gate step, no latch. On foot this keeps what the hook did before (it rewrote
+// the setpoint on every call, cancelling the kick); a seat no longer reads an impulse or a sway as a limit.
+// Halo 4's extra calls PRECEDE the stick call, so the slot holds the previous frame's write: it is honoured
+// only while no stick call has run since, on the same record, under the same publication context, and while
+// the record sits within an impulse of it (aim_caller::PutBack::check). Halo 3's / ODST's extra calls FOLLOW
+// the stick call (same_frame): this frame's write, on the same record, with no publication, context or
+// plausibility test, as before -- only the window is per caller (kLegacyDrivePutBackNoStickMs).
+void LegacyDrivePutBack(LegacyDriveState& st, const LegacyDriveSite& site, int user, aim_caller::Caller caller)
 {
     if (!g_config.legacy_direct_drive || !st.installed.load(std::memory_order_acquire) ||
         !st.armed.load(std::memory_order_acquire) || !st.tlsIndexAddress)
@@ -800,27 +819,39 @@ void LegacyDrivePutBack(LegacyDriveState& st, const LegacyDriveSite& site, int u
         LegacyDriveRefused(st, aim_caller::Refusal::Record);
         return;
     }
-    const LegacyDrivePublication pub = LegacyDriveReadPublication(st);
-    if (!pub.coherent || !pub.valid || (pub.seated && !g_config.seat_direct_drive))
+    aim_caller::Context context{};
+    uint64_t cap = st.putBack.max_age;
+    if (!st.putBack.same_frame)
     {
-        LegacyDriveRefused(st, aim_caller::Refusal::Context);
-        return;
+        // Halo 4: the previous frame's write, honoured only under the publication it was written under.
+        const LegacyDrivePublication pub = LegacyDriveReadPublication(st);
+        if (!pub.coherent || !pub.valid || (pub.seated && !g_config.seat_direct_drive))
+        {
+            LegacyDriveRefused(st, aim_caller::Refusal::Context);
+            return;
+        }
+        context = pub.context();
+    }
+    else if (caller != aim_caller::Caller::Kick)
+    {
+        cap = st.putBackNoStickCap;   // Halo 3 / ODST: no stick call ends these; only their 50 ms does
     }
     float* pair = reinterpret_cast<float*>(pc + site.angles);
     const float native[2]{pair[0], pair[1]};
-    const aim_caller::Refusal why = st.putBack.check(pc, pub.context(), st.stickSeq, AimCallerClockNow(), native);
+    const aim_caller::Refusal why = st.putBack.check(pc, context, st.stickSeq, AimCallerClockNow(), native, cap);
     if (why != aim_caller::Refusal::None)
     {
         LegacyDriveRefused(st, why);
         return;
     }
 #if HALOMCCVR_DEV_DIAGNOSTICS
+    // On foot or seated as the stick write was (Halo 4: the same as now, or the context check refused it).
     for (int a = 0; a < 2; ++a)
         if (st.putBack.axis[a])
         {
             const float d = a == 0 ? LegacyDriveAngleDiff(native[a], st.putBack.value[a])
                                    : native[a] - st.putBack.value[a];
-            aim_caller::AtomicMaxFloat(st.extraDeltaMax[pub.seated ? 1 : 0][a], std::fabs(d) * 57.29578f);
+            aim_caller::AtomicMaxFloat(st.extraDeltaMax[st.putBack.ctx.seated ? 1 : 0][a], std::fabs(d) * 57.29578f);
         }
     st.censusPutBacks.fetch_add(1, std::memory_order_relaxed);
 #endif
@@ -887,7 +918,7 @@ extern "C" void LegacyPcApplyForUser(int slot, int user, uintptr_t ret, const ui
         __try
         {
             if (action == aim_caller::Action::RestoreOnly)
-                LegacyDrivePutBack(st, site, user);
+                LegacyDrivePutBack(st, site, user, caller);
             else
                 LegacyDriveEndUpdate(st);
         }
