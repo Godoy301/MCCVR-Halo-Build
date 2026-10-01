@@ -173,6 +173,10 @@ public:
 private:
     void LearnCalibrated(float height,uint64_t now,float threshold) noexcept
     {
+        // The cap follows the CURRENT depth: a rise learned at a deeper setting comes down with a shallower
+        // one, or the posture the player calibrated in reads as a crouch until they calibrate again. Only the
+        // learned rise moves; the calibration itself never does.
+        baseline_=std::min(baseline_,seed_+MaxLearnedRise(threshold));
         if(height<=baseline_+kRiseSteady||height>seed_+kMaxRise) {riseSince_=0;return;}
         if(!riseSince_||std::fabs(height-riseValue_)>kRiseSteady) {riseSince_=now;riseValue_=height;return;}
         if(now>=riseSince_&&now-riseSince_>=kRiseHoldMs)

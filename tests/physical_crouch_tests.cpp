@@ -180,6 +180,22 @@ int main()
         Check(!seatedCrouch,"sitting back down after a half-rise deeper than the depth is still not a crouch");
         Check(step(r.Baseline()-depth*1.1f),"a real crouch below the learned line still works");
     }
+    // ...and the cap follows the depth slider: a half-rise learned at 40 cm, then the depth lowered to 22 cm --
+    // sitting is still not a crouch (the slider no longer re-samples the reference).
+    {
+        PhysicalCrouchReference r;PhysicalCrouch g;uint64_t now=5000;const float seated=1.2f;float depth=.40f;
+        uint32_t calibration=1;
+        auto step=[&](float h)
+        {now+=20;r.Update(h,calibration,0,now,true,depth);return g.Update(h,r.Baseline(),r.Seeds(),now,true,depth);};
+        step(seated);calibration=2;step(seated);
+        for(int i=0;i<60;++i) step(seated+.27f);
+        Check(r.Baseline()>seated+.2f,"fixture: a half-rise is learned at the deeper setting");
+        depth=.22f;
+        bool seatedCrouch=false;
+        for(int i=0;i<60;++i) seatedCrouch|=step(seated);
+        Check(!seatedCrouch&&r.Baseline()<seated+depth*.70f&&r.Baseline()>=seated,
+            "a shallower depth re-caps the learned rise, never below the calibration: sitting is not a crouch");
+    }
     {
         PhysicalCrouchReference r;uint64_t now=5000;const float normal=1.7f,depth=.22f;uint32_t calibration=1;
         auto step=[&](float h){now+=20;r.Update(h,calibration,0,now,true,depth);};
