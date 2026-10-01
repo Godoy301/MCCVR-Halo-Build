@@ -795,6 +795,10 @@ namespace
         std::atomic<uintptr_t> expected{0};
         uint32_t agree = 0;            // sim thread only
         std::atomic<uint64_t> footControlMs{0};   // the control update last ran for an on-foot local unit
+        // ...and found the hand's aim to write: VR owns Halo 2's aim (Insert switches it) and a hand direction
+        // could be built (it needs both controllers tracked). The view holds its own heading -- and the right
+        // stick -- only while this is fresh, so without a hand the stick aims, as with the drive off.
+        std::atomic<uint64_t> handAimMs{0};
         std::atomic<uint64_t> liveMs{0};          // the last write
         std::atomic<uint32_t> callbacks{0};
         std::atomic<uint32_t> calls{0}, kicks{0}, writes{0}, convergedWrites{0}, waits{0}, arms{0},
@@ -827,6 +831,12 @@ namespace
     {
         const uint64_t at = g_halo2Drive.footControlMs.load(std::memory_order_acquire);
         return at && now >= at && now - at <= 120;
+    }
+
+    bool Halo2DriveHandAimFresh(uint64_t now) noexcept
+    {
+        const uint64_t at = g_halo2Drive.handAimMs.load(std::memory_order_acquire);
+        return at && now >= at && now - at <= 150;
     }
 
     // The stock camera is still the player's own: it looks where the record says (the game builds it from
@@ -1047,10 +1057,14 @@ namespace
     {
         const bool armed = Halo2DriveArmedForView();
         const bool controls = Halo2DriveFootControlFresh(now);
+        const bool handAim = Halo2DriveHandAimFresh(now);
         const bool playerCamera = Halo2DriveCameraFollowsRecord(stock, 0.087f);
         const bool sameGeneration = g_footView.active && g_footView.generation == generation;
+        // While the control update runs, the drive must also have the hand's aim to write (VR aim on, both
+        // controllers tracked), or the view would keep the stick from a game nothing writes the aim into.
+        // While it does not run (a pause, a hitch), the player's camera keeps the heading, as before.
         const bool keep = armed && !vehicle && generation &&
-            (sameGeneration ? (controls || playerCamera) : controls);
+            (sameGeneration ? (controls ? handAim : playerCamera) : (controls && handAim));
         if (keep)
         {
             g_footSeatSeedValid = false;

@@ -166,20 +166,22 @@ void Halo2DriveApply(int user, uint64_t returnAddress) noexcept
                 st.disarms.fetch_add(1, std::memory_order_relaxed);
                 break;
             }
-            // Only once the view is published at its own heading: before that, the stock camera -- built
-            // from this record -- would turn the view with the hand.
-            const uint64_t engaged = g_footViewEngagedMs.load(std::memory_order_acquire);
-            if (!havePublication || !publication.footReferenceValid || !engaged || now < engaged ||
-                now - engaged > 100)
-            {
-                st.waits.fetch_add(1, std::memory_order_relaxed);
-                break;
-            }
+            // The hand's aim, while VR owns Halo 2's aim (Insert switches it off) and a direction can be built
+            // (both controllers tracked). Stamped before the view is engaged too: the observer holds the
+            // heading, and keeps the right stick from the game, only while the drive has something to write.
             float direction[3]{};
             bool converged = false;
             float yaw = 0.0f, pitch = 0.0f;
-            if (!BuildPublishedControllerAimDirection(direction, &converged) ||
-                !Halo2DriveYawPitch(direction, yaw, pitch))
+            const bool handAim = Game_Halo2ControllerAimActive() &&
+                BuildPublishedControllerAimDirection(direction, &converged) &&
+                Halo2DriveYawPitch(direction, yaw, pitch);
+            if (handAim)
+                st.handAimMs.store(now, std::memory_order_release);
+            // Only once the view is published at its own heading: before that, the stock camera -- built
+            // from this record -- would turn the view with the hand.
+            const uint64_t engaged = g_footViewEngagedMs.load(std::memory_order_acquire);
+            if (!handAim || !havePublication || !publication.footReferenceValid || !engaged ||
+                now < engaged || now - engaged > 100)
             {
                 st.waits.fetch_add(1, std::memory_order_relaxed);
                 break;
@@ -254,6 +256,7 @@ bool InstallHalo2Drive(uintptr_t base, size_t size) noexcept
     st.expected.store(0, std::memory_order_release);
     st.agree = 0;
     st.footControlMs.store(0, std::memory_order_release);
+    st.handAimMs.store(0, std::memory_order_release);
     st.liveMs.store(0, std::memory_order_release);
     st.slot = slot;
     st.controlReturn = call + 5;
