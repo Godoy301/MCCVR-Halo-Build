@@ -957,9 +957,11 @@ void Halo4SeatSightMeasureShot(const float pre[3], const float post[3], const fl
 {
     const auto dot = [](const float* a, const float* b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; };
     const float preLength = std::sqrt(dot(pre, pre)), postLength = std::sqrt(dot(post, post));
-    if (std::isfinite(preLength) && preLength > 1.0e-6f && std::isfinite(postLength) && postLength > 1.0e-6f)
+    if (g_halo4BarrelRequest.barrel == 0 && std::isfinite(preLength) && preLength > 1.0e-6f &&
+        std::isfinite(postLength) && postLength > 1.0e-6f)
     {
-        // The turn the assist made bounds this weapon's cap from below (it is the fire routine's own weapon).
+        // The turn the assist made bounds this weapon's cap from below (it is the fire routine's own weapon). Barrel
+        // 0 only, like everything the claim judges: another barrel may fire another projectile at another angle.
         float c0 = dot(pre, post) / (preLength * postLength);
         c0 = c0 > 1.0f ? 1.0f : (c0 < -1.0f ? -1.0f : c0);
         Halo4SeatNoteAssistTurn(g_halo4BarrelRequest.weapon, std::acos(c0));
