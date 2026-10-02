@@ -81,6 +81,24 @@ const char* SeatAimFrameSlotName(int slot)
     return slot == 0 ? "Halo 3" : slot == 1 ? "ODST" : "Reach";
 }
 
+// CO-OP LIMIT OF THE GLOBAL SKIP (review round 1, finding 3; docs/ALL-TITLES-AIM-2026-09-29.md "Co-op limit of
+// the skip"). The jump skips the rebase for EVERY player unit this machine simulates, not only ours. When we host,
+// a co-op peer sitting in a seat whose OWN flags lack bit 4 is no longer rebased on our host while the peer's own
+// game rebases it. Stock Halo 3 / ODST player seats all carry bit 4, so there it needs custom content; stock Reach
+// has such seats. Kept global on purpose: a per-unit skip needs a new code relay inside the rebase, which this round
+// did not add. Logged once per skip so a co-op aim report can be read against it.
+void SeatAimFrameLogCoopLimit(int slot)
+{
+    static bool s_logged[3]{};
+    if (slot < 0 || slot > 2 || s_logged[slot])
+        return;
+    s_logged[slot] = true;
+    LOG("%s seat aim: NOTE (co-op host): the skip applies to every player unit this machine simulates; a peer in a "
+        "seat whose own flags lack bit 4%s is not rebased here while their game rebases it (their aim can differ "
+        "on our host while their vehicle tilts)", SeatAimFrameSlotName(slot),
+        slot == 2 ? " (stock Reach has such seats)" : " (custom content only: every stock seat has bit 4)");
+}
+
 // The occupied seat natively lacks bit 4 (published by the C20 seat patch -- Reach: by its sampler from R-V27's
 // lease; 0 = no). ODST's lives in the ODST bring-up block.
 uint32_t SeatAimFrameNativeNoThirdPerson(int slot)
@@ -300,8 +318,11 @@ void SeatAimFrameApply(int slot, SeatAimFrameState& s)
     }
     s.patched = want;
     if (want)
+    {
         LOG("%s seat aim: the vehicle-tilt rebase is skipped (0x%X), seats aim in world angles as in stock",
             s.site->name, s.site->jccRva);
+        SeatAimFrameLogCoopLimit(slot);
+    }
     else
         LOG("%s seat aim: the vehicle-tilt rebase is back in place (0x%X; %s)", s.site->name, s.site->jccRva,
             SeatAimFrameWhyOff(slot));
@@ -360,8 +381,11 @@ bool SeatAimFrameInstall(GameTitle title, uintptr_t base, size_t size, uint32_t 
         LOG("%s seat aim: the rebase skip is verified at 0x%X but not applied (%s)", site.name, site.jccRva,
             SeatAimFrameWhyOff(slot));
     else if (want && s.patched)
+    {
         LOG("%s seat aim: the vehicle-tilt rebase is skipped (0x%X), seats aim in world angles as in stock",
             site.name, site.jccRva);
+        SeatAimFrameLogCoopLimit(slot);
+    }
     SeatAimFrameApply(slot, s);
     return true;
 }

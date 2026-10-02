@@ -232,6 +232,7 @@ void TestInstallPatchRemove(Fixture& f)
     Check(f.Install(), "install verifies the stock site");
     Check(f.Patched() && f.State().patched, "install applies the skip: E9 rel32+1 90");
     Check(Logged("vehicle-tilt rebase is skipped"), "...and logs it");
+    Check(Logged("NOTE (co-op host)"), "...with the co-op limit of the global skip (once per title)");
     Check(f.ProtectionRestored(), "...and puts the page protection back");
     Check(f.Install() && f.Patched(), "a repeat install of the same mapping keeps the patch");
 
