@@ -26,6 +26,21 @@ inline float unwrap_to_branch(float target, float current) {
     return current + std::remainder(target - current, kTwoPi);
 }
 
+// Put a yaw into [0, 2*pi), the range Halo 3 and ODST keep their control yaw in. A branch-matched
+// write (unwrap_to_branch) can fall up to half a turn outside it when the heading crosses the seam, and
+// those titles pack the yaw into their per-tick player action with a 13-bit quantizer over [0, 2*pi]
+// that neither clamps nor masks: a yaw of 2*pi + 0.0004 or -0.0004 overflows into the action's button
+// field and reads as an action-button press -- in a vehicle, EXIT SEAT (halo3 0x4EAD4 / 0xA3554 /
+// 0x110050 -> 0xE7C68 -> 0xE82CB -> unit action 0xD). The game's own record jumps by 2*pi at the same
+// seam, so this adds no jump the game does not already make. Non-finite -> unchanged.
+inline float wrap_0_2pi(float a) {
+    if (!std::isfinite(a)) return a;
+    a = std::fmod(a, kTwoPi);
+    if (a < 0.0f) a += kTwoPi;
+    if (!(a < kTwoPi) || !(a >= 0.0f)) a = 0.0f;   // fmod/add rounding can land exactly on 2*pi
+    return a;
+}
+
 // Keep a written pitch inside the game's own clamp (radians).
 inline float clamp_pitch(float pitch, float limit) {
     return pitch < -limit ? -limit : (pitch > limit ? limit : pitch);

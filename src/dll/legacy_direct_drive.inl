@@ -249,6 +249,10 @@ struct LegacyDriveState
     std::atomic<uint32_t> seatStints{0}, seatYawChecks{0}, seatPitchChecks{0}, seatPitchFails{0};
     std::atomic<uint32_t> byRole[aim_caller::kCallerCount]{};   // every call, by caller
     std::atomic<uint32_t> restores{0}, restoresRefused{0};
+    // Halo 3 / ODST: writes whose branch-matched yaw fell outside [0, 2*pi) and were wrapped back into it
+    // (aim_write::wrap_0_2pi). Before 2026-10-01 each of those reached the game's action packer unwrapped,
+    // overflowed its 13-bit yaw into the button field and read as an action-button press (seat exits).
+    std::atomic<uint32_t> yawWrapped{0};
     std::atomic<uintptr_t> lastUnknownRet{0};                   // Halo 4: the dispatcher's return
 #if HALOMCCVR_DEV_DIAGNOSTICS
     // Dev census (aim_caller::TickCensus): calls per sim tick and per caller, on foot vs seated.
@@ -1135,6 +1139,16 @@ extern "C" void LegacyPcApplyForUser(int slot, int user, uintptr_t ret, const ui
                     if (latch[1])
                         p = aim_write::clamp_pitch(held[1], 1.45f);
                 }
+                // Halo 3 / ODST pack the control yaw into the per-tick player action as 13 bits over [0, 2*pi]
+                // with no clamp and no mask, so the branch-matched value above, which can lie up to half a
+                // turn past the seam, must be wrapped into the game's own range or its overflow bits press
+                // the action button (exit seat in a vehicle; aim_write::wrap_0_2pi). Halo 4 (slot 2) keeps
+                // the branch-matched value until its own packer is checked.
+                if (slot != 2 && std::isfinite(y) && !(y >= 0.0f && y < aim_write::kTwoPi))
+                {
+                    y = aim_write::wrap_0_2pi(y);
+                    st.yawWrapped.fetch_add(1, std::memory_order_relaxed);
+                }
                 if (std::isfinite(y) && std::isfinite(p))
                 {
                     if (writeYaw)
@@ -1262,10 +1276,10 @@ void LegacyDriveReport()
         else
         {
             LOG("DRIVE %s: armed=%d updates %u, wrote %u; arms %u, disarms %u, seated %u, faults %u; record yaw %.3f "
-                "pitch %.3f vs game aim yaw %.3f pitch %.3f; %s",
+                "pitch %.3f vs game aim yaw %.3f pitch %.3f; yaw wrapped into [0, 2pi) %u; %s",
                 name, st.armed.load() ? 1 : 0, calls, st.writes.exchange(0), st.arms.exchange(0),
                 st.disarms.exchange(0), st.seatedSkips.exchange(0), st.faults.exchange(0), st.nativeYaw.load(),
-                st.nativePitch.load(), st.aimYaw.load(), st.aimPitch.load(), callers);
+                st.nativePitch.load(), st.aimYaw.load(), st.aimPitch.load(), st.yawWrapped.exchange(0), callers);
             const uint32_t stints = st.seatStints.exchange(0), yawWrites = st.seatYawWrites.exchange(0),
                            pitchWrites = st.seatPitchWrites.exchange(0), unverified = st.seatUnverified.exchange(0),
                            yawChecks = st.seatYawChecks.exchange(0), pitchChecks = st.seatPitchChecks.exchange(0),
