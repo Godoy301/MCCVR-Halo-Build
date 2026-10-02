@@ -1296,6 +1296,7 @@ void ConfigLoad(const wchar_t* path)
             continue;
         }
         if (!strcmp(key, "type13_log")) { g_config.type13_log=atoi(val)!=0?1:0; continue; }
+        if (!strcmp(key, "seat_aim_world_frame")) { g_config.seat_aim_world_frame=atoi(val)!=0?1:0; continue; }
         if (!strcmp(key, "dev_synthetic_pad")) { g_config.dev_synthetic_pad=atoi(val)!=0?1:0; continue; }
         if (!strcmp(key, "reach_sight_fault")) { g_config.reach_sight_fault=(int)strtol(val,nullptr,0); continue; }
         if (!strcmp(key, "reach_sight_trace_length_m")) { g_config.reach_sight_trace_length_m=(float)atof(val); continue; }
@@ -2202,6 +2203,10 @@ void ConfigSave()
     fprintf(f, "# DEV BUILD ONLY. 1 = log the type-13 pilot controllers (Reach Sabre, Halo 4 Broadsword): REACH SF and\n");
     fprintf(f, "# H4 T13 lines. Writes nothing to the game. Read at startup. Leave at 0.\n");
     fprintf(f, "type13_log = %d\n\n", g_config.type13_log);
+    fprintf(f, "# DEV BUILD ONLY. Halo 3 / ODST seats: 1 = skip the game's vehicle-tilt rebase of the aim while the\n");
+    fprintf(f, "# first-person seat patch is on, so seats aim in world angles as in stock. 0 = leave the rebase (A/B for\n");
+    fprintf(f, "# the DRIVE seats frame check line). (default %d)\n", d.seat_aim_world_frame);
+    fprintf(f, "seat_aim_world_frame = %d\n\n", g_config.seat_aim_world_frame);
     fprintf(f, "# DEV BUILD ONLY. Headless tests: 1 = a synthetic gamepad driven by halomccvr_pad.txt in the\n");
     fprintf(f, "# mod folder (tools/Send-MccPad.ps1). Read at startup. Leave at 0.\n");
     fprintf(f, "dev_synthetic_pad = %d\n\n", g_config.dev_synthetic_pad);

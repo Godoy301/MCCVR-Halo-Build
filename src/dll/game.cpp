@@ -34,6 +34,7 @@
 #include "../common/contact_melee_motion.h"
 #include "../common/halo3_melee_selection_logic.h"
 #include "../common/halo4_contact_melee_logic.h"
+#include "../common/seat_aim_frame_logic.h"
 #include <windows.h>
 #include <tlhelp32.h>
 #include <array>
@@ -199,6 +200,15 @@ bool LegacyDriveInstall(GameTitle title, uintptr_t base, size_t size);
 bool LegacyDriveRemove(GameTitle title);
 bool LegacyDriveLive(GameTitle title);
 void LegacyDriveReport();
+// Halo 3 / ODST seats aim in world angles (seat_aim_world_frame.inl): the vehicle-tilt rebase is skipped while
+// the first-person seat patch is enabled. Install/remove with the title; the WaitThread poll follows the setting.
+bool SeatAimFrameInstall(GameTitle title, uintptr_t base, size_t size, uint32_t generation);
+bool SeatAimFrameRemove(GameTitle title);
+void SeatAimFrameSync();
+#if HALOMCCVR_DEV_DIAGNOSTICS
+void SeatAimFrameNoteSeated(int slot, float recordYaw, float recordPitch, float aimYaw, float aimPitch);
+void SeatAimFrameReport(int slot, const char* name);
+#endif
 #if HALOMCCVR_DEV_DIAGNOSTICS
 // DEV BUILDS ONLY: the log-only hooks on the type-13 pilot controllers (type13_flight_log.inl): the cold
 // worker's report, and Halo 4's install/remove inside its camera core.
@@ -15479,6 +15489,9 @@ namespace
             }
         }
         Halo3RestoreNativeSeatPatch();
+        // The seat flags are stock again, so the rebase skip is now inert;
+        // put the game's own jne back (only over our bytes).
+        if (!SeatAimFrameRemove(GameTitle::Halo3)) return false;
         // Optional publishers are now stopped too. Retire every old feature
         // before any new module can overwrite its target/original pair.
         if (!RemoveHalo3Avatar()) return false;
@@ -16396,6 +16409,7 @@ namespace
             RememberInstalledGameHook(g_halo3WorldCollision.target);
         (void)InstallHalo3ContactMelee(base,size,runtimeGeneration);
         (void)LegacyDriveInstall(GameTitle::Halo3,base,size);
+        (void)SeatAimFrameInstall(GameTitle::Halo3,base,size,runtimeGeneration);
         (void)InstallHalo3WeaponHaptics(base,size,runtimeGeneration);
         (void)InstallHalo3Avatar(base,size,runtimeGeneration);
         // The rejected early-helper-only detours remain inert. The new optional
@@ -18112,6 +18126,9 @@ namespace
         if(!RemoveOdstWeaponHaptics())return false;
         if(!RemoveOdstMuzzle())return false;
         if(!LegacyDriveRemove(GameTitle::Halo3ODST)) return false;
+        // Put the game's own seat-flag jne back (only over our bytes). With
+        // stock seat flags the skip is inert, so order does not matter.
+        if(!SeatAimFrameRemove(GameTitle::Halo3ODST)) return false;
         if(!DisableAndRemoveOdstContactMelee()) return false;
         // Stop new outer stereo transactions first. Existing ones retain all FP
         // dependencies until their complete two-eye callback has returned.
@@ -18490,6 +18507,7 @@ namespace
 
         (void)InstallOdstContactMelee(base,size,runtimeGeneration);
         (void)LegacyDriveInstall(GameTitle::Halo3ODST,base,size);
+        (void)SeatAimFrameInstall(GameTitle::Halo3ODST,base,size,runtimeGeneration);
         (void)InstallOdstMuzzle(base,size,runtimeGeneration);
         (void)InstallOdstWeaponHaptics(base,size,runtimeGeneration);
 
@@ -46210,6 +46228,7 @@ namespace
             Halo4SeatSightReport();   // SIGHT Halo 4 seat eye / seated trace, SHOT Halo 4 seated
 #endif
             LegacyDriveReport();
+            SeatAimFrameSync();   // Halo 3 / ODST seat aim: follow the first-person seat settings
 #if HALOMCCVR_DEV_DIAGNOSTICS
             Type13LogReport();   // the type-13 pilot-controller log lines (REACH SF, H4 T13)
 #endif
@@ -51100,6 +51119,7 @@ bool Game_ReachDdTestOwnsAim()
     return g_reachDdpOwnsAim.load(std::memory_order_acquire);
 }
 #endif
+#include "seat_aim_world_frame.inl"
 #include "legacy_direct_drive.inl"
 #if HALOMCCVR_DEV_DIAGNOSTICS
 #include "type13_flight_log.inl"

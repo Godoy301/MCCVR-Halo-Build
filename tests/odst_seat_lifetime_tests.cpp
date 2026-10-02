@@ -94,6 +94,16 @@ int main()
     Check(!g_odstNativeSeatPatch.active&&g_odstNativeSeatState==0,"fault isolated during cleanup");
     Check(VirtualProtect(memory+0x1000,0x1000,PAGE_READWRITE,&previous)!=0,"restore fixture page");
     Check(*word==0x120,"unreadable storage untouched");
+    // A seat whose ORIGINAL flags lack bit 4 (custom or modded): refused, and published for the world-angle
+    // rebase skip, which stands down there because stock rebases that seat too.
+    reset();Check(g_odstSeatNativeNoThirdPerson==0,"a stock seat is not reported as natively lacking bit 4");
+    OdstRestoreNativeSeatPatch();*word=0x120;
+    Check(!OdstEnsureFirstPersonSeatFlag(4,1,generation)&&*word==0x120,"a seat natively lacking bit 4 is refused");
+    Check(g_odstSeatNativeNoThirdPerson==OdstSeatNativeNoThirdPersonKey(4,1),"...and published with its definition and seat");
+    Check(!OdstEnsureFirstPersonSeatFlag(4,1,generation)&&g_odstSeatNativeNoThirdPerson==OdstSeatNativeNoThirdPersonKey(4,1),
+        "...and stays published while the same seat is occupied");
+    OdstRestoreNativeSeatPatch();Check(g_odstSeatNativeNoThirdPerson==0,"...and is cleared when the seat is left");
+    *word=0x130;
     reset();g_config.vehicle_hide_body=false;
     Check(!OdstEnsureFirstPersonSeatFlag(4,1,generation)&&*word==0x130,"config off restores live seat");
     Check(VirtualFree(memory,0,MEM_RELEASE)!=0,"fixture freed");

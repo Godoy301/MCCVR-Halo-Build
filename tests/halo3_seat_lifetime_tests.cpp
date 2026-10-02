@@ -99,6 +99,16 @@ int main()
     Check(!g_halo3NativeSeatPatch.active&&g_halo3NativeSeatState==0,"fault isolated during cleanup");
     Check(VirtualProtect(memory+0x1000,0x1000,PAGE_READWRITE,&previous)!=0,"restore fixture page");
     Check(*word==0x120,"unreadable storage untouched");
+    // A seat whose ORIGINAL flags lack bit 4 (custom or modded): refused, and published for the world-angle
+    // rebase skip, which stands down there because stock rebases that seat too.
+    reset();Check(g_halo3SeatNativeNoThirdPerson==0,"a stock seat is not reported as natively lacking bit 4");
+    Halo3RestoreNativeSeatPatch();*word=0x120;
+    Check(!Halo3EnsureFirstPersonSeatFlag(4,1,generation)&&*word==0x120,"a seat natively lacking bit 4 is refused");
+    Check(g_halo3SeatNativeNoThirdPerson==Halo3SeatNativeNoThirdPersonKey(4,1),"...and published with its definition and seat");
+    Check(!Halo3EnsureFirstPersonSeatFlag(4,1,generation)&&g_halo3SeatNativeNoThirdPerson==Halo3SeatNativeNoThirdPersonKey(4,1),
+        "...and stays published while the same seat is occupied");
+    Halo3RestoreNativeSeatPatch();Check(g_halo3SeatNativeNoThirdPerson==0,"...and is cleared when the seat is left");
+    *word=0x130;
     reset();g_config.vehicle_hide_body=false;
     Check(!Halo3EnsureFirstPersonSeatFlag(4,1,generation)&&*word==0x130,"config off restores live seat");
     Check(*reinterpret_cast<int32_t*>(memory+0x1000+kHalo3VehicleSeatStride+kHalo3SeatCameraTracksBlockOffset)==1,
