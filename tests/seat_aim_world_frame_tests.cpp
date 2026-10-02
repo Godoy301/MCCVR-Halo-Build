@@ -86,19 +86,6 @@ public:
     const std::vector<ReachFrozenThread>& Threads() const { return g_fakeThreads; }
 };
 
-#if HALOMCCVR_DEV_DIAGNOSTICS
-struct Halo3SeatSnapshot
-{
-    float up[3];
-};
-static bool Halo3ReadSeatSnapshot(Halo3SeatSnapshot& seat)
-{
-    seat.up[0] = std::sin(0.5f);
-    seat.up[1] = 0.0f;
-    seat.up[2] = std::cos(0.5f);
-    return true;
-}
-#endif
 
 #include "../src/dll/seat_aim_world_frame.inl"
 
@@ -503,20 +490,6 @@ void TestGenerationChange(Fixture& f)
     --generation;
 }
 
-#if HALOMCCVR_DEV_DIAGNOSTICS
-void TestWitness()
-{
-    ResetWorld();
-    SeatAimFrameNoteSeated(0, 0.0f, 0.0f, 0.0f, 0.1f);
-    SeatAimFrameNoteSeated(0, 0.0f, 0.0f, 0.0f, 0.05f);
-    SeatAimFrameReport(0, "Halo 3");
-    Check(Logged("frame check: max |record - game aim| 5.73 deg at tilt 28.6 deg (2 seated stick updates"),
-          "dev witness: the max error with its tilt, per 2 s window");
-    g_log.clear();
-    SeatAimFrameReport(0, "Halo 3");
-    Check(g_log.empty(), "dev witness: an empty window prints nothing");
-}
-#endif
 } // namespace
 
 int main()
@@ -535,9 +508,6 @@ int main()
         TestForeignAfterInstall(*f);
         TestGenerationChange(*f);
     }
-#if HALOMCCVR_DEV_DIAGNOSTICS
-    TestWitness();
-#endif
     Check(g_freezeCaptures > 0, "the freeze was taken for every write");
     VirtualFree(halo3.base, 0, MEM_RELEASE);
     VirtualFree(odst.base, 0, MEM_RELEASE);

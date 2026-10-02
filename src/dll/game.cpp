@@ -72,6 +72,7 @@
 #include "../common/physical_crouch_cached_witnesses.h"
 #include "d3d11_hook.h"
 #include "sigscan.h"
+#include "seat_frame_reader.h"
 #include "vr.h"
 #include "native_subtitles.h"
 #include "bloom_override.h"
@@ -206,10 +207,6 @@ void LegacyDriveReport();
 bool SeatAimFrameInstall(GameTitle title, uintptr_t base, size_t size, uint32_t generation);
 bool SeatAimFrameRemove(GameTitle title);
 void SeatAimFrameSync();
-#if HALOMCCVR_DEV_DIAGNOSTICS
-void SeatAimFrameNoteSeated(int slot, float recordYaw, float recordPitch, float aimYaw, float aimPitch);
-void SeatAimFrameReport(int slot, const char* name);
-#endif
 #if HALOMCCVR_DEV_DIAGNOSTICS
 // DEV BUILDS ONLY: the log-only hooks on the type-13 pilot controllers (type13_flight_log.inl): the cold
 // worker's report, and Halo 4's install/remove inside its camera core.

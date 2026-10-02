@@ -307,33 +307,6 @@ void SeatAimFrameApply(int slot, SeatAimFrameState& s)
             SeatAimFrameWhyOff(slot));
 }
 
-#if HALOMCCVR_DEV_DIAGNOSTICS
-// DEV witness: per seated stick update, the angle between the record's e(yaw, pitch) and the game's world aim,
-// max per 2 s window with the vehicle tilt at that sample (Halo 3 only: ODST has no proven up binding). Packed
-// as (err bits << 32) | tilt bits so the pair stays together; the sim thread is the only writer, the report
-// exchanges it with 0.
-struct SeatAimFrameWitness
-{
-    std::atomic<uint64_t> maxPair{0};
-    std::atomic<uint32_t> samples{0};
-    std::atomic<uint32_t> maxTiltBits{0};
-};
-SeatAimFrameWitness g_seatAimFrameWitness[2];
-
-uint32_t SeatAimFrameFloatBits(float v)
-{
-    uint32_t bits = 0;
-    memcpy(&bits, &v, sizeof(bits));
-    return bits;
-}
-
-float SeatAimFrameBitsFloat(uint32_t bits)
-{
-    float v = 0.0f;
-    memcpy(&v, &bits, sizeof(v));
-    return v;
-}
-#endif
 } // namespace
 
 bool SeatAimFrameInstall(GameTitle title, uintptr_t base, size_t size, uint32_t generation)
@@ -444,66 +417,5 @@ void SeatAimFrameSync()
     }
 }
 
-#if HALOMCCVR_DEV_DIAGNOSTICS
-// Sim thread (LegacyPcApplyForUser), dev builds only: one seated stick update's record against the game's aim.
-void SeatAimFrameNoteSeated(int slot, float recordYaw, float recordPitch, float aimYaw, float aimPitch)
-{
-    if (slot < 0 || slot > 1)
-        return;
-    const float err = seat_aim_frame::AimSeparationDeg(recordYaw, recordPitch, aimYaw, aimPitch);
-    if (!std::isfinite(err))
-        return;
-    float tilt = std::numeric_limits<float>::quiet_NaN();
-    if (slot == 0)
-    {
-        Halo3SeatSnapshot seat{};
-        if (Halo3ReadSeatSnapshot(seat))
-            tilt = seat_aim_frame::TiltDeg(seat.up);
-    }
-    SeatAimFrameWitness& w = g_seatAimFrameWitness[slot];
-    w.samples.fetch_add(1, std::memory_order_relaxed);
-    if (std::isfinite(tilt))
-    {
-        uint32_t seen = w.maxTiltBits.load(std::memory_order_relaxed);
-        while ((!seen || SeatAimFrameBitsFloat(seen) < tilt) &&
-               !w.maxTiltBits.compare_exchange_weak(seen, SeatAimFrameFloatBits(tilt), std::memory_order_relaxed))
-        {
-        }
-    }
-    const uint64_t pair = static_cast<uint64_t>(SeatAimFrameFloatBits(err)) << 32 | SeatAimFrameFloatBits(tilt);
-    uint64_t seen = w.maxPair.load(std::memory_order_relaxed);
-    while ((!seen || SeatAimFrameBitsFloat(static_cast<uint32_t>(seen >> 32)) < err) &&
-           !w.maxPair.compare_exchange_weak(seen, pair, std::memory_order_relaxed))
-    {
-    }
-}
-
-// WaitThread, from LegacyDriveReport's 2 s window: the frame check line, when a seated stick update ran.
-void SeatAimFrameReport(int slot, const char* name)
-{
-    if (slot < 0 || slot > 1)
-        return;
-    SeatAimFrameWitness& w = g_seatAimFrameWitness[slot];
-    const uint32_t samples = w.samples.exchange(0, std::memory_order_relaxed);
-    const uint64_t pair = w.maxPair.exchange(0, std::memory_order_relaxed);
-    const uint32_t maxTilt = w.maxTiltBits.exchange(0, std::memory_order_relaxed);
-    if (!samples)
-        return;
-    const float err = SeatAimFrameBitsFloat(static_cast<uint32_t>(pair >> 32));
-    const float tilt = SeatAimFrameBitsFloat(static_cast<uint32_t>(pair));
-    const SeatAimFrameState& s = g_seatAimFrame[slot];
-    const char* rebase = !s.jcc ? "rebase NOT managed (see the seat aim install line)"
-                       : s.patched ? "rebase skipped" : "game's rebase in place";
-    char tiltText[32], maxTiltText[32];
-    if (std::isfinite(tilt))
-        snprintf(tiltText, sizeof(tiltText), "%.1f deg", tilt);
-    else
-        snprintf(tiltText, sizeof(tiltText), "n/a");
-    if (maxTilt)
-        snprintf(maxTiltText, sizeof(maxTiltText), "%.1f deg", SeatAimFrameBitsFloat(maxTilt));
-    else
-        snprintf(maxTiltText, sizeof(maxTiltText), "n/a");
-    LOG("DRIVE %s seats (dev): frame check: max |record - game aim| %.2f deg at tilt %s (%u seated stick updates, "
-        "max tilt %s; %s)", name, err, tiltText, samples, maxTiltText, rebase);
-}
-#endif
+// The dev frame check that used to live here (Halo 3 / ODST only) is now every title's: seat_frame_reader.h
+// (seat_frame_rt::NoteFrameCheck), printed in each drive's seats line.

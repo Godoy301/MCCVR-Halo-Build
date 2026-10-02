@@ -44,6 +44,17 @@
 // (aim_write::LimitLatch), pitch excepted for a LOOK-STEERED driver, whose pitch the accumulator levels as the vehicle
 // moves. A seat may also ARM the hook, on yaw agreement alone: a checkpoint that loads in a vehicle.
 //
+// THE SEAT'S FRAME (2026-10-01; seat_frame_reader.h, docs/ALL-TITLES-AIM-2026-09-29.md "Seats aim in world
+// angles"). The record is NOT always in world angles: each title's rebase (Halo 3 0x355E20, ODST 0x39A600, Halo 4
+// 0x5F97DC) rotates it by the vehicle's up frame R(u) unless the seat's live flags carry bit 4. So each seated
+// update first reads, on this thread and from the unit the rebase itself will rotate, what the rebase will do this
+// tick: WORLD (bit 4, or its own early exit), case (a) (our Halo 3 / ODST skip: the flag is clear only because C20
+// cleared it, and the rebase is jumped over -- what an unmodded peer computes), or case (b) (the seat's own data
+// lacks bit 4: every peer applies R(u) to the action angles we send). In case (b) the hand's world aim AND the
+// game's world aim are taken into the record's frame -- the record holds R^-1 of the aim -- before the stint check,
+// the arm gate, the seat-limit latch and the write, so every comparison is like with like. A frame that does not
+// read makes NO seated write that update (the servo keeps the seat; the stint survives it like a gap).
+//
 // THE STICK CALL IS THE UPDATE (aim_caller_logic.h). The accumulator does not only run for the stick. Halo 3
 // and ODST call it directly from three sites -- the stick update, the no-unit path and a weapon's pitch kick
 // -- so this detour's own return address names the caller. Halo 4 calls it from ONE site inside the
@@ -284,8 +295,15 @@ struct LegacyDriveState
     std::atomic<float> wroteYaw[2]{}, wrotePitch[2]{};
     std::atomic<bool> wroteValid[2]{};
     std::atomic<float> nativeYaw{0.0f}, nativePitch{0.0f};
+    // The seat's frame (seat_frame_reader.h): bound at install with the hook, read on the sim thread each seated
+    // update; its per-case counters feed the seats line (and, dev, the frame check).
+    seat_frame_rt::Binding frame{};
+    seat_frame_rt::Counters frameCounters{};
 };
 LegacyDriveState g_legacyDrive[3];
+
+constexpr const seat_frame::ReaderSite* kLegacyFrameSites[3]{&seat_frame::kHalo3Reader, &seat_frame::kOdstReader,
+                                                             &seat_frame::kHalo4Reader};
 
 int LegacyDriveSlot(GameTitle title)
 {
@@ -375,6 +393,26 @@ int LegacyDriveHalo4RecordSeat(const uint8_t* tls, uintptr_t pc)
     }
 }
 #endif
+
+// Sim thread: the local player's unit -- the one the title's rebase will rotate this tick. Halo 3 / ODST: the
+// player-unit getter (output user 0), as LegacyDriveLocalOnFoot reads it; Halo 4: the record's own unit (+0x120,
+// proven at install). kNone when unknown (the seat frame then reads Unknown: no seated write).
+uint32_t LegacyDriveSeatUnit(int slot, const LegacyDriveState& st, uintptr_t pc)
+{
+    __try
+    {
+        if (slot == 0)
+            return g_halo3PlayerUnitGetter ? static_cast<uint32_t>(g_halo3PlayerUnitGetter(0)) : seat_frame::kNone;
+        if (slot == 1)
+            return g_odstPlayerUnitGetter ? static_cast<uint32_t>(g_odstPlayerUnitGetter(0)) : seat_frame::kNone;
+        if (slot == 2 && st.halo4RecordUnit && pc)
+            return *reinterpret_cast<const uint32_t*>(pc + kHalo4RecordUnitOffset);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+    }
+    return seat_frame::kNone;
+}
 
 // The pattern matches at exactly base + rva (not merely somewhere).
 bool LegacyDriveBytesAt(uintptr_t base, size_t size, uint32_t rva, const char* pattern)
@@ -589,6 +627,11 @@ bool LegacyDriveInstall(GameTitle title, uintptr_t base, size_t size)
     st.base = base;
     st.halo4RecordUnit = recordUnit;
     st.tlsIndexAddress = indexAddress;
+    // The seat's frame: what the title's vehicle-tilt rebase reads, proven here (seat_frame_reader.h). Unbound,
+    // every seated update reads Unknown and writes nothing (the stick servo keeps every seat).
+    const char* frameWhy = nullptr;
+    const bool frameBound = seat_frame_rt::Bind(st.frame, *kLegacyFrameSites[slot], base, size, frameWhy);
+    st.frameCounters.unknownLogged.store(0, std::memory_order_relaxed);
     const MH_STATUS created = MH_CreateHook(target, detour, orig);
     if (created != MH_OK || MH_EnableHook(target) != MH_OK)
     {
@@ -607,6 +650,13 @@ bool LegacyDriveInstall(GameTitle title, uintptr_t base, size_t size)
     if (slot == 2)
         LOG("DRIVE Halo 4: the record's unit load at +0x%X %s", kHalo4RecordUnitLoadRva,
             recordUnit ? "verified (seats may be written)" : "did NOT verify; seats keep the stick servo");
+    if (frameBound)
+        LOG("DRIVE %s: seat frame reader bound (the rebase +0x%X: its gate +0x%X and up getter +0x%X proven): a seated "
+            "write follows the vehicle-tilt rebase (world / a / b)", site.name, kLegacyFrameSites[slot]->rebaseRva,
+            kLegacyFrameSites[slot]->gateRva, kLegacyFrameSites[slot]->getterRva);
+    else
+        LOG("DRIVE %s: seat frame reader NOT bound (%s at +0x%X); seats are never written (the stick servo keeps "
+            "every seat)", site.name, frameWhy ? frameWhy : "unknown", kLegacyFrameSites[slot]->gateRva);
     return true;
 }
 
@@ -636,6 +686,7 @@ bool LegacyDriveRemove(GameTitle title)
         return false;
     st.target = nullptr;
     *orig = nullptr;
+    seat_frame_rt::Unbind(st.frame);
     return true;
 }
 
@@ -990,6 +1041,7 @@ extern "C" void LegacyPcApplyForUser(int slot, int user, uintptr_t ret, const ui
     bool seatWrote = false;   // this update ended in a seat write (the latch keeps its last value only then)
     bool seatKept = false;    // this update continued a seat stint (its checks survive)
     bool wroteAxis[2]{};      // which axes this update's seat write wrote
+    seat_frame_rt::Live seatFrame{};   // the seat's frame this update (World unless read)
     __try
     {
         do
@@ -1018,7 +1070,8 @@ extern "C" void LegacyPcApplyForUser(int slot, int user, uintptr_t ret, const ui
             st.nativeYaw.store(nativeYaw, std::memory_order_relaxed);
             st.nativePitch.store(nativePitch, std::memory_order_relaxed);
             const LegacyDrivePublication pub = LegacyDriveReadPublication(st);
-            const float yaw = pub.yaw, pitch = pub.pitch, aimYaw = pub.aimYaw, aimPitch = pub.aimPitch;
+            // World angles as published; a seat in case (b) takes them into the record's frame below.
+            float yaw = pub.yaw, pitch = pub.pitch, aimYaw = pub.aimYaw, aimPitch = pub.aimPitch;
             const uint64_t setMs = pub.setMs;
             const uint32_t axesBits = pub.axesBits, seatKey = pub.seatKey;
             const bool valid = pub.valid, seatedSet = pub.seated, pitchLatch = pub.pitchLatch, coherent = pub.coherent;
@@ -1042,10 +1095,6 @@ extern "C" void LegacyPcApplyForUser(int slot, int user, uintptr_t ret, const ui
             const uint64_t now = GetTickCount64();
             const bool fresh = coherent && valid && setMs && now >= setMs && now - setMs <= 200;
 #if HALOMCCVR_DEV_DIAGNOSTICS
-            // The seat frame check (seat_aim_world_frame.inl): a seated record against the game's world aim. With
-            // the vehicle-tilt rebase skipped it stays small at any tilt; with the rebase in place it grows with it.
-            if (seatedSet && fresh && slot < 2)
-                SeatAimFrameNoteSeated(slot, nativeYaw, nativePitch, aimYaw, aimPitch);
             ds.setYaw = yaw; ds.setPitch = pitch; ds.aimYaw = aimYaw; ds.aimPitch = aimPitch;
             ds.seatKey = seatKey;
             ds.pubAgeMs = static_cast<uint16_t>(setMs && now >= setMs ? (now - setMs > 0xFFFE ? 0xFFFE : now - setMs)
@@ -1078,6 +1127,30 @@ extern "C" void LegacyPcApplyForUser(int slot, int user, uintptr_t ret, const ui
                 (!onFoot && seatConfirmed && g_config.seat_direct_drive && fresh) ? axesBits : 0u;
             const bool seatWrite = wantAxes != 0;
             seatKept = seatWrite;
+            // THE SEAT'S FRAME, read now from the unit the rebase will rotate this tick (see the header). In case
+            // (b) the hand's aim and the game's aim go into the record's frame; unread, nothing is written.
+            if (seatWrite)
+            {
+                seatFrame = seat_frame_rt::Read(st.frame, nullptr, LegacyDriveSeatUnit(slot, st, pc));
+                seat_frame_rt::Count(st.frameCounters, seatFrame.kase);
+#if HALOMCCVR_DEV_DIAGNOSTICS
+                // THE FRAME CHECK: the record (as the accumulator left it) through R against the game's world aim.
+                seat_frame_rt::NoteFrameCheck(st.frameCounters, seatFrame, nativeYaw, nativePitch, aimYaw, aimPitch);
+#endif
+                if (!seat_frame_rt::ToRecord(seatFrame, yaw, pitch, nativeYaw) ||
+                    !seat_frame_rt::ToRecord(seatFrame, aimYaw, aimPitch, nativeYaw))
+                {
+                    // No frame this update: no seated write, the servo keeps the seat. The stint survives it as it
+                    // survives a gap (bounded), so a flicker of an unreadable link does not cost the proven checks.
+                    seatKept = st.stintActive && st.stintKey == seatKey &&
+                        ++st.stintStaleUpdates <= kLegacyDriveStintStaleUpdates;
+                    LEGACY_DRIVE_WITNESS(ds.outcome = seatKept ? seat_witness::DriveGapKept
+                                                               : seat_witness::DriveSkipped);
+                    st.seatedSkips.fetch_add(1, std::memory_order_relaxed);
+                    st.agree = 0;
+                    break;
+                }
+            }
 #if HALOMCCVR_DEV_DIAGNOSTICS
             ds.axes = static_cast<uint8_t>(wantAxes & 3u);
             ds.flags |= (onFoot ? seat_witness::DriveOnFoot : 0) |
@@ -1253,8 +1326,18 @@ extern "C" void LegacyPcApplyForUser(int slot, int user, uintptr_t ret, const ui
                                                std::memory_order_relaxed);
                         st.wroteValid[1].store(st.wroteValid[0].load(std::memory_order_relaxed),
                                                std::memory_order_relaxed);
-                        st.wroteYaw[0].store(writeYaw ? y : nativeYaw, std::memory_order_relaxed);
-                        st.wrotePitch[0].store(writePitch ? p : nativePitch, std::memory_order_relaxed);
+                        // As the WORLD angles the write put into effect (R e(record) in case b): the input thread's
+                        // witnesses compare these with the game's world aim.
+                        float worldYaw = writeYaw ? y : nativeYaw, worldPitch = writePitch ? p : nativePitch;
+                        seat_frame::Angles world{};
+                        if (seatFrame.kase == seat_frame::Case::Rebased &&
+                            seat_frame::WorldFromRecord(seatFrame.frame, worldYaw, worldPitch, world))
+                        {
+                            worldYaw = world.yaw;
+                            worldPitch = world.pitch;
+                        }
+                        st.wroteYaw[0].store(worldYaw, std::memory_order_relaxed);
+                        st.wrotePitch[0].store(worldPitch, std::memory_order_relaxed);
                         st.wroteValid[0].store(true, std::memory_order_relaxed);
                         st.wroteSeq.fetch_add(1, std::memory_order_release);
                         if (writeYaw)
@@ -1367,17 +1450,30 @@ void LegacyDriveReport()
                            pitchWrites = st.seatPitchWrites.exchange(0), unverified = st.seatUnverified.exchange(0),
                            yawChecks = st.seatYawChecks.exchange(0), pitchChecks = st.seatPitchChecks.exchange(0),
                            pitchFails = st.seatPitchFails.exchange(0), held = st.seatHeld.exchange(0);
-            if (stints || yawWrites || pitchWrites || unverified || yawChecks || pitchChecks || pitchFails || held)
+            char frames[96];
+            const bool unread = seat_frame_rt::CaseText(st.frameCounters, frames, sizeof(frames));
+            if (stints || yawWrites || pitchWrites || unverified || yawChecks || pitchChecks || pitchFails || held ||
+                frames[0])
                 LOG("DRIVE %s seats: new stints %u; checks passed yaw %u pitch %u, pitch checks failed %u (retried after 5 s); writes "
                     "yaw %u pitch %u (held at a seat limit %u); updates waiting on a check %u; this stint yaw %s, "
-                    "pitch %s",
+                    "pitch %s; %s",
                     name, stints, yawChecks, pitchChecks, pitchFails, yawWrites, pitchWrites, held, unverified,
                     st.stint.yaw_ok ? "proven" : "checking",
-                    st.stint.pitch_ok ? "proven" : st.stint.pitch_failed ? "servo until its retry" : "checking");
+                    st.stint.pitch_ok ? "proven" : st.stint.pitch_failed ? "servo until its retry" : "checking",
+                    frames[0] ? frames : "frame not read");
+            // Once per binding: a seat whose frame did not read is never written (the servo keeps it).
+            if (unread && !st.frameCounters.unknownLogged.exchange(1, std::memory_order_relaxed))
+                LOG("DRIVE %s seats: the seat's frame did not read (the rebase's links or the vehicle's up failed "
+                    "their checks); those updates write nothing and the stick servo keeps the seat (logged once)",
+                    name);
         }
 #if HALOMCCVR_DEV_DIAGNOSTICS
-        if (slot < 2)
-            SeatAimFrameReport(slot, name);   // DRIVE <title> seats (dev): frame check ...
+        {
+            char check[224];
+            seat_frame_rt::FrameCheckText(st.frameCounters, check, sizeof(check));
+            if (check[0])
+                LOG("DRIVE %s seats (dev): %s", name, check);   // frame check: max |R*e(record) - game aim| ...
+        }
         // THE CENSUS: calls per sim tick and per caller. "stick per tick" is frames per tick (2.00 at 120 fps
         // over a 60 Hz sim); ~1.00 at 120 fps would mean the pass runs per tick after all.
         const aim_caller::CensusTotals t = st.census.take();
