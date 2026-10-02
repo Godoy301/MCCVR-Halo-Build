@@ -249,6 +249,61 @@ void TestClassify()
           "classify: the log names");
 }
 
+// The yaw-only write: the world heading R e(written yaw, record pitch) lands on, against the hand's.
+float WorldYawErrorDeg(const Frame& r, float yaw, float recordPitch, float handYaw)
+{
+    Angles w{};
+    if (!WorldFromRecord(r, yaw, recordPitch, w))
+        return 1e9f;
+    return std::fabs(std::remainder(w.yaw - handYaw, 2.0f * kPi)) / kDeg;
+}
+
+void TestYawOnlyWrite()
+{
+    // The worked example: 30 deg of roll, the hand 20 deg up at heading 0, the record still level in pitch.
+    const float up[3]{0.0f, -std::sin(30.0f * kDeg), std::cos(30.0f * kDeg)};
+    Frame r{};
+    Check(BuildFrame(up, r), "yaw-only: a rolled frame");
+    const float handYaw = 0.0f, handPitch = 20.0f * kDeg, recordPitch = 0.0f;
+    Angles old{};
+    Check(RecordFromWorld(r, handYaw, handPitch, 0.0f, old), "yaw-only: the old conversion resolves");
+    const float oldErr = WorldYawErrorDeg(r, old.yaw, recordPitch, handYaw);
+    float y = 0.0f;
+    Check(RecordYawForWorldYaw(r, handYaw, old.yaw, recordPitch, y), "yaw-only: the new conversion resolves");
+    const float newErr = WorldYawErrorDeg(r, y, recordPitch, handYaw);
+    Check(oldErr > 5.0f, "yaw-only: the old conversion (the hand's pitch) misses the heading by several degrees");
+    Check(newErr < 0.5f * oldErr, "yaw-only: the current world pitch at least halves it in one update");
+    // Each update the record yaw is the last write: the residual shrinks to nothing.
+    for (int i = 0; i < 6; ++i)
+        Check(RecordYawForWorldYaw(r, handYaw, y, recordPitch, y), "yaw-only: resolves every update");
+    Check(WorldYawErrorDeg(r, y, recordPitch, handYaw) < 0.05f, "yaw-only: converges on the hand's heading");
+    // Over a sweep of headings, record pitches and starting yaws, every update brings it closer.
+    bool closer = true;
+    for (int h = -170; h < 180; h += 20)
+        for (int p0 = -20; p0 <= 20; p0 += 20)
+        {
+            float start = 0.0f, next = 0.0f;
+            Angles o{};
+            if (!RecordFromWorld(r, h * kDeg, 25.0f * kDeg, 0.0f, o) ||
+                !RecordYawForWorldYaw(r, h * kDeg, o.yaw, p0 * kDeg, next))
+            {
+                closer = false;
+                continue;
+            }
+            start = o.yaw;
+            const float before = WorldYawErrorDeg(r, start, p0 * kDeg, h * kDeg);
+            const float after = WorldYawErrorDeg(r, next, p0 * kDeg, h * kDeg);
+            if (after > before + 1e-3f && after > 0.05f)
+                closer = false;
+        }
+    Check(closer, "yaw-only: never further from the hand's heading than the old conversion, over a sweep");
+    // Level: exactly the hand's yaw, whatever the record's pitch.
+    Frame level{};
+    const float z[3]{0.0f, 0.0f, 1.0f};
+    Check(BuildFrame(z, level) && RecordYawForWorldYaw(level, 1.0f, 0.2f, -0.3f, y) && Near(y, 1.0f, 1e-5f),
+          "yaw-only: level is the hand's yaw");
+}
+
 // Reach's hand-back to the stick servo (Game_ReachDirectDriveAimWhy 0x400): never a frozen seat.
 void TestHandBack()
 {
@@ -277,6 +332,7 @@ int main()
     TestFrameReadAgrees();
     TestClassify();
     TestHandBack();
+    TestYawOnlyWrite();
     std::printf("%u checks, %u failures\n", checks, failures);
     return failures ? 1 : 0;
 }

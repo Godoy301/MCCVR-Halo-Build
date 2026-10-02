@@ -1072,6 +1072,7 @@ extern "C" void LegacyPcApplyForUser(int slot, int user, uintptr_t ret, const ui
             const LegacyDrivePublication pub = LegacyDriveReadPublication(st);
             // World angles as published; a seat in case (b) takes them into the record's frame below.
             float yaw = pub.yaw, pitch = pub.pitch, aimYaw = pub.aimYaw, aimPitch = pub.aimPitch;
+            const float handWorldYaw = pub.yaw;   // a yaw-only write converts at the game's own pitch (below)
             const uint64_t setMs = pub.setMs;
             const uint32_t axesBits = pub.axesBits, seatKey = pub.seatKey;
             const bool valid = pub.valid, seatedSet = pub.seated, pitchLatch = pub.pitchLatch, coherent = pub.coherent;
@@ -1254,6 +1255,15 @@ extern "C" void LegacyPcApplyForUser(int slot, int user, uintptr_t ret, const ui
                     LEGACY_DRIVE_WITNESS(ds.outcome = seat_witness::DriveUnverified);
                     break;
                 }
+            }
+            // A YAW-ONLY seat write in case (b) keeps the game's record pitch, so its yaw is converted at the pitch
+            // the game will aim at (seat_frame::RecordYawForWorldYaw), not at the hand's: until the pitch servo
+            // caught up, the hand's pitch put the heading off under a tilted hull.
+            if (seatWrite && writeYaw && !writePitch && seatFrame.kase == seat_frame::Case::Rebased)
+            {
+                float yawOnly = 0.0f;
+                if (seat_frame::RecordYawForWorldYaw(seatFrame.frame, handWorldYaw, nativeYaw, nativePitch, yawOnly))
+                    yaw = yawOnly;
             }
             LEGACY_DRIVE_WITNESS(ds.outcome = seat_witness::DriveNotFresh);
             if (fresh && std::isfinite(yaw) && std::isfinite(pitch))

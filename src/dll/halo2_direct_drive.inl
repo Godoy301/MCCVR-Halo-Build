@@ -305,14 +305,23 @@ void Halo2DriveApply(int user, uint64_t returnAddress) noexcept
                 // Never a converged aim here: there is no seated trace yet, and an on-foot one could still be
                 // fresh for 150 ms after sitting down.
                 float direction[3]{};
-                float yaw = 0.0f, pitch = 0.0f;
+                float yaw = 0.0f, pitch = 0.0f, handWorldYaw = 0.0f;
                 // ...in the record's frame (case b: R^-1 of it), where the latch and the pitch limits live.
-                const bool handAim = Game_Halo2SeatAimActive() &&
+                bool handAim = Game_Halo2SeatAimActive() &&
                     BuildPublishedControllerAimDirection(direction, nullptr, false) &&
-                    Halo2DriveYawPitch(direction, yaw, pitch) &&
-                    seat_frame_rt::ToRecord(seatFrame, yaw, pitch, nativeYaw);
+                    Halo2DriveYawPitch(direction, yaw, pitch);
+                handWorldYaw = yaw;
+                handAim = handAim && seat_frame_rt::ToRecord(seatFrame, yaw, pitch, nativeYaw);
                 const bool writeYaw = axes.yaw && st.stint.yaw_ok && handAim;
                 const bool writePitch = axes.pitch && st.stint.yaw_ok && st.stint.pitch_ok && handAim;
+                // A YAW-ONLY write in case (b) keeps the record's pitch: convert the hand's heading at the pitch the
+                // game will aim at (seat_frame::RecordYawForWorldYaw), not at the hand's.
+                if (writeYaw && !writePitch && seatFrame.kase == seat_frame::Case::Rebased)
+                {
+                    float yawOnly = 0.0f;
+                    if (seat_frame::RecordYawForWorldYaw(seatFrame.frame, handWorldYaw, nativeYaw, nativePitch, yawOnly))
+                        yaw = yawOnly;
+                }
                 if (!writeYaw && !writePitch)
                 {
                     st.seatWaits.fetch_add(1, std::memory_order_relaxed);

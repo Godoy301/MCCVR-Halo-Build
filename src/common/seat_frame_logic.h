@@ -281,6 +281,25 @@ inline Case Classify(bool readable, bool gateSeated, bool flagsKnown, bool flags
     return frameUsable ? Case::Rebased : Case::Unknown;
 }
 
+// THE YAW-ONLY WRITE (review round 1, finding 4). A seat that writes only the record's YAW (Halo 4 always; Halo 3 /
+// ODST / Halo 2 while the pitch stays on the servo) keeps the game's own record pitch. RecordFromWorld(hand yaw,
+// hand pitch) would aim R^-1 of the hand's whole direction and keep only its yaw, which is right only once the
+// record's pitch has converged on the hand's: under a tilted hull the yaw of R^-1 d depends on d's pitch (30 deg of
+// roll, hand 20 deg up, record level: about 9 deg of world yaw error until the pitch servo catches up). Instead the
+// world target is e(hand yaw, the game's CURRENT world pitch) -- the pitch R e(record yaw, record pitch) puts into
+// effect -- so the written yaw is the one that turns the aim to the hand's heading at the pitch the record keeps.
+// Exact when level; under tilt the residual shrinks every update as the record yaw follows the write (the fixed
+// point of this map is the hand's heading). False when either conversion does not resolve.
+inline bool RecordYawForWorldYaw(const Frame& r, float worldYaw, float recordYaw, float recordPitch, float& outYaw)
+{
+    Angles now{}, record{};
+    if (!WorldFromRecord(r, recordYaw, recordPitch, now) ||
+        !RecordFromWorld(r, worldYaw, now.pitch, recordYaw, record))
+        return false;
+    outYaw = record.yaw;
+    return true;
+}
+
 // THE HAND-BACK (Reach, Game_ReachDirectDriveAimWhy's 0x400). A seated update whose frame reads Unknown writes
 // nothing -- and Reach's aim provider holds the aim stick NEUTRAL while it selects the state write, so without this
 // the seat's aim would simply FREEZE. So the provider leaves the state write for the stick servo whenever the seat's
