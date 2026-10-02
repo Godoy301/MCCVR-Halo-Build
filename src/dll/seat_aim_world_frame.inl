@@ -232,7 +232,11 @@ const char* SeatAimFrameWhyOff(int slot)
         return "the vehicle sampler is not bound: no seat is checked, and no seat flag is patched";
     if (SeatAimFrameNativeNoThirdPerson(slot))
         return "the occupied seat natively lacks bit 4, so stock rebases it too";
+#if HALOMCCVR_DEV_DIAGNOSTICS
     return "seat_aim_world_frame = 0 (dev A/B)";
+#else
+    return "unknown";   // unreachable: a player build has no A/B key, so Wanted fails only for a reason above
+#endif
 }
 
 // WaitThread: bring the bytes in line with the setting. Cheap when nothing changes (no engine access at all).
