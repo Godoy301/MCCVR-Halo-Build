@@ -26,6 +26,15 @@
     std::atomic<uint32_t> g_odstNativeSeatState{
         static_cast<uint32_t>(OdstNativeSeatState::Stock)};
     std::atomic<uint32_t> g_odstNativeSeatSerial{0};
+    // The occupied seat's ORIGINAL tag flags lack bit 4 (third-person camera): C20 refused it, and unmodded ODST
+    // rebases this seat's aim by the vehicle's up frame itself. Same contract as Halo 3's
+    // g_halo3SeatNativeNoThirdPerson (seat_aim_world_frame.inl stands down and logs the seat once).
+    std::atomic<uint32_t> g_odstSeatNativeNoThirdPerson{0};
+
+    constexpr uint32_t OdstSeatNativeNoThirdPersonKey(uint32_t definitionIndex, int seatIndex)
+    {
+        return 0x80000000u | (definitionIndex & 0xFFFFu) << 8 | (static_cast<uint32_t>(seatIndex) & 0xFFu);
+    }
 
     bool OdstNativeSeatStillOwned(const OdstNativeSeatPatch& patch)
     {
@@ -97,6 +106,7 @@
             }
         }
         patch = {};
+        g_odstSeatNativeNoThirdPerson.store(0, std::memory_order_relaxed);
         if (hadState)
         {
             g_odstNativeSeatState.store(
@@ -130,6 +140,7 @@
         patch.seatIndex = seatIndex;
 
         bool installed = false;
+        bool nativeNoThirdPerson = false;
         if (definitionIndex <= 0xFFFFu && seatIndex >= 0 && seatIndex <= 125)
         {
             __try
@@ -157,6 +168,8 @@
                         auto* flags = reinterpret_cast<uint32_t*>(
                             seat + kOdstSeatFlagsOffset);
                         const uint32_t originalFlags = *flags;
+                        nativeNoThirdPerson =
+                            (originalFlags & kOdstSeatThirdPersonCameraBit) == 0;
                         // Only ever touch a seat that actually is a
                         // third-person player seat today.
                         if (originalFlags & kOdstSeatThirdPersonCameraBit)
@@ -187,6 +200,9 @@
             patch.generation = generation;
             patch.definitionIndex = definitionIndex;
             patch.seatIndex = seatIndex;
+            g_odstSeatNativeNoThirdPerson.store(nativeNoThirdPerson
+                ? OdstSeatNativeNoThirdPersonKey(definitionIndex, seatIndex) : 0u,
+                std::memory_order_relaxed);
             g_odstNativeSeatState.store(
                 static_cast<uint32_t>(OdstNativeSeatState::StockFallback), std::memory_order_relaxed);
             g_odstNativeSeatSerial.fetch_add(1, std::memory_order_release);

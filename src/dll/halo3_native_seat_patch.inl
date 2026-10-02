@@ -27,6 +27,16 @@
     std::atomic<uint32_t> g_halo3NativeSeatState{
         static_cast<uint32_t>(Halo3NativeSeatState::Stock)};
     std::atomic<uint32_t> g_halo3NativeSeatSerial{0};
+    // The occupied seat's ORIGINAL tag flags lack bit 4 (the third-person camera flag), so C20 refused it and the
+    // game itself rebases this seat's aim by the vehicle's up frame, unmodded. 0 = not seen (or not seated);
+    // otherwise Halo3SeatNativeNoThirdPersonKey(). Written here (camera thread), read by the WaitThread: the
+    // world-angle rebase skip (seat_aim_world_frame.inl) stands down while it is set, and logs the seat once.
+    std::atomic<uint32_t> g_halo3SeatNativeNoThirdPerson{0};
+
+    constexpr uint32_t Halo3SeatNativeNoThirdPersonKey(uint32_t definitionIndex, int seatIndex)
+    {
+        return 0x80000000u | (definitionIndex & 0xFFFFu) << 8 | (static_cast<uint32_t>(seatIndex) & 0xFFu);
+    }
 
     // A module generation does not identify a loaded map's tag allocation.
     // Re-resolve from current storage before reading or restoring the lease.
@@ -106,6 +116,7 @@
         }
         patch = {};
         g_halo3NativeAnchorCalibration = {};
+        g_halo3SeatNativeNoThirdPerson.store(0, std::memory_order_relaxed);
         g_halo3NativeSeatState.store(
             static_cast<uint32_t>(Halo3NativeSeatState::Stock),
             std::memory_order_release);
@@ -149,6 +160,7 @@
         patch.definitionIndex = definitionIndex;
         patch.seatIndex = seatIndex;
         bool installed = false;
+        bool nativeNoThirdPerson = false;
         __try
         {
             void** instSlot = g_halo3TagInstanceTable;
@@ -184,6 +196,8 @@
                         seat + kHalo3SeatCameraTracksBlockOffset);
                     const uint32_t originalFlags = *flags;
                     const int32_t originalTrackCount = *trackCount;
+                    nativeNoThirdPerson =
+                        !Halo3SeatFlagsLookLikePlayerSeat(originalFlags);
                     // Every official H3 player seat has bit 4. Requiring it is
                     // the live layout proof that keeps a bad tag walk stock.
                     // The track count is only a second bounds check on the same
@@ -219,6 +233,9 @@
             patch.generation = generation;
             patch.definitionIndex = definitionIndex;
             patch.seatIndex = seatIndex;
+            g_halo3SeatNativeNoThirdPerson.store(nativeNoThirdPerson
+                ? Halo3SeatNativeNoThirdPersonKey(definitionIndex, seatIndex) : 0u,
+                std::memory_order_relaxed);
             g_halo3NativeSeatState.store(
                 static_cast<uint32_t>(Halo3NativeSeatState::StockFallback),
                 std::memory_order_release);
