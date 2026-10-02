@@ -64,8 +64,10 @@ public:
         // vehicle-tilt rebase -- reads: an unread frame writes nothing, so the seat goes to the stick loop
         // rather than freeze with the stick neutral). Cinematics keep the stick
         // loop. Co-op host-follow is UNVERIFIED, so actuate() never claims a replicated write.
+        // Never in the free-camera frame (no player unit): there is no record to write, and the hand steers the
+        // death / free camera through the stick loop (aim_no_unit_logic.h).
         c.can_write_state       = g_config.reach_direct_drive == 3 && Game_ReachDirectDriveReady() &&
-                                  Game_ReachDirectDriveAimWritable();
+                                  Game_ReachDirectDriveAimWritable() && !Game_AimFreeCamera();
         c.has_stick_loop        = true;   // Reach steers via Game_ComputeAimStick, like Halo 3
         // TRACE-AND-REAIM (reach_sight_trace.inl): whenever the trace has a fresh result (hit or miss)
         // and direct drive can actuate the bent aim (a stick loop cannot hold an aim that bends with

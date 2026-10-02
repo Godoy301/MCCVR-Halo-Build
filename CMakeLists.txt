@@ -857,6 +857,11 @@ if(BUILD_TESTING)
     add_executable(halomccvr_seat_drive_policy_tests tests/seat_drive_policy_tests.cpp)
     target_include_directories(halomccvr_seat_drive_policy_tests PRIVATE src/common)
     add_test(NAME halomccvr_seat_drive_policy_tests COMMAND halomccvr_seat_drive_policy_tests)
+    # The free camera with no player unit (src/common/aim_no_unit_logic.h): the death/respawn debounce, its
+    # fail-open rules and the frame the aim servo composes while the player has no unit.
+    add_executable(halomccvr_aim_no_unit_tests tests/aim_no_unit_tests.cpp)
+    target_include_directories(halomccvr_aim_no_unit_tests PRIVATE src/common)
+    add_test(NAME halomccvr_aim_no_unit_tests COMMAND halomccvr_aim_no_unit_tests)
     add_executable(halomccvr_seat_aim_frame_tests tests/seat_aim_frame_tests.cpp)
     target_include_directories(halomccvr_seat_aim_frame_tests PRIVATE src/common)
     add_test(NAME halomccvr_seat_aim_frame_tests COMMAND halomccvr_seat_aim_frame_tests)

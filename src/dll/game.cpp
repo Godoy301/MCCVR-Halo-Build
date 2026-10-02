@@ -83,6 +83,22 @@
 #include "../common/reach_render_logic.h"
 #include "../common/reach_vehicle_logic.h"
 #include "../common/reach_hand_shot_logic.h"
+#include "../common/aim_no_unit_logic.h"
+#include "../common/title_runtime_state.h"
+// THE FREE CAMERA WITH NO PLAYER UNIT (src/common/aim_no_unit_logic.h). Each servo title's own vehicle/seat
+// sampler already reads its local player's unit through the output-user getter on an engine thread; it also
+// publishes Present / Absent here, one word per title, with the time it read it. Game_ComputeAimStick (the input
+// thread) debounces it into the free-camera frame. Allocation-, lock- and log-free on the publishing side.
+static std::array<std::atomic<uint64_t>, kTitleRuntimeSlotCount> g_aimUnitPresence{};
+static void AimNoUnit_Note(GameTitle title, bool unitPresent) noexcept
+{
+    const size_t slot = TitleRuntimeSlotIndex(title);
+    if (slot < kTitleRuntimeSlotCount)
+        g_aimUnitPresence[slot].store(
+            aim_no_unit::Pack(unitPresent ? aim_no_unit::Presence::Present : aim_no_unit::Presence::Absent,
+                              GetTickCount64()),
+            std::memory_order_relaxed);
+}
 #ifndef HALOMCCVR_EXPERIMENTAL_REACH_RENDER_CANDIDATE
 #define HALOMCCVR_EXPERIMENTAL_REACH_RENDER_CANDIDATE 0
 #endif
@@ -8733,6 +8749,8 @@ namespace
             Halo3DisableVehicleProbe("sampler fault");
             return;
         }
+        // The free-camera frame's signal (aim_no_unit_logic.h): this read's own answer, death or not.
+        AimNoUnit_Note(GameTitle::Halo3, unit != -1);
         if (kEnableRetiredHalo3Diagnostics && parentWindowValid)
         {
             Halo3ParentCapture& pcap = g_halo3ParentCapture;
@@ -12311,6 +12329,8 @@ namespace
             return;
         }
 
+        // The free-camera frame's signal (aim_no_unit_logic.h): the 2026-10-01 death read unit -1 here.
+        AimNoUnit_Note(GameTitle::Halo3ODST, unit != -1);
         g_odstRoomscaleOnFootMs.store(unit != -1 && unseatedProven
             ? nowMs : 0, std::memory_order_release);
         const bool seated = unit != -1 &&
@@ -29359,6 +29379,8 @@ namespace
         g_reachVehicleInputSnapshot.store(
             ReachVehicleInputSnapshot(generation, state),
             std::memory_order_release);
+        // The free-camera frame's signal (aim_no_unit_logic.h): Unknown here means the getter returned no unit.
+        AimNoUnit_Note(GameTitle::HaloReach, state != ReachVehicleInputState::Unknown);
         // Deliberately NO freshness stamp (g_reachVehicleSampleMs) here. unit_in_vehicle rejects Reach's
         // type-6 mounted turrets, so this fallback publishes OnFoot on a turret; stamping it would make
         // every "on foot now" reader (direct drive, roomscale, physical crouch, the leash) act in a seat.
@@ -29889,6 +29911,10 @@ namespace
         {
             faulted = true;
         }
+        // The free-camera frame's signal (aim_no_unit_logic.h). A fault may land before the getter returned, so
+        // only a read that completed answers.
+        if (!faulted)
+            AimNoUnit_Note(GameTitle::HaloReach, unitKnown);
 
         const ReachVehicleInputState inputState = !unitKnown
             ? ReachVehicleInputState::Unknown
@@ -51328,10 +51354,90 @@ converge::SeatMuzzleRefusal Game_SeatMuzzleRefusal(GameTitle title)
     }
     return converge::SeatMuzzleRefuses(held, turret);
 }
+
+// THE FREE CAMERA WITH NO PLAYER UNIT (src/common/aim_no_unit_logic.h): the input thread's half. The decision
+// (Game_AimFreeCamera) is published for the Reach aim provider, which reads it after the servo stepped it.
+static std::atomic<bool> g_aimFreeCamera{false};
+// Set on every edge; the servo forgets its axes (rest state, measured quantum, last commands) at its next poll,
+// so neither frame inherits the other's measurements.
+static bool g_aimFreeCameraServoReset = false;
+#if HALOMCCVR_DEV_DIAGNOSTICS
+static uint32_t g_aimFreeCameraPolls = 0, g_aimFreeCameraParked = 0;   // this stint; the release line reports them
+#endif
+bool Game_AimFreeCamera()
+{
+    return g_aimFreeCamera.load(std::memory_order_acquire);
+}
+// Once per Game_ComputeAimStick (the servo's thread): steps the debounce on the active title's latest sample, logs
+// each edge once, and returns whether this poll is in the free-camera frame.
+static bool AimNoUnit_Step()
+{
+    static aim_no_unit::Debounce s_debounce;
+    static GameTitle s_title = GameTitle::None;
+    const GameTitle title = TitleAdapter_GetActiveTitle();
+    const auto release = [](GameTitle from, const char* why) {
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        LOG("%s aim: %s (dev: %u free-camera polls, %u parked)", aim_no_unit::TitleLabel(from), why,
+            g_aimFreeCameraPolls, g_aimFreeCameraParked);
+        g_aimFreeCameraPolls = g_aimFreeCameraParked = 0;
+#else
+        LOG("%s aim: %s", aim_no_unit::TitleLabel(from), why);
+#endif
+        g_aimFreeCameraServoReset = true;
+    };
+    if (title != s_title)
+    {
+        // Another title's samples describe nothing here.
+        if (s_debounce.freeCamera)
+            release(s_title, "title changed - the hand aims as usual");
+        s_debounce.Reset();
+        s_title = title;
+    }
+    aim_no_unit::Presence presence = aim_no_unit::Presence::Unknown;
+    uint64_t sampleMs = 0;
+    const size_t slot = TitleRuntimeSlotIndex(title);
+    if (aim_no_unit::TitlePublishes(title) && slot < kTitleRuntimeSlotCount)
+    {
+        const uint64_t word = g_aimUnitPresence[slot].load(std::memory_order_relaxed);
+        presence = aim_no_unit::UnpackPresence(word);
+        sampleMs = aim_no_unit::UnpackMs(word);
+    }
+    switch (s_debounce.Step(presence, sampleMs, GetTickCount64()))
+    {
+    case aim_no_unit::Edge::Entered:
+        LOG("%s aim: no player unit (death camera) - the hand steers the free camera in a stable frame "
+            "(no trace, seat or direct-drive terms; the servo parks inside its rest band)",
+            aim_no_unit::TitleLabel(title));
+        g_aimFreeCameraServoReset = true;
+        break;
+    case aim_no_unit::Edge::Released:
+        release(title, "player unit back - the hand aims again");
+        break;
+    case aim_no_unit::Edge::ReleasedUnknown:
+        release(title, "no player-unit answer (the sampler went quiet) - the hand aims as usual");
+        break;
+    case aim_no_unit::Edge::None:
+        break;
+    }
+    g_aimFreeCamera.store(s_debounce.freeCamera, std::memory_order_release);
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    if (s_debounce.freeCamera)
+        ++g_aimFreeCameraPolls;
+#endif
+    return s_debounce.freeCamera;
+}
+
 bool Game_ComputeAimStick(float& outRx, float& outRy)
 {
     // Before any return: this poll's assessment direction (dev only), cleared unless set below.
     AimClampedPublication clamped;
+    // THE FREE CAMERA WITH NO PLAYER UNIT (aim_no_unit_logic.h), stepped on every poll so its edges and the
+    // published decision stay current whichever return this poll takes. While it holds, the hand still steers the
+    // camera (the user flies the death/free camera with it); the frame below drops every term that camera's own
+    // motion can feed back into, and the servo parks inside its rest band so the 27.5% stick floor cannot hunt
+    // round the target on two uncapped axes (the reported circle / figure eight).
+    const bool freeCamera = AimNoUnit_Step();
+    const aim_no_unit::Frame aimFrame = aim_no_unit::FrameFor(freeCamera);
     // Preserve C-H2-43's rejected ON-FOOT hand-driven turning. A newly verified
     // native seated-local-unit sample admits the normal controller stick loop
     // only in vehicles/turrets, matching the established H3 control behavior.
@@ -51491,7 +51597,7 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
     // world angles, and its seat state comes from its own camera hook's stamp.
     float hullYaw = 0.0f, hullPitch = 0.0f, followedAim[9];
     bool followedVehicleFrame = false;
-    if (!halo4Aim && Halo3ReadRollStableFollow(hullYaw, hullPitch) &&
+    if (!halo4Aim && aimFrame.hullFrame && Halo3ReadRollStableFollow(hullYaw, hullPitch) &&
         Halo3ComposeRollStableFollowBasis(
             hullYaw, hullPitch, gameYawReference,
             g_yawSign.load() * WrapPi(cy - headYawReference),
@@ -51552,7 +51658,7 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
     // seat with no trim - the correction is exactly zero. Gated to a seat whose
     // own loaded tag sets `allows weapons`, because a driver's or mounted
     // gunner's shots leave a vehicle barrel rather than the occupant's eye.
-    if (!halo4Aim &&
+    if (!halo4Aim && aimFrame.seatReOrigin &&
         Halo3SeatFiresPersonalWeapon(Halo3OccupiedSeatFlags()) && tl > 1e-3f &&
         g_camValid.load(std::memory_order_acquire) &&
         g_baseCamValid.load(std::memory_order_acquire))
@@ -51602,11 +51708,14 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
 #if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA && HALOMCCVR_DEV_DIAGNOSTICS
     // Halo 4 seated convergence (dev; halo4_seat_sight.inl): this poll's seat, eyes and proofs.
     Halo4SeatSightPoll halo4SeatSight{};
-    if (halo4Aim)
+    if (halo4Aim && aimFrame.traceReaim)
         (void)Halo4SeatSightPrepare(halo4SeatSight, halo4AimForward);
     float halo4SeatPoint[3]{};
     bool halo4SeatPointValid = false;
 #endif
+    // The free-camera frame publishes no intent ray and bends nothing: the ray's eye is the engine camera's
+    // position, which a death or free camera moves as the servo turns it, and with no unit there is no shot.
+    if (aimFrame.traceReaim)
     {
         const GameTitle sightTitle = TitleAdapter_GetActiveTitle();
         float sightHead[3]{}, sightEye[3]{};
@@ -51894,8 +52003,9 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
     // Two atomics and a byte; Halo 3, ODST and Halo 4 here (Reach notes from its provider).
     {
         const GameTitle witnessTitle = TitleAdapter_GetActiveTitle();
-        if (witnessTitle == GameTitle::Halo3 || witnessTitle == GameTitle::Halo3ODST ||
-            witnessTitle == GameTitle::Halo4)
+        // Not in the free-camera frame: with no unit there is no converged aim to be on or off.
+        if ((witnessTitle == GameTitle::Halo3 || witnessTitle == GameTitle::Halo3ODST ||
+             witnessTitle == GameTitle::Halo4) && aimFrame.claimConverged)
         {
             const bool live = sightOnFootConverged || sightSeatedClaim;
             if (!live && seatedClaim.why != converge::ConvergeOff::None)
@@ -51946,7 +52056,18 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
     // estimate would read the drive's motion as its own. Set when a written frame returns early; the servo then
     // starts afresh.
     static bool s_turretServoStale = false;
-    if (g_config.legacy_direct_drive)
+    if (g_config.legacy_direct_drive && !aimFrame.directDrive)
+    {
+        // THE FREE-CAMERA FRAME: no unit, so no record to write. Publish an explicit "nothing" (invalid, on foot,
+        // no seat axes) rather than going quiet: the hook's next update then writes nothing and ENDS the seat
+        // stint at once (legacy_direct_drive.inl: a coherent publication with no seat is not a "same seat, stale"
+        // gap), instead of keeping the stint through up to its 120-update grace. The servo below steers.
+        const GameTitle driveTitle = TitleAdapter_GetActiveTitle();
+        if (driveTitle == GameTitle::Halo3 || driveTitle == GameTitle::Halo3ODST ||
+            driveTitle == GameTitle::Halo4)
+            LegacyDrivePublish(driveTitle, 0.0f, 0.0f, 0.0f, 0.0f, false, false, seat_drive::Axes{}, true, 0);
+    }
+    else if (g_config.legacy_direct_drive)
     {
         const GameTitle driveTitle = TitleAdapter_GetActiveTitle();
         if (driveTitle == GameTitle::Halo3 || driveTitle == GameTitle::Halo3ODST ||
@@ -52131,7 +52252,8 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
     // servo below parks it instead of hunting (its reticle stays on the hand's
     // point, 2026-10-01). Halo 4's seats are read from its own stamp below;
     // OccupiedTurretSeat's state is another title's.
-    bool turretSeat = !halo4Aim && OccupiedTurretSeat();
+    // (No seat at all in the free-camera frame: a seat state left over from the death must not count.)
+    bool turretSeat = !halo4Aim && !freeCamera && OccupiedTurretSeat();
 #if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA && HALOMCCVR_DEV_DIAGNOSTICS
     // Stage 1 (dev key halo4_seat_converge): a Halo 4 slaved-turret seat (seat flag bit 7, whose aim camera IS
     // the turret marker's line) is a turret here too -- for the servo's PARKING only (its pitch is on this servo);
@@ -52234,14 +52356,16 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
     static float servoLastYawCommand = 0.0f;
     static bool servoWasTurret = false;
     static uint32_t servoFrames = 0, servoParkedFrames = 0;
-    if (s_turretServoStale)
+    if (s_turretServoStale || g_aimFreeCameraServoReset)
     {
-        // The drive aimed for the servo since its last frame: forget what it measured and commanded then.
+        // The drive aimed for the servo since its last frame, or the free-camera frame began or ended (the camera
+        // the servo turns changed): forget what it measured and commanded then.
         AimServoReset(servoPitch);
         AimServoReset(servoYaw);
         servoLastPitchCommand = 0.0f;
         servoLastYawCommand = 0.0f;
         s_turretServoStale = false;
+        g_aimFreeCameraServoReset = false;
     }
     if (turretSeat)
     {
@@ -52275,8 +52399,17 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
         servoLastYawCommand = 0.0f;
     }
     servoWasTurret = turretSeat;
+    // THE FREE-CAMERA FRAME parks the same way, on both axes: a death or free camera turns with no rate cap on
+    // either axis, so each axis hunts the 27.5% floor's minimum step on its own period, and the two cycles traced
+    // together are the reported circle / figure eight. Its quantum is measured on the camera it now turns.
+    if (freeCamera)
+    {
+        AimServoObserve(servoPitch, aimPitch, servoLastPitchCommand);
+        AimServoObserve(servoYaw, aimYaw, servoLastYawCommand);
+    }
+    const bool servoParks = aim_no_unit::ServoParks(turretSeat, freeCamera);
 
-    outRy = turretSeat
+    outRy = servoParks
         ? AimServoCommand(servoPitch, errPitch, k, kAimServoRestEnterRadians,
                           kAimServoRestExitRadians)
         : Clamp(errPitch * k, -1.0f, 1.0f);
@@ -52288,7 +52421,7 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
     // instead: the wheel while both hands hold it, and Halo's own turn stick
     // when they do not. A Banshee/Hornet driver publishes no vehicle pitch
     // frame, so its proven climb/dive loop still follows the aiming hand.
-    if (Halo3SeatAuthorsSteeringNow())
+    if (!freeCamera && Halo3SeatAuthorsSteeringNow())
     {
         if (Game_Halo3VehicleWheelActive())
         {
@@ -52321,7 +52454,7 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
     // Deflection is continuous out of the deadband, so a small hand tremor
     // never becomes a steering step.
     float reachHullYaw = 0.0f;
-    if (kReachR_V16HullServoEnabled &&
+    if (kReachR_V16HullServoEnabled && !freeCamera &&
         ReachGroundDriverHandSteers(reachHullYaw))
     {
         const float hullErr = WrapPi(desiredYaw - reachHullYaw);
@@ -52335,7 +52468,7 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
         return true;
     }
 #endif
-    outRx = turretSeat
+    outRx = servoParks
         ? -AimServoCommand(servoYaw, errYaw, k, kAimServoRestEnterRadians,
                            kAimServoRestExitRadians)
         : Clamp(-errYaw * k, -1.0f, 1.0f);
@@ -52351,6 +52484,10 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
     servoLastYawCommand = fabsf(outRx);
     if (turretSeat && outRx == 0.0f && outRy == 0.0f)
         ++servoParkedFrames;
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    if (freeCamera && outRx == 0.0f && outRy == 0.0f)
+        ++g_aimFreeCameraParked;
+#endif
     return true;
 }
 
