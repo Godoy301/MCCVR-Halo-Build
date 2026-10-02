@@ -688,16 +688,18 @@ struct Config
     // sibling engines. Your aim writes the game's own control angles instead of steering the right stick
     // (the stick can only turn the view at the game's turn rate). Installs on the next title load, then
     // arms itself once the angles it found agree with the game's aim (log: DRIVE ... armed=1). Vehicles,
-    // cutscenes and menus keep the stick. 0 = off: the stick servo aims. (default 0)
-    int legacy_direct_drive = 0;
+    // cutscenes and menus keep the stick. 0 = off: the stick servo aims. Derived from aim_direct_drive by
+    // Config_ApplyAimModes. (default 1, as aim_direct_drive)
+    int legacy_direct_drive = 1;
     // EVERY TITLE THAT HAS IT (Reach, Halo 3, ODST, Halo 4), live from F1 > Weapon & aim: 1 = DIRECT DRIVE,
     // your aim writes the game's own aim instead of steering the right stick; 0 = the stick aims. Halo 2 on
     // foot: 1 also writes player control's desired angles (the body faces the aim, the network carries it,
     // and the right stick turns the view's own heading; halo2_direct_drive.inl); 0 keeps Halo 2's earlier
     // aim, written into the unit only. Halo CE always writes its aim directly. The per-lane fields
     // reach_direct_drive (3/0) and legacy_direct_drive (1/0) are DERIVED from this by Config_ApplyAimModes;
-    // old files that set those are still read, as aliases. (default 0)
-    int aim_direct_drive = 0;
+    // old files that set those are still read, as aliases that can only turn it on. (default 1: direct drive is
+    // the aim path everything else builds on; no release ever shipped this key, so no saved file holds an old 0)
+    int aim_direct_drive = 1;
     // Every title but Reach (Reach's is reach_direct_drive = 3), ON FOOT: CONVERGED AIM (1). The game traces
     // the ray from your eye along the controller and bends the aim so the shot, which leaves from the
     // character's eye, passes through the point that ray hits; the reticle is drawn on that point. 0 = the

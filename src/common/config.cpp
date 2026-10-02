@@ -930,6 +930,8 @@ void ConfigLoad(const wchar_t* path)
     if (!f)
     {
         LOG("config: no file yet, writing defaults");
+        // A first run takes the same derived aim modes a loaded file does (each lane reads its own field).
+        Config_ApplyAimModes();
         ConfigSave();
         return;
     }
@@ -1822,10 +1824,11 @@ void ConfigLoad(const wchar_t* path)
         const float legacyDelta = g_config.hud_curvature * 0.1f;
         g_config.hud_curvature = (0.30f - legacyDelta) / 0.60f;
     }
-    // One direct-drive switch for every title (aim_direct_drive). A file from before it set each lane on its
-    // own (reach_direct_drive = 3, legacy_direct_drive = 1): either one turns it on.
-    if (!aimDirectDriveSeen)
-        g_config.aim_direct_drive = (g_config.legacy_direct_drive || g_config.reach_direct_drive == 3) ? 1 : 0;
+    // One direct-drive switch for every title (aim_direct_drive, default 1). A file from before it set each lane
+    // on its own (reach_direct_drive = 3, legacy_direct_drive = 1). Those old keys can only turn it on: a 0 in
+    // them was the old default, never a choice, and only dev builds ever wrote them.
+    if (!aimDirectDriveSeen && (g_config.legacy_direct_drive || g_config.reach_direct_drive == 3))
+        g_config.aim_direct_drive = 1;
     Config_ApplyAimModes();
     Clamp();
     NormalizeVirtualStockProximityPair();

@@ -13875,6 +13875,35 @@ int main()
         std::filesystem::remove(oldAimConfig);
         std::filesystem::remove(rollbackAimConfig);
     }
+    {
+        // 2026-10-01: direct drive is the default. A file without aim_direct_drive (every released
+        // config) takes it ON, and so does a first run with no file at all; the old per-lane keys can
+        // only turn it on, so a leftover legacy_direct_drive = 0 / reach_direct_drive = 0 does not
+        // turn it off. An explicit aim_direct_drive = 0 is still honoured.
+        const std::filesystem::path driveConfig = configDir / L"direct-drive-default.cfg";
+        const auto loadDrive = [&](const char* text) {
+            { std::ofstream file(driveConfig); file << text; }
+            ConfigLoad(driveConfig.c_str());
+        };
+        loadDrive("config_version = 6\n");
+        Check(g_config.aim_direct_drive == 1 && g_config.legacy_direct_drive == 1 &&
+                  g_config.reach_direct_drive == 3,
+            "A config without aim_direct_drive takes direct drive ON in every lane");
+        loadDrive("legacy_direct_drive = 0\nreach_direct_drive = 0\n");
+        Check(g_config.aim_direct_drive == 1 && g_config.legacy_direct_drive == 1,
+            "The old per-lane keys at 0 do not turn direct drive off");
+        loadDrive("aim_direct_drive = 0\n");
+        Check(g_config.aim_direct_drive == 0 && g_config.legacy_direct_drive == 0 &&
+                  g_config.reach_direct_drive == 0,
+            "An explicit aim_direct_drive = 0 turns every lane off");
+        std::filesystem::remove(driveConfig);
+        ConfigLoad(driveConfig.c_str());
+        Check(g_config.aim_direct_drive == 1 && g_config.legacy_direct_drive == 1 &&
+                  g_config.reach_direct_drive == 3,
+            "A first run with no config file derives direct drive ON in every lane");
+        ConfigLoad(primary.c_str());
+        std::filesystem::remove(driveConfig);
+    }
 #if !HALOMCCVR_DEV_DIAGNOSTICS
     {
         // 2026-10-01: the player-facing honest reticle is retired. A player build
