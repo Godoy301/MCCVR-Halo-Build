@@ -6970,6 +6970,19 @@ int main()
                       HudLayoutProfile::Halo3ODST, 9,
                       HudLayoutProfile::Halo3ODST, 8),
             "foreign-title and stale-generation HUD results are rejected");
+        // Build bd2aac6 verified Halo 3's cached slot ~1 s after its last
+        // camera copy, as the level unloaded, and read freed tag data.
+        Check(HudLayoutTitleFrameLive(5000, 5000) &&
+                  HudLayoutTitleFrameLive(5000, 5000 + kHudLayoutLiveCameraWindowMs),
+            "a title that copied a camera within the window may touch its HUD slots");
+        Check(!HudLayoutTitleFrameLive(5000, 5001 + kHudLayoutLiveCameraWindowMs) &&
+                  !HudLayoutTitleFrameLive(0, 5000) &&
+                  !HudLayoutTitleFrameLive(0, 0) &&
+                  !HudLayoutTitleFrameLive(5000, 4999),
+            "a stale, cleared (retired) or future camera beacon leaves cached "
+            "HUD slots unread");
+        Check(kHudLayoutLiveCameraWindowMs == 1000,
+            "the HUD liveness window is the scan path's original 1 s");
 
         Check(OdstHudLayoutEligible(true, true, true, true, false, false),
             "ODST starts shared HUD layout work on its first eligible camera heartbeat");

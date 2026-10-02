@@ -45,7 +45,12 @@ static void Run(bool ok=true,bool haveLatch=true)
     const uintptr_t base=reinterpret_cast<uintptr_t>(&latch)-kHalo2SaberSceneOnceLatchRva;
     void* ctx=state;uintptr_t record=reinterpret_cast<uintptr_t>(recordBytes),rdx=3;int viewIndex=0,constants=0;
     Halo2SaberEyeCover cover{};auto original=&Native;
+    // The fixture's faults are RaiseException (kernelbase), so it keeps the
+    // contain-everything filter; the GameFault decision has its own tests.
+    const uintptr_t faultAnchor=0;(void)faultAnchor;
+#define GameFault(anchor) EXCEPTION_EXECUTE_HANDLER
 #include "../src/dll/halo2_anniversary_scope_pass.inl"
+#undef GameFault
     Check(!memcmp(state,expected,sizeof(state)),"third pass restores exact post-eye context including exterior sentinels");
     Check(!active&&!scopeFlag,"optional flags end even after exception");
 }

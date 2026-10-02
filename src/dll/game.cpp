@@ -3821,6 +3821,32 @@ namespace
         }
 
         const uint64_t now = GetTickCount64();
+        // Nothing below touches a slot, verified or remembered, unless this
+        // title's level is provably still live (HudLayoutTitleFrameLive). The
+        // verify pass used to run on the cached slots regardless and read
+        // Halo 3's freed tag data while its level unloaded.
+        uint64_t lastCam = 0;
+        if (profile == HudLayoutProfile::Halo3)
+        {
+            lastCam =
+                g_halo3LastCamCopyMs.load(std::memory_order_relaxed);
+        }
+#if HALOMCCVR_EXPERIMENTAL_ODST_BRINGUP
+        else if (profile == HudLayoutProfile::Halo3ODST)
+        {
+            lastCam =
+                g_odstLastCamCopyMs.load(std::memory_order_relaxed);
+        }
+#endif
+#if HALOMCCVR_EXPERIMENTAL_REACH_RENDER_CANDIDATE
+        else if (profile == HudLayoutProfile::HaloReach)
+        {
+            lastCam =
+                g_reachLastCamCopyMs.load(std::memory_order_relaxed);
+        }
+#endif
+        if (!HudLayoutTitleFrameLive(lastCam, now))
+            return;
         if (count > 0)
         {
             const uint64_t lastVerify =
@@ -3849,29 +3875,6 @@ namespace
         }
         if (count == -2 ||
             g_safeFrameScanInFlight.load(std::memory_order_acquire))
-            return;
-
-        uint64_t lastCam = 0;
-        if (profile == HudLayoutProfile::Halo3)
-        {
-            lastCam =
-                g_halo3LastCamCopyMs.load(std::memory_order_relaxed);
-        }
-#if HALOMCCVR_EXPERIMENTAL_ODST_BRINGUP
-        else if (profile == HudLayoutProfile::Halo3ODST)
-        {
-            lastCam =
-                g_odstLastCamCopyMs.load(std::memory_order_relaxed);
-        }
-#endif
-#if HALOMCCVR_EXPERIMENTAL_REACH_RENDER_CANDIDATE
-        else if (profile == HudLayoutProfile::HaloReach)
-        {
-            lastCam =
-                g_reachLastCamCopyMs.load(std::memory_order_relaxed);
-        }
-#endif
-        if (!lastCam || now < lastCam || now - lastCam > 1000)
             return;
 
         const bool stockSize =
@@ -46882,6 +46885,12 @@ namespace
                 TitleAdapter_ClearCinematicControl(
                     GameTitle::Halo3, haloGeneration);
                 g_halo3LastCamCopyMs.store(0, std::memory_order_release);
+                // The level's tag data, which the HUD safe-frame slots point
+                // into, is going away: drop the published slots now, as ODST
+                // and Reach do at their own retirement, so nothing re-reads
+                // them. The per-title remembered baselines stay (re-verified
+                // by anchor before any reuse) so curvature never compounds.
+                InvalidateHudLayoutProfile(HudLayoutProfile::Halo3);
                 // Stop new camera transactions immediately. Presentation
                 // detaches on the render thread in Game_AutoVrTick.
                 g_enabled.store(false, std::memory_order_release);
@@ -49390,6 +49399,8 @@ void Game_AutoVrTick()
             PublishHalo3Lifecycle(true, false, false);
         if (presentationWasActive)
             VR_DetachGamePresentation();
+        // Slots published for the previous instance point into its tag data.
+        InvalidateHudLayoutProfile(HudLayoutProfile::Halo3);
     }
 
     UpdateCinematicFovPolicy();
