@@ -864,6 +864,12 @@ if(BUILD_TESTING)
     add_executable(halomccvr_seat_frame_logic_tests tests/seat_frame_logic_tests.cpp)
     target_include_directories(halomccvr_seat_frame_logic_tests PRIVATE src/common)
     add_test(NAME halomccvr_seat_frame_logic_tests COMMAND halomccvr_seat_frame_logic_tests)
+    # Seat frame readers (src/common/seat_frame_sites.h, src/dll/seat_frame_reader.h): the read over a synthetic
+    # world per title, the case decision, and the live Bind over an executable fixture.
+    add_executable(halomccvr_seat_frame_sites_tests tests/seat_frame_sites_tests.cpp src/dll/sigscan.cpp)
+    target_compile_definitions(halomccvr_seat_frame_sites_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    target_link_libraries(halomccvr_seat_frame_sites_tests PRIVATE psapi)
+    add_test(NAME halomccvr_seat_frame_sites_tests COMMAND halomccvr_seat_frame_sites_tests)
     # The production install / sync / teardown of the seat aim rebase skip (src/dll/seat_aim_world_frame.inl)
     # over a VirtualAlloc'd executable fixture: player flavour, then dev flavour (the A/B key and the witness).
     add_executable(halomccvr_seat_aim_world_frame_tests tests/seat_aim_world_frame_tests.cpp src/dll/sigscan.cpp)
