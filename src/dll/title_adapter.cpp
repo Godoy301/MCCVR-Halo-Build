@@ -13,6 +13,7 @@
 #include "halo4_adapter.h"
 #include "reach_adapter.h"
 #include "title_reentry_probe.h"
+#include "seat_exit_witness.h"
 
 namespace
 {
@@ -193,6 +194,11 @@ void TitleAdapter_SetRuntimeMode(RuntimeMode mode)
         return;
     LOG("Runtime mode: %s -> %s",
         RuntimeModeName(previous), RuntimeModeName(mode));
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    // SEATEXIT witness: a vehicle/turret -> gameplay edge gets its own block unless a raw seat edge explained it.
+    SeatWitness_NoteRuntimeMode(TitleAdapter_GetActiveTitle(), static_cast<uint8_t>(previous),
+        static_cast<uint8_t>(mode));
+#endif
     // Preserve the exact teardown edge for targeted co-op diagnostic rebuilds.
     // Production builds compile the sampler and dump out, so this call is a
     // no-op. Ordinary menu traffic is still excluded from the dormant path.

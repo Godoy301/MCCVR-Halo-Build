@@ -27,6 +27,7 @@
 #include "native_vr_actions.h"
 #include "dev_pad.h"
 #include "halo2_observer_6dof.h"
+#include "seat_exit_witness.h"
 
 // M3 VR input. MCC reads gamepads through XInputGetState; hooking it lets the
 // mod present the Sense controllers as a gamepad the game already understands
@@ -97,6 +98,44 @@ namespace
         g_crouchStatus.base.store(sample.baseline, std::memory_order_relaxed);
         g_crouchStatus.calibrated.store(sample.calibrated, std::memory_order_relaxed);
         g_crouchStatus.atMs.store(now, std::memory_order_release);
+    }
+
+    // SEATEXIT witness: this poll's record, filled along MergeVrPad and committed (after every filter,
+    // including the flashlight scope) by ProcessGetState. Dev builds only; see seat_exit_witness.h.
+    thread_local seat_witness::Sample g_witness;
+
+    uint32_t WitnessTransport(const XINPUT_GAMEPAD& pad) noexcept
+    {
+        return pad.wButtons |
+            (pad.bLeftTrigger > XINPUT_GAMEPAD_TRIGGER_THRESHOLD ? seat_witness::kTransportLT : 0u) |
+            (pad.bRightTrigger > XINPUT_GAMEPAD_TRIGGER_THRESHOLD ? seat_witness::kTransportRT : 0u);
+    }
+
+    void WitnessPad(const VrPadState& pad) noexcept
+    {
+        using namespace seat_witness;
+        auto& w = g_witness;
+        w.raw |= (pad.valid ? RawPadValid : 0u) | (pad.a ? RawA : 0u) | (pad.b ? RawB : 0u) |
+            (pad.x ? RawX : 0u) | (pad.y ? RawY : 0u) | (pad.clickL ? RawClickL : 0u) |
+            (pad.clickR ? RawClickR : 0u) | (pad.menu ? RawMenu : 0u) |
+            (pad.thumbrestDpad ? RawThumbrestDpad : 0u) | (pad.exclusiveInput ? RawExclusive : 0u) |
+            (pad.devTouch & 0xFu) * RawThumbrestL;   // devTouch bits 0..3 = TRL, TRR, STL, STR
+        w.moveX = QuantizeAxis(pad.moveX); w.moveY = QuantizeAxis(pad.moveY);
+        w.turnX = QuantizeAxis(pad.turnX); w.turnY = QuantizeAxis(pad.turnY);
+        w.trigL = QuantizeUnit(pad.trigL); w.trigR = QuantizeUnit(pad.trigR);
+        w.gripL = QuantizeUnit(pad.gripL); w.gripR = QuantizeUnit(pad.gripR);
+        w.weapon = pad.weaponButtons & kTransportMask;
+    }
+
+    void CommitSeatWitness(const XINPUT_STATE& state) noexcept
+    {
+        auto& w = g_witness;
+        w.fed = WitnessTransport(state.Gamepad);
+        w.thread = static_cast<uint16_t>(GetCurrentThreadId());
+        vr_mapping::Transports native{};
+        if (Game_ReadVrActionBindings(native, GetTickCount64()))
+            w.useMask = seat_witness::UseTransportMask(TitleAdapter_GetActiveTitle(), native);
+        SeatWitness_Record(w);
     }
 #endif
 
@@ -179,6 +218,10 @@ namespace
             Roomscale_Input(false,0,0);
             return;
         }
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        WitnessPad(pad);
+        g_witness.route = seat_witness::RouteNormal;
+#endif
 
         const bool sharedGameplayInput =
             Game_AllowsSharedGameplayFeatures();
@@ -227,6 +270,9 @@ namespace
                 }
             }
         }
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        if (dpadMode) g_witness.raw |= seat_witness::RawDpadGesture;
+#endif
 
 
         // The physical pad's own Y/B count for the pause chord too, so a
@@ -281,11 +327,21 @@ namespace
             PhysicalCrouchCamera_Invalidate();
             Roomscale_Input(false,0,0);
             state->Gamepad={};
+#if HALOMCCVR_DEV_DIAGNOSTICS
+            g_witness.route = seat_witness::RouteF1Menu;
+            g_witness.raw |= seat_witness::RawF1Menu;
+            g_witness.weapon = 0;
+#endif
             return;
         }
 
         if(pad.exclusiveInput&&!Menu_IsOpen())
         {
+#if HALOMCCVR_DEV_DIAGNOSTICS
+            g_witness.route = seat_witness::RouteExclusive;
+            g_witness.weapon = 0;   // the exclusive route never forwards weapon-gesture buttons
+            if (gameplayMode) g_witness.flags |= seat_witness::FlagGameplay;
+#endif
             g_physicalCrouchInput.Suspend(g_config.physical_crouch);
             PhysicalCrouchCamera_Invalidate();
             Roomscale_Input(false,0,0);
@@ -296,6 +352,9 @@ namespace
                 (pad.a||(state->Gamepad.wButtons&XINPUT_GAMEPAD_A))?XINPUT_GAMEPAD_A:0;
             state->Gamepad={};
             state->Gamepad.wButtons=confirm;
+#if HALOMCCVR_DEV_DIAGNOSTICS
+            g_witness.mapper = confirm;   // native menu pointer's A confirm
+#endif
             if(pad.thumbrestDpad)
             {
                 const auto title=TitleAdapter_GetActiveTitle();
@@ -321,11 +380,21 @@ namespace
                     state->Gamepad.wButtons=static_cast<WORD>(mapped);
                     if(mapped&(1u<<16)) state->Gamepad.bLeftTrigger=255;
                     if(mapped&(1u<<17)) state->Gamepad.bRightTrigger=255;
+#if HALOMCCVR_DEV_DIAGNOSTICS
+                    g_witness.sources = collectedSources;
+                    g_witness.actions = actions.actions&~(scopeAvailable?(1u<<vr_mapping::Zoom):0u);
+                    g_witness.mapper = mapped & seat_witness::kTransportMask;
+                    g_witness.flags |= seat_witness::FlagSemantic | seat_witness::FlagPublished |
+                        (direct ? seat_witness::FlagDirect : 0);
+#endif
                 }
                 else
                 {
                     g_vrActionMapper.ready=false;
                     state->Gamepad.wButtons=DpadDirectionButtons(pad.dpadX,pad.dpadY);
+#if HALOMCCVR_DEV_DIAGNOSTICS
+                    g_witness.dpad = state->Gamepad.wButtons;
+#endif
                 }
             }
             else g_vrActionMapper.ready=false;
@@ -434,6 +503,9 @@ namespace
             btn &= ~(XINPUT_GAMEPAD_Y | XINPUT_GAMEPAD_B);
         if (scopeAvailable)
             btn &= ~XINPUT_GAMEPAD_RIGHT_THUMB;
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        const WORD witnessBase = btn;
+#endif
         if (!semanticMode&&pad.a) btn |= XINPUT_GAMEPAD_A;
         if (!semanticMode&&pad.b && !pauseChord.consumeClicks) btn |= XINPUT_GAMEPAD_B;
         if (!semanticMode&&xPressed) btn |= XINPUT_GAMEPAD_X;
@@ -442,6 +514,10 @@ namespace
         if (!semanticMode&&pad.clickR && !chord.consumeClicks && !scopeAvailable)
             btn |= XINPUT_GAMEPAD_RIGHT_THUMB;
         btn|=static_cast<WORD>(semanticButtons);
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        g_witness.mapper = static_cast<uint32_t>(btn & ~witnessBase) |
+            (semanticButtons & seat_witness::kTransportMask);
+#endif
         btn|=static_cast<WORD>(crouchButtons);
         static bool previousMenu = false;
         const bool menuEdge = pad.menu && !previousMenu;
@@ -463,12 +539,23 @@ namespace
         }
         previousMenu = pad.menu;
         if (pad.menu || inputNow < g_startPulseUntilMs.load())
+        {
             btn |= XINPUT_GAMEPAD_START;
+#if HALOMCCVR_DEV_DIAGNOSTICS
+            g_witness.start = XINPUT_GAMEPAD_START;
+#endif
+        }
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        const WORD witnessBeforeGrips = btn;
+#endif
         if (!wheelGesture&&!semanticMode)
         {
             if (pad.gripL > 0.6f && !pad.weaponConsumeSupport) btn |= XINPUT_GAMEPAD_LEFT_SHOULDER;
             if (pad.gripR > 0.6f && !pad.weaponConsumePrimary) btn |= XINPUT_GAMEPAD_RIGHT_SHOULDER;
         }
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        g_witness.mapper |= static_cast<uint32_t>(btn & ~witnessBeforeGrips);
+#endif
         const bool weaponGesture=pad.weaponConsumeSupport||pad.weaponConsumePrimary||pad.weaponButtons;
         const uint32_t gestureMelee=weaponGesture?0:Game_GestureMeleeInput(inputNow);
         if(semanticMode) NativeVrActions_Publish(state,currentTitle,inputNow,
@@ -477,6 +564,24 @@ namespace
         btn |= static_cast<WORD>(pad.weaponButtons & 0xFFFF);
         state->Gamepad.wButtons = btn;
         NoteFedButtons(btn);
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        {
+            using namespace seat_witness;
+            auto& w = g_witness;
+            w.sources = actionSources;
+            w.crouch = crouchButtons & kTransportMask;
+            w.gesture = gestureMelee & kTransportMask;
+            if (semanticMode)
+            {
+                w.actions = semanticActions.actions | ((crouchButtons|gestureMelee|pad.weaponButtons)>>18);
+                w.flags |= FlagSemantic | FlagPublished;
+            }
+            if (directActions) w.flags |= FlagDirect;
+            if (wheelGesture) w.flags |= FlagWheel;
+            if (chord.consumeClicks || pauseChord.consumeClicks) w.flags |= FlagChord;
+            if (gameplayMode) w.flags |= FlagGameplay;
+        }
+#endif
 
         const BYTE tl = semanticMode?((semanticButtons&(1u<<16))?255:0):(BYTE)(leftTrigger*255.0f);
         const BYTE tr = semanticMode?((semanticButtons&(1u<<17))?255:0):(BYTE)(pad.trigR*255.0f);
@@ -488,6 +593,13 @@ namespace
         if (gestureMelee & (1u<<17)) state->Gamepad.bRightTrigger = 255;
         if (pad.weaponButtons & (1u<<16)) state->Gamepad.bLeftTrigger = 255;
         if (pad.weaponButtons & (1u<<17)) state->Gamepad.bRightTrigger = 255;
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        if (!semanticMode)
+        {
+            if (tl > XINPUT_GAMEPAD_TRIGGER_THRESHOLD) g_witness.mapper |= seat_witness::kTransportLT;
+            if (tr > XINPUT_GAMEPAD_TRIGGER_THRESHOLD) g_witness.mapper |= seat_witness::kTransportRT;
+        }
+#endif
 
         // The optional thumb-rest gesture uses the physical RIGHT stick. Its
         // axes were consumed at XR publication, including every title's turn
@@ -495,6 +607,9 @@ namespace
         if (pad.thumbrestDpad&&!semanticMode)
         {
             btn |= DpadDirectionButtons(pad.dpadX, pad.dpadY);
+#if HALOMCCVR_DEV_DIAGNOSTICS
+            g_witness.dpad |= DpadDirectionButtons(pad.dpadX, pad.dpadY);
+#endif
             state->Gamepad.wButtons = btn;
             NoteFedButtons(btn);
         }
@@ -512,6 +627,9 @@ namespace
             !VR_IsPausePresentationTarget() && !VR_IsCutsceneTheaterActive(),
             locomotionX, locomotionY);
 
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        const WORD witnessBeforeDpad = btn;
+#endif
         if (dpadMode)
         {
             if (!semanticMode&&pad.moveY > 0.5f) btn |= XINPUT_GAMEPAD_DPAD_UP;
@@ -561,6 +679,9 @@ namespace
             }
             state->Gamepad.wButtons = btn;
         NoteFedButtons(btn);
+#if HALOMCCVR_DEV_DIAGNOSTICS
+            g_witness.dpad |= static_cast<uint32_t>(btn & ~witnessBeforeDpad);
+#endif
             // No walking while navigating.
             state->Gamepad.sThumbLX = 0;
             state->Gamepad.sThumbLY = 0;
@@ -719,6 +840,17 @@ namespace
         struct NativeActionPollScope {
             ~NativeActionPollScope() noexcept {NativeVrActions_EndPoll();}
         } nativeActionPollScope;
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        // SEATEXIT witness: declared BEFORE the flashlight filter so it is destroyed AFTER it and records
+        // exactly the pad the game receives, on every return path.
+        g_witness = {};
+        g_witness.ms = SeatWitness_NowMs();
+        g_witness.route = seat_witness::RouteGated;
+        struct SeatWitnessCommitScope {
+            XINPUT_STATE* state;
+            ~SeatWitnessCommitScope() noexcept {CommitSeatWitness(*state);}
+        } seatWitnessCommit{state};
+#endif
         // Scope exit covers both tracked-controller and physical-pad-only
         // branches, after all gesture pulses and pad merging have completed.
         struct FlashlightFilterScope
@@ -755,6 +887,9 @@ namespace
         // way a physical pad's state arrives, before any gate, so it reaches menus as well as gameplay. A
         // player build compiles this to nothing.
         DevPad_Apply(state->Gamepad);
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        g_witness.physical = WitnessTransport(state->Gamepad);
+#endif
         // Controller admission is separate from shared gameplay ownership.
         // Private ODST camera-only and Reach controller-only stages may expose
         // ordinary gamepad input while motion aim and every title-runtime
@@ -801,6 +936,10 @@ namespace
         VR_GetPadState(pad);
         if (!pad.valid)
         {
+#if HALOMCCVR_DEV_DIAGNOSTICS
+            g_witness.route = seat_witness::RouteNoPad;
+            WitnessPad(pad);
+#endif
             g_vrActionMapper.ready=false;
             g_scopeInput.Suspend();
             g_physicalCrouchInput.Suspend(g_config.physical_crouch);

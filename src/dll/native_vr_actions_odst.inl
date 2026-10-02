@@ -87,6 +87,14 @@ void* ReadOwned(void* state,unsigned action,void* native,uintptr_t caller) noexc
         // The abstraction updater also calls the reader to WRITE keyboard
         // counters. It must never receive a private VR record. Admit only the
         // independently matched native player-control builder's read calls.
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        // SEATEXIT witness: the proven player-control builder reading the Use (3) or Reload consumer record --
+        // the game's own view of that button, whatever fed it. Read-only, SEH-guarded, dev builds only.
+        if(runtime.admitted.load(std::memory_order_acquire) && caller>=runtime.base+consumerBegin &&
+           caller<runtime.base+consumerEnd && reinterpret_cast<uintptr_t>(state)==runtime.state &&
+           (action==3u || action==native_action_button::ConsumerAction(title,vr_mapping::Reload)))
+            WitnessNativeRecord(title,action,native);
+#endif
         if(!Current() || caller<runtime.base+consumerBegin || caller>=runtime.base+consumerEnd ||
             reinterpret_cast<uintptr_t>(state)!=runtime.state)return native;
         unsigned controller=0;

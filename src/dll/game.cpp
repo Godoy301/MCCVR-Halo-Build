@@ -3,6 +3,7 @@
 #include "../common/reach_wind_replay.h"
 #include "native_reload_policy.h"
 #include "native_vr_actions.h"
+#include "seat_exit_witness.h"
 #include "native_vehicle_first_person.h"
 #include "haloce_native_bindings.h"
 #include "../common/weapon_model_catalog.h"
@@ -8723,6 +8724,11 @@ namespace
 
         const bool seated = seat >= 0 && parent != -1 &&
             parentKind == kHalo3ObjectKindVehicle;
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        // SEATEXIT witness: the RAW seated edge, ~0.35 s before the debounced re-centre below.
+        SeatWitness_NoteSeat(GameTitle::Halo3, generation, seated, unit, seat, parent,
+            directType, defIndex, native);
+#endif
         // C20: while the player is in a seat, tell Halo that seat is first
         // person so it stops drawing the character model around the headset.
         // Off foot, on feature-disable, or on any layout failure this restores
@@ -8851,6 +8857,12 @@ namespace
             {
                 frameStatus = Halo3FrameStatus::TooDeep;
             }
+#if HALOMCCVR_DEV_DIAGNOSTICS
+            // SEATEXIT witness: the seated vehicle's validated object frame (orthonormal, inside its bounding
+            // sphere), so an exit shows the hull's tilt and speed just before it.
+            if (frameOk)
+                SeatWitness_NoteVehicleFrame(GameTitle::Halo3, world.pos, world.fwd, world.up);
+#endif
             if (frameOk)
             {
                 // C18: select the node Halo actually attached this occupant to.
@@ -12283,6 +12295,11 @@ namespace
         const bool seated = unit != -1 &&
             !OdstSeatWordMeansUnseated(seat) && parentObjectData != nullptr;
         g_odstSeatedLastKnown.store(seated, std::memory_order_relaxed);
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        // SEATEXIT witness: the RAW seated edge, ahead of the debounced re-centre.
+        SeatWitness_NoteSeat(GameTitle::Halo3ODST, generation, seated, unit, seat, parent,
+            physicsType, defIndex, native);
+#endif
 
         // Identity. A mounted-turret gunner is not resolved in this candidate:
         // ODST's object parent-node byte is not yet proven (O-E2 open gap), so
@@ -46498,6 +46515,9 @@ namespace
             RefreshGestureMeleeBinding(activeTitle,activeLevelRunning,pollNow);
             Input_PollMccCrouchLock(pollNow);
             Input_ReportPhysicalCrouch(pollNow);
+#if HALOMCCVR_DEV_DIAGNOSTICS
+            SeatWitness_Poll();   // SEATEXIT witness blocks (dev builds only)
+#endif
             if(const unsigned notice=g_bodyNotice.exchange(0,std::memory_order_acq_rel))
                 LOG("Legacy H3 body switch: %s; independent body/hand visibility remains WIP",
                     notice==1?"enabled":notice==2?"original boolean values restored":
