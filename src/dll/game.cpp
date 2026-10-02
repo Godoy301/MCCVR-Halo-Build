@@ -29901,6 +29901,9 @@ namespace
             // The optional vehicle transaction is going stock for this title
             // generation; it must not leave a cleared seat word behind.
             ReachRestoreNativeSeatLease();
+            // ...nor a published natively bit-4-less seat (seat aim world
+            // frame), as Halo 3's C20 clears its own beside the restore.
+            g_reachSeatNativeNoThirdPerson.store(0, std::memory_order_relaxed);
             g_reachVehicleCameraFaults.fetch_add(
                 1, std::memory_order_relaxed);
             g_reachCamera.vehicleCameraBindingState.store(
@@ -29958,7 +29961,13 @@ namespace
             // every transient miss would re-toggle the bit and reintroduce the
             // rejected per-frame churn.
             if (!structurallySeated)
+            {
                 ReachRestoreNativeSeatLease();
+                // The seat is left: it is no longer a natively bit-4-less
+                // seat we sit in (published only on a complete frame below).
+                g_reachSeatNativeNoThirdPerson.store(
+                    0, std::memory_order_relaxed);
+            }
             // Marker, bounds and identity proof can fail while the occupied
             // seat relationship itself remains structurally valid. Hold the
             // already-debounced occupation through those camera-only misses:
