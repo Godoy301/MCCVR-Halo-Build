@@ -672,6 +672,12 @@ if(BUILD_TESTING)
     target_include_directories(halomccvr_dpad_input_tests PRIVATE src/common src/dll)
     target_compile_definitions(halomccvr_dpad_input_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
     add_test(NAME halomccvr_dpad_input_tests COMMAND halomccvr_dpad_input_tests)
+    # SEATEXIT witness (dev-only vehicle-exit diagnostic): ring compression, the Use/Exit verdict, the drive
+    # summary, the native Use record span, vehicle kinematics and the edge-log limiter are pure logic.
+    add_executable(halomccvr_seat_exit_witness_tests tests/seat_exit_witness_tests.cpp)
+    target_compile_features(halomccvr_seat_exit_witness_tests PRIVATE cxx_std_20)
+    target_compile_definitions(halomccvr_seat_exit_witness_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    add_test(NAME halomccvr_seat_exit_witness_tests COMMAND halomccvr_seat_exit_witness_tests)
     add_executable(halomccvr_weapon_interaction_tests tests/weapon_interaction_tests.cpp)
     add_executable(halomccvr_native_reload_tests tests/native_reload_policy_tests.cpp src/common/config.cpp)
     add_executable(halomccvr_native_vehicle_fp_tests tests/native_vehicle_first_person_tests.cpp src/common/config.cpp)
