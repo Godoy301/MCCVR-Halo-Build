@@ -1,4 +1,6 @@
 #include "../src/common/vr_action_mapping.h"
+#include "../src/common/vr_action_passthrough.h"
+#include "../src/dll/native_vr_actions.h"
 #include "../src/common/config.h"
 #include "../src/common/weapon_interaction_logic.h"
 #include "../src/common/scope_action_input.h"
@@ -114,8 +116,105 @@ void CheckPhysicalCrouchInput()
         unavailable.Update(GameTitle::Halo3,1,1.4f,1,2,true,true,.22f,0)==0,
         "native crouch without proven transport cannot inject a guessed button");
 }
+// One input poll as both production routes compose it (input.cpp): in direct
+// mode the mapper sees the bridge's gesture bits, the router sees the REAL
+// layout, and the result is the pad buttons plus the bridge publication.
+struct Poll { MappedActions mapped; RoutedActions routed; };
+Poll RunPoll(Mapper& mapper,GameTitle title,bool direct,uint32_t sources,
+    const Overrides& bindings,const Transports& layout)
+{
+    Transports mapping=layout;
+    if(direct) for(unsigned a=0;a<Count;++a) mapping[a]=NativeVrActions_GestureBit(static_cast<Action>(a));
+    Poll poll{};
+    poll.mapped=mapper.ApplyDetailed(sources,bindings,mapping,(uint64_t(title)<<24)|1,true);
+    poll.routed=RouteActions(title,direct,poll.mapped,layout);
+    return poll;
+}
+void CheckDirectContextPassthrough()
+{
+    constexpr uint32_t padX=0x4000,padA=0x1000,padB=0x2000,padY=0x8000;
+    constexpr uint32_t context=(1u<<Reload)|(1u<<Interact);
+    // MCC's default Halo 2 layout: Reload (0x2E) and touch_device (0x23) are
+    // both on X; Jump on A; Fire on the right trigger.
+    Transports layout{};
+    for(unsigned a=0;a<Count;++a) layout[a]=1u<<a;
+    layout[Reload]=layout[Interact]=padX;layout[Jump]=padA;layout[Fire]=1u<<17;
+    Overrides automatic{};
+    {
+        Mapper mapper;
+        RunPoll(mapper,GameTitle::Halo2,true,0,automatic,layout);
+        for(unsigned poll=0;poll<40;++poll) // a held X: tap, then well past H2's hold threshold
+        {
+            const auto p=RunPoll(mapper,GameTitle::Halo2,true,Bit(X),automatic,layout);
+            Check(p.mapped.Has(Reload)&&p.mapped.Has(Interact),"H2 default X still names Reload and Use semantically");
+            Check(p.routed.buttons==padX,"H2 direct: held X reaches the game as the real X button on every poll");
+            Check(!(p.routed.published&context),"H2 direct: bridge publishes neither Reload 2E nor touch_device 23");
+        }
+        const auto released=RunPoll(mapper,GameTitle::Halo2,true,0,automatic,layout);
+        Check(released.routed.buttons==0&&released.routed.published==0,"H2 direct: releasing X releases the real button");
+        auto p=RunPoll(mapper,GameTitle::Halo2,true,Bit(A),automatic,layout);
+        Check(p.routed.buttons==0&&p.routed.published==(1u<<Jump),"H2 direct: Jump stays on the bridge, real A withheld");
+        RunPoll(mapper,GameTitle::Halo2,true,0,automatic,layout);
+        p=RunPoll(mapper,GameTitle::Halo2,true,Bit(PrimaryTrigger),automatic,layout);
+        Check(p.routed.buttons==0&&p.routed.published==(1u<<Fire),"H2 direct: Fire stays on the bridge, real trigger withheld");
+        RunPoll(mapper,GameTitle::Halo2,true,0,automatic,layout);
+        p=RunPoll(mapper,GameTitle::Halo2,true,Bit(X)|Bit(Y),automatic,layout);
+        Check(p.routed.buttons==padX&&p.routed.published==(1u<<SwitchWeapon),
+            "H2 direct: X passes through while Y (switch weapon) stays bridged in the same poll");
+    }
+    {
+        // Transport fallback (no direct route) is byte-identical to before.
+        Mapper mapper;
+        RunPoll(mapper,GameTitle::Halo2,false,0,automatic,layout);
+        const auto p=RunPoll(mapper,GameTitle::Halo2,false,Bit(X),automatic,layout);
+        Check(p.routed.buttons==p.mapped.transports&&p.routed.buttons==padX&&p.routed.published==p.mapped.actions,
+            "H2 transport fallback unchanged");
+    }
+    {
+        // Use device bound in MCC to a different button than Reload: each VR
+        // action sends its own real button, so the game's context actions on
+        // that button still run. Neither reaches the bridge.
+        Transports split=layout;split[Interact]=padB;
+        Overrides bindings=automatic;bindings[Interact]=Y;
+        Mapper mapper;
+        RunPoll(mapper,GameTitle::Halo2,true,0,bindings,split);
+        auto p=RunPoll(mapper,GameTitle::Halo2,true,Bit(Y),bindings,split);
+        Check(p.routed.buttons==padB&&!(p.routed.published&context),"H2 direct: Use sends its own real MCC button");
+        RunPoll(mapper,GameTitle::Halo2,true,0,bindings,split);
+        p=RunPoll(mapper,GameTitle::Halo2,true,Bit(X),bindings,split);
+        Check(p.routed.buttons==padX&&!(p.routed.published&context),"H2 direct: Reload sends only the real reload button");
+        // A context action with NO native binding has no button to send; the
+        // bridge remains its only route, exactly as before.
+        Transports unbound=layout;unbound[Reload]=0;
+        RunPoll(mapper,GameTitle::Halo2,true,0,automatic,unbound);
+        p=RunPoll(mapper,GameTitle::Halo2,true,Bit(X),automatic,unbound);
+        Check(p.routed.buttons==padX&&(p.routed.published&context)==(1u<<Reload),
+            "H2 direct: natively unbound Reload stays on the bridge");
+        // Binding reader unavailable: nothing to pass through, bridge unchanged.
+        RunPoll(mapper,GameTitle::Halo2,true,0,automatic,Transports{});
+        p=RunPoll(mapper,GameTitle::Halo2,true,Bit(X),automatic,Transports{});
+        Check(p.routed.buttons==0&&(p.routed.published&context)==context,
+            "H2 direct with no readable layout keeps the bridge route");
+    }
+    for(const auto title:{GameTitle::Halo3,GameTitle::Halo3ODST,GameTitle::HaloReach,GameTitle::Halo4,GameTitle::HaloCE})
+    {
+        Check(DirectPassthroughActions(title)==0,"only Halo 2 passes context actions through");
+        Mapper direct,fallback;
+        RunPoll(direct,title,true,0,automatic,layout);RunPoll(fallback,title,false,0,automatic,layout);
+        for(unsigned poll=0;poll<40;++poll)
+        {
+            const auto d=RunPoll(direct,title,true,Bit(X),automatic,layout);
+            Check(d.routed.buttons==0&&(d.routed.published&context)==context,
+                "other titles direct: X stays withheld and the bridge publishes Reload and Use");
+            const auto f=RunPoll(fallback,title,false,Bit(X),automatic,layout);
+            Check(f.routed.buttons==f.mapped.transports&&f.routed.published==f.mapped.actions,
+                "other titles transport fallback unchanged");
+        }
+    }
+}
 int main()
 {
+    CheckDirectContextPassthrough();
     CheckScopeAdmission();
     CheckPhysicalCrouchInput();
     {
