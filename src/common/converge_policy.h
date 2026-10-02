@@ -46,7 +46,9 @@ enum class ConvergeOff : uint8_t {
     AimFeedbackInvalid,  // the game's aim could not be read as a finite direction
     MarkStale,           // the converged mark is older than its freshness window
     SeatProofPending,    // a seat whose own proofs (Halo 4's eye agreement, its record facts) do not hold yet
-    SeatSteering,        // Reach: a seat whose stick or wheel steers right now (the stick is not aiming)
+    SeatSteering,        // a seat whose stick or wheel steers right now: our control mode leaves the heading off
+                         // the hand, so the hand's point is not where the gun turns (Reach's 0x100; Halo 3 /
+                         // ODST's C9 steering author, Halo3SeatAuthorsSteeringNow)
     Count
 };
 
@@ -77,15 +79,21 @@ inline const char* ConvergeOffName(ConvergeOff why)
 
 // THE SEATED CONVERGED CLAIM (Halo 3, ODST, Halo 4): the mark, so the traced reticle, the scope's convergence and
 // the muzzle redirect that rides on it. Claimed whenever the aim was solved through the traced point -- exactly as
-// on foot. Every fact it is decided on is our code's: nothing about the seat's limits, a turret's rate cap or how
+// on foot. Every fact it is decided on is our code's or our control mode's: nothing about the seat's limits, a turret's rate cap or how
 // far the game's aim trails the target takes part (those are natural, and the game shows them itself).
 //
 // This is the WHOLE decision: Game_ComputeAimStick assigns its claim from SeatedClaimDecide and nothing else
 // (tools/check_seated_claim.py checks that call site), and the facts struct holds no natural cause by
 // construction (tests/converge_policy_tests.cpp pins its layout).
+//
+// handOwnsHeading is a CONTROL MODE of ours, not a natural limit: with the view following the hull, a seat whose
+// stick or wheel steers (C9, vehicle_view_follow) never actuates the heading the aim was solved for -- the stick
+// or wheel does -- so the hand's point is not where the gun is turned to. Reach withholds its claim in the same
+// state (ConvergeOff::SeatSteering, aim-why 0x100).
 struct SeatedClaimFacts {
     bool solved = false;              // the aim was bent through the traced point this poll
     bool pointFinite = true;          // the point it was bent through is a finite position (Halo 4 computes it)
+    bool handOwnsHeading = true;      // our code actuates the solved heading (no stick or wheel steering author)
     bool aimFeedbackFinite = false;   // the game's aim feedback reads as a direction
 };
 // `why` names the reason only when the aim WAS solved and the claim is still withheld; an unsolved poll keeps the
@@ -100,6 +108,7 @@ inline SeatedClaim SeatedClaimDecide(const SeatedClaimFacts& f)
     if (!f.solved)
         return c;
     if (!f.pointFinite) { c.why = ConvergeOff::NoRange; return c; }
+    if (!f.handOwnsHeading) { c.why = ConvergeOff::SeatSteering; return c; }
     if (!f.aimFeedbackFinite) { c.why = ConvergeOff::AimFeedbackInvalid; return c; }
     c.claim = true;
     return c;

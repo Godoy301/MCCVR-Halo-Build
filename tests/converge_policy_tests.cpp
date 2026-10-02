@@ -21,20 +21,22 @@ void Check(bool ok, const char* what)
 using namespace converge;
 
 // THE REGRESSION GUARD for the 2026-10-01 decision. The seated claim is decided on SeatedClaimFacts alone, whose
-// fields are all our own code's -- solved, a finite point, a readable aim feedback -- so no natural cause can be
+// fields are all our own code's -- solved, a finite point, our control mode owning the heading, a readable aim
+// feedback -- so no natural cause can be
 // handed to it. Adding a field (a latch, a stall, a turret, an outcome miss) fails these compile-time checks
 // before it can fail a player; the call site in game.cpp is pinned by tools/check_seated_claim.py.
 static_assert(std::is_same_v<decltype(&SeatedClaimDecide), SeatedClaim (*)(const SeatedClaimFacts&)>,
               "the seated converged claim is decided on SeatedClaimFacts alone");
-static_assert(sizeof(SeatedClaimFacts) == 3 * sizeof(bool) && std::is_trivially_copyable_v<SeatedClaimFacts>,
-              "SeatedClaimFacts holds exactly our code's three facts: no natural in-game cause");
+static_assert(sizeof(SeatedClaimFacts) == 4 * sizeof(bool) && std::is_trivially_copyable_v<SeatedClaimFacts>,
+              "SeatedClaimFacts holds exactly our code's four facts: no natural in-game cause");
 
 // Shorthand: the claim for one combination of the facts.
-bool Claims(bool solved, bool pointFinite, bool aimFeedbackFinite)
+bool Claims(bool solved, bool pointFinite, bool aimFeedbackFinite, bool handOwnsHeading = true)
 {
     SeatedClaimFacts f;
     f.solved = solved;
     f.pointFinite = pointFinite;
+    f.handOwnsHeading = handOwnsHeading;
     f.aimFeedbackFinite = aimFeedbackFinite;
     return SeatedClaimDecide(f).claim;
 }
@@ -54,16 +56,17 @@ void TestClaimIgnoresNaturalCauses()
         e.turretSlew = (bits & 8u) != 0;
         e.reachLimited = (bits & 16u) != 0;
         e.yawShortH4 = (bits & 32u) != 0;
-        for (unsigned facts = 0; facts < 8; ++facts)
+        for (unsigned facts = 0; facts < 16; ++facts)
         {
             const bool solved = (facts & 1u) != 0, point = (facts & 2u) != 0, finite = (facts & 4u) != 0;
+            const bool owns = (facts & 8u) != 0;
             witness.note(e);
             ++combinations;
-            if (Claims(solved, point, finite) != (solved && point && finite))
+            if (Claims(solved, point, finite, owns) != (solved && point && finite && owns))
                 ++changed;
         }
     }
-    Check(combinations == 512 && changed == 0, "no natural cause changes the seated converged claim");
+    Check(combinations == 1024 && changed == 0, "no natural cause changes the seated converged claim");
     {
         unsigned held = 0;
         for (unsigned bits = 0; bits < 64; ++bits)
@@ -80,8 +83,8 @@ void TestClaimIgnoresNaturalCauses()
         Check(held == 63, "any natural cause marks the poll held off the point (for the dev witnesses only)");
     }
     const NaturalCounts counts = witness.take();
-    Check(counts.polls == 512 && counts.latchHeld == 256 && counts.outcomeMiss == 256 && counts.stall == 256 &&
-              counts.turretSlew == 256 && counts.reachLimited == 256 && counts.yawShortH4 == 256,
+    Check(counts.polls == 1024 && counts.latchHeld == 512 && counts.outcomeMiss == 512 && counts.stall == 512 &&
+              counts.turretSlew == 512 && counts.reachLimited == 512 && counts.yawShortH4 == 512,
           "the witness counts every natural cause it is shown");
     const NaturalCounts again = witness.take();
     Check(again.polls == 0 && again.latchHeld == 0 && again.yawShortH4 == 0, "taking the counts resets them");
@@ -101,6 +104,10 @@ void TestClaimIgnoresNaturalCauses()
         f.pointFinite = true;
         f.aimFeedbackFinite = false;
         Check(SeatedClaimDecide(f).why == ConvergeOff::AimFeedbackInvalid, "an unreadable aim: AimFeedbackInvalid");
+        f.aimFeedbackFinite = true;
+        f.handOwnsHeading = false;
+        Check(!SeatedClaimDecide(f).claim && SeatedClaimDecide(f).why == ConvergeOff::SeatSteering,
+              "a seat whose stick or wheel steers the heading: SeatSteering, as Reach's 0x100");
         f.solved = false;
         Check(!SeatedClaimDecide(f).claim && SeatedClaimDecide(f).why == ConvergeOff::None,
               "unsolved: the solve's own reason stands");

@@ -51635,11 +51635,15 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
     // whatever the seat's limits do to it. Natural causes (a seat stop, a turret's rate cap, the game's aim
     // still turning toward the target) no longer withhold it: flat Halo shows those through its own tracers and
     // impacts, and the reticle stays on the converged point (2026-10-01; reverses O4 81856ea, C27 30f786f and
-    // the turret rule of e4b8e07 / 61ecf34). Only our own facts can decline it (converge::SeatedClaimFacts), and
+    // the turret rule of e4b8e07 / 61ecf34). Only our own facts can decline it (converge::SeatedClaimFacts: an
+    // unreadable aim, a non-finite point, or a seat whose stick or wheel steers the heading), and
     // the claim is exactly SeatedClaimDecide's -- tools/check_seated_claim.py keeps it that way.
     converge::SeatedClaimFacts seatedClaimFacts{};
     seatedClaimFacts.solved = sightSeatedConverged;
     seatedClaimFacts.pointFinite = sightSeatedPointFinite;
+    // C9's steering author (below) turns the heading from the stick or wheel, not toward the solved aim: the hand's
+    // point is then not where the gun goes. That is our control mode, so it withholds (as Reach's 0x100 does).
+    seatedClaimFacts.handOwnsHeading = !Halo3SeatAuthorsSteeringNow();
     seatedClaimFacts.aimFeedbackFinite = converge::AimFeedbackFinite(ax, ay, az);
     const converge::SeatedClaim seatedClaim = converge::SeatedClaimDecide(seatedClaimFacts);
     const bool sightSeatedClaim = seatedClaim.claim;
