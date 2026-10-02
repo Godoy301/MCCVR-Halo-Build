@@ -43,6 +43,9 @@
 #include "native_menu_pointer.h"
 #include "native_subtitles.h"
 #include "native_vr_actions.h"
+#if HALOMCCVR_DEV_DIAGNOSTICS
+#include "../common/seat_exit_witness_logic.h"
+#endif
 #include "../common/subtitle_logic.h"
 #include "../common/dual_reticle_logic.h"
 #include "../common/aim_solve_logic.h"
@@ -159,6 +162,12 @@ namespace
     XrAction g_hapticAction = XR_NULL_HANDLE;
     XrAction g_actMenu = XR_NULL_HANDLE;
     XrAction g_actLeftThumbrest = XR_NULL_HANDLE;
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    // SEATEXIT witness only (dev builds): capacitive touch, logged, never acted on. Bound for the Touch
+    // profiles as a separate optional suggestion that falls back to the complete original controls.
+    XrAction g_actDevThumbrestR = XR_NULL_HANDLE;
+    XrAction g_actDevStickTouchL = XR_NULL_HANDLE, g_actDevStickTouchR = XR_NULL_HANDLE;
+#endif
     XrAction g_actFacePadL=XR_NULL_HANDLE,g_actFacePadR=XR_NULL_HANDLE;
     XrAction g_actFaceClickL=XR_NULL_HANDLE,g_actFaceClickR=XR_NULL_HANDLE;
     std::atomic<uint64_t> g_thumbrestDpadSampleMs{0};
@@ -9738,6 +9747,14 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
             "left_thumbrest_touch", "Left Thumb Rest Touch (D-pad)");
         if (g_actLeftThumbrest == XR_NULL_HANDLE)
             LOG("D-pad thumb rest: optional touch action unavailable; head gesture and normal input retained");
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        makeAction(g_actDevThumbrestR, XR_ACTION_TYPE_BOOLEAN_INPUT,
+            "dev_thumbrest_touch_r", "DEV Right Thumb Rest Touch (diagnostic)");
+        makeAction(g_actDevStickTouchL, XR_ACTION_TYPE_BOOLEAN_INPUT,
+            "dev_thumbstick_touch_l", "DEV Left Thumbstick Touch (diagnostic)");
+        makeAction(g_actDevStickTouchR, XR_ACTION_TYPE_BOOLEAN_INPUT,
+            "dev_thumbstick_touch_r", "DEV Right Thumbstick Touch (diagnostic)");
+#endif
 
         XrPath hapticPaths[2] = {g_leftHandPath, g_rightHandPath};
         XrActionCreateInfo hapticInfo{XR_TYPE_ACTION_CREATE_INFO};
@@ -9907,6 +9924,34 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                     LOG("D-pad thumb rest: optional binding rejected for %s; preserving complete original controls", profile);
                 }
             }
+#if HALOMCCVR_DEV_DIAGNOSTICS
+            {
+                // SEATEXIT witness: touch sensors, negotiated exactly like the thumb rest above. A
+                // rejection re-suggests the preserved baseline below (baselineSuggested = false), so it
+                // can never cost an existing binding.
+                std::vector<Bind> withDevTouch = preservedBaseline;
+                if (g_actDevThumbrestR != XR_NULL_HANDLE)
+                    withDevTouch.push_back({g_actDevThumbrestR, "/user/hand/right/input/thumbrest/touch"});
+                if (g_actDevStickTouchL != XR_NULL_HANDLE)
+                    withDevTouch.push_back({g_actDevStickTouchL, "/user/hand/left/input/thumbstick/touch"});
+                if (g_actDevStickTouchR != XR_NULL_HANDLE)
+                    withDevTouch.push_back({g_actDevStickTouchR, "/user/hand/right/input/thumbstick/touch"});
+                if (withDevTouch.size() != preservedBaseline.size())
+                {
+                    if (suggest(profile, withDevTouch.data(), withDevTouch.size()))
+                    {
+                        preservedBaseline = std::move(withDevTouch);
+                        baselineSuggested = true;
+                        LOG("SEATEXIT witness: DEV touch bindings (right thumb rest, both thumbsticks) accepted for %s", profile);
+                    }
+                    else
+                    {
+                        baselineSuggested = false;
+                        LOG("SEATEXIT witness: DEV touch bindings rejected for %s; complete original controls preserved", profile);
+                    }
+                }
+            }
+#endif
             if (g_supportGripPoseAction == XR_NULL_HANDLE)
                 return baselineSuggested || suggest(
                     profile, preservedBaseline.data(), preservedBaseline.size());
@@ -13614,6 +13659,18 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         lastApplyMs = now;
     }
 
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    bool ReadDevBool(XrAction action)
+    {
+        if (action == XR_NULL_HANDLE) return false;
+        XrActionStateGetInfo info{XR_TYPE_ACTION_STATE_GET_INFO};
+        info.action = action;
+        XrActionStateBoolean st{XR_TYPE_ACTION_STATE_BOOLEAN};
+        return XR_SUCCEEDED(xrGetActionStateBoolean(g_session, &info, &st)) &&
+            st.isActive && st.currentState == XR_TRUE;
+    }
+#endif
+
     bool ReadLeftThumbrestTouched()
     {
         if (g_actLeftThumbrest == XR_NULL_HANDLE) return false;
@@ -13981,6 +14038,13 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
             if(rightProfile==vr_mapping::Profile::Vive&&rightZone)
             {pad.clickR=false;pad.turnX=pad.turnY=0;}
         }
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        // SEATEXIT witness: physical touch sensors (bit 0 left thumb rest, 1 right thumb rest, 2/3 left/
+        // right thumbstick). Physical hands, so read before any handedness swap would matter.
+        pad.devTouch = static_cast<uint8_t>((ReadLeftThumbrestTouched() ? 1u : 0u) |
+            (ReadDevBool(g_actDevThumbrestR) ? 2u : 0u) | (ReadDevBool(g_actDevStickTouchL) ? 4u : 0u) |
+            (ReadDevBool(g_actDevStickTouchR) ? 8u : 0u));
+#endif
         const DpadStickInput thumbrest = ConsumeThumbrestDpad(
             g_config.quest_thumbrest_dpad, ReadLeftThumbrestTouched(),
             pad.valid && valid && leftValid && g_sessionState == XR_SESSION_STATE_FOCUSED &&
@@ -14006,6 +14070,31 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         if (pad.b && !previousPad.b) LOG("controller edge: B");
         if (pad.x && !previousPad.x) LOG("controller edge: X");
         if (pad.y && !previousPad.y) LOG("controller edge: Y");
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        {
+            // SEATEXIT witness: the remaining raw edges, rate-limited per kind (thumb-rest touch can
+            // chatter). Menu/Start is already logged above.
+            static seat_witness::EdgeLimiter limiters[6];
+            const struct { bool now, before; const char* text; } edges[6]{
+                {pad.clickL, previousPad.clickL, "L3 (left stick click) DOWN"},
+                {pad.clickR, previousPad.clickR, "R3 (right stick click) DOWN"},
+                {(pad.devTouch & 1u) != 0, (previousPad.devTouch & 1u) != 0, "left thumb rest TOUCH"},
+                {(previousPad.devTouch & 1u) != 0, (pad.devTouch & 1u) != 0, "left thumb rest release"},
+                {(pad.devTouch & 2u) != 0, (previousPad.devTouch & 2u) != 0, "right thumb rest TOUCH"},
+                {(previousPad.devTouch & 2u) != 0, (pad.devTouch & 2u) != 0, "right thumb rest release"},
+            };
+            for (unsigned i = 0; i < 6; ++i)
+            {
+                if (!edges[i].now || edges[i].before) continue;
+                unsigned carried = 0;
+                if (limiters[i].Allow(inputNow, 4, 1000, &carried))
+                {
+                    if (carried) LOG("controller edge (dev): %s (+%u suppressed)", edges[i].text, carried);
+                    else LOG("controller edge (dev): %s", edges[i].text);
+                }
+            }
+        }
+#endif
         previousPad = pad;
         // Keep the pointer click private while suppressing all gameplay
         // consumers (including camera snapshots that bypass XInput).

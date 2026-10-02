@@ -1005,6 +1005,11 @@ struct VrPadState
     uint32_t weaponReloadBinding = 0, weaponSwitchBinding = 0;
     GameTitle weaponTitle{};
     bool weaponConsumePrimary = false, weaponConsumeSupport = false;
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    // SEATEXIT witness only: capacitive touch, bit 0 left thumb rest, 1 right thumb rest, 2 left
+    // thumbstick, 3 right thumbstick. Read for the log; nothing acts on it.
+    uint8_t devTouch = 0;
+#endif
 };
 void VR_GetPadState(VrPadState& out);
 const char* VR_ControllerProfileName(bool left);

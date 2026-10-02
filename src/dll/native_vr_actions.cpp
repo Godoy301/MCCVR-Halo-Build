@@ -1,4 +1,5 @@
 #include "native_vr_actions.h"
+#include "seat_exit_witness.h"
 #include "game.h"
 #include "title_adapter.h"
 #include "sigscan.h"
@@ -218,6 +219,21 @@ bool Retire() {
     runtime.attempted=false;runtime.faulted=false;
     return true;
 }
+#if HALOMCCVR_DEV_DIAGNOSTICS
+// SEATEXIT witness: one native action record's held counters (native_action_button::Counters: milliseconds at
+// +0, frames at +2), read under SEH. Dev builds only.
+__declspec(noinline) void WitnessNativeRecord(GameTitle requested,unsigned action,const void* record) noexcept {
+    uint16_t milliseconds=0;uint8_t frames=0;bool present=false;
+    if(record) {
+        __try {
+            milliseconds=*reinterpret_cast<const volatile uint16_t*>(record);
+            frames=*(reinterpret_cast<const volatile uint8_t*>(record)+2);
+            present=true;
+        } __except(EXCEPTION_EXECUTE_HANDLER) {present=false;}
+    }
+    SeatWitness_NoteNativeAction(requested,action,present,frames,milliseconds);
+}
+#endif
 #include "native_vr_actions_ce.inl"
 #include "native_vr_actions_h3.inl"
 #include "native_vr_actions_odst.inl"

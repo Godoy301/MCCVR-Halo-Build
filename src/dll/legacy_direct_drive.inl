@@ -65,6 +65,14 @@
 // "Updates" are therefore stick calls, and the control pass runs once per MAIN-LOOP ITERATION -- a rendered
 // frame -- ahead of that frame's 0..N sim ticks: ~120 per second at 120 fps, not the sim's 60 Hz.
 
+// SEATEXIT witness (dev builds only): every accumulator call is recorded into a fixed ring
+// (seat_exit_witness.h). The macro's argument is compiled only in a dev build.
+#if HALOMCCVR_DEV_DIAGNOSTICS
+#define LEGACY_DRIVE_WITNESS(...) do { __VA_ARGS__; } while (0)
+#else
+#define LEGACY_DRIVE_WITNESS(...) do {} while (0)
+#endif
+
 namespace
 {
 struct LegacyDriveSite
@@ -915,9 +923,22 @@ extern "C" void LegacyPcApplyForUser(int slot, int user, uintptr_t ret, const ui
         st.lastUnknownRet.store(st.callers.dispatcher_mode() ? dispatcherRet : ret, std::memory_order_relaxed);
 #if HALOMCCVR_DEV_DIAGNOSTICS
     LegacyDriveCensusNote(st, site, user, caller);
+    seat_witness::DriveSample ds{};
+    ds.ms = SeatWitness_NowMs();
+    ds.slot = static_cast<uint8_t>(slot);
+    ds.caller = static_cast<uint8_t>(caller);
+    ds.nativeYaw = ds.nativePitch = ds.wroteYaw = ds.wrotePitch = std::numeric_limits<float>::quiet_NaN();
+    ds.setYaw = ds.setPitch = ds.aimYaw = ds.aimPitch = std::numeric_limits<float>::quiet_NaN();
 #endif
     if (action != aim_caller::Action::StepAndWrite)
     {
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        const uint32_t restoresBefore = st.restores.load(std::memory_order_relaxed);
+        uint32_t refusalsBefore[aim_caller::kRefusalCount];
+        for (int r = 0; r < aim_caller::kRefusalCount; ++r)
+            refusalsBefore[r] = st.refusals[r].load(std::memory_order_relaxed);
+        const uint32_t faultsBefore = st.faults.load(std::memory_order_relaxed);
+#endif
         __try
         {
             if (action == aim_caller::Action::RestoreOnly)
@@ -934,6 +955,23 @@ extern "C" void LegacyPcApplyForUser(int slot, int user, uintptr_t ret, const ui
             st.putBack.invalidate();
             st.faults.fetch_add(1, std::memory_order_relaxed);
         }
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        ds.outcome = action != aim_caller::Action::RestoreOnly ? seat_witness::DriveEndUpdate
+            : st.restores.load(std::memory_order_relaxed) != restoresBefore ? seat_witness::DrivePutBack
+            : seat_witness::DrivePutBackRefused;
+        for (int r = 0; r < aim_caller::kRefusalCount; ++r)
+            if (st.refusals[r].load(std::memory_order_relaxed) != refusalsBefore[r])
+                ds.refusal = static_cast<uint8_t>(r);
+        if (st.faults.load(std::memory_order_relaxed) != faultsBefore)
+            ds.outcome = seat_witness::DriveFault;
+        if (st.armed.load(std::memory_order_relaxed)) ds.flags |= seat_witness::DriveArmed;
+        if (st.putBack.valid)
+        {
+            ds.wroteYaw = st.putBack.axis[0] ? st.putBack.value[0] : ds.wroteYaw;
+            ds.wrotePitch = st.putBack.axis[1] ? st.putBack.value[1] : ds.wrotePitch;
+        }
+        SeatWitness_RecordDrive(ds);
+#endif
         st.callbacks.fetch_sub(1, std::memory_order_acq_rel);
         return;
     }
@@ -953,20 +991,25 @@ extern "C" void LegacyPcApplyForUser(int slot, int user, uintptr_t ret, const ui
         {
             if (!g_config.legacy_direct_drive)
             {
+                LEGACY_DRIVE_WITNESS(ds.outcome = seat_witness::DriveOff);
                 // Switched off live: stop now, and make switching back on re-validate the record first.
                 if (st.armed.exchange(false, std::memory_order_acq_rel))
                     st.disarms.fetch_add(1, std::memory_order_relaxed);
                 st.agree = 0;
                 break;
             }
+            LEGACY_DRIVE_WITNESS(ds.outcome = seat_witness::DriveNoHook);
             if (!st.installed.load(std::memory_order_acquire) || !st.tlsIndexAddress)
                 break;
             const uint8_t* tls = nullptr;
             const uintptr_t pc = LegacyDriveRecord(st, site, user, &tls);
+            LEGACY_DRIVE_WITNESS(ds.outcome = seat_witness::DriveNoRecord);
             if (!pc)
                 break;
             float* pair = reinterpret_cast<float*>(pc + site.angles);
             const float nativeYaw = pair[0], nativePitch = pair[1];
+            LEGACY_DRIVE_WITNESS(ds.pcLow = static_cast<uint32_t>(pc), ds.nativeYaw = nativeYaw,
+                                 ds.nativePitch = nativePitch);
             st.nativeYaw.store(nativeYaw, std::memory_order_relaxed);
             st.nativePitch.store(nativePitch, std::memory_order_relaxed);
             const LegacyDrivePublication pub = LegacyDriveReadPublication(st);
@@ -993,6 +1036,14 @@ extern "C" void LegacyPcApplyForUser(int slot, int user, uintptr_t ret, const ui
 #endif
             const uint64_t now = GetTickCount64();
             const bool fresh = coherent && valid && setMs && now >= setMs && now - setMs <= 200;
+#if HALOMCCVR_DEV_DIAGNOSTICS
+            ds.setYaw = yaw; ds.setPitch = pitch; ds.aimYaw = aimYaw; ds.aimPitch = aimPitch;
+            ds.seatKey = seatKey;
+            ds.pubAgeMs = static_cast<uint16_t>(setMs && now >= setMs ? (now - setMs > 0xFFFE ? 0xFFFE : now - setMs)
+                                                                        : 0xFFFF);
+            ds.flags |= (fresh ? seat_witness::DriveFresh : 0) | (coherent ? seat_witness::DriveCoherent : 0) |
+                (seatedSet ? seat_witness::DriveSeatedSet : 0);
+#endif
             // ValueAgreement (the arm gate): the record holds the game's own aim.
             const bool agrees = LegacyDriveAgrees(fresh, nativeYaw, nativePitch, aimYaw, aimPitch);
             // ON FOOT OR SEATED. The input thread says which (its seated flag is the first-person seat it
@@ -1018,6 +1069,12 @@ extern "C" void LegacyPcApplyForUser(int slot, int user, uintptr_t ret, const ui
                 (!onFoot && seatConfirmed && g_config.seat_direct_drive && fresh) ? axesBits : 0u;
             const bool seatWrite = wantAxes != 0;
             seatKept = seatWrite;
+#if HALOMCCVR_DEV_DIAGNOSTICS
+            ds.axes = static_cast<uint8_t>(wantAxes & 3u);
+            ds.flags |= (onFoot ? seat_witness::DriveOnFoot : 0) |
+                (seatConfirmed ? seat_witness::DriveSeatConfirmed : 0) |
+                (slot != 2 && !LegacyDriveLocalOnFoot(slot) ? seat_witness::DriveTitleSeated : 0);
+#endif
             if (!onFoot && !seatWrite)
             {
                 // A GAP in this stint's seat is not the end of it: write nothing, keep the proven checks (no step:
@@ -1036,6 +1093,7 @@ extern "C" void LegacyPcApplyForUser(int slot, int user, uintptr_t ret, const ui
                 if (st.stintActive && (titleKnowsSeat ? titleSeated : true) && (sameSeatStale || seatViewLost) &&
                     ++st.stintStaleUpdates <= kLegacyDriveStintStaleUpdates)
                     seatKept = true;
+                LEGACY_DRIVE_WITNESS(ds.outcome = seatKept ? seat_witness::DriveGapKept : seat_witness::DriveSkipped);
                 st.seatedSkips.fetch_add(1, std::memory_order_relaxed);
                 st.agree = 0;
                 break;
@@ -1085,10 +1143,12 @@ extern "C" void LegacyPcApplyForUser(int slot, int user, uintptr_t ret, const ui
                     st.armed.store(true, std::memory_order_release);
                     st.arms.fetch_add(1, std::memory_order_relaxed);
                 }
+                LEGACY_DRIVE_WITNESS(ds.outcome = seat_witness::DriveArming);
                 break;
             }
             if (pc != st.expected.load(std::memory_order_acquire))
             {
+                LEGACY_DRIVE_WITNESS(ds.outcome = seat_witness::DriveDisarmed);
                 st.armed.store(false, std::memory_order_release);
                 st.agree = 0;
                 seatKept = false;
@@ -1109,9 +1169,11 @@ extern "C" void LegacyPcApplyForUser(int slot, int user, uintptr_t ret, const ui
                         ((wantAxes & kLegacyDriveAxisPitch) && !st.stint.pitch_ok && !st.stint.pitch_failed);
                     if (pending)
                         st.seatUnverified.fetch_add(1, std::memory_order_relaxed);
+                    LEGACY_DRIVE_WITNESS(ds.outcome = seat_witness::DriveUnverified);
                     break;
                 }
             }
+            LEGACY_DRIVE_WITNESS(ds.outcome = seat_witness::DriveNotFresh);
             if (fresh && std::isfinite(yaw) && std::isfinite(pitch))
             {
                 // Stay on the branch the game's yaw is on (never a 2*pi jump) and inside its pitch clamp.
@@ -1141,6 +1203,13 @@ extern "C" void LegacyPcApplyForUser(int slot, int user, uintptr_t ret, const ui
                         pair[0] = y;
                     if (writePitch)
                         pair[1] = p;
+#if HALOMCCVR_DEV_DIAGNOSTICS
+                    ds.outcome = seat_witness::DriveWrote;
+                    if (writeYaw) ds.wroteYaw = y;
+                    if (writePitch) ds.wrotePitch = p;
+                    ds.axes |= static_cast<uint8_t>((writeYaw ? 0x10 : 0) | (writePitch ? 0x20 : 0));
+                    if (limited) ds.flags |= seat_witness::DriveLimited;
+#endif
                     // What a later extra call may put back (aim_caller::PutBack), under this publication.
                     const bool putAxes[2]{writeYaw, writePitch};
                     const float putValues[2]{y, p};
@@ -1191,6 +1260,7 @@ extern "C" void LegacyPcApplyForUser(int slot, int user, uintptr_t ret, const ui
         seatKept = false;
         wroteAxis[0] = wroteAxis[1] = false;
         st.faults.fetch_add(1, std::memory_order_relaxed);
+        LEGACY_DRIVE_WITNESS(ds.outcome = seat_witness::DriveFault);
     }
     // The latch's contract is "nothing written last tick: forget everything". Every update that did not end
     // in a seat write -- on foot, a skipped or unverified seat, disarmed, switched off, a fault -- resets it
@@ -1213,6 +1283,13 @@ extern "C" void LegacyPcApplyForUser(int slot, int user, uintptr_t ret, const ui
         st.seatPitchWriteMs.store(0, std::memory_order_release);
         st.seatLimitedMs.store(0, std::memory_order_release);
     }
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    ds.flags |= (st.armed.load(std::memory_order_relaxed) ? seat_witness::DriveArmed : 0) |
+        (st.stintActive ? seat_witness::DriveStint : 0) | (st.stint.yaw_ok ? seat_witness::DriveYawOk : 0) |
+        (st.stint.pitch_ok ? seat_witness::DrivePitchOk : 0) |
+        (st.stint.pitch_failed ? seat_witness::DrivePitchFailed : 0);
+    SeatWitness_RecordDrive(ds);
+#endif
     st.callbacks.fetch_sub(1, std::memory_order_acq_rel);
 }
 

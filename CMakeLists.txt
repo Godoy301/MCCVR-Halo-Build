@@ -290,6 +290,7 @@ add_library(halo3xr SHARED
     src/dll/game.cpp
     src/dll/ik.cpp
     src/dll/input.cpp
+    src/dll/seat_exit_witness.cpp
     src/dll/roomscale.cpp
     src/dll/sight_layer.cpp
     src/dll/dev_pad.cpp
