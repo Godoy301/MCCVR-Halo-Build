@@ -257,9 +257,10 @@ struct LegacyDriveState
     std::atomic<uint32_t> seatStints{0}, seatYawChecks{0}, seatPitchChecks{0}, seatPitchFails{0};
     std::atomic<uint32_t> byRole[aim_caller::kCallerCount]{};   // every call, by caller
     std::atomic<uint32_t> restores{0}, restoresRefused{0};
-    // Halo 3 / ODST: writes whose branch-matched yaw fell outside [0, 2*pi) and were wrapped back into it
-    // (aim_write::wrap_0_2pi). Before 2026-10-01 each of those reached the game's action packer unwrapped,
-    // overflowed its 13-bit yaw into the button field and read as an action-button press (seat exits).
+    // Writes whose branch-matched yaw fell outside [0, 2*pi) and were wrapped back into it
+    // (aim_write::wrap_0_2pi). Before 2026-10-01 each of those reached the game's action packer unwrapped: in
+    // Halo 3 / ODST it overflowed the 13-bit yaw into the button field and read as an action-button press
+    // (seat exits); in Halo 4 the packer clamped it to 0 or 2*pi (a one-update aim nudge).
     std::atomic<uint32_t> yawWrapped{0};
     std::atomic<uintptr_t> lastUnknownRet{0};                   // Halo 4: the dispatcher's return
 #if HALOMCCVR_DEV_DIAGNOSTICS
@@ -1201,12 +1202,13 @@ extern "C" void LegacyPcApplyForUser(int slot, int user, uintptr_t ret, const ui
                     if (latch[1])
                         p = aim_write::clamp_pitch(held[1], 1.45f);
                 }
-                // Halo 3 / ODST pack the control yaw into the per-tick player action as 13 bits over [0, 2*pi]
-                // with no clamp and no mask, so the branch-matched value above, which can lie up to half a
-                // turn past the seam, must be wrapped into the game's own range or its overflow bits press
-                // the action button (exit seat in a vehicle; aim_write::wrap_0_2pi). Halo 4 (slot 2) keeps
-                // the branch-matched value until its own packer is checked.
-                if (slot != 2 && std::isfinite(y) && !(y >= 0.0f && y < aim_write::kTwoPi))
+                // All three titles pack the control yaw into the per-tick player action as 13 bits over
+                // [0, 2*pi], and keep their own record in [0, 2*pi). The branch-matched value above can lie up
+                // to half a turn past the seam, so it is wrapped into that range (aim_write::wrap_0_2pi).
+                // Halo 3 / ODST: the quantizer neither clamps nor masks, and the overflow bits press the action
+                // button (exit seat in a vehicle). Halo 4: its quantizer clamps (halo4 0x517BEC), so the
+                // overflow was a one-update aim nudge to 0 or 2*pi instead.
+                if (std::isfinite(y) && !(y >= 0.0f && y < aim_write::kTwoPi))
                 {
                     y = aim_write::wrap_0_2pi(y);
                     st.yawWrapped.fetch_add(1, std::memory_order_relaxed);
