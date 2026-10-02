@@ -23,6 +23,7 @@
 #include "native_vehicle_first_person.h"
 #include "physical_crouch_camera.h"
 #include "sigscan.h"
+#include "seat_frame_reader.h"
 #include "../common/physical_crouch_native_read.h"
 #include "../common/physical_crouch_additional_witnesses.h"
 

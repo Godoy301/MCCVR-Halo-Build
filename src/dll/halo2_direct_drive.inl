@@ -39,6 +39,15 @@
 // that, the stock camera would turn the view with the hand, which the headset rejected as C-H2-41. SEATED
 // (2026-10-01) it writes, axis by axis, only while the seat's own view is up and the seat's own record has
 // passed its checks (the seated branch below).
+//
+// THE SEAT'S FRAME (2026-10-01; seat_frame_reader.h, docs/ALL-TITLES-AIM-2026-09-29.md "Seats aim in world angles").
+// The per-player update hands the action's angles to 0x8F0D20 (from 0x6A40CD), which rotates them by the vehicle's
+// up frame R(u) unless the occupied seat's live flags carry bit 4. No patch of ours clears that flag in Halo 2, so a
+// seat without it lacks it in its own data, and every peer -- the host included -- applies R(u) to the angles we
+// send: case (b). Each seated update therefore reads, on this thread and from the unit the rebase will rotate, the
+// seat's flags and the vehicle's up exactly as the rebase does, and takes the game's aim (for the stint check and
+// the arm gate) and the hand's aim (for the write) into the record's frame; the yaw latch and the record's own eased
+// pitch limits then work in that frame too, as the accumulator's do. A frame that does not read writes nothing.
 
 constexpr uint32_t kHalo2PcEntryRva = 0x6C3DF0;
 constexpr char kHalo2PcEntryPattern[] =
@@ -98,6 +107,10 @@ int Halo2DriveOccupancy(uint32_t& parent, int16_t& seat) noexcept
     parent = *reinterpret_cast<const uint32_t*>(unit + 0x14);
     return seat >= 0 && parent != UINT32_MAX ? 1 : -1;
 }
+
+// The seat's frame (seat_frame_reader.h): bound with the hook, read on the sim thread each seated update.
+seat_frame_rt::Binding g_halo2SeatFrame;
+seat_frame_rt::Counters g_halo2SeatFrameCounters;
 
 // The first writes of a seat's yaw read no limit off the record (the stick servo may still be deflecting the
 // stick until the input thread sees the seat written), as the other titles' seats.
@@ -200,6 +213,33 @@ void Halo2DriveApply(int user, uint64_t returnAddress) noexcept
                 const seat_drive::Axes axes = g_config.vehicle_view_follow ? seat_drive::Axes{}
                     : seat_drive::Decide(facts, g_config.reach_vehicle_aim, g_config.seat_direct_drive != 0);
                 const uint32_t key = seat_drive::SeatKey(static_cast<int>(seatParent), seatIndex, false);
+                // THE SEAT'S FRAME, read only where the hand would write (see the header). In case (b) the game's
+                // aim goes into the record's frame for the stint check and the arm gate, and the hand's below.
+                seat_frame_rt::Live seatFrame{};
+                float recordAimYaw = aimYaw, recordAimPitch = aimPitch;
+                bool frameRead = true;
+                if (axes.any())
+                {
+                    seatFrame = seat_frame_rt::Read(g_halo2SeatFrame, &Halo2ObjectFromIndex, Halo2OwnedUnit());
+                    seat_frame_rt::Count(g_halo2SeatFrameCounters, seatFrame.kase);
+#if HALOMCCVR_DEV_DIAGNOSTICS
+                    // THE FRAME CHECK: the record through R against the stock camera (the game's world aim).
+                    if (aimValid)
+                        seat_frame_rt::NoteFrameCheck(g_halo2SeatFrameCounters, seatFrame, nativeYaw, nativePitch,
+                                                      aimYaw, aimPitch);
+#endif
+                    frameRead = seat_frame_rt::ToRecord(seatFrame, recordAimYaw, recordAimPitch, nativeYaw);
+                }
+                if (!frameRead)
+                {
+                    // No frame this update: nothing is written, the servo keeps the seat; the stint survives it as
+                    // it survives a gap in the seat's view (bounded).
+                    if (facts.identified && st.stintActive && st.stintKey == key &&
+                        ++st.stintStaleUpdates <= kHalo2StintStaleUpdates)
+                        seatKept = true;
+                    st.agree = 0;
+                    break;
+                }
                 if (!axes.any())
                 {
                     // A GAP in this stint's seat (the F1 menu, a pause and its fade, the theater: the observer stops
@@ -227,7 +267,7 @@ void Halo2DriveApply(int user, uint64_t returnAddress) noexcept
                 const bool yawWas = st.stint.yaw_ok, pitchWas = st.stint.pitch_ok;
                 const bool newSample = !havePublication || publication.index != st.stintSample;
                 st.stintSample = havePublication ? publication.index : 0;
-                st.stint.step(aimValid, nativeYaw, nativePitch, aimYaw, aimPitch, now, newSample);
+                st.stint.step(aimValid, nativeYaw, nativePitch, recordAimYaw, recordAimPitch, now, newSample);
                 if (!yawWas && st.stint.yaw_ok)
                     st.seatYawChecks.fetch_add(1, std::memory_order_relaxed);
                 if (!pitchWas && st.stint.pitch_ok)
@@ -243,7 +283,7 @@ void Halo2DriveApply(int user, uint64_t returnAddress) noexcept
                 {
                     // A seat may arm the drive on yaw agreement alone (a level that starts in a vehicle).
                     const bool agrees = aimValid && std::isfinite(nativeYaw) &&
-                        std::fabs(std::remainder(nativeYaw - aimYaw, 6.28318531f)) < kHalo2DriveAgreeRad;
+                        std::fabs(std::remainder(nativeYaw - recordAimYaw, 6.28318531f)) < kHalo2DriveAgreeRad;
                     st.agree = agrees ? st.agree + 1 : 0;
                     if (st.agree >= kHalo2DriveAgreeUpdates)
                     {
@@ -266,9 +306,11 @@ void Halo2DriveApply(int user, uint64_t returnAddress) noexcept
                 // fresh for 150 ms after sitting down.
                 float direction[3]{};
                 float yaw = 0.0f, pitch = 0.0f;
+                // ...in the record's frame (case b: R^-1 of it), where the latch and the pitch limits live.
                 const bool handAim = Game_Halo2SeatAimActive() &&
                     BuildPublishedControllerAimDirection(direction, nullptr, false) &&
-                    Halo2DriveYawPitch(direction, yaw, pitch);
+                    Halo2DriveYawPitch(direction, yaw, pitch) &&
+                    seat_frame_rt::ToRecord(seatFrame, yaw, pitch, nativeYaw);
                 const bool writeYaw = axes.yaw && st.stint.yaw_ok && handAim;
                 const bool writePitch = axes.pitch && st.stint.yaw_ok && st.stint.pitch_ok && handAim;
                 if (!writeYaw && !writePitch)
@@ -460,6 +502,24 @@ bool InstallHalo2Drive(uintptr_t base, size_t size) noexcept
     st.liveMs.store(0, std::memory_order_release);
     st.slot = slot;
     st.controlReturn = call + 5;
+    // The seat's frame: the vehicle-tilt rebase 0x8F0D20's gate and up getter, proven here (seat_frame_reader.h).
+    const char* frameWhy = nullptr;
+    bool frameBound = seat_frame_rt::Bind(g_halo2SeatFrame, seat_frame::kHalo2Reader, base, size, frameWhy);
+    if (frameBound && g_halo2SeatFrame.objectsArray != base + kHalo2ObjectsDataArrayPointerRva)
+    {
+        // The reader resolves objects through Halo2ObjectFromIndex: it must be the array the rebase walks.
+        seat_frame_rt::Unbind(g_halo2SeatFrame);
+        frameBound = false;
+        frameWhy = "its objects array is not the one the proven accessor reads";
+    }
+    g_halo2SeatFrameCounters.unknownLogged.store(0, std::memory_order_relaxed);
+    if (frameBound)
+        LOG("Halo 2 DRIVE: seat frame reader bound (the rebase +0x%X: its gate +0x%X and up getter +0x%X proven, "
+            "objects through the proven accessor): a seated write follows the vehicle-tilt rebase (world / b)",
+            seat_frame::kHalo2Reader.rebaseRva, seat_frame::kHalo2Reader.gateRva, seat_frame::kHalo2Reader.getterRva);
+    else
+        LOG("Halo 2 DRIVE: seat frame reader NOT bound (%s at +0x%X); seats are never written (the stick servo keeps "
+            "every seat)", frameWhy ? frameWhy : "unknown", seat_frame::kHalo2Reader.gateRva);
     void* const target = reinterpret_cast<void*>(base + kHalo2PcEntryRva);
     const MH_STATUS created = MH_CreateHook(target, reinterpret_cast<void*>(&Halo2PcHook), &g_halo2PcOrig);
     if (created != MH_OK || MH_EnableHook(target) != MH_OK)
@@ -515,6 +575,7 @@ bool RemoveHalo2Drive() noexcept
     g_halo2PcOrig = nullptr;
     st.slot = 0;
     st.controlReturn = 0;
+    seat_frame_rt::Unbind(g_halo2SeatFrame);
     return true;
 }
 
@@ -539,8 +600,20 @@ void ReportHalo2Drive() noexcept
                    seatWaits = st.seatWaits.exchange(0), yawChecks = st.seatYawChecks.exchange(0),
                    pitchChecks = st.seatPitchChecks.exchange(0), pitchFails = st.seatPitchFails.exchange(0),
                    held = st.seatHeld.exchange(0);
-    if (stints || seatWrites || seatWaits || yawChecks || pitchChecks || pitchFails || held)
+    char frames[96];
+    const bool unread = seat_frame_rt::CaseText(g_halo2SeatFrameCounters, frames, sizeof(frames));
+    if (stints || seatWrites || seatWaits || yawChecks || pitchChecks || pitchFails || held || frames[0])
         LOG("Halo 2 DRIVE seats: new stints %u; checks passed yaw %u pitch %u, pitch checks failed %u (retried after 5 s); "
-            "writes %u (yaw held at a seat limit %u), waited for the hand or a check %u",
-            stints, yawChecks, pitchChecks, pitchFails, seatWrites, held, seatWaits);
+            "writes %u (yaw held at a seat limit %u), waited for the hand or a check %u; %s",
+            stints, yawChecks, pitchChecks, pitchFails, seatWrites, held, seatWaits,
+            frames[0] ? frames : "frame not read");
+    if (unread && !g_halo2SeatFrameCounters.unknownLogged.exchange(1, std::memory_order_relaxed))
+        LOG("Halo 2 DRIVE seats: the seat's frame did not read (the rebase's links or the vehicle's up failed their "
+            "checks); those updates write nothing and the stick servo keeps the seat (logged once)");
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    char check[224];
+    seat_frame_rt::FrameCheckText(g_halo2SeatFrameCounters, check, sizeof(check));
+    if (check[0])
+        LOG("Halo 2 DRIVE seats (dev): %s", check);   // frame check: max |R*e(record) - game aim| ...
+#endif
 }
