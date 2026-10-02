@@ -24,6 +24,11 @@ void TestSites()
 {
     Check(kHalo3Site.jccRva == kHalo3Site.anchorRva + kAnchorToJcc, "Halo 3: the jne is 15 bytes into the anchor");
     Check(kOdstSite.jccRva == kOdstSite.anchorRva + kAnchorToJcc, "ODST: the jne is 15 bytes into the anchor");
+    // The anchor must still find the site once our `E9 rel32 90` is in place (the adopt path): its last two
+    // tokens, exactly the jne's opcode bytes, are wildcards.
+    const size_t len = std::strlen(kAnchorPattern);
+    Check(len == (kAnchorToJcc + 2) * 3 - 1 && !std::strcmp(kAnchorPattern + len - 5, "?? ??"),
+          "the anchor is kAnchorToJcc bytes + two wildcards over the jne's opcode");
     Check(kHalo3Site.anchorRva > kHalo3Site.rebaseRva && kHalo3Site.skipRva > kHalo3Site.jccRva,
           "Halo 3: the test and its target sit inside the rebase, target after the test");
     Check(kOdstSite.anchorRva > kOdstSite.rebaseRva && kOdstSite.skipRva > kOdstSite.jccRva,
@@ -91,11 +96,13 @@ void TestPatchBytes()
 
 void TestGate()
 {
-    Check(Wanted(true, true, true, false), "first-person seats on: skipped");
-    Check(!Wanted(false, true, true, false), "vehicle_first_person off: the game's rebase");
-    Check(!Wanted(true, false, true, false), "vehicle_hide_body off: the game's rebase");
-    Check(!Wanted(true, true, false, false), "dev A/B 0: the game's rebase");
-    Check(!Wanted(true, true, true, true), "a seat natively lacking bit 4: the game's rebase, as stock");
+    Check(Wanted(true, true, true, true, false), "first-person seats on, sampler bound: skipped");
+    Check(!Wanted(false, true, true, true, false), "vehicle_first_person off: the game's rebase");
+    Check(!Wanted(true, false, true, true, false), "vehicle_hide_body off: the game's rebase");
+    Check(!Wanted(true, true, false, true, false), "dev A/B 0: the game's rebase");
+    Check(!Wanted(true, true, true, false, false),
+          "vehicle sampler not bound (no C20, no seat check): the game's rebase, as stock");
+    Check(!Wanted(true, true, true, true, true), "a seat natively lacking bit 4: the game's rebase, as stock");
 }
 
 void TestAngles()

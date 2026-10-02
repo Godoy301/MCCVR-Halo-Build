@@ -18126,9 +18126,9 @@ namespace
         if(!RemoveOdstWeaponHaptics())return false;
         if(!RemoveOdstMuzzle())return false;
         if(!LegacyDriveRemove(GameTitle::Halo3ODST)) return false;
-        // Put the game's own seat-flag jne back (only over our bytes). With
-        // stock seat flags the skip is inert, so order does not matter.
-        if(!SeatAimFrameRemove(GameTitle::Halo3ODST)) return false;
+        // The seat aim rebase skip is retired further down, after the
+        // all-detour quiescence: it is inert only once the camera thread can
+        // no longer clear bit 4 (C20) and the seat flags are stock again.
         if(!DisableAndRemoveOdstContactMelee()) return false;
         // Stop new outer stereo transactions first. Existing ones retain all FP
         // dependencies until their complete two-eye callback has returned.
@@ -18172,6 +18172,18 @@ namespace
         if (!disabledAll ||
             !WaitForOdstCallbacks(
                 g_odstCamera.activeCallbacks, "all-detour", false))
+            return false;
+
+        // As Halo 3's core cleanup does: with every camera detour disabled and
+        // verified quiescent, the camera thread (OdstSampleVehicleState, run
+        // only from OdstCamCopyHook, the C20 seat patch's only caller) can no
+        // longer touch g_odstNativeSeatPatch, so the WaitThread may restore
+        // the occupied seat's bit 4 here. Idempotent: a retry of this function
+        // finds the patch already cleared. With the flags stock the rebase
+        // skip is inert, so the game's own jne goes back after it (only over
+        // our bytes; false = the thread freeze was unavailable, retry).
+        OdstRestoreNativeSeatPatch();
+        if (!SeatAimFrameRemove(GameTitle::Halo3ODST))
             return false;
 
         bool removedAll = true;
