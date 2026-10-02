@@ -83,6 +83,22 @@
 #include "../common/reach_render_logic.h"
 #include "../common/reach_vehicle_logic.h"
 #include "../common/reach_hand_shot_logic.h"
+#include "../common/aim_no_unit_logic.h"
+#include "../common/title_runtime_state.h"
+// THE FREE CAMERA WITH NO PLAYER UNIT (src/common/aim_no_unit_logic.h). Each servo title's own vehicle/seat
+// sampler already reads its local player's unit through the output-user getter on an engine thread; it also
+// publishes Present / Absent here, one word per title, with the time it read it. Game_ComputeAimStick (the input
+// thread) debounces it into the free-camera frame. Allocation-, lock- and log-free on the publishing side.
+static std::array<std::atomic<uint64_t>, kTitleRuntimeSlotCount> g_aimUnitPresence{};
+static void AimNoUnit_Note(GameTitle title, bool unitPresent) noexcept
+{
+    const size_t slot = TitleRuntimeSlotIndex(title);
+    if (slot < kTitleRuntimeSlotCount)
+        g_aimUnitPresence[slot].store(
+            aim_no_unit::Pack(unitPresent ? aim_no_unit::Presence::Present : aim_no_unit::Presence::Absent,
+                              GetTickCount64()),
+            std::memory_order_relaxed);
+}
 #ifndef HALOMCCVR_EXPERIMENTAL_REACH_RENDER_CANDIDATE
 #define HALOMCCVR_EXPERIMENTAL_REACH_RENDER_CANDIDATE 0
 #endif
@@ -8733,6 +8749,8 @@ namespace
             Halo3DisableVehicleProbe("sampler fault");
             return;
         }
+        // The free-camera frame's signal (aim_no_unit_logic.h): this read's own answer, death or not.
+        AimNoUnit_Note(GameTitle::Halo3, unit != -1);
         if (kEnableRetiredHalo3Diagnostics && parentWindowValid)
         {
             Halo3ParentCapture& pcap = g_halo3ParentCapture;
@@ -12311,6 +12329,8 @@ namespace
             return;
         }
 
+        // The free-camera frame's signal (aim_no_unit_logic.h): the 2026-10-01 death read unit -1 here.
+        AimNoUnit_Note(GameTitle::Halo3ODST, unit != -1);
         g_odstRoomscaleOnFootMs.store(unit != -1 && unseatedProven
             ? nowMs : 0, std::memory_order_release);
         const bool seated = unit != -1 &&
@@ -29359,6 +29379,8 @@ namespace
         g_reachVehicleInputSnapshot.store(
             ReachVehicleInputSnapshot(generation, state),
             std::memory_order_release);
+        // The free-camera frame's signal (aim_no_unit_logic.h): Unknown here means the getter returned no unit.
+        AimNoUnit_Note(GameTitle::HaloReach, state != ReachVehicleInputState::Unknown);
         // Deliberately NO freshness stamp (g_reachVehicleSampleMs) here. unit_in_vehicle rejects Reach's
         // type-6 mounted turrets, so this fallback publishes OnFoot on a turret; stamping it would make
         // every "on foot now" reader (direct drive, roomscale, physical crouch, the leash) act in a seat.
@@ -29889,6 +29911,10 @@ namespace
         {
             faulted = true;
         }
+        // The free-camera frame's signal (aim_no_unit_logic.h). A fault may land before the getter returned, so
+        // only a read that completed answers.
+        if (!faulted)
+            AimNoUnit_Note(GameTitle::HaloReach, unitKnown);
 
         const ReachVehicleInputState inputState = !unitKnown
             ? ReachVehicleInputState::Unknown
