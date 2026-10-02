@@ -23,8 +23,8 @@
 //     (a gun that cannot reach the point fires where it can, as in flat Halo); the line is drawn only by the
 //     dev assessment reticle (honest_reticle_assess);
 //   * the RECORD-FRAME GATE: the seat's flags read and, without flag bit 4, the vehicle's frame anchor (its up)
-//     readable. A TILT is natural and never refuses (SeatRecordIsWorld counts it until the 0x5F97DC rebase is
-//     ported; R11, 2026-10-01).
+//     readable. A TILT is natural and never refuses (SeatRecordIsWorld counts it; R11, 2026-10-01). The 0x5F97DC
+//     rebase itself is the seat drive's: it writes R^-1 of the aim in a seat without bit 4 (seat_frame_reader.h).
 //
 // Zero engine dependencies.
 
@@ -443,8 +443,9 @@ inline bool ShotReticleDirection(Vec3 head, Vec3 barrelOrigin, Vec3 shot, Vec3 p
 // steer it fell back to is written into the same rotated record and carries the same frame error, so the
 // refusal bought nothing except convergence switching off on every slope -- a natural cause. The gate keeps only
 // what our code must prove: the seat's flags read, and for a seat without bit 4 the vehicle's frame anchor
-// readable (a finite, non-zero up). The 0x5F97DC rebase port is its own fix; SeatRecordIsWorld stays as its
-// dev witness.
+// readable (a finite, non-zero up). The 0x5F97DC rebase is handled where the record is written: the seat drive
+// takes the aim into the record's frame (src/dll/seat_frame_reader.h, case b); SeatRecordIsWorld stays as the
+// tilt's dev witness.
 inline constexpr float kSeatLevelCos = 0.99939083f;   // cos(2 deg)
 
 inline bool SeatRecordIsWorld(bool flagsKnown, uint32_t flags, bool upKnown, Vec3 up)

@@ -1140,7 +1140,8 @@ struct Halo4SeatEyeWitness
     // shot's line (Halo4SeatSightHonestAlongAim), or left on the game's aim because that could not be composed.
     std::atomic<uint64_t> honestAlongAim{0}, honestGameAim{0};
     // Solved polls on a record that is NOT in world angles now (a tilted vehicle without seat flag bit 4): the
-    // slope-frame question (0x5F97DC) the rebase port answers. Natural; counted, never refused.
+    // 0x5F97DC rebase, which the seat drive answers by writing R^-1 of the aim (seat_frame_reader.h, case b).
+    // Natural; counted, never refused.
     std::atomic<uint64_t> solvedTilted{0};
     // Polls whose seat facts came from the stint's last sample, held across a gap in the samples (a weapon switch).
     std::atomic<uint64_t> heldPolls{0};
@@ -1307,7 +1308,7 @@ bool Halo4SeatSightPrepare(Halo4SeatSightPoll& out, const float observerForward[
                                        seatFacts.weaponKnown, seatFacts.hasWeapon)
         : halo4_seat_aim::SeatClass::Unknown;
     // The gate is what our code must prove (the flags, the frame anchor); a tilt is natural and only counted
-    // (SeatRecordIsWorld: the slope-frame witness until the 0x5F97DC rebase is ported).
+    // (SeatRecordIsWorld: the slope-frame witness; the seat drive handles the 0x5F97DC rebase itself).
     const halo4_seat_aim::Vec3 sampleUp{seatFacts.up[0], seatFacts.up[1], seatFacts.up[2]};
     const bool recordSolvable = seatFactsKnown &&
         halo4_seat_aim::SeatRecordSolvable(seatFacts.flagsKnown, seatFacts.flags, seatFacts.upKnown, sampleUp);

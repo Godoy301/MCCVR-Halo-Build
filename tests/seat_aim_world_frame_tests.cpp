@@ -27,8 +27,8 @@
 #define HALOMCCVR_EXPERIMENTAL_ODST_BRINGUP 1
 
 // ---- the game.cpp surface the .inl uses ---------------------------------------------------------------------
-enum class GameTitle { None, Halo3, Halo3ODST };
-static uint32_t g_generation[3]{0, 7, 9};
+enum class GameTitle { None, Halo3, Halo3ODST, HaloReach };
+static uint32_t g_generation[4]{0, 7, 9, 11};
 uint32_t TitleAdapter_GetGeneration(GameTitle title) { return g_generation[static_cast<int>(title)]; }
 
 static struct
@@ -40,6 +40,10 @@ static struct
 
 static std::atomic<uint32_t> g_halo3SeatNativeNoThirdPerson{0};
 static std::atomic<uint32_t> g_odstSeatNativeNoThirdPerson{0};
+static std::atomic<uint32_t> g_reachSeatNativeNoThirdPerson{0};
+// Reach's gate is its vehicle camera binding (R-V27's own): 1 Installed, 2 StockFallback, as the fixture flips it.
+static std::atomic<uint8_t> g_reachBinding{1};
+static bool ReachSeatAimFrameBindingInstalled() { return g_reachBinding.load() == 1; }
 enum class Halo3VehicleBindingState : uint8_t { NotInstalled = 0, Installed, StockFallback };
 enum class OdstVehicleBindingState : uint8_t { NotInstalled = 0, Installed, StockFallback };
 static std::atomic<uint8_t> g_halo3VehicleBinding{static_cast<uint8_t>(Halo3VehicleBindingState::Installed)};
@@ -82,19 +86,6 @@ public:
     const std::vector<ReachFrozenThread>& Threads() const { return g_fakeThreads; }
 };
 
-#if HALOMCCVR_DEV_DIAGNOSTICS
-struct Halo3SeatSnapshot
-{
-    float up[3];
-};
-static bool Halo3ReadSeatSnapshot(Halo3SeatSnapshot& seat)
-{
-    seat.up[0] = std::sin(0.5f);
-    seat.up[1] = 0.0f;
-    seat.up[2] = std::cos(0.5f);
-    return true;
-}
-#endif
 
 #include "../src/dll/seat_aim_world_frame.inl"
 
@@ -114,11 +105,23 @@ void Check(bool ok, const char* what)
 
 bool Logged(const char* text) { return g_log.find(text) != std::string::npos; }
 
-constexpr size_t kModuleSize = 0x400000;   // covers both titles' RVAs
-const uint8_t kAnchorBytes[seat_aim_frame::kAnchorToJcc]{0x48, 0x69, 0xD0, 0xD4, 0x00, 0x00, 0x00, 0x8B,
-                                                         0x04, 0x0A, 0xC1, 0xE8, 0x04, 0xA8, 0x01};
-// The anchor as it read before 2026-10-01: it required the jne's own `0F 85`.
-constexpr const char* kOldStrictAnchor = "48 69 D0 D4 00 00 00 8B 04 0A C1 E8 04 A8 01 0F 85";
+constexpr size_t kModuleSize = 0x500000;   // covers every title's RVAs (Reach's skip label is 0x48AF72)
+
+// The site's anchor bytes (its pattern up to the jne), and the strict form that also required the jne's `0F 85`
+// (how the Halo 3 / ODST anchor read before 2026-10-01).
+std::vector<uint8_t> AnchorBytes(const seat_aim_frame::Site& site)
+{
+    std::vector<uint8_t> out;
+    const char* p = site.anchorPattern;
+    for (uint32_t i = 0; i < site.anchorToJcc; ++i, p += 3)
+        out.push_back(static_cast<uint8_t>(strtoul(std::string(p, 2).c_str(), nullptr, 16)));
+    return out;
+}
+
+std::string StrictAnchor(const seat_aim_frame::Site& site)
+{
+    return std::string(site.anchorPattern, site.anchorToJcc * 3) + "0F 85";
+}
 
 struct Fixture
 {
@@ -129,7 +132,12 @@ struct Fixture
     uint8_t stock[6]{};
     uint8_t skip[6]{};
 
-    Fixture(const seat_aim_frame::Site& s, GameTitle t, int sl) : site(s), title(t), slot(sl) {}
+    std::vector<uint8_t> anchor;
+
+    Fixture(const seat_aim_frame::Site& s, GameTitle t, int sl) : site(s), title(t), slot(sl), anchor(AnchorBytes(s))
+    {
+    }
+    bool Reach() const { return slot == 2; }
 
     uintptr_t Base() const { return reinterpret_cast<uintptr_t>(base); }
     uint8_t* Jcc() const { return base + site.jccRva; }
@@ -151,7 +159,7 @@ struct Fixture
         DWORD previous = 0;
         VirtualProtect(base, kModuleSize, PAGE_EXECUTE_READWRITE, &previous);
         memset(base, 0xCC, kModuleSize);
-        memcpy(base + site.anchorRva, kAnchorBytes, sizeof(kAnchorBytes));
+        memcpy(base + site.anchorRva, anchor.data(), anchor.size());
         const int32_t rel = static_cast<int32_t>(site.skipRva - (site.jccRva + 6));
         stock[0] = 0x0F;
         stock[1] = 0x85;
@@ -185,6 +193,8 @@ void ResetWorld()
     g_config.seat_aim_world_frame = 1;
     g_halo3SeatNativeNoThirdPerson = 0;
     g_odstSeatNativeNoThirdPerson = 0;
+    g_reachSeatNativeNoThirdPerson = 0;
+    g_reachBinding = 1;
     g_halo3VehicleBinding = static_cast<uint8_t>(Halo3VehicleBindingState::Installed);
     g_odstVehicleBinding = static_cast<uint8_t>(OdstVehicleBindingState::Installed);
     g_freezeFails = false;
@@ -194,37 +204,56 @@ void ResetWorld()
 
 std::atomic<uint32_t>& NativeFlag(const Fixture& f)
 {
-    return f.slot == 0 ? g_halo3SeatNativeNoThirdPerson : g_odstSeatNativeNoThirdPerson;
+    return f.slot == 0 ? g_halo3SeatNativeNoThirdPerson
+         : f.slot == 1 ? g_odstSeatNativeNoThirdPerson : g_reachSeatNativeNoThirdPerson;
 }
 
 std::atomic<uint8_t>& Binding(const Fixture& f)
 {
-    return f.slot == 0 ? g_halo3VehicleBinding : g_odstVehicleBinding;
+    return f.slot == 0 ? g_halo3VehicleBinding : f.slot == 1 ? g_odstVehicleBinding : g_reachBinding;
+}
+
+// The setting that switches this title's seat patch (and so the skip) off: C20 reads both first-person seat keys;
+// Reach's R-V27 reads vehicle_first_person alone.
+void SetPatchOff(const Fixture& f, bool off)
+{
+    if (f.Reach())
+        g_config.vehicle_first_person = !off;
+    else
+        g_config.vehicle_hide_body = !off;
 }
 
 void TestInstallPatchRemove(Fixture& f)
 {
     ResetWorld();
     f.Build();
-    Check(sig::Find(f.Base(), kModuleSize, seat_aim_frame::kAnchorPattern) == f.Base() + f.site.anchorRva,
+    Check(sig::Find(f.Base(), kModuleSize, f.site.anchorPattern) == f.Base() + f.site.anchorRva,
           "fixture: the production anchor finds the stock site");
     Check(f.Install(), "install verifies the stock site");
     Check(f.Patched() && f.State().patched, "install applies the skip: E9 rel32+1 90");
     Check(Logged("vehicle-tilt rebase is skipped"), "...and logs it");
+    Check(Logged("NOTE (co-op host)"), "...with the co-op limit of the global skip (once per title)");
     Check(f.ProtectionRestored(), "...and puts the page protection back");
     Check(f.Install() && f.Patched(), "a repeat install of the same mapping keeps the patch");
 
     g_log.clear();
     g_config.vehicle_hide_body = false;
     SeatAimFrameSync();
-    Check(f.Stock() && !f.State().patched, "vehicle_hide_body off: the stock jne is back");
-    Check(Logged("back in place") && Logged("vehicle_hide_body off"), "...logged with the reason");
+    if (f.Reach())
+        Check(f.Patched() && f.State().patched, "Reach: vehicle_hide_body is not R-V27's key: still skipped");
+    else
+    {
+        Check(f.Stock() && !f.State().patched, "vehicle_hide_body off: the stock jne is back");
+        Check(Logged("back in place") && Logged("vehicle_hide_body off"), "...logged with the reason");
+    }
     g_config.vehicle_hide_body = true;
     SeatAimFrameSync();
     Check(f.Patched(), "vehicle_hide_body on again: skipped again");
+    g_log.clear();
     g_config.vehicle_first_person = false;
     SeatAimFrameSync();
     Check(f.Stock(), "vehicle_first_person off: the stock jne");
+    Check(Logged("vehicle_first_person"), "...logged with the reason");
     g_config.vehicle_first_person = true;
     SeatAimFrameSync();
     Check(f.Patched(), "...and back");
@@ -242,7 +271,8 @@ void TestInstallPatchRemove(Fixture& f)
     Binding(f) = static_cast<uint8_t>(2);   // StockFallback: the sampler faulted and was disarmed
     SeatAimFrameSync();
     Check(f.Stock(), "the vehicle sampler disarmed: the skip stands down");
-    Check(Logged("vehicle sampler is not bound"), "...logged with the reason");
+    Check(Logged(f.Reach() ? "vehicle camera binding is not installed" : "vehicle sampler is not bound"),
+          "...logged with the reason");
     Binding(f) = static_cast<uint8_t>(1);
     SeatAimFrameSync();
     Check(f.Patched(), "(fixture) the binding back: skipped again");
@@ -285,7 +315,7 @@ void TestBusy(Fixture& f)
     Check(f.Install() && f.Patched(), "busy: installed");
     g_log.clear();
     g_freezeFails = true;
-    g_config.vehicle_hide_body = false;
+    SetPatchOff(f, true);
     SeatAimFrameSync();
     Check(f.Patched() && f.State().patched, "no thread freeze: nothing is written");
     Check(Logged("restore is pending"), "...the pending restore is logged");
@@ -320,7 +350,7 @@ void TestThreadInsideBytes(Fixture& f)
     g_fakeThreads = {{thread, id, true}};
 
     Check(parkAt(f.Jcc() + 2), "park the thread inside the jne");
-    g_config.vehicle_hide_body = false;
+    SetPatchOff(f, true);
     SeatAimFrameSync();
     Check(f.Patched() && f.State().patched, "a thread inside the six bytes: nothing is written (retried)");
     Check(parkAt(f.Jcc() + 5), "park the thread on the nop");
@@ -330,7 +360,7 @@ void TestThreadInsideBytes(Fixture& f)
     SeatAimFrameSync();
     Check(f.Stock(), "a thread at the instruction start just runs the new bytes: written");
     Check(parkAt(f.Jcc() + 6), "park the thread just past it");
-    g_config.vehicle_hide_body = true;
+    SetPatchOff(f, false);
     SeatAimFrameSync();
     Check(f.Patched(), "a thread past the bytes: written");
 
@@ -356,9 +386,9 @@ void TestAdoptLeftover(Fixture& f)
     Check(Logged("could not be restored at teardown"), "...and says so");
     g_freezeFails = false;
 
-    Check(sig::Find(f.Base(), kModuleSize, kOldStrictAnchor) == 0,
-          "witness: the pre-fix anchor (`... A8 01 0F 85`) cannot find the patched site");
-    Check(sig::Find(f.Base(), kModuleSize, seat_aim_frame::kAnchorPattern) == f.Base() + f.site.anchorRva,
+    Check(sig::Find(f.Base(), kModuleSize, StrictAnchor(f.site).c_str()) == 0,
+          "witness: a strict anchor (`... 0F 85`) cannot find the patched site");
+    Check(sig::Find(f.Base(), kModuleSize, f.site.anchorPattern) == f.Base() + f.site.anchorRva,
           "the production anchor still finds it");
 
     g_log.clear();
@@ -366,10 +396,10 @@ void TestAdoptLeftover(Fixture& f)
     Check(!Logged("NOT skipped"), "...without refusing it");
     Check(f.State().jcc && f.State().patched && f.Patched(), "...adopts our jump as patched");
     Check(!memcmp(f.State().stock, f.stock, 6), "...and rebuilds the exact stock jne from it");
-    g_config.vehicle_hide_body = false;
+    SetPatchOff(f, true);
     SeatAimFrameSync();
     Check(f.Stock(), "the adopted jump is managed: the setting puts the stock jne back");
-    g_config.vehicle_hide_body = true;
+    SetPatchOff(f, false);
     SeatAimFrameSync();
     Check(f.Patched(), "...and skips again");
     Check(SeatAimFrameRemove(f.title) && f.Stock(), "...and teardown restores it");
@@ -415,13 +445,13 @@ void TestRefusals(Fixture& f)
 
     ResetWorld();
     f.Build();
-    f.Write(f.site.anchorRva + 0x20, kAnchorBytes, sizeof(kAnchorBytes));
+    f.Write(f.site.anchorRva + 0x30, f.anchor.data(), f.anchor.size());
     Check(!f.Install() && f.Stock() && Logged("ambiguous"), "refuses a second copy of the anchor");
     ResetWorld();
     f.Build();
     const uint8_t filler[1]{0xCC};
     f.Write(f.site.anchorRva, filler, 1);
-    f.Write(f.site.anchorRva + 0x40, kAnchorBytes, sizeof(kAnchorBytes));
+    f.Write(f.site.anchorRva + 0x40, f.anchor.data(), f.anchor.size());
     Check(!f.Install() && Logged("ambiguous or moved"), "refuses an anchor that moved");
     ResetWorld();
     Check(!SeatAimFrameInstall(f.title, 0, kModuleSize, 7) && Logged("not loaded"), "refuses a module not loaded");
@@ -439,7 +469,7 @@ void TestForeignAfterInstall(Fixture& f)
     uint8_t theirs[6]{0xE9, 0x10, 0x20, 0x30, 0x00, 0xCC};
     f.Write(f.site.jccRva, theirs, 6);
     g_log.clear();
-    g_config.vehicle_hide_body = false;
+    SetPatchOff(f, true);
     SeatAimFrameSync();
     Check(f.Is(theirs), "bytes changed under us: left alone");
     Check(!f.State().jcc && Logged("no longer the ones verified"), "...the site is forgotten, and logged");
@@ -453,7 +483,7 @@ void TestGenerationChange(Fixture& f)
     Check(f.Install() && f.Patched(), "generation: installed");
     uint32_t& generation = g_generation[static_cast<int>(f.title)];
     ++generation;
-    g_config.vehicle_hide_body = false;
+    SetPatchOff(f, true);
     SeatAimFrameSync();
     Check(f.Patched() && !f.State().jcc && Logged("generation changed"),
           "a replaced module generation: forgotten without writing");
@@ -461,27 +491,14 @@ void TestGenerationChange(Fixture& f)
     --generation;
 }
 
-#if HALOMCCVR_DEV_DIAGNOSTICS
-void TestWitness()
-{
-    ResetWorld();
-    SeatAimFrameNoteSeated(0, 0.0f, 0.0f, 0.0f, 0.1f);
-    SeatAimFrameNoteSeated(0, 0.0f, 0.0f, 0.0f, 0.05f);
-    SeatAimFrameReport(0, "Halo 3");
-    Check(Logged("frame check: max |record - game aim| 5.73 deg at tilt 28.6 deg (2 seated stick updates"),
-          "dev witness: the max error with its tilt, per 2 s window");
-    g_log.clear();
-    SeatAimFrameReport(0, "Halo 3");
-    Check(g_log.empty(), "dev witness: an empty window prints nothing");
-}
-#endif
 } // namespace
 
 int main()
 {
     Fixture halo3(seat_aim_frame::kHalo3Site, GameTitle::Halo3, 0);
     Fixture odst(seat_aim_frame::kOdstSite, GameTitle::Halo3ODST, 1);
-    for (Fixture* f : {&halo3, &odst})
+    Fixture reach(seat_aim_frame::kReachSite, GameTitle::HaloReach, 2);
+    for (Fixture* f : {&halo3, &odst, &reach})
     {
         TestInstallPatchRemove(*f);
         TestNotWantedAtInstall(*f);
@@ -492,12 +509,10 @@ int main()
         TestForeignAfterInstall(*f);
         TestGenerationChange(*f);
     }
-#if HALOMCCVR_DEV_DIAGNOSTICS
-    TestWitness();
-#endif
     Check(g_freezeCaptures > 0, "the freeze was taken for every write");
     VirtualFree(halo3.base, 0, MEM_RELEASE);
     VirtualFree(odst.base, 0, MEM_RELEASE);
+    VirtualFree(reach.base, 0, MEM_RELEASE);
     if (failures)
     {
         std::printf("%u of %u checks FAILED\n", failures, checks);

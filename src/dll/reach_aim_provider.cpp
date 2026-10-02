@@ -60,7 +60,9 @@ public:
         // Offered only when opted in (reach_direct_drive=3), with the hook proven by the arm-gate AND
         // demonstrably running (its heartbeat -- a hook that stopped would otherwise leave the stick
         // neutral with nothing writing), on foot or in a seat the hand aims (Game_ReachDirectDriveAimWhy:
-        // not a seat whose stick is steering, and as reach_vehicle_aim allows). Cinematics keep the stick
+        // not a seat whose stick is steering, as reach_vehicle_aim allows, and whose frame -- the
+        // vehicle-tilt rebase -- reads: an unread frame writes nothing, so the seat goes to the stick loop
+        // rather than freeze with the stick neutral). Cinematics keep the stick
         // loop. Co-op host-follow is UNVERIFIED, so actuate() never claims a replicated write.
         c.can_write_state       = g_config.reach_direct_drive == 3 && Game_ReachDirectDriveReady() &&
                                   Game_ReachDirectDriveAimWritable();

@@ -10,15 +10,20 @@
 //
 // WHY THIS MATCHES AN UNMODDED PEER. The skip is correct ONLY because every stock Halo 3 / ODST player seat carries
 // bit 4 and it is our own C20 patch that clears it: an unmodded game, and every unmodded co-op peer, never runs the
-// rebase for a player, so skipping it restores exactly what they compute. Reach, Halo 2 and CE have a similar
-// rebase but some of their stock seats natively lack the flag, so there a skip would make us disagree with peers;
-// nothing here touches those titles. The assumption is checked live: when C20 finds the occupied seat's ORIGINAL
-// flags already lacking bit 4 (a custom or modded seat), it refuses that seat and publishes it
-// (g_halo3SeatNativeNoThirdPerson / g_odstSeatNativeNoThirdPerson); this then logs the seat once and puts the
-// game's rebase back while it is occupied, because there stock rebases too.
+// rebase for a player, so skipping it restores exactly what they compute. The assumption is checked live: when C20
+// finds the occupied seat's ORIGINAL flags already lacking bit 4 (a custom or modded seat), it refuses that seat
+// and publishes it (g_halo3SeatNativeNoThirdPerson / g_odstSeatNativeNoThirdPerson); this then logs the seat once
+// and puts the game's rebase back while it is occupied, because there stock rebases too -- and the seat drive then
+// writes R^-1 of the aim (seat_frame_reader.h, case b), which every peer's rebase turns back into it.
 //
-// LIFETIME: the skip lives while the seat patch is ENABLED (and that seat exception), not only while C20 is
-// Active on a seat. Following Active would re-patch on every seat entry and exit from the WaitThread's 50 ms poll:
+// REACH (2026-10-01, slot 2) follows the same rule for the seats ITS patch touches: R-V27 clears bit 4 on
+// `allows weapons` passenger seats, which keep the flag in stock, so the skip restores stock there (case a). Reach
+// also has stock seats that natively lack the flag; the Reach sampler publishes one from R-V27's own lease
+// (g_reachSeatNativeNoThirdPerson) and the skip stands down while it is occupied (case b, the inverse). Halo 2 and
+// CE have the rebase too, but no patch of ours clears their flag: nothing to skip there.
+//
+// LIFETIME (Halo 3 / ODST; Reach the same, with R-V27's lease in C20's place): the skip lives while the seat patch
+// is ENABLED (and that seat exception), not only while C20 is Active on a seat. Following Active would re-patch on every seat entry and exit from the WaitThread's 50 ms poll:
 // C20 clears bit 4 on the camera thread at once, so the rebase would act on the first frames of every entry, and
 // each toggle freezes every game thread for a code write -- a possible dropped VR frame per vehicle entry. While
 // C20 is not Active the skip is inert (a stock seat has bit 4 and skips the rebase anyway; only a player's aim
@@ -62,15 +67,40 @@ struct SeatAimFrameState
     bool pendingLogged = false;                   // a transition is waiting on the thread freeze (logged once)
     uint32_t removeFailures = 0;
 };
-SeatAimFrameState g_seatAimFrame[2];
+// Slots: 0 Halo 3, 1 ODST, 2 Reach (2026-10-01: R-V27's `allows weapons` passenger seats, case (a)).
+constexpr int kSeatAimFrameSlots = 3;
+SeatAimFrameState g_seatAimFrame[kSeatAimFrameSlots];
 
 int SeatAimFrameSlot(GameTitle title)
 {
-    return title == GameTitle::Halo3 ? 0 : title == GameTitle::Halo3ODST ? 1 : -1;
+    return title == GameTitle::Halo3 ? 0 : title == GameTitle::Halo3ODST ? 1 : title == GameTitle::HaloReach ? 2 : -1;
 }
 
-// The occupied seat natively lacks bit 4 (published by the C20 seat patch; 0 = no). ODST's lives in the ODST
-// bring-up block.
+const char* SeatAimFrameSlotName(int slot)
+{
+    return slot == 0 ? "Halo 3" : slot == 1 ? "ODST" : "Reach";
+}
+
+// CO-OP LIMIT OF THE GLOBAL SKIP (review round 1, finding 3; docs/ALL-TITLES-AIM-2026-09-29.md "Co-op limit of
+// the skip"). The jump skips the rebase for EVERY player unit this machine simulates, not only ours. When we host,
+// a co-op peer sitting in a seat whose OWN flags lack bit 4 is no longer rebased on our host while the peer's own
+// game rebases it. Stock Halo 3 / ODST player seats all carry bit 4, so there it needs custom content; stock Reach
+// has such seats. Kept global on purpose: a per-unit skip needs a new code relay inside the rebase, which this round
+// did not add. Logged once per skip so a co-op aim report can be read against it.
+void SeatAimFrameLogCoopLimit(int slot)
+{
+    static bool s_logged[3]{};
+    if (slot < 0 || slot > 2 || s_logged[slot])
+        return;
+    s_logged[slot] = true;
+    LOG("%s seat aim: NOTE (co-op host): the skip applies to every player unit this machine simulates; a peer in a "
+        "seat whose own flags lack bit 4%s is not rebased here while their game rebases it (their aim can differ "
+        "on our host while their vehicle tilts)", SeatAimFrameSlotName(slot),
+        slot == 2 ? " (stock Reach has such seats)" : " (custom content only: every stock seat has bit 4)");
+}
+
+// The occupied seat natively lacks bit 4 (published by the C20 seat patch -- Reach: by its sampler from R-V27's
+// lease; 0 = no). ODST's lives in the ODST bring-up block.
 uint32_t SeatAimFrameNativeNoThirdPerson(int slot)
 {
     if (slot == 0)
@@ -79,6 +109,8 @@ uint32_t SeatAimFrameNativeNoThirdPerson(int slot)
     if (slot == 1)
         return g_odstSeatNativeNoThirdPerson.load(std::memory_order_relaxed);
 #endif
+    if (slot == 2)
+        return g_reachSeatNativeNoThirdPerson.load(std::memory_order_relaxed);
     return 0;
 }
 
@@ -98,6 +130,10 @@ bool SeatAimFrameSamplerBound(int slot)
                    static_cast<uint8_t>(OdstVehicleBindingState::Installed) &&
             g_odstEngineTlsIndex;
 #endif
+    // Reach: the binding R-V27 itself gates on (ReachEnsureNativeFirstPersonSeat): the vehicle camera binding
+    // Installed. It is also what runs the sampler that publishes a natively bit-4-less seat.
+    if (slot == 2)
+        return ReachSeatAimFrameBindingInstalled();
     return false;
 }
 
@@ -108,6 +144,9 @@ bool SeatAimFrameWanted(int slot)
 #else
     const bool key = true;   // the A/B key exists in dev builds only
 #endif
+    if (slot == 2)
+        return seat_aim_frame::ReachWanted(g_config.vehicle_first_person, key, SeatAimFrameSamplerBound(slot),
+                                           SeatAimFrameNativeNoThirdPerson(slot) != 0);
     return seat_aim_frame::Wanted(g_config.vehicle_first_person, g_config.vehicle_hide_body, key,
                                   SeatAimFrameSamplerBound(slot), SeatAimFrameNativeNoThirdPerson(slot) != 0);
 }
@@ -227,10 +266,13 @@ SeatAimFrameSwap SeatAimFrameSwapBytes(uint8_t* at, const uint8_t* expected, con
 
 const char* SeatAimFrameWhyOff(int slot)
 {
-    if (!g_config.vehicle_first_person || !g_config.vehicle_hide_body)
+    if (slot == 2 && !g_config.vehicle_first_person)
+        return "vehicle_first_person off: R-V27 leaves every seat's third-person flag stock";
+    if (slot != 2 && (!g_config.vehicle_first_person || !g_config.vehicle_hide_body))
         return "vehicle_first_person / vehicle_hide_body off: seats keep their stock third-person flag";
     if (!SeatAimFrameSamplerBound(slot))
-        return "the vehicle sampler is not bound: no seat is checked, and no seat flag is patched";
+        return slot == 2 ? "the Reach vehicle camera binding is not installed: R-V27 patches no seat flag"
+                         : "the vehicle sampler is not bound: no seat is checked, and no seat flag is patched";
     if (SeatAimFrameNativeNoThirdPerson(slot))
         return "the occupied seat natively lacks bit 4, so stock rebases it too";
 #if HALOMCCVR_DEV_DIAGNOSTICS
@@ -276,40 +318,16 @@ void SeatAimFrameApply(int slot, SeatAimFrameState& s)
     }
     s.patched = want;
     if (want)
+    {
         LOG("%s seat aim: the vehicle-tilt rebase is skipped (0x%X), seats aim in world angles as in stock",
             s.site->name, s.site->jccRva);
+        SeatAimFrameLogCoopLimit(slot);
+    }
     else
         LOG("%s seat aim: the vehicle-tilt rebase is back in place (0x%X; %s)", s.site->name, s.site->jccRva,
             SeatAimFrameWhyOff(slot));
 }
 
-#if HALOMCCVR_DEV_DIAGNOSTICS
-// DEV witness: per seated stick update, the angle between the record's e(yaw, pitch) and the game's world aim,
-// max per 2 s window with the vehicle tilt at that sample (Halo 3 only: ODST has no proven up binding). Packed
-// as (err bits << 32) | tilt bits so the pair stays together; the sim thread is the only writer, the report
-// exchanges it with 0.
-struct SeatAimFrameWitness
-{
-    std::atomic<uint64_t> maxPair{0};
-    std::atomic<uint32_t> samples{0};
-    std::atomic<uint32_t> maxTiltBits{0};
-};
-SeatAimFrameWitness g_seatAimFrameWitness[2];
-
-uint32_t SeatAimFrameFloatBits(float v)
-{
-    uint32_t bits = 0;
-    memcpy(&bits, &v, sizeof(bits));
-    return bits;
-}
-
-float SeatAimFrameBitsFloat(uint32_t bits)
-{
-    float v = 0.0f;
-    memcpy(&v, &bits, sizeof(v));
-    return v;
-}
-#endif
 } // namespace
 
 bool SeatAimFrameInstall(GameTitle title, uintptr_t base, size_t size, uint32_t generation)
@@ -318,7 +336,9 @@ bool SeatAimFrameInstall(GameTitle title, uintptr_t base, size_t size, uint32_t 
     if (slot < 0)
         return false;
     SeatAimFrameState& s = g_seatAimFrame[slot];
-    const seat_aim_frame::Site& site = slot == 0 ? seat_aim_frame::kHalo3Site : seat_aim_frame::kOdstSite;
+    const seat_aim_frame::Site& site = slot == 0 ? seat_aim_frame::kHalo3Site
+                                     : slot == 1 ? seat_aim_frame::kOdstSite
+                                                 : seat_aim_frame::kReachSite;
     if (s.jcc && s.base == base && s.generation == generation)
     {
         SeatAimFrameApply(slot, s);
@@ -330,7 +350,7 @@ bool SeatAimFrameInstall(GameTitle title, uintptr_t base, size_t size, uint32_t 
     uint8_t* jcc = reinterpret_cast<uint8_t*>(base + site.jccRva);
     if (!base || !generation || site.jccRva + seat_aim_frame::kPatchBytes > size)
         why = "the module is not loaded";
-    else if (!SeatAimFrameUniqueAt(base, size, site.anchorRva, seat_aim_frame::kAnchorPattern))
+    else if (!SeatAimFrameUniqueAt(base, size, site.anchorRva, site.anchorPattern))
         why = "the seat-flag test's anchor is missing, ambiguous or moved";
     else if (!SeatAimFrameExecutable(jcc, seat_aim_frame::kPatchBytes) || !SeatAimFrameRead(jcc, now))
         why = "the jne is not in executable memory";
@@ -361,8 +381,11 @@ bool SeatAimFrameInstall(GameTitle title, uintptr_t base, size_t size, uint32_t 
         LOG("%s seat aim: the rebase skip is verified at 0x%X but not applied (%s)", site.name, site.jccRva,
             SeatAimFrameWhyOff(slot));
     else if (want && s.patched)
+    {
         LOG("%s seat aim: the vehicle-tilt rebase is skipped (0x%X), seats aim in world angles as in stock",
             site.name, site.jccRva);
+        SeatAimFrameLogCoopLimit(slot);
+    }
     SeatAimFrameApply(slot, s);
     return true;
 }
@@ -402,8 +425,8 @@ bool SeatAimFrameRemove(GameTitle title)
 // that natively lacks bit 4 (logged once per seat, whether or not the skip is installed).
 void SeatAimFrameSync()
 {
-    static uint32_t s_loggedNoThirdPerson[2]{};
-    for (int slot = 0; slot < 2; ++slot)
+    static uint32_t s_loggedNoThirdPerson[kSeatAimFrameSlots]{};
+    for (int slot = 0; slot < kSeatAimFrameSlots; ++slot)
     {
         const uint32_t key = SeatAimFrameNativeNoThirdPerson(slot);
         if (key && key != s_loggedNoThirdPerson[slot])
@@ -411,72 +434,12 @@ void SeatAimFrameSync()
             s_loggedNoThirdPerson[slot] = key;
             LOG("%s seat aim: seat %u of vehicle definition 0x%X natively lacks bit 4: the skip changes stock "
                 "behaviour here, so the game's rebase is put back while it is occupied (the first-person seat patch "
-                "also leaves this seat stock)", slot == 0 ? "Halo 3" : "ODST", key & 0xFFu, (key >> 8) & 0xFFFFu);
+                "also leaves this seat stock; the seat drive writes the inverse of the rebase, case b)",
+                SeatAimFrameSlotName(slot), key & 0xFFu, (key >> 8) & 0xFFFFu);
         }
         SeatAimFrameApply(slot, g_seatAimFrame[slot]);
     }
 }
 
-#if HALOMCCVR_DEV_DIAGNOSTICS
-// Sim thread (LegacyPcApplyForUser), dev builds only: one seated stick update's record against the game's aim.
-void SeatAimFrameNoteSeated(int slot, float recordYaw, float recordPitch, float aimYaw, float aimPitch)
-{
-    if (slot < 0 || slot > 1)
-        return;
-    const float err = seat_aim_frame::AimSeparationDeg(recordYaw, recordPitch, aimYaw, aimPitch);
-    if (!std::isfinite(err))
-        return;
-    float tilt = std::numeric_limits<float>::quiet_NaN();
-    if (slot == 0)
-    {
-        Halo3SeatSnapshot seat{};
-        if (Halo3ReadSeatSnapshot(seat))
-            tilt = seat_aim_frame::TiltDeg(seat.up);
-    }
-    SeatAimFrameWitness& w = g_seatAimFrameWitness[slot];
-    w.samples.fetch_add(1, std::memory_order_relaxed);
-    if (std::isfinite(tilt))
-    {
-        uint32_t seen = w.maxTiltBits.load(std::memory_order_relaxed);
-        while ((!seen || SeatAimFrameBitsFloat(seen) < tilt) &&
-               !w.maxTiltBits.compare_exchange_weak(seen, SeatAimFrameFloatBits(tilt), std::memory_order_relaxed))
-        {
-        }
-    }
-    const uint64_t pair = static_cast<uint64_t>(SeatAimFrameFloatBits(err)) << 32 | SeatAimFrameFloatBits(tilt);
-    uint64_t seen = w.maxPair.load(std::memory_order_relaxed);
-    while ((!seen || SeatAimFrameBitsFloat(static_cast<uint32_t>(seen >> 32)) < err) &&
-           !w.maxPair.compare_exchange_weak(seen, pair, std::memory_order_relaxed))
-    {
-    }
-}
-
-// WaitThread, from LegacyDriveReport's 2 s window: the frame check line, when a seated stick update ran.
-void SeatAimFrameReport(int slot, const char* name)
-{
-    if (slot < 0 || slot > 1)
-        return;
-    SeatAimFrameWitness& w = g_seatAimFrameWitness[slot];
-    const uint32_t samples = w.samples.exchange(0, std::memory_order_relaxed);
-    const uint64_t pair = w.maxPair.exchange(0, std::memory_order_relaxed);
-    const uint32_t maxTilt = w.maxTiltBits.exchange(0, std::memory_order_relaxed);
-    if (!samples)
-        return;
-    const float err = SeatAimFrameBitsFloat(static_cast<uint32_t>(pair >> 32));
-    const float tilt = SeatAimFrameBitsFloat(static_cast<uint32_t>(pair));
-    const SeatAimFrameState& s = g_seatAimFrame[slot];
-    const char* rebase = !s.jcc ? "rebase NOT managed (see the seat aim install line)"
-                       : s.patched ? "rebase skipped" : "game's rebase in place";
-    char tiltText[32], maxTiltText[32];
-    if (std::isfinite(tilt))
-        snprintf(tiltText, sizeof(tiltText), "%.1f deg", tilt);
-    else
-        snprintf(tiltText, sizeof(tiltText), "n/a");
-    if (maxTilt)
-        snprintf(maxTiltText, sizeof(maxTiltText), "%.1f deg", SeatAimFrameBitsFloat(maxTilt));
-    else
-        snprintf(maxTiltText, sizeof(maxTiltText), "n/a");
-    LOG("DRIVE %s seats (dev): frame check: max |record - game aim| %.2f deg at tilt %s (%u seated stick updates, "
-        "max tilt %s; %s)", name, err, tiltText, samples, maxTiltText, rebase);
-}
-#endif
+// The dev frame check that used to live here (Halo 3 / ODST only) is now every title's: seat_frame_reader.h
+// (seat_frame_rt::NoteFrameCheck), printed in each drive's seats line.

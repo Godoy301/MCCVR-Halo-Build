@@ -72,6 +72,7 @@
 #include "../common/physical_crouch_cached_witnesses.h"
 #include "d3d11_hook.h"
 #include "sigscan.h"
+#include "seat_frame_reader.h"
 #include "vr.h"
 #include "native_subtitles.h"
 #include "bloom_override.h"
@@ -167,6 +168,16 @@ static std::atomic<unsigned>           g_reachDriveResetSeq{0};
 static std::atomic<int>                g_reachUnitCrouchState{-1};
 static std::atomic<unsigned long long> g_reachUnitCrouchMs{0};
 static void* g_reachPcTarget = nullptr;
+// The seat's frame for the Reach direct drive (seat_frame_reader.h): what the vehicle-tilt rebase 0x48ADB8 will do
+// to a seated record, read by ReachPcApplyForUser on the sim thread. Bound with the hook (ReachSeatFrameBind),
+// unbound when it is removed.
+static seat_frame_rt::Binding  g_reachSeatFrame;
+static seat_frame_rt::Counters g_reachSeatFrameCounters;
+// When a seated read of that frame last came back Unknown (GetTickCount64; 0 = never since the drive reset). The sim
+// thread stamps it; Game_ReachDirectDriveAimWhy reads it (0x400: the seat goes back to the stick servo,
+// seat_frame::SeatFrameHandsBack).
+static std::atomic<unsigned long long> g_reachSeatFrameUnknownMs{0};
+static void ReachSeatFrameBind(uintptr_t base, size_t size);
 static void ReachRecordDesiredAim(float gameYaw, float gamePitch);
 extern "C" void ReachPcApplyForUser(int user, const uint8_t* entryRsp);
 // Which caller ran the accumulator (aim_caller_logic.h; defined beside ReachPcApplyForUser). Built at install,
@@ -200,15 +211,12 @@ bool LegacyDriveInstall(GameTitle title, uintptr_t base, size_t size);
 bool LegacyDriveRemove(GameTitle title);
 bool LegacyDriveLive(GameTitle title);
 void LegacyDriveReport();
-// Halo 3 / ODST seats aim in world angles (seat_aim_world_frame.inl): the vehicle-tilt rebase is skipped while
-// the first-person seat patch is enabled. Install/remove with the title; the WaitThread poll follows the setting.
+// Halo 3 / ODST / Reach seats aim in world angles (seat_aim_world_frame.inl): the vehicle-tilt rebase is skipped
+// while the first-person seat patch (C20; Reach: R-V27) is enabled. Install/remove with the title; the WaitThread
+// poll follows the setting.
 bool SeatAimFrameInstall(GameTitle title, uintptr_t base, size_t size, uint32_t generation);
 bool SeatAimFrameRemove(GameTitle title);
 void SeatAimFrameSync();
-#if HALOMCCVR_DEV_DIAGNOSTICS
-void SeatAimFrameNoteSeated(int slot, float recordYaw, float recordPitch, float aimYaw, float aimPitch);
-void SeatAimFrameReport(int slot, const char* name);
-#endif
 #if HALOMCCVR_DEV_DIAGNOSTICS
 // DEV BUILDS ONLY: the log-only hooks on the type-13 pilot controllers (type13_flight_log.inl): the cold
 // worker's report, and Halo 4's install/remove inside its camera core.
@@ -19564,6 +19572,12 @@ namespace
     // The occupied seat's own flags word, published by the engine
     // thread that read it so the worker can report it honestly.
     std::atomic<uint32_t> g_reachVehicleSeatFlagsPublished{0};
+    // The occupied seat's ORIGINAL flags lack bit 4 (third-person camera): stock Reach rebases this seat's aim by
+    // the vehicle's up frame, so the rebase skip (seat_aim_world_frame.inl, slot 2) stands down while it is
+    // occupied and the seat drive writes the inverse (case b). "Original" is R-V27's lease's saved word when the
+    // lease owns this seat's mutation, the live word otherwise. 0 = not seen; otherwise the Halo 3 key layout
+    // (0x80000000 | definition index << 8 | seat). Camera/engine thread writes, WaitThread reads.
+    std::atomic<uint32_t> g_reachSeatNativeNoThirdPerson{0};
     // How many times Reach's own first-person interpolation/palette
     // transaction ran while a vehicle seat was occupied. This is the
     // one number that separates "the engine never built the occupant's
@@ -29891,6 +29905,9 @@ namespace
             // The optional vehicle transaction is going stock for this title
             // generation; it must not leave a cleared seat word behind.
             ReachRestoreNativeSeatLease();
+            // ...nor a published natively bit-4-less seat (seat aim world
+            // frame), as Halo 3's C20 clears its own beside the restore.
+            g_reachSeatNativeNoThirdPerson.store(0, std::memory_order_relaxed);
             g_reachVehicleCameraFaults.fetch_add(
                 1, std::memory_order_relaxed);
             g_reachCamera.vehicleCameraBindingState.store(
@@ -29948,7 +29965,13 @@ namespace
             // every transient miss would re-toggle the bit and reintroduce the
             // rejected per-frame churn.
             if (!structurallySeated)
+            {
                 ReachRestoreNativeSeatLease();
+                // The seat is left: it is no longer a natively bit-4-less
+                // seat we sit in (published only on a complete frame below).
+                g_reachSeatNativeNoThirdPerson.store(
+                    0, std::memory_order_relaxed);
+            }
             // Marker, bounds and identity proof can fail while the occupied
             // seat relationship itself remains structurally valid. Hold the
             // already-debounced occupation through those camera-only misses:
@@ -29993,6 +30016,31 @@ namespace
             ReachEnsureNativeFirstPersonSeat(frame);
         else
             ReachRestoreNativeSeatLease();
+        // Seat aim world frame (seat_aim_world_frame.inl): does the occupied seat lack bit 4 in its OWN data? When
+        // R-V27's lease owns this very seat, its saved original word answers (the live word is ours); otherwise the
+        // live word is the seat's own.
+        {
+            uint32_t nativeLacks = 0;
+            if (frame.active)
+            {
+                const ReachSeatLeaseState lease = ReachNativeSeatLeaseState();
+                const ReachSeatLeaseKey key{
+                    g_reachCamera.generation.load(std::memory_order_acquire),
+                    frame.unitHandle, frame.directParent, frame.definitionDatum,
+                    frame.seatIndex};
+                const uint32_t original =
+                    ReachSeatLeaseOwnsMutation(lease) &&
+                            ReachSeatLeaseKeyEqual(g_reachNativeSeatLease.key, key)
+                        ? g_reachNativeSeatLease.originalFlags
+                        : frame.seatFlags;
+                if (!(original & kReachSeatThirdPersonCameraBit))
+                    nativeLacks = 0x80000000u |
+                        (frame.definitionDatum & 0xFFFFu) << 8 |
+                        (static_cast<uint32_t>(frame.seatIndex) & 0xFFu);
+            }
+            g_reachSeatNativeNoThirdPerson.store(
+                nativeLacks, std::memory_order_relaxed);
+        }
         ReachUpdateVehicleTransition(Halo3VehicleState::Vehicle, nowMs);
         return frame.active;
     }
@@ -31397,6 +31445,7 @@ namespace
             {
                 g_reachPcTarget = nullptr;
                 g_reachPcOrig = nullptr;
+                seat_frame_rt::Unbind(g_reachSeatFrame);
             }
             else
             {
@@ -31803,6 +31852,13 @@ namespace
         if (!RestoreReachThirdPersonEffectSuppression())
             LOG("Reach muzzle: third-person effect branch could not be restored");
         ReachMuzzleRetargetRestore();
+
+        // R-V27's lease is restored and the hooks are quiescent, so every seat's
+        // flags are stock and the rebase skip is inert: put the game's own jne
+        // back (only over our bytes; retried like the restores below).
+        g_reachSeatNativeNoThirdPerson.store(0, std::memory_order_relaxed);
+        if (!SeatAimFrameRemove(GameTitle::HaloReach))
+            return false;
 
         if (!RestoreReachSkyParallaxNeutralization())
         {
@@ -33767,6 +33823,7 @@ namespace
         g_reachSeatAnchorLatch = {};
         g_reachVehicleAnchorFallbacks.store(0, std::memory_order_relaxed);
         g_reachNativeSeatLease = {};
+        g_reachSeatNativeNoThirdPerson.store(0, std::memory_order_relaxed);
         g_reachSeatYaw = {};
         g_reachYawSeat = {};
         if (reachVehicleCameraResolved)
@@ -34010,6 +34067,10 @@ namespace
             }
         }
 
+        // Reach seats aim in world angles on R-V27's seats (seat_aim_world_frame.inl, slot 2): resolve and verify
+        // the vehicle-tilt rebase's bit-4 jne; the WaitThread poll applies the skip while R-V27 is enabled.
+        (void)SeatAimFrameInstall(GameTitle::HaloReach, base, size, generation);
+
         // Reach DIRECT DRIVE (reach_direct_drive==3, opt-in): hook the per-user control update
         // haloreach+0x6375C -- the ACCUMULATOR of player_control.desired_angles (value-scan 2026-09-25,
         // one-shot write proof 2026-09-26) -- and, after it runs on the sim thread, overwrite desired
@@ -34038,6 +34099,8 @@ namespace
             {
                 // Which caller ran it (the dispatcher's return): built while no hook can run, logged inside.
                 (void)ReachBuildCallerMap(base, size);
+                // The seat's frame (the vehicle-tilt rebase, read by the hook itself): bound while no hook can run.
+                ReachSeatFrameBind(base, size);
                 void* target = reinterpret_cast<void*>(base + 0x6375C);
                 const MH_STATUS created = MH_CreateHook(
                     target, reinterpret_cast<void*>(&ReachPlayerControlHook),
@@ -50424,7 +50487,11 @@ bool Game_ReachDirectDriveOnFoot()
 // 0x01-0x40 as Game_ReachDirectDriveOnFootWhy, except that 0x08 now means the fresh sample is neither on
 // foot nor seated; and, seated: 0x80 our first-person seat camera is not up (no presented intent ray),
 // 0x100 this seat steers with the stick or wheel right now (vehicle_view_follow driver: the stick is
-// steering, not aiming), 0x200 reach_vehicle_aim leaves this seat on the stick servo.
+// steering, not aiming), 0x200 reach_vehicle_aim leaves this seat on the stick servo, 0x400 the seat's frame
+// (the vehicle-tilt rebase, ReachSeatFrameBind) cannot be trusted -- its reader is not bound, or a seated read
+// came back Unknown within the last 500 ms (seat_frame::SeatFrameHandsBack). Such an update writes nothing, and
+// the provider holds the aim stick neutral while it selects the state write, so without 0x400 the seat's aim
+// would FREEZE; with it the stick servo aims the seat until the frame reads again.
 uint32_t Game_ReachDirectDriveAimWhy()
 {
     uint32_t why = Game_ReachDirectDriveOnFootWhy();
@@ -50445,6 +50512,11 @@ uint32_t Game_ReachDirectDriveAimWhy()
              (g_config.reach_vehicle_aim == 1 && ReachVehicleSeatIsDriver(identity, seatIndex) &&
               ReachVehicleIsLookSteered(identity)))   // 1: a driver whose look steers keeps the servo
         why |= 0x200;                                 // seat_direct_drive = 0: every seat keeps it
+    else if (g_reachPcTarget &&
+             seat_frame::SeatFrameHandsBack(g_reachSeatFrame.ready.load(std::memory_order_acquire),
+                                            g_reachSeatFrameUnknownMs.load(std::memory_order_acquire),
+                                            GetTickCount64()))
+        why |= 0x400;                                 // the seat's frame: unbound, or Unknown just now
     return why;
 }
 
@@ -50757,6 +50829,24 @@ static bool ReachBuildCallerMap(uintptr_t base, size_t size)
     return proven;
 }
 
+// THE SEAT'S FRAME (seat_frame_reader.h; docs/ALL-TITLES-AIM-2026-09-29.md "Seats aim in world angles"). Reach's
+// rebase 0x48ADB8 rotates a seated player's record by the vehicle's up frame R(u) unless the seat's live flags carry
+// bit 4 -- or our skip (seat_aim_world_frame.inl, slot 2) jumps over it on R-V27's seats (case a: an unmodded peer,
+// whose seat keeps bit 4, never rotates). Where the seat's OWN data lacks bit 4 (case b; the skip stands down
+// there) every peer rotates the action angles we send, so the seated write puts R^-1 of the aim in the record.
+static void ReachSeatFrameBind(uintptr_t base, size_t size)
+{
+    const char* why = nullptr;
+    g_reachSeatFrameCounters.unknownLogged.store(0, std::memory_order_relaxed);
+    if (seat_frame_rt::Bind(g_reachSeatFrame, seat_frame::kReachReader, base, size, why))
+        LOG("REACHDRIVE: seat frame reader bound (the rebase +0x%X: its gate +0x%X and up getter +0x%X proven): a "
+            "seated write follows the vehicle-tilt rebase (world / a / b)", seat_frame::kReachReader.rebaseRva,
+            seat_frame::kReachReader.gateRva, seat_frame::kReachReader.getterRva);
+    else
+        LOG("REACHDRIVE: seat frame reader NOT bound (%s at +0x%X); seats are never written (the aim provider leaves "
+            "every seat on the stick servo: why 0x400)", why ? why : "unknown", seat_frame::kReachReader.gateRva);
+}
+
 // Runs on the SIM thread from the naked detour, AFTER native 0x6375C updated desired_angles (stick
 // delta + clamps). Overwrites the pair with the published VR aim, but only for the first local player,
 // only while armed, only for a fresh aim, and only when THIS thread's TLS resolves to the MASTER
@@ -50841,6 +50931,7 @@ extern "C" void ReachPcApplyForUser(int user, const uint8_t* entryRsp)
                 s_putBack = aim_caller::PutBack{};
                 s_putBack.max_age = AimCallerClockFromMs(kAimCallerPutBackCapMs);
                 s_stickSeq = 0;
+                g_reachSeatFrameUnknownMs.store(0, std::memory_order_release);
 #if HALOMCCVR_DEV_DIAGNOSTICS
                 g_reachCensus.restart(g_reachCallerMap.dispatcher_mode());
 #endif
@@ -50926,6 +51017,41 @@ extern "C" void ReachPcApplyForUser(int user, const uint8_t* entryRsp)
                 ++s_stickSeq;
                 s_putBack.invalidate();
             }
+            // THE SEAT'S FRAME (see ReachSeatFrameBind): read once per seated stick update of the first local
+            // player -- written or not -- from the unit the rebase will rotate this tick. Probed while the stick
+            // servo aims too (the sampler's snapshot says seated), so a seat whose frame stays unreadable keeps its
+            // Unknown stamp fresh and stays on the servo (Game_ReachDirectDriveAimWhy 0x400), instead of returning
+            // to the state write, freezing for an update and handing back again.
+            seat_frame_rt::Live seatFrame{};
+            bool seatFrameRead = false;
+            if (user == 0 && armed && same &&
+                (drivenSeated ||
+                 g_reachVehicleInputSnapshot.load(std::memory_order_acquire) ==
+                     ReachVehicleInputSnapshot(TitleAdapter_GetGeneration(GameTitle::HaloReach),
+                                               ReachVehicleInputState::Vehicle)))
+            {
+                const uint32_t unit = g_reachCamera.playerUnitByOutputUser
+                    ? static_cast<uint32_t>(g_reachCamera.playerUnitByOutputUser(0)) : seat_frame::kNone;
+                seatFrame = seat_frame_rt::Read(g_reachSeatFrame, nullptr, unit);
+                seatFrameRead = true;
+                if (seatFrame.kase == seat_frame::Case::Unknown)
+                    g_reachSeatFrameUnknownMs.store(tick ? tick : 1, std::memory_order_release);
+                // Counted while seated (a stale seated setpoint on foot reads the rebase's own early exit).
+                if (seatFrame.seated || seatFrame.kase == seat_frame::Case::Unknown)
+                {
+                    seat_frame_rt::Count(g_reachSeatFrameCounters, seatFrame.kase);
+#if HALOMCCVR_DEV_DIAGNOSTICS
+                    // THE FRAME CHECK: the record through R against the game's world aim (the unit's aiming
+                    // vector, built from the record by the rebase one tick ago).
+                    const float* record = reinterpret_cast<const float*>(pc + 0x94);
+                    float aim[3]{};
+                    if (ReachReadUnitAimingVector(static_cast<int32_t>(unit), aim))
+                        seat_frame_rt::NoteFrameCheck(g_reachSeatFrameCounters, seatFrame, record[0], record[1],
+                                                      std::atan2(aim[1], aim[0]),
+                                                      std::atan2(aim[2], std::sqrt(aim[0] * aim[0] + aim[1] * aim[1])));
+#endif
+                }
+            }
             if (same && armed && valid && age <= 200 &&
                 std::isfinite(yaw) && std::isfinite(pitch))
             {
@@ -50946,14 +51072,24 @@ extern "C" void ReachPcApplyForUser(int user, const uint8_t* entryRsp)
                 (void)previousPc;
                 (void)previous;
 #endif
+                // In case (b) the hand's world aim goes into the record's frame (the seat's frame read above), before
+                // the latch compares it with the record. Unread, nothing is written this update, and the stamp it
+                // left hands the seat to the stick servo from the next poll (Game_ReachDirectDriveAimWhy 0x400).
+                float target[2]{yaw, pitch};
+                bool frameOk = true;
+                if (drivenSeated && user == 0)
+                    frameOk = seatFrameRead && seat_frame_rt::ToRecord(seatFrame, target[0], target[1], pair[0]);
+                else if (drivenSeated)
+                    frameOk = false;   // only the first local player's seat frame is read
                 // In a seat, the game's update has just clamped the record to the seat's limits (a turret's
                 // pitch stop, a passenger's cone): keep the write inside them rather than carry the aim past
                 // (aim_write::LimitLatch). On foot there is no such clamp, and nothing changes. Per axis, as in
                 // Halo 3 / ODST (critic M1): a look-steered driver's pitch is never latched -- the game levels
                 // it as the vehicle moves, which the latch would take for a limit and hold the write short of
                 // the hand -- so that axis is written as the hand's; its yaw still latches.
-                float target[2]{yaw, pitch};
-                if (drivenSeated)
+                if (!frameOk)
+                    s_seatLimit.reset();
+                else if (drivenSeated)
                 {
                     const float native[2]{pair[0], pair[1]};
                     const bool latch[2]{true, drivenPitchLatch};
@@ -50973,7 +51109,7 @@ extern "C" void ReachPcApplyForUser(int user, const uint8_t* entryRsp)
                 // one-update aim nudge. The game's own record jumps by 2*pi at the same seam (0x63D39-0x63D75),
                 // so the wrap adds no jump it does not make. Pitch stays inside the game's own clamp.
                 const float y = aim_write::wrap_0_2pi(aim_write::unwrap_to_branch(target[0], pair[0]));
-                if (std::isfinite(y) && std::isfinite(target[1]))
+                if (frameOk && std::isfinite(y) && std::isfinite(target[1]))
                 {
                     pair[0] = y;
                     pair[1] = aim_write::clamp_pitch(target[1], 1.45f);
@@ -51088,6 +51224,23 @@ void Game_ReachDirectDriveReport()
     {
         LOG("REACHDRIVE apply user=0: no stick update; %s", callers);
     }
+    {
+        // THE SEAT'S FRAME: how many seated updates read each case (world / a: our skip / b: the inverse / unread).
+        char frames[96];
+        const bool unread = seat_frame_rt::CaseText(g_reachSeatFrameCounters, frames, sizeof(frames));
+        if (frames[0])
+            LOG("REACHDRIVE seats: %s", frames);
+        if (unread && !g_reachSeatFrameCounters.unknownLogged.exchange(1, std::memory_order_relaxed))
+            LOG("REACHDRIVE seats: the seat's frame did not read (the rebase's links or the vehicle's up failed their "
+                "checks); those updates write nothing, and the aim provider hands the seat to the stick servo until "
+                "it has read again for 500 ms (why 0x400; logged once)");
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        char check[224];
+        seat_frame_rt::FrameCheckText(g_reachSeatFrameCounters, check, sizeof(check));
+        if (check[0])
+            LOG("REACHDRIVE seats (dev): %s", check);   // frame check: max |R*e(record) - game aim| ...
+#endif
+    }
 #if HALOMCCVR_DEV_DIAGNOSTICS
     // THE CENSUS, every 2 s: calls per sim tick and per caller ("stick per tick" = frames per tick: 2.00 at
     // 120 fps over the 60 Hz sim).
@@ -51142,6 +51295,13 @@ bool Game_ReachDdTestOwnsAim()
     return g_reachDdpOwnsAim.load(std::memory_order_acquire);
 }
 #endif
+// seat_aim_world_frame.inl's Reach gate (slot 2): the binding R-V27 itself gates on (ReachEnsureNativeFirstPersonSeat),
+// which is also what runs the sampler that publishes a natively bit-4-less seat.
+static bool ReachSeatAimFrameBindingInstalled()
+{
+    return g_reachCamera.vehicleCameraBindingState.load(std::memory_order_acquire) ==
+        static_cast<uint8_t>(ReachVehicleCameraBindingState::Installed);
+}
 #include "seat_aim_world_frame.inl"
 #include "legacy_direct_drive.inl"
 #if HALOMCCVR_DEV_DIAGNOSTICS

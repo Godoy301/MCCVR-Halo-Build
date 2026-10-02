@@ -292,6 +292,11 @@ void TestReachConvergeOffReason()
     Check(ReachConvergeOffReason(p, why) && why == ConvergeOff::SeatSteering, "the stick steers this seat");
     p.aimWhy = 0x200;
     Check(ReachConvergeOffReason(p, why) && why == ConvergeOff::AimOff, "reach_vehicle_aim leaves it on the servo");
+    p.aimWhy = 0x400;
+    Check(ReachConvergeOffReason(p, why) && why == ConvergeOff::SeatProofPending,
+          "the seat's frame did not read: the seat is on the servo, its proof pending");
+    p.aimWhy = 0x200 | 0x400;
+    Check(ReachConvergeOffReason(p, why) && why == ConvergeOff::AimOff, "...after reach_vehicle_aim, in order");
     p.aimWhy = 0;
     Check(ReachConvergeOffReason(p, why) && why == ConvergeOff::DriveNotArmed, "the hook is not armed");
     p.driveReady = true;
