@@ -24,9 +24,14 @@
 
 namespace seat_aim_frame
 {
-// `imul rdx,rax,0xD4; mov eax,[rdx+rcx]; shr eax,4; test al,1; jne` -- the seat-flags bit-4 test, unique in
-// both modules. The 6-byte jne (0F 85 rel32) starts kAnchorToJcc bytes in.
-inline constexpr const char* kAnchorPattern = "48 69 D0 D4 00 00 00 8B 04 0A C1 E8 04 A8 01 0F 85";
+// `imul rdx,rax,0xD4; mov eax,[rdx+rcx]; shr eax,4; test al,1` + the two bytes after it -- the seat-flags bit-4
+// test, unique in both modules. The 6-byte jne (0F 85 rel32) starts kAnchorToJcc bytes in. The jne's own first
+// two bytes are WILDCARDS on purpose: our patch turns them into `E9 xx`, and an anchor that required `0F 85`
+// could never find a jump an earlier install left in place (a teardown restore that gave up), so the adopt path
+// would be unreachable and the jump unmanaged. The anchor locates the site; IsStockJcc / IsSkipPatch then decide
+// whose bytes are there. tools/verify_seat_aim_world_frame.py proves this pattern unique in the stock module AND
+// in the module with our jump applied.
+inline constexpr const char* kAnchorPattern = "48 69 D0 D4 00 00 00 8B 04 0A C1 E8 04 A8 01 ?? ??";
 inline constexpr uint32_t kAnchorToJcc = 15;
 inline constexpr size_t kPatchBytes = 6;
 
@@ -41,8 +46,8 @@ struct Site
 };
 
 // ADDR-HYGIENE: guarded. Measured 2026-10-01 on the retail Steam modules (the Store modules are byte-identical,
-// MCC-EDITIONS-EVIDENCE). The install refuses unless the anchor is unique and at anchorRva, and the jne there is
-// exactly 0F 85 with its target at skipRva.
+// MCC-EDITIONS-EVIDENCE). The install refuses unless the anchor is unique and at anchorRva, and the six bytes at
+// the jne are exactly 0F 85 with its target at skipRva (or our own E9 to skipRva + 90, which it adopts).
 inline constexpr Site kHalo3Site{"Halo 3", 0x355E20, 0xE3C4B, 0x355EEB, 0x355EFA, 0x355FDD};
 inline constexpr Site kOdstSite{"ODST", 0x39A600, 0xFDF48, 0x39A6B5, 0x39A6C4, 0x39A7C8};
 

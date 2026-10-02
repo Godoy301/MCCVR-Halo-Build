@@ -24,6 +24,11 @@ void TestSites()
 {
     Check(kHalo3Site.jccRva == kHalo3Site.anchorRva + kAnchorToJcc, "Halo 3: the jne is 15 bytes into the anchor");
     Check(kOdstSite.jccRva == kOdstSite.anchorRva + kAnchorToJcc, "ODST: the jne is 15 bytes into the anchor");
+    // The anchor must still find the site once our `E9 rel32 90` is in place (the adopt path): its last two
+    // tokens, exactly the jne's opcode bytes, are wildcards.
+    const size_t len = std::strlen(kAnchorPattern);
+    Check(len == (kAnchorToJcc + 2) * 3 - 1 && !std::strcmp(kAnchorPattern + len - 5, "?? ??"),
+          "the anchor is kAnchorToJcc bytes + two wildcards over the jne's opcode");
     Check(kHalo3Site.anchorRva > kHalo3Site.rebaseRva && kHalo3Site.skipRva > kHalo3Site.jccRva,
           "Halo 3: the test and its target sit inside the rebase, target after the test");
     Check(kOdstSite.anchorRva > kOdstSite.rebaseRva && kOdstSite.skipRva > kOdstSite.jccRva,

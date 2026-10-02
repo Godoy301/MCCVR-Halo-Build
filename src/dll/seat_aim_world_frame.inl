@@ -314,7 +314,7 @@ bool SeatAimFrameInstall(GameTitle title, uintptr_t base, size_t size, uint32_t 
         s.patched = true;
     }
     else
-        why = "the jne there is not `0F 85` to the expected skip label";
+        why = "the six bytes there are neither the stock `0F 85` nor our jump to the expected skip label";
     if (why)
     {
         s = {};
