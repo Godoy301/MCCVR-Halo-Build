@@ -23,6 +23,7 @@
 #include "../common/odst_bringup_logic.h"
 #include "../common/scope_action_input.h"
 #include "../common/physical_crouch_input.h"
+#include "../common/vr_action_passthrough.h"
 #include "physical_crouch_camera.h"
 #include "native_vr_actions.h"
 #include "dev_pad.h"
@@ -366,6 +367,7 @@ namespace
                     const uint64_t now=GetTickCount64();
                     const bool direct=NativeVrActions_CanRoute(title,now);
                     const bool ready=Game_ReadVrActionBindings(native,now)||direct;
+                    const vr_mapping::Transports realNative=native;
                     if(direct) for(unsigned action=0;action<vr_mapping::Count;++action)
                         native[action]=NativeVrActions_GestureBit(static_cast<vr_mapping::Action>(action));
                     if(scopeAvailable) native[vr_mapping::Zoom]=0;
@@ -374,8 +376,11 @@ namespace
                         (uint64_t(TitleAdapter_GetGeneration(title))<<32)|(uint64_t(title)<<24)|pad.profileEpoch,
                         ready,g_config.disable_flashlight_input||
                             (g_config.flashlight_suppress_on_two_hand&&pad.supportAimActive));
-                    const uint32_t mapped=direct?0:actions.transports;
-                    NativeVrActions_Publish(state,title,now,actions.actions&
+                    // Halo 2 context actions keep their real MCC button; see
+                    // vr_action_passthrough.h. Every other action is unchanged.
+                    const auto routed=vr_mapping::RouteActions(title,direct,actions,realNative);
+                    const uint32_t mapped=routed.buttons;
+                    NativeVrActions_Publish(state,title,now,routed.published&
                         ~(scopeAvailable?(1u<<vr_mapping::Zoom):0u),direct);
                     state->Gamepad.wButtons=static_cast<WORD>(mapped);
                     if(mapped&(1u<<16)) state->Gamepad.bLeftTrigger=255;
@@ -494,7 +499,12 @@ namespace
             nativeMapping,g_config.disable_flashlight_input||
                 (g_config.flashlight_suppress_on_two_hand&&pad.supportAimActive));
         if(scopeAvailable) semanticActions.actions&=~(1u<<vr_mapping::Zoom);
-        const uint32_t semanticButtons=directActions?0:semanticActions.transports;
+        // Direct routing withholds native transports, except Halo 2's context
+        // actions, whose real button is their only complete transport (tap
+        // reload / hold pick up or board). See vr_action_passthrough.h.
+        const auto routedActions=vr_mapping::RouteActions(currentTitle,directActions,
+            semanticActions,nativeActions);
+        const uint32_t semanticButtons=routedActions.buttons;
         const bool xPressed=pad.x;
         const float leftTrigger=pad.trigL;
 
@@ -559,7 +569,7 @@ namespace
         const bool weaponGesture=pad.weaponConsumeSupport||pad.weaponConsumePrimary||pad.weaponButtons;
         const uint32_t gestureMelee=weaponGesture?0:Game_GestureMeleeInput(inputNow);
         if(semanticMode) NativeVrActions_Publish(state,currentTitle,inputNow,
-            semanticActions.actions | ((crouchButtons|gestureMelee|pad.weaponButtons)>>18),directActions);
+            routedActions.published | ((crouchButtons|gestureMelee|pad.weaponButtons)>>18),directActions);
         btn |= static_cast<WORD>(gestureMelee & 0xFFFF);
         btn |= static_cast<WORD>(pad.weaponButtons & 0xFFFF);
         state->Gamepad.wButtons = btn;

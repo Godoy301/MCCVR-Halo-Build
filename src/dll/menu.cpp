@@ -26,6 +26,7 @@
 #include "../common/log.h"
 #include "../common/config.h"
 #include "../common/weapon_interaction_logic.h"
+#include "../common/vr_action_passthrough.h"
 #include "../common/halo2_vehicle_identity.h"
 #include "../common/window_focus_policy.h"
 
@@ -881,12 +882,16 @@ namespace
             ImGui::TextWrapped("All six games support separate actions while direct VR routing is available. "
                 "Games using the MCC layout fallback can link actions sharing a native button. "
                 "If the direct route is unavailable, Reload and Use may still share a button.");
+            const auto selectedGame=static_cast<GameTitle>(selectedTitle+1);
+            if(vr_mapping::DirectPassthroughActions(selectedGame))
+                ImGui::TextWrapped("Halo 2: Reload and Use device always send their MCC button, so the game's "
+                    "own tap and hold choose reload, pick up, board or use.");
             vr_mapping::Transports bindings{};
             const bool haveBindings=activeIndex==selectedTitle&&Game_ReadVrActionBindings(bindings,GetTickCount64());
             for(unsigned action=0;action<vr_mapping::Count;++action)
             {
                 ImGui::PushID(static_cast<int>(action));
-                ImGui::TextUnformatted(vr_mapping::kNames[action]);
+                ImGui::TextUnformatted(vr_mapping::ActionName(selectedGame,static_cast<vr_mapping::Action>(action)));
                 ImGui::SetNextItemWidth(-1);
                 changed|=ImGui::Combo("##source",&g_config.vr_bindings[selectedTitle][action],
                     vr_mapping::kSourceNames,vr_mapping::SourceCount);
