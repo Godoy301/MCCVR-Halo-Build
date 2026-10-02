@@ -14,8 +14,9 @@
 // aim feedback we cannot read. Those are the ConvergeOff reasons below.
 //
 // The natural causes are still COUNTED (NaturalWitness, dev lines only) so a headset session can prove they
-// now leave convergence on. They are never an input to a decision: ClaimSeatedConverged takes no natural
-// cause by construction (tests/converge_policy_tests.cpp pins its signature).
+// now leave convergence on. They are never an input to a decision: SeatedClaimDecide's facts hold no natural
+// cause by construction (tests/converge_policy_tests.cpp pins their layout, tools/check_seated_claim.py the
+// call site in game.cpp).
 //
 // Zero engine dependencies; unit-tested in tests/converge_policy_tests.cpp.
 
@@ -74,11 +75,35 @@ inline const char* ConvergeOffName(ConvergeOff why)
     return "?";
 }
 
-// A SEATED converged aim is claimed (the mark, so the traced reticle and the scope's convergence) whenever the
-// aim was solved through the traced point and the game's aim feedback is a finite direction -- exactly as on
-// foot. Nothing about the seat's limits, a turret's rate cap or how far the game's aim trails the target
-// takes part: those are natural, and the game shows them itself.
-inline bool ClaimSeatedConverged(bool solved, bool aimFeedbackFinite) { return solved && aimFeedbackFinite; }
+// THE SEATED CONVERGED CLAIM (Halo 3, ODST, Halo 4): the mark, so the traced reticle, the scope's convergence and
+// the muzzle redirect that rides on it. Claimed whenever the aim was solved through the traced point -- exactly as
+// on foot. Every fact it is decided on is our code's: nothing about the seat's limits, a turret's rate cap or how
+// far the game's aim trails the target takes part (those are natural, and the game shows them itself).
+//
+// This is the WHOLE decision: Game_ComputeAimStick assigns its claim from SeatedClaimDecide and nothing else
+// (tools/check_seated_claim.py checks that call site), and the facts struct holds no natural cause by
+// construction (tests/converge_policy_tests.cpp pins its layout).
+struct SeatedClaimFacts {
+    bool solved = false;              // the aim was bent through the traced point this poll
+    bool pointFinite = true;          // the point it was bent through is a finite position (Halo 4 computes it)
+    bool aimFeedbackFinite = false;   // the game's aim feedback reads as a direction
+};
+// `why` names the reason only when the aim WAS solved and the claim is still withheld; an unsolved poll keeps the
+// solve's own reason (None here).
+struct SeatedClaim {
+    bool claim = false;
+    ConvergeOff why = ConvergeOff::None;
+};
+inline SeatedClaim SeatedClaimDecide(const SeatedClaimFacts& f)
+{
+    SeatedClaim c;
+    if (!f.solved)
+        return c;
+    if (!f.pointFinite) { c.why = ConvergeOff::NoRange; return c; }
+    if (!f.aimFeedbackFinite) { c.why = ConvergeOff::AimFeedbackInvalid; return c; }
+    c.claim = true;
+    return c;
+}
 
 // A timestamp (GetTickCount64) still inside its freshness window. 0 = never stamped.
 inline bool StampLive(uint64_t at_ms, uint64_t now_ms, uint64_t window_ms)

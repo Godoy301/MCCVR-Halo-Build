@@ -51362,7 +51362,10 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
     // through the hand ray at one distance, while the shot leaves from the engine eye, so it missed by the
     // head's offset from the character (in a passenger seat, by the seat trim: the re-origin above is the
     // same correction at one distance only). With no fresh range the steer above stands exactly as it was.
+    // Solved through the traced point in a seat this poll (the seated claim below decides on it with the other
+    // facts of converge::SeatedClaimFacts; nothing clears it once set).
     bool sightSeatedConverged = false;
+    bool sightSeatedPointFinite = true;
     GameTitle sightSeatedTitle = GameTitle::None;
     bool sightOnFootConverged = false;
     GameTitle sightOnFootTitle = GameTitle::None;
@@ -51534,8 +51537,8 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
                 desiredYaw = atan2f(bent[1], bent[0]);
                 desiredPitch = Clamp(asinf(Clamp(bent[2], -1.0f, 1.0f)), -1.45f, 1.45f);
                 // On foot the converged aim is in effect now. In a seat too, as on foot (2026-10-01): the
-                // mark only waits for the game's aim feedback, read below, to be a direction it can claim
-                // (converge::ClaimSeatedConverged). A seat stop or a turret's rate cap never withholds it.
+                // mark only waits for the rest of our own facts, read below (converge::SeatedClaimDecide). A
+                // seat stop or a turret's rate cap never withholds it.
                 if (sightSeated)
                 {
                     sightSeatedConverged = true;
@@ -51572,15 +51575,11 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
     // for an aiming unit that carries the player -- and a gun the assist cannot bring onto the point fires where
     // it can, as in flat Halo, with the game's tracers showing it. The assist's verdict (capped, unassisted,
     // unknown, a slaved turret) is COUNTED for the dev line only (Halo4SeatSightClaimWitness); the claim is
-    // withheld only when the point itself is not a finite position (our code).
+    // withheld only when the point itself is not a finite position (our code: SeatedClaimFacts::pointFinite).
     if (sightSeatedConverged && sightSeatedTitle == GameTitle::Halo4 && halo4SeatSight.seated)
     {
-        if (!halo4SeatPointValid)
-        {
-            sightSeatedConverged = false;
-            convergeWhy = converge::ConvergeOff::NoRange;   // the point is not a finite position (our code)
-        }
-        else
+        sightSeatedPointFinite = halo4SeatPointValid;
+        if (halo4SeatPointValid)
             Halo4SeatSightClaimWitness(halo4SeatSight, halo4SeatPoint);
     }
     // DEV ASSESSMENT ONLY (honest_reticle_assess = 2): where the shot really goes for a seat whose proofs hold,
@@ -51636,9 +51635,14 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
     // whatever the seat's limits do to it. Natural causes (a seat stop, a turret's rate cap, the game's aim
     // still turning toward the target) no longer withhold it: flat Halo shows those through its own tracers and
     // impacts, and the reticle stays on the converged point (2026-10-01; reverses O4 81856ea, C27 30f786f and
-    // the turret rule of e4b8e07 / 61ecf34). Only an aim feedback we cannot read declines it (our code).
-    const bool sightSeatedClaim = sightSeatedConverged &&
-        converge::ClaimSeatedConverged(true, converge::AimFeedbackFinite(ax, ay, az));
+    // the turret rule of e4b8e07 / 61ecf34). Only our own facts can decline it (converge::SeatedClaimFacts), and
+    // the claim is exactly SeatedClaimDecide's -- tools/check_seated_claim.py keeps it that way.
+    converge::SeatedClaimFacts seatedClaimFacts{};
+    seatedClaimFacts.solved = sightSeatedConverged;
+    seatedClaimFacts.pointFinite = sightSeatedPointFinite;
+    seatedClaimFacts.aimFeedbackFinite = converge::AimFeedbackFinite(ax, ay, az);
+    const converge::SeatedClaim seatedClaim = converge::SeatedClaimDecide(seatedClaimFacts);
+    const bool sightSeatedClaim = seatedClaim.claim;
     if (sightSeatedClaim)
         Sight_MarkConverged(sightSeatedTitle, g_worldScale.load(std::memory_order_relaxed));
 #if HALOMCCVR_DEV_DIAGNOSTICS
@@ -51651,8 +51655,8 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
             witnessTitle == GameTitle::Halo4)
         {
             const bool live = sightOnFootConverged || sightSeatedClaim;
-            if (!live && sightSeatedConverged && !sightSeatedClaim)
-                convergeWhy = converge::ConvergeOff::AimFeedbackInvalid;
+            if (!live && seatedClaim.why != converge::ConvergeOff::None)
+                convergeWhy = seatedClaim.why;
             if (!Sight_AimEnabled())
                 convergeWhy = converge::ConvergeOff::AimOff;
             Sight_NoteConvergeState(witnessTitle, live, convergeWhy);

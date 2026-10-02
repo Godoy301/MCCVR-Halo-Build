@@ -20,11 +20,24 @@ void Check(bool ok, const char* what)
 
 using namespace converge;
 
-// THE REGRESSION GUARD for the 2026-10-01 decision. The seated claim's signature is two facts of our own
-// code -- solved, and a readable aim feedback -- so no natural cause can be handed to it. Adding a parameter
-// (a latch, a stall, a turret, an outcome miss) fails this compile-time check before it can fail a player.
-static_assert(std::is_same_v<decltype(&ClaimSeatedConverged), bool (*)(bool, bool)>,
-              "the seated converged claim must take no natural in-game cause");
+// THE REGRESSION GUARD for the 2026-10-01 decision. The seated claim is decided on SeatedClaimFacts alone, whose
+// fields are all our own code's -- solved, a finite point, a readable aim feedback -- so no natural cause can be
+// handed to it. Adding a field (a latch, a stall, a turret, an outcome miss) fails these compile-time checks
+// before it can fail a player; the call site in game.cpp is pinned by tools/check_seated_claim.py.
+static_assert(std::is_same_v<decltype(&SeatedClaimDecide), SeatedClaim (*)(const SeatedClaimFacts&)>,
+              "the seated converged claim is decided on SeatedClaimFacts alone");
+static_assert(sizeof(SeatedClaimFacts) == 3 * sizeof(bool) && std::is_trivially_copyable_v<SeatedClaimFacts>,
+              "SeatedClaimFacts holds exactly our code's three facts: no natural in-game cause");
+
+// Shorthand: the claim for one combination of the facts.
+bool Claims(bool solved, bool pointFinite, bool aimFeedbackFinite)
+{
+    SeatedClaimFacts f;
+    f.solved = solved;
+    f.pointFinite = pointFinite;
+    f.aimFeedbackFinite = aimFeedbackFinite;
+    return SeatedClaimDecide(f).claim;
+}
 
 void TestClaimIgnoresNaturalCauses()
 {
@@ -41,19 +54,16 @@ void TestClaimIgnoresNaturalCauses()
         e.turretSlew = (bits & 8u) != 0;
         e.reachLimited = (bits & 16u) != 0;
         e.yawShortH4 = (bits & 32u) != 0;
-        for (int solved = 0; solved < 2; ++solved)
+        for (unsigned facts = 0; facts < 8; ++facts)
         {
-            for (int finite = 0; finite < 2; ++finite)
-            {
-                witness.note(e);
-                ++combinations;
-                const bool claim = ClaimSeatedConverged(solved != 0, finite != 0);
-                if (claim != (solved && finite))
-                    ++changed;
-            }
+            const bool solved = (facts & 1u) != 0, point = (facts & 2u) != 0, finite = (facts & 4u) != 0;
+            witness.note(e);
+            ++combinations;
+            if (Claims(solved, point, finite) != (solved && point && finite))
+                ++changed;
         }
     }
-    Check(combinations == 256 && changed == 0, "no natural cause changes the seated converged claim");
+    Check(combinations == 512 && changed == 0, "no natural cause changes the seated converged claim");
     {
         unsigned held = 0;
         for (unsigned bits = 0; bits < 64; ++bits)
@@ -70,16 +80,31 @@ void TestClaimIgnoresNaturalCauses()
         Check(held == 63, "any natural cause marks the poll held off the point (for the dev witnesses only)");
     }
     const NaturalCounts counts = witness.take();
-    Check(counts.polls == 256 && counts.latchHeld == 128 && counts.outcomeMiss == 128 && counts.stall == 128 &&
-              counts.turretSlew == 128 && counts.reachLimited == 128 && counts.yawShortH4 == 128,
+    Check(counts.polls == 512 && counts.latchHeld == 256 && counts.outcomeMiss == 256 && counts.stall == 256 &&
+              counts.turretSlew == 256 && counts.reachLimited == 256 && counts.yawShortH4 == 256,
           "the witness counts every natural cause it is shown");
     const NaturalCounts again = witness.take();
     Check(again.polls == 0 && again.latchHeld == 0 && again.yawShortH4 == 0, "taking the counts resets them");
 
-    // Our code's failures still decline.
-    Check(ClaimSeatedConverged(true, true), "solved with a readable aim: claimed, as on foot");
-    Check(!ClaimSeatedConverged(false, true), "not solved (no fresh trace, an unnamed seat): not claimed");
-    Check(!ClaimSeatedConverged(true, false), "an unreadable aim feedback: not claimed");
+    // Our code's failures still decline, each with its reason; an unsolved poll keeps the solve's own.
+    Check(Claims(true, true, true), "solved with a readable aim: claimed, as on foot");
+    Check(!Claims(false, true, true), "not solved (no fresh trace, an unnamed seat): not claimed");
+    Check(!Claims(true, false, true), "a point that is not a finite position: not claimed");
+    Check(!Claims(true, true, false), "an unreadable aim feedback: not claimed");
+    {
+        SeatedClaimFacts f;
+        f.solved = true;
+        f.aimFeedbackFinite = true;
+        Check(SeatedClaimDecide(f).claim && SeatedClaimDecide(f).why == ConvergeOff::None, "claimed: no reason");
+        f.pointFinite = false;
+        Check(SeatedClaimDecide(f).why == ConvergeOff::NoRange, "a non-finite point: NoRange");
+        f.pointFinite = true;
+        f.aimFeedbackFinite = false;
+        Check(SeatedClaimDecide(f).why == ConvergeOff::AimFeedbackInvalid, "an unreadable aim: AimFeedbackInvalid");
+        f.solved = false;
+        Check(!SeatedClaimDecide(f).claim && SeatedClaimDecide(f).why == ConvergeOff::None,
+              "unsolved: the solve's own reason stands");
+    }
 }
 
 void TestAimFeedback()
@@ -99,7 +124,7 @@ void TestAssessment()
     Check(!AssessDrawsGameAim(-1, false), "a negative key is off");
     // The assessment key is not an input of the claim: the claim is pinned to two facts above, so this
     // documents the separation rather than computing it.
-    Check(ClaimSeatedConverged(true, true) == true, "the claim stands whatever the assessment draws");
+    Check(Claims(true, true, true), "the claim stands whatever the assessment draws");
 }
 
 void TestStallWitness()
@@ -161,7 +186,7 @@ void TestSeatMuzzleRefusal()
           "a turret refuses even when not latched (a rate cap is not a latch)");
     Check(SeatMuzzleRefuses(true, true) == SeatMuzzleRefusal::Turret, "a held turret reports the turret");
     // The refusal is a separate decision from the claim: the claim's signature takes neither input.
-    Check(ClaimSeatedConverged(true, true), "the claim stands whatever the muzzle guard decides");
+    Check(Claims(true, true, true), "the claim stands whatever the muzzle guard decides");
 }
 
 void TestConvergeOffWitness()
@@ -203,7 +228,7 @@ void TestConvergeOffWitness()
         e.reachLimited = (bits & 16u) != 0;
         e.yawShortH4 = (bits & 32u) != 0;
         natural.note(e);
-        seat.note(ClaimSeatedConverged(true, AimFeedbackFinite(1.0f, 0.0f, 0.0f)), ConvergeOff::None);
+        seat.note(Claims(true, true, AimFeedbackFinite(1.0f, 0.0f, 0.0f)), ConvergeOff::None);
     }
     const ConvergeOffCounts seated = seat.take();
     Check(seated.polls == 64 && seated.live == 64 && seated.offEdges == 0,
