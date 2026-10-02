@@ -47,6 +47,9 @@ bool Halo2Observer6Dof_DirectWeaponAimArmed() noexcept;
 bool Halo2Observer6Dof_VehicleControlActive() noexcept;
 // The last seat sample said seated, however old (a pause stops the samples).
 bool Halo2Observer6Dof_LastKnownSeated() noexcept;
+// Whether there IS a last seat sample (observer armed and sampled). Without one LastKnownSeated() answers
+// "seated" (fail closed); fail-open consumers (Game_TitleKnownSeated) must tell the two apart.
+bool Halo2Observer6Dof_LastKnownSeatValid() noexcept;
 // C-H2-50: optional final visible-palette transaction. The controller-owned
 // shot path is admitted only while this exact visual boundary is installed.
 bool Halo2Observer6Dof_FinalPaletteArmed() noexcept;

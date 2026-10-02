@@ -21,6 +21,9 @@ bool Game_RoomscaleCameraAllowed(GameTitle title);
 bool Game_TitleOnFootPlayerControlled(GameTitle title);
 // The local player is in a vehicle seat, as last known (a pause, which stops the samples, keeps the answer).
 bool Game_TitleSeated(GameTitle title);
+// The same last-known seat state failing OPEN: true only on the title's own positive answer that the local
+// player is in a vehicle seat or walk-up turret (no sampler / no answer yet reads "not seated"). Any thread.
+bool Game_TitleKnownSeated(GameTitle title);
 
 // Monotonic counters written by render/palette hooks and sampled at OpenXR
 // frame boundaries. Hooks only touch relaxed atomics; formatting and file I/O

@@ -6648,6 +6648,13 @@ bool Halo2Observer6Dof_LastKnownSeated() noexcept
     return (sample & 1u) != 0;
 }
 
+// Whether LastKnownSeated() above is a real answer rather than its fail-closed default.
+bool Halo2Observer6Dof_LastKnownSeatValid() noexcept
+{
+    return Halo2Observer6Dof_Armed() &&
+        g_vehicleSeatSample.load(std::memory_order_acquire) != 0;
+}
+
 bool Halo2Observer6Dof_VehicleControlActive() noexcept
 {
     if (!Halo2Observer6Dof_DirectWeaponAimArmed() ||
@@ -7104,6 +7111,8 @@ bool Halo2Observer6Dof_Armed() noexcept { return false; }
 bool Halo2Observer6Dof_FootViewEngaged() noexcept { return false; }
 bool Halo2Observer6Dof_SeatDriveAxes(bool& yaw, bool& pitch) noexcept { yaw = pitch = false; return false; }
 bool Halo2Observer6Dof_LastKnownSeated() noexcept { return false; }
+// A definite "not seated", as this build always answered: Game_TitleSeated keeps its observer-off result.
+bool Halo2Observer6Dof_LastKnownSeatValid() noexcept { return true; }
 void Halo2Observer6Dof_SnapTurnSettled(uint32_t, float) noexcept {}
 bool Halo2Observer6Dof_DirectWeaponAimArmed() noexcept { return false; }
 bool Halo2Observer6Dof_FinalPaletteArmed() noexcept { return false; }
