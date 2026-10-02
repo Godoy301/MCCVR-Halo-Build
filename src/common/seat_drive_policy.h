@@ -75,25 +75,29 @@ inline unsigned SeatKey(int parent_handle, int seat_index, bool mounted)
 }
 
 // PER-AXIS SEAT CHECK -- each seat stint proves, axis by axis, that its record holds the aim the game
-// shows before that axis is written. Only SETTLED samples are evidence: a sample is settled on an axis when
-// both the game's aim and the record moved less than `settle` on that axis since the last judged sample. The
-// record and the published aim are read on different clocks, so while either is moving -- a rate-capped
-// barrel slewing, a vehicle turning, an impulse under fire, rough driving, flight -- the gap between them is
-// the motion, not a disagreement. An unsettled sample neither counts nor resets (the user's rule, 2026-10-01:
-// natural motion never switches the drive off). A SETTLED disagreement still resets that axis's count, so a
-// record that really holds another aim -- a Halo 3 driver+gunner's pitch ~13 deg off the gun -- never passes:
-// it agrees on no settled sample.
-//   * Yaw passes on `needed` settled agreeing samples with no settled disagreement between them.
-//   * Pitch passes the same way, never before yaw. Its BUDGET counts only settled time after yaw passed
-//     (`budget_ms`), so a hand that keeps aiming does not use it up; when it runs out the pitch stays on the
-//     servo, and the check RETRIES `retry_ms` of updates later (a stint used to stay on the servo for good).
-//     A pitch that agreed all along passes the moment yaw does.
+// shows before that axis is written. The record and the published aim are read on different clocks, so
+// while either is moving -- a vehicle turning, flight, a rate-capped barrel slewing, an impulse under fire --
+// the gap between them includes the motion since the last sample. So the tolerance GROWS WITH THAT MOTION
+// (`motion` = the larger of how far the aim and the record moved on that axis since the last judged sample):
+//   * AGREE when the gap is under tol + motion: counts, moving or still.
+//   * DISAGREE when the gap is over tol + 3 * motion: resets that axis's count.
+//   * Between the two, or when either moved more than `max_motion` in one sample (a teleport, a seat snap, a
+//     big hit), the sample is no evidence: it neither counts nor resets.
+// A record that really holds another aim -- a Halo 3 driver+gunner's pitch ~13 deg off the gun -- disagrees
+// at rest and in motion alike (13 deg is far past tol + 3 * any per-sample motion under max_motion), so it
+// never passes. Until 2026-10-01 (late) only SETTLED samples (under 0.1 deg of motion) were evidence: that kept
+// natural motion from resetting the check, but a flying Banshee is never settled, so the check barely ever
+// passed and the seat stayed on the stick servo -- natural motion switching direct drive off by another route.
+//   * Yaw passes on `needed` agreeing samples with no disagreement between them.
+//   * Pitch passes the same way, never before yaw. Its BUDGET counts evidence time after yaw passed
+//     (`budget_ms`); when it runs out the pitch stays on the servo, and the check RETRIES `retry_ms` of
+//     updates later. A pitch that agreed all along passes the moment yaw does.
 // Time counts only while the game is updating (a gap -- a pause menu -- adds at most `gap_ms`). A REPEATED
 // aim sample (the sim ticking faster than the aim is published), a stale one or a non-finite one is no
 // evidence: it neither counts nor resets.
 struct StintCheck {
     float tol = 0.03f;          // 1.7 deg
-    float settle = 0.00175f;    // 0.1 deg per sample
+    float max_motion = 0.1f;    // 5.7 deg in one sample: more is a jump, not evidence
     unsigned needed = 30;
     unsigned long long budget_ms = 3000;   // settled time after yaw passed
     unsigned long long retry_ms = 5000;    // after a failed pitch check, of updating time
@@ -129,13 +133,20 @@ struct StintCheck {
         const bool finite = fresh && std::isfinite(native_yaw) && std::isfinite(native_pitch) &&
                             std::isfinite(aim_yaw) && std::isfinite(aim_pitch);
         const bool judged = finite && new_sample && have_last;
-        const bool yaw_settled = judged && std::fabs(wrap(aim_yaw - last_aim_yaw)) < settle &&
-                                 std::fabs(wrap(native_yaw - last_native_yaw)) < settle;
-        const bool pitch_settled = judged && std::fabs(aim_pitch - last_aim_pitch) < settle &&
-                                   std::fabs(native_pitch - last_native_pitch) < settle;
-        if (!yaw_ok && yaw_settled) {
-            const bool agree = std::fabs(wrap(native_yaw - aim_yaw)) < tol;
-            yaw_count = agree ? yaw_count + 1 : 0;
+        // Evidence on one axis: +1 agree, -1 disagree, 0 none (see the comment above the struct).
+        const auto evidence = [&](float gap, float aim_moved, float record_moved) {
+            const float motion = aim_moved > record_moved ? aim_moved : record_moved;
+            if (!judged || !(motion <= max_motion)) return 0;
+            if (gap < tol + motion) return 1;
+            if (gap > tol + 3.0f * motion) return -1;
+            return 0;
+        };
+        const int yaw_ev = evidence(std::fabs(wrap(native_yaw - aim_yaw)), std::fabs(wrap(aim_yaw - last_aim_yaw)),
+                                    std::fabs(wrap(native_yaw - last_native_yaw)));
+        const int pitch_ev = evidence(std::fabs(native_pitch - aim_pitch), std::fabs(aim_pitch - last_aim_pitch),
+                                      std::fabs(native_pitch - last_native_pitch));
+        if (!yaw_ok && yaw_ev) {
+            yaw_count = yaw_ev > 0 ? yaw_count + 1 : 0;
             if (yaw_count >= needed) {
                 yaw_ok = true;
                 yaw_ok_at_ms = elapsed_ms;
@@ -147,10 +158,9 @@ struct StintCheck {
             pitch_settled_ms = 0;
         }
         if (!pitch_ok && !pitch_failed) {
-            if (pitch_settled) {
-                const bool agree = std::fabs(native_pitch - aim_pitch) < tol;
-                pitch_count = agree ? pitch_count + 1 : 0;
-                if (yaw_ok) pitch_settled_ms += dt;
+            if (pitch_ev) {
+                pitch_count = pitch_ev > 0 ? pitch_count + 1 : 0;
+                if (yaw_ok) pitch_settled_ms += dt;   // evidence time (the name predates the motion rule)
             }
             if (yaw_ok && pitch_count >= needed) pitch_ok = true;
             else if (yaw_ok && pitch_settled_ms > budget_ms) {

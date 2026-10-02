@@ -122,33 +122,58 @@ void TestStintCheck()
             c.step(true, 0.0f, 0.3f, 0.0f, 0.3f, t);
         Check(c.pitch_ok, "and the retry passes on 30 settled agreeing samples");
     }
-    {   // a hand that keeps aiming for 4 s, then settles: the budget counts only settled time, so pitch passes
+    {   // a hand that keeps aiming: the record a sample behind the moving aim AGREES (the gap is the motion), so
+        // pitch passes while the hand is still moving -- it no longer has to wait for the hand to settle
         StintCheck d;
         unsigned long long t = 1000;
         for (int i = 0; i < 31; ++i, t += 16)
             d.step(true, 0.0f, 0.4f, 0.0f, 0.0f, t);   // yaw proven; the record's pitch is somewhere else
         Check(d.yaw_ok && !d.pitch_ok, "(setup) yaw proven, pitch still checking");
-        const unsigned long long spent = d.pitch_settled_ms;
         float p = 0.0f;
-        for (int i = 0; i < 250; ++i, t += 16)          // the servo chasing a moving hand: never settled
+        int passedAt = -1;
+        for (int i = 0; i < 250 && passedAt < 0; ++i, t += 16)   // the servo chasing a moving hand
         {
             p += 0.004f * ((i / 50) % 2 ? -1.0f : 1.0f);
-            d.step(true, 0.0f, p - 0.02f, 0.0f, p, t);
+            d.step(true, 0.0f, p - 0.004f, 0.0f, p, t);         // the record one sample behind
+            if (d.pitch_ok) passedAt = i;
         }
-        Check(!d.pitch_failed && d.pitch_settled_ms == spent, "aiming continuously spends none of the budget");
-        for (int i = 0; i < 32; ++i, t += 16)
-            d.step(true, 0.0f, p, 0.0f, p, t);
-        Check(d.pitch_ok && !d.pitch_failed, "settled on the record, pitch passes");
+        Check(passedAt >= 0 && passedAt <= 35 && !d.pitch_failed, "a hand that keeps aiming proves pitch in motion");
     }
-    {   // a slow yaw (a gun slewing onto the hand) does not use up an agreeing pitch's budget
+    {   // a yaw dithering a sample behind (a gun slewing onto the hand) agrees: yaw and pitch pass together
         StintCheck c;
         unsigned long long t = 1000;
-        for (int i = 0; i < 250; ++i, t += 16)           // 4 s: the record's yaw never settles
+        for (int i = 0; i < 40; ++i, t += 16)
             c.step(true, (i % 2) ? 0.05f : 0.0f, 0.1f, 0.0f, 0.1f, t);
-        Check(!c.yaw_ok && !c.pitch_ok && !c.pitch_failed, "no pitch before yaw, and no budget spent waiting");
-        for (int i = 0; i < 31; ++i, t += 16)
-            c.step(true, 0.0f, 0.1f, 0.0f, 0.1f, t);
-        Check(c.yaw_ok && c.pitch_ok && !c.pitch_failed, "pitch passes the moment the slow yaw does");
+        Check(c.yaw_ok && c.pitch_ok && !c.pitch_failed, "a record moving with the gun is no disagreement");
+    }
+    {   // THE BANSHEE: a flying vehicle is never still. Aim and record turn and climb continuously, the record a
+        // sample behind. The check must pass in about half a second, as at rest (the settled-only rule left this
+        // seat on the stick servo for 14 s to forever).
+        StintCheck c;
+        unsigned long long t = 1000;
+        float y = 6.0f, p = 0.0f;
+        int passedAt = -1;
+        for (int i = 0; i < 300 && passedAt < 0; ++i, t += 16)
+        {
+            const float dy = 0.03f * std::sin(i * 0.05f), dp = 0.02f * std::cos(i * 0.07f);
+            const float ry = y, rp = p;            // the record holds last sample's aim
+            y += dy; p += dp;
+            c.step(true, ry, rp, std::remainder(y, 6.28318531f), p, t);   // the aim reported wrapped
+            if (c.yaw_ok && c.pitch_ok) passedAt = i;
+        }
+        Check(passedAt >= 0 && passedAt <= 32, "a Banshee in constant flight proves yaw and pitch in ~0.5 s");
+    }
+    {   // ...but a REAL offset still fails in flight: the record 13 deg off in pitch while flying never passes
+        StintCheck c;
+        unsigned long long t = 1000;
+        float y = 1.0f, p = 0.0f;
+        for (int i = 0; i < 2000; ++i, t += 16)
+        {
+            const float ry = y, rp = p;
+            y += 0.03f * std::sin(i * 0.05f); p += 0.02f * std::cos(i * 0.07f);
+            c.step(true, ry, rp + 0.23f, y, p, t);
+        }
+        Check(c.yaw_ok && !c.pitch_ok && c.pitch_fails >= 2, "a 13 deg pitch offset never passes, in flight either");
     }
     {   // a SETTLED disagreement restarts the count; a one-sample jump of the record is motion, not evidence
         StintCheck c;
@@ -186,19 +211,24 @@ void TestStintCheck()
         Check(resets == 0, "a recoil kick of the record never resets the pitch count");
         Check(d.yaw_ok && d.pitch_ok && !d.pitch_failed, "pitch proves through recoil on its settled samples");
     }
-    {   // a turning vehicle: the aim and the record move together, a sample apart -- no evidence, no reset
+    {   // a turning vehicle: the aim and the record move together, a sample apart -- agreement, so it passes mid-turn
         StintCheck c;
         unsigned long long t = 1000;
         for (int i = 0; i < 20; ++i, t += 16) c.step(true, 1.0f, 0.0f, 1.0f, 0.0f, t);
         float yaw = 1.0f;
-        for (int i = 0; i < 60; ++i, t += 16)
+        for (int i = 0; i < 12; ++i, t += 16)
         {
             yaw += 0.04f;                                     // 2.3 deg per sample; the record leads by one
             c.step(true, yaw + 0.04f, 0.0f, yaw, 0.0f, t);
         }
-        Check(c.yaw_count == 19 && !c.yaw_ok, "a turn neither counts nor resets the yaw check");
-        for (int i = 0; i < 12; ++i, t += 16) c.step(true, yaw, 0.0f, yaw, 0.0f, t);
-        Check(c.yaw_ok, "it passes once the turn ends");
+        Check(c.yaw_ok, "a turn keeps counting: the check passes mid-turn");
+    }
+    {   // a jump bigger than max_motion in one sample (a seat snap, a big hit) is no evidence either way
+        StintCheck c;
+        unsigned long long t = 1000;
+        for (int i = 0; i < 21; ++i, t += 16) c.step(true, 0.0f, 0.0f, 0.0f, 0.0f, t);
+        c.step(true, 0.5f, 0.0f, 0.0f, 0.0f, t); t += 16;
+        Check(c.yaw_count == 20, "a 29 deg jump of the record neither counts nor resets");
     }
     {   // a repeated aim sample neither counts nor resets
         StintCheck c;
@@ -211,22 +241,24 @@ void TestStintCheck()
         for (int i = 0; i < 10; ++i, t += 16) c.step(true, 0.0f, 0.0f, 0.0f, 0.0f, t);
         Check(c.yaw_ok, "new samples finish the count");
     }
-    {   // a slewing barrel: unsettled updates neither count nor reset
+    {   // a slewing barrel whose record trails by several samples (rate-capped): never reset by the lag
         StintCheck d;
         unsigned long long t = 1000;
         float p = 0.0f;
-        for (int i = 0; i < 30; ++i, t += 16)
+        for (int i = 0; i < 25; ++i, t += 16)
             d.step(true, 0.0f, p, 0.0f, p, t);
-        Check(!d.pitch_ok && d.pitch_count == 29, "pitch is still counting (29 settled)");
+        Check(!d.pitch_ok && d.pitch_count == 24, "(setup) pitch is still counting");
+        unsigned resets = 0;
         for (int i = 0; i < 20; ++i, t += 16)
         {
-            p += 0.01f;                       // the barrel slews 0.6 deg per update; record lags 1.7+ deg
+            p += 0.01f;                       // the barrel slews 0.6 deg per update; record lags 2.9 deg
+            const unsigned before = d.pitch_count;
             d.step(true, 0.0f, p - 0.05f, 0.0f, p, t);
+            if (before && !d.pitch_count && !d.pitch_ok) ++resets;
         }
-        Check(!d.pitch_ok && d.pitch_count == 29, "a slewing barrel is not a disagreement");
-        d.step(true, 0.0f, p, 0.0f, p, t); t += 16;   // the record catches up: it moved, so no evidence yet
-        d.step(true, 0.0f, p, 0.0f, p, t);            // settled on the record
-        Check(d.pitch_ok, "one more settled agreement passes pitch");
+        Check(resets == 0, "a slewing barrel's lag is not a disagreement");
+        for (int i = 0; i < 8; ++i, t += 16) d.step(true, 0.0f, p, 0.0f, p, t);
+        Check(d.pitch_ok, "pitch passes once the record holds the aim");
     }
     {   // a pause after yaw passed: the gap adds at most 100 ms to pitch's budget
         StintCheck c;
