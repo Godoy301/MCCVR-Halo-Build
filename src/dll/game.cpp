@@ -51939,8 +51939,12 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
             const float stallYawErr = seatWritten.yaw ? 0.0f : errYaw;
             natural.stall = s_stallWitness.step(seated, sqrtf(stallYawErr * stallYawErr + errPitch * errPitch), nowMs);
             natural.turretSlew = natural.turretSlew || turretSeat;
-            if (seated)
-                ConvergeNoteNatural(TitleAdapter_GetActiveTitle(), natural);
+            // Not Reach: its provider calls this servo every input poll and then discards it while WriteState drives
+            // desired_angles, so this stall is not Reach's actuator; Reach's natural line is fed only by its sim
+            // hook (ReachPcApplyForUser), one note per seated stick update.
+            const GameTitle naturalTitle = TitleAdapter_GetActiveTitle();
+            if (seated && naturalTitle != GameTitle::HaloReach)
+                ConvergeNoteNatural(naturalTitle, natural);
         }
         // DEV ASSESSMENT (honest_reticle_assess): the game's real aim instead of the aim point, so the
         // integrator's lag behind the hand -- or a seat's stop, or a turret's slew -- is visible by eye.
