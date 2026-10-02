@@ -67,4 +67,12 @@ inline RoutedActions RouteActions(GameTitle title,bool direct,const MappedAction
     const DirectRoute route=SplitDirectRoute(title,direct,mapped.actions,native);
     return {direct?route.transports:mapped.transports,mapped.actions&route.bridgeMask};
 }
+
+// Halo 2's index-5 native action is touch_device, not a generic use/pick-up.
+inline constexpr const char* ActionName(GameTitle title,Action action) noexcept
+{
+    if(action>=Count) return "";
+    if(title==GameTitle::Halo2&&action==Interact) return "Use device / context action";
+    return kNames[action];
+}
 }

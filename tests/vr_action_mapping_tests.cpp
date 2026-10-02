@@ -211,6 +211,12 @@ void CheckDirectContextPassthrough()
                 "other titles transport fallback unchanged");
         }
     }
+    Check(std::strcmp(ActionName(GameTitle::Halo2,Interact),kNames[Interact])!=0,
+        "Halo 2 index 5 is labelled as touch_device, not pick up");
+    for(const auto title:{GameTitle::Halo3,GameTitle::Halo3ODST,GameTitle::HaloReach,GameTitle::Halo4,GameTitle::HaloCE,GameTitle::Halo2})
+        for(unsigned a=0;a<Count;++a)
+            if(!(title==GameTitle::Halo2&&a==Interact))
+                Check(std::strcmp(ActionName(title,static_cast<Action>(a)),kNames[a])==0,"other labels unchanged");
 }
 int main()
 {
