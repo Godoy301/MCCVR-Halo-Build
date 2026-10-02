@@ -1042,6 +1042,10 @@ extern "C" void LegacyPcApplyForUser(int slot, int user, uintptr_t ret, const ui
             const uint64_t now = GetTickCount64();
             const bool fresh = coherent && valid && setMs && now >= setMs && now - setMs <= 200;
 #if HALOMCCVR_DEV_DIAGNOSTICS
+            // The seat frame check (seat_aim_world_frame.inl): a seated record against the game's world aim. With
+            // the vehicle-tilt rebase skipped it stays small at any tilt; with the rebase in place it grows with it.
+            if (seatedSet && fresh && slot < 2)
+                SeatAimFrameNoteSeated(slot, nativeYaw, nativePitch, aimYaw, aimPitch);
             ds.setYaw = yaw; ds.setPitch = pitch; ds.aimYaw = aimYaw; ds.aimPitch = aimPitch;
             ds.seatKey = seatKey;
             ds.pubAgeMs = static_cast<uint16_t>(setMs && now >= setMs ? (now - setMs > 0xFFFE ? 0xFFFE : now - setMs)
@@ -1372,6 +1376,8 @@ void LegacyDriveReport()
                     st.stint.pitch_ok ? "proven" : st.stint.pitch_failed ? "servo until its retry" : "checking");
         }
 #if HALOMCCVR_DEV_DIAGNOSTICS
+        if (slot < 2)
+            SeatAimFrameReport(slot, name);   // DRIVE <title> seats (dev): frame check ...
         // THE CENSUS: calls per sim tick and per caller. "stick per tick" is frames per tick (2.00 at 120 fps
         // over a 60 Hz sim); ~1.00 at 120 fps would mean the pass runs per tick after all.
         const aim_caller::CensusTotals t = st.census.take();

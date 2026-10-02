@@ -764,6 +764,11 @@ struct Config
     // The hooks write nothing to the game; at 0 they are not installed at all (no detour: a true control run).
     // Read at startup. Leave at 0 for play.
     int type13_log = 0;
+    // DEV BUILD ONLY (parsed and saved only in dev builds; a player build always uses 1), Halo 3 / ODST seats:
+    // 1 = skip the game's vehicle-tilt rebase of a player's aim (halo3+0x355EFA / halo3odst+0x39A6C4) while the
+    // first-person seat patch is enabled, so seats aim in world angles as in stock (src/dll/seat_aim_world_frame.inl).
+    // 0 = leave the game's rebase in place: the A/B arm for the dev "frame check" line. Followed live. (default 1)
+    int seat_aim_world_frame = 1;
     // DEV BUILD ONLY, headless tests: 1 = the synthetic gamepad. Scripts dropped as halomccvr_pad.txt in the
     // mod folder press its buttons (tools/Send-MccPad.ps1; the language is src/common/dev_pad_script.h).
     // Read once at startup. Leave at 0 to play.
