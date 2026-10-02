@@ -151,6 +151,10 @@ void Game_ToggleVrAim();        // Insert: right controller steers the weapon ai
 // the right-stick deflection (-1..1) that turns the game's aim toward the
 // right controller ray; false = leave the player's real stick alone.
 bool Game_ComputeAimStick(float& outRx, float& outRy);
+// The free-camera frame (src/common/aim_no_unit_logic.h): the local player has had no unit long enough to be
+// dead / waiting to respawn / spectating, as the last Game_ComputeAimStick decided it. The hand still steers the
+// camera through the stick servo; nothing writes aim state. False when unknown. Any thread.
+bool Game_AimFreeCamera();
 // Shots from the muzzle, seated (defensive; converge::SeatMuzzleRefuses): whether the local player's seat
 // points the gun away from the converged point by a natural cause right now -- the direct drive held at the
 // seat's stop (Halo 3, ODST, Halo 4), or a rate-capped turret (Halo 3, ODST, where the muzzle owner check
