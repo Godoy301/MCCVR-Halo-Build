@@ -33,6 +33,16 @@ void TestSites()
           "Halo 3: the test and its target sit inside the rebase, target after the test");
     Check(kOdstSite.anchorRva > kOdstSite.rebaseRva && kOdstSite.skipRva > kOdstSite.jccRva,
           "ODST: the test and its target sit inside the rebase, target after the test");
+    Check(kReachSite.jccRva == kReachSite.anchorRva + kReachSite.anchorToJcc && kReachSite.anchorToJcc == 24,
+          "Reach: the jne is 24 bytes into its anchor");
+    const size_t reachLen = std::strlen(kReachSite.anchorPattern);
+    Check(reachLen == (kReachSite.anchorToJcc + 2) * 3 - 1 &&
+              !std::strcmp(kReachSite.anchorPattern + reachLen - 5, "?? ??"),
+          "Reach: the anchor is anchorToJcc bytes + two wildcards over the jne's opcode");
+    Check(kReachSite.anchorRva > kReachSite.rebaseRva && kReachSite.skipRva > kReachSite.jccRva,
+          "Reach: the test and its target sit inside the rebase, target after the test");
+    Check(kHalo3Site.anchorPattern == kAnchorPattern && kOdstSite.anchorToJcc == kAnchorToJcc,
+          "Halo 3 / ODST keep the shared anchor");
 }
 
 void TestPatchBytes()
@@ -55,6 +65,14 @@ void TestPatchBytes()
     Check(!std::memcmp(out, odstWant, 6), "ODST: E9 rel32+1 90");
     Check(BuildStockJcc(out, kOdstSite.jccRva, kOdstSite.skipRva, back) && !std::memcmp(back, odst, 6),
           "ODST: the inverse gives back the retail bytes");
+
+    // Reach: `0F 85 DD 00 00 00` at 0x48AE8F -> 0x48AF72.
+    const uint8_t reach[6]{0x0F, 0x85, 0xDD, 0x00, 0x00, 0x00};
+    Check(IsStockJcc(reach, kReachSite.jccRva, kReachSite.skipRva), "Reach retail jne is recognised");
+    Check(BuildSkipPatch(reach, kReachSite.jccRva, kReachSite.skipRva, out) && !std::memcmp(out, h3Want, 6),
+          "Reach: E9 DE 00 00 00 90");
+    Check(BuildStockJcc(out, kReachSite.jccRva, kReachSite.skipRva, back) && !std::memcmp(back, reach, 6),
+          "Reach: the inverse gives back the retail bytes");
 
     // rel32 carry: 0xFF -> 0x100 crosses a byte.
     const uint8_t carry[6]{0x0F, 0x85, 0xFF, 0x00, 0x00, 0x00};
@@ -103,6 +121,12 @@ void TestGate()
     Check(!Wanted(true, true, true, false, false),
           "vehicle sampler not bound (no C20, no seat check): the game's rebase, as stock");
     Check(!Wanted(true, true, true, true, true), "a seat natively lacking bit 4: the game's rebase, as stock");
+    // Reach: R-V27's own keys (vehicle_first_person and its camera binding), not vehicle_hide_body.
+    Check(ReachWanted(true, true, true, false), "Reach: R-V27 on, binding installed: skipped");
+    Check(!ReachWanted(false, true, true, false), "Reach: vehicle_first_person off: the game's rebase");
+    Check(!ReachWanted(true, false, true, false), "Reach: dev A/B 0: the game's rebase");
+    Check(!ReachWanted(true, true, false, false), "Reach: the camera binding not installed: the game's rebase");
+    Check(!ReachWanted(true, true, true, true), "Reach: a seat natively lacking bit 4: the game's rebase (case b)");
 }
 
 void TestAngles()

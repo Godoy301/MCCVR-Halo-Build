@@ -19,7 +19,7 @@
 // The fix makes the bit-4 test's `jne skip` unconditional (`jmp skip; nop`), so the rebase never runs: player
 // seats aim in world angles as in stock while the flag patch keeps the first-person view. Stock seats all have
 // bit 4, so the patch is behaviour-neutral for them, and with it a modded player computes the same aim as an
-// unmodded co-op peer (see Wanted for why that holds here and not in Reach / Halo 2 / CE).
+// unmodded co-op peer (see Wanted for why that holds here, and in Reach only for R-V27's seats; not in Halo 2 / CE).
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -36,23 +36,42 @@ namespace seat_aim_frame
 // in the module with our jump applied.
 inline constexpr const char* kAnchorPattern = "48 69 D0 D4 00 00 00 8B 04 0A C1 E8 04 A8 01 ?? ??";
 inline constexpr uint32_t kAnchorToJcc = 15;
+// Reach's bit-4 test (0x48AE77): `imul rdx,rax,0x4B; add rdx,r8; shr r8,0x1C; mov rax,[rcx+r8*8];
+// mov edx,[rax+rdx*4]; shr edx,4; test dl,1` + the jne's two opcode bytes, wildcarded for the same reason. Unique
+// in the stock module and with our jump applied (tools/verify_seat_aim_world_frame.py).
+inline constexpr const char* kReachAnchorPattern =
+    "48 6B D0 4B 49 03 D0 49 C1 E8 1C 4A 8B 04 C1 8B 14 90 C1 EA 04 F6 C2 01 ?? ??";
+inline constexpr uint32_t kReachAnchorToJcc = 24;
 inline constexpr size_t kPatchBytes = 6;
 
 struct Site
 {
     const char* name;
-    uint32_t rebaseRva;   // the rebase function (.pdata begin)
-    uint32_t callerRva;   // its only call (E8 rel32)
-    uint32_t anchorRva;   // kAnchorPattern, unique, here
-    uint32_t jccRva;      // the jne (anchorRva + kAnchorToJcc)
-    uint32_t skipRva;     // its target: the function's no-rotation exit
+    uint32_t rebaseRva;          // the rebase function (.pdata begin)
+    uint32_t callerRva;          // its only call (E8 rel32)
+    uint32_t anchorRva;          // anchorPattern, unique, here
+    uint32_t jccRva;             // the jne (anchorRva + anchorToJcc)
+    uint32_t skipRva;            // its target: the function's no-rotation exit
+    const char* anchorPattern;   // the bit-4 test + the jne's two opcode bytes (wildcards)
+    uint32_t anchorToJcc;
 };
 
 // ADDR-HYGIENE: guarded. Measured 2026-10-01 on the retail Steam modules (the Store modules are byte-identical,
 // MCC-EDITIONS-EVIDENCE). The install refuses unless the anchor is unique and at anchorRva, and the six bytes at
 // the jne are exactly 0F 85 with its target at skipRva (or our own E9 to skipRva + 90, which it adopts).
-inline constexpr Site kHalo3Site{"Halo 3", 0x355E20, 0xE3C4B, 0x355EEB, 0x355EFA, 0x355FDD};
-inline constexpr Site kOdstSite{"ODST", 0x39A600, 0xFDF48, 0x39A6B5, 0x39A6C4, 0x39A7C8};
+inline constexpr Site kHalo3Site{"Halo 3", 0x355E20, 0xE3C4B, 0x355EEB, 0x355EFA, 0x355FDD, kAnchorPattern,
+                                 kAnchorToJcc};
+inline constexpr Site kOdstSite{"ODST", 0x39A600, 0xFDF48, 0x39A6B5, 0x39A6C4, 0x39A7C8, kAnchorPattern, kAnchorToJcc};
+// REACH (2026-10-01): the same mechanism (docs/ALL-TITLES-AIM-2026-09-29.md, the per-title table). The rebase
+// 0x48ADB8's only call is 0x45E34 in the unit-aim build 0x45C2C, which indexes the "players" data array (TLS block
+// +0x18, element 0x490, data_array_new at 0x43469) with its first argument and hands the rebase the unit at +0x28
+// of that record -- players only, as in Halo 3. The skip label 0x48AF72 is the function's common exit (its
+// "no parent" / "no seat" early-outs take it too); it returns r9b, which the caller ignores. Our R-V27 seat patch
+// clears bit 4 only on `allows weapons` passenger seats; stock Reach keeps bit 4 there, so skipping restores what
+// an unmodded peer computes -- case (a). A seat whose OWN flags lack bit 4 stands the skip down (Wanted below):
+// there every peer rebases, and the seat drive writes R^-1 of the aim instead -- case (b).
+inline constexpr Site kReachSite{"Reach", 0x48ADB8, 0x45E34, 0x48AE77, 0x48AE8F, 0x48AF72, kReachAnchorPattern,
+                                 kReachAnchorToJcc};
 
 inline int32_t ReadI32(const uint8_t* p)
 {
@@ -123,8 +142,9 @@ inline bool BuildStockJcc(const uint8_t patched[kPatchBytes], uint32_t jcc, uint
 // Whether the rebase is skipped. WHY THE SKIP IS STOCK BEHAVIOUR, and the only reason it is allowed: every stock
 // Halo 3 / ODST player seat carries bit 4, so an unmodded game -- and every unmodded co-op peer -- never runs the
 // rebase for a player; it is our own C20 patch that clears the bit. Skipping restores exactly what an unmodded
-// peer computes. (Reach, Halo 2 and CE have a similar rebase, but there some stock seats natively LACK the flag;
-// skipping it there would make this machine disagree with its peers, which is why only these two titles do this.)
+// peer computes. (Halo 2 and CE have a similar rebase, but there some stock seats natively LACK the flag and no
+// patch of ours clears it, so there is nothing to skip: their seat drives write the inverse instead. Reach skips
+// too since 2026-10-01, but only where R-V27 cleared the bit -- ReachWanted -- for the same reason as here.)
 // So: skipped whenever the title's first-person seat patch is enabled (vehicle_first_person and
 // vehicle_hide_body, as the C20 patch reads them), unless the dev A/B key says to leave the game's rebase, and
 // NOT while the occupied seat natively lacks bit 4 (a custom or modded seat: there stock rebases, so we must too).
@@ -148,6 +168,17 @@ inline bool Wanted(bool vehicleFirstPerson, bool vehicleHideBody, bool worldFram
                    bool seatNativelyLacksBit4)
 {
     return vehicleFirstPerson && vehicleHideBody && worldFrameKey && vehicleSamplerBound && !seatNativelyLacksBit4;
+}
+
+// REACH: the same rule, keyed on what R-V27 itself reads. R-V27 (ReachEnsureNativeFirstPersonSeat) clears bit 4
+// while `vehicle_first_person` is on and the Reach vehicle camera binding is Installed -- it does not read
+// vehicle_hide_body -- so the skip follows exactly those, and stands down while the occupied seat's ORIGINAL flags
+// lack bit 4 (published by the Reach sampler from R-V27's own lease). The bound-is-not-running gap is the same as
+// above (the sampler runs from the camera hooks).
+inline bool ReachWanted(bool vehicleFirstPerson, bool worldFrameKey, bool cameraBindingInstalled,
+                        bool seatNativelyLacksBit4)
+{
+    return vehicleFirstPerson && worldFrameKey && cameraBindingInstalled && !seatNativelyLacksBit4;
 }
 
 // Halo's forward for control angles: x = cos(pitch)cos(yaw), y = cos(pitch)sin(yaw), z = sin(pitch).

@@ -200,8 +200,9 @@ bool LegacyDriveInstall(GameTitle title, uintptr_t base, size_t size);
 bool LegacyDriveRemove(GameTitle title);
 bool LegacyDriveLive(GameTitle title);
 void LegacyDriveReport();
-// Halo 3 / ODST seats aim in world angles (seat_aim_world_frame.inl): the vehicle-tilt rebase is skipped while
-// the first-person seat patch is enabled. Install/remove with the title; the WaitThread poll follows the setting.
+// Halo 3 / ODST / Reach seats aim in world angles (seat_aim_world_frame.inl): the vehicle-tilt rebase is skipped
+// while the first-person seat patch (C20; Reach: R-V27) is enabled. Install/remove with the title; the WaitThread
+// poll follows the setting.
 bool SeatAimFrameInstall(GameTitle title, uintptr_t base, size_t size, uint32_t generation);
 bool SeatAimFrameRemove(GameTitle title);
 void SeatAimFrameSync();
@@ -19564,6 +19565,12 @@ namespace
     // The occupied seat's own flags word, published by the engine
     // thread that read it so the worker can report it honestly.
     std::atomic<uint32_t> g_reachVehicleSeatFlagsPublished{0};
+    // The occupied seat's ORIGINAL flags lack bit 4 (third-person camera): stock Reach rebases this seat's aim by
+    // the vehicle's up frame, so the rebase skip (seat_aim_world_frame.inl, slot 2) stands down while it is
+    // occupied and the seat drive writes the inverse (case b). "Original" is R-V27's lease's saved word when the
+    // lease owns this seat's mutation, the live word otherwise. 0 = not seen; otherwise the Halo 3 key layout
+    // (0x80000000 | definition index << 8 | seat). Camera/engine thread writes, WaitThread reads.
+    std::atomic<uint32_t> g_reachSeatNativeNoThirdPerson{0};
     // How many times Reach's own first-person interpolation/palette
     // transaction ran while a vehicle seat was occupied. This is the
     // one number that separates "the engine never built the occupant's
@@ -29993,6 +30000,31 @@ namespace
             ReachEnsureNativeFirstPersonSeat(frame);
         else
             ReachRestoreNativeSeatLease();
+        // Seat aim world frame (seat_aim_world_frame.inl): does the occupied seat lack bit 4 in its OWN data? When
+        // R-V27's lease owns this very seat, its saved original word answers (the live word is ours); otherwise the
+        // live word is the seat's own.
+        {
+            uint32_t nativeLacks = 0;
+            if (frame.active)
+            {
+                const ReachSeatLeaseState lease = ReachNativeSeatLeaseState();
+                const ReachSeatLeaseKey key{
+                    g_reachCamera.generation.load(std::memory_order_acquire),
+                    frame.unitHandle, frame.directParent, frame.definitionDatum,
+                    frame.seatIndex};
+                const uint32_t original =
+                    ReachSeatLeaseOwnsMutation(lease) &&
+                            ReachSeatLeaseKeyEqual(g_reachNativeSeatLease.key, key)
+                        ? g_reachNativeSeatLease.originalFlags
+                        : frame.seatFlags;
+                if (!(original & kReachSeatThirdPersonCameraBit))
+                    nativeLacks = 0x80000000u |
+                        (frame.definitionDatum & 0xFFFFu) << 8 |
+                        (static_cast<uint32_t>(frame.seatIndex) & 0xFFu);
+            }
+            g_reachSeatNativeNoThirdPerson.store(
+                nativeLacks, std::memory_order_relaxed);
+        }
         ReachUpdateVehicleTransition(Halo3VehicleState::Vehicle, nowMs);
         return frame.active;
     }
@@ -31803,6 +31835,13 @@ namespace
         if (!RestoreReachThirdPersonEffectSuppression())
             LOG("Reach muzzle: third-person effect branch could not be restored");
         ReachMuzzleRetargetRestore();
+
+        // R-V27's lease is restored and the hooks are quiescent, so every seat's
+        // flags are stock and the rebase skip is inert: put the game's own jne
+        // back (only over our bytes; retried like the restores below).
+        g_reachSeatNativeNoThirdPerson.store(0, std::memory_order_relaxed);
+        if (!SeatAimFrameRemove(GameTitle::HaloReach))
+            return false;
 
         if (!RestoreReachSkyParallaxNeutralization())
         {
@@ -33767,6 +33806,7 @@ namespace
         g_reachSeatAnchorLatch = {};
         g_reachVehicleAnchorFallbacks.store(0, std::memory_order_relaxed);
         g_reachNativeSeatLease = {};
+        g_reachSeatNativeNoThirdPerson.store(0, std::memory_order_relaxed);
         g_reachSeatYaw = {};
         g_reachYawSeat = {};
         if (reachVehicleCameraResolved)
@@ -34009,6 +34049,10 @@ namespace
                     "the camera core remains active");
             }
         }
+
+        // Reach seats aim in world angles on R-V27's seats (seat_aim_world_frame.inl, slot 2): resolve and verify
+        // the vehicle-tilt rebase's bit-4 jne; the WaitThread poll applies the skip while R-V27 is enabled.
+        (void)SeatAimFrameInstall(GameTitle::HaloReach, base, size, generation);
 
         // Reach DIRECT DRIVE (reach_direct_drive==3, opt-in): hook the per-user control update
         // haloreach+0x6375C -- the ACCUMULATOR of player_control.desired_angles (value-scan 2026-09-25,
@@ -51142,6 +51186,13 @@ bool Game_ReachDdTestOwnsAim()
     return g_reachDdpOwnsAim.load(std::memory_order_acquire);
 }
 #endif
+// seat_aim_world_frame.inl's Reach gate (slot 2): the binding R-V27 itself gates on (ReachEnsureNativeFirstPersonSeat),
+// which is also what runs the sampler that publishes a natively bit-4-less seat.
+static bool ReachSeatAimFrameBindingInstalled()
+{
+    return g_reachCamera.vehicleCameraBindingState.load(std::memory_order_acquire) ==
+        static_cast<uint8_t>(ReachVehicleCameraBindingState::Installed);
+}
 #include "seat_aim_world_frame.inl"
 #include "legacy_direct_drive.inl"
 #if HALOMCCVR_DEV_DIAGNOSTICS
