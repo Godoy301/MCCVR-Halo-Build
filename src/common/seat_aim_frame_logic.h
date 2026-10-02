@@ -4,14 +4,17 @@
 // tests/seat_aim_frame_tests.cpp, and re-proven offline against the retail modules by
 // tools/verify_seat_aim_world_frame.py (which reads the site table below straight out of this file).
 //
-// Halo 3 builds a player unit's aim vector from the control angles (0xE3A48, called from 0xE8DD8) and then
-// hands it to ONE function, 0x355E20 (its only caller is the E8 at 0xE3C4B), which re-expresses the vector
-// in the parent vehicle's UP frame -- unless the occupied seat's tag flags carry bit 4, the `third person
-// camera` flag. Every stock player seat carries bit 4, so stock never rotates a player's aim: the control
+// Halo 3 builds a player unit's aim vector from the control angles (0xE3A48, four call sites, 0xE8DD8's among
+// them) and then hands it to ONE function, 0x355E20 (its only caller is the E8 at 0xE3C4B), which re-expresses
+// the vector in the parent vehicle's UP frame -- unless the occupied seat's tag flags carry bit 4, the `third
+// person camera` flag. Every stock player seat carries bit 4, so stock never rotates a player's aim: the control
 // angles ARE world angles. Our C20 first-person seat patch clears bit 4 on the occupied seat (that is what
 // gives the cockpit view), which switches the rebase ON, and the seat direct drive writes WORLD yaw/pitch:
 // the hull's tilt is then added to the aim (a Banshee runs away in pitch, a Chopper's aim hops with its nose).
 // ODST has the same mechanism at 0x39A600 (caller 0xFDF48 in 0xFDD30).
+// PLAYERS ONLY, proven offline by the tool: 0xE3A48 / 0xFDD30 index the module's "players" data array with their
+// first argument and pass the rebase the unit handle at +0x28 of that player record, so whichever call site runs,
+// only a unit a player record holds can reach the rebase; an AI unit cannot.
 //
 // The fix makes the bit-4 test's `jne skip` unconditional (`jmp skip; nop`), so the rebase never runs: player
 // seats aim in world angles as in stock while the flag patch keeps the first-person view. Stock seats all have

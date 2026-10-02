@@ -22,7 +22,8 @@
 // C20 clears bit 4 on the camera thread at once, so the rebase would act on the first frames of every entry, and
 // each toggle freezes every game thread for a code write -- a possible dropped VR frame per vehicle entry. While
 // C20 is not Active the skip is inert (a stock seat has bit 4 and skips the rebase anyway; only a player's aim
-// reaches 0x355E20 / 0x39A600, its only callers being the unit-aim build), except on a natively bit-4-less seat,
+// reaches 0x355E20 / 0x39A600: their only caller, the unit-aim build, passes the unit held by a players-array
+// record, as tools/verify_seat_aim_world_frame.py proves), except on a natively bit-4-less seat,
 // which is exactly the case handled above. It also needs the title's vehicle sampler BOUND
 // (SeatAimFrameSamplerBound), since the sampler is what runs C20 and what reports such a seat: unbound, the skip
 // stands down and the title is exactly stock. Bound is not running -- seat_aim_frame::Wanted says why the
