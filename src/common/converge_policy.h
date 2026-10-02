@@ -298,6 +298,7 @@ inline bool ReachConvergeOffReason(const ReachConvergePoll& p, ConvergeOff& why)
     if (p.aimWhy & 0x80u) { why = ConvergeOff::SeatViewNotOwned; return true; }
     if (p.aimWhy & 0x100u) { why = ConvergeOff::SeatSteering; return true; }
     if (p.aimWhy & 0x200u) { why = ConvergeOff::AimOff; return true; }   // reach_vehicle_aim / seat_direct_drive
+    if (p.aimWhy & 0x400u) { why = ConvergeOff::SeatProofPending; return true; }   // the seat's frame: unread
     if (!p.driveReady) { why = ConvergeOff::DriveNotArmed; return true; }
     if (!p.flagsResolved) { why = ConvergeOff::NoTraceFlags; return true; }
     if (p.traceFaulted) { why = ConvergeOff::TraceFaulted; return true; }

@@ -280,4 +280,22 @@ inline Case Classify(bool readable, bool gateSeated, bool flagsKnown, bool flags
         return Case::SkipWorld;
     return frameUsable ? Case::Rebased : Case::Unknown;
 }
+
+// THE HAND-BACK (Reach, Game_ReachDirectDriveAimWhy's 0x400). A seated update whose frame reads Unknown writes
+// nothing -- and Reach's aim provider holds the aim stick NEUTRAL while it selects the state write, so without this
+// the seat's aim would simply FREEZE. So the provider leaves the state write for the stick servo whenever the seat's
+// frame cannot be trusted: the reader is not bound (it never binds again within a module generation), or a seated
+// read came back Unknown within the last `holdMs`. The sim thread probes the frame on every seated stick update,
+// written or not, so a seat that stays unreadable keeps its stamp fresh and stays on the servo; one that reads again
+// returns to the state write `holdMs` after its last Unknown (no flapping on a single bad read). `nowMs` earlier
+// than the stamp (the reading thread's clock sampled just before the sim thread's) counts as fresh.
+inline constexpr uint64_t kUnreadHandBackMs = 500;
+
+inline bool SeatFrameHandsBack(bool readerBound, uint64_t lastUnknownMs, uint64_t nowMs,
+                               uint64_t holdMs = kUnreadHandBackMs)
+{
+    if (!readerBound)
+        return true;
+    return lastUnknownMs != 0 && (nowMs < lastUnknownMs || nowMs - lastUnknownMs <= holdMs);
+}
 } // namespace seat_frame

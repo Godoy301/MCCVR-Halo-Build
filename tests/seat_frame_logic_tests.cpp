@@ -248,6 +248,21 @@ void TestClassify()
               std::string_view(CaseName(Case::World)) == "world",
           "classify: the log names");
 }
+
+// Reach's hand-back to the stick servo (Game_ReachDirectDriveAimWhy 0x400): never a frozen seat.
+void TestHandBack()
+{
+    Check(SeatFrameHandsBack(false, 0, 1000), "hand-back: an unbound reader always hands the seat back");
+    Check(SeatFrameHandsBack(false, 900, 1000), "hand-back: ...whatever the stamp says");
+    Check(!SeatFrameHandsBack(true, 0, 1000), "hand-back: bound and never Unknown: the state write may drive");
+    Check(SeatFrameHandsBack(true, 1000, 1000), "hand-back: Unknown this instant: the servo");
+    Check(SeatFrameHandsBack(true, 1000, 1000 + kUnreadHandBackMs), "hand-back: ...through the hold window");
+    Check(!SeatFrameHandsBack(true, 1000, 1001 + kUnreadHandBackMs), "hand-back: ...and the state write after it");
+    Check(SeatFrameHandsBack(true, 1000, 999),
+          "hand-back: a reader clock just behind the sim thread's stamp counts as fresh, not as 2^64 ms old");
+    Check(SeatFrameHandsBack(true, 5000, 5100, 200) && !SeatFrameHandsBack(true, 5000, 5201, 200),
+          "hand-back: the hold is a parameter");
+}
 } // namespace
 
 int main()
@@ -261,6 +276,7 @@ int main()
     TestPoleKeepsYaw();
     TestFrameReadAgrees();
     TestClassify();
+    TestHandBack();
     std::printf("%u checks, %u failures\n", checks, failures);
     return failures ? 1 : 0;
 }
