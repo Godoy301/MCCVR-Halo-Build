@@ -860,6 +860,10 @@ if(BUILD_TESTING)
     add_executable(halomccvr_seat_aim_frame_tests tests/seat_aim_frame_tests.cpp)
     target_include_directories(halomccvr_seat_aim_frame_tests PRIVATE src/common)
     add_test(NAME halomccvr_seat_aim_frame_tests COMMAND halomccvr_seat_aim_frame_tests)
+    # Seat frame conversion (src/common/seat_frame_logic.h): every title's vehicle-up rebase R(u) and its inverse.
+    add_executable(halomccvr_seat_frame_logic_tests tests/seat_frame_logic_tests.cpp)
+    target_include_directories(halomccvr_seat_frame_logic_tests PRIVATE src/common)
+    add_test(NAME halomccvr_seat_frame_logic_tests COMMAND halomccvr_seat_frame_logic_tests)
     # The production install / sync / teardown of the seat aim rebase skip (src/dll/seat_aim_world_frame.inl)
     # over a VirtualAlloc'd executable fixture: player flavour, then dev flavour (the A/B key and the witness).
     add_executable(halomccvr_seat_aim_world_frame_tests tests/seat_aim_world_frame_tests.cpp src/dll/sigscan.cpp)
