@@ -44,6 +44,10 @@ static bool Sight_AimMuzzleShot(GameTitle t,uint32_t generation,const float* bef
         "shots from the muzzle ask after the obstruction check, with the authored muzzle before it");
     return !muzzleAimRefuses;
 }
+// The seat guard (game.cpp SeatMuzzleShotHeld): a seat held at its stop refuses the redirect.
+static unsigned seatHeldCalls=0;static bool seatHeld=false;
+static bool SeatMuzzleShotHeld(GameTitle t)
+{++seatHeldCalls;Check(t==GameTitle::Halo4,"the seat guard is asked for this title");return seatHeld;}
 static bool VR_IsStereoEnabled(){return stereo;}
 struct VrContactTrackingSnapshot
 {uint64_t serial=11,referenceEpoch=3;int64_t timeNs=1000000000;struct {bool valid=true;} hands[2];};
@@ -191,6 +195,12 @@ static void ShotTests()
     Check(fireCalls==1&&muzzleAimCalls==1&&!g_halo4BarrelShot.active&&
         *reinterpret_cast<uint32_t*>(unitBytes+0x5B0)==0x44440007,"a refused converged point leaves the shot at the eye");
     muzzleAimRefuses=false;
+    Reset();g_config.gun_barrel_aim=false;g_config.shots_from_muzzle=true;muzzleAimCalls=0;seatHeld=true;
+    expectMuzzle=false;Shoot();
+    Check(fireCalls==1&&muzzleAimCalls==0&&!g_halo4BarrelShot.active&&
+        *reinterpret_cast<uint32_t*>(unitBytes+0x5B0)==0x44440007,
+        "a seat held at its stop refuses the redirect before asking for the point; the shot leaves at the eye");
+    seatHeld=false;
     Reset();g_config.shots_from_muzzle=true;muzzleAimCalls=0;Shoot();
     Check(fireCalls==1&&muzzleAimCalls==0,"the barrel aim, when on, wins over shots from the muzzle");
     Reset();g_config.gun_barrel_aim=false;muzzleAimCalls=0;expectMuzzle=false;Shoot();

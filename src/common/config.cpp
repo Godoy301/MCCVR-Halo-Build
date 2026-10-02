@@ -930,6 +930,8 @@ void ConfigLoad(const wchar_t* path)
     if (!f)
     {
         LOG("config: no file yet, writing defaults");
+        // A first run takes the same derived aim modes a loaded file does (each lane reads its own field).
+        Config_ApplyAimModes();
         ConfigSave();
         return;
     }
@@ -1287,6 +1289,12 @@ void ConfigLoad(const wchar_t* path)
         if (!strcmp(key, "reach_collision_census")) { g_config.reach_collision_census=atoi(val); continue; }
         if (!strcmp(key, "sight_ray_census")) { g_config.sight_ray_census=atoi(val); continue; }
         if (!strcmp(key, "halo4_seat_converge")) { g_config.halo4_seat_converge=atoi(val)!=0?1:0; continue; }
+        if (!strcmp(key, "honest_reticle_assess"))
+        {
+            const int v = atoi(val);
+            g_config.honest_reticle_assess = v < 0 ? 0 : (v > 2 ? 2 : v);
+            continue;
+        }
         if (!strcmp(key, "type13_log")) { g_config.type13_log=atoi(val)!=0?1:0; continue; }
         if (!strcmp(key, "dev_synthetic_pad")) { g_config.dev_synthetic_pad=atoi(val)!=0?1:0; continue; }
         if (!strcmp(key, "reach_sight_fault")) { g_config.reach_sight_fault=(int)strtol(val,nullptr,0); continue; }
@@ -1298,7 +1306,19 @@ void ConfigLoad(const wchar_t* path)
             g_config.reach_vehicle_aim = v < 0 ? 0 : (v > 2 ? 2 : v);
             continue;
         }
-        if (!strcmp(key, "honest_reticle_onfoot")) { g_config.honest_reticle_onfoot=atoi(val)!=0; continue; }
+        if (!strcmp(key, "honest_reticle_onfoot"))
+        {
+            // Retired 2026-10-01: the player-facing honest reticle is gone (the crosshair stays on the converged
+            // point; the game's own tracers show where a held or slewing gun really fires). Dev builds have the
+            // assessment key honest_reticle_assess instead. Logged once a session when a cfg still sets it.
+            static bool s_loggedHonestOnFoot = false;
+            if (atoi(val) != 0 && !s_loggedHonestOnFoot)
+            {
+                s_loggedHonestOnFoot = true;
+                LOG("config: honest_reticle_onfoot is retired and ignored (the crosshair stays on the aim point)");
+            }
+            continue;
+        }
         if (!strcmp(key, "reticle_max_dist_m")) { g_config.reticle_max_dist_m=(float)atof(val); continue; }
         if (!strcmp(key, "reticle_surface_offset_m")) { g_config.reticle_surface_offset_m=(float)atof(val); continue; }
         if (!strcmp(key, "reticle_min_scale_dist_m")) { g_config.reticle_min_scale_dist_m=(float)atof(val); continue; }
@@ -1804,10 +1824,11 @@ void ConfigLoad(const wchar_t* path)
         const float legacyDelta = g_config.hud_curvature * 0.1f;
         g_config.hud_curvature = (0.30f - legacyDelta) / 0.60f;
     }
-    // One direct-drive switch for every title (aim_direct_drive). A file from before it set each lane on its
-    // own (reach_direct_drive = 3, legacy_direct_drive = 1): either one turns it on.
-    if (!aimDirectDriveSeen)
-        g_config.aim_direct_drive = (g_config.legacy_direct_drive || g_config.reach_direct_drive == 3) ? 1 : 0;
+    // One direct-drive switch for every title (aim_direct_drive, default 1). A file from before it set each lane
+    // on its own (reach_direct_drive = 3, legacy_direct_drive = 1). Those old keys can only turn it on: a 0 in
+    // them was the old default, never a choice, and only dev builds ever wrote them.
+    if (!aimDirectDriveSeen && (g_config.legacy_direct_drive || g_config.reach_direct_drive == 3))
+        g_config.aim_direct_drive = 1;
     Config_ApplyAimModes();
     Clamp();
     NormalizeVirtualStockProximityPair();
@@ -2080,7 +2101,6 @@ void ConfigSave()
     fprintf(f, "# Shots leave the visible muzzle but fly through the converged aim's point (the reticle):\n"
                "# they land where the shot from the eye would have. Needs converged_aim; gun_barrel_aim wins.\n"
                "shots_from_muzzle = %d\n\n", g_config.shots_from_muzzle ? 1 : 0);
-    fprintf(f, "# DEMO: also show the crosshair at the game's REAL aim ON FOOT, not just in\n# seats. On foot the hand-ray crosshair leads the shot while you turn; this puts\n# it on the true (integrated) aim so the lag is visible. Off by default.\nhonest_reticle_onfoot = %d\n\n", g_config.honest_reticle_onfoot ? 1 : 0);
     fprintf(f, "# Floating VR-crosshair smoothing only; bullets stay raw.\n");
     fprintf(f, "# (default %.2f, range 0 to 0.95)\n", d.aim_stabilization);
     fprintf(f, "aim_stabilization = %.2f\n\n", g_config.aim_stabilization);
@@ -2173,8 +2193,12 @@ void ConfigSave()
     fprintf(f, "# Halo 2). Leave at 0.\n");
     fprintf(f, "sight_ray_census = %d\n\n", g_config.sight_ray_census);
     fprintf(f, "# DEV BUILD ONLY. Halo 4 seated convergence (stage 1): 1 = a seat converges like Halo 3's while\n");
-    fprintf(f, "# every proof holds; the reticle stays honest where the shot cannot follow. 0 = seats as before.\n");
+    fprintf(f, "# every proof holds, and stays converged where the native assist cannot bring the shot on. 0 = seats as before.\n");
     fprintf(f, "halo4_seat_converge = %d\n\n", g_config.halo4_seat_converge);
+    fprintf(f, "# DEV BUILD ONLY. Assessment: draw the crosshair on the game's REAL aim instead of the aim point, to see\n");
+    fprintf(f, "# how far the game trails the hand. Moves the drawing only; shots, aim and convergence are unchanged.\n");
+    fprintf(f, "# 0 = off, 1 = on foot, 2 = everywhere. (default 0)\n");
+    fprintf(f, "honest_reticle_assess = %d\n\n", g_config.honest_reticle_assess);
     fprintf(f, "# DEV BUILD ONLY. 1 = log the type-13 pilot controllers (Reach Sabre, Halo 4 Broadsword): REACH SF and\n");
     fprintf(f, "# H4 T13 lines. Writes nothing to the game. Read at startup. Leave at 0.\n");
     fprintf(f, "type13_log = %d\n\n", g_config.type13_log);
@@ -2185,7 +2209,8 @@ void ConfigSave()
     fprintf(f, "# Vehicle seats: which seats your hand aims. With aim_direct_drive = 1 the seat's aim is written\n");
     fprintf(f, "# as on foot (Reach, Halo 3, ODST, Halo 4, Halo 2); Halo 3 and ODST seats also converge whenever\n");
     fprintf(f, "# converged_aim is on (0 here keeps their old seat aim). A turret's or passenger seat's limits\n");
-    fprintf(f, "# still hold. A driver whose stick or wheel steers keeps it for steering. 0 = off (vehicles\n");
+    fprintf(f, "# still hold: past them the gun fires where it can, as in flat Halo, and the crosshair stays on\n");
+    fprintf(f, "# your aim point. A driver whose stick or wheel steers keeps it for steering. 0 = off (vehicles\n");
     fprintf(f, "# keep the old stick aim), 1 = gunners, passengers, and drivers whose gun turns apart from the\n");
     fprintf(f, "# hull (a driver whose look steers the vehicle keeps the stick; Halo 4 and Halo 2 cannot tell a\n");
     fprintf(f, "# seat's role yet, so 1 keeps every seat there on the stick), 2 = every seat you aim,\n");
@@ -2495,7 +2520,8 @@ void ConfigSave()
     fprintf(f, "# The zoom looks AT the point your converged aim sends the shot to, from your eye, so the\n");
     fprintf(f, "# reticle's point is its centre however far you stand from the character. 0 = the earlier\n");
     fprintf(f, "# zoom, along the game's aim: parallel to your sight line, off by that distance. Needs\n");
-    fprintf(f, "# converged_aim. Live in F1 > Scope. (default %d)\n", d.scope_converge);
+    fprintf(f, "# converged_aim and the aim written (direct drive). Live in F1 > Scope. (default %d)\n",
+            d.scope_converge);
     fprintf(f, "scope_converge = %d\n\n", g_config.scope_converge);
     fprintf(f, "# Default experimental magnification used for every weapon.\n");
     fprintf(f, "# Initial zoom restored whenever R3 opens the scope; right-stick Y adjusts it.\n");

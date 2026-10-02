@@ -2703,10 +2703,6 @@ int main()
             }
             Check(retook && std::fabs(moved - aim) < 0.012f,
                 "a real hand move breaks the park and the gun follows it");
-            // A 15 deg/s shade cannot be made to follow a hand flick by any
-            // gain, which is why its reticle must ride the barrel instead.
-            static_assert(kAimServoTurretReticleRidesBarrel,
-                          "a turret's reticle reports the gun, not the hand");
         }
         Check(kReachVehicleIdentityCount == kReachVehicleIdentityTrimCount &&
               kReachVehicleTrimCount == kReachVehicleIdentityCount + 1 &&
@@ -2903,6 +2899,18 @@ int main()
               ReachVehicleUsesWheel(ReachVehicleId::Forklift) &&
               !ReachVehicleUsesWheel(ReachVehicleId::Banshee),
             "Reach view-follow and steering ownership remain seat-explicit");
+        // Critic M1: a look-steered DRIVER's pitch is never latched (the game's autolevel is not a limit), as
+        // in Halo 3 / ODST; gunners, passengers, tank drivers and turrets latch both axes.
+        Check(!ReachSeatPitchLatches(ReachVehicleId::Warthog, 0) &&
+              !ReachSeatPitchLatches(ReachVehicleId::Ghost, 0) &&
+              !ReachSeatPitchLatches(ReachVehicleId::Banshee, 0) &&
+              ReachSeatPitchLatches(ReachVehicleId::Warthog, 1) &&
+              ReachSeatPitchLatches(ReachVehicleId::WarthogChaingun, 0) &&
+              ReachSeatPitchLatches(ReachVehicleId::Scorpion, 0) &&
+              ReachSeatPitchLatches(ReachVehicleId::Wraith, 0) &&
+              ReachSeatPitchLatches(ReachVehicleId::ShadePlasma, 0) &&
+              ReachSeatPitchLatches(ReachVehicleId::Unknown, 0),
+            "Reach seat latch exempts only a look-steered driver's pitch");
         // R-V19 is intentionally refresh-rate independent: every supported
         // 72-144 Hz headset consumes that frame's render-matched carrier basis.
         Check(!kReachR_V15RawHullFollowEnabled,
@@ -13867,6 +13875,59 @@ int main()
         std::filesystem::remove(oldAimConfig);
         std::filesystem::remove(rollbackAimConfig);
     }
+    {
+        // 2026-10-01: direct drive is the default. A file without aim_direct_drive (every released
+        // config) takes it ON, and so does a first run with no file at all; the old per-lane keys can
+        // only turn it on, so a leftover legacy_direct_drive = 0 / reach_direct_drive = 0 does not
+        // turn it off. An explicit aim_direct_drive = 0 is still honoured.
+        const std::filesystem::path driveConfig = configDir / L"direct-drive-default.cfg";
+        const auto loadDrive = [&](const char* text) {
+            { std::ofstream file(driveConfig); file << text; }
+            ConfigLoad(driveConfig.c_str());
+        };
+        loadDrive("config_version = 6\n");
+        Check(g_config.aim_direct_drive == 1 && g_config.legacy_direct_drive == 1 &&
+                  g_config.reach_direct_drive == 3,
+            "A config without aim_direct_drive takes direct drive ON in every lane");
+        loadDrive("legacy_direct_drive = 0\nreach_direct_drive = 0\n");
+        Check(g_config.aim_direct_drive == 1 && g_config.legacy_direct_drive == 1,
+            "The old per-lane keys at 0 do not turn direct drive off");
+        loadDrive("aim_direct_drive = 0\n");
+        Check(g_config.aim_direct_drive == 0 && g_config.legacy_direct_drive == 0 &&
+                  g_config.reach_direct_drive == 0,
+            "An explicit aim_direct_drive = 0 turns every lane off");
+        std::filesystem::remove(driveConfig);
+        ConfigLoad(driveConfig.c_str());
+        Check(g_config.aim_direct_drive == 1 && g_config.legacy_direct_drive == 1 &&
+                  g_config.reach_direct_drive == 3,
+            "A first run with no config file derives direct drive ON in every lane");
+        ConfigLoad(primary.c_str());
+        std::filesystem::remove(driveConfig);
+    }
+#if !HALOMCCVR_DEV_DIAGNOSTICS
+    {
+        // 2026-10-01: the player-facing honest reticle is retired. A player build
+        // ignores the old key, never reads the dev assessment key, and saves
+        // neither, so no player cfg can move the reticle off the aim point.
+        const std::filesystem::path honestConfig = configDir / L"honest-reticle-retired.cfg";
+        {
+            std::ofstream file(honestConfig);
+            file << "honest_reticle_onfoot = 1\n";
+            file << "honest_reticle_assess = 2\n";
+        }
+        g_config.honest_reticle_assess = 0;
+        ConfigLoad(honestConfig.c_str());
+        Check(g_config.honest_reticle_assess == 0,
+            "A player build reads neither honest_reticle_onfoot nor the dev assessment key");
+        ConfigSave();
+        const std::string savedHonest = ReadTextFile(honestConfig);
+        Check(CountText(savedHonest, "honest_reticle_onfoot") == 0 &&
+                  CountText(savedHonest, "honest_reticle_assess") == 0,
+            "A player build saves neither honest-reticle key");
+        ConfigLoad(primary.c_str());
+        std::filesystem::remove(honestConfig);
+    }
+#endif
     {
         // Exercise the real installer merge followed by runtime parsing and
         // saving. Text-only installer assertions cannot catch new defaults

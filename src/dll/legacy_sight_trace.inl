@@ -307,6 +307,9 @@ struct LegacyEngineTraceWindow
     std::atomic<uint32_t> siteCalls{0};
     std::atomic<uint64_t> siteFlags{0};
     std::atomic<uint32_t> seen{0}, compared{0};
+    // Converged queries skipped because a natural cause (a seat's latch, a turret's slew, a stall) held the game's
+    // aim off the point: the mark stays on through those since 2026-10-01, so they are not misses of the solve.
+    std::atomic<uint32_t> heldOff{0};
     std::atomic<float> missMm{0.0f}, maxMissMm{0.0f}, rangeM{0.0f}, angleDeg{0.0f};
     std::atomic<float> startAlongMm{0.0f}, startRightMm{0.0f}, startUpMm{0.0f};
 };
@@ -338,6 +341,11 @@ void LegacySightNoteEngineTrace(GameTitle title, uint64_t flags, const float* st
     window.seen.fetch_add(1, std::memory_order_relaxed);
     if (TitleAdapter_GetActiveTitle() != title || !Sight_ConvergedLive(title))
         return;
+    if (ConvergeNaturalHeld(title))
+    {
+        window.heldOff.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
     const uint32_t generation = TitleAdapter_GetGeneration(title);
     SightRay ray{};
     SightTrace trace{};
@@ -418,13 +426,15 @@ void LegacySightReport()
         const uint32_t sites = window.siteCalls.exchange(0, std::memory_order_relaxed);
         const uint32_t seen = window.seen.exchange(0, std::memory_order_relaxed);
         const uint32_t compared = window.compared.exchange(0, std::memory_order_acquire);
+        const uint32_t heldOff = window.heldOff.exchange(0, std::memory_order_relaxed);
         if (!seen && !sites)
             continue;
         LOG("SIGHT %s engine crosshair: %u queries from the crosshair call site(s) (last flags 0x%llX); %u "
-            "with the resolved flags, %u while converged; the point aimed at is %.0f mm off the game's line "
+            "with the resolved flags, %u while converged (%u more skipped: a seat limit, turret or stall held the "
+            "aim off the point); the point aimed at is %.0f mm off the game's line "
             "(max %.0f) at %.2f m; line vs eye->point %.2f deg; its start minus the solve's eye "
             "[along,right,up] %.0f,%.0f,%.0f mm", slot ? "ODST" : "Halo 3", sites,
-            static_cast<unsigned long long>(window.siteFlags.load()), seen, compared,
+            static_cast<unsigned long long>(window.siteFlags.load()), seen, compared, heldOff,
             double(window.missMm.load()), double(window.maxMissMm.exchange(0.0f)), double(window.rangeM.load()),
             double(window.angleDeg.load()), double(window.startAlongMm.load()),
             double(window.startRightMm.load()), double(window.startUpMm.load()));

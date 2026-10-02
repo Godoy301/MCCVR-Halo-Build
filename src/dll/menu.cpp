@@ -1143,8 +1143,9 @@ namespace
         ImGui::TextDisabled("Seats follow Converged aim and Direct drive in Weapon & Aim, as on foot.\n"
                             "Reach fires a seat's weapon at what that seat's own crosshair hits, so the\n"
                             "aim is bent to put that crosshair on your target. A turret's or passenger\n"
-                            "seat's limits still hold; there the crosshair shows where the gun really\n"
-                            "points. A seat whose stick steers the vehicle keeps the stick.");
+                            "seat's limits still hold: past them the gun fires where it can, as in flat\n"
+                            "Halo, and the crosshair stays on your aim point (the tracers show the rest).\n"
+                            "A seat whose stick steers the vehicle keeps the stick.");
         {
             bool seats = g_config.seat_direct_drive != 0;
             if (ImGui::Checkbox("Direct drive in seats", &seats))
@@ -1630,14 +1631,23 @@ namespace
             }
             ImGui::TextWrapped("Single weapons use their authored crosshair where available. "
                 "Halo 2 and Halo 3 dual wield use two separate aim marks, one for each weapon.");
+#if HALOMCCVR_DEV_DIAGNOSTICS
             ImGui::Spacing();
-            changed |= ImGui::Checkbox("Honest reticle on foot (comparison)", &g_config.honest_reticle_onfoot);
-            ImGui::TextDisabled("On foot the crosshair normally shows where your HAND points, but the\n"
-                                "game's aim lags behind through its turn-rate loop, so shots trail the\n"
-                                "crosshair while you turn. This puts the crosshair on the REAL aim\n"
-                                "instead, so the gap is visible. For comparison capture; off by default.\n"
-                                "Ignored while Reach's traced aim converges (it would draw a line\n"
-                                "parallel to the real shot).");
+            {
+                static const char* const kAssess[] = {"Off", "On foot", "Everywhere"};
+                int assess = g_config.honest_reticle_assess < 0 ? 0 :
+                    (g_config.honest_reticle_assess > 2 ? 2 : g_config.honest_reticle_assess);
+                if (ImGui::Combo("Assess: crosshair on the game's aim (dev)", &assess, kAssess, 3))
+                {
+                    g_config.honest_reticle_assess = assess;
+                    changed = true;
+                }
+            }
+            ImGui::TextDisabled("DEV BUILD ONLY. Draws the crosshair where the game is REALLY aiming,\n"
+                                "drawn from your hand, instead of the aim point, so you can see how far\n"
+                                "the game trails your hand. It moves the drawing only: shots, the aim\n"
+                                "and convergence are exactly the same. Off for normal play.");
+#endif
         }
         ImGui::TextDisabled("Crosshair smoothing is visual only; bullets keep the current controller ray.\n"
                             "Set it to 0%% for exact raw tracking.");

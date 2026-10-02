@@ -168,8 +168,9 @@ bool ApplyHalo4MuzzleMarker(uint32_t object,uint64_t count,void* markers,int16_t
         if(!std::isfinite(muzzle.ray.position[axis])||!std::isfinite(direction[axis]))return false;
     // SHOTS FROM THE MUZZLE (sight_layer.h): keep the origin the obstruction check left, but fly through the
     // converged point instead of along the barrel. A refusal refuses the barrel shot: it leaves the eye.
-    if(!g_config.gun_barrel_aim&&!Sight_AimMuzzleShot(GameTitle::Halo4,TitleAdapter_GetGeneration(GameTitle::Halo4),
-        before,muzzle.ray.position,muzzle.ray.direction,muzzle.ray.up))return false;
+    // A seat held at its stop refuses it too (SeatMuzzleShotHeld; the owner check already refuses vehicles).
+    if(!g_config.gun_barrel_aim&&(SeatMuzzleShotHeld(GameTitle::Halo4)||!Sight_AimMuzzleShot(GameTitle::Halo4,TitleAdapter_GetGeneration(GameTitle::Halo4),
+        before,muzzle.ray.position,muzzle.ray.direction,muzzle.ray.up)))return false;
     if(!AcquireHalo4MuzzleTarget(muzzle,*request.lease))return false;
     const auto& ray=muzzle.ray;auto* bytes=static_cast<uint8_t*>(markers);
     const float side[3]{ray.up[1]*ray.direction[2]-ray.up[2]*ray.direction[1],

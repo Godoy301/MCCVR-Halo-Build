@@ -304,6 +304,41 @@ static void test_arm_gate() {
         CHECK(g.step(true, A, 0, 10) == Ev::None && g.step(true, A, 0, 11) == Ev::None);
         CHECK(g.step(true, A, 0, 12) == Ev::Armed);
     }
+    {   // release() alone never clears a give-up: that is the session's verdict
+        ArmGate g;
+        uint64_t t = 0; unsigned mm = 0;
+        for (int round = 0; round < 3; ++round) {
+            for (int i = 0; i < 3; ++i) g.step(true, A, mm, t++);
+            g.step(true, 0, ++mm, t);
+            t += 6000;
+        }
+        CHECK(g.given_up);
+        g.release();
+        CHECK(g.given_up && !g.wants_evidence(t));
+    }
+    {   // reset_session(): a new session (reinstall / teardown) clears the give-up, the disarm count and the
+        // backoff, and the record must be proven from scratch (plan 2.E: no process-long give-up)
+        ArmGate g;
+        uint64_t t = 0; unsigned mm = 0;
+        for (int round = 0; round < 3; ++round) {
+            for (int i = 0; i < 3; ++i) g.step(true, A, mm, t++);
+            g.step(true, 0, ++mm, t);
+            t += 6000;
+        }
+        CHECK(g.given_up && g.disarms == 3);
+        CHECK(g.reset_session());                                            // reports the cleared give-up
+        CHECK(!g.given_up && !g.armed && g.disarms == 0 && g.record == 0 && g.retry_at_ms == 0);
+        CHECK(g.wants_evidence(t));
+        CHECK(g.step(true, B, mm, t) == Ev::None && g.step(true, B, mm, t + 1) == Ev::None);
+        CHECK(g.step(true, B, mm, t + 2) == Ev::Armed && g.record == B);     // re-proven, on the new record
+        CHECK(!g.reset_session() && !g.armed);                               // nothing to clear: reports false
+    }
+    {   // reset_session() mid-backoff: the new session re-validates at once, without the old backoff
+        ArmGate g;
+        for (int i = 0; i < 3; ++i) g.step(true, A, 0, i);
+        CHECK(g.step(true, 0, 1, 100) == Ev::Disarmed && !g.wants_evidence(200));
+        CHECK(!g.reset_session() && g.wants_evidence(200) && g.disarms == 0);
+    }
 }
 
 // Reach's mapping into the core (src/common/reach_aim_basis.h): the frame the core cannot check itself.
@@ -378,10 +413,131 @@ static void test_converge_direction() {
         CHECK(!converge_direction(Vec3{0.1f, 0, 0}, Vec3{0, 0, 0}, 1.0f, kCm, r, a) && near(a.x, 9.0f, 1e-6f));
         CHECK(!converge_direction(Vec3{0.1f, 0, 0}, Vec3{1, 0, 0}, 1.0f, 0.0f, r, a) && near(a.x, 9.0f, 1e-6f));
     }
-    {   // a bend steeper than the record accepts declines
+    {   // a bend steeper than the record accepts is HELD AT THE RAIL and stays converged (2026-10-01; it used to
+        // decline, handing the write the unbent steer and switching convergence off)
         ConvergeRails steep{}; steep.max_pitch_deg = 1.45f * 57.29578f;
         Vec3 a{9, 9, 9};
-        CHECK(!converge_direction(Vec3{0.1f, 0, 0.9f}, Vec3{0, 0, 1}, 0.2f, kCm, steep, a) && near(a.x, 9.0f, 1e-6f));
+        CHECK(converge_direction(Vec3{0.1f, 0, 0.9f}, Vec3{0, 0, 1}, 0.2f, kCm, steep, a));
+        float ay = 0, ap = 0;
+        CHECK(angles_from_dir(a, ay, ap) && near(ap, 83.08f, 0.01f) && near(ay, 0.0f, 1e-3f));
+        CHECK(near(a.x * a.x + a.y * a.y + a.z * a.z, 1.0f, 1e-5f));
+        // downward: held at -rail
+        CHECK(converge_direction(Vec3{0.1f, 0, -0.9f}, Vec3{0, 0, -1}, 0.2f, kCm, steep, a));
+        CHECK(angles_from_dir(a, ay, ap) && near(ap, -83.08f, 0.01f) && near(ay, 0.0f, 1e-3f));
+        // both the bend and the hand exactly vertical: no heading at all, cannot resolve (out untouched)
+        Vec3 b{9, 9, 9};
+        CHECK(!converge_direction(Vec3{0, 0, 0.9f}, Vec3{0, 0, 1}, 0.2f, kCm, steep, b) && near(b.x, 9.0f, 1e-6f));
+    }
+    {   // continuous at the rail: a bend just under it and one just over it keep (nearly) the bent heading, even
+        // with the hand's heading 30 deg away
+        ConvergeRails steep{}; steep.max_pitch_deg = 1.45f * 57.29578f;
+        const float D = 0.0174532925f;
+        const Vec3 u{std::cos(80.0f * D), 0, std::sin(80.0f * D)};   // the hand: 80 deg up, heading 0
+        // Pick delta so the bent aim is at 82.9 / 83.2 deg pitch, heading 30 deg: t = a_dir * L, delta = t - u.
+        float yaws[2]{}, pitches[2]{};
+        const float wantPitch[2]{82.9f, 83.2f};
+        for (int i = 0; i < 2; ++i) {
+            const float p = wantPitch[i] * D, h = 30.0f * D;
+            const Vec3 t{std::cos(p) * std::cos(h), std::cos(p) * std::sin(h), std::sin(p)};
+            const Vec3 delta{t.x - u.x, t.y - u.y, t.z - u.z};
+            Vec3 a{};
+            CHECK(converge_direction(delta, u, 1.0f, kCm, steep, a));
+            CHECK(angles_from_dir(a, yaws[i], pitches[i]));
+        }
+        CHECK(near(pitches[0], 82.9f, 0.01f) && near(pitches[1], 83.08f, 0.01f));
+        CHECK(near(yaws[0], 30.0f, 0.01f) && near(yaws[1], 30.0f, 1.5f));
+    }
+    {   // NEAR THE POLE the bent heading whips through every direction at the smallest change; the held aim
+        // takes the hand's instead, so it stays put
+        ConvergeRails steep{}; steep.max_pitch_deg = 1.45f * 57.29578f;
+        const float D = 0.0174532925f;
+        const Vec3 u{std::cos(80.0f * D), 0, std::sin(80.0f * D)};   // the hand: 80 deg up, heading 0
+        float lo = 1e9f, hi = -1e9f;
+        for (int k = 0; k < 16; ++k) {
+            // the bend's horizontal: 3 mm (in a 1 wu range) in sixteen directions -- within 0.2 deg of the pole
+            const float h = k * 22.5f * D;
+            const Vec3 delta{-u.x + 0.003f * std::cos(h), 0.003f * std::sin(h), 0.0f};
+            Vec3 a{};
+            CHECK(converge_direction(delta, u, 1.0f, kCm, steep, a));
+            float ay = 0, ap = 0;
+            CHECK(angles_from_dir(a, ay, ap) && near(ap, 83.08f, 0.01f));
+            lo = ay < lo ? ay : lo;
+            hi = ay > hi ? ay : hi;
+        }
+        CHECK(hi - lo < 0.5f);   // the bent aim's own heading swept all 360 deg
+    }
+    {   // THE BLEND'S SINGULARITY (code review, 2026-10-01): a hand at 80 deg under a ceiling 0.5 m up, the engine eye
+        // E ahead of the rendered head along the hand's heading (a roomscale lean). Sweeping E through ~13 cm sends the
+        // bent aim over the pole and away from the hand; the stateless blend whipped the output's heading through
+        // 180 deg in 0.5 mm there (and through -52..-140 deg in 1 mm with a 2 mm lateral offset), a 14 deg swing of
+        // the written aim. With a RailHold the sweep flips the heading AT MOST ONCE, and every other 0.1 mm step
+        // moves the aim by a fraction of a degree.
+        ConvergeRails steep{}; steep.max_pitch_deg = 1.45f * 57.29578f;
+        const float D = 0.0174532925f, kM = 3.048f;   // metres per world unit
+        const Vec3 u{std::cos(80.0f * D), 0, std::sin(80.0f * D)};
+        const float range = (0.5f / std::sin(80.0f * D)) / kM;
+        const auto stepDeg = [](const Vec3& a, const Vec3& b) {
+            float d = a.x * b.x + a.y * b.y + a.z * b.z;
+            d = d > 1.0f ? 1.0f : (d < -1.0f ? -1.0f : d);
+            return std::acos(d) * 57.29578f;
+        };
+        for (float lateral : {0.0f, 0.002f, -0.004f}) {
+            if (lateral == 0.0f) {   // the stateless blend reproduces the whip (the reason for the hold)
+                Vec3 prev{}; bool have = false; float worst = 0.0f;
+                for (int i = 0; i <= 200; ++i) {
+                    const float d = 0.120f + i * 0.0001f;
+                    Vec3 a{};
+                    CHECK(converge_direction(Vec3{-d / kM, -lateral / kM, 0}, u, range, kCm, steep, a));
+                    if (have) { const float s = stepDeg(prev, a); worst = s > worst ? s : worst; }
+                    prev = a; have = true;
+                }
+                CHECK(worst > 10.0f);
+            }
+            RailHold hold;
+            Vec3 prev{}; bool have = false;
+            int jumps = 0; float worstSmall = 0.0f;
+            // d from 3.1 cm (just past min_divergence, whose own 3 deg step is not this clamp's) to 16 cm (under the
+            // rail again), 0.1 mm steps
+            for (int i = 0; i <= 1290; ++i) {
+                const float d = 0.031f + i * 0.0001f;
+                Vec3 a{};
+                CHECK(converge_direction(Vec3{-d / kM, -lateral / kM, 0}, u, range, kCm, steep, a, &hold));
+                if (have) {
+                    const float s = stepDeg(prev, a);
+                    if (s > 2.0f) ++jumps; else worstSmall = s > worstSmall ? s : worstSmall;
+                }
+                prev = a; have = true;
+            }
+            CHECK(jumps <= 1);
+            CHECK(worstSmall < 0.25f);
+            // JITTER AT THE SINGULARITY: the eye shaking +-1 mm about the old flip point moves nothing.
+            hold.reset();
+            for (int i = 0; i <= 995; ++i) {   // approach from the hand's side, as a lean would
+                const float d = 0.031f + i * 0.0001f;
+                Vec3 a{};
+                converge_direction(Vec3{-d / kM, -lateral / kM, 0}, u, range, kCm, steep, a, &hold);
+                prev = a;
+            }
+            float worstJitter = 0.0f;
+            for (int i = 0; i < 400; ++i) {
+                const float d = 0.1305f + 0.001f * std::sin(i * 0.7f) + 0.0003f * ((i * 7919) % 5 - 2);
+                Vec3 a{};
+                CHECK(converge_direction(Vec3{-d / kM, -lateral / kM, 0}, u, range, kCm, steep, a, &hold));
+                const float s = stepDeg(prev, a);
+                worstJitter = s > worstJitter ? s : worstJitter;
+                prev = a;
+            }
+            CHECK(worstJitter < 0.25f);
+        }
+        {   // the hold is forgotten by any call that does not clamp, and by a decline
+            RailHold hold;
+            Vec3 a{};
+            CHECK(converge_direction(Vec3{-0.13f / kM, 0, 0}, u, range, kCm, steep, a, &hold) && hold.active);
+            CHECK(converge_direction(Vec3{0.1f, 0, 0}, Vec3{1, 0, 0}, 2.5f, kCm, steep, a, &hold) && !hold.active);
+            CHECK(converge_direction(Vec3{-0.13f / kM, 0, 0}, u, range, kCm, steep, a, &hold) && hold.active);
+            CHECK(!converge_direction(Vec3{0.1f, 0, 0}, Vec3{1, 0, 0}, 0.00001f, kCm, steep, a, &hold) &&
+                  !hold.active && !hold.holding);
+        }
     }
 }
 

@@ -17801,10 +17801,11 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                             // controller's direction from the centre eye), sits
                             // on the surface that ray hits, parks at a readable
                             // depth beyond it, and shrinks away up close -- see
-                            // aim_solve::traced_reticle_placement. The honest
-                            // (clamped) aim is NOT used here: the achieved aim
-                            // is the intent bent for the shot origin, and
-                            // drawing it from the eye would apply the bend twice.
+                            // aim_solve::traced_reticle_placement. The game's
+                            // achieved aim is NOT drawn here (only the dev
+                            // assessment key draws it, from the hand): it is the
+                            // intent bent for the shot origin, and drawing it
+                            // from the eye would apply the bend twice.
                             bool tracedReticle = false;
                             aim_solve::TracedReticle tracedPlacement{};
 #if HALOMCCVR_EXPERIMENTAL_REACH_RENDER_CANDIDATE
@@ -17860,25 +17861,28 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                                     else
                                         LOG("%s traced placement off: the crosshair is back on the "
                                             "controller ray at %.1f m (the aim is not converging: off, a "
-                                            "seat limit, or no fresh trace)", tag,
+                                            "seat not converged yet, or no fresh trace)", tag,
                                             g_config.crosshair_distance_m);
                                 }
                             }
 #endif
-                            // A vehicle seat bounds the weapon to a cone around
-                            // the hull, so a hand outside it asks for an angle
-                            // the engine will never reach. While that limit is
-                            // holding, show where the gun ACTUALLY points: the
-                            // reticle is meant to be the truth, and this is the
-                            // one case where the hand ray is not.
+#if HALOMCCVR_DEV_DIAGNOSTICS
+                            // DEV ASSESSMENT ONLY (honest_reticle_assess): draw the
+                            // game's REAL aim, from the controller at the crosshair
+                            // distance, instead of the aim point -- even over the
+                            // traced reticle, so the gap can be judged by eye. It
+                            // moves the drawing only. A player build never publishes
+                            // it: a seat's stop or a turret's slew no longer moves the
+                            // reticle (2026-10-01); the game's tracers show those.
                             float clampedAim[3];
-                            if (!reachNativeAim && !tracedReticle &&
-                                Game_GetClampedAimDirection(clampedAim))
+                            if (!reachNativeAim && Game_GetClampedAimDirection(clampedAim))
                             {
                                 aimDir[0] = clampedAim[0];
                                 aimDir[1] = clampedAim[1];
                                 aimDir[2] = clampedAim[2];
+                                tracedReticle = false;
                             }
+#endif
                             const float dist = tracedReticle
                                 ? tracedPlacement.dist_m
                                 : g_config.crosshair_distance_m;

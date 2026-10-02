@@ -234,9 +234,11 @@ void Halo2DriveApply(int user, uint64_t returnAddress) noexcept
                     st.seatPitchChecks.fetch_add(1, std::memory_order_relaxed);
                 if (st.stint.pitch_failed && !st.stintPitchFailCounted)
                 {
-                    st.stintPitchFailCounted = true;
+                    st.stintPitchFailCounted = true;   // each failed attempt once (the check retries every 5 s)
                     st.seatPitchFails.fetch_add(1, std::memory_order_relaxed);
                 }
+                else if (!st.stint.pitch_failed)
+                    st.stintPitchFailCounted = false;
                 if (!st.armed.load(std::memory_order_acquire))
                 {
                     // A seat may arm the drive on yaw agreement alone (a level that starts in a vehicle).
@@ -538,7 +540,7 @@ void ReportHalo2Drive() noexcept
                    pitchChecks = st.seatPitchChecks.exchange(0), pitchFails = st.seatPitchFails.exchange(0),
                    held = st.seatHeld.exchange(0);
     if (stints || seatWrites || seatWaits || yawChecks || pitchChecks || pitchFails || held)
-        LOG("Halo 2 DRIVE seats: new stints %u; checks passed yaw %u pitch %u, pitch left on the servo %u; "
+        LOG("Halo 2 DRIVE seats: new stints %u; checks passed yaw %u pitch %u, pitch checks failed %u (retried after 5 s); "
             "writes %u (yaw held at a seat limit %u), waited for the hand or a check %u",
             stints, yawChecks, pitchChecks, pitchFails, seatWrites, held, seatWaits);
 }

@@ -581,12 +581,14 @@ void TestStintPass()
     // record a frame later. Only the stick call steps the check, once per pass.
     bool onePerPass = false;
     StintSim fire(true);
-    Check(fire.untilYaw(0.0f, 0, onePerPass) == 30,
-          "impulses under the 1.7 deg tolerance: yaw passes on the 30th stick call");
+    // An impulse moves the record before the stick call judges it, and the published aim a pass later: both
+    // samples moved, so neither is evidence (StintCheck counts settled samples only). Passes 2-4 of every 5 count.
+    Check(fire.untilYaw(0.0f, 0, onePerPass) == 49,
+          "an impulse every 5th pass: two samples in five are motion, yaw passes on the 49th stick call");
     Check(onePerPass, "with the split: one update per pass, and its judgement is the stick call's");
     StintSim big(true);
-    Check(big.untilYaw(2.5f, 10, onePerPass) == 40,
-          "a 2.5 deg impulse while checking resets yaw (the record leads the published aim): passes 30 later");
+    Check(big.untilYaw(2.5f, 10, onePerPass) == 49,
+          "a 2.5 deg impulse while checking is motion, not a disagreement: it resets nothing");
     Check(onePerPass && big.putBacks == 0, "while checking nothing is written, so nothing is put back");
 
     // Proven: the stick call writes the hand, and every impulse ahead of it is put back -- the stick call finds
@@ -597,21 +599,22 @@ void TestStintPass()
     Check(fire.putBacks - putBacksBefore == 9, "proven: each of the 9 impulses is put back");
     Check(fire.maxStickDrift == 0.0f && fire.record == fire.hand && fire.publishedAim == fire.hand,
           "proven: no impulse reaches a stick call or the camera");
-    Check(fire.updates == 70 && fire.judgements == 70 && fire.stickJudgements == 70,
+    Check(fire.updates == 89 && fire.judgements == 89 && fire.stickJudgements == 89,
           "proven: still one update and one stick judgement per pass");
 
     // The no-unit pass (death) ends the update and the stint: the next stint proves yaw again from zero.
     fire.pass(0.0f, true);
-    Check(!fire.stint.yaw_ok && !fire.slot.valid && fire.updates == 70, "the no-unit pass ends the stint, unstepped");
-    Check(fire.untilYaw(0.0f, 0, onePerPass) == 30 && onePerPass, "after it, yaw is proven again over 30 stick calls");
+    Check(!fire.stint.yaw_ok && !fire.slot.valid && fire.updates == 89, "the no-unit pass ends the stint, unstepped");
+    Check(fire.untilYaw(0.0f, 0, onePerPass) == 49 && onePerPass, "after it, yaw is proven again from zero");
 
     // Before the split (an unproven map: every call is the update), a pass with an extra call stepped twice: the
     // extra call consumed the fresh publication and the stick call was never judged. Same verdict while
-    // checking, still one judgement per pass -- but on the impulse call.
+    // checking, still one judgement per pass -- but on the impulse call. (Impulses under the 0.1 deg settle, so
+    // every sample after the first is evidence.)
     StintSim before(false), after(true);
     for (int n = 1; n <= 29; ++n)
     {
-        const float impulse = n % 2 == 0 ? 0.5f * kDeg : 0.0f;
+        const float impulse = n % 2 == 0 ? 0.05f * kDeg : 0.0f;
         before.pass(impulse);
         after.pass(impulse);
     }
@@ -619,7 +622,7 @@ void TestStintPass()
           "before the split: 14 impulse passes stepped twice, and the impulse call took their judgement");
     Check(after.updates == 29 && after.judgements == 29 && after.stickJudgements == 29,
           "with the split: one update per pass, every judgement the stick call's");
-    Check(before.stint.yaw_count == 29 && after.stint.yaw_count == 29, "the same verdict while checking");
+    Check(before.stint.yaw_count == 28 && after.stint.yaw_count == 28, "the same verdict while checking");
 }
 
 void TestCensus()

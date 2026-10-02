@@ -2,6 +2,7 @@
 
 #include <cstdint>
 
+#include "../common/converge_policy.h"
 #include "../common/halo3_vehicle_logic.h"
 #include "../common/runtime_types.h"
 #include "../common/support_grip_logic.h"
@@ -147,6 +148,11 @@ void Game_ToggleVrAim();        // Insert: right controller steers the weapon ai
 // the right-stick deflection (-1..1) that turns the game's aim toward the
 // right controller ray; false = leave the player's real stick alone.
 bool Game_ComputeAimStick(float& outRx, float& outRy);
+// Shots from the muzzle, seated (defensive; converge::SeatMuzzleRefuses): whether the local player's seat
+// points the gun away from the converged point by a natural cause right now -- the direct drive held at the
+// seat's stop (Halo 3, ODST, Halo 4), or a rate-capped turret (Halo 3, ODST, where the muzzle owner check
+// cannot see a stationary turret). Refuses the redirect only; nothing else reads it. Any thread.
+converge::SeatMuzzleRefusal Game_SeatMuzzleRefusal(GameTitle title);
 // DEV (reach_direct_drive=4): true while the MASTER desired_angles persistence test owns Reach's aim;
 // the XInput hook then holds the aim stick neutral. Defined only in experimental Reach builds.
 bool Game_ReachDdTestOwnsAim();
@@ -205,6 +211,9 @@ struct ReachSightSample
     uint64_t raySampleMs = 0, traceSampleMs = 0;
 };
 bool Game_ReachSightSample(ReachSightSample& out);
+// For the dev converge-off witness only: whether the crosshair trace's flags resolved on this build, and
+// whether the trace latched off on a native fault (the reasons Game_ReachSightSample can fail for good).
+void Game_ReachSightHealth(bool& flagsResolved, bool& faulted);
 void Game_ReachNoteConvergedSample(const ReachSightSample& sample, float smoothedRangeWu);
 // The traced reticle's range along that eye-anchored intent ray, for the compositor (any thread):
 // the latest fresh trace result -- the hit range in METRES, or hit=false on a miss -- and only while
@@ -283,11 +292,10 @@ enum class VehicleTrimBank : uint8_t
 };
 int Game_VehicleSeatTrimSlotEx(VehicleTrimBank* outBank);
 const char* Game_VehicleSeatTrimName(int slot, VehicleTrimBank bank);
-// True while a vehicle seat's own angular limit is holding the weapon short of
-// where the hand points (a warthog rider seat authors yaw +/-90, pitch +/-45
-// relative to the hull). `outDir` then carries the engine's ACTUAL aim as a
-// VR-space unit vector so the floating reticle can sit on the gun instead of
-// promising a shot the engine will never take.
+// DEV ASSESSMENT ONLY (honest_reticle_assess): true while this input poll
+// published the engine's ACTUAL aim for the reticle to draw instead of the aim
+// point. `outDir` carries it as a VR-space unit vector. A player build never
+// publishes it: a seat's limit or a turret no longer moves the reticle.
 bool Game_GetClampedAimDirection(float outDir[3]);
 // Reach-only exact-frame reticle truth: returns the completed stereo pair's
 // native seated unit aim in that pair's final center-camera local axes.

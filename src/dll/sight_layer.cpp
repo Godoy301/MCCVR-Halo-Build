@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 
 namespace
@@ -59,8 +60,9 @@ struct Stats
 {
     std::atomic<uint64_t> rays{0}, traces{0}, hits{0}, misses{0}, faults{0}, converged{0}, declined{0}, written{0};
     std::atomic<uint64_t> costTicks{0}, costMaxTicks{0};
-    // Shots from the muzzle: aimed through the converged point, refused by a rail, or without a point.
-    std::atomic<uint64_t> muzzleAimed{0}, muzzleRefused{0}, muzzleUnconverged{0};
+    // Shots from the muzzle: aimed through the converged point, refused by a rail, or without a point; and
+    // (defensive) held off because the gun points elsewhere, naturally -- a seat held at its stop, a turret.
+    std::atomic<uint64_t> muzzleAimed{0}, muzzleRefused{0}, muzzleUnconverged{0}, muzzleHeld{0};
 };
 
 RayPublication g_rays[kTitleSlots];
@@ -281,26 +283,39 @@ bool Sight_AimWrittenLive(GameTitle title)
 
 bool Sight_ConvergedDirection(GameTitle title, uint32_t generation, const float head[3], const float dir[3],
                               const float eye[3], float out[3], float maxPitchDeg, float* outRangeWu,
-                              bool* outHit)
+                              bool* outHit, converge::ConvergeOff* outWhy, aim_solve::RailHold* railHold)
 {
-    SightTrace trace{};
-    if (!Sight_AimEnabled() || !head || !dir || !eye || !out ||
-        !Sight_ReadTrace(title, generation, kSightFreshMs, trace))
+    using converge::ConvergeOff;
+    const auto decline = [&](ConvergeOff why) {
+        if (outWhy)
+            *outWhy = why;
+        if (railHold)
+            railHold->reset();
         return false;
+    };
+    SightTrace trace{};
+    if (!Sight_AimEnabled())
+        return decline(ConvergeOff::AimOff);
+    if (!head || !dir || !eye || !out)
+        return decline(ConvergeOff::RayStale);
+    if (!Sight_ReadTrace(title, generation, kSightFreshMs, trace))
+        return decline(Sight_TraceFaulted(title) ? ConvergeOff::TraceFaulted : ConvergeOff::TraceStale);
     if (!(trace.convergeRangeWu > 0.0f))   // no hit yet since the traces (re)started: nothing to converge on
     {
         g_stats[Slot(title)].declined.fetch_add(1, std::memory_order_relaxed);
-        return false;
+        return decline(ConvergeOff::NoRange);
     }
     aim_solve::ConvergeRails rails{};
     rails.max_pitch_deg = maxPitchDeg;
     aim_solve::Vec3 bent{};
     if (!aim_solve::converge_direction(aim_solve::Vec3{head[0] - eye[0], head[1] - eye[1], head[2] - eye[2]},
                                        aim_solve::Vec3{dir[0], dir[1], dir[2]}, trace.convergeRangeWu,
-                                       kSightCmPerWorldUnit, rails, bent))
+                                       kSightCmPerWorldUnit, rails, bent, railHold))
     {
+        // The geometry did not resolve: a point inside the range floor, or a degenerate ray. (A steep bend no
+        // longer declines: Halo 3 / ODST / Halo 4 hold it at the rail and stay converged.)
         g_stats[Slot(title)].declined.fetch_add(1, std::memory_order_relaxed);
-        return false;
+        return decline(ConvergeOff::NoRange);
     }
     out[0] = bent.x;
     out[1] = bent.y;
@@ -318,6 +333,11 @@ bool Sight_MuzzleShotsConverge()
 void Sight_NoteMuzzleShotUnconverged(GameTitle title)
 {
     g_stats[Slot(title)].muzzleUnconverged.fetch_add(1, std::memory_order_relaxed);
+}
+
+void Sight_NoteMuzzleShotHeld(GameTitle title)
+{
+    g_stats[Slot(title)].muzzleHeld.fetch_add(1, std::memory_order_relaxed);
 }
 
 bool Sight_AimMuzzleShotThrough(GameTitle title, const float point[3], const float rayDir[3], const float eye[3],
@@ -726,12 +746,15 @@ void Sight_Report()
         const uint64_t muzzleAimed = s.muzzleAimed.exchange(0, std::memory_order_relaxed);
         const uint64_t muzzleRefused = s.muzzleRefused.exchange(0, std::memory_order_relaxed);
         const uint64_t muzzleUnconverged = s.muzzleUnconverged.exchange(0, std::memory_order_relaxed);
-        if (muzzleAimed || muzzleRefused || muzzleUnconverged)
+        const uint64_t muzzleHeld = s.muzzleHeld.exchange(0, std::memory_order_relaxed);
+        if (muzzleAimed || muzzleRefused || muzzleUnconverged || muzzleHeld)
             LOG("SHOTS FROM THE MUZZLE %s: %llu aimed through the converged point, %llu refused by a rail (the "
                 "muzzle far from the eye, pulled back by the obstruction check, or the point not ahead of it), "
-                "%llu without a converged point; every refusal left from the eye as before",
+                "%llu without a converged point, %llu held off (a seat held at its stop, or a turret: the gun "
+                "points elsewhere); every refusal left from the eye as before",
                 TitleName(static_cast<GameTitle>(i)), (unsigned long long)muzzleAimed,
-                (unsigned long long)muzzleRefused, (unsigned long long)muzzleUnconverged);
+                (unsigned long long)muzzleRefused, (unsigned long long)muzzleUnconverged,
+                (unsigned long long)muzzleHeld);
         if (!rays && !traces && !converged && !declined && !faults)
             continue;
         const uint64_t hits = s.hits.exchange(0, std::memory_order_relaxed);
@@ -750,4 +773,111 @@ void Sight_Report()
             double(convergeWu) * double(kSightCmPerWorldUnit) * 0.01, Sight_TraceFaulted(title) ? 1 : 0,
             faults ? " (a native fault latched the trace off)" : "");
     }
+}
+
+// ---- the converge-off witness and the natural-cause counters (dev lines only; converge_policy.h) ----------
+#if HALOMCCVR_DEV_DIAGNOSTICS
+namespace
+{
+converge::ConvergeOffWitness g_convergeOff[kTitleSlots];
+converge::NaturalWitness g_natural[kTitleSlots];
+std::atomic<uint64_t> g_naturalHeldMs[kTitleSlots]{};
+} // namespace
+#endif
+
+void Sight_NoteConvergeState(GameTitle title, bool live, converge::ConvergeOff why)
+{
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    g_convergeOff[Slot(title)].note(live, why);
+#else
+    (void)title; (void)live; (void)why;
+#endif
+}
+
+void Sight_NoteNatural(GameTitle title, const converge::NaturalEvents& events)
+{
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    g_natural[Slot(title)].note(events);
+    if (converge::NaturalHoldsAimOff(events))
+        g_naturalHeldMs[Slot(title)].store(GetTickCount64(), std::memory_order_relaxed);
+#else
+    (void)title; (void)events;
+#endif
+}
+
+bool Sight_NaturalHeld(GameTitle title, uint64_t windowMs)
+{
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    return Fresh(g_naturalHeldMs[Slot(title)].load(std::memory_order_relaxed), GetTickCount64(), windowMs);
+#else
+    (void)title; (void)windowMs;
+    return false;
+#endif
+}
+
+void Sight_ReportConverge()
+{
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    using converge::ConvergeOff;
+    static converge::ConvergeEdgeLog s_edges[kTitleSlots];
+    static uint64_t s_last = 0;
+    const uint64_t now = GetTickCount64();
+    const auto reasonName = [](ConvergeOff why) {
+        return why == ConvergeOff::None ? "Unclassified" : converge::ConvergeOffName(why);
+    };
+    // EDGES, every loop of the cold worker (a byte load per title; a line only on a change).
+    for (size_t slot = 0; slot < kTitleSlots; ++slot)
+    {
+        uint8_t previous = converge::kConvergeStateNone;
+        const uint8_t current = g_convergeOff[slot].current();
+        if (!s_edges[slot].observe(current, now, previous))
+            continue;
+        const auto title = static_cast<GameTitle>(slot);
+        if (converge::ConvergeStateIsOff(current))
+            LOG("SIGHT %s converge-off: %s%s", TitleName(title), reasonName(converge::ConvergeStateReason(current)),
+                previous == converge::kConvergeStateLive ? " (it was on)" : "");
+        else
+            LOG("SIGHT %s converge back on (it was off: %s)", TitleName(title),
+                reasonName(converge::ConvergeStateReason(previous)));
+    }
+    if (now - s_last < 2000)
+        return;
+    s_last = now;
+    // SUMMARIES, every 2 s per title: why it was off (our code's reasons only), and the natural causes it stayed
+    // on through.
+    for (size_t slot = 0; slot < kTitleSlots; ++slot)
+    {
+        const auto title = static_cast<GameTitle>(slot);
+        const converge::ConvergeOffCounts c = g_convergeOff[slot].take();
+        const uint32_t suppressed = s_edges[slot].take_suppressed();
+        // Off by configuration (F1 Converged aim, reach_direct_drive, reach_vehicle_aim) the whole window: the edge
+        // line already said so.
+        const bool onlyKeyOff = c.off() == c.why[static_cast<size_t>(ConvergeOff::AimOff)] && !c.offEdges &&
+                                !c.onEdges;
+        if ((c.off() || c.offEdges || c.onEdges) && !onlyKeyOff)
+        {
+            char reasons[512]{};
+            size_t used = 0;
+            for (size_t i = 0; i < static_cast<size_t>(ConvergeOff::Count) && used < sizeof(reasons); ++i)
+            {
+                if (!c.why[i])
+                    continue;
+                const int n = std::snprintf(reasons + used, sizeof(reasons) - used, "%s%s=%u", used ? ", " : "",
+                                            reasonName(static_cast<ConvergeOff>(i)), c.why[i]);
+                if (n <= 0)
+                    break;
+                used += static_cast<size_t>(n);
+            }
+            LOG("SIGHT %s converge-off %u/%u polls: %s (went off %u times, back on %u%s)", TitleName(title),
+                c.off(), c.polls, used ? reasons : "none", c.offEdges, c.onEdges,
+                suppressed ? "; some edge lines suppressed" : "");
+        }
+        const converge::NaturalCounts n = g_natural[slot].take();
+        if (n.latchHeld || n.outcomeMiss || n.stall || n.turretSlew || n.reachLimited || n.yawShortH4)
+            LOG("SIGHT %s natural (no switch-off) in %u polls: latchHeld=%u outcomeMiss=%u stall=%u turret=%u "
+                "reachLimited=%u yawShortH4=%u (none of these switches the converged aim off)",
+                TitleName(title), n.polls, n.latchHeld, n.outcomeMiss, n.stall, n.turretSlew, n.reachLimited,
+                n.yawShortH4);
+    }
+#endif
 }

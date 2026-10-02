@@ -43,6 +43,9 @@ static unsigned muzzleAimCalls=0;static bool muzzleAimRefuses=false;
 static bool Sight_MuzzleShotsConverge(){return g_config.shots_from_muzzle&&!g_config.gun_barrel_aim;}
 static bool Sight_AimMuzzleShot(GameTitle,uint32_t,const float*,const float*,float*,float*)
 {++muzzleAimCalls;return !muzzleAimRefuses;}
+// The seat guard (game.cpp SeatMuzzleShotHeld): a seat held at its stop or a turret refuses the redirect.
+static unsigned seatHeldCalls=0;static bool seatHeld=false;
+static bool SeatMuzzleShotHeld(GameTitle){++seatHeldCalls;return seatHeld;}
 static bool VR_IsStereoEnabled(){return stereo;}
 static float Game_GetWorldScale(){return 1;}
 static CinematicControlState ReadCinematicControl(int32_t&,int32_t&)

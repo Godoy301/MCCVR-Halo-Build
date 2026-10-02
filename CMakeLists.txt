@@ -850,6 +850,17 @@ if(BUILD_TESTING)
     add_executable(halomccvr_seat_drive_policy_tests tests/seat_drive_policy_tests.cpp)
     target_include_directories(halomccvr_seat_drive_policy_tests PRIVATE src/common)
     add_test(NAME halomccvr_seat_drive_policy_tests COMMAND halomccvr_seat_drive_policy_tests)
+    add_executable(halomccvr_converge_policy_tests tests/converge_policy_tests.cpp)
+    target_include_directories(halomccvr_converge_policy_tests PRIVATE src/common)
+    add_test(NAME halomccvr_converge_policy_tests COMMAND halomccvr_converge_policy_tests)
+    # Source-consistency guard for the seated converged claim (2026-10-01): game.cpp assigns the claim from
+    # converge::SeatedClaimDecide and nothing else, never clears sightSeatedConverged, and reads no natural-cause
+    # symbol into the claim's facts. No behavioural test compiles game.cpp, so a natural-cause switch-off added
+    # at the call site would otherwise pass every test. Python stdlib only; --self-test checks the checker.
+    add_test(NAME halomccvr_seated_claim_guard
+        COMMAND "${Python3_EXECUTABLE}" -O
+            "${CMAKE_CURRENT_SOURCE_DIR}/tools/check_seated_claim.py"
+            --self-test)
     add_executable(halomccvr_aim_caller_tests tests/aim_caller_tests.cpp)
     target_include_directories(halomccvr_aim_caller_tests PRIVATE src/common)
     add_test(NAME halomccvr_aim_caller_tests COMMAND halomccvr_aim_caller_tests)

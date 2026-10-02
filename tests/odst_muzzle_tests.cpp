@@ -56,6 +56,9 @@ static unsigned muzzleAimCalls=0;static bool muzzleAimRefuses=false;
 static bool Sight_MuzzleShotsConverge(){return g_config.shots_from_muzzle&&!g_config.gun_barrel_aim;}
 static bool Sight_AimMuzzleShot(GameTitle,uint32_t,const float*,const float*,float*,float*)
 {++muzzleAimCalls;return !muzzleAimRefuses;}
+// The seat guard (game.cpp SeatMuzzleShotHeld): a seat held at its stop or a turret refuses the redirect.
+static unsigned seatHeldCalls=0;static bool seatHeld=false;
+static bool SeatMuzzleShotHeld(GameTitle){++seatHeldCalls;return seatHeld;}
 static bool VR_IsStereoEnabled(){return stereo;}
 static CinematicControlState ReadOdstCinematicControl(int32_t&,int32_t&)
 {return cinematic?CinematicControlState::AuthoredLocked:CinematicControlState::PlayerControlled;}
@@ -362,6 +365,15 @@ static void LifecycleTests()
 int main()
 {
     ShotTests();PublicationTests();
+    // Shots from the muzzle: the control asks for the converged point; a seat held at its stop or a turret
+    // (SeatMuzzleShotHeld; unit_in_vehicle reads false in a stationary turret) refuses before asking.
+    Reset();g_config.gun_barrel_aim=false;g_config.shots_from_muzzle=true;muzzleAimCalls=0;seatHeld=false;
+    (void)Shoot();Check(muzzleAimCalls==1&&fireCalls==1,"ODST shots from the muzzle ask for the point (control)");
+    Reset();g_config.gun_barrel_aim=false;g_config.shots_from_muzzle=true;muzzleAimCalls=0;seatHeld=true;
+    seatHeldCalls=0;expectMuzzle=false;(void)Shoot();
+    Check(seatHeldCalls==1&&muzzleAimCalls==0&&fireCalls==1&&*reinterpret_cast<uint32_t*>(unitBytes+0x230)==0x44440007,
+        "ODST seat held at its stop or a turret refuses the redirect; native fire forwarded once");
+    seatHeld=false;
     Reset(true);g_config.gun_barrel_aim=false;g_config.independent_dual_aim=true;expectMuzzle=false;
     Check(!kEnableOdstIndependentAim,"ODST dual expansion stays disabled after scope correction");
     (void)Shoot();Check(fireCalls==1&&queryCalls==0,"H2/H3 dual option does not adapt ODST firing");

@@ -18,6 +18,7 @@
 #include "../common/aim_provider.h"
 #include "../common/reach_aim_basis.h"   // Reach <-> core units and angles (unit-tested)
 #include "game.h"   // Game_ComputeAimStick (StickLoop) + the Game_ReachDirectDrive* WriteState seam
+#include "sight_layer.h"   // the dev converge-off witness (Sight_NoteConvergeState)
 #include "../common/config.h"
 #include "../common/log.h"
 
@@ -221,6 +222,28 @@ bool ReachAimProvider_ProduceStick(float& outRx, float& outRy) {
     g_status.pitchDeg.store(provider.last_angles.pitch_deg, std::memory_order_relaxed);
     g_status.rangeM.store(state.range_cm * 0.01f, std::memory_order_relaxed);
     g_status.deltaCm.store(provider.last_delta_cm, std::memory_order_relaxed);
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    // THE CONVERGE-OFF WITNESS (sight_layer.h): whether this poll actuated a converged setpoint and, if not, the
+    // first of our code's reasons (converge::ReachConvergeOffReason). A seat limit is not among them: the hook's
+    // latch never withdraws the claim (converge::ReachStampUpdate). Only polls the aim path ran are counted.
+    if (provider.servo_ok)
+    {
+        converge::ReachConvergePoll p;
+        p.live = wroteState && provider.last_converged;
+        p.aimOn = g_config.reach_direct_drive == 3 && g_config.converged_aim;
+        if (!p.live && p.aimOn)
+        {
+            p.driveReady = Game_ReachDirectDriveReady();
+            p.aimWhy = Game_ReachDirectDriveAimWhy();
+            Game_ReachSightHealth(p.flagsResolved, p.traceFaulted);
+            p.sightSample = provider.trace_ok;
+            p.rangeKnown = state.range_cm > 0.0f;
+        }
+        converge::ConvergeOff why = converge::ConvergeOff::None;
+        if (converge::ReachConvergeOffReason(p, why))
+            Sight_NoteConvergeState(GameTitle::HaloReach, p.live, why);
+    }
+#endif
 
     if (wroteState) {   // one driver: the state write owns aim, so the stick says nothing
         outRx = 0.0f;
