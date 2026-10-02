@@ -160,6 +160,32 @@ void TestStintCheck()
         c.step(true, 0.2f, 0.0f, 0.0f, 0.0f, t); t += 16;   // it stays there: settled, and it disagrees
         Check(c.yaw_count == 0 && !c.yaw_ok, "a settled disagreement restarts the yaw count");
     }
+    {   // ...and the same for PITCH: an impulse that moves only the RECORD (fire kicks the gun before the stick call
+        // reads it) is motion, not a settled disagreement. Pitch settling on the game's aim alone would reset the
+        // count here and keep a gunner seat on the servo under fire.
+        StintCheck c;
+        unsigned long long t = 1000;
+        for (int i = 0; i < 25; ++i, t += 16) c.step(true, 0.0f, 0.0f, 0.0f, 0.0f, t);
+        Check(c.pitch_count == 24, "(setup) 24 settled pitch agreements");
+        c.step(true, 0.0f, 0.2f, 0.0f, 0.0f, t); t += 16;   // only the record's pitch jumps: unsettled
+        Check(c.pitch_count == 24, "a record whose pitch just moved is no pitch disagreement");
+        c.step(true, 0.0f, 0.2f, 0.0f, 0.0f, t); t += 16;   // it stays there: settled, and it disagrees
+        Check(c.pitch_count == 0 && !c.pitch_ok, "a settled pitch disagreement restarts the pitch count");
+    }
+    {   // under fire: the record's pitch kicks on every other sample and recovers, the aim holds still. No kick is
+        // ever settled, so none resets the count, and the settled samples between them still prove the pitch.
+        StintCheck d;
+        unsigned long long t = 1000;
+        unsigned resets = 0, before = 0;
+        for (int i = 0; i < 400 && !d.pitch_ok; ++i, t += 16) {
+            const float kick = (i % 3 == 1) ? 0.08f : 0.0f;   // a 4.6 deg kick, recovered the next sample
+            before = d.pitch_count;
+            d.step(true, 0.0f, 0.1f + kick, 0.0f, 0.1f, t);
+            if (before > 0 && d.pitch_count == 0) ++resets;
+        }
+        Check(resets == 0, "a recoil kick of the record never resets the pitch count");
+        Check(d.yaw_ok && d.pitch_ok && !d.pitch_failed, "pitch proves through recoil on its settled samples");
+    }
     {   // a turning vehicle: the aim and the record move together, a sample apart -- no evidence, no reset
         StintCheck c;
         unsigned long long t = 1000;
