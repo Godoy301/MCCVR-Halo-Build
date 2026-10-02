@@ -369,8 +369,18 @@ void Halo2DriveApply(int user, uint64_t returnAddress) noexcept
                 st.seatWrites.fetch_add(1, std::memory_order_relaxed);
                 if (limited)
                     st.seatHeld.fetch_add(1, std::memory_order_relaxed);
-                st.wroteYaw.store(y, std::memory_order_relaxed);
-                st.wrotePitch.store(p, std::memory_order_relaxed);
+                // Reported as the WORLD angles the write put into effect (R e(record) in case b; an axis not written is
+                // the record's own), so "last write" prints in the same frame as the camera's aim beside it.
+                float worldYaw = writeYaw ? y : nativeYaw, worldPitch = writePitch ? p : nativePitch;
+                seat_frame::Angles world{};
+                if (seatFrame.kase == seat_frame::Case::Rebased &&
+                    seat_frame::WorldFromRecord(seatFrame.frame, worldYaw, worldPitch, world))
+                {
+                    worldYaw = world.yaw;
+                    worldPitch = world.pitch;
+                }
+                st.wroteYaw.store(worldYaw, std::memory_order_relaxed);
+                st.wrotePitch.store(worldPitch, std::memory_order_relaxed);
                 st.writes.fetch_add(1, std::memory_order_relaxed);
                 break;
             }

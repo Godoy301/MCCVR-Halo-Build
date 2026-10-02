@@ -747,8 +747,9 @@ seat_drive::Axes LegacyDriveSeatAxes(GameTitle title)
     return axes;
 }
 
-// Input thread: the hook's last two seat writes (yaw/pitch as written into the record), newest first. False
-// when torn or none.
+// Input thread: the hook's last two seat writes, newest first, as the WORLD angles each put into effect (R e(record)
+// in case b, the record itself otherwise; an axis the write did not touch is the record's own). False when torn or
+// none.
 bool LegacyDriveSeatWrites(GameTitle title, float yaw[2], float pitch[2], bool valid[2])
 {
     const int slot = LegacyDriveSlot(title);
