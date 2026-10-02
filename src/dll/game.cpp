@@ -50905,9 +50905,12 @@ extern "C" void ReachPcApplyForUser(int user, const uint8_t* entryRsp)
                 }
                 else
                     s_seatLimit.reset();
-                // Keep yaw on the branch the game's value is on (never a 2*pi jump between updates, which an
-                // interpolated snapshot would render as a spin), and pitch inside the game's own clamp.
-                const float y = aim_write::unwrap_to_branch(target[0], pair[0]);
+                // Keep yaw on the branch the game's value is on, then inside the game's own [0, 2*pi]: Reach
+                // packs the yaw into its player action as 13 bits over [0, 2*pi] and CLAMPS an out-of-range
+                // value (0x3C7033), so a branch-matched write just past the seam would arrive as 0 or 2*pi -- a
+                // one-update aim nudge. The game's own record jumps by 2*pi at the same seam (0x63D39-0x63D75),
+                // so the wrap adds no jump it does not make. Pitch stays inside the game's own clamp.
+                const float y = aim_write::wrap_0_2pi(aim_write::unwrap_to_branch(target[0], pair[0]));
                 if (std::isfinite(y) && std::isfinite(target[1]))
                 {
                     pair[0] = y;
