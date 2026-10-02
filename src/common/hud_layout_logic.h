@@ -389,6 +389,21 @@ inline constexpr bool HudLayoutAcceptedCountOk(
         accepted <= adapter.maxBlocks;
 }
 
+// The safe-frame slots point into the running level's tag data, which the
+// title frees while it unloads. Its camera beacon is the proof the level is
+// still live: no slot is read, verified, rescanned or written unless the title
+// copied a camera within this window. Build bd2aac6 read Halo 3's cached slot
+// 0 a second after the last camera copy, as the level was unloading, and
+// faulted (caught by SafeFrameVerifySlot's own guard).
+inline constexpr uint64_t kHudLayoutLiveCameraWindowMs = 1000;
+
+inline constexpr bool HudLayoutTitleFrameLive(
+    uint64_t lastCameraMs, uint64_t nowMs)
+{
+    return lastCameraMs != 0 && nowMs >= lastCameraMs &&
+        nowMs - lastCameraMs <= kHudLayoutLiveCameraWindowMs;
+}
+
 inline constexpr bool HudLayoutCanReacquireFromRemembered(
     int rememberedCount, int expectedBlocks)
 {
