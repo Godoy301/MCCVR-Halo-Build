@@ -80,12 +80,11 @@ struct Debounce
     uint64_t absentSinceMs = 0;  // ...since this sample
     bool presentRun = false;     // while in the free-camera frame: a run of Present samples is open...
     uint64_t presentSinceMs = 0; // ...since this sample
-    uint64_t lastSampleMs = 0;   // the last sample stepped (a repeat is no new evidence)
-    bool haveLast = false;
 
     void Reset() noexcept { *this = Debounce{}; }
 
-    // `presence` and `sampleMs` from the title's latest sample, `nowMs` the consumer's clock (same clock).
+    // `presence` and `sampleMs` from the title's latest sample, `nowMs` the consumer's clock (same clock). Runs are
+    // timed on the SAMPLES' clock, so a sample read again proves nothing new: only a newer one lengthens a run.
     Edge Step(Presence presence, uint64_t sampleMs, uint64_t nowMs) noexcept
     {
         // A sample stamped a moment after `now` was read is fresh, not stale (two threads, one clock).
@@ -96,10 +95,6 @@ struct Debounce
             Reset();
             return was ? Edge::ReleasedUnknown : Edge::None;
         }
-        if (haveLast && sampleMs == lastSampleMs)
-            return Edge::None;
-        haveLast = true;
-        lastSampleMs = sampleMs;
         if (presence == Presence::Absent)
         {
             presentRun = false;
