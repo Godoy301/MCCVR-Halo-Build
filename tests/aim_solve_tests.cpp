@@ -234,6 +234,31 @@ static void test_unwrap_to_branch() {
         CHECK(std::fabs(unwrap_to_branch(t, 2.0f) - 2.0f) <= 3.1416f);
 }
 
+// Halo 3 / ODST quantise the control yaw as 13 bits over [0, 2pi] with no clamp; anything outside overflows
+// into the action's button bits (a phantom exit-seat press). The branch-matched write at the seam lands just
+// outside -- exactly the values below -- so the written yaw is wrapped into [0, 2pi).
+static void test_wrap_0_2pi() {
+    using aim_write::wrap_0_2pi;
+    using aim_write::unwrap_to_branch;
+    using aim_write::kTwoPi;
+    const auto inRange = [&](float v) { return v >= 0.0f && v < kTwoPi; };
+    CHECK(near(wrap_0_2pi(1.0f), 1.0f, 1e-6f));                                // in range: unchanged
+    CHECK(near(wrap_0_2pi(0.0f), 0.0f, 1e-6f));
+    CHECK(near(wrap_0_2pi(-0.01f), kTwoPi - 0.01f, 1e-4f));                    // just below the seam
+    CHECK(near(wrap_0_2pi(kTwoPi + 0.01f), 0.01f, 1e-4f));                     // just above it
+    CHECK(inRange(wrap_0_2pi(kTwoPi)) && inRange(wrap_0_2pi(-0.0f)));          // exactly the seam
+    CHECK(inRange(wrap_0_2pi(std::nextafter(kTwoPi, 0.0f) - kTwoPi)));          // rounding lands on 2pi
+    CHECK(std::isnan(wrap_0_2pi(NAN)));
+    // The case that ejected the player: record just past the seam, target just before it (and the reverse).
+    const float bad[2]{unwrap_to_branch(-0.01f, 0.01f), unwrap_to_branch(0.01f, 6.27f)};
+    CHECK(!inRange(bad[0]) && !inRange(bad[1]));                               // branch matching leaves the range
+    CHECK(inRange(wrap_0_2pi(bad[0])) && inRange(wrap_0_2pi(bad[1])));          // the wrap brings it back
+    // A sweep through the seam from both sides: every written value stays in [0, 2pi).
+    for (float native : {0.0005f, 0.02f, 3.0f, 6.26f, 6.2830f})
+        for (float t = -0.5f; t <= 0.5f; t += 0.0007f)
+            CHECK(inRange(wrap_0_2pi(unwrap_to_branch(t, native))));
+}
+
 static void test_clamp_pitch() {
     using aim_write::clamp_pitch;
     CHECK(near(clamp_pitch(0.2f, 1.45f), 0.2f, 1e-6f));
@@ -781,6 +806,7 @@ int main() {
     test_traced_reticle();
     test_orchestrator();
     test_unwrap_to_branch();
+    test_wrap_0_2pi();
     test_clamp_pitch();
     test_arm_gate();
     test_reach_basis();
