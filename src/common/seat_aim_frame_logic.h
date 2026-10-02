@@ -125,9 +125,26 @@ inline bool BuildStockJcc(const uint8_t patched[kPatchBytes], uint32_t jcc, uint
 // So: skipped whenever the title's first-person seat patch is enabled (vehicle_first_person and
 // vehicle_hide_body, as the C20 patch reads them), unless the dev A/B key says to leave the game's rebase, and
 // NOT while the occupied seat natively lacks bit 4 (a custom or modded seat: there stock rebases, so we must too).
-inline bool Wanted(bool vehicleFirstPerson, bool vehicleHideBody, bool worldFrameKey, bool seatNativelyLacksBit4)
+//
+// AND only while the title's vehicle sampler is BOUND (vehicleSamplerBound: the binding the sampler itself gates
+// on is Installed, with its engine TLS index). The sampler is the only thing that ever sees the occupied seat's
+// original flags, so it is both what runs C20 and what publishes seatNativelyLacksBit4. Unbound (signature
+// resolve failed, or a fault disarmed it) nothing clears bit 4, so the skip would buy nothing, and nothing would
+// tell us about a natively bit-4-less seat, so it would run blind; standing down leaves exactly stock. This never
+// flaps: the binding is decided once per title install and can only fall from Installed to StockFallback (the
+// fault path restores the seat flag first), never back within a module generation.
+//
+// The residual gap, deliberately NOT closed: bound is not RUNNING. The sampler runs from the camera copy hook
+// (Halo 3: every camera copy while the title generation is published; ODST: only on the single-user primary
+// camera path), so a natively bit-4-less seat occupied while that hook is not sampling is not seen until it
+// samples again, and for that window the skip suppresses a rebase stock would run. Gating on a sampler heartbeat
+// instead would be worse: the hook stops on pauses and loads (and off ODST's single-user path), so the code patch
+// would toggle -- each toggle freezes every game thread -- and it would put the rebase back while C20 may still
+// hold bit 4 cleared on a seat sampled earlier, which is the original bug.
+inline bool Wanted(bool vehicleFirstPerson, bool vehicleHideBody, bool worldFrameKey, bool vehicleSamplerBound,
+                   bool seatNativelyLacksBit4)
 {
-    return vehicleFirstPerson && vehicleHideBody && worldFrameKey && !seatNativelyLacksBit4;
+    return vehicleFirstPerson && vehicleHideBody && worldFrameKey && vehicleSamplerBound && !seatNativelyLacksBit4;
 }
 
 // Halo's forward for control angles: x = cos(pitch)cos(yaw), y = cos(pitch)sin(yaw), z = sin(pitch).

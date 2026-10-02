@@ -96,11 +96,13 @@ void TestPatchBytes()
 
 void TestGate()
 {
-    Check(Wanted(true, true, true, false), "first-person seats on: skipped");
-    Check(!Wanted(false, true, true, false), "vehicle_first_person off: the game's rebase");
-    Check(!Wanted(true, false, true, false), "vehicle_hide_body off: the game's rebase");
-    Check(!Wanted(true, true, false, false), "dev A/B 0: the game's rebase");
-    Check(!Wanted(true, true, true, true), "a seat natively lacking bit 4: the game's rebase, as stock");
+    Check(Wanted(true, true, true, true, false), "first-person seats on, sampler bound: skipped");
+    Check(!Wanted(false, true, true, true, false), "vehicle_first_person off: the game's rebase");
+    Check(!Wanted(true, false, true, true, false), "vehicle_hide_body off: the game's rebase");
+    Check(!Wanted(true, true, false, true, false), "dev A/B 0: the game's rebase");
+    Check(!Wanted(true, true, true, false, false),
+          "vehicle sampler not bound (no C20, no seat check): the game's rebase, as stock");
+    Check(!Wanted(true, true, true, true, true), "a seat natively lacking bit 4: the game's rebase, as stock");
 }
 
 void TestAngles()

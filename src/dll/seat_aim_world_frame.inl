@@ -23,7 +23,10 @@
 // each toggle freezes every game thread for a code write -- a possible dropped VR frame per vehicle entry. While
 // C20 is not Active the skip is inert (a stock seat has bit 4 and skips the rebase anyway; only a player's aim
 // reaches 0x355E20 / 0x39A600, its only callers being the unit-aim build), except on a natively bit-4-less seat,
-// which is exactly the case handled above.
+// which is exactly the case handled above. It also needs the title's vehicle sampler BOUND
+// (SeatAimFrameSamplerBound), since the sampler is what runs C20 and what reports such a seat: unbound, the skip
+// stands down and the title is exactly stock. Bound is not running -- seat_aim_frame::Wanted says why the
+// remaining window (the camera hook not sampling) is left open rather than gated on a heartbeat.
 //
 // ADDR-HYGIENE: guarded. The anchor must be unique in the module and sit at its pinned RVA, the six bytes at the
 // jne must be exactly `0F 85 rel32` (or our own `E9 rel32 90`, left by an earlier install of this module) with the
@@ -78,6 +81,25 @@ uint32_t SeatAimFrameNativeNoThirdPerson(int slot)
     return 0;
 }
 
+// The title's vehicle sampler is bound: exactly the gate Halo3SampleVehicleState / OdstSampleVehicleState check
+// before doing anything (binding Installed, engine TLS index resolved). Only the sampler runs C20 and publishes a
+// natively bit-4-less seat, so without it the skip stands down (seat_aim_frame::Wanted has the reasoning and the
+// one gap left open).
+bool SeatAimFrameSamplerBound(int slot)
+{
+    if (slot == 0)
+        return g_halo3VehicleBinding.load(std::memory_order_acquire) ==
+                   static_cast<uint8_t>(Halo3VehicleBindingState::Installed) &&
+            g_engineTlsIndex;
+#if HALOMCCVR_EXPERIMENTAL_ODST_BRINGUP
+    if (slot == 1)
+        return g_odstVehicleBinding.load(std::memory_order_acquire) ==
+                   static_cast<uint8_t>(OdstVehicleBindingState::Installed) &&
+            g_odstEngineTlsIndex;
+#endif
+    return false;
+}
+
 bool SeatAimFrameWanted(int slot)
 {
 #if HALOMCCVR_DEV_DIAGNOSTICS
@@ -86,7 +108,7 @@ bool SeatAimFrameWanted(int slot)
     const bool key = true;   // the A/B key exists in dev builds only
 #endif
     return seat_aim_frame::Wanted(g_config.vehicle_first_person, g_config.vehicle_hide_body, key,
-                                  SeatAimFrameNativeNoThirdPerson(slot) != 0);
+                                  SeatAimFrameSamplerBound(slot), SeatAimFrameNativeNoThirdPerson(slot) != 0);
 }
 
 bool SeatAimFrameUniqueAt(uintptr_t base, size_t size, uint32_t rva, const char* pattern)
@@ -206,6 +228,8 @@ const char* SeatAimFrameWhyOff(int slot)
 {
     if (!g_config.vehicle_first_person || !g_config.vehicle_hide_body)
         return "vehicle_first_person / vehicle_hide_body off: seats keep their stock third-person flag";
+    if (!SeatAimFrameSamplerBound(slot))
+        return "the vehicle sampler is not bound: no seat is checked, and no seat flag is patched";
     if (SeatAimFrameNativeNoThirdPerson(slot))
         return "the occupied seat natively lacks bit 4, so stock rebases it too";
     return "seat_aim_world_frame = 0 (dev A/B)";
