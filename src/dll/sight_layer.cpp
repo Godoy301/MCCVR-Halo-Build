@@ -283,12 +283,14 @@ bool Sight_AimWrittenLive(GameTitle title)
 
 bool Sight_ConvergedDirection(GameTitle title, uint32_t generation, const float head[3], const float dir[3],
                               const float eye[3], float out[3], float maxPitchDeg, float* outRangeWu,
-                              bool* outHit, converge::ConvergeOff* outWhy)
+                              bool* outHit, converge::ConvergeOff* outWhy, aim_solve::RailHold* railHold)
 {
     using converge::ConvergeOff;
     const auto decline = [&](ConvergeOff why) {
         if (outWhy)
             *outWhy = why;
+        if (railHold)
+            railHold->reset();
         return false;
     };
     SightTrace trace{};
@@ -308,7 +310,7 @@ bool Sight_ConvergedDirection(GameTitle title, uint32_t generation, const float 
     aim_solve::Vec3 bent{};
     if (!aim_solve::converge_direction(aim_solve::Vec3{head[0] - eye[0], head[1] - eye[1], head[2] - eye[2]},
                                        aim_solve::Vec3{dir[0], dir[1], dir[2]}, trace.convergeRangeWu,
-                                       kSightCmPerWorldUnit, rails, bent))
+                                       kSightCmPerWorldUnit, rails, bent, railHold))
     {
         // The geometry did not resolve: a point inside the range floor, or a degenerate ray. (A steep bend no
         // longer declines: Halo 3 / ODST / Halo 4 hold it at the rail and stay converged.)

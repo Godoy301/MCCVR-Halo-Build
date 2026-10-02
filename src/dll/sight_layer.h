@@ -109,10 +109,12 @@ bool Sight_AimWrittenLive(GameTitle title);
 // `maxPitchDeg` (the steepest pitch the caller's actuation can reach) is HELD AT THAT PITCH and still
 // returned as converged (2026-10-01): a close ceiling or floor is natural geometry, not our code failing.
 // `outWhy`, when given, receives why it declined (our code's reasons only: converge::ConvergeOff).
+// `railHold`, when given, is the caller's hysteresis for that clamp (aim_solve::RailHold: one per actuation loop,
+// owned by the thread that calls; a call that does not clamp, including every decline, forgets it).
 bool Sight_ConvergedDirection(GameTitle title, uint32_t generation, const float head[3], const float dir[3],
                               const float eye[3], float out[3], float maxPitchDeg = 90.0f,
                               float* outRangeWu = nullptr, bool* outHit = nullptr,
-                              converge::ConvergeOff* outWhy = nullptr);
+                              converge::ConvergeOff* outWhy = nullptr, aim_solve::RailHold* railHold = nullptr);
 
 // For the compositor (any thread): the active title's traced range along its eye-anchored intent ray, in
 // VR METRES, and whether it hit -- only while that title's aim in effect is converged. Never Reach

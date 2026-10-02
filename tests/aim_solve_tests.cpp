@@ -466,6 +466,79 @@ static void test_converge_direction() {
         }
         CHECK(hi - lo < 0.5f);   // the bent aim's own heading swept all 360 deg
     }
+    {   // THE BLEND'S SINGULARITY (code review, 2026-10-01): a hand at 80 deg under a ceiling 0.5 m up, the engine eye
+        // E ahead of the rendered head along the hand's heading (a roomscale lean). Sweeping E through ~13 cm sends the
+        // bent aim over the pole and away from the hand; the stateless blend whipped the output's heading through
+        // 180 deg in 0.5 mm there (and through -52..-140 deg in 1 mm with a 2 mm lateral offset), a 14 deg swing of
+        // the written aim. With a RailHold the sweep flips the heading AT MOST ONCE, and every other 0.1 mm step
+        // moves the aim by a fraction of a degree.
+        ConvergeRails steep{}; steep.max_pitch_deg = 1.45f * 57.29578f;
+        const float D = 0.0174532925f, kM = 3.048f;   // metres per world unit
+        const Vec3 u{std::cos(80.0f * D), 0, std::sin(80.0f * D)};
+        const float range = (0.5f / std::sin(80.0f * D)) / kM;
+        const auto stepDeg = [](const Vec3& a, const Vec3& b) {
+            float d = a.x * b.x + a.y * b.y + a.z * b.z;
+            d = d > 1.0f ? 1.0f : (d < -1.0f ? -1.0f : d);
+            return std::acos(d) * 57.29578f;
+        };
+        for (float lateral : {0.0f, 0.002f, -0.004f}) {
+            if (lateral == 0.0f) {   // the stateless blend reproduces the whip (the reason for the hold)
+                Vec3 prev{}; bool have = false; float worst = 0.0f;
+                for (int i = 0; i <= 200; ++i) {
+                    const float d = 0.120f + i * 0.0001f;
+                    Vec3 a{};
+                    CHECK(converge_direction(Vec3{-d / kM, -lateral / kM, 0}, u, range, kCm, steep, a));
+                    if (have) { const float s = stepDeg(prev, a); worst = s > worst ? s : worst; }
+                    prev = a; have = true;
+                }
+                CHECK(worst > 10.0f);
+            }
+            RailHold hold;
+            Vec3 prev{}; bool have = false;
+            int jumps = 0; float worstSmall = 0.0f;
+            // d from 3.1 cm (just past min_divergence, whose own 3 deg step is not this clamp's) to 16 cm (under the
+            // rail again), 0.1 mm steps
+            for (int i = 0; i <= 1290; ++i) {
+                const float d = 0.031f + i * 0.0001f;
+                Vec3 a{};
+                CHECK(converge_direction(Vec3{-d / kM, -lateral / kM, 0}, u, range, kCm, steep, a, &hold));
+                if (have) {
+                    const float s = stepDeg(prev, a);
+                    if (s > 2.0f) ++jumps; else worstSmall = s > worstSmall ? s : worstSmall;
+                }
+                prev = a; have = true;
+            }
+            CHECK(jumps <= 1);
+            CHECK(worstSmall < 0.25f);
+            // JITTER AT THE SINGULARITY: the eye shaking +-1 mm about the old flip point moves nothing.
+            hold.reset();
+            for (int i = 0; i <= 995; ++i) {   // approach from the hand's side, as a lean would
+                const float d = 0.031f + i * 0.0001f;
+                Vec3 a{};
+                converge_direction(Vec3{-d / kM, -lateral / kM, 0}, u, range, kCm, steep, a, &hold);
+                prev = a;
+            }
+            float worstJitter = 0.0f;
+            for (int i = 0; i < 400; ++i) {
+                const float d = 0.1305f + 0.001f * std::sin(i * 0.7f) + 0.0003f * ((i * 7919) % 5 - 2);
+                Vec3 a{};
+                CHECK(converge_direction(Vec3{-d / kM, -lateral / kM, 0}, u, range, kCm, steep, a, &hold));
+                const float s = stepDeg(prev, a);
+                worstJitter = s > worstJitter ? s : worstJitter;
+                prev = a;
+            }
+            CHECK(worstJitter < 0.25f);
+        }
+        {   // the hold is forgotten by any call that does not clamp, and by a decline
+            RailHold hold;
+            Vec3 a{};
+            CHECK(converge_direction(Vec3{-0.13f / kM, 0, 0}, u, range, kCm, steep, a, &hold) && hold.active);
+            CHECK(converge_direction(Vec3{0.1f, 0, 0}, Vec3{1, 0, 0}, 2.5f, kCm, steep, a, &hold) && !hold.active);
+            CHECK(converge_direction(Vec3{-0.13f / kM, 0, 0}, u, range, kCm, steep, a, &hold) && hold.active);
+            CHECK(!converge_direction(Vec3{0.1f, 0, 0}, Vec3{1, 0, 0}, 0.00001f, kCm, steep, a, &hold) &&
+                  !hold.active && !hold.holding);
+        }
+    }
 }
 
 // A chase camera's crosshair line as the shot origin (aim_solve::line_point_nearest), and why the point

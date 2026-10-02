@@ -200,12 +200,34 @@ inline bool converge_trace_reaim(float& yaw_deg, float& pitch_deg,
 // handed the write the unbent steer, a jump by the whole bend, and switched convergence off). The aim is held
 // AT the rail and stays converged. Its heading: the bent aim's own near the rail (continuous with the unclamped
 // bend), handing over to the intent ray's as the bent aim nears the pole, where atan2 of a vanishing horizontal
-// whips through any heading at the smallest change. Weight w^2, w = |bent horizontal| / cos(rail). Reach's angle
-// form keeps its decline (its fallback relocates the shot exactly; see converge_trace_reaim).
-inline bool clamp_to_pitch_rail(const Vec3& bent, const Vec3& intent, float max_pitch_deg, Vec3& out) {
+// whips through any heading at the smallest change. Weight w^2, w = |bent horizontal| / cos(rail).
+//
+// THAT BLEND HAS A SINGULARITY, and no blend can avoid one: mapping every bent aim past the rail onto a heading
+// that agrees with the bent aim's own at the rail is a retraction of a disk onto its rim. It sits where the bent
+// heading points AWAY from the hand's and w^2 = 1/2 (a bent pitch near 85 deg at an 83 deg rail): a hand at 80 deg
+// under a ceiling 0.5 m up, with the engine eye 13 cm ahead of the rendered head, swept the output heading through
+// 180 deg in half a millimetre of eye motion -- a 14 deg whip of the written aim near vertical. So the clamp keeps
+// a RailHold (caller-owned, one per actuation loop): inside the band where the blend nearly cancels
+// (|mix| < kRailHoldEnter) it holds the heading it wrote last poll, and lets go only once the blend agrees with
+// that heading again (within ~10 deg, out of the band) or is decisively on the far side (|mix| > kRailHoldLeave).
+// A hand that jitters at the singularity then moves nothing; one that really crosses it flips the heading once.
+// Without a hold (nullptr) the clamp is the stateless blend. Reach's angle form keeps its decline (its fallback relocates
+// the shot exactly; see converge_trace_reaim).
+struct RailHold {
+    bool active = false;    // the previous call clamped at the rail and wrote heading (hx, hy)
+    bool holding = false;   // that heading is being held through the blend's cancellation band
+    float hx = 0.0f, hy = 0.0f;
+    void reset() { active = holding = false; hx = hy = 0.0f; }
+};
+constexpr float kRailHoldEnter = 0.25f;   // |mix| below this: hold the heading written last
+constexpr float kRailHoldLeave = 0.5f;    // |mix| above this: let go, whatever its heading
+constexpr float kRailHoldAgree = 0.985f;  // or once the blend's heading is within ~10 deg of the held one
+
+inline bool clamp_to_pitch_rail(const Vec3& bent, const Vec3& intent, float max_pitch_deg, Vec3& out,
+                                RailHold* hold = nullptr) {
     constexpr float D2R = 0.017453292519943295f;
     const float cr = std::cos(max_pitch_deg * D2R), sr = std::sin(max_pitch_deg * D2R);
-    if (!(cr > 1.0e-6f)) return false;
+    if (!(cr > 1.0e-6f)) { if (hold) hold->reset(); return false; }
     const float bh = std::sqrt(bent.x * bent.x + bent.y * bent.y);
     const float uh = std::sqrt(intent.x * intent.x + intent.y * intent.y);
     float w = bh / cr;
@@ -214,39 +236,60 @@ inline bool clamp_to_pitch_rail(const Vec3& bent, const Vec3& intent, float max_
     float mx = 0.0f, my = 0.0f;
     if (bh > 1.0e-6f) { mx += w * bent.x / bh; my += w * bent.y / bh; }
     if (uh > 1.0e-6f) { mx += (1.0f - w) * intent.x / uh; my += (1.0f - w) * intent.y / uh; }
-    float ml = std::sqrt(mx * mx + my * my);
-    if (!(ml > 1.0e-4f)) {
-        // The two headings cancel (the bend went over the pole): the intent ray's, else the bent aim's.
-        if (uh > 1.0e-6f) { mx = intent.x / uh; my = intent.y / uh; }
-        else if (bh > 1.0e-6f) { mx = bent.x / bh; my = bent.y / bh; }
-        else return false;   // both vertical: no heading at all
-        ml = 1.0f;
+    const float ml = std::sqrt(mx * mx + my * my);
+    if (!std::isfinite(ml)) { if (hold) hold->reset(); return false; }
+    float hx = 0.0f, hy = 0.0f;
+    bool have = ml > 1.0e-4f;
+    if (have) { hx = mx / ml; hy = my / ml; }
+    if (hold) {
+        if (hold->active && hold->holding) {
+            const bool agree = have && hx * hold->hx + hy * hold->hy > kRailHoldAgree;
+            if (have && (ml > kRailHoldLeave || (ml >= kRailHoldEnter && agree)))
+                hold->holding = false;
+            else { hx = hold->hx; hy = hold->hy; have = true; }
+        } else if (hold->active && ml < kRailHoldEnter) {
+            hold->holding = true;
+            hx = hold->hx; hy = hold->hy; have = true;
+        } else if (!hold->active && ml < kRailHoldEnter) {
+            // The first clamped call is already in the band: start from the intent ray's heading, and hold it.
+            hold->holding = true;
+            if (uh > 1.0e-6f) { hx = intent.x / uh; hy = intent.y / uh; have = true; }
+        }
     }
-    if (!std::isfinite(ml)) return false;
-    out = Vec3{cr * mx / ml, cr * my / ml, bent.z < 0.0f ? -sr : sr};
+    if (!have) {
+        // The two headings cancel exactly (the bend went over the pole): the intent ray's, else the bent aim's.
+        if (uh > 1.0e-6f) { hx = intent.x / uh; hy = intent.y / uh; }
+        else if (bh > 1.0e-6f) { hx = bent.x / bh; hy = bent.y / bh; }
+        else { if (hold) hold->reset(); return false; }   // both vertical: no heading at all
+    }
+    out = Vec3{cr * hx, cr * hy, bent.z < 0.0f ? -sr : sr};
+    if (hold) { hold->active = true; hold->hx = hx; hold->hy = hy; }
     return true;
 }
 
+// `hold` (optional): the caller's RailHold for clamp_to_pitch_rail. Any call that does not clamp -- the aim is
+// under the rail, already converged, or does not resolve -- forgets it.
 inline bool converge_direction(const Vec3& delta, const Vec3& dir, float range, float cm_per_unit,
-                               const ConvergeRails& r, Vec3& out) {
-    if (!std::isfinite(cm_per_unit) || !(cm_per_unit > 0.0f)) return false;
+                               const ConvergeRails& r, Vec3& out, RailHold* hold = nullptr) {
+    const auto unclamped = [hold](bool result) { if (hold) hold->reset(); return result; };
+    if (!std::isfinite(cm_per_unit) || !(cm_per_unit > 0.0f)) return unclamped(false);
     const float dl = std::sqrt(dir.x * dir.x + dir.y * dir.y + dir.z * dir.z);
-    if (!std::isfinite(dl) || !(dl > 1.0e-6f)) return false;
+    if (!std::isfinite(dl) || !(dl > 1.0e-6f)) return unclamped(false);
     const Vec3 u{dir.x / dl, dir.y / dl, dir.z / dl};
     const float m2 = delta.x * delta.x + delta.y * delta.y + delta.z * delta.z;
-    if (!std::isfinite(m2)) return false;
+    if (!std::isfinite(m2)) return unclamped(false);
     const float minDiv = r.min_divergence_cm / cm_per_unit;
-    if (m2 <= minDiv * minDiv) { out = u; return true; }                  // already converged: no bend
-    if (!std::isfinite(range) || !(range * cm_per_unit > r.range_floor_cm)) return false;
+    if (m2 <= minDiv * minDiv) { out = u; return unclamped(true); }       // already converged: no bend
+    if (!std::isfinite(range) || !(range * cm_per_unit > r.range_floor_cm)) return unclamped(false);
     const Vec3 t{delta.x + u.x * range, delta.y + u.y * range, delta.z + u.z * range};
     const float len = std::sqrt(t.x * t.x + t.y * t.y + t.z * t.z);
-    if (!std::isfinite(len) || !(len * cm_per_unit > 1.0f)) return false;
+    if (!std::isfinite(len) || !(len * cm_per_unit > 1.0f)) return unclamped(false);
     const Vec3 a{t.x / len, t.y / len, t.z / len};
     float c = a.z; c = c < -1.0f ? -1.0f : (c > 1.0f ? 1.0f : c);
     if (std::fabs(std::asin(c) * 57.295779513082320f) > r.max_pitch_deg)
-        return clamp_to_pitch_rail(a, u, r.max_pitch_deg, out);   // held at the rail, still converged
+        return clamp_to_pitch_rail(a, u, r.max_pitch_deg, out, hold);   // held at the rail, still converged
     out = a;
-    return true;
+    return unclamped(true);
 }
 
 // A CHASE CAMERA'S CROSSHAIR LINE, as a shot origin. A title that aims vehicle weapons at the point under

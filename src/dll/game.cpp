@@ -51526,13 +51526,26 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
             Sight_PublishRay(sightTitle, ray);
             float bent[3]{};
             float sightRangeWu = 0.0f;
+            // The pitch rail's hysteresis (aim_solve::RailHold): this loop's own, forgotten whenever the title, its
+            // generation or a poll's continuity changes, and by every call that does not clamp.
+            static aim_solve::RailHold s_railHold;
+            static GameTitle s_railHoldTitle = GameTitle::None;
+            static uint32_t s_railHoldGeneration = 0;
+            static uint64_t s_railHoldMs = 0;
+            if (s_railHoldTitle != sightTitle || s_railHoldGeneration != ray.generation ||
+                ray.sampleMs < s_railHoldMs || ray.sampleMs - s_railHoldMs > 100 || !sightSolve)
+                s_railHold.reset();
+            s_railHoldTitle = sightTitle;
+            s_railHoldGeneration = ray.generation;
+            s_railHoldMs = ray.sampleMs;
             if (!sightSolve)
             {
                 // Published for the trace and the witnesses only; the aim keeps its old steer.
             }
             // 1.45 rad: the pitch clamp of this servo target and of the direct drive's write.
             else if (Sight_ConvergedDirection(sightTitle, ray.generation, ray.head, ray.dir, ray.eye, bent,
-                                              1.45f * 57.29578f, &sightRangeWu, nullptr, &convergeWhy))
+                                              1.45f * 57.29578f, &sightRangeWu, nullptr, &convergeWhy,
+                                              &s_railHold))
             {
                 desiredYaw = atan2f(bent[1], bent[0]);
                 desiredPitch = Clamp(asinf(Clamp(bent[2], -1.0f, 1.0f)), -1.45f, 1.45f);
