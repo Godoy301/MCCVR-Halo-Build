@@ -168,6 +168,12 @@ static std::atomic<unsigned>           g_reachDriveResetSeq{0};
 static std::atomic<int>                g_reachUnitCrouchState{-1};
 static std::atomic<unsigned long long> g_reachUnitCrouchMs{0};
 static void* g_reachPcTarget = nullptr;
+// The seat's frame for the Reach direct drive (seat_frame_reader.h): what the vehicle-tilt rebase 0x48ADB8 will do
+// to a seated record, read by ReachPcApplyForUser on the sim thread. Bound with the hook (ReachSeatFrameBind),
+// unbound when it is removed.
+static seat_frame_rt::Binding  g_reachSeatFrame;
+static seat_frame_rt::Counters g_reachSeatFrameCounters;
+static void ReachSeatFrameBind(uintptr_t base, size_t size);
 static void ReachRecordDesiredAim(float gameYaw, float gamePitch);
 extern "C" void ReachPcApplyForUser(int user, const uint8_t* entryRsp);
 // Which caller ran the accumulator (aim_caller_logic.h; defined beside ReachPcApplyForUser). Built at install,
@@ -31426,6 +31432,7 @@ namespace
             {
                 g_reachPcTarget = nullptr;
                 g_reachPcOrig = nullptr;
+                seat_frame_rt::Unbind(g_reachSeatFrame);
             }
             else
             {
@@ -34079,6 +34086,8 @@ namespace
             {
                 // Which caller ran it (the dispatcher's return): built while no hook can run, logged inside.
                 (void)ReachBuildCallerMap(base, size);
+                // The seat's frame (the vehicle-tilt rebase, read by the hook itself): bound while no hook can run.
+                ReachSeatFrameBind(base, size);
                 void* target = reinterpret_cast<void*>(base + 0x6375C);
                 const MH_STATUS created = MH_CreateHook(
                     target, reinterpret_cast<void*>(&ReachPlayerControlHook),
@@ -50798,6 +50807,24 @@ static bool ReachBuildCallerMap(uintptr_t base, size_t size)
     return proven;
 }
 
+// THE SEAT'S FRAME (seat_frame_reader.h; docs/ALL-TITLES-AIM-2026-09-29.md "Seats aim in world angles"). Reach's
+// rebase 0x48ADB8 rotates a seated player's record by the vehicle's up frame R(u) unless the seat's live flags carry
+// bit 4 -- or our skip (seat_aim_world_frame.inl, slot 2) jumps over it on R-V27's seats (case a: an unmodded peer,
+// whose seat keeps bit 4, never rotates). Where the seat's OWN data lacks bit 4 (case b; the skip stands down
+// there) every peer rotates the action angles we send, so the seated write puts R^-1 of the aim in the record.
+static void ReachSeatFrameBind(uintptr_t base, size_t size)
+{
+    const char* why = nullptr;
+    g_reachSeatFrameCounters.unknownLogged.store(0, std::memory_order_relaxed);
+    if (seat_frame_rt::Bind(g_reachSeatFrame, seat_frame::kReachReader, base, size, why))
+        LOG("REACHDRIVE: seat frame reader bound (the rebase +0x%X: its gate +0x%X and up getter +0x%X proven): a "
+            "seated write follows the vehicle-tilt rebase (world / a / b)", seat_frame::kReachReader.rebaseRva,
+            seat_frame::kReachReader.gateRva, seat_frame::kReachReader.getterRva);
+    else
+        LOG("REACHDRIVE: seat frame reader NOT bound (%s at +0x%X); seats are never written (the stick servo keeps "
+            "every seat)", why ? why : "unknown", seat_frame::kReachReader.gateRva);
+}
+
 // Runs on the SIM thread from the naked detour, AFTER native 0x6375C updated desired_angles (stick
 // delta + clamps). Overwrites the pair with the published VR aim, but only for the first local player,
 // only while armed, only for a fresh aim, and only when THIS thread's TLS resolves to the MASTER
@@ -50987,14 +51014,39 @@ extern "C" void ReachPcApplyForUser(int user, const uint8_t* entryRsp)
                 (void)previousPc;
                 (void)previous;
 #endif
+                // THE SEAT'S FRAME (see ReachSeatFrameBind): read now, from the unit the rebase will rotate this
+                // tick. In case (b) the hand's world aim goes into the record's frame, before the latch compares it
+                // with the record; unread, nothing is written this update (the servo keeps the seat).
+                float target[2]{yaw, pitch};
+                bool frameOk = true;
+                if (drivenSeated && user == 0)
+                {
+                    const uint32_t unit = g_reachCamera.playerUnitByOutputUser
+                        ? static_cast<uint32_t>(g_reachCamera.playerUnitByOutputUser(0)) : seat_frame::kNone;
+                    const seat_frame_rt::Live seatFrame = seat_frame_rt::Read(g_reachSeatFrame, nullptr, unit);
+                    seat_frame_rt::Count(g_reachSeatFrameCounters, seatFrame.kase);
+#if HALOMCCVR_DEV_DIAGNOSTICS
+                    // THE FRAME CHECK: the record through R against the game's world aim (the unit's aiming
+                    // vector, built from the record by the rebase one tick ago).
+                    float aim[3]{};
+                    if (ReachReadUnitAimingVector(static_cast<int32_t>(unit), aim))
+                        seat_frame_rt::NoteFrameCheck(g_reachSeatFrameCounters, seatFrame, pair[0], pair[1],
+                                                      std::atan2(aim[1], aim[0]),
+                                                      std::atan2(aim[2], std::sqrt(aim[0] * aim[0] + aim[1] * aim[1])));
+#endif
+                    frameOk = seat_frame_rt::ToRecord(seatFrame, target[0], target[1], pair[0]);
+                }
+                else if (drivenSeated)
+                    frameOk = false;   // only the first local player's seat frame is read
                 // In a seat, the game's update has just clamped the record to the seat's limits (a turret's
                 // pitch stop, a passenger's cone): keep the write inside them rather than carry the aim past
                 // (aim_write::LimitLatch). On foot there is no such clamp, and nothing changes. Per axis, as in
                 // Halo 3 / ODST (critic M1): a look-steered driver's pitch is never latched -- the game levels
                 // it as the vehicle moves, which the latch would take for a limit and hold the write short of
                 // the hand -- so that axis is written as the hand's; its yaw still latches.
-                float target[2]{yaw, pitch};
-                if (drivenSeated)
+                if (!frameOk)
+                    s_seatLimit.reset();
+                else if (drivenSeated)
                 {
                     const float native[2]{pair[0], pair[1]};
                     const bool latch[2]{true, drivenPitchLatch};
@@ -51014,7 +51066,7 @@ extern "C" void ReachPcApplyForUser(int user, const uint8_t* entryRsp)
                 // one-update aim nudge. The game's own record jumps by 2*pi at the same seam (0x63D39-0x63D75),
                 // so the wrap adds no jump it does not make. Pitch stays inside the game's own clamp.
                 const float y = aim_write::wrap_0_2pi(aim_write::unwrap_to_branch(target[0], pair[0]));
-                if (std::isfinite(y) && std::isfinite(target[1]))
+                if (frameOk && std::isfinite(y) && std::isfinite(target[1]))
                 {
                     pair[0] = y;
                     pair[1] = aim_write::clamp_pitch(target[1], 1.45f);
@@ -51128,6 +51180,22 @@ void Game_ReachDirectDriveReport()
     else if (extra)
     {
         LOG("REACHDRIVE apply user=0: no stick update; %s", callers);
+    }
+    {
+        // THE SEAT'S FRAME: how many seated updates read each case (world / a: our skip / b: the inverse / unread).
+        char frames[96];
+        const bool unread = seat_frame_rt::CaseText(g_reachSeatFrameCounters, frames, sizeof(frames));
+        if (frames[0])
+            LOG("REACHDRIVE seats: %s", frames);
+        if (unread && !g_reachSeatFrameCounters.unknownLogged.exchange(1, std::memory_order_relaxed))
+            LOG("REACHDRIVE seats: the seat's frame did not read (the rebase's links or the vehicle's up failed their "
+                "checks); those updates write nothing and the stick servo keeps the seat (logged once)");
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        char check[224];
+        seat_frame_rt::FrameCheckText(g_reachSeatFrameCounters, check, sizeof(check));
+        if (check[0])
+            LOG("REACHDRIVE seats (dev): %s", check);   // frame check: max |R*e(record) - game aim| ...
+#endif
     }
 #if HALOMCCVR_DEV_DIAGNOSTICS
     // THE CENSUS, every 2 s: calls per sim tick and per caller ("stick per tick" = frames per tick: 2.00 at
