@@ -1784,6 +1784,155 @@ void TestPersistentSupportGripApplicability(TestContext& test)
         "an unclassified title is never a wired persistent-grip title");
 }
 
+// Two-handed aim is off in every vehicle seat and walk-up turret. Rehearses
+// vr.cpp's UpdateTwoHandLatch seam: SeatedSupportGate feeds the seat into the
+// shared SupportGripAdmission as a blocker (beside dual wield), the base latch
+// or the durable writer steps on that admission, and DropPresentationHistory
+// decides when the release blend is skipped.
+struct SeatedLatchRig
+{
+    SeatedSupportGate gate;
+    SupportGripAdmission admission;
+    bool latched = false;
+    bool prevGrip = false;
+    bool toggleMode = false;
+    bool lastDrop = false;
+    SeatedSupportGate::Step lastStep{};
+
+    bool Frame(bool seated, bool gripHeld, bool inZone, bool dualWield = false)
+    {
+        const bool rising = gripHeld && !prevGrip;
+        prevGrip = gripHeld;
+        lastStep = gate.Observe(seated);
+        const bool before = latched;
+        const bool allowed = admission.Observe(gripHeld,
+            dualWield || lastStep.blocksSupport, false);
+        if (!allowed)
+            latched = false;
+        else if (toggleMode)
+        {
+            if (rising) latched = latched ? false : inZone;
+        }
+        else
+            latched = UpdateTwoHandHold(latched, gripHeld, inZone);
+        lastDrop = SeatedSupportGate::DropPresentationHistory(
+            lastStep, before, latched);
+        return latched;
+    }
+};
+
+void TestSeatedTwoHandGate(TestContext& test)
+{
+    // Hold mode, the reported case: sprinting two-handed, then boarding.
+    SeatedLatchRig hold;
+    test.Check(hold.Frame(false, true, true) && !hold.lastDrop,
+        "seat: on foot, a grip in the zone engages two-handed aim");
+    test.Check(!hold.Frame(true, true, true) && hold.lastStep.enteredSeat &&
+            hold.lastDrop,
+        "seat: boarding with the hold engaged drops it and skips the release blend");
+    test.Check(!hold.Frame(true, true, true) && !hold.lastStep.enteredSeat &&
+            !hold.lastDrop,
+        "seat: a held grip in the zone never engages while seated; nothing is re-dropped");
+    test.Check(!hold.Frame(true, false, true) && !hold.Frame(true, true, true),
+        "seat: a fresh grip while seated still cannot engage");
+    test.Check(!hold.Frame(false, true, true) && !hold.lastDrop,
+        "seat: leaving the seat with the grip still held does not re-engage");
+    test.Check(!hold.Frame(false, true, true),
+        "seat: the still-held grip stays one-handed on foot");
+    test.Check(!hold.Frame(false, false, true) && hold.Frame(false, true, true),
+        "seat: release and grip again on foot re-engages");
+
+    // Boarding without a hold: the entry edge still drops presentation
+    // history once (a release blend begun just before boarding).
+    SeatedLatchRig idle;
+    (void)idle.Frame(false, false, false);
+    test.Check(!idle.Frame(true, false, false) && idle.lastDrop,
+        "seat: the entry edge drops presentation history even without a hold");
+    test.Check(!idle.Frame(true, false, false) && !idle.lastDrop,
+        "seat: a steady seat drops nothing further");
+    test.Check(idle.Frame(false, true, true),
+        "seat: a grip squeezed as or after the player leaves is a new grip and engages");
+
+    // An ordinary on-foot release keeps its blend: only seated drops skip it.
+    SeatedLatchRig onFoot;
+    (void)onFoot.Frame(false, true, true);
+    test.Check(!onFoot.Frame(false, false, true) && !onFoot.lastDrop,
+        "seat: an on-foot release keeps the release blend");
+
+    // A pose outage defers the durable drop until tracking returns; that
+    // later, still-seated drop skips the blend too.
+    const SeatedSupportGate::Step seatedSteady{true, false};
+    test.Check(SeatedSupportGate::DropPresentationHistory(seatedSteady, true, false),
+        "seat: a hold that drops later while seated still skips the blend");
+    test.Check(!SeatedSupportGate::DropPresentationHistory(seatedSteady, true, true) &&
+            !SeatedSupportGate::DropPresentationHistory(seatedSteady, false, false),
+        "seat: no drop without a released hold or an entry edge");
+    const SeatedSupportGate::Step onFootStep{false, false};
+    test.Check(!SeatedSupportGate::DropPresentationHistory(onFootStep, true, false),
+        "seat: an on-foot release is never a seated drop");
+
+    // Toggle mode: boarding releases; a press made in the seat and still held
+    // on exit is not a new grab; the next press on foot toggles on.
+    SeatedLatchRig toggle;
+    toggle.toggleMode = true;
+    (void)toggle.Frame(false, true, true);
+    test.Check(toggle.latched, "seat: toggle engages on foot");
+    (void)toggle.Frame(false, false, true);
+    test.Check(!toggle.Frame(true, false, true) && toggle.lastDrop,
+        "seat: boarding releases a toggled hold");
+    test.Check(!toggle.Frame(true, true, true),
+        "seat: a toggle press in the seat does nothing");
+    test.Check(!toggle.Frame(false, true, true),
+        "seat: that press still held on exit does not engage");
+    (void)toggle.Frame(false, false, true);
+    test.Check(toggle.Frame(false, true, true),
+        "seat: the next toggle press on foot engages");
+
+    // On-foot parity: with no seat ever seen the latch is the pre-change
+    // admission exactly, dual wield included.
+    SeatedLatchRig gated;
+    SupportGripAdmission reference;
+    bool referenceLatched = false;
+    bool parity = true;
+    for (unsigned i = 0; i < 64; ++i)
+    {
+        const bool grip = (i * 7u + 3u) % 5u < 3u;
+        const bool zone = (i * 11u + 1u) % 3u != 0u;
+        const bool dual = (i % 13u) == 6u;
+        const bool allowed = reference.Observe(grip, dual, false);
+        referenceLatched = allowed &&
+            UpdateTwoHandHold(referenceLatched, grip, zone);
+        parity = parity && gated.Frame(false, grip, zone, dual) ==
+            referenceLatched && !gated.lastDrop &&
+            gated.admission.requiresRelease == reference.requiresRelease;
+    }
+    test.Check(parity, "seat: on foot the latch is exactly the pre-change one");
+
+    // Persistent support grip: the seat closes the durable writer's hard gate,
+    // which releases an engaged relationship; held across the exit, the armed
+    // admission keeps the gate closed until the Grip is released.
+    SupportGripAdmission pgAdmission;
+    SeatedSupportGate pgGate;
+    DurableWriterState writer;
+    const auto pgFrame = [&](bool seated, bool grip)
+    {
+        const SeatedSupportGate::Step step = pgGate.Observe(seated);
+        const bool allowed = pgAdmission.Observe(grip, step.blocksSupport, false);
+        writer.requiresRelease = pgAdmission.requiresRelease;
+        return DurableWriterStep(writer, allowed, allowed && grip,
+            OwnerEvidence::KnownPresent, kOwnerA, kGeneration);
+    };
+    test.Check(pgFrame(false, true) == DurableWriterAction::Bind && writer.engaged,
+        "seat: the durable writer binds on foot");
+    test.Check(pgFrame(true, true) == DurableWriterAction::Released && !writer.engaged,
+        "seat: boarding releases the durable relationship");
+    test.Check(pgFrame(false, true) != DurableWriterAction::Bind && !writer.engaged,
+        "seat: a grip held across the exit does not rebind");
+    (void)pgFrame(false, false);
+    test.Check(pgFrame(false, true) == DurableWriterAction::Bind && writer.engaged,
+        "seat: a fresh grip on foot rebinds");
+}
+
 } // namespace
 
 int main()
@@ -1824,5 +1973,6 @@ int main()
     TestSolveSupportQualification(test);
     TestPresentedRayConsumption(test);
     TestPersistentSupportGripApplicability(test);
+    TestSeatedTwoHandGate(test);
     return test.Finish();
 }

@@ -13423,7 +13423,7 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
 
     void UpdateTwoHandLatch(bool rightValid, const XrPosef& rpose,
                             bool leftValid, const XrPosef& lpose, float gripL,
-                            bool rolesChanged, bool weaponGesture = false)
+                            bool rolesChanged, bool weaponGesture, bool seated)
     {
         // Track the physical grip edge even while tracking/handedness resets
         // invalidate the poses. A held grip is not a new grab on recovery.
@@ -13432,8 +13432,11 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         const bool rising = gripHeld && !prevGrip;
         prevGrip = gripHeld;
         static SupportGripAdmission admission;
+        // A vehicle seat or turret blocks support exactly as dual wield does
+        // (SeatedSupportGate): drop on entry, release before reacquire on exit.
         const bool grabAllowed = admission.Observe(
-            gripHeld, SecondaryWeaponPresentationActive(), rolesChanged);
+            gripHeld, SecondaryWeaponPresentationActive() || seated,
+            rolesChanged);
         // A0 transitional applicability gate: the durable writer only owns a
         // wired title. An unwired title (ODST/Reach/H4 until their own
         // tranche) runs the EXACT base latch path below even with the config
@@ -13472,6 +13475,39 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         {
             g_twoHandLatched.store(UpdateTwoHandHold(
                 g_twoHandLatched.load(), gripHeld, inZone));
+        }
+    }
+
+    // Two-handed aim is on-foot only, in every title: in a vehicle seat or
+    // walk-up turret the aim is the primary controller's (the configured aim
+    // hand) alone. The seat comes from each title's own seat sampler, failing
+    // OPEN (Game_TitleKnownSeated), so on foot - or with a sampler down - the
+    // latch above runs exactly as before.
+    void UpdateSeatedTwoHandLatch(bool rightValid, const XrPosef& rpose,
+                            bool leftValid, const XrPosef& lpose, float gripL,
+                            bool rolesChanged, bool weaponGesture)
+    {
+        static SeatedSupportGate seatGate;
+        const SeatedSupportGate::Step seat = seatGate.Observe(
+            Game_TitleKnownSeated(TitleAdapter_GetActiveTitle()));
+        const bool latchedBefore =
+            g_twoHandLatched.load(std::memory_order_acquire);
+        UpdateTwoHandLatch(rightValid, rpose, leftValid, lpose, gripL,
+            rolesChanged, weaponGesture, seat.blocksSupport);
+        const bool latchedAfter =
+            g_twoHandLatched.load(std::memory_order_acquire);
+        if (SeatedSupportGate::DropPresentationHistory(
+                seat, latchedBefore, latchedAfter))
+        {
+            // No release blend and no filter/damping history: the next solve
+            // is the primary controller's own aim, not an ease away from the
+            // support hand. Same frame-thread layers the owner-break path
+            // invalidates.
+            InvalidateAimContinuityLayer();
+            InvalidateTwoHandLabTemporal();
+            if (latchedBefore && !latchedAfter)
+                LOG("M3: two-handed aim released: vehicle seat (the seat aims "
+                    "with the primary controller; grip again on foot to re-engage)");
         }
     }
 
@@ -14212,7 +14248,7 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         const bool supportWasLatched=g_twoHandLatched.load(std::memory_order_acquire);
         // Diagnostic-only pre-latch weapon probe (no gameplay effect).
         ProbeCaptureWeaponPreLatch();
-        UpdateTwoHandLatch(valid, location.pose, leftValid, leftLocation.pose,
+        UpdateSeatedTwoHandLatch(valid, location.pose, leftValid, leftLocation.pose,
                            rawSupportGrip, handChanged, weapon_interaction::BlocksSupportGrab(weaponGesture));
         {
             static hud_reveal::Gesture reveal;

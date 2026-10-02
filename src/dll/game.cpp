@@ -54105,54 +54105,79 @@ bool Game_TitleOnFootPlayerControlled(GameTitle title)
     __except(EXCEPTION_EXECUTE_HANDLER) { return false; }
 }
 
-// Whether the local player is in a vehicle seat, from each title's LAST KNOWN seat state (a pause stops the
-// samples, and the recenter that follows it must still see the seat). With no seat sampler (Halo 3 / ODST /
-// Reach not installed or faulted, CE unreadable), or before its first answer where that is known (Halo 4 since
-// the level began, the Halo 2 observer down or not yet sampled), it fails CLOSED: "seated", so no lift.
-// (A runtime sampler fault therefore costs the lift on foot until the title reloads: degraded, never wrong.)
-// For the recenter's standing lift (VR_RecenterStandingLiftM): a seat
-// composes its own view, the player may well be sitting in it, and nothing there pairs with the lift.
-bool Game_TitleSeated(GameTitle title)
+// Each title's LAST KNOWN seat state (a pause stops the samples, and whatever follows it must still see the
+// seat), as a three-way answer so each consumer chooses how to treat "no answer":
+//  - Unknown: no seat sampler (Halo 3 / ODST / Reach not installed or faulted, CE unreadable), or no answer
+//    yet where that is known (Halo 4 since the level began, the Halo 2 observer down or not yet sampled).
+//  - Seated: the title's own sampler last saw the local player in a seat. Walk-up turrets are seats wherever
+//    the sampler sees them: CE (a turret is a vehicle), Halo 3 / ODST (the seat probe), Reach's camera-info
+//    sampler (type-6 mounted turrets), Halo 2's observer and Halo 4's seat stamp.
+//  - OnFoot: everything else, including a title that is not the active one.
+// Reach's unit_in_vehicle fallback (camera sampler not installed) reports a mounted turret on foot, so its
+// OnFoot is no answer while its Vehicle is still a seat.
+// Runs inside the callers' __try: reads atomics and the SEH-guarded CE player state only.
+namespace
 {
-    if (title!=TitleAdapter_GetActiveTitle()) return false;
-    __try
+    enum class TitleSeatState : uint8_t { Unknown, OnFoot, Seated };
+
+    TitleSeatState ReadTitleSeatState(GameTitle title)
     {
+        if (title!=TitleAdapter_GetActiveTitle()) return TitleSeatState::OnFoot;
+        const auto seatedIf=[](bool seated) { return seated?TitleSeatState::Seated:TitleSeatState::OnFoot; };
         switch(title)
         {
         case GameTitle::HaloCE:
         {
             HaloCELocalPlayerState player{};
-            if (!HaloCEControls_GetLocalPlayerState(player)) return true;
-            return player.hasControlledUnit&&!player.onFoot;
+            if (!HaloCEControls_GetLocalPlayerState(player)) return TitleSeatState::Unknown;
+            return seatedIf(player.hasControlledUnit&&!player.onFoot);
         }
         case GameTitle::Halo3:
             if (g_halo3VehicleBinding.load(std::memory_order_acquire)!=
-                static_cast<uint8_t>(Halo3VehicleBindingState::Installed)) return true;
-            return g_halo3VehicleFpStable.load(std::memory_order_relaxed)==
-                static_cast<uint32_t>(Halo3VehicleState::Vehicle);
+                static_cast<uint8_t>(Halo3VehicleBindingState::Installed)) return TitleSeatState::Unknown;
+            return seatedIf(g_halo3VehicleFpStable.load(std::memory_order_relaxed)==
+                static_cast<uint32_t>(Halo3VehicleState::Vehicle));
         case GameTitle::Halo3ODST:
             if (g_odstVehicleBinding.load(std::memory_order_acquire)!=
-                static_cast<uint8_t>(OdstVehicleBindingState::Installed)) return true;
-            return g_odstSeatedLastKnown.load(std::memory_order_relaxed);
+                static_cast<uint8_t>(OdstVehicleBindingState::Installed)) return TitleSeatState::Unknown;
+            return seatedIf(g_odstSeatedLastKnown.load(std::memory_order_relaxed));
         case GameTitle::HaloReach:
-            // Only the camera-info sampler sees a mounted (type-6) turret; the unit_in_vehicle fallback
-            // reports it on foot. Without the sampler no seat state can be vouched for: seated, so no lift.
-            if (g_reachCamera.vehicleCameraBindingState.load(std::memory_order_acquire) !=
-                static_cast<uint8_t>(ReachVehicleCameraBindingState::Installed))
-                return true;
-            return g_reachVehicleInputSnapshot.load(std::memory_order_acquire)==ReachVehicleInputSnapshot(
-                TitleAdapter_GetGeneration(title),ReachVehicleInputState::Vehicle);
+            if (g_reachVehicleInputSnapshot.load(std::memory_order_acquire)==ReachVehicleInputSnapshot(
+                    TitleAdapter_GetGeneration(title),ReachVehicleInputState::Vehicle))
+                return TitleSeatState::Seated;
+            return g_reachCamera.vehicleCameraBindingState.load(std::memory_order_acquire)==
+                    static_cast<uint8_t>(ReachVehicleCameraBindingState::Installed)
+                ? TitleSeatState::OnFoot : TitleSeatState::Unknown;
 #if HALOMCCVR_HALO2_STEREO6DOF
         case GameTitle::Halo2:
-            return Halo2Observer6Dof_LastKnownSeated();
+            if (!Halo2Observer6Dof_LastKnownSeatValid()) return TitleSeatState::Unknown;
+            return seatedIf(Halo2Observer6Dof_LastKnownSeated());
 #endif
 #if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA
         case GameTitle::Halo4:
-            if (!g_halo4SeatStamp.lastKnownValid.load(std::memory_order_relaxed)) return true;
-            return g_halo4SeatStamp.lastKnownSeated.load(std::memory_order_relaxed);
+            if (!g_halo4SeatStamp.lastKnownValid.load(std::memory_order_relaxed)) return TitleSeatState::Unknown;
+            return seatedIf(g_halo4SeatStamp.lastKnownSeated.load(std::memory_order_relaxed));
 #endif
-        default: return false;
+        default: return TitleSeatState::OnFoot;
         }
     }
+}
+
+// Whether the local player is in a vehicle seat, failing CLOSED: no answer reads "seated", so no lift.
+// (A runtime sampler fault therefore costs the lift on foot until the title reloads: degraded, never wrong.)
+// For the recenter's standing lift (VR_RecenterStandingLiftM): a seat
+// composes its own view, the player may well be sitting in it, and nothing there pairs with the lift.
+bool Game_TitleSeated(GameTitle title)
+{
+    __try { return ReadTitleSeatState(title)!=TitleSeatState::OnFoot; }
+    __except(EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+
+// Whether the local player is in a vehicle seat or turret, failing OPEN: only the title's own positive seat
+// answer counts, so an on-foot-only feature stays exactly as it is while a sampler is down. Two-handed aim
+// reads it on VR's frame thread (support-grip admission): a seat is the primary controller's alone.
+bool Game_TitleKnownSeated(GameTitle title)
+{
+    __try { return ReadTitleSeatState(title)==TitleSeatState::Seated; }
     __except(EXCEPTION_EXECUTE_HANDLER) { return false; }
 }
