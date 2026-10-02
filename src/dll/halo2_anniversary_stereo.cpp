@@ -23,6 +23,7 @@
 #include "halo2_saber_camera.h"
 #include "halo2_stereo_core.h"
 #include "hook_quiescence.h"
+#include "own_image_fault_filter.h"
 #include "vr.h"
 
 #ifndef HALOMCCVR_HALO2_ANNIVERSARY_STEREO
@@ -128,7 +129,21 @@ namespace
     std::atomic<uint64_t> g_pairs{0};
     std::atomic<uint64_t> g_drops{0};
     std::atomic<uint64_t> g_stockPasses{0};
+    // Faults CONTAINED by this core's handlers: only HaloMCCVR's own (see
+    // GameFault below). A fault in the game's code is no longer counted here.
     std::atomic<uint64_t> g_exceptions{0};
+    // Every __except here that wraps a call into the game's code uses
+    // GameFault() as its filter. The build bd2aac6 freeze: the renderer
+    // dereferenced null twice inside the scene render (halo2 +0x107449,
+    // +0x3D0730) ~190 ms after a cinematic (StockScreen) frame. The old
+    // EXCEPTION_EXECUTE_HANDLER swallowed both ("2 drops, 2 exceptions"),
+    // unwinding the renderer mid-frame past its own lock/event cleanup, and
+    // the render thread never presented again - a silent hang instead of a
+    // crash with a dump. Now such a fault propagates to the game's / the OS's
+    // own handling, counted here and reported by the cold poll.
+    OwnImageFaultStats g_gameFaults{};
+#define GameFault(anchor) \
+    OwnImageFaultFilter(GetExceptionInformation(), (anchor), g_gameFaults)
     // E-H2-12: per eye pass, the projection read back from record+0x4AC
     // after the scene render returned. Unreadable means that eye's crop used
     // the written cover; a mismatch means Saber rasterised a different
@@ -357,6 +372,7 @@ namespace
             g_rebuildMatrices.load(std::memory_order_acquire));
         if (!refresh || !commit || !rebuild)
             return false;
+        const uintptr_t faultAnchor = OwnImageFault_Anchor();
         __try
         {
             refresh(reinterpret_cast<void*>(camera));
@@ -364,7 +380,7 @@ namespace
             rebuild(reinterpret_cast<void*>(record), nullptr, nullptr, nullptr);
             return true;
         }
-        __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+        __except (GameFault(faultAnchor)) { return false; }
     }
 
     bool RestoreCamera(
@@ -381,20 +397,22 @@ namespace
             g_rebuildMatrices.load(std::memory_order_acquire));
         if (!rebuild)
             return false;
+        const uintptr_t faultAnchor = OwnImageFault_Anchor();
         __try
         {
             rebuild(reinterpret_cast<void*>(record), nullptr, nullptr, nullptr);
             return true;
         }
-        __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+        __except (GameFault(faultAnchor)) { return false; }
     }
 
     void CallStock(
         SaberSceneFn original, void* ctx, void* rdx, uint32_t viewIndex) noexcept
     {
         g_stockPasses.fetch_add(1, std::memory_order_relaxed);
+        const uintptr_t faultAnchor = OwnImageFault_Anchor();
         __try { original(ctx, rdx, viewIndex); }
-        __except (EXCEPTION_EXECUTE_HANDLER)
+        __except (GameFault(faultAnchor))
         {
             g_exceptions.fetch_add(1, std::memory_order_relaxed);
         }
@@ -439,6 +457,8 @@ namespace
     void EyeLoopBody(
         SaberSceneFn original, void* ctx, void* rdx, uint32_t viewIndex) noexcept
     {
+        // The scene render below (and the scope pass's) is the game's code.
+        const uintptr_t faultAnchor = OwnImageFault_Anchor();
         const uintptr_t base = g_moduleBase.load(std::memory_order_acquire);
         const uint32_t generation = g_generation.load(std::memory_order_acquire);
         const uintptr_t observer = g_observerResult.load(std::memory_order_acquire);
@@ -928,7 +948,7 @@ namespace
                 original(ctx, rdx, viewIndex);
                 rendered = true;
             }
-            __except (EXCEPTION_EXECUTE_HANDLER)
+            __except (GameFault(faultAnchor))
             {
                 g_exceptions.fetch_add(1, std::memory_order_relaxed);
             }
@@ -1178,24 +1198,14 @@ namespace
     }
 
     thread_local bool g_insideHudReplay = false;
-    __declspec(noinline) void __fastcall HostUiDetour(void* param)
+    // The armed half of HostUiDetour. Its caller restores the in-replay flag
+    // and the callback count in a __finally, so they are right even when a
+    // game fault propagates out of here and something above handles it.
+    __declspec(noinline) void HostUiReplay(
+        HostUiCallbackFn original, void* param) noexcept
     {
-        const auto original = reinterpret_cast<HostUiCallbackFn>(
-            g_originalHostUi.load(std::memory_order_acquire));
-        if (!original)
-            return;
-        g_hudCallbacks.fetch_add(1, std::memory_order_relaxed);
-        if (g_insideHudReplay || g_insideEyeLoop ||
-            !g_armed.load(std::memory_order_acquire) ||
-            !g_levelLive.load(std::memory_order_acquire) ||
-            !g_remasteredLive.load(std::memory_order_acquire) ||
-            g_teardown.load(std::memory_order_acquire))
-        {
-            original(param);
-            return;
-        }
-        g_activeCallbacks.fetch_add(1, std::memory_order_acq_rel);
-        g_insideHudReplay = true;
+        // The host UI callback (original) is the game's code.
+        const uintptr_t faultAnchor = OwnImageFault_Anchor();
         const uint32_t generation = g_generation.load(std::memory_order_acquire);
         const uint64_t serial = g_lastCompletedSerial.load(std::memory_order_acquire);
         const char* reason = "none";
@@ -1207,12 +1217,10 @@ namespace
             g_hudStockPasses.fetch_add(1, std::memory_order_relaxed);
             g_hudLastReason = reason;
             __try { original(param); }
-            __except (EXCEPTION_EXECUTE_HANDLER)
+            __except (GameFault(faultAnchor))
             {
                 g_exceptions.fetch_add(1, std::memory_order_relaxed);
             }
-            g_insideHudReplay = false;
-            g_activeCallbacks.fetch_sub(1, std::memory_order_acq_rel);
             return;
         }
         bool ok = true;
@@ -1248,7 +1256,7 @@ namespace
                     reason = "eye 0 recapture refused";
             }
         }
-        __except (EXCEPTION_EXECUTE_HANDLER)
+        __except (GameFault(faultAnchor))
         {
             g_exceptions.fetch_add(1, std::memory_order_relaxed);
             ok = false;
@@ -1261,8 +1269,33 @@ namespace
             g_hudFailures.fetch_add(1, std::memory_order_relaxed);
             g_hudLastReason = reason;
         }
-        g_insideHudReplay = false;
-        g_activeCallbacks.fetch_sub(1, std::memory_order_acq_rel);
+    }
+
+    __declspec(noinline) void __fastcall HostUiDetour(void* param)
+    {
+        const auto original = reinterpret_cast<HostUiCallbackFn>(
+            g_originalHostUi.load(std::memory_order_acquire));
+        if (!original)
+            return;
+        g_hudCallbacks.fetch_add(1, std::memory_order_relaxed);
+        if (g_insideHudReplay || g_insideEyeLoop ||
+            !g_armed.load(std::memory_order_acquire) ||
+            !g_levelLive.load(std::memory_order_acquire) ||
+            !g_remasteredLive.load(std::memory_order_acquire) ||
+            g_teardown.load(std::memory_order_acquire))
+        {
+            original(param);
+            return;
+        }
+        g_activeCallbacks.fetch_add(1, std::memory_order_acq_rel);
+        g_insideHudReplay = true;
+        OwnImageFault_BeginScope();
+        __try { HostUiReplay(original, param); }
+        __finally
+        {
+            g_insideHudReplay = false;
+            g_activeCallbacks.fetch_sub(1, std::memory_order_acq_rel);
+        }
     }
 
     __declspec(noinline) void __fastcall SaberSceneDetour(
@@ -1295,10 +1328,14 @@ namespace
 
         g_activeCallbacks.fetch_add(1, std::memory_order_acq_rel);
         g_insideEyeLoop = true;
+        OwnImageFault_BeginScope();
+        // EyeLoopBody calls the game's scene render; this outer handler must
+        // not catch what the inner GameFault filters let through.
+        const uintptr_t faultAnchor = OwnImageFault_Anchor();
         __try
         {
             __try { EyeLoopBody(original, ctx, rdx, viewIndex); }
-            __except (EXCEPTION_EXECUTE_HANDLER)
+            __except (GameFault(faultAnchor))
             {
                 g_exceptions.fetch_add(1, std::memory_order_relaxed);
             }
@@ -1683,6 +1720,74 @@ namespace
         }
     }
 }
+
+    // Cold poll only: names the last fault the GameFault filters let through.
+    // Only reached when the game (or the OS) survived it; otherwise the
+    // first-chance record in HaloMCCVR-native-faults.log is the evidence.
+    static void ReportPropagatedGameFaults(uintptr_t moduleBase, size_t moduleSize) noexcept
+    {
+        static uint64_t reported = 0;
+        const uint64_t propagated =
+            g_gameFaults.propagated.load(std::memory_order_acquire);
+        if (propagated == reported)
+            return;
+        reported = propagated;
+        if (!moduleBase)
+        {
+            moduleBase = g_moduleBase.load(std::memory_order_acquire);
+            moduleSize = kHalo2RetailImageSize;
+        }
+        const FaultImageRange game{moduleBase, moduleSize};
+        const FaultImageRange self = OwnImageFault_SelfRange();
+        const auto describe = [&](uintptr_t address, char* out, size_t bytes)
+        {
+            if (FaultImageContains(game, address))
+                _snprintf_s(out, bytes, _TRUNCATE, "halo2+0x%llX",
+                    static_cast<unsigned long long>(address - game.base));
+            else if (FaultImageContains(self, address))
+                _snprintf_s(out, bytes, _TRUNCATE, "HaloMCCVR+0x%llX",
+                    static_cast<unsigned long long>(address - self.base));
+            else
+                _snprintf_s(out, bytes, _TRUNCATE, "0x%llX",
+                    static_cast<unsigned long long>(address));
+        };
+        const uintptr_t fault =
+            g_gameFaults.lastFaultAddress.load(std::memory_order_relaxed);
+        const uintptr_t foreign =
+            g_gameFaults.lastForeignAddress.load(std::memory_order_relaxed);
+        const unsigned code =
+            g_gameFaults.lastCode.load(std::memory_order_relaxed);
+        const unsigned long long contained =
+            g_exceptions.load(std::memory_order_relaxed);
+        char at[64]{}, frame[64]{};
+        describe(fault, at, sizeof(at));
+        describe(foreign, frame, sizeof(frame));
+        if (foreign == fault)
+        {
+            LOG("H2A stereo: a fault in %s code at %s propagated (not "
+                "contained); code=0x%08X, %llu propagated in total, %llu "
+                "contained in HaloMCCVR code",
+                FaultImageContains(game, fault) ? "game" : "non-HaloMCCVR",
+                at, code, static_cast<unsigned long long>(propagated), contained);
+        }
+        else if (foreign)
+        {
+            LOG("H2A stereo: a fault in HaloMCCVR code at %s propagated (not "
+                "contained): it ran inside a game frame at %s that the handler "
+                "would have unwound; code=0x%08X, %llu propagated in total, "
+                "%llu contained in HaloMCCVR code",
+                at, frame, code, static_cast<unsigned long long>(propagated),
+                contained);
+        }
+        else
+        {
+            LOG("H2A stereo: a fault in HaloMCCVR code at %s propagated (not "
+                "contained): its frames up to the handler could not be proven "
+                "HaloMCCVR's own; code=0x%08X, %llu propagated in total, %llu "
+                "contained in HaloMCCVR code",
+                at, code, static_cast<unsigned long long>(propagated), contained);
+        }
+    }
 
 #include "halo2_anniversary_poll.inl"
 
