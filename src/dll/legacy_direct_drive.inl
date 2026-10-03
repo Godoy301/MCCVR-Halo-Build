@@ -1371,13 +1371,16 @@ bool LegacyDriveRecordSnapshot(GameTitle title, float& nativeYaw, float& nativeP
 // camera evaluator for it (the acquisition, 0x13B08C at 0xF4CC8, in the same pass and just before this stick call
 // at 0xF6D11: both inside 0xF66AC, read from the pinned module) -- carried one measured simulation tick ahead,
 // because the record written now is first consumed by the next tick. Never P rebuilt from the current eye: that
-// would recreate the error. Kept as published (fail closed) when the setpoint is not the solve that built P (the
-// fixed-distance steer, a seat author), the point is stale, seated or held at the pitch rail, the game's eye is
-// unknown or stale (Halo 3's dual-aim hooks absent), or P is within 30 cm of that eye or behind it (no magnitude
-// limit: shot_lag::Recompose). When the game skipped its acquisition this tick, the eye is asked of the same
-// evaluator directly (Halo3TickEyeFromEvaluator; shot_lag::TickEyeMiss). Yaw is
-// atan2's like the solve's: the wrap into [0, 2*pi) below applies to it as to every write. The decision is
-// shot_lag::RecomposeRecord (pure, unit-tested); this gathers its inputs.
+// would recreate the error. ONLY FROM OUR UNIT'S FIRST-PERSON EYE (shot_lag_logic.h 4d, 2026-10-03): our unit on
+// foot in control and the director's camera for output user 0 the first-person camera -- in Forge the Monitor's
+// own and orbit cameras bent the record by up to 88 deg and flung the held object. Kept as published (fail closed)
+// when the setpoint is not the solve that built P (the fixed-distance steer, a seat author), the point is stale,
+// seated or held at the pitch rail, the eye is not a first-person eye, the game's eye is not from this tick (Halo
+// 3's dual-aim hooks absent, or none published since the previous stick call), or P is within 30 cm of that eye or
+// behind it (no magnitude limit: shot_lag::Recompose). When the game skipped its acquisition this tick, the eye is
+// asked of the same evaluator directly (Halo3TickEyeFromEvaluator; shot_lag::TickEyeMiss). Yaw is atan2's like the
+// solve's: the wrap into [0, 2*pi) below applies to it as to every write. The decision is shot_lag::RecomposeRecord
+// (pure, unit-tested); this gathers its inputs.
 using LegacyRecomposeWhy = shot_lag::Recompose;
 std::atomic<uint32_t> g_legacyRecompose[static_cast<size_t>(LegacyRecomposeWhy::Count)]{};
 std::atomic<uint32_t> g_legacyRecomposeMilliDeg{0}, g_legacyRecomposeMaxMilliDeg{0};
@@ -1385,14 +1388,51 @@ std::atomic<uint32_t> g_legacyRecomposeMilliDeg{0}, g_legacyRecomposeMaxMilliDeg
 // the SHOT RECORD line.
 std::atomic<uint32_t> g_tickEyeMiss[static_cast<size_t>(shot_lag::TickEyeMiss::Count)]{};
 std::atomic<uint32_t> g_tickEyeAcquisition[static_cast<size_t>(shot_lag::TickEyeAcquisition::Count)]{};
+// The first-person eye identity's verdicts at the stick calls that had a point to recompose through (4d), and the
+// director's camera mode each time it said "not first person" (the last slot: the first-person camera with another
+// perspective), for the SHOT RECORD first-person line.
+std::atomic<uint32_t> g_firstPersonEye[static_cast<size_t>(shot_lag::FirstPersonEye::Count)]{};
+std::atomic<uint32_t> g_firstPersonEyeMode[shot_lag::kHalo3CameraModeCount + 1]{};
+
+// THE FIRST-PERSON EYE (sim thread, the stick call; shot_lag_logic.h 4d). Our unit, on foot (no seat word, the
+// vehicle sampler on foot) and player-controlled, and the director's camera for output user 0 the first-person
+// camera from the first-person perspective (ReadHalo3DirectorCamera, game.cpp). `unitOut` is the unit read; `modeOut`
+// the director's mode when read (-1 otherwise).
+shot_lag::FirstPersonEye Halo3FirstPersonEyeNow(uint32_t generation, int32_t& unitOut, int32_t& modeOut,
+                                                int32_t& perspectiveOut)
+{
+    shot_lag::FirstPersonEyeInput in{};
+    unitOut = -1;
+    __try
+    {
+        unitOut = g_halo3PlayerUnitGetter ? g_halo3PlayerUnitGetter(0) : -1;
+        int32_t scene = -1, shot = -1;
+        const uint8_t* unit = unitOut != -1 ? Halo3MeleeSelectionObject(static_cast<uint32_t>(unitOut), 0) : nullptr;
+        in.onFootControlled = unit &&
+            *reinterpret_cast<const int16_t*>(unit + kHalo3UnitSeatWordOffset) == -1 &&
+            Game_Halo3VehicleState().state == Halo3VehicleState::OnFoot &&
+            ReadCinematicControl(scene, shot) == CinematicControlState::PlayerControlled;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        in.onFootControlled = false;
+    }
+    in.directorRead = ReadHalo3DirectorCamera(generation, in.mode, in.perspective);
+    modeOut = in.directorRead ? in.mode : -1;
+    perspectiveOut = in.directorRead ? in.perspective : -1;
+    return shot_lag::ClassifyFirstPersonEye(in);
+}
 
 // THE GAME'S EYE, ASKED DIRECTLY (sim thread, the stick call; shot_lag_logic.h 4c). Halo 3 skips its aim
 // acquisition -- and with it the evaluator call the eye is normally published from -- by its own branch (0xF48C9).
 // The evaluator itself (0x212198, signature-bound by the dual-aim lane, InstallHalo3DualAim; called through its
 // trampoline, so our camera detour does not run) is the same eye the acquisition and the firing assist ask for.
-// Gated by identity only: the hooks live for this generation, our unit, on foot and player-controlled. The lane's
-// callback count brackets the call so RemoveHalo3DualAim's quiescence wait covers it. Returns the reason.
-shot_lag::TickEyeMiss Halo3TickEyeFromEvaluator(uint32_t generation)
+// Asked only for a first-person eye (4d), and never when the acquisition ran and declined the unit (an unarmed
+// Monitor: the game itself does not aim it). Its answer is published only when it took the first-person path
+// (0x17DAEC, whose chain writes nothing but its out-parameters: read offline two calls deep). The lane's callback
+// count brackets the call so RemoveHalo3DualAim's quiescence wait covers it. Returns the reason.
+shot_lag::TickEyeMiss Halo3TickEyeFromEvaluator(uint32_t generation, int32_t unit, bool firstPersonEye,
+                                                shot_lag::TickEyeAcquisition acquisition)
 {
     auto& feature = g_halo3Dual;
     feature.callbacks.fetch_add(1, std::memory_order_acq_rel);
@@ -1404,19 +1444,17 @@ shot_lag::TickEyeMiss Halo3TickEyeFromEvaluator(uint32_t generation)
         in.hooked = evaluator && feature.enabled.load(std::memory_order_acquire) &&
             !feature.faulted.load(std::memory_order_acquire);
         in.sameGeneration = generation && feature.generation == generation;
-        in.unit = g_halo3PlayerUnitGetter ? g_halo3PlayerUnitGetter(0) : -1;
-        int32_t scene = -1, shot = -1;
-        const uint8_t* unit = in.unit != -1 ? Halo3MeleeSelectionObject(static_cast<uint32_t>(in.unit), 0) : nullptr;
-        in.onFootControlled = unit &&
-            *reinterpret_cast<const int16_t*>(unit + kHalo3UnitSeatWordOffset) == -1 &&
-            Game_Halo3VehicleState().state == Halo3VehicleState::OnFoot &&
-            ReadCinematicControl(scene, shot) == CinematicControlState::PlayerControlled;
+        in.unit = unit;
+        in.firstPersonEye = firstPersonEye;
+        in.acquisition = acquisition;
         why = shot_lag::TickEyeFallbackGate(in);
         if (why == shot_lag::TickEyeMiss::FromEvaluator)
         {
             float position[3]{}, direction[3]{};
-            (void)evaluator(static_cast<uint32_t>(in.unit), position, direction);
-            if (shot_lag::Finite3(position))
+            const int32_t path = evaluator(static_cast<uint32_t>(in.unit), position, direction);
+            if (!shot_lag::EvaluatorTookFirstPersonPath(path))
+                why = shot_lag::TickEyeMiss::ThirdPersonPath;
+            else if (shot_lag::Finite3(position))
                 PublishHalo3TickEye(generation, in.unit, position);
             else
                 why = shot_lag::TickEyeMiss::EvaluatorFault;
@@ -1432,6 +1470,15 @@ shot_lag::TickEyeMiss Halo3TickEyeFromEvaluator(uint32_t generation)
 
 LegacyRecomposeWhy LegacyDriveRecomposeOnFoot(int slot, const LegacyDrivePublication& pub, float& yaw, float& pitch)
 {
+    // Halo 3's stick calls, one per tick: an eye is this tick's only when published since the previous one.
+    static uint64_t s_lastStickUs = 0;
+    uint64_t previousStickUs = 0;
+    const uint64_t nowUs = Sight_NowUs();
+    if (slot == 0)
+    {
+        previousStickUs = s_lastStickUs;
+        s_lastStickUs = nowUs;
+    }
     shot_lag::RecomposeInput in{};
     in.onFoot = slot == 0 && !pub.seated && pub.valid && Sight_AimEnabled();
     if (!in.onFoot)
@@ -1442,23 +1489,44 @@ LegacyRecomposeWhy LegacyDriveRecomposeOnFoot(int slot, const LegacyDrivePublica
     in.setYaw = pub.yaw;
     in.setPitch = pub.pitch;
     in.generation = TitleAdapter_GetGeneration(GameTitle::Halo3);
-    in.nowUs = Sight_NowUs();
+    in.nowUs = nowUs;
     in.maxAgeUs = kSightIntentShotMaxAgeMs * 1000ull;
+    // IDENTITY FIRST: whose eye, from which camera. Nothing below asks the game for an eye that is not ours.
+    int32_t unit = -1, mode = -1, perspective = -1;
+    const shot_lag::FirstPersonEye identity = in.generation
+        ? Halo3FirstPersonEyeNow(in.generation, unit, mode, perspective)
+        : shot_lag::FirstPersonEye::NotOnFootControlled;
+    in.firstPersonEye = identity == shot_lag::FirstPersonEye::Yes;
+    if (in.intentRead)
+    {
+        g_firstPersonEye[static_cast<size_t>(identity)].fetch_add(1, std::memory_order_relaxed);
+        if (identity == shot_lag::FirstPersonEye::NotFirstPersonCamera)
+            g_firstPersonEyeMode[mode == shot_lag::kHalo3CameraModeFirstPerson ? shot_lag::kHalo3CameraModeCount
+                                                                               : mode]
+                .fetch_add(1, std::memory_order_relaxed);
+    }
     uint64_t stampUs = 0;
-    in.eyeRead = in.generation &&
+    const bool read = in.generation &&
         ReadHalo3TickEye(in.generation, 100000, in.eye, in.eyeVel, in.eyeVelValid, stampUs);
+    in.eyeRead = shot_lag::TickEyeFromThisTick(read, stampUs, previousStickUs);
     if (in.generation && !in.eyeRead && in.intentRead)
     {
-        // No eye from the acquisition: count why, then ask the evaluator directly.
+        // No eye from this tick's acquisition: count why, then ask the evaluator directly if the eye is ours.
+        const uint64_t sinceStickUs = previousStickUs && nowUs > previousStickUs ? nowUs - previousStickUs : 100000;
         const auto acquisition = shot_lag::ClassifyTickEyeAcquisition(
-            g_halo3AcquisitionUser0Us.load(std::memory_order_relaxed), in.nowUs, 100000);
+            g_halo3AcquisitionUser0Us.load(std::memory_order_relaxed), nowUs, sinceStickUs);
         g_tickEyeAcquisition[static_cast<size_t>(acquisition)].fetch_add(1, std::memory_order_relaxed);
-        const shot_lag::TickEyeMiss miss = Halo3TickEyeFromEvaluator(in.generation);
+        const shot_lag::TickEyeMiss miss = Halo3TickEyeFromEvaluator(in.generation, unit, in.firstPersonEye,
+                                                                     acquisition);
         const size_t m = static_cast<size_t>(miss);
         if (m < static_cast<size_t>(shot_lag::TickEyeMiss::Count))
             g_tickEyeMiss[m].fetch_add(1, std::memory_order_relaxed);
         if (miss == shot_lag::TickEyeMiss::FromEvaluator)
-            in.eyeRead = ReadHalo3TickEye(in.generation, 100000, in.eye, in.eyeVel, in.eyeVelValid, stampUs);
+        {
+            const bool asked =
+                ReadHalo3TickEye(in.generation, 100000, in.eye, in.eyeVel, in.eyeVelValid, stampUs);
+            in.eyeRead = shot_lag::TickEyeFromThisTick(asked, stampUs, previousStickUs);
+        }
     }
     in.eyeProven = g_halo3TickEyeProof.load(std::memory_order_relaxed) == static_cast<uint32_t>(TickEyeProof::Proven);
     in.tickS = float(g_legacyTickPeriodUs[0].load(std::memory_order_relaxed)) * 1.0e-6f;
@@ -2085,19 +2153,50 @@ void LegacyDriveReport()
         if (total)
             LOG("SHOT RECORD Halo 3 on foot: %u stick writes recomposed through the intent point from the game's own "
                 "eye a tick ahead (%.1f ms; mean %.2f deg from the solve, max %.2f), %u kept as solved (no intent %u, "
-                "another solve %u, point stale/seated/rail-held %u, no fresh game eye %u, game eye unproven %u, "
-                "point within 30 cm %u, point behind the eye %u)",
+                "another solve %u, point stale/seated/rail-held %u, not a first-person eye %u, no game eye from this "
+                "tick %u, game eye unproven %u, point within 30 cm %u, point behind the eye %u)",
                 n[0], double(g_legacyTickPeriodUs[0].load(std::memory_order_relaxed)) / 1000.0,
                 n[0] ? double(sum) / 1000.0 / double(n[0]) : 0.0, double(max) / 1000.0, total - n[0],
                 n[static_cast<size_t>(LegacyRecomposeWhy::NoIntent)],
                 n[static_cast<size_t>(LegacyRecomposeWhy::OtherSolve)],
                 n[static_cast<size_t>(LegacyRecomposeWhy::PointUnusable)],
+                n[static_cast<size_t>(LegacyRecomposeWhy::NotFirstPerson)],
                 n[static_cast<size_t>(LegacyRecomposeWhy::NoGameEye)],
                 n[static_cast<size_t>(LegacyRecomposeWhy::EyeUnproven)],
                 n[static_cast<size_t>(LegacyRecomposeWhy::PointTooClose)],
                 n[static_cast<size_t>(LegacyRecomposeWhy::PointBehind)]);
         {
-            // The game eye's misses by cause (shot_lag_logic.h 4c), whenever the acquisition published none.
+            // The first-person eye identity (shot_lag_logic.h 4d) at the stick calls with a point: why it said no,
+            // and the director's camera mode when the camera was the reason.
+            using FE = shot_lag::FirstPersonEye;
+            uint32_t fe[static_cast<size_t>(FE::Count)]{};
+            uint32_t refused = 0;
+            for (size_t i = 0; i < static_cast<size_t>(FE::Count); ++i)
+            {
+                fe[i] = g_firstPersonEye[i].exchange(0, std::memory_order_relaxed);
+                if (i != static_cast<size_t>(FE::Yes))
+                    refused += fe[i];
+            }
+            uint32_t modes[shot_lag::kHalo3CameraModeCount + 1]{};
+            for (int i = 0; i <= shot_lag::kHalo3CameraModeCount; ++i)
+                modes[i] = g_firstPersonEyeMode[i].exchange(0, std::memory_order_relaxed);
+            if (refused)
+                LOG("SHOT RECORD Halo 3 first-person eye: %u of %u stick calls not our unit's first-person eye (%s %u, "
+                    "%s %u, %s %u: the director's camera %s %u, %s %u, %s %u, %s %u, %s %u, %s %u, %s %u, first person "
+                    "from another perspective %u); neither recomposed nor asked for the game's eye",
+                    refused, refused + fe[static_cast<size_t>(FE::Yes)],
+                    shot_lag::FirstPersonEyeName(FE::NotOnFootControlled),
+                    fe[static_cast<size_t>(FE::NotOnFootControlled)],
+                    shot_lag::FirstPersonEyeName(FE::DirectorUnread), fe[static_cast<size_t>(FE::DirectorUnread)],
+                    shot_lag::FirstPersonEyeName(FE::NotFirstPersonCamera),
+                    fe[static_cast<size_t>(FE::NotFirstPersonCamera)],
+                    shot_lag::Halo3CameraModeName(0), modes[0], shot_lag::Halo3CameraModeName(1), modes[1],
+                    shot_lag::Halo3CameraModeName(2), modes[2], shot_lag::Halo3CameraModeName(4), modes[4],
+                    shot_lag::Halo3CameraModeName(5), modes[5], shot_lag::Halo3CameraModeName(6), modes[6],
+                    shot_lag::Halo3CameraModeName(7), modes[7], modes[shot_lag::kHalo3CameraModeCount]);
+        }
+        {
+            // The game eye's misses by cause (shot_lag_logic.h 4c), whenever this tick's acquisition published none.
             uint32_t acq[static_cast<size_t>(shot_lag::TickEyeAcquisition::Count)]{};
             uint32_t miss[static_cast<size_t>(shot_lag::TickEyeMiss::Count)]{};
             uint32_t misses = 0;
@@ -2105,19 +2204,23 @@ void LegacyDriveReport()
                 misses += (acq[i] = g_tickEyeAcquisition[i].exchange(0, std::memory_order_relaxed));
             for (size_t i = 0; i < static_cast<size_t>(shot_lag::TickEyeMiss::Count); ++i)
                 miss[i] = g_tickEyeMiss[i].exchange(0, std::memory_order_relaxed);
+            const uint32_t chase = g_halo3TickEyeChasePath.exchange(0, std::memory_order_relaxed);
             using TM = shot_lag::TickEyeMiss;
-            if (misses)
-                LOG("SHOT RECORD Halo 3 game eye: the acquisition published none at %u stick calls (the game skipped "
-                    "its acquisition %u, it ran without reaching the evaluator %u); %s %u, not asked: %s %u, %s %u, "
-                    "%s %u; %s %u", misses,
-                    acq[static_cast<size_t>(shot_lag::TickEyeAcquisition::Skipped)],
+            if (misses || chase)
+                LOG("SHOT RECORD Halo 3 game eye: this tick's acquisition published none at %u stick calls (the game "
+                    "skipped its acquisition %u, it ran without reaching the evaluator %u); %s %u (%s %u, %s %u), not "
+                    "asked: %s %u, %s %u, %s %u, %s %u; acquisition eyes withheld as chase-camera %u",
+                    misses, acq[static_cast<size_t>(shot_lag::TickEyeAcquisition::Skipped)],
                     acq[static_cast<size_t>(shot_lag::TickEyeAcquisition::RanWithoutEvaluator)],
-                    shot_lag::TickEyeMissName(TM::FromEvaluator), miss[static_cast<size_t>(TM::FromEvaluator)],
+                    shot_lag::TickEyeMissName(TM::FromEvaluator),
+                    miss[static_cast<size_t>(TM::FromEvaluator)] + miss[static_cast<size_t>(TM::ThirdPersonPath)] +
+                        miss[static_cast<size_t>(TM::EvaluatorFault)],
+                    shot_lag::TickEyeMissName(TM::ThirdPersonPath), miss[static_cast<size_t>(TM::ThirdPersonPath)],
+                    shot_lag::TickEyeMissName(TM::EvaluatorFault), miss[static_cast<size_t>(TM::EvaluatorFault)],
                     shot_lag::TickEyeMissName(TM::NoHook), miss[static_cast<size_t>(TM::NoHook)],
                     shot_lag::TickEyeMissName(TM::NoUnit), miss[static_cast<size_t>(TM::NoUnit)],
-                    shot_lag::TickEyeMissName(TM::NotOnFootControlled),
-                    miss[static_cast<size_t>(TM::NotOnFootControlled)],
-                    shot_lag::TickEyeMissName(TM::EvaluatorFault), miss[static_cast<size_t>(TM::EvaluatorFault)]);
+                    shot_lag::TickEyeMissName(TM::NotFirstPersonEye), miss[static_cast<size_t>(TM::NotFirstPersonEye)],
+                    shot_lag::TickEyeMissName(TM::GameDeclined), miss[static_cast<size_t>(TM::GameDeclined)], chase);
         }
         // The game-eye proof's state, once per change (the ValueAgreement above PublishHalo3TickEye).
         static uint32_t s_proofLogged = 0;

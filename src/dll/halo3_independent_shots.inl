@@ -34,6 +34,9 @@ thread_local int32_t t_halo3AcquisitionUser=-1;
 // When the native acquisition last ran for input user 0 (Sight_NowUs): the record's "no fresh game eye" cause --
 // the game skipped its acquisition, or it ran without reaching the evaluator (shot_lag::TickEyeAcquisition).
 std::atomic<uint64_t> g_halo3AcquisitionUser0Us{0};
+// Acquisition evaluator calls for input user 0 that took the chase-camera path (the evaluator's own return,
+// shot_lag::EvaluatorTookFirstPersonPath): never published as the game eye; counted on the SHOT RECORD game eye line.
+std::atomic<uint32_t> g_halo3TickEyeChasePath{0};
 
 __declspec(noinline) void MarkHalo3IndependentShotFault()
 {g_halo3Dual.faulted.store(true,std::memory_order_release);}
@@ -55,10 +58,17 @@ __declspec(noinline) int32_t __fastcall Halo3IndependentCameraDetour(
             ++g_halo3QueryCapture.count;
         }
         // The eye the game targets and fires from at this tick: the acquisition's own evaluator call for input
-        // user 0 (never our own replayed query, which runs as an owned collision query with a substituted camera).
+        // user 0 (never our own replayed query, which runs as an owned collision query with a substituted camera),
+        // and only a FIRST-PERSON eye: the evaluator returns the path it took (0x2121B8..0x2121D2: 0 = the
+        // first-person update 0x17DAEC, else the chase camera 0x2144C0). A chase eye is not the record's eye.
         if(caller==feature.base+0x13B1DC && t_halo3AcquisitionUser==0 && position && !g_legacyCollisionOwnedQuery &&
             !g_halo3IndependentShot.active)
-            PublishHalo3TickEye(feature.generation,static_cast<int32_t>(unit),position);
+        {
+            if(shot_lag::EvaluatorTookFirstPersonPath(result))
+                PublishHalo3TickEye(feature.generation,static_cast<int32_t>(unit),position);
+            else
+                g_halo3TickEyeChasePath.fetch_add(1,std::memory_order_relaxed);
+        }
         const auto& shot=g_halo3IndependentShot;
         if(!shot.active || unit!=shot.unit || !position || !direction ||
             (caller!=feature.base+0x13B1DC && caller!=feature.base+0x13BC0D))__leave;

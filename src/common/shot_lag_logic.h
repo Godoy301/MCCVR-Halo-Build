@@ -23,6 +23,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 
 namespace shot_lag
 {
@@ -499,7 +500,9 @@ enum class Recompose : uint8_t
     NoIntent,       // nothing published
     OtherSolve,     // the setpoint is not the solve that built P (the fixed-distance steer, a seat author)
     PointUnusable,  // another generation, stale (or from the future), seated, held at the pitch rail, or non-finite
-    NoGameEye,      // the game's eye at the tick is unknown or stale
+    NotFirstPerson, // the camera is not our unit's first-person eye (4d): Forge's Monitor or orbit camera, a chase
+                    // or scripted camera, a seat, a cinematic -- an eye there is not the one P was solved from
+    NoGameEye,      // the game's eye at the tick is unknown, or not from this tick
     EyeUnproven,    // that eye is not (yet) proven to be the engine eye (EyeProof)
     PointTooClose,  // P within 30 cm of the eye (or non-finite): it defines no direction
     PointBehind,    // P not ahead of the eye along the setpoint: no forward line through it
@@ -513,7 +516,8 @@ struct RecomposeInput
     float setYaw = 0.0f, setPitch = 0.0f;   // the setpoint about to be written
     uint32_t generation = 0;                // the title's current generation (0 = none)
     uint64_t nowUs = 0, maxAgeUs = 0;
-    bool eyeRead = false;                   // the game's eye at the tick, fresh
+    bool firstPersonEye = false;            // 4d: our unit on foot in control, the director's camera first person
+    bool eyeRead = false;                   // the game's eye at this tick (published since the previous stick call)
     float eye[3]{}, eyeVel[3]{};
     bool eyeVelValid = false;
     bool eyeProven = false;
@@ -531,6 +535,8 @@ inline Recompose RecomposeRecord(const RecomposeInput& in, float& yaw, float& pi
     if (!in.generation || p.generation != in.generation || p.seated || p.railHeld || !p.stampUs ||
         in.nowUs < p.stampUs || in.nowUs - p.stampUs > in.maxAgeUs || !Finite3(p.point))
         return Recompose::PointUnusable;
+    if (!in.firstPersonEye)
+        return Recompose::NotFirstPerson;
     if (!in.eyeRead || !Finite3(in.eye))
         return Recompose::NoGameEye;
     if (!in.eyeProven)
@@ -557,24 +563,32 @@ inline Recompose RecomposeRecord(const RecomposeInput& in, float& yaw, float& pi
     return Recompose::Recomposed;
 }
 
-// ---- 4c. the game's eye when its acquisition did not run (Halo 3 on foot) ----------------------------------------
+// ---- 4c. the game's eye when its acquisition did not publish one (Halo 3 on foot) --------------------------------
 // The record's eye (4b) is published from the evaluator call inside Halo 3's aim acquisition (0x13B08C, called at
-// 0xF4CC8 from the control update's targeting pass 0xF42D8). The game SKIPS that acquisition -- by its own branch,
-// not ours: `call 0xF4060; test al, al; je` at 0xF48C9 -- whenever 0xF4060 says no: a local input user's control
-// flag (+0x18 bit 0 of its 0x30-byte record in the thread table at TLS +0xC0) is set, or 0xF3710 holds (not yet
-// named; it reads game-mode and interface state). Read from the pinned module B209D845...EFB63, offline. The stick call still runs every tick. In the Forge log (2026-10-03)
-// every stretch without the eye (up to 24 s) is one where the first-person view model is not drawn and roomscale's
-// on-foot proof fails on every frame, no shot is fired, and the stretch ends a few seconds before a vehicle entry
-// or the first on-foot shot: consistent with Forge's Monitor (editor) mode, unconfirmed.
-// So the eye is asked of the same evaluator directly at the stick call when the acquisition has not published one,
-// gated by identity only (the hooks live, this generation, our unit, on foot and in player control). Each miss is
-// counted by cause on the SHOT RECORD line, whichever way it ends.
+// 0xF4CC8 from the control update's targeting pass 0xF42D8). Two things stop it publishing, both the game's own:
+//   * the game SKIPS the acquisition: `call 0xF4060; test al, al; je` at 0xF48C9 (0xF4060 says no when a local input
+//     user's control flag, +0x18 bit 0 of its 0x30-byte record at TLS +0xC0, is set, or 0xF3710 holds);
+//   * the acquisition RUNS WITHOUT ITS EVALUATOR: it asks the evaluator (0x13B1D7) only when 0x13C518 accepts the
+//     aiming unit (0x355CD4: the unit itself on foot), and 0x13C518 answers false at once when the unit has no
+//     current weapon (0x356388 on unit +0x262 at 0x13C58B; -1 jumps to its false return 0x13C8ED). An unarmed unit
+//     -- Forge's Monitor -- never reaches it: the game itself does not aim it, so its eye is NOT asked for
+//     (GameDeclined).
+//     The Forge log of 2026-10-03 (impact2): every miss, ~18 of 122 stick calls per 2 s across the Monitor stretches,
+//     was this kind; asked directly anyway (66289be), each answer stood for up to 100 ms (the freshness window) and
+//     the record was bent from it by up to 88 deg while the Monitor held and spawned objects.
+// Read from the pinned module B209D845...EFB63, offline. When the game skipped the acquisition and the eye is
+// otherwise wanted, it is asked of the same evaluator directly at the stick call -- only for a first-person eye (4d).
+// The evaluator returns its camera path: 0 = the first-person update 0x17DAEC, else the following (chase) camera
+// 0x2144C0 (0x2121B8..0x2121D2, the path 0x1326E8 chose). Only a first-person-path eye is ever published, from the
+// acquisition or from here. Each miss is counted by cause on the SHOT RECORD line, whichever way it ends.
 enum class TickEyeMiss : uint8_t
 {
     FromEvaluator = 0,  // asked the evaluator directly: the eye is published
     NoHook,             // the acquisition / evaluator hooks are not installed, disabled, faulted or another generation's
     NoUnit,             // no local unit
-    NotOnFootControlled,// a seat, a cinematic or scripted control: our own on-foot proof failed; not asked
+    NotFirstPersonEye,  // 4d said no: a seat, a cinematic, the Monitor's or an orbit / chase camera; not asked
+    GameDeclined,       // the acquisition ran without its evaluator (no weapon to aim): not asked
+    ThirdPersonPath,    // asked, and the evaluator took the chase-camera path: nothing published
     EvaluatorFault,     // the direct call faulted or answered a non-finite eye
     Count
 };
@@ -585,17 +599,35 @@ inline const char* TickEyeMissName(TickEyeMiss why)
     case TickEyeMiss::FromEvaluator: return "asked the evaluator directly";
     case TickEyeMiss::NoHook: return "hooks absent";
     case TickEyeMiss::NoUnit: return "no unit";
-    case TickEyeMiss::NotOnFootControlled: return "not on foot in control";
+    case TickEyeMiss::NotFirstPersonEye: return "not a first-person eye";
+    case TickEyeMiss::GameDeclined: return "the game's acquisition declined the unit (nothing to aim)";
+    case TickEyeMiss::ThirdPersonPath: return "the evaluator took the chase-camera path";
     case TickEyeMiss::EvaluatorFault: return "evaluator faulted";
     default: return "?";
     }
+}
+// Why the acquisition did not publish, for the same line: it did not run for input user 0 since the previous stick
+// call (the game skipped it), or it ran and never reached the evaluator. `windowUs` is the time since that call.
+enum class TickEyeAcquisition : uint8_t { Skipped = 0, RanWithoutEvaluator, Count };
+inline TickEyeAcquisition ClassifyTickEyeAcquisition(uint64_t lastAcquisitionUs, uint64_t nowUs, uint64_t windowUs)
+{
+    return lastAcquisitionUs && nowUs >= lastAcquisitionUs && nowUs - lastAcquisitionUs <= windowUs
+               ? TickEyeAcquisition::RanWithoutEvaluator
+               : TickEyeAcquisition::Skipped;
+}
+// The record is recomposed from THIS tick's eye only: one published since the previous stick call. A held-over eye
+// (the 100 ms freshness window alone let one stand for six ticks) is off by everything the eye did since.
+inline bool TickEyeFromThisTick(bool read, uint64_t stampUs, uint64_t previousStickUs)
+{
+    return read && stampUs && stampUs > previousStickUs;
 }
 struct TickEyeFallbackInput
 {
     bool hooked = false;            // the evaluator's trampoline is live, the lane enabled and not faulted
     bool sameGeneration = false;    // the hooks were installed for this generation
     int32_t unit = -1;              // the local player's unit
-    bool onFootControlled = false;  // on foot (no seat word), player-controlled (no cinematic)
+    bool firstPersonEye = false;    // 4d: on foot, in control, the director's camera first person
+    TickEyeAcquisition acquisition = TickEyeAcquisition::Skipped;
 };
 // FromEvaluator: ask. Anything else: the reason not to.
 inline TickEyeMiss TickEyeFallbackGate(const TickEyeFallbackInput& in)
@@ -604,18 +636,140 @@ inline TickEyeMiss TickEyeFallbackGate(const TickEyeFallbackInput& in)
         return TickEyeMiss::NoHook;
     if (in.unit == -1)
         return TickEyeMiss::NoUnit;
-    if (!in.onFootControlled)
-        return TickEyeMiss::NotOnFootControlled;
+    if (!in.firstPersonEye)
+        return TickEyeMiss::NotFirstPersonEye;
+    if (in.acquisition == TickEyeAcquisition::RanWithoutEvaluator)
+        return TickEyeMiss::GameDeclined;
     return TickEyeMiss::FromEvaluator;
 }
-// Why the acquisition did not publish, for the same line: it did not run for input user 0 within the window (the
-// game skipped it), or it ran and never reached the evaluator.
-enum class TickEyeAcquisition : uint8_t { Skipped = 0, RanWithoutEvaluator, Count };
-inline TickEyeAcquisition ClassifyTickEyeAcquisition(uint64_t lastAcquisitionUs, uint64_t nowUs, uint64_t windowUs)
+// The evaluator's own answer for which camera it evaluated (0x212198 returns 0x1326E8's result): 0 = first person.
+inline bool EvaluatorTookFirstPersonPath(int32_t evaluatorResult) { return evaluatorResult == 0; }
+
+// ---- 4d. is the eye our unit's FIRST-PERSON eye? (Halo 3; the identity the record and the direct ask require) ----
+// The recompose bends the record through P from the game's eye; that is only right when the eye is the camera P was
+// solved from: our unit's first-person eye. As Forge's Monitor the record was bent by up to 88 deg (impact2 log,
+// 2026-10-03) while the user spawned and held objects: "my position starts going crazy, and I get flung when I let
+// go" -- the Monitor's aim carries what it holds. The identity is the game's own, read where the game keeps it:
+//
+//   THE DIRECTOR'S CAMERA for the output user. set_camera_mode (0x131B40) stores, every time a director changes
+//   camera, the camera's PERSPECTIVE (c_director::get_perspective 0x131A00; 0 = first person, 1 third, 2 scripted,
+//   3 neutral) at +0x604 and its MODE at +0x608 of the user's 0xC-byte record in the block at engine TLS +0x188
+//   (0x131C44..0x131C8F). The mode is the camera's type: each case of set_camera_mode's switch (0x131B96) builds a
+//   camera whose vtable's get_type returns that case's number (read offline: 0 -> 0x7FB748, 1 -> 0x7FB7B0, 3 ->
+//   0x7961D0, 4..7 -> 0x7FB888/0x7FB8F0/0x7FB548/0x7FB958). Named after Halo 3's camera-mode enum: 0 following,
+//   1 orbiting, 2 flying, 3 first person, 4 dead, 5 static, 6 scripted, 7 authored. Only type 3's get_perspective
+//   is a constant 0 (first person); 0, 1 and 4 return 1 (third), 5 returns 3 (neutral), 6 and 7 decide at run
+//   time. Directors do switch to the orbit: one (0x2121F0, 0x212491..0x21259B) turns its flying camera into mode 1
+//   around the biped it looks at. Which mode Forge's Monitor and its spawn camera use is not read offline; the
+//   SHOT RECORD first-person line counts the director's mode at every refusal, so the next log names it. The
+//   engine's own first-person gate is this same field: the first-person model cache (0x28ADDC) builds the view
+//   model and names our unit the first-person camera object only when +0x604 is 0 (0x28AE31).
+//   ADDR-HYGIENE: resolved. Nothing is assumed: the TLS index, the block offset, both field offsets and the user
+//   stride are decoded from TWO independent sites of the pinned module, each matched uniquely, which must agree
+//   (DecodeDirectorCameraSites below); the runtime read is then range-checked (DirectorCameraPlausible). A build
+//   where they do not match or agree resolves nothing: no identity, the record keeps its solved angles, said once.
+//
+// Plus the unit itself: our unit, on foot (no seat word) and player-controlled (no cinematic).
+inline constexpr int32_t kHalo3CameraModeFirstPerson = 3;
+inline constexpr int32_t kHalo3CameraModeCount = 8;
+inline constexpr int32_t kHalo3PerspectiveFirstPerson = 0;
+inline constexpr int32_t kHalo3PerspectiveCount = 4;
+inline bool DirectorCameraPlausible(int32_t mode, int32_t perspective)
 {
-    return lastAcquisitionUs && nowUs >= lastAcquisitionUs && nowUs - lastAcquisitionUs <= windowUs
-               ? TickEyeAcquisition::RanWithoutEvaluator
-               : TickEyeAcquisition::Skipped;
+    return mode >= 0 && mode < kHalo3CameraModeCount && perspective >= 0 && perspective < kHalo3PerspectiveCount;
+}
+inline const char* Halo3CameraModeName(int32_t mode)
+{
+    static const char* const names[kHalo3CameraModeCount]{"following", "orbiting",  "flying",   "first person",
+                                                            "dead",      "static",    "scripted", "authored"};
+    return mode >= 0 && mode < kHalo3CameraModeCount ? names[mode] : "?";
+}
+enum class FirstPersonEye : uint8_t
+{
+    Yes = 0,
+    NotOnFootControlled,   // no unit, a seat word, or a cinematic / scripted control
+    DirectorUnread,        // the director's record is not bound, not readable on this thread, or out of range
+    NotFirstPersonCamera,  // the director's camera is not the first-person camera, or its perspective is not first
+    Count
+};
+inline const char* FirstPersonEyeName(FirstPersonEye why)
+{
+    switch (why)
+    {
+    case FirstPersonEye::Yes: return "a first-person eye";
+    case FirstPersonEye::NotOnFootControlled: return "not on foot in control";
+    case FirstPersonEye::DirectorUnread: return "director camera unread";
+    case FirstPersonEye::NotFirstPersonCamera: return "camera not first person";
+    default: return "?";
+    }
+}
+struct FirstPersonEyeInput
+{
+    bool onFootControlled = false;  // our unit, no seat word, player-controlled
+    bool directorRead = false;      // the director's record read (and plausible)
+    int32_t mode = -1, perspective = -1;
+};
+inline FirstPersonEye ClassifyFirstPersonEye(const FirstPersonEyeInput& in)
+{
+    if (!in.onFootControlled)
+        return FirstPersonEye::NotOnFootControlled;
+    if (!in.directorRead || !DirectorCameraPlausible(in.mode, in.perspective))
+        return FirstPersonEye::DirectorUnread;
+    if (in.mode != kHalo3CameraModeFirstPerson || in.perspective != kHalo3PerspectiveFirstPerson)
+        return FirstPersonEye::NotFirstPersonCamera;
+    return FirstPersonEye::Yes;
+}
+
+// The two sites the director's record is decoded from (halo3.dll, matched uniquely in the whole module):
+//   CACHE  0x28AE09, the first-person model cache's gate:  mov ebp, BLOCK / ... / mov ecx, [rip + TLS index] /
+//          gs:[0x58] / slots[index] / lea rcx, [user*3] / [tls + BLOCK] / cmp dword [rax + rcx*4 + PERSPECTIVE], 0
+//   SETMODE 0x131C44, set_camera_mode's store:  gs:[0x58] / mov r8d, BLOCK / slots[r15] / [tls + BLOCK] /
+//          movsxd rcx, [director + USER] / lea r8, [user*3] / cmp [rdx + r8*4 + PERSPECTIVE], eax / jne /
+//          cmp [rdx + r8*4 + MODE], ebp / je / mov [rdx + r8*4 + PERSPECTIVE], eax
+// Both index the per-user record as user*3*4 (0xC); the patterns fix that stride and every register.
+inline constexpr const char* kHalo3DirectorCacheSitePattern =
+    "BD ?? ?? ?? ?? 3B C6 75 ?? 3B DE 74 ?? 8B 0D ?? ?? ?? ?? 65 48 8B 04 25 58 00 00 00 48 8B 14 C8 48 8D 0C 5B "
+    "48 8B 04 2A 83 BC 88 ?? ?? ?? ?? 00 75";
+inline constexpr const char* kHalo3DirectorSetModeSitePattern =
+    "65 48 8B 0C 25 58 00 00 00 41 B8 ?? ?? ?? ?? 4A 8B 0C F9 49 8B 14 08 48 63 8E ?? ?? ?? ?? 4C 8D 04 49 "
+    "42 39 84 82 ?? ?? ?? ?? 75 ?? 42 39 AC 82 ?? ?? ?? ?? 74 ?? 42 89 84 82 ?? ?? ?? ??";
+inline constexpr size_t kDirectorCacheSiteBytes = 49, kDirectorSetModeSiteBytes = 62;
+inline constexpr size_t kDirectorCacheBlock = 1, kDirectorCacheTlsDisp = 15, kDirectorCacheTlsNext = 19,
+                        kDirectorCachePerspective = 43;
+inline constexpr size_t kDirectorSetModeBlock = 11, kDirectorSetModeUser = 26, kDirectorSetModePerspective = 38,
+                        kDirectorSetModeMode = 48, kDirectorSetModePerspectiveStore = 58;
+inline constexpr uint32_t kDirectorUserStride = 0xC;
+struct DirectorCameraSites
+{
+    uint32_t blockOffset = 0;       // the per-user camera block's pointer in engine TLS (0x188 on the pinned build)
+    uint32_t perspectiveOffset = 0; // the perspective field in the block, user 0 (0x604)
+    uint32_t modeOffset = 0;        // the mode field (0x608)
+    int32_t tlsIndexDisp = 0;       // the CACHE site's rip-relative TLS index: target = site + 19 + disp
+};
+// True (and `out` filled) only when both sites agree: the same block, the same perspective field at all three uses,
+// the mode field right after it inside the 0xC record, and every value a small aligned offset.
+inline bool DecodeDirectorCameraSites(const uint8_t* cache, const uint8_t* setMode, DirectorCameraSites& out)
+{
+    if (!cache || !setMode)
+        return false;
+    const auto u32 = [](const uint8_t* at) {
+        uint32_t v = 0;
+        std::memcpy(&v, at, sizeof(v));
+        return v;
+    };
+    const uint32_t block = u32(cache + kDirectorCacheBlock), persp = u32(cache + kDirectorCachePerspective);
+    const uint32_t block2 = u32(setMode + kDirectorSetModeBlock), persp2 = u32(setMode + kDirectorSetModePerspective);
+    const uint32_t mode = u32(setMode + kDirectorSetModeMode), perspStore = u32(setMode + kDirectorSetModePerspectiveStore);
+    if (block != block2 || persp != persp2 || persp != perspStore || mode != persp + 4)
+        return false;
+    if (!block || block >= 0x1000 || (block & 7) || !persp || persp >= 0x10000 || (persp & 3) ||
+        mode + 4 - persp > kDirectorUserStride)
+        return false;
+    out.blockOffset = block;
+    out.perspectiveOffset = persp;
+    out.modeOffset = mode;
+    out.tlsIndexDisp = static_cast<int32_t>(u32(cache + kDirectorCacheTlsDisp));
+    return true;
 }
 
 // ---- 5. the frame-coherent pair --------------------------------------------------------------------------------
