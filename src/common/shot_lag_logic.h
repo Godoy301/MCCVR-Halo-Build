@@ -486,15 +486,21 @@ inline bool SameKey(const float a[3], const float b[3])
 }
 
 // Indices into the two arrays, or false. `maxSkewUs`: a hand newer than its eye by more than this is refused (a
-// key that repeats after a long freeze is not the same frame).
+// key that repeats after a long freeze is not the same frame). `maxHandAgeUs` (with `nowUs`; 0 = unbounded): a hand
+// older than this at `nowUs`, or stamped after it, is refused -- during a render stall the newest hand whose frame
+// rendered can be several polls old, and a pair built from it is the player's aim of that moment, not of now. The
+// caller stamps the published point with the chosen HAND's stamp, so its consumers age it from when it was meant.
 inline bool SelectCoherentPair(const EyeFrame* eyes, size_t eyeCount, const HandFrame* hands, size_t handCount,
-                               uint64_t maxSkewUs, size_t& eyeIndex, size_t& handIndex)
+                               uint64_t maxSkewUs, size_t& eyeIndex, size_t& handIndex, uint64_t nowUs = 0,
+                               uint64_t maxHandAgeUs = 0)
 {
     bool found = false;
     uint64_t bestHand = 0, bestEye = 0;
     for (size_t h = 0; h < handCount; ++h)
     {
         if (!hands[h].valid || !hands[h].stampUs || (found && hands[h].stampUs < bestHand))
+            continue;
+        if (maxHandAgeUs && (hands[h].stampUs > nowUs || nowUs - hands[h].stampUs > maxHandAgeUs))
             continue;
         for (size_t e = 0; e < eyeCount; ++e)
         {

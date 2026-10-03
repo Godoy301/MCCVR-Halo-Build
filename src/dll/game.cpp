@@ -51981,7 +51981,7 @@ static void PublishAimIntent(GameTitle title, const SightRay& ray, const float h
     SightIntent intent{};
     shot_lag::IntentPoint& p = intent.p;
     p.generation = ray.generation;
-    p.stampUs = now;
+    p.stampUs = now;   // the poll's own pair; a coherent pair below takes its hand's stamp
     p.railHeld = railHeld;
     p.seated = seated;
     p.rangeWu = rangeWu;
@@ -51996,13 +51996,19 @@ static void PublishAimIntent(GameTitle title, const SightRay& ray, const float h
     shot_lag::EyeFrame frames[kCamFrameSlots]{};
     const size_t frameCount = cameraFrames ? ReadCamFrames(frames) : 0;
     size_t eyeIndex = 0, handIndex = 0;
-    // A head sample repeated more than 100 ms apart is not the same frame.
+    // A head sample repeated more than 100 ms apart is not the same frame. A hand older than 50 ms (renders stalled:
+    // the newest hand whose frame rendered is several polls back) is the aim of that moment, not of now: the poll's
+    // own pair stands instead. The point is stamped with the HAND's own stamp, so a consumer ages it from when the
+    // player meant it -- never republished as fresh.
+    constexpr uint64_t kIntentHandMaxAgeUs = 50000;
     if (keyed && frameCount &&
-        shot_lag::SelectCoherentPair(frames, frameCount, s_hands, 8, 100000, eyeIndex, handIndex))
+        shot_lag::SelectCoherentPair(frames, frameCount, s_hands, 8, 100000, eyeIndex, handIndex, now,
+                                     kIntentHandMaxAgeUs))
     {
         const shot_lag::EyeFrame& eye = frames[eyeIndex];
         const shot_lag::HandFrame& hand = s_hands[handIndex];
         p.coherent = true;
+        p.stampUs = hand.stampUs;
         p.serial = eye.serial;
         memcpy(p.head, eye.head, sizeof(p.head));
         memcpy(p.dir, hand.dir, sizeof(p.dir));

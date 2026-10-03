@@ -401,6 +401,21 @@ int main()
         invalid[0] = eyes[0];
         invalid[0].valid = false;
         Check(!SelectCoherentPair(invalid, 1, hands, 1, 100000, e, h), "an invalid slot never pairs");
+        // A RENDER STALL: the newest hand whose frame rendered is old by now. Bounded by the hand's age at `now`.
+        Check(SelectCoherentPair(eyes, 3, hands, 3, 100000, e, h, 13000 + 40000, 50000) && h == 1,
+              "a hand 40 ms old pairs");
+        Check(!SelectCoherentPair(eyes, 3, hands, 3, 100000, e, h, 13000 + 60000, 50000),
+              "a hand 60 ms old is the aim of that moment, not of now: no pair (the poll's own pair stands)");
+        Check(SelectCoherentPair(eyes, 3, hands, 3, 100000, e, h, 2000 + 40000, 50000) && h == 1,
+              "...while it is the newest within the bound, the newest still wins");
+        Check(!SelectCoherentPair(eyes, 3, hands, 1, 100000, e, h, 1000, 50000),
+              "a hand stamped after `now` is never paired");
+        Check(SelectCoherentPair(eyes, 3, hands, 3, 100000, e, h, 13000 + 60000, 0) && h == 1,
+              "a zero bound is unbounded (the old behaviour)");
+        HandFrame staleNewest[2]{hands[0], hands[1]};
+        staleNewest[0].stampUs = 30000;   // hand k1 re-stamped newer than hand k2: only it is within the bound
+        Check(SelectCoherentPair(eyes, 2, staleNewest, 2, 100000, e, h, 13000 + 60000, 50000) && h == 0,
+              "the bound picks the newest hand within it, never an older one past it");
     }
 
     // ---- the witness ----
