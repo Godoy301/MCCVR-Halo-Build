@@ -1,6 +1,8 @@
 // Gun-slaved seats (src/common/gun_slaved_seat_logic.h): the seat flag, the occupant-aim binding's agreement rules,
 // the servo's feedback choice, the pacer that stops a servo closing on a slewing gun from nodding, the gun-settle
-// gate of the crosshair witness, the slew rate and the nod witness.
+// gate of the crosshair witness, the slew rate and the nod witness; and (2026-10-03) the gun camera's own offset from the
+// occupant's aim -- its measurement in the turret frame, the stillness gate, the learner, the per-definition book, the
+// feed-forward shift. The offset half is MUTATION-CHECKED by tools/mutate_vehicle_gun_aim.py (15 of 15 caught).
 #include "gun_slaved_seat_logic.h"
 #include "aim_servo_logic.h"
 
@@ -312,6 +314,216 @@ void TestNodWitness()
     ramp.take(rev, swing);
     Check(rev == 0, "a steady climb is no reversal");
 }
+
+// ---- the gun's own offset (2026-10-03) ----------------------------------------------------------------------
+constexpr float kD = 0.017453292519943295f;
+
+// A turret frame tilted 15 deg nose-up and 10 deg to the side (a Warthog on a slope), yawed 40 deg.
+seat_frame::Frame TiltedFrame()
+{
+    const float up[3]{std::sin(15.0f * kD), std::sin(10.0f * kD), 1.0f};
+    seat_frame::Frame raw{};
+    seat_frame::BuildFrame(up, raw);
+    // Turn the frame about its up by 40 deg so forward is not the world's.
+    seat_frame::Frame f = raw;
+    const float c = std::cos(40.0f * kD), s = std::sin(40.0f * kD);
+    const float ul = std::sqrt(seat_frame::Dot(raw.u, raw.u)), ll = std::sqrt(seat_frame::Dot(raw.l, raw.l));
+    for (int i = 0; i < 3; ++i)
+    {
+        f.u[i] = raw.u[i] / ul;
+        f.f[i] = c * raw.f[i] + s * raw.l[i] / ll;
+        f.l[i] = -s * raw.f[i] + c * raw.l[i] / ll;
+    }
+    return f;
+}
+
+bool NearRad(float a, float b, float tol) { return std::fabs(std::remainder(a - b, 6.28318531f)) <= tol; }
+
+// The angle between two (yaw, pitch) directions, degrees, exact at small angles (AngleBetweenDeg's acos is not).
+float SepDeg(float yawA, float pitchA, float yawB, float pitchB)
+{
+    float a[3], b[3];
+    seat_frame::Forward(yawA, pitchA, a);
+    seat_frame::Forward(yawB, pitchB, b);
+    return seat_frame::SeparationDeg(a, b);
+}
+
+void TestOffsetInFrame()
+{
+    const seat_frame::Frame level{};
+    float dy = 0.0f, dp = 0.0f, sep = 0.0f;
+    Check(OffsetInFrame(level, 0.30f, 0.10f, 0.29f, 0.06f, dy, dp, sep) && std::fabs(dy - 0.01f) < 1e-5f &&
+              std::fabs(dp - 0.04f) < 1e-5f,
+          "a level frame: the offset is the plain angle difference");
+    Check(std::fabs(sep - AngleBetweenDeg(0.30f, 0.10f, 0.29f, 0.06f) / kRadToDeg) < 1e-4f,
+          "the separation is the angle between the two directions");
+    Check(OffsetInFrame(level, 0.01f, 0.0f, 6.27f, 0.0f, dy, dp, sep) && std::fabs(dy - (0.01f + 6.28318531f - 6.27f)) < 1e-4f,
+          "the yaw offset wraps across the seam");
+    // The same fixed rotation of the marker, measured on a tilted hull, comes back as the same frame offset at every
+    // gun direction; the world-angle difference does not.
+    const seat_frame::Frame tilt = TiltedFrame();
+    bool same = true, worldDiffers = false;
+    for (float gy = -0.6f; gy <= 0.6f; gy += 0.3f)
+        for (float gp = -0.2f; gp <= 0.5f; gp += 0.35f)
+        {
+            seat_frame::Angles occFrame{gy, gp}, gunFrame{gy + 0.004f, gp + 0.040f};
+            seat_frame::Angles occW{}, gunW{};
+            seat_frame::WorldFromRecord(tilt, occFrame.yaw, occFrame.pitch, occW);
+            seat_frame::WorldFromRecord(tilt, gunFrame.yaw, gunFrame.pitch, gunW);
+            float y = 0.0f, p = 0.0f, s = 0.0f;
+            same = same && OffsetInFrame(tilt, gunW.yaw, gunW.pitch, occW.yaw, occW.pitch, y, p, s) &&
+                   std::fabs(y - 0.004f) < 2e-4f && std::fabs(p - 0.040f) < 2e-4f;
+            worldDiffers = worldDiffers || std::fabs(std::remainder(gunW.yaw - occW.yaw, 6.28318531f) - 0.004f) > 2e-3f;
+        }
+    Check(same, "a marker's fixed rotation reads the same in the turret frame across the gun's range");
+    Check(worldDiffers, "...while in world angles it moves with the tilt (the frame matters)");
+    Check(!OffsetInFrame(level, std::nanf(""), 0.0f, 0.0f, 0.0f, dy, dp, sep), "a non-finite gun is no sample");
+}
+
+void TestShiftInFrame()
+{
+    const seat_frame::Frame tilt = TiltedFrame();
+    float y = 0.0f, p = 0.0f, back = 0.0f, backP = 0.0f;
+    Check(ShiftInFrame(tilt, 1.0f, 0.2f, 0.01f, -0.04f, y, p) && ShiftInFrame(tilt, y, p, -0.01f, 0.04f, back, backP) &&
+              NearRad(back, 1.0f, 2e-5f) && std::fabs(backP - 0.2f) < 2e-5f,
+          "shifting by delta and back is the identity");
+    seat_frame::Angles a{}, b{};
+    AnglesInFrame(tilt, 1.0f, 0.2f, 0.0f, a);
+    AnglesInFrame(tilt, y, p, 0.0f, b);
+    Check(NearRad(b.yaw - a.yaw, 0.01f, 2e-5f) && std::fabs((b.pitch - a.pitch) + 0.04f) < 2e-5f,
+          "the shift is applied in the frame's own angles");
+    const seat_frame::Frame level{};
+    Check(ShiftInFrame(level, 6.27f, 0.0f, 0.03f, 0.0f, y, p) && std::fabs(y - 6.30f) < 1e-4f,
+          "the result stays on the input's yaw branch (no 2pi jump)");
+    Check(ShiftInFrame(level, 0.0f, 1.5f, 0.0f, 0.2f, y, p) && p <= 1.55f + 1e-5f && NearRad(y, 0.0f, 1e-3f),
+          "pitch is held short of the pole (never over it: the yaw does not flip)");
+    Check(!ShiftInFrame(level, 0.0f, 0.0f, std::nanf(""), 0.0f, y, p), "a non-finite shift is refused");
+}
+
+void TestStillness()
+{
+    Stillness s;
+    float v[6]{0.1f, 0.2f, 0.1f, 0.18f, 0.5f, 0.3f};
+    Check(!s.step(v, 1000), "the first sample anchors");
+    Check(!s.step(v, 1050), "50 ms still is not yet still");
+    v[0] += 0.001f;   // 0.06 deg of gun: inside 0.1
+    v[4] += 0.006f;   // 0.34 deg of hand: inside 0.5
+    Check(s.step(v, 1100), "100 ms within the tolerances is still");
+    v[1] += 0.003f;   // the gun moves 0.17 deg
+    Check(!s.step(v, 1110), "a gun that moves re-anchors");
+    Check(!s.step(v, 1200), "...and waits its 100 ms again");
+    Check(s.step(v, 1210), "...from where it moved to");
+    v[5] += 0.01f;    // the hand moves 0.57 deg
+    Check(!s.step(v, 1220), "a hand that moves re-anchors");
+    v[2] += 6.28318531f;   // the occupant's yaw on another branch is the same direction
+    Check(!s.step(v, 1300), "(re-anchored by the hand)");
+    Check(s.step(v, 1330), "a yaw on another 2pi branch is not motion");
+    v[3] = std::nanf("");
+    Check(!s.step(v, 1400), "a non-finite angle is never still");
+}
+
+void TestOffsetLearner()
+{
+    OffsetLearner l;
+    Check(!l.usable(), "nothing learned yet");
+    for (unsigned i = 0; i < l.ready - 1; ++i)
+        l.step(0.004f, 0.041f, 0.041f);
+    Check(!l.usable(), "one sample short of ready");
+    l.step(0.004f, 0.041f, 0.041f);
+    Check(l.usable() && std::fabs(l.pitch - 0.041f) < 1e-6f, "ready after `ready` samples, at the sample's value");
+    for (int i = 0; i < 200; ++i)
+        l.step(0.002f, 0.039f, 0.039f);
+    Check(std::fabs(l.pitch - 0.039f) < 1e-4f && std::fabs(l.yaw - 0.002f) < 1e-4f,
+          "the average converges on a new steady offset");
+    OffsetLearner noisy;
+    for (int i = 0; i < 400; ++i)
+        noisy.step(0.0f, (i % 2) ? 0.042f : 0.036f, 0.04f);
+    Check(std::fabs(noisy.pitch - 0.039f) < 4e-4f, "alternating samples average to their mean, not the last one");
+    const unsigned samples = l.samples;
+    Check(!l.step(0.0f, 0.10f, 0.10f) && l.refused == 1 && l.samples == samples && std::fabs(l.pitch - 0.039f) < 1e-4f,
+          "a 5.7 deg sample is refused and averages nothing in");
+    Check(l.step(0.0f, 0.08f, 0.08f), "4.6 deg is accepted");
+    OffsetLearner s;
+    s.seed(0.001f, 0.04f, 100);
+    Check(s.usable() && s.samples == s.ready, "seeded from the definition: usable at once");
+    OffsetLearner n;
+    n.seed(0.0f, 0.0f, 0);
+    Check(!n.have, "a seed of no samples seeds nothing");
+}
+
+void TestOffsetBook()
+{
+    OffsetBook b;
+    Check(!b.find(0x069C, 3), "an empty book has nothing");
+    b.store(0x069C, 3, 0.001f, 0.041f, 40);
+    const auto* e = b.find(0x069C, 3);
+    Check(e && std::fabs(e->pitch - 0.041f) < 1e-7f && e->samples == 40, "stored per definition");
+    Check(!b.find(0x069C, 4), "another generation is another tag set");
+    Check(!b.find(0x0697, 3), "another definition is another gun");
+    b.store(0x069C, 3, 0.002f, 0.042f, 60);
+    Check(b.find(0x069C, 3)->samples == 60, "a definition's entry is updated in place");
+    for (uint32_t d = 0; d < 8; ++d)
+        b.store(0x100 + d, 3, 0.0f, 0.0f, 1);
+    Check(!b.find(0x069C, 3), "the oldest entry gives way");
+    b.store(0xFFFFFFFFu, 3, 0.0f, 0.0f, 5);
+    Check(!b.find(0xFFFFFFFFu, 3), "an unknown definition is never stored");
+}
+
+void TestOffsetRange()
+{
+    OffsetRange r;
+    r.note(0.01f, 0.04f, -0.5f, 0.1f);
+    r.note(0.00f, 0.05f, 0.4f, -0.2f);
+    r.note(std::nanf(""), 0.0f, 0.0f, 0.0f);
+    Check(r.samples == 2, "a non-finite sample is not counted");
+    Check(r.minYaw == 0.0f && r.maxYaw == 0.01f && r.minPitch == 0.04f && r.maxPitch == 0.05f, "the deltas' range");
+    Check(r.gunMinYaw == -0.5f && r.gunMaxYaw == 0.4f && r.gunMinPitch == -0.2f && r.gunMaxPitch == 0.1f,
+          "the gun's range");
+}
+
+// End to end: a gun whose camera sits a fixed rotation off the occupant's aim, on a tilted hull. Learn it from still
+// samples, then feed it forward: the camera lands on the ray it is meant to (the residual is the learning error).
+void TestFeedForward()
+{
+    const seat_frame::Frame tilt = TiltedFrame();
+    const float trueYaw = 0.0035f, truePitch = 0.0410f;   // ~0.2 and 2.35 deg (the gauss turret)
+    OffsetLearner learner;
+    Stillness still;
+    unsigned long long now = 0;
+    for (int pose = 0; pose < 6; ++pose)
+    {
+        const float occYaw = -0.4f + 0.15f * pose, occPitch = -0.1f + 0.08f * pose;
+        seat_frame::Angles occF{}, occW{}, gunW{};
+        AnglesInFrame(tilt, occYaw, occPitch, 0.0f, occF);
+        seat_frame::WorldFromRecord(tilt, occF.yaw, occF.pitch, occW);
+        seat_frame::WorldFromRecord(tilt, occF.yaw + trueYaw, occF.pitch + truePitch, gunW);
+        for (int i = 0; i < 30; ++i, now += 8)
+        {
+            const float v[6]{gunW.yaw, gunW.pitch, occW.yaw, occW.pitch, occW.yaw, occW.pitch};
+            if (!still.step(v, now))
+                continue;
+            float dy = 0.0f, dp = 0.0f, sep = 0.0f;
+            if (OffsetInFrame(tilt, gunW.yaw, gunW.pitch, occW.yaw, occW.pitch, dy, dp, sep))
+                learner.step(dy, dp, sep);
+        }
+    }
+    Check(learner.usable() && std::fabs(learner.yaw - trueYaw) < 1e-4f && std::fabs(learner.pitch - truePitch) < 1e-4f,
+          "the offset is learned from still samples across the gun's range");
+    // The ray through the point (what the solve hands the drive), and the record written for it.
+    const float rayYaw = 0.25f, rayPitch = -0.12f;
+    float recYaw = 0.0f, recPitch = 0.0f, camYaw = 0.0f, camPitch = 0.0f;
+    Check(ShiftInFrame(tilt, rayYaw, rayPitch, -learner.yaw, -learner.pitch, recYaw, recPitch),
+          "the record is the ray minus delta");
+    // The game: the occupant's aim is the record; the camera is that plus the true offset.
+    ShiftInFrame(tilt, recYaw, recPitch, trueYaw, truePitch, camYaw, camPitch);
+    Check(SepDeg(camYaw, camPitch, rayYaw, rayPitch) < 0.01f, "the gun's camera lands on the ray (< 0.01 deg)");
+    Check(SepDeg(recYaw, recPitch, rayYaw, rayPitch) > 2.0f, "...where the uncorrected record missed by ~2.4 deg");
+    // The gun as a stand-in for the record: the gun minus delta is the occupant's aim it implies.
+    float impliedYaw = 0.0f, impliedPitch = 0.0f;
+    ShiftInFrame(tilt, camYaw, camPitch, -learner.yaw, -learner.pitch, impliedYaw, impliedPitch);
+    Check(SepDeg(impliedYaw, impliedPitch, recYaw, recPitch) < 0.01f,
+          "the corrected gun reads as the record (the camera check and the outcome guard see no offset)");
+}
 } // namespace
 
 int main()
@@ -325,6 +537,13 @@ int main()
     TestGunSettle();
     TestSlewRate();
     TestNodWitness();
+    TestOffsetInFrame();
+    TestShiftInFrame();
+    TestStillness();
+    TestOffsetLearner();
+    TestOffsetBook();
+    TestOffsetRange();
+    TestFeedForward();
     std::printf("Gun-slaved seats: %u checks, %u failures\n", checks, failures);
     return failures ? 1 : 0;
 }
