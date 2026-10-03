@@ -85,6 +85,10 @@ void PublishShotDiagnostic(GameTitle,uint32_t,uint32_t,uint32_t,uint8_t,uint8_t,
     bool,bool,bool,bool,const float*,const float*) noexcept {}
 // The dev turret-shot witness (legacy_sight_trace.inl, defined in game.cpp): it only reads, so an inert stand-in.
 void LegacySightNoteTurretShot(GameTitle,uint32_t,const float*,const float*) {}
+// The shot-lag fix (sight_layer.h / game.cpp): the fire's `predicted` flag rides a thread-local for the witness, and
+// the acquisition's camera evaluator publishes the game's own eye. Both only read the native results.
+static unsigned shotLagNotes{},tickEyes{};
+static void PublishHalo3TickEye(uint32_t,int32_t,const float*){++tickEyes;}
 #include "../src/dll/halo3_independent_shots.inl"
 #undef _ReturnAddress
 

@@ -694,6 +694,121 @@ namespace
         return count;
     }
 
+    // THE GAME'S OWN EYE AT THE SIMULATION TICK (Halo 3; legacy_direct_drive.inl's record recomposition). Halo 3's
+    // native acquisition (0x13B08C, run by the control update for each local input user) asks the unit's camera
+    // evaluator (0x212198, hooked as g_halo3Dual.cameraOriginal) for the eye it targets from -- the same evaluator
+    // the firing assist asks on a shot (0x13BC0D). Captured for input user 0 on every acquisition: the eye the game
+    // fires from in this mode, whatever the render shows (campaign, or a multiplayer simulation that predicts or
+    // interpolates the rendered camera). Sim thread writes; any thread reads. Its velocity is measured on its own
+    // clock, by the writer.
+    struct TickEyePublication
+    {
+        std::atomic<uint32_t> sequence{0};
+        std::atomic<uint32_t> generation{0};
+        std::atomic<int32_t> unit{-1};
+        std::atomic<float> eye[3]{}, vel[3]{};
+        std::atomic<bool> velValid{false};
+        std::atomic<uint64_t> stampUs{0};
+    };
+    TickEyePublication g_halo3TickEye;
+    shot_lag::EyeTrack g_halo3TickEyeTrack;   // the sim thread's own
+    // ADDR-HYGIENE: guarded (ValueAgreement). The evaluator is the dual-aim lane's signature-bound 0x212198, but that
+    // its answer IS the engine eye is a claim this lane makes, so it is proven before anything decides on it: with
+    // the eye at rest (under 5 cm/s) it must sit within 5 cm of the engine camera's own position (g_baseCam, the
+    // camera before head look) for 30 samples in a row. At rest a rendered camera that leads or trails the
+    // simulation (multiplayer) sits on the same point, so the check holds in every mode. Over 25 cm at rest disproves
+    // it until the next title generation; until proven the record keeps its solved angles (fail closed), and
+    // LegacyDriveReport says which, once per state.
+    enum class TickEyeProof : uint32_t { Unproven = 0, Proven, Disproven };
+    std::atomic<uint32_t> g_halo3TickEyeProof{0};
+    std::atomic<float> g_halo3TickEyeRestOffsetMm{0.0f};
+
+    void PublishHalo3TickEye(uint32_t generation, int32_t unit, const float eye[3]) noexcept
+    {
+        if (!shot_lag::Finite3(eye))
+            return;
+        static uint32_t s_generation = 0;
+        static int32_t s_unit = -1;
+        static uint32_t s_agree = 0;
+        if (s_generation != generation)
+        {
+            s_agree = 0;
+            g_halo3TickEyeProof.store(static_cast<uint32_t>(TickEyeProof::Unproven), std::memory_order_relaxed);
+        }
+        if (s_generation != generation || s_unit != unit)
+        {
+            g_halo3TickEyeTrack.Reset();
+            s_generation = generation;
+            s_unit = unit;
+        }
+        const uint64_t now = Sight_NowUs();
+        g_halo3TickEyeTrack.Push(now, eye);
+        float vel[3]{};
+        const bool velValid = g_halo3TickEyeTrack.Velocity(120000, 30000, vel);
+        // The proof (above), on the eye at rest only.
+        if (velValid && g_baseCamValid.load(std::memory_order_acquire) &&
+            g_halo3TickEyeProof.load(std::memory_order_relaxed) !=
+                static_cast<uint32_t>(TickEyeProof::Disproven) &&
+            shot_lag::Length(vel) * shot_lag::kMetresPerWu < 0.05f)
+        {
+            const float d[3]{eye[0] - g_baseCamX.load(), eye[1] - g_baseCamY.load(), eye[2] - g_baseCamZ.load()};
+            const float offsetMm = shot_lag::Length(d) * shot_lag::kMmPerWu;
+            g_halo3TickEyeRestOffsetMm.store(offsetMm, std::memory_order_relaxed);
+            if (offsetMm < 50.0f)
+            {
+                if (++s_agree >= 30)
+                    g_halo3TickEyeProof.store(static_cast<uint32_t>(TickEyeProof::Proven), std::memory_order_relaxed);
+            }
+            else
+            {
+                s_agree = 0;
+                if (offsetMm > 250.0f)
+                    g_halo3TickEyeProof.store(static_cast<uint32_t>(TickEyeProof::Disproven),
+                                              std::memory_order_relaxed);
+            }
+        }
+        auto& p = g_halo3TickEye;
+        p.sequence.fetch_add(1, std::memory_order_acq_rel);
+        std::atomic_thread_fence(std::memory_order_release);
+        p.generation.store(generation, std::memory_order_relaxed);
+        p.unit.store(unit, std::memory_order_relaxed);
+        for (int axis = 0; axis < 3; ++axis)
+        {
+            p.eye[axis].store(eye[axis], std::memory_order_relaxed);
+            p.vel[axis].store(velValid ? vel[axis] : 0.0f, std::memory_order_relaxed);
+        }
+        p.velValid.store(velValid, std::memory_order_relaxed);
+        p.stampUs.store(now, std::memory_order_relaxed);
+        p.sequence.fetch_add(1, std::memory_order_release);
+    }
+
+    bool ReadHalo3TickEye(uint32_t generation, uint64_t maxAgeUs, float eye[3], float vel[3], bool& velValid,
+                          uint64_t& stampUs) noexcept
+    {
+        const auto& p = g_halo3TickEye;
+        for (int attempt = 0; attempt < 2; ++attempt)
+        {
+            const uint32_t before = p.sequence.load(std::memory_order_acquire);
+            if (!before || (before & 1u))
+                continue;
+            const uint32_t g = p.generation.load(std::memory_order_relaxed);
+            for (int axis = 0; axis < 3; ++axis)
+            {
+                eye[axis] = p.eye[axis].load(std::memory_order_relaxed);
+                vel[axis] = p.vel[axis].load(std::memory_order_relaxed);
+            }
+            velValid = p.velValid.load(std::memory_order_relaxed);
+            stampUs = p.stampUs.load(std::memory_order_relaxed);
+            std::atomic_thread_fence(std::memory_order_acquire);
+            if (p.sequence.load(std::memory_order_relaxed) != before)
+                continue;
+            const uint64_t now = Sight_NowUs();
+            return generation && g == generation && stampUs && now >= stampUs && now - stampUs <= maxAgeUs &&
+                   shot_lag::Finite3(eye);
+        }
+        return false;
+    }
+
     // FIRST-PERSON WITNESSES (roomscale and the head leash; Halo 4's is g_halo4FirstPersonMs). Each title's
     // on-foot proof passes in third person too -- a death camera, a carried turret, Reach's Armor Lock,
     // scripted third person -- and roomscale's body point is the engine camera, so a third-person camera

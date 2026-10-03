@@ -1258,6 +1258,72 @@ void LegacyDriveCensusNote(LegacyDriveState& st, const LegacyDriveSite& site, in
     st.census.note(tickOk, tick, caller, st.setSeated.load(std::memory_order_relaxed));
 }
 #endif
+// THE RECORD THROUGH THE INTENT POINT (Halo 3 on foot; shot_lag_logic.h, 2026-10-02). The shot itself is re-aimed
+// at the firing assist's crosshair query (legacy_sight_trace.inl). The RECORD -- the angles the HUD, autoaim, melee
+// and the network read -- was solved on the input thread from the render-time eye, so it still points the line
+// from the tick's eye beside the point by the eye's travel. At the stick call it is recomposed as the angles of
+// normalize(P - E): P the published intent point, E the game's OWN eye -- Halo 3's control pass asks the unit's
+// camera evaluator for it (the acquisition, 0x13B08C at 0xF4CC8, in the same pass and just before this stick call
+// at 0xF6D11: both inside 0xF66AC, read from the pinned module) -- carried one measured simulation tick ahead,
+// because the record written now is first consumed by the next tick. Never P rebuilt from the current eye: that
+// would recreate the error. Kept as published (fail closed) when the setpoint is not the solve that built P (the
+// fixed-distance steer, a seat author), the point is stale, seated or held at the pitch rail, the game's eye is
+// unknown or stale (Halo 3's dual-aim hooks absent), or the result bends over 30 deg from the solve. Yaw is
+// atan2's like the solve's: the wrap into [0, 2*pi) below applies to it as to every write.
+enum class LegacyRecomposeWhy : uint8_t
+{
+    Recomposed = 0, NotHalo3OnFoot, NoIntent, OtherSolve, PointUnusable, NoGameEye, EyeUnproven, Geometry, Count
+};
+std::atomic<uint32_t> g_legacyRecompose[static_cast<size_t>(LegacyRecomposeWhy::Count)]{};
+std::atomic<uint32_t> g_legacyRecomposeMilliDeg{0}, g_legacyRecomposeMaxMilliDeg{0};
+
+LegacyRecomposeWhy LegacyDriveRecomposeOnFoot(int slot, const LegacyDrivePublication& pub, float& yaw, float& pitch)
+{
+    if (slot != 0 || pub.seated || !pub.valid || !Sight_AimEnabled())
+        return LegacyRecomposeWhy::NotHalo3OnFoot;
+    SightIntent intent{};
+    if (!Sight_ReadIntent(GameTitle::Halo3, intent))
+        return LegacyRecomposeWhy::NoIntent;
+    const shot_lag::IntentPoint& p = intent.p;
+    if (!shot_lag::SameAngles(pub.yaw, pub.pitch, p.solvedYaw, p.solvedPitch))
+        return LegacyRecomposeWhy::OtherSolve;
+    const uint32_t generation = TitleAdapter_GetGeneration(GameTitle::Halo3);
+    const uint64_t now = Sight_NowUs();
+    if (!generation || p.generation != generation || p.seated || p.railHeld || !p.stampUs || now < p.stampUs ||
+        now - p.stampUs > kSightIntentShotMaxAgeMs * 1000ull || !shot_lag::Finite3(p.point))
+        return LegacyRecomposeWhy::PointUnusable;
+    float eye[3]{}, vel[3]{};
+    bool velValid = false;
+    uint64_t stampUs = 0;
+    if (!ReadHalo3TickEye(generation, 100000, eye, vel, velValid, stampUs))
+        return LegacyRecomposeWhy::NoGameEye;
+    if (g_halo3TickEyeProof.load(std::memory_order_relaxed) != static_cast<uint32_t>(TickEyeProof::Proven))
+        return LegacyRecomposeWhy::EyeUnproven;
+    float fire[3]{eye[0], eye[1], eye[2]};
+    const float tickS = float(g_legacyTickPeriodUs[0].load(std::memory_order_relaxed)) * 1.0e-6f;
+    if (velValid)
+        (void)shot_lag::ExtrapolateEye(eye, vel, tickS, 0.05f, fire);
+    float newYaw = 0.0f, newPitch = 0.0f;
+    if (!shot_lag::AnglesTowardPoint(fire, p.point, 0.3f * shot_lag::kWuPerMetre, 1.45f, newYaw, newPitch))
+        return LegacyRecomposeWhy::Geometry;
+    const float a[3]{std::cos(pub.pitch) * std::cos(pub.yaw), std::cos(pub.pitch) * std::sin(pub.yaw),
+                     std::sin(pub.pitch)};
+    const float b[3]{std::cos(newPitch) * std::cos(newYaw), std::cos(newPitch) * std::sin(newYaw), std::sin(newPitch)};
+    float c = a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    c = c > 1.0f ? 1.0f : (c < -1.0f ? -1.0f : c);
+    const float bendDeg = std::acos(c) * 57.29578f;
+    if (!(bendDeg <= 30.0f))
+        return LegacyRecomposeWhy::Geometry;
+    yaw = newYaw;
+    pitch = newPitch;
+    const uint32_t milli = static_cast<uint32_t>(bendDeg * 1000.0f);
+    g_legacyRecomposeMilliDeg.fetch_add(milli, std::memory_order_relaxed);
+    uint32_t prior = g_legacyRecomposeMaxMilliDeg.load(std::memory_order_relaxed);
+    while (milli > prior && !g_legacyRecomposeMaxMilliDeg.compare_exchange_weak(prior, milli,
+                                                                               std::memory_order_relaxed)) {}
+    return LegacyRecomposeWhy::Recomposed;
+}
+
 } // namespace
 
 extern "C" void LegacyPcApplyForUser(int slot, int user, uintptr_t ret, const uint8_t* entryRsp)
@@ -1368,9 +1434,18 @@ extern "C" void LegacyPcApplyForUser(int slot, int user, uintptr_t ret, const ui
             st.nativeYaw.store(nativeYaw, std::memory_order_relaxed);
             st.nativePitch.store(nativePitch, std::memory_order_relaxed);
             const LegacyDrivePublication pub = LegacyDriveReadPublication(st);
+            // THE RECORD THROUGH THE INTENT POINT (LegacyDriveRecomposeOnFoot): Halo 3 on foot, the solve's angles
+            // recomposed from the game's own eye at the tick that will consume them. Every other case keeps the
+            // published angles exactly.
+            float setYaw = pub.yaw, setPitch = pub.pitch;
+            {
+                const LegacyRecomposeWhy why = LegacyDriveRecomposeOnFoot(slot, pub, setYaw, setPitch);
+                if (why != LegacyRecomposeWhy::NotHalo3OnFoot)
+                    g_legacyRecompose[static_cast<size_t>(why)].fetch_add(1, std::memory_order_relaxed);
+            }
             // World angles as published; a seat in case (b) takes them into the record's frame below.
-            float yaw = pub.yaw, pitch = pub.pitch, aimYaw = pub.aimYaw, aimPitch = pub.aimPitch;
-            const float handWorldYaw = pub.yaw;   // a yaw-only write converts at the game's own pitch (below)
+            float yaw = setYaw, pitch = setPitch, aimYaw = pub.aimYaw, aimPitch = pub.aimPitch;
+            const float handWorldYaw = setYaw;   // a yaw-only write converts at the game's own pitch (below)
             const uint64_t setMs = pub.setMs;
             const uint32_t axesBits = pub.axesBits, seatKey = pub.seatKey;
             const bool valid = pub.valid, seatedSet = pub.seated, pitchLatch = pub.pitchLatch, coherent = pub.coherent;
@@ -1815,6 +1890,42 @@ void LegacyDriveReport()
     if (now - s_last < 2000)
         return;
     s_last = now;
+    {
+        uint32_t n[static_cast<size_t>(LegacyRecomposeWhy::Count)]{};
+        uint32_t total = 0;
+        for (size_t i = 0; i < static_cast<size_t>(LegacyRecomposeWhy::Count); ++i)
+            total += (n[i] = g_legacyRecompose[i].exchange(0, std::memory_order_relaxed));
+        const uint32_t sum = g_legacyRecomposeMilliDeg.exchange(0, std::memory_order_relaxed);
+        const uint32_t max = g_legacyRecomposeMaxMilliDeg.exchange(0, std::memory_order_relaxed);
+        if (total)
+            LOG("SHOT RECORD Halo 3 on foot: %u stick writes recomposed through the intent point from the game's own "
+                "eye a tick ahead (%.1f ms; mean %.2f deg from the solve, max %.2f), %u kept as solved (no intent %u, "
+                "another solve %u, point stale/seated/rail-held %u, no fresh game eye %u, game eye unproven %u, "
+                "geometry %u)",
+                n[0], double(g_legacyTickPeriodUs[0].load(std::memory_order_relaxed)) / 1000.0,
+                n[0] ? double(sum) / 1000.0 / double(n[0]) : 0.0, double(max) / 1000.0, total - n[0],
+                n[static_cast<size_t>(LegacyRecomposeWhy::NoIntent)],
+                n[static_cast<size_t>(LegacyRecomposeWhy::OtherSolve)],
+                n[static_cast<size_t>(LegacyRecomposeWhy::PointUnusable)],
+                n[static_cast<size_t>(LegacyRecomposeWhy::NoGameEye)],
+                n[static_cast<size_t>(LegacyRecomposeWhy::EyeUnproven)],
+                n[static_cast<size_t>(LegacyRecomposeWhy::Geometry)]);
+        // The game-eye proof's state, once per change (the ValueAgreement above PublishHalo3TickEye).
+        static uint32_t s_proofLogged = 0;
+        const uint32_t proof = g_halo3TickEyeProof.load(std::memory_order_relaxed);
+        if (proof != s_proofLogged)
+        {
+            s_proofLogged = proof;
+            if (proof == static_cast<uint32_t>(TickEyeProof::Proven))
+                LOG("SHOT RECORD Halo 3: the acquisition's camera evaluator agrees with the engine camera at rest "
+                    "(%.0f mm, 30 samples): the record is recomposed from the game's own eye",
+                    double(g_halo3TickEyeRestOffsetMm.load(std::memory_order_relaxed)));
+            else if (proof == static_cast<uint32_t>(TickEyeProof::Disproven))
+                LOG("SHOT RECORD Halo 3: the acquisition's camera evaluator sits %.0f mm from the engine camera at "
+                    "rest; it is not the eye, so the record keeps its solved angles this title session (the shot "
+                    "re-aim is unaffected)", double(g_halo3TickEyeRestOffsetMm.load(std::memory_order_relaxed)));
+        }
+    }
     for (int slot = 0; slot < 3; ++slot)
     {
         auto& st = g_legacyDrive[slot];

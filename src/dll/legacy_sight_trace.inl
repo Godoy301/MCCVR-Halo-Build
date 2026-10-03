@@ -51,6 +51,10 @@ struct LegacySightState
 // flags, see halo4_contact_melee_runtime.inl: Halo4SightTraceTick; its `flags` is only "available").
 LegacySightState g_legacySight[3];
 
+// The simulation tick period of the local unit's per-unit update (Halo 3, ODST), microseconds, smoothed; 0 until
+// measured. Every build: the record recomposition (legacy_direct_drive.inl) carries the game's eye one tick ahead.
+std::atomic<uint32_t> g_legacyTickPeriodUs[2]{};
+
 LegacySightState& LegacySight(GameTitle title)
 {
     return g_legacySight[title == GameTitle::Halo3ODST ? 1 : title == GameTitle::Halo4 ? 2 : 0];
@@ -204,6 +208,22 @@ void LegacySightTraceTick(GameTitle title, uint32_t unit, int32_t localUnit, boo
     if (!flags || localUnit == -1 || unit != static_cast<uint32_t>(localUnit) ||
         TitleAdapter_GetActiveTitle() != title)
         return;
+    // The local unit's tick (once per simulation tick): its period, smoothed over ~8 ticks; a stall (over 250 ms)
+    // or a repeat inside one tick (under 2 ms) is no period.
+    {
+        static uint64_t s_lastUs[2]{};
+        const int t = title == GameTitle::Halo3ODST ? 1 : 0;
+        const uint64_t nowUs = Sight_NowUs();
+        if (s_lastUs[t] && nowUs > s_lastUs[t] + 2000 && nowUs - s_lastUs[t] < 250000)
+        {
+            const uint32_t period = static_cast<uint32_t>(nowUs - s_lastUs[t]);
+            const uint32_t prior = g_legacyTickPeriodUs[t].load(std::memory_order_relaxed);
+            g_legacyTickPeriodUs[t].store(prior ? prior + (static_cast<int32_t>(period - prior) / 8) : period,
+                                          std::memory_order_relaxed);
+        }
+        if (!s_lastUs[t] || nowUs > s_lastUs[t] + 2000 || nowUs < s_lastUs[t])
+            s_lastUs[t] = nowUs;
+    }
     if (Sight_TraceFaulted(title) || !Sight_TraceDue(title, Sight_NowMs()))
         return;
     const uint32_t generation = TitleAdapter_GetGeneration(title);

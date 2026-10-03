@@ -28,6 +28,9 @@ struct Halo3IndependentShotScope
 thread_local Halo3NativeQueryContext g_halo3NativeQueryContext;
 thread_local Halo3QueryCapture g_halo3QueryCapture;
 thread_local Halo3IndependentShotScope g_halo3IndependentShot;
+// The input user of the native acquisition running on this thread (-1 outside one): its camera evaluator call for
+// user 0 is the game's own eye at this tick (PublishHalo3TickEye).
+thread_local int32_t t_halo3AcquisitionUser=-1;
 
 __declspec(noinline) void MarkHalo3IndependentShotFault()
 {g_halo3Dual.faulted.store(true,std::memory_order_release);}
@@ -48,6 +51,11 @@ __declspec(noinline) int32_t __fastcall Halo3IndependentCameraDetour(
             g_halo3QueryCapture.unit=unit;
             ++g_halo3QueryCapture.count;
         }
+        // The eye the game targets and fires from at this tick: the acquisition's own evaluator call for input
+        // user 0 (never our own replayed query, which runs as an owned collision query with a substituted camera).
+        if(caller==feature.base+0x13B1DC && t_halo3AcquisitionUser==0 && position && !g_legacyCollisionOwnedQuery &&
+            !g_halo3IndependentShot.active)
+            PublishHalo3TickEye(feature.generation,static_cast<int32_t>(unit),position);
         const auto& shot=g_halo3IndependentShot;
         if(!shot.active || unit!=shot.unit || !position || !direction ||
             (caller!=feature.base+0x13B1DC && caller!=feature.base+0x13BC0D))__leave;
@@ -75,6 +83,8 @@ __declspec(noinline) void __fastcall Halo3IndependentQueryDetour(
         (g_config.independent_dual_aim || g_config.gun_barrel_aim || g_config.shots_from_muzzle) &&
         inputUser>=0 && inputUser<4 && !(flags&1) && direction && control && targeting;
     g_halo3QueryCapture.active=capture;
+    const int32_t previousAcquisitionUser=t_halo3AcquisitionUser;
+    t_halo3AcquisitionUser=inputUser;
     __try
     {
         if(!feature.queryOriginal)__leave;
@@ -87,6 +97,7 @@ __declspec(noinline) void __fastcall Halo3IndependentQueryDetour(
     }
     __finally
     {
+        t_halo3AcquisitionUser=previousAcquisitionUser;
         g_halo3QueryCapture=previousCapture;
         feature.callbacks.fetch_sub(1,std::memory_order_acq_rel);
     }
