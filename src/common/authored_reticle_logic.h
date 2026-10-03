@@ -355,3 +355,137 @@ inline AuthoredReticleQuadShift AuthoredReticleArtCentreShift(
     shift.up = clampOffset(centre.v - 0.5f) * width;
     return shift;
 }
+
+// WHAT A CAPTURED CROSSHAIR TEXEL HOLDS, AND WHAT THE COMPOSITOR MUST BE GIVEN.
+//
+// The capture is cleared to transparent black and the game then draws its
+// widget into it with its OWN blend state. Whatever that state is, a widget
+// that looks translucent over the flat scene ADDS some colour C to it, and
+// over a zero target that added colour is exactly what lands in RGB: the
+// capture's colour is PREMULTIPLIED (colour already scaled by the widget's
+// opacity). Its alpha channel is whatever the game's alpha blend factors left
+// there (the coverage itself for the usual premultiplied/over encodings).
+//
+// The aim quad is submitted with XR_COMPOSITION_LAYER_UNPREMULTIPLIED_ALPHA_BIT,
+// so the runtime multiplies colour by alpha AGAIN. Copying the capture
+// straight in therefore applied the game's fade twice (C x A instead of C),
+// and the sRGB decode of the already-darkened bytes dimmed it further: Reach's
+// DMR, whose crosshair idles well below full opacity, read as far fainter in
+// the headset than on the monitor.
+//
+// The fix converts to straight alpha before upload, in the shared blit shader's
+// `fix()` (src/common/vr_blit_shader.h), which this function mirrors exactly:
+// alpha = max(A, max(R,G,B)), colour = C / alpha. Straight-alpha compositing
+// then adds alpha x C/alpha = C - precisely the colour the flat game adds,
+// whatever encoding the alpha channel used - and covers the background by the
+// capture's own coverage. Taking the max also keeps the result a valid colour
+// (<= 1) when the alpha channel under-reports coverage.
+struct AuthoredReticleStraightTexel
+{
+    float r = 0.0f;
+    float g = 0.0f;
+    float b = 0.0f;
+    float a = 0.0f;
+};
+
+inline AuthoredReticleStraightTexel AuthoredReticleStraightAlpha(
+    float r, float g, float b, float a)
+{
+    const float alpha = std::fmax(a, std::fmax(r, std::fmax(g, b)));
+    AuthoredReticleStraightTexel out{r, g, b, alpha};
+    if (alpha > 0.0f)
+    {
+        out.r = r / alpha;
+        out.g = g / alpha;
+        out.b = b / alpha;
+    }
+    return out;
+}
+
+// One channel of a quad layer composited over `background`, as OpenXR defines
+// the two encodings (all values 0..1, same colour space on both sides).
+inline float CompositeUnpremultipliedChannel(
+    float colour, float alpha, float background)
+{
+    return colour * alpha + background * (1.0f - alpha);
+}
+
+inline float CompositePremultipliedChannel(
+    float colour, float alpha, float background)
+{
+    return colour + background * (1.0f - alpha);
+}
+
+// Development evidence for the fix above: what the capture held, what the
+// flat game adds, what the headset was shown before the straight-alpha
+// conversion and what it is shown now. Values are 0..255 and come from the
+// coverage probe's small mip level, so they are box-filtered MEANS of the art
+// (a 1-texel line reads fainter there than it is); compare them with each
+// other, not with a screenshot.
+struct AuthoredReticleAlphaSummary
+{
+    uint32_t inkTexels = 0;
+    // Texels whose colour exceeds their alpha: the alpha channel
+    // under-reports coverage, so the game's alpha blend factors are not the
+    // premultiplied/over pair. Zero means the classic premultiplied encoding.
+    uint32_t alphaBelowColourTexels = 0;
+    uint32_t capturedAlphaPeak = 0;
+    uint32_t capturedAlphaMean = 0;
+    // Brightest colour channel = the colour the flat game ADDS to the scene.
+    uint32_t addedColourPeak = 0;
+    // What the headset added before the fix: colour x alpha a second time.
+    uint32_t legacyAddedColourPeak = 0;
+    // Alpha the compositor is given now (straight), and the colour it adds.
+    uint32_t drawnAlphaPeak = 0;
+    uint32_t drawnAlphaMean = 0;
+    uint32_t drawnAddedColourPeak = 0;
+};
+
+inline AuthoredReticleAlphaSummary SummarizeAuthoredReticleAlpha(
+    const uint8_t* rows, size_t rowPitch, uint32_t size)
+{
+    AuthoredReticleAlphaSummary out{};
+    if (!rows || size == 0 || rowPitch < static_cast<size_t>(size) * 4)
+        return out;
+    uint64_t capturedSum = 0;
+    uint64_t drawnSum = 0;
+    for (uint32_t y = 0; y < size; ++y)
+    {
+        const uint8_t* texel = rows + static_cast<size_t>(y) * rowPitch;
+        for (uint32_t x = 0; x < size; ++x, texel += 4)
+        {
+            const uint32_t colour = texel[0] > texel[1]
+                ? (texel[0] > texel[2] ? texel[0] : texel[2])
+                : (texel[1] > texel[2] ? texel[1] : texel[2]);
+            const uint32_t alpha = texel[3];
+            if (!colour && !alpha)
+                continue;
+            const uint32_t drawn = alpha > colour ? alpha : colour;
+            const AuthoredReticleStraightTexel straight =
+                AuthoredReticleStraightAlpha(
+                    colour / 255.0f, 0.0f, 0.0f, alpha / 255.0f);
+            const uint32_t drawnAdded = static_cast<uint32_t>(
+                straight.r * straight.a * 255.0f + 0.5f);
+            const uint32_t legacy = (colour * alpha + 127) / 255;
+            ++out.inkTexels;
+            if (colour > alpha)
+                ++out.alphaBelowColourTexels;
+            capturedSum += alpha;
+            drawnSum += drawn;
+            if (alpha > out.capturedAlphaPeak) out.capturedAlphaPeak = alpha;
+            if (colour > out.addedColourPeak) out.addedColourPeak = colour;
+            if (legacy > out.legacyAddedColourPeak)
+                out.legacyAddedColourPeak = legacy;
+            if (drawn > out.drawnAlphaPeak) out.drawnAlphaPeak = drawn;
+            if (drawnAdded > out.drawnAddedColourPeak)
+                out.drawnAddedColourPeak = drawnAdded;
+        }
+    }
+    if (out.inkTexels)
+    {
+        out.capturedAlphaMean =
+            static_cast<uint32_t>(capturedSum / out.inkTexels);
+        out.drawnAlphaMean = static_cast<uint32_t>(drawnSum / out.inkTexels);
+    }
+    return out;
+}

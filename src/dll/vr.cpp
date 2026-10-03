@@ -8956,6 +8956,37 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                     texel[2];
             }
         }
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        // Reach crosshair opacity evidence: captured alpha vs the alpha (and
+        // colour) the headset is given, against what the flat game adds.
+        // Reuses this readback - no extra GPU work - and logs at most every
+        // 2 s from the render thread that already owns this upload.
+        if (TitleAdapter_GetActiveTitle() == GameTitle::HaloReach)
+        {
+            static uint64_t lastReachAlphaLogMs = 0;
+            const uint64_t nowMs = GetTickCount64();
+            if (nowMs - lastReachAlphaLogMs >= 2000)
+            {
+                const AuthoredReticleAlphaSummary s =
+                    SummarizeAuthoredReticleAlpha(
+                        rows, mapped.RowPitch, kAuthoredReticleProbeSize);
+                if (s.inkTexels)
+                {
+                    lastReachAlphaLogMs = nowMs;
+                    LOG("REACHHUD alpha (8x8 mip means, 0-255): captured "
+                        "alpha mean %u peak %u | colour flat adds %u, VR "
+                        "added before straight-alpha %u, VR adds now %u | "
+                        "drawn alpha mean %u peak %u | ink texels %u, alpha "
+                        "below colour in %u",
+                        s.capturedAlphaMean, s.capturedAlphaPeak,
+                        s.addedColourPeak, s.legacyAddedColourPeak,
+                        s.drawnAddedColourPeak, s.drawnAlphaMean,
+                        s.drawnAlphaPeak, s.inkTexels,
+                        s.alphaBelowColourTexels);
+                }
+            }
+        }
+#endif
         g_context->Unmap(g_authoredReticleProbeStaging, 0);
         g_authoredReticleLastAlphaInk=alphaInk;
         g_authoredReticleLastColorInk=colorInk;
@@ -9275,15 +9306,34 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
 
         D3D11_TEXTURE2D_DESC sourceDesc{};
         source->GetDesc(&sourceDesc);
-        const bool copied = Blit(source, sourceDesc,
-                                 g_reticleImages[index], kReticleSize,
-                                 kReticleSize,
-                                 GetRtv(
-                                     g_reticleImages, g_reticleRtvs, index,
-                                     TitleAdapter_GetActiveTitle() ==
-                                         GameTitle::Halo4 ||
-                                     TitleAdapter_GetActiveTitle() ==
-                                         GameTitle::HaloCE), true);
+        const GameTitle uploadTitle = TitleAdapter_GetActiveTitle();
+        // Reach now takes the shader path too (straight-alpha conversion, see
+        // VrBlitNeedsReachReticleStraightAlpha), so it needs a view of the XR
+        // image - and the same typed retry, because SteamVR can expose a
+        // TYPELESS image that has no default view.
+        bool copied = Blit(source, sourceDesc,
+                           g_reticleImages[index], kReticleSize,
+                           kReticleSize,
+                           GetRtv(
+                               g_reticleImages, g_reticleRtvs, index,
+                               uploadTitle == GameTitle::Halo4 ||
+                               uploadTitle == GameTitle::HaloCE ||
+                               uploadTitle == GameTitle::HaloReach), true);
+        if (!copied && uploadTitle == GameTitle::HaloReach)
+        {
+            // Failure isolation: if the conversion cannot run (no view, no
+            // shader pipeline), publish the art the way Reach did before it -
+            // too faint at partial opacity, but never no crosshair at all.
+            copied = Blit(source, sourceDesc, g_reticleImages[index],
+                          kReticleSize, kReticleSize, nullptr, false);
+            static std::atomic<bool> loggedStraightAlphaLoss{false};
+            if (!loggedStraightAlphaLoss.exchange(
+                    true, std::memory_order_relaxed))
+                LOG("Reach crosshair: straight-alpha upload unavailable; "
+                    "publishing the capture by direct copy (it will read "
+                    "fainter than flat at partial opacity) - copied=%d",
+                    copied ? 1 : 0);
+        }
         const XrResult releaseResult =
             xrReleaseSwapchainImage(g_reticleChain, &release);
         const bool released = requireSuccessfulRelease
