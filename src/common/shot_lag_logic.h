@@ -101,12 +101,13 @@ inline Reaim ReaimThroughPoint(const float start[3], const float vector[3], cons
         return Reaim::PointBehind;
     if (!(distance > rails.minRangeWu))
         return Reaim::PointTooClose;
-    // How far P sits off the old line, and the angle between the two lines.
-    const float offsetSq = distance * distance - ahead * ahead;
-    const float offset = offsetSq > 0.0f ? std::sqrt(offsetSq) : 0.0f;
-    float cosine = ahead / distance;
-    cosine = cosine > 1.0f ? 1.0f : (cosine < -1.0f ? -1.0f : cosine);
-    const float bend = std::acos(cosine) * kRadToDeg;
+    // How far P sits off the old line, and the angle between the two lines -- from the perpendicular VECTOR, never
+    // as distance^2 - ahead^2: that difference of two large squares cancels catastrophically in float (at 1 km its
+    // rounding alone is ~0.5 m of "offset", so a query already through P read as off it), and acos near 1 is as bad.
+    // toPoint - d * ahead keeps an absolute error of a few ulps of the range (well under a millimetre at 1 km).
+    const float perpendicular[3]{toPoint[0] - d[0] * ahead, toPoint[1] - d[1] * ahead, toPoint[2] - d[2] * ahead};
+    const float offset = Length(perpendicular);
+    const float bend = std::atan2(offset, ahead) * kRadToDeg;
     if (offset < rails.minOffsetWu)
         return Reaim::AlreadyThrough;
     if (!(offset <= rails.maxOffsetWu) || !(bend <= rails.maxBendDeg))
@@ -151,6 +152,7 @@ enum class IntentUse : uint8_t
     NaturalHeld,   // a natural cause holds the game's aim off it (a seat stop, a turret's slew)
     NotConverged,  // the converged aim is not in effect
     Bad,           // a non-finite or degenerate point
+    OwnShotLine,   // the shot is another gun's own line (an off-hand gun, a barrel shot): never the aim hand's P
     Count
 };
 
@@ -165,8 +167,46 @@ inline const char* IntentUseName(IntentUse why)
     case IntentUse::NaturalHeld: return "natural-held";
     case IntentUse::NotConverged: return "not converged";
     case IntentUse::Bad: return "bad";
+    case IntentUse::OwnShotLine: return "own shot line";
     default: return "?";
     }
+}
+
+// THE CROSSHAIR QUERY'S GATE: before any intent is consulted, may the re-aim touch this query at all? Only the local
+// player's query at a resolved crosshair site, and only while no other shot line owns the fire. Independent dual aim
+// (the off-hand gun) and barrel / muzzle shots run the fire with that GUN's own camera ray -- the firing assist's
+// camera is swapped for it (Halo 3 0x13BC0D, ODST 0x161204, Reach 0x10F954) -- so its crosshair query traces that
+// gun's line, and re-aiming it through the AIM HAND's point would steer the off-hand or barrel shot onto the other
+// hand's target.
+//
+// THE LOCAL PLAYER'S FIRE. A query's ignores and start cannot tell two players in one vehicle apart (Reach names only
+// the vehicle's root; Halo 3's 1.5 m start guard admits an adjacent seat), and in networked co-op another player's
+// assist runs on this machine too (the assists take a player index: Halo 3 0x13BAD0, Reach's aim_projectile). So the
+// fire itself is tagged on the fire thread: a native fire's entry opens it as kFireOther, and its shot line -- the one
+// call that names the shooting unit (Halo 3 0x3524B0 from 0x368B92: the OCCUPANT after the gunner chain; ODST
+// 0x396B7C from 0x3AEB26; Reach's unit-adjust from 0x4C303A) -- marks it kFireLocal when that unit is the local
+// player's. The fire's exit restores the enclosing value. Only a kFireLocal fire's queries are ever re-aimed.
+inline constexpr int8_t kFireNone = -1;    // not inside a native fire on this thread
+inline constexpr int8_t kFireOther = 0;    // inside a fire whose shooter is not (yet) the local player
+inline constexpr int8_t kFireLocal = 1;    // inside the local player's fire
+inline int8_t FireMark(int8_t current, bool shooterIsLocal)
+{
+    return current == kFireNone ? kFireNone : (shooterIsLocal ? kFireLocal : kFireOther);
+}
+
+enum class QueryGate : uint8_t
+{
+    Try = 0,       // consult the intent (ShouldUseIntent)
+    NotOurs,       // not the site, not the local player's fire, or not his query: left alone and not counted
+    OwnShotLine,   // the local fire's line belongs to another gun: left alone, counted (IntentUse::OwnShotLine)
+};
+inline QueryGate GateCrosshairQuery(bool atSite, int8_t fire, bool queryLocal, bool ownShotLine)
+{
+    if (!atSite || fire != kFireLocal || !queryLocal)
+        return QueryGate::NotOurs;
+    if (ownShotLine)
+        return QueryGate::OwnShotLine;
+    return QueryGate::Try;
 }
 
 inline IntentUse ShouldUseIntent(bool published, const IntentPoint& p, uint32_t generation, uint64_t nowUs,
@@ -273,6 +313,74 @@ struct EyeTrack
     }
 };
 
+// ---- 3b. the game-eye proof -----------------------------------------------------------------------------------
+// A ValueAgreement over a claim: "this evaluator's answer IS the engine eye". Compared against the engine camera's own
+// position at rest (moving, a rendered camera may lead or trail the simulation). The comparison means something only
+// where the two are the SAME point by construction -- on foot, in first person -- so a sample from a seat, a third-
+// person or scripted camera, a carried turret or a death camera is no evidence either way (`eligible` false). One
+// disagreeing sample proves nothing (a respawn, a teleport, a frame of transition), so disproof takes a STREAK of
+// kDisagreeToDisprove consecutive disagreeing at-rest samples, as proof takes kAgreeToProve agreeing ones. A
+// disproof holds for the unit's on-foot stint; a new unit (respawn) or a new stint re-opens the question. A new
+// title generation starts over.
+struct EyeProof
+{
+    enum class State : uint8_t { Unproven = 0, Proven, Disproven };
+    static constexpr uint32_t kAgreeToProve = 30;
+    static constexpr uint32_t kDisagreeToDisprove = 15;
+    static constexpr float kAgreeMm = 50.0f;
+    static constexpr float kDisagreeMm = 250.0f;
+
+    State state = State::Unproven;
+    uint32_t agree = 0, disagree = 0;
+    uint32_t generation = 0;
+    int32_t unit = -1;
+    bool inStint = false;
+
+    // One sample from the publisher. `offsetMm` is read only when eligible and at rest.
+    void Note(uint32_t gen, int32_t unitNow, bool eligible, bool atRest, float offsetMm)
+    {
+        if (gen != generation)
+        {
+            *this = EyeProof{};
+            generation = gen;
+            unit = unitNow;
+        }
+        else if (unitNow != unit)
+        {
+            unit = unitNow;
+            inStint = false;   // a new unit's stint starts below
+        }
+        if (!eligible)
+        {
+            inStint = false;
+            return;
+        }
+        if (!inStint)
+        {
+            inStint = true;
+            agree = disagree = 0;
+            if (state == State::Disproven)
+                state = State::Unproven;
+        }
+        if (!atRest || !std::isfinite(offsetMm))
+            return;
+        if (offsetMm < kAgreeMm)
+        {
+            disagree = 0;
+            if (++agree >= kAgreeToProve && state != State::Disproven)
+                state = State::Proven;
+        }
+        else if (offsetMm > kDisagreeMm)
+        {
+            agree = 0;
+            if (++disagree >= kDisagreeToDisprove)
+                state = State::Disproven;
+        }
+        else
+            agree = disagree = 0;   // neither: no streak survives it
+    }
+};
+
 // ---- 4. the eye now, and the angles toward the point --------------------------------------------------------
 // The interim estimate of an eye at a later tick: E + v * dt, dt clamped to [0, maxDtS]. False (out untouched)
 // without a finite eye and velocity.
@@ -284,6 +392,32 @@ inline bool ExtrapolateEye(const float eye[3], const float velocity[3], float dt
     for (int axis = 0; axis < 3; ++axis)
         out[axis] = eye[axis] + velocity[axis] * dt;
     return true;
+}
+
+// The crosshair query's own evidence that it is the local player's (with GateCrosshairQuery's fire tag). On foot its
+// first ignore is the local unit itself. Seated it is the vehicle's root (the published seat chain's top: `seatC`,
+// else `seatB`) or the seat's parent (`seatB`), which another occupant's query names too, so it must also START
+// within maxStartWu of the eye the intent was built from, carried forward by that eye's velocity to now (at most
+// 100 ms): an AI gunner's camera sits elsewhere. Not enough alone for a co-op player in the next seat -- hence the
+// fire tag.
+inline bool QueryIsLocal(bool seated, int32_t ignoredA, int32_t localUnit, int32_t seatB, int32_t seatC,
+                         const IntentPoint& intent, const float* start, uint64_t nowUs, float maxStartWu)
+{
+    if (ignoredA == -1)
+        return false;
+    if (!seated)
+        return ignoredA == localUnit;
+    const int32_t root = seatC != -1 ? seatC : seatB;
+    if (ignoredA != root && ignoredA != seatB)
+        return false;
+    if (!start || !Finite3(start) || !Finite3(intent.eye))
+        return false;
+    float eye[3]{intent.eye[0], intent.eye[1], intent.eye[2]};
+    if (intent.eyeVelValid && intent.eyeStampUs && nowUs > intent.eyeStampUs)
+        (void)ExtrapolateEye(intent.eye, intent.eyeVel, float(nowUs - intent.eyeStampUs) * 1.0e-6f, 0.1f, eye);
+    const float d[3]{start[0] - eye[0], start[1] - eye[1], start[2] - eye[2]};
+    const float distance = Length(d);
+    return std::isfinite(distance) && distance <= maxStartWu;
 }
 
 // The game-basis angles of normalize(P - origin) (yaw about +Z from +X, pitch up), pitch clamped to
@@ -323,6 +457,74 @@ inline bool SameAngles(float yawA, float pitchA, float yawB, float pitchB, float
     return std::fabs(dy) <= toleranceRad && std::fabs(pitchA - pitchB) <= toleranceRad;
 }
 
+// ---- 4b. the record recomposed through the point (Halo 3 on foot) ---------------------------------------------
+// The stick call's setpoint -- the record the HUD, autoaim, melee and the network read -- recomposed as the angles of
+// normalize(P - E'): P the published intent point, E' the game's own eye at the stick call carried one simulation
+// tick ahead (the record written now is first consumed by the next tick). Never P rebuilt from the current eye. Kept
+// as published (fail closed) for every reason below, in this order; `yaw`/`pitch`/`bendDeg` are written only on
+// Recomposed.
+enum class Recompose : uint8_t
+{
+    Recomposed = 0,
+    NotOnFoot,      // not Halo 3's on-foot stick call, its publication invalid or seated, or the converged aim off
+    NoIntent,       // nothing published
+    OtherSolve,     // the setpoint is not the solve that built P (the fixed-distance steer, a seat author)
+    PointUnusable,  // another generation, stale (or from the future), seated, held at the pitch rail, or non-finite
+    NoGameEye,      // the game's eye at the tick is unknown or stale
+    EyeUnproven,    // that eye is not (yet) proven to be the engine eye (EyeProof)
+    Geometry,       // P within 30 cm of the eye, or the result bends over 30 deg from the setpoint
+    Count
+};
+struct RecomposeInput
+{
+    bool onFoot = false;
+    bool intentRead = false;
+    IntentPoint intent{};
+    float setYaw = 0.0f, setPitch = 0.0f;   // the setpoint about to be written
+    uint32_t generation = 0;                // the title's current generation (0 = none)
+    uint64_t nowUs = 0, maxAgeUs = 0;
+    bool eyeRead = false;                   // the game's eye at the tick, fresh
+    float eye[3]{}, eyeVel[3]{};
+    bool eyeVelValid = false;
+    bool eyeProven = false;
+    float tickS = 0.0f;                     // the measured simulation tick; the carry is clamped to 50 ms
+};
+inline Recompose RecomposeRecord(const RecomposeInput& in, float& yaw, float& pitch, float& bendDeg)
+{
+    if (!in.onFoot)
+        return Recompose::NotOnFoot;
+    if (!in.intentRead)
+        return Recompose::NoIntent;
+    const IntentPoint& p = in.intent;
+    if (!SameAngles(in.setYaw, in.setPitch, p.solvedYaw, p.solvedPitch))
+        return Recompose::OtherSolve;
+    if (!in.generation || p.generation != in.generation || p.seated || p.railHeld || !p.stampUs ||
+        in.nowUs < p.stampUs || in.nowUs - p.stampUs > in.maxAgeUs || !Finite3(p.point))
+        return Recompose::PointUnusable;
+    if (!in.eyeRead || !Finite3(in.eye))
+        return Recompose::NoGameEye;
+    if (!in.eyeProven)
+        return Recompose::EyeUnproven;
+    float fire[3]{in.eye[0], in.eye[1], in.eye[2]};
+    if (in.eyeVelValid)
+        (void)ExtrapolateEye(in.eye, in.eyeVel, in.tickS, 0.05f, fire);
+    float newYaw = 0.0f, newPitch = 0.0f;
+    if (!AnglesTowardPoint(fire, p.point, 0.3f * kWuPerMetre, 1.45f, newYaw, newPitch))
+        return Recompose::Geometry;
+    const float a[3]{std::cos(in.setPitch) * std::cos(in.setYaw), std::cos(in.setPitch) * std::sin(in.setYaw),
+                     std::sin(in.setPitch)};
+    const float b[3]{std::cos(newPitch) * std::cos(newYaw), std::cos(newPitch) * std::sin(newYaw), std::sin(newPitch)};
+    float c = Dot(a, b);
+    c = c > 1.0f ? 1.0f : (c < -1.0f ? -1.0f : c);
+    const float bend = std::acos(c) * kRadToDeg;
+    if (!(bend <= 30.0f))
+        return Recompose::Geometry;
+    yaw = newYaw;
+    pitch = newPitch;
+    bendDeg = bend;
+    return Recompose::Recomposed;
+}
+
 // ---- 5. the frame-coherent pair --------------------------------------------------------------------------------
 // A render publishes the eyes it rendered from, keyed by the tracking-space head position its head look used; the
 // aim path keeps the hand directions it computed, keyed by the head position of the sample the hand came from.
@@ -352,15 +554,21 @@ inline bool SameKey(const float a[3], const float b[3])
 }
 
 // Indices into the two arrays, or false. `maxSkewUs`: a hand newer than its eye by more than this is refused (a
-// key that repeats after a long freeze is not the same frame).
+// key that repeats after a long freeze is not the same frame). `maxHandAgeUs` (with `nowUs`; 0 = unbounded): a hand
+// older than this at `nowUs`, or stamped after it, is refused -- during a render stall the newest hand whose frame
+// rendered can be several polls old, and a pair built from it is the player's aim of that moment, not of now. The
+// caller stamps the published point with the chosen HAND's stamp, so its consumers age it from when it was meant.
 inline bool SelectCoherentPair(const EyeFrame* eyes, size_t eyeCount, const HandFrame* hands, size_t handCount,
-                               uint64_t maxSkewUs, size_t& eyeIndex, size_t& handIndex)
+                               uint64_t maxSkewUs, size_t& eyeIndex, size_t& handIndex, uint64_t nowUs = 0,
+                               uint64_t maxHandAgeUs = 0)
 {
     bool found = false;
     uint64_t bestHand = 0, bestEye = 0;
     for (size_t h = 0; h < handCount; ++h)
     {
         if (!hands[h].valid || !hands[h].stampUs || (found && hands[h].stampUs < bestHand))
+            continue;
+        if (maxHandAgeUs && (hands[h].stampUs > nowUs || nowUs - hands[h].stampUs > maxHandAgeUs))
             continue;
         for (size_t e = 0; e < eyeCount; ++e)
         {

@@ -232,6 +232,13 @@ __declspec(noinline) void __fastcall OdstMuzzleAimDetour(uint32_t unit,float* or
     {
         if(!feature.aimOriginal)__leave;
         auto& shot=g_odstMuzzleShot;
+        // The fire's shot line (0x396B7C from 0x3AEB26) names the shooter before its assist (0x3AED8A) traces the
+        // crosshair: the local player's fire only from here (shot_lag::FireMark). Seated, the shooter is taken to be
+        // the occupant as in Halo 3 (ODST's fire also walks the controlling parent, +0x2B8 at 0x3AEA59); were it the
+        // vehicle, a seated query simply stays as the game built it (fail closed).
+        if(reinterpret_cast<uintptr_t>(_ReturnAddress())==feature.base+0x3AEB2B)
+            t_odstFire=shot_lag::FireMark(t_odstFire,unit!=UINT32_MAX &&
+                static_cast<int32_t>(unit)==LegacyCollisionIgnoredObject(GameTitle::Halo3ODST));
         if(shot.active&&!shot.query&&shot.barrel&&shot.unit==unit&&origin&&direction&&
             reinterpret_cast<uintptr_t>(_ReturnAddress())==feature.base+0x3AEB2B)
         {
@@ -269,6 +276,8 @@ __declspec(noinline) uint64_t __fastcall OdstMuzzleFireDetour(uint32_t weapon,in
 {
     auto& feature=g_odstMuzzle;feature.callbacks.fetch_add(1,std::memory_order_acq_rel);
     const auto previousShot=g_odstMuzzleShot;const auto previousRequest=g_odstMuzzleRequest;
+    // The shooter is unknown until the shot line names it (OdstMuzzleAimDetour): shot_lag::FireMark.
+    const int8_t previousFire=t_odstFire;t_odstFire=shot_lag::kFireOther;
     NativeShotTargetLease<0x28> lease{},controllerLease{};g_odstMuzzleShot={};g_odstMuzzleRequest={weapon,barrel,&lease};uint64_t result=0;
     __try
     {
@@ -288,7 +297,7 @@ __declspec(noinline) uint64_t __fastcall OdstMuzzleFireDetour(uint32_t weapon,in
     __finally
     {
         RestoreOdstMuzzleTarget(lease);RestoreOdstMuzzleTarget(controllerLease);
-        g_odstMuzzleShot=previousShot;g_odstMuzzleRequest=previousRequest;
+        g_odstMuzzleShot=previousShot;g_odstMuzzleRequest=previousRequest;t_odstFire=previousFire;
         feature.callbacks.fetch_sub(1,std::memory_order_acq_rel);
     }
     return result;

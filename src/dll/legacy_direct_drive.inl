@@ -1374,53 +1374,35 @@ bool LegacyDriveRecordSnapshot(GameTitle title, float& nativeYaw, float& nativeP
 // would recreate the error. Kept as published (fail closed) when the setpoint is not the solve that built P (the
 // fixed-distance steer, a seat author), the point is stale, seated or held at the pitch rail, the game's eye is
 // unknown or stale (Halo 3's dual-aim hooks absent), or the result bends over 30 deg from the solve. Yaw is
-// atan2's like the solve's: the wrap into [0, 2*pi) below applies to it as to every write.
-enum class LegacyRecomposeWhy : uint8_t
-{
-    Recomposed = 0, NotHalo3OnFoot, NoIntent, OtherSolve, PointUnusable, NoGameEye, EyeUnproven, Geometry, Count
-};
+// atan2's like the solve's: the wrap into [0, 2*pi) below applies to it as to every write. The decision is
+// shot_lag::RecomposeRecord (pure, unit-tested); this gathers its inputs.
+using LegacyRecomposeWhy = shot_lag::Recompose;
 std::atomic<uint32_t> g_legacyRecompose[static_cast<size_t>(LegacyRecomposeWhy::Count)]{};
 std::atomic<uint32_t> g_legacyRecomposeMilliDeg{0}, g_legacyRecomposeMaxMilliDeg{0};
 
 LegacyRecomposeWhy LegacyDriveRecomposeOnFoot(int slot, const LegacyDrivePublication& pub, float& yaw, float& pitch)
 {
-    if (slot != 0 || pub.seated || !pub.valid || !Sight_AimEnabled())
-        return LegacyRecomposeWhy::NotHalo3OnFoot;
+    shot_lag::RecomposeInput in{};
+    in.onFoot = slot == 0 && !pub.seated && pub.valid && Sight_AimEnabled();
+    if (!in.onFoot)
+        return LegacyRecomposeWhy::NotOnFoot;   // nothing read
     SightIntent intent{};
-    if (!Sight_ReadIntent(GameTitle::Halo3, intent))
-        return LegacyRecomposeWhy::NoIntent;
-    const shot_lag::IntentPoint& p = intent.p;
-    if (!shot_lag::SameAngles(pub.yaw, pub.pitch, p.solvedYaw, p.solvedPitch))
-        return LegacyRecomposeWhy::OtherSolve;
-    const uint32_t generation = TitleAdapter_GetGeneration(GameTitle::Halo3);
-    const uint64_t now = Sight_NowUs();
-    if (!generation || p.generation != generation || p.seated || p.railHeld || !p.stampUs || now < p.stampUs ||
-        now - p.stampUs > kSightIntentShotMaxAgeMs * 1000ull || !shot_lag::Finite3(p.point))
-        return LegacyRecomposeWhy::PointUnusable;
-    float eye[3]{}, vel[3]{};
-    bool velValid = false;
+    in.intentRead = Sight_ReadIntent(GameTitle::Halo3, intent);
+    in.intent = intent.p;
+    in.setYaw = pub.yaw;
+    in.setPitch = pub.pitch;
+    in.generation = TitleAdapter_GetGeneration(GameTitle::Halo3);
+    in.nowUs = Sight_NowUs();
+    in.maxAgeUs = kSightIntentShotMaxAgeMs * 1000ull;
     uint64_t stampUs = 0;
-    if (!ReadHalo3TickEye(generation, 100000, eye, vel, velValid, stampUs))
-        return LegacyRecomposeWhy::NoGameEye;
-    if (g_halo3TickEyeProof.load(std::memory_order_relaxed) != static_cast<uint32_t>(TickEyeProof::Proven))
-        return LegacyRecomposeWhy::EyeUnproven;
-    float fire[3]{eye[0], eye[1], eye[2]};
-    const float tickS = float(g_legacyTickPeriodUs[0].load(std::memory_order_relaxed)) * 1.0e-6f;
-    if (velValid)
-        (void)shot_lag::ExtrapolateEye(eye, vel, tickS, 0.05f, fire);
-    float newYaw = 0.0f, newPitch = 0.0f;
-    if (!shot_lag::AnglesTowardPoint(fire, p.point, 0.3f * shot_lag::kWuPerMetre, 1.45f, newYaw, newPitch))
-        return LegacyRecomposeWhy::Geometry;
-    const float a[3]{std::cos(pub.pitch) * std::cos(pub.yaw), std::cos(pub.pitch) * std::sin(pub.yaw),
-                     std::sin(pub.pitch)};
-    const float b[3]{std::cos(newPitch) * std::cos(newYaw), std::cos(newPitch) * std::sin(newYaw), std::sin(newPitch)};
-    float c = a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
-    c = c > 1.0f ? 1.0f : (c < -1.0f ? -1.0f : c);
-    const float bendDeg = std::acos(c) * 57.29578f;
-    if (!(bendDeg <= 30.0f))
-        return LegacyRecomposeWhy::Geometry;
-    yaw = newYaw;
-    pitch = newPitch;
+    in.eyeRead = in.generation &&
+        ReadHalo3TickEye(in.generation, 100000, in.eye, in.eyeVel, in.eyeVelValid, stampUs);
+    in.eyeProven = g_halo3TickEyeProof.load(std::memory_order_relaxed) == static_cast<uint32_t>(TickEyeProof::Proven);
+    in.tickS = float(g_legacyTickPeriodUs[0].load(std::memory_order_relaxed)) * 1.0e-6f;
+    float bendDeg = 0.0f;
+    const LegacyRecomposeWhy why = shot_lag::RecomposeRecord(in, yaw, pitch, bendDeg);
+    if (why != LegacyRecomposeWhy::Recomposed)
+        return why;
     const uint32_t milli = static_cast<uint32_t>(bendDeg * 1000.0f);
     g_legacyRecomposeMilliDeg.fetch_add(milli, std::memory_order_relaxed);
     uint32_t prior = g_legacyRecomposeMaxMilliDeg.load(std::memory_order_relaxed);
@@ -1546,7 +1528,7 @@ extern "C" void LegacyPcApplyForUser(int slot, int user, uintptr_t ret, const ui
             float setYaw = pub.yaw, setPitch = pub.pitch;
             {
                 const LegacyRecomposeWhy why = LegacyDriveRecomposeOnFoot(slot, pub, setYaw, setPitch);
-                if (why != LegacyRecomposeWhy::NotHalo3OnFoot)
+                if (why != LegacyRecomposeWhy::NotOnFoot)
                     g_legacyRecompose[static_cast<size_t>(why)].fetch_add(1, std::memory_order_relaxed);
             }
             // World angles as published; a seat in case (b) takes them into the record's frame below.
@@ -2055,15 +2037,22 @@ void LegacyDriveReport()
         const uint32_t proof = g_halo3TickEyeProof.load(std::memory_order_relaxed);
         if (proof != s_proofLogged)
         {
+            const uint32_t was = s_proofLogged;
             s_proofLogged = proof;
-            if (proof == static_cast<uint32_t>(TickEyeProof::Proven))
+            if (proof == static_cast<uint32_t>(TickEyeProof::Unproven) &&
+                was == static_cast<uint32_t>(TickEyeProof::Disproven))
+                LOG("SHOT RECORD Halo 3: a new unit or on-foot stint re-opens the game-eye proof (the record keeps its "
+                    "solved angles until it is proven)");
+            else if (proof == static_cast<uint32_t>(TickEyeProof::Proven))
                 LOG("SHOT RECORD Halo 3: the acquisition's camera evaluator agrees with the engine camera at rest "
                     "(%.0f mm, 30 samples): the record is recomposed from the game's own eye",
                     double(g_halo3TickEyeRestOffsetMm.load(std::memory_order_relaxed)));
             else if (proof == static_cast<uint32_t>(TickEyeProof::Disproven))
                 LOG("SHOT RECORD Halo 3: the acquisition's camera evaluator sits %.0f mm from the engine camera at "
-                    "rest; it is not the eye, so the record keeps its solved angles this title session (the shot "
-                    "re-aim is unaffected)", double(g_halo3TickEyeRestOffsetMm.load(std::memory_order_relaxed)));
+                    "rest, on foot in first person, for %u samples in a row; it is not the eye, so the record keeps "
+                    "its solved angles for this on-foot stint (the shot re-aim is unaffected)",
+                    double(g_halo3TickEyeRestOffsetMm.load(std::memory_order_relaxed)),
+                    shot_lag::EyeProof::kDisagreeToDisprove);
         }
     }
     for (int slot = 0; slot < 3; ++slot)

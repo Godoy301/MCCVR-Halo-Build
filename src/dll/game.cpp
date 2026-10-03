@@ -730,12 +730,25 @@ namespace
     // its answer IS the engine eye is a claim this lane makes, so it is proven before anything decides on it: with
     // the eye at rest (under 5 cm/s) it must sit within 5 cm of the engine camera's own position (g_baseCam, the
     // camera before head look) for 30 samples in a row. At rest a rendered camera that leads or trails the
-    // simulation (multiplayer) sits on the same point, so the check holds in every mode. Over 25 cm at rest disproves
-    // it until the next title generation; until proven the record keeps its solved angles (fail closed), and
-    // LegacyDriveReport says which, once per state.
+    // simulation (multiplayer) sits on the same point, so the check holds in every mode. The comparison is only
+    // evidence ON FOOT IN FIRST PERSON: in a seat, a third-person or scripted camera, a carried turret or the death
+    // camera the engine camera is not the eye by design, and a single such sample used to latch a disproof for the
+    // whole generation. So it samples only on foot with the first-person view model drawn (Halo3TickEyeProofEligible),
+    // and disproof takes 15 consecutive at-rest samples over 25 cm; it holds for that unit's on-foot stint (a respawn
+    // or the next stint asks again). Until proven the record keeps its solved angles (fail closed), and
+    // LegacyDriveReport says which, once per state. shot_lag::EyeProof is the state machine (unit-tested).
     enum class TickEyeProof : uint32_t { Unproven = 0, Proven, Disproven };
+    static_assert(static_cast<uint32_t>(shot_lag::EyeProof::State::Proven) ==
+                      static_cast<uint32_t>(TickEyeProof::Proven) &&
+                  static_cast<uint32_t>(shot_lag::EyeProof::State::Disproven) ==
+                      static_cast<uint32_t>(TickEyeProof::Disproven),
+                  "the published proof state is the state machine's");
     std::atomic<uint32_t> g_halo3TickEyeProof{0};
     std::atomic<float> g_halo3TickEyeRestOffsetMm{0.0f};
+    shot_lag::EyeProof g_halo3TickEyeProofState;   // the sim thread's own
+    // On foot, in first person, the player in control: the only state in which the evaluator's eye and the engine
+    // camera are the same point. Defined below with the first-person witness.
+    bool Halo3TickEyeProofEligible() noexcept;
 
     void PublishHalo3TickEye(uint32_t generation, int32_t unit, const float eye[3]) noexcept
     {
@@ -743,12 +756,6 @@ namespace
             return;
         static uint32_t s_generation = 0;
         static int32_t s_unit = -1;
-        static uint32_t s_agree = 0;
-        if (s_generation != generation)
-        {
-            s_agree = 0;
-            g_halo3TickEyeProof.store(static_cast<uint32_t>(TickEyeProof::Unproven), std::memory_order_relaxed);
-        }
         if (s_generation != generation || s_unit != unit)
         {
             g_halo3TickEyeTrack.Reset();
@@ -759,28 +766,18 @@ namespace
         g_halo3TickEyeTrack.Push(now, eye);
         float vel[3]{};
         const bool velValid = g_halo3TickEyeTrack.Velocity(120000, 30000, vel);
-        // The proof (above), on the eye at rest only.
-        if (velValid && g_baseCamValid.load(std::memory_order_acquire) &&
-            g_halo3TickEyeProof.load(std::memory_order_relaxed) !=
-                static_cast<uint32_t>(TickEyeProof::Disproven) &&
-            shot_lag::Length(vel) * shot_lag::kMetresPerWu < 0.05f)
+        // The proof (above): eligible samples only, judged at rest only.
+        const bool eligible = g_baseCamValid.load(std::memory_order_acquire) && Halo3TickEyeProofEligible();
+        const bool atRest = velValid && shot_lag::Length(vel) * shot_lag::kMetresPerWu < 0.05f;
+        float offsetMm = 0.0f;
+        if (eligible && atRest)
         {
             const float d[3]{eye[0] - g_baseCamX.load(), eye[1] - g_baseCamY.load(), eye[2] - g_baseCamZ.load()};
-            const float offsetMm = shot_lag::Length(d) * shot_lag::kMmPerWu;
+            offsetMm = shot_lag::Length(d) * shot_lag::kMmPerWu;
             g_halo3TickEyeRestOffsetMm.store(offsetMm, std::memory_order_relaxed);
-            if (offsetMm < 50.0f)
-            {
-                if (++s_agree >= 30)
-                    g_halo3TickEyeProof.store(static_cast<uint32_t>(TickEyeProof::Proven), std::memory_order_relaxed);
-            }
-            else
-            {
-                s_agree = 0;
-                if (offsetMm > 250.0f)
-                    g_halo3TickEyeProof.store(static_cast<uint32_t>(TickEyeProof::Disproven),
-                                              std::memory_order_relaxed);
-            }
         }
+        g_halo3TickEyeProofState.Note(generation, unit, eligible, atRest, offsetMm);
+        g_halo3TickEyeProof.store(static_cast<uint32_t>(g_halo3TickEyeProofState.state), std::memory_order_relaxed);
         auto& p = g_halo3TickEye;
         p.sequence.fetch_add(1, std::memory_order_acq_rel);
         std::atomic_thread_fence(std::memory_order_release);
@@ -846,6 +843,16 @@ namespace
     {
         return WitnessFresh(g_reachFirstPersonMs, now, kReachFirstPersonWitnessMs) &&
             WitnessFresh(g_reachFirstPersonPrevMs, now, kReachFirstPersonWitnessMs);
+    }
+    // Declared with PublishHalo3TickEye (sim thread). On foot (the vehicle sampler's state) with the first-person view
+    // model drawn within the witness window: a seat, a third-person or scripted camera, a carried turret and the death
+    // camera all stop the view model, so none of them is ever evidence. No witness hook: never eligible (fail closed:
+    // the record keeps its solved angles).
+    bool Halo3TickEyeProofEligible() noexcept
+    {
+        return g_fpInterpolatorHooked.load(std::memory_order_acquire) &&
+            WitnessFresh(g_halo3FirstPersonMs, GetTickCount64(), kFirstPersonWitnessMs) &&
+            Game_Halo3VehicleState().state == Halo3VehicleState::OnFoot;
     }
     std::atomic<float> g_camFwd[3] = {{1},{0},{0}};
     std::atomic<float> g_camUp[3] = {{0},{0},{1}};
@@ -1941,6 +1948,14 @@ namespace
     // resolver hook directly. Suppress only that owned nested callback so a
     // native game query remains the sole scheduling point.
     thread_local bool g_legacyCollisionOwnedQuery = false;
+    // THE LOCAL PLAYER'S FIRE, per title, on the fire thread (shot_lag::FireMark): kFireNone outside a native fire,
+    // kFireOther from a fire's entry, kFireLocal once its shot line names the local unit. Opened and restored by the
+    // fire detours (Halo3IndependentFireDetour, OdstMuzzleFireDetour, ReachMuzzleFireDetour), marked by the shot-line
+    // detours (Halo3IndependentAimDetour, OdstMuzzleAimDetour, ReachUnitAdjustHook); the crosshair re-aims require
+    // kFireLocal. No fire detour installed: never local, never re-aimed (fail closed).
+    thread_local int8_t t_halo3Fire = shot_lag::kFireNone;
+    thread_local int8_t t_odstFire = shot_lag::kFireNone;
+    thread_local int8_t t_reachFire = shot_lag::kFireNone;
 
     LegacyWorldCollisionFeature* LegacyCollisionForTitle(GameTitle title);
     void LegacyPublishReloadTarget(GameTitle title,uint16_t tag,uint32_t generation,
@@ -2030,6 +2045,11 @@ namespace
         int32_t ignoredA, uintptr_t caller, float out[3]);
     void LegacySightNoteCrosshairQuery(GameTitle title, uint64_t flags, const float* start, const float* vector,
         int32_t ignoredA, uintptr_t caller);
+    // True on a fire thread while another gun's own line owns the local fire: Halo 3's independent shot scope (the
+    // off-hand gun under independent dual aim, or a barrel / muzzle shot), ODST's and Reach's muzzle shot scopes. The
+    // firing assist's camera is then that gun's ray, so the crosshair re-aims leave its query alone. Defined after
+    // the scopes (halo3_independent_shots.inl, odst_muzzle_shots.inl, reach_muzzle_shots.inl).
+    bool LegacyOwnShotLineActive(GameTitle title);
     bool ReachConvergedShotLive(uint64_t nowMs);
     void ReachSightMeasureShot(int32_t unitIndex, const float* origin, const float* direction,
                                const float* cameraPoint, uint8_t firesFromCamera, uint8_t useUnitAim);
@@ -20791,6 +20811,12 @@ namespace
             1, std::memory_order_acq_rel);
         __try
         {
+            // The projectile transaction names its shooter here, before its aim_assist traces the crosshair: the
+            // local player's fire only from here (shot_lag::FireMark; ReachMuzzleFireDetour opens the fire). Seated,
+            // unitIndex is the occupant (the seated redirect below matches it to the occupation's unit).
+            if (reinterpret_cast<uintptr_t>(_ReturnAddress())==g_reachCamera.base+0x4C303F)
+                t_reachFire=shot_lag::FireMark(t_reachFire,
+                    unitIndex!=-1 && unitIndex==LegacyCollisionIgnoredObject(GameTitle::HaloReach));
             if (reinterpret_cast<uintptr_t>(_ReturnAddress())==g_reachCamera.base+0x4C303F &&
                 ReachApplyBarrelAim(unitIndex,origin,direction,basisForward,collision,simulation))
             {
@@ -27014,6 +27040,18 @@ namespace
     #include "reach_muzzle_shots.inl"
     #include "reach_muzzle_lifecycle.inl"
     #include "reach_visual_hand_offset.inl"
+
+    // Declared with the crosshair re-aims above: the fire thread's own-shot-line scopes, read where they live.
+    bool LegacyOwnShotLineActive(GameTitle title)
+    {
+        switch (title)
+        {
+        case GameTitle::Halo3: return g_halo3IndependentShot.active;
+        case GameTitle::Halo3ODST: return g_odstMuzzleShot.active;
+        case GameTitle::HaloReach: return g_reachBarrelShot.active;
+        default: return false;
+        }
+    }
 
     // Optional per-frame read of the SAME local unit handle whose native
     // camera-info call proved the occupied seat. Keep its SEH boundary separate
@@ -51943,7 +51981,7 @@ static void PublishAimIntent(GameTitle title, const SightRay& ray, const float h
     SightIntent intent{};
     shot_lag::IntentPoint& p = intent.p;
     p.generation = ray.generation;
-    p.stampUs = now;
+    p.stampUs = now;   // the poll's own pair; a coherent pair below takes its hand's stamp
     p.railHeld = railHeld;
     p.seated = seated;
     p.rangeWu = rangeWu;
@@ -51958,13 +51996,19 @@ static void PublishAimIntent(GameTitle title, const SightRay& ray, const float h
     shot_lag::EyeFrame frames[kCamFrameSlots]{};
     const size_t frameCount = cameraFrames ? ReadCamFrames(frames) : 0;
     size_t eyeIndex = 0, handIndex = 0;
-    // A head sample repeated more than 100 ms apart is not the same frame.
+    // A head sample repeated more than 100 ms apart is not the same frame. A hand older than 50 ms (renders stalled:
+    // the newest hand whose frame rendered is several polls back) is the aim of that moment, not of now: the poll's
+    // own pair stands instead. The point is stamped with the HAND's own stamp, so a consumer ages it from when the
+    // player meant it -- never republished as fresh.
+    constexpr uint64_t kIntentHandMaxAgeUs = 50000;
     if (keyed && frameCount &&
-        shot_lag::SelectCoherentPair(frames, frameCount, s_hands, 8, 100000, eyeIndex, handIndex))
+        shot_lag::SelectCoherentPair(frames, frameCount, s_hands, 8, 100000, eyeIndex, handIndex, now,
+                                     kIntentHandMaxAgeUs))
     {
         const shot_lag::EyeFrame& eye = frames[eyeIndex];
         const shot_lag::HandFrame& hand = s_hands[handIndex];
         p.coherent = true;
+        p.stampUs = hand.stampUs;
         p.serial = eye.serial;
         memcpy(p.head, eye.head, sizeof(p.head));
         memcpy(p.dir, hand.dir, sizeof(p.dir));
@@ -52155,7 +52199,7 @@ static bool SeatLimitReticleStep(const SeatLimitPoll& in, SeatLimitMarkPublicati
         const uint32_t generation = TitleAdapter_GetGeneration(in.title);
         SightAuxRay ray{};
         ray.generation = generation;
-        ray.sampleMs = now;
+        ray.sampleMs = Sight_NowMs();   // the sight clock (`now` above is the gate's GetTickCount64); the publish restamps
         for (int axis = 0; axis < 3; ++axis)
         {
             ray.origin[axis] = rayOrigin[axis];

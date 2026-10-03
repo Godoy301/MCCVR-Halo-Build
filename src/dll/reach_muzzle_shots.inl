@@ -195,11 +195,14 @@ __declspec(noinline) void __fastcall ReachMuzzleFireDetour(uint32_t weapon,int16
 {
     auto& feature=g_reachBarrel;feature.callbacks.fetch_add(1,std::memory_order_acq_rel);
     const auto previousShot=g_reachBarrelShot;const auto previousRequest=g_reachBarrelRequest;
+    // The shooter is unknown until the unit-adjust (ReachUnitAdjustHook, from 0x4C303A) names it: shot_lag::FireMark.
+    const int8_t previousFire=t_reachFire;t_reachFire=shot_lag::kFireOther;
     NativeShotTargetLease<0x28> lease{};g_reachBarrelShot={};g_reachBarrelRequest={weapon,barrel,simulation,&lease};
     __try {if(feature.fireOriginal)feature.fireOriginal(weapon,barrel,data,simulation);}
     __finally
     {
         RestoreReachMuzzleTarget(lease);g_reachBarrelShot=previousShot;g_reachBarrelRequest=previousRequest;
+        t_reachFire=previousFire;
         feature.callbacks.fetch_sub(1,std::memory_order_acq_rel);
     }
 }

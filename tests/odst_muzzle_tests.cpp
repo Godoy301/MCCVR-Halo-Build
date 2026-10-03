@@ -87,6 +87,9 @@ static unsigned shotLagNotes{};
 static void Sight_NoteShotLagFromIntent(GameTitle,SightShotPath,const float*,const float*,int,bool,int32_t)
 {++shotLagNotes;}
 static int32_t LegacyCollisionIgnoredObject(GameTitle){return -1;}
+// THE LOCAL PLAYER'S FIRE (shot_lag_logic.h FireMark; game.cpp t_odstFire): opened by the fire, marked by its line.
+#include "../src/common/shot_lag_logic.h"
+static thread_local int8_t t_odstFire=shot_lag::kFireNone;
 static thread_local uintptr_t caller{};
 #define _ReturnAddress() reinterpret_cast<void*>(::caller)
 #include "../src/dll/odst_muzzle_shots.inl"
