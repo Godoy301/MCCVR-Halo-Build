@@ -525,6 +525,9 @@ struct ReaimStats
     std::atomic<uint64_t> refused[static_cast<size_t>(shot_lag::Reaim::Count)]{};
     std::atomic<uint64_t> skipped[static_cast<size_t>(shot_lag::IntentUse::Count)]{};
     std::atomic<uint32_t> bendSumMilliDeg{0}, bendMaxMilliDeg{0};
+    // Seated queries (also in the totals above): the multiplayer residual (Sight_ReaimThroughPoint's `seated`).
+    std::atomic<uint64_t> seatedApplied{0}, seatedThrough{0};
+    std::atomic<uint32_t> seatedBendSumMilliDeg{0}, seatedBendMaxMilliDeg{0};
 };
 ReaimStats g_reaim[kTitleSlots][static_cast<size_t>(SightShotSite::Count)];
 
@@ -563,7 +566,7 @@ shot_lag::IntentUse Sight_IntentForShot(GameTitle title, uint64_t maxAgeMs, bool
 }
 
 bool Sight_ReaimThroughPoint(GameTitle title, SightShotSite site, const float start[3], float vector[3],
-                             const float point[3])
+                             const float point[3], bool seated)
 {
     const size_t s = static_cast<size_t>(site) % static_cast<size_t>(SightShotSite::Count);
     auto& stats = g_reaim[Slot(title)][s];
@@ -573,6 +576,8 @@ bool Sight_ReaimThroughPoint(GameTitle title, SightShotSite site, const float st
     if (why == shot_lag::Reaim::AlreadyThrough)
     {
         stats.through.fetch_add(1, std::memory_order_relaxed);
+        if (seated)
+            stats.seatedThrough.fetch_add(1, std::memory_order_relaxed);
         return false;
     }
     if (why != shot_lag::Reaim::Applied)
@@ -588,6 +593,14 @@ bool Sight_ReaimThroughPoint(GameTitle title, SightShotSite site, const float st
     stats.bendSumMilliDeg.fetch_add(milli, std::memory_order_relaxed);
     uint32_t prior = stats.bendMaxMilliDeg.load(std::memory_order_relaxed);
     while (milli > prior && !stats.bendMaxMilliDeg.compare_exchange_weak(prior, milli, std::memory_order_relaxed)) {}
+    if (seated)
+    {
+        stats.seatedApplied.fetch_add(1, std::memory_order_relaxed);
+        stats.seatedBendSumMilliDeg.fetch_add(milli, std::memory_order_relaxed);
+        uint32_t seatedPrior = stats.seatedBendMaxMilliDeg.load(std::memory_order_relaxed);
+        while (milli > seatedPrior &&
+               !stats.seatedBendMaxMilliDeg.compare_exchange_weak(seatedPrior, milli, std::memory_order_relaxed)) {}
+    }
     return true;
 }
 
@@ -636,8 +649,22 @@ void ReportReaims(size_t slot)
         }
         const uint32_t bendSum = stats.bendSumMilliDeg.exchange(0, std::memory_order_relaxed);
         const uint32_t bendMax = stats.bendMaxMilliDeg.exchange(0, std::memory_order_relaxed);
+        const uint64_t seatedApplied = stats.seatedApplied.exchange(0, std::memory_order_relaxed);
+        const uint64_t seatedThrough = stats.seatedThrough.exchange(0, std::memory_order_relaxed);
+        const uint32_t seatedBendSum = stats.seatedBendSumMilliDeg.exchange(0, std::memory_order_relaxed);
+        const uint32_t seatedBendMax = stats.seatedBendMaxMilliDeg.exchange(0, std::memory_order_relaxed);
         if (!applied && !through && !refused && !skipped && !used)
             continue;
+        // The seated part: with the seat's record chosen upstream (Halo 3) the game's own line should already be
+        // through P, so a seated re-aim that still had to act is what a host firing from the record would miss by.
+        char seatedPart[200]{};
+        if (seatedApplied || seatedThrough)
+            std::snprintf(seatedPart, sizeof(seatedPart),
+                          "; seated: %llu still re-aimed at the fire -- the multiplayer residual, what a host firing "
+                          "from the record alone misses by (mean %.2f deg, max %.2f) -- and %llu already through",
+                          static_cast<unsigned long long>(seatedApplied),
+                          seatedApplied ? double(seatedBendSum) / 1000.0 / double(seatedApplied) : 0.0,
+                          double(seatedBendMax) / 1000.0, static_cast<unsigned long long>(seatedThrough));
         if (static_cast<SightShotSite>(s) == SightShotSite::Muzzle)
         {
             LOG("SHOT REAIM %s %s: %llu flew through the frame-coherent intent point, %llu through the ray's point "
@@ -647,12 +674,12 @@ void ReportReaims(size_t slot)
             continue;
         }
         LOG("SHOT REAIM %s %s: %llu re-aimed through the intent point from the query's own start (mean %.2f deg, "
-            "max %.2f), %llu already through it (left alone), %llu left as the game built them%s%s%s",
+            "max %.2f), %llu already through it (left alone), %llu left as the game built them%s%s%s%s",
             TitleName(static_cast<GameTitle>(slot)), SiteName(static_cast<SightShotSite>(s)),
             static_cast<unsigned long long>(applied),
             applied ? double(bendSum) / 1000.0 / double(applied) : 0.0, double(bendMax) / 1000.0,
             static_cast<unsigned long long>(through), static_cast<unsigned long long>(refused + skipped),
-            length ? " (" : "", length ? reasons : "", length ? ")" : "");
+            length ? " (" : "", length ? reasons : "", length ? ")" : "", seatedPart);
     }
 }
 } // namespace

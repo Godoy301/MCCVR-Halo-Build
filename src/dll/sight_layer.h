@@ -214,9 +214,12 @@ enum class SightShotSite : uint8_t
     Count
 };
 // Re-aims `vector` (from `start`) through `point`: true and `vector` replaced when it applied; false leaves it as the
-// game built it. Counted per title and site with the reason (Sight_Report logs "SHOT REAIM" every 2 s).
+// game built it. Counted per title and site with the reason (Sight_Report logs "SHOT REAIM" every 2 s). `seated`: a
+// seat's query, counted apart as well -- with the seat's record chosen upstream of replication (Halo 3,
+// seat_upstream_logic.h) the game's own line should already pass through P, so a seated re-aim that still acts (and
+// its bend) is the MULTIPLAYER RESIDUAL: what a host firing from the record alone would miss by.
 bool Sight_ReaimThroughPoint(GameTitle title, SightShotSite site, const float start[3], float vector[3],
-                             const float point[3]);
+                             const float point[3], bool seated = false);
 // A shot site that did not try (the intent was not usable): counted with its reason.
 void Sight_NoteReaimSkipped(GameTitle title, SightShotSite site, shot_lag::IntentUse why);
 

@@ -257,6 +257,7 @@ bool Halo4Type13LogRemove();
 #include "../common/aim_caller_logic.h"
 #include "../common/seat_drive_policy.h"
 #include "../common/gun_slaved_seat_logic.h"
+#include "../common/seat_upstream_logic.h"
 #include "../common/vehicle_gun_band_logic.h"
 #include "../common/converge_policy.h"
 #include "../common/shot_point_logic.h"
