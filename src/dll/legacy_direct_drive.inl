@@ -1542,6 +1542,144 @@ LegacyRecomposeWhy LegacyDriveRecomposeOnFoot(int slot, const LegacyDrivePublica
     return LegacyRecomposeWhy::Recomposed;
 }
 
+// THE SEATED RECORD UPSTREAM OF REPLICATION (Halo 3; src/common/seat_upstream_logic.h, 2026-10-03). In online play
+// the record is what the host fires from -- with the stock game, if it runs no mod -- so a correction made only at
+// the fire site (the crosshair query re-aimed through P, legacy_sight_trace.inl) is this machine's prediction and
+// nothing more. Here, at the stick call, a seat's setpoint is replaced by the record whose STOCK crosshair line at the
+// next tick passes through the seat's P (SightIntent::solvePoint): solved from this control pass's own camera (the
+// acquisition's evaluator answer, carried one measured tick ahead) through the seat's learned velocity term (the stock
+// query runs along normalize(R - g v), g learned from the same evaluator's directions against the record that drove
+// them). Kept as published, counted by reason, whenever any input is missing (seat_upstream::SeatRecompose); no
+// magnitude limit. Gun-slaved seats are not modelled (their line is the gun's marker; GunOffsetStep owns them).
+// THE HOST CAVEAT (read from the module, not testable here): the evaluator chooses the chase-camera path for a seat
+// whose LOADED tag flags carry bit 4 (0x1326E8 -> 0x2121D2). C20 clears that bit on this machine; an unmodded host
+// keeps it, so in a stock third-person seat its query starts at its chase camera and runs parallel to ours. The dev
+// SHOT UPSTREAM line names such seats ("stock chase camera").
+using LegacySeatRecomposeWhy = seat_upstream::SeatRecompose;
+std::atomic<uint32_t> g_legacySeatRecompose[static_cast<size_t>(LegacySeatRecomposeWhy::Count)]{};
+std::atomic<uint32_t> g_legacySeatRecomposeMilliDeg{0}, g_legacySeatRecomposeMaxMilliDeg{0};
+// The gain learner's samples since the last report, and its state (sim thread writes; the report reads).
+std::atomic<uint32_t> g_legacySeatGainUsed{0}, g_legacySeatGainSlow{0}, g_legacySeatGainUnpaired{0};
+std::atomic<uint32_t> g_legacySeatCameraPath[3]{};   // this pass's camera: first person, chase, other/none
+std::atomic<float> g_legacySeatGain{0.0f};
+std::atomic<bool> g_legacySeatGainLearned{false};
+struct LegacySeatUpstream
+{
+    seat_upstream::GainFit fit;
+    seat_upstream::WriteRing ring;
+    uint32_t fitKey = 0;
+    uint32_t generation = 0;
+    uint64_t lastStickUs = 0;
+};
+LegacySeatUpstream g_legacySeatUpstream;   // the stick call's thread only
+
+// The local player's unit (Halo 3), guarded; -1 when unknown.
+int32_t LegacyHalo3LocalUnit()
+{
+    __try
+    {
+        return g_halo3PlayerUnitGetter ? g_halo3PlayerUnitGetter(0) : -1;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return -1;
+    }
+}
+
+// Sim thread, Halo 3's stick call: what record the call leaves in effect (for the learner's pairing), after it ran.
+// `dir` null: this call wrote nothing (the record is whatever the game or the servo made it).
+void LegacySeatUpstreamNoteCall(uint32_t seatKey, const float* dir)
+{
+    g_legacySeatUpstream.ring.Note(g_legacySimTicks[0].load(std::memory_order_acquire), seatKey, dir);
+}
+
+LegacySeatRecomposeWhy LegacyDriveRecomposeSeated(int slot, const LegacyDrivePublication& pub, float& yaw,
+                                                  float& pitch)
+{
+    auto& s = g_legacySeatUpstream;
+    const uint64_t nowUs = Sight_NowUs();
+    const uint64_t previousStickUs = s.lastStickUs;
+    s.lastStickUs = nowUs;
+    const uint32_t generation = TitleAdapter_GetGeneration(GameTitle::Halo3);
+    if (generation != s.generation)
+    {
+        s.fit.Reset();
+        s.ring.Reset();
+        s.fitKey = 0;
+        s.generation = generation;
+    }
+    if (slot != 0 || !pub.valid || !pub.seated || !pub.axesBits)
+        return LegacySeatRecomposeWhy::NotSeated;   // not counted: not a Halo 3 seat this drive writes
+    // THIS PASS'S CAMERA: the acquisition ran just before this stick call, in the same control pass.
+    int32_t cameraUnit = -1, path = -1;
+    float camera[3]{}, direction[3]{}, velocity[3]{};
+    bool velocityValid = false;
+    uint64_t stampUs = 0;
+    const bool cameraRead = generation &&
+        ReadHalo3AcquisitionCamera(generation, 100000, cameraUnit, path, camera, direction, velocity, velocityValid,
+                                   stampUs) &&
+        shot_lag::TickEyeFromThisTick(true, stampUs, previousStickUs);
+    const int32_t localUnit = cameraRead ? LegacyHalo3LocalUnit() : -1;
+    const bool ourUnit = cameraRead && localUnit != -1 && cameraUnit == localUnit;
+    // Only the first-person path's answer is used (0x17DAEC writes both outputs, read offline); the chase path's is
+    // counted and refused like no camera.
+    const bool firstPerson = ourUnit && shot_lag::EvaluatorTookFirstPersonPath(path);
+    const bool ours = firstPerson;
+    g_legacySeatCameraPath[!ourUnit ? 2 : firstPerson ? 0 : 1].fetch_add(1, std::memory_order_relaxed);
+    // THE GAIN: the game's answer (this camera's direction) to the record that drove it.
+    if (pub.seatKey != s.fitKey)
+    {
+        s.fit.Reset();
+        s.fitKey = pub.seatKey;
+    }
+    if (ours && !pub.gunSlaved && velocityValid)
+    {
+        const auto* inEffect = s.ring.InEffect(g_legacySimTicks[0].load(std::memory_order_acquire), pub.seatKey);
+        float q[3]{direction[0], direction[1], direction[2]};
+        if (!inEffect || !seat_upstream::Normalize(q))
+            g_legacySeatGainUnpaired.fetch_add(1, std::memory_order_relaxed);
+        else if (s.fit.Add(inEffect->dir, q, velocity, seat_upstream::kGainMinCrossWuPerS, seat_upstream::kGainDecay))
+            g_legacySeatGainUsed.fetch_add(1, std::memory_order_relaxed);
+        else
+            g_legacySeatGainSlow.fetch_add(1, std::memory_order_relaxed);
+    }
+    const bool learned = s.fit.Learned(seat_upstream::kGainMinWeight);
+    g_legacySeatGain.store(s.fit.Gain(), std::memory_order_relaxed);
+    g_legacySeatGainLearned.store(learned, std::memory_order_relaxed);
+    // THE RECORD.
+    seat_upstream::SeatRecomposeInput in{};
+    in.enabled = g_config.seat_upstream_aim != 0 && Sight_AimEnabled();
+    in.seated = true;
+    in.gunSlaved = pub.gunSlaved;
+    SightIntent intent{};
+    in.intentRead = Sight_ReadIntent(GameTitle::Halo3, intent);
+    in.intent = intent.p;
+    memcpy(in.point, intent.solvePoint, sizeof(in.point));
+    in.setYaw = pub.yaw;
+    in.setPitch = pub.pitch;
+    in.generation = generation;
+    in.nowUs = nowUs;
+    in.maxAgeUs = kSightIntentShotMaxAgeMs * 1000ull;
+    in.cameraRead = ours;
+    memcpy(in.camera, camera, sizeof(in.camera));
+    memcpy(in.cameraVel, velocity, sizeof(in.cameraVel));
+    in.cameraVelValid = velocityValid;
+    in.tickS = float(g_legacyTickPeriodUs[0].load(std::memory_order_relaxed)) * 1.0e-6f;
+    in.gain = learned ? s.fit.Gain() : 0.0f;
+    float bendDeg = 0.0f;
+    const LegacySeatRecomposeWhy why = seat_upstream::RecomposeSeat(in, yaw, pitch, bendDeg);
+    g_legacySeatRecompose[static_cast<size_t>(why)].fetch_add(1, std::memory_order_relaxed);
+    if (why == LegacySeatRecomposeWhy::Recomposed)
+    {
+        const uint32_t milli = static_cast<uint32_t>((std::min)(bendDeg * 1000.0f, 4.0e9f));
+        g_legacySeatRecomposeMilliDeg.fetch_add(milli, std::memory_order_relaxed);
+        uint32_t prior = g_legacySeatRecomposeMaxMilliDeg.load(std::memory_order_relaxed);
+        while (milli > prior && !g_legacySeatRecomposeMaxMilliDeg.compare_exchange_weak(prior, milli,
+                                                                                       std::memory_order_relaxed)) {}
+    }
+    return why;
+}
+
 } // namespace
 
 extern "C" void LegacyPcApplyForUser(int slot, int user, uintptr_t ret, const uint8_t* entryRsp)
@@ -1625,6 +1763,10 @@ extern "C" void LegacyPcApplyForUser(int slot, int user, uintptr_t ret, const ui
     bool wroteAxis[2]{};      // which axes this update's seat write wrote
     bool latchRead[2]{};      // which axes the seat-limit latch read this update (their stops go to the reticle)
     seat_frame_rt::Live seatFrame{};   // the seat's frame this update (World unless read)
+    // What record this call leaves in effect, in world angles, for the seated gain learner's pairing (Halo 3).
+    bool noteKnown = false;
+    uint32_t noteKey = 0;
+    float noteDir[3]{};
     __try
     {
         do
@@ -1662,6 +1804,11 @@ extern "C" void LegacyPcApplyForUser(int slot, int user, uintptr_t ret, const ui
                 if (why != LegacyRecomposeWhy::NotOnFoot)
                     g_legacyRecompose[static_cast<size_t>(why)].fetch_add(1, std::memory_order_relaxed);
             }
+            // THE SEATED RECORD UPSTREAM OF REPLICATION (LegacyDriveRecomposeSeated): a Halo 3 seat's setpoint becomes
+            // the record whose stock crosshair line at the fire tick passes through the seat's point. The world angles
+            // it returns go through the seat's frame, latch and write below exactly as the published ones did.
+            if (slot == 0)
+                (void)LegacyDriveRecomposeSeated(slot, pub, setYaw, setPitch);
             // World angles as published; a seat in case (b) takes them into the record's frame below.
             float yaw = setYaw, pitch = setPitch, aimYaw = pub.aimYaw, aimPitch = pub.aimPitch;
             const float handWorldYaw = setYaw;   // a yaw-only write converts at the game's own pitch (below)
@@ -2072,12 +2219,25 @@ extern "C" void LegacyPcApplyForUser(int slot, int user, uintptr_t ret, const ui
                         st.wrotePitch[0].store(worldPitch, std::memory_order_relaxed);
                         st.wroteValid[0].store(true, std::memory_order_relaxed);
                         st.wroteSeq.fetch_add(1, std::memory_order_release);
+                        noteKnown = true;
+                        noteKey = seatKey;
+                        seat_upstream::DirFromAngles(worldYaw, worldPitch, noteDir);
                         if (writeYaw)
                             st.seatYawWrites.fetch_add(1, std::memory_order_relaxed);
                         if (writePitch)
                             st.seatPitchWrites.fetch_add(1, std::memory_order_relaxed);
                         if (limited)
+                        {
                             st.seatHeld.fetch_add(1, std::memory_order_relaxed);
+                            noteKnown = false;   // held at the seat's stop: the game's aim there is the clamp's
+                        }
+                    }
+                    else
+                    {
+                        // On foot: the record left is the written pair (world angles), the unwritten axis the game's.
+                        noteKnown = true;
+                        noteKey = 0;
+                        seat_upstream::DirFromAngles(writeYaw ? y : nativeYaw, writePitch ? p : nativePitch, noteDir);
                     }
                     st.writes.fetch_add(1, std::memory_order_relaxed);
                 }
@@ -2094,9 +2254,13 @@ extern "C" void LegacyPcApplyForUser(int slot, int user, uintptr_t ret, const ui
         seatWrote = false;
         seatKept = false;
         wroteAxis[0] = wroteAxis[1] = false;
+        noteKnown = false;
         st.faults.fetch_add(1, std::memory_order_relaxed);
         LEGACY_DRIVE_WITNESS(ds.outcome = seat_witness::DriveFault);
     }
+    // The seated gain learner's pairing (Halo 3): the record this stick call leaves for the ticks that follow it.
+    if (slot == 0)
+        LegacySeatUpstreamNoteCall(noteKey, noteKnown ? noteDir : nullptr);
     // The latch's contract is "nothing written last tick: forget everything". Every update that did not end
     // in a seat write -- on foot, a skipped or unverified seat, disarmed, switched off, a fault -- resets it
     // here, so a later seat write never reads a limit off a value this hook did not write. Per axis, an axis
@@ -2165,6 +2329,49 @@ void LegacyDriveReport()
                 n[static_cast<size_t>(LegacyRecomposeWhy::EyeUnproven)],
                 n[static_cast<size_t>(LegacyRecomposeWhy::PointTooClose)],
                 n[static_cast<size_t>(LegacyRecomposeWhy::PointBehind)]);
+        {
+            // THE SEATED RECORD UPSTREAM OF REPLICATION (LegacyDriveRecomposeSeated): how many seat setpoints were
+            // replaced by the record whose stock crosshair line passes through P, why the rest were kept, and the
+            // learned velocity gain (printed as its speed, 1/g).
+            using SR = LegacySeatRecomposeWhy;
+            uint32_t sr[static_cast<size_t>(SR::Count)]{};
+            uint32_t seatTotal = 0;
+            for (size_t i = 0; i < static_cast<size_t>(SR::Count); ++i)
+                seatTotal += (sr[i] = g_legacySeatRecompose[i].exchange(0, std::memory_order_relaxed));
+            const uint32_t seatSum = g_legacySeatRecomposeMilliDeg.exchange(0, std::memory_order_relaxed);
+            const uint32_t seatMax = g_legacySeatRecomposeMaxMilliDeg.exchange(0, std::memory_order_relaxed);
+            const uint32_t used = g_legacySeatGainUsed.exchange(0, std::memory_order_relaxed);
+            const uint32_t slow = g_legacySeatGainSlow.exchange(0, std::memory_order_relaxed);
+            const uint32_t unpaired = g_legacySeatGainUnpaired.exchange(0, std::memory_order_relaxed);
+            uint32_t paths[3]{};
+            for (int i = 0; i < 3; ++i)
+                paths[i] = g_legacySeatCameraPath[i].exchange(0, std::memory_order_relaxed);
+            const float gain = g_legacySeatGain.load(std::memory_order_relaxed);
+            const bool learned = g_legacySeatGainLearned.load(std::memory_order_relaxed);
+            const uint32_t recomposed = sr[static_cast<size_t>(SR::Recomposed)];
+            if (seatTotal)
+            {
+                char kept[320]{};
+                size_t length = 0;
+                for (size_t i = 1; i < static_cast<size_t>(SR::Count); ++i)
+                {
+                    if (!sr[i] || length + 1 >= sizeof(kept))
+                        continue;
+                    const int w = std::snprintf(kept + length, sizeof(kept) - length, "%s%s %u", length ? ", " : "",
+                                                seat_upstream::SeatRecomposeName(static_cast<SR>(i)), sr[i]);
+                    if (w > 0)
+                        length += (std::min)(static_cast<size_t>(w), sizeof(kept) - length - 1);
+                }
+                LOG("SHOT RECORD Halo 3 seated: %u stick writes recomposed so the stock crosshair line at the fire "
+                    "tick passes through the point (what a multiplayer host fires; mean %.2f deg from the solve, max "
+                    "%.2f), %u kept as solved%s%s%s; this pass's camera first person %u, chase %u, none %u; velocity "
+                    "gain %s (1/g %.0f m/s; samples used %u, too slow %u, unpaired %u)",
+                    recomposed, recomposed ? double(seatSum) / 1000.0 / double(recomposed) : 0.0,
+                    double(seatMax) / 1000.0, seatTotal - recomposed, length ? " (" : "", length ? kept : "",
+                    length ? ")" : "", paths[0], paths[1], paths[2], learned ? "learned" : "not yet learned (g = 0 used)",
+                    std::fabs(gain) > 1.0e-9f ? double(shot_lag::kMetresPerWu / gain) : 0.0, used, slow, unpaired);
+            }
+        }
         {
             // The first-person eye identity (shot_lag_logic.h 4d) at the stick calls with a point: why it said no,
             // and the director's camera mode when the camera was the reason.

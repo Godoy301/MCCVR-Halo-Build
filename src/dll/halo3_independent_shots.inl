@@ -64,6 +64,10 @@ __declspec(noinline) int32_t __fastcall Halo3IndependentCameraDetour(
         if(caller==feature.base+0x13B1DC && t_halo3AcquisitionUser==0 && position && !g_legacyCollisionOwnedQuery &&
             !g_halo3IndependentShot.active)
         {
+            // The whole camera, whichever path (seat_upstream_logic.h): the seated record is solved from it and the
+            // seat's velocity gain is learned from its direction.
+            if(direction)
+                PublishHalo3AcquisitionCamera(feature.generation,static_cast<int32_t>(unit),result,position,direction);
             if(shot_lag::EvaluatorTookFirstPersonPath(result))
                 PublishHalo3TickEye(feature.generation,static_cast<int32_t>(unit),position);
             else

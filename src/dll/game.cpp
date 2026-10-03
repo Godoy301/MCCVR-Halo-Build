@@ -796,6 +796,90 @@ namespace
         p.sequence.fetch_add(1, std::memory_order_release);
     }
 
+    // THE ACQUISITION'S CAMERA (Halo 3; seat_upstream_logic.h, the seated record upstream of replication). The same
+    // evaluator answer as the tick eye above -- the native acquisition's own call for input user 0, once per control
+    // pass -- but whole: position AND direction (the occupant's aiming vector on the first-person path, unit +0x1AC;
+    // the gun's marker in a gun-slaved seat), whichever path it took (`path`, the evaluator's own return), on foot
+    // or seated. It is the camera the firing assist's crosshair query will start from and point along, so the seated
+    // record is solved from it, and the direction is the game's answer to the record that drove it (the learned
+    // velocity gain). Its velocity is measured by the writer on its own clock. Sim thread writes; any thread reads.
+    struct AcquisitionCameraPublication
+    {
+        std::atomic<uint32_t> sequence{0};
+        std::atomic<uint32_t> generation{0};
+        std::atomic<int32_t> unit{-1}, path{-1};
+        std::atomic<float> pos[3]{}, dir[3]{}, vel[3]{};
+        std::atomic<bool> velValid{false};
+        std::atomic<uint64_t> stampUs{0};
+    };
+    AcquisitionCameraPublication g_halo3AcqCamera;
+    shot_lag::EyeTrack g_halo3AcqCameraTrack;   // the sim thread's own
+
+    void PublishHalo3AcquisitionCamera(uint32_t generation, int32_t unit, int32_t path, const float pos[3],
+                                       const float dir[3]) noexcept
+    {
+        if (!shot_lag::Finite3(pos) || !shot_lag::Finite3(dir))
+            return;
+        static uint32_t s_generation = 0;
+        static int32_t s_unit = -1;
+        if (s_generation != generation || s_unit != unit)
+        {
+            g_halo3AcqCameraTrack.Reset();
+            s_generation = generation;
+            s_unit = unit;
+        }
+        const uint64_t now = Sight_NowUs();
+        g_halo3AcqCameraTrack.Push(now, pos);
+        float vel[3]{};
+        const bool velValid = g_halo3AcqCameraTrack.Velocity(120000, 30000, vel);
+        auto& p = g_halo3AcqCamera;
+        p.sequence.fetch_add(1, std::memory_order_acq_rel);
+        std::atomic_thread_fence(std::memory_order_release);
+        p.generation.store(generation, std::memory_order_relaxed);
+        p.unit.store(unit, std::memory_order_relaxed);
+        p.path.store(path, std::memory_order_relaxed);
+        for (int axis = 0; axis < 3; ++axis)
+        {
+            p.pos[axis].store(pos[axis], std::memory_order_relaxed);
+            p.dir[axis].store(dir[axis], std::memory_order_relaxed);
+            p.vel[axis].store(velValid ? vel[axis] : 0.0f, std::memory_order_relaxed);
+        }
+        p.velValid.store(velValid, std::memory_order_relaxed);
+        p.stampUs.store(now, std::memory_order_relaxed);
+        p.sequence.fetch_add(1, std::memory_order_release);
+    }
+
+    bool ReadHalo3AcquisitionCamera(uint32_t generation, uint64_t maxAgeUs, int32_t& unit, int32_t& path,
+                                    float pos[3], float dir[3], float vel[3], bool& velValid,
+                                    uint64_t& stampUs) noexcept
+    {
+        const auto& p = g_halo3AcqCamera;
+        for (int attempt = 0; attempt < 2; ++attempt)
+        {
+            const uint32_t before = p.sequence.load(std::memory_order_acquire);
+            if (!before || (before & 1u))
+                continue;
+            const uint32_t g = p.generation.load(std::memory_order_relaxed);
+            unit = p.unit.load(std::memory_order_relaxed);
+            path = p.path.load(std::memory_order_relaxed);
+            for (int axis = 0; axis < 3; ++axis)
+            {
+                pos[axis] = p.pos[axis].load(std::memory_order_relaxed);
+                dir[axis] = p.dir[axis].load(std::memory_order_relaxed);
+                vel[axis] = p.vel[axis].load(std::memory_order_relaxed);
+            }
+            velValid = p.velValid.load(std::memory_order_relaxed);
+            stampUs = p.stampUs.load(std::memory_order_relaxed);
+            std::atomic_thread_fence(std::memory_order_acquire);
+            if (p.sequence.load(std::memory_order_relaxed) != before)
+                continue;
+            const uint64_t now = Sight_NowUs();
+            return generation && g == generation && stampUs && now >= stampUs && now - stampUs <= maxAgeUs &&
+                   shot_lag::Finite3(pos) && shot_lag::Finite3(dir);
+        }
+        return false;
+    }
+
     bool ReadHalo3TickEye(uint32_t generation, uint64_t maxAgeUs, float eye[3], float vel[3], bool& velValid,
                           uint64_t& stampUs) noexcept
     {

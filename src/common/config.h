@@ -767,6 +767,13 @@ struct Config
     // speed, learned and value-proven from the weapon's earlier rounds, so the first shots of a weapon are not
     // compensated. 0 = re-aim through P as before. For A/B in the headset. (default 0)
     int seated_inherit_compensation = 0;
+    // DEV BUILD ONLY (parsed and saved only in dev builds; a player build always uses 1), Halo 3 SEATS: 1 = the seat's
+    // record (the angles a multiplayer host fires from) is chosen at the stick call so the game's OWN crosshair query
+    // at the fire tick -- from this pass's camera, along the occupant's aim with the seat's learned velocity term --
+    // passes through the point, and the host computes the same shot (src/common/seat_upstream_logic.h). The fire-site
+    // re-aim stays as the local backstop. Gun-slaved seats (turret, Gauss) keep their own gun-offset path.
+    // 0 = the record keeps the render-time solve, as before: the A/B arm for the dev SHOT UPSTREAM line. (default 1)
+    int seat_upstream_aim = 1;
     // DEV BUILD ONLY (parsed and saved only in dev builds; the hooks are compiled out of player builds): 1 = log
     // the type-13 pilot controllers, Reach's Sabre/Seraph (haloreach+0x64828) and Halo 4's Broadsword
     // (halo4+0xAA524) -- src/dll/type13_flight_log.inl, docs/TYPE13-FLIGHT-CONTROLLERS-2026-10-01.md Phase B.

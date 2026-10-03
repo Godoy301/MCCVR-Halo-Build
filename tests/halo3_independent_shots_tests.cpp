@@ -99,6 +99,11 @@ static int lastNotedPredicted=-2;
 static void Sight_NoteShotLagFromIntent(GameTitle,SightShotPath,const float*,const float*,int predicted,bool,int32_t)
 {++shotLagNotes;lastNotedPredicted=predicted;}
 static void PublishHalo3TickEye(uint32_t,int32_t,const float*){++tickEyes;}
+// The acquisition's whole camera (seat_upstream_logic.h): position and direction, whichever path it took.
+static unsigned acqCameras{};
+static int32_t lastAcqPath=-9;
+static void PublishHalo3AcquisitionCamera(uint32_t,int32_t,int32_t path,const float*,const float*)
+{++acqCameras;lastAcqPath=path;}
 static uint64_t Sight_NowUs(){return 1000000;}
 // The local player's unit as the crosshair re-aims see it (-1: none, the default for every other check).
 static int32_t localPlayerUnit=-1;
