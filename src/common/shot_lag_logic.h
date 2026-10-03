@@ -457,6 +457,74 @@ inline bool SameAngles(float yawA, float pitchA, float yawB, float pitchB, float
     return std::fabs(dy) <= toleranceRad && std::fabs(pitchA - pitchB) <= toleranceRad;
 }
 
+// ---- 4b. the record recomposed through the point (Halo 3 on foot) ---------------------------------------------
+// The stick call's setpoint -- the record the HUD, autoaim, melee and the network read -- recomposed as the angles of
+// normalize(P - E'): P the published intent point, E' the game's own eye at the stick call carried one simulation
+// tick ahead (the record written now is first consumed by the next tick). Never P rebuilt from the current eye. Kept
+// as published (fail closed) for every reason below, in this order; `yaw`/`pitch`/`bendDeg` are written only on
+// Recomposed.
+enum class Recompose : uint8_t
+{
+    Recomposed = 0,
+    NotOnFoot,      // not Halo 3's on-foot stick call, its publication invalid or seated, or the converged aim off
+    NoIntent,       // nothing published
+    OtherSolve,     // the setpoint is not the solve that built P (the fixed-distance steer, a seat author)
+    PointUnusable,  // another generation, stale (or from the future), seated, held at the pitch rail, or non-finite
+    NoGameEye,      // the game's eye at the tick is unknown or stale
+    EyeUnproven,    // that eye is not (yet) proven to be the engine eye (EyeProof)
+    Geometry,       // P within 30 cm of the eye, or the result bends over 30 deg from the setpoint
+    Count
+};
+struct RecomposeInput
+{
+    bool onFoot = false;
+    bool intentRead = false;
+    IntentPoint intent{};
+    float setYaw = 0.0f, setPitch = 0.0f;   // the setpoint about to be written
+    uint32_t generation = 0;                // the title's current generation (0 = none)
+    uint64_t nowUs = 0, maxAgeUs = 0;
+    bool eyeRead = false;                   // the game's eye at the tick, fresh
+    float eye[3]{}, eyeVel[3]{};
+    bool eyeVelValid = false;
+    bool eyeProven = false;
+    float tickS = 0.0f;                     // the measured simulation tick; the carry is clamped to 50 ms
+};
+inline Recompose RecomposeRecord(const RecomposeInput& in, float& yaw, float& pitch, float& bendDeg)
+{
+    if (!in.onFoot)
+        return Recompose::NotOnFoot;
+    if (!in.intentRead)
+        return Recompose::NoIntent;
+    const IntentPoint& p = in.intent;
+    if (!SameAngles(in.setYaw, in.setPitch, p.solvedYaw, p.solvedPitch))
+        return Recompose::OtherSolve;
+    if (!in.generation || p.generation != in.generation || p.seated || p.railHeld || !p.stampUs ||
+        in.nowUs < p.stampUs || in.nowUs - p.stampUs > in.maxAgeUs || !Finite3(p.point))
+        return Recompose::PointUnusable;
+    if (!in.eyeRead || !Finite3(in.eye))
+        return Recompose::NoGameEye;
+    if (!in.eyeProven)
+        return Recompose::EyeUnproven;
+    float fire[3]{in.eye[0], in.eye[1], in.eye[2]};
+    if (in.eyeVelValid)
+        (void)ExtrapolateEye(in.eye, in.eyeVel, in.tickS, 0.05f, fire);
+    float newYaw = 0.0f, newPitch = 0.0f;
+    if (!AnglesTowardPoint(fire, p.point, 0.3f * kWuPerMetre, 1.45f, newYaw, newPitch))
+        return Recompose::Geometry;
+    const float a[3]{std::cos(in.setPitch) * std::cos(in.setYaw), std::cos(in.setPitch) * std::sin(in.setYaw),
+                     std::sin(in.setPitch)};
+    const float b[3]{std::cos(newPitch) * std::cos(newYaw), std::cos(newPitch) * std::sin(newYaw), std::sin(newPitch)};
+    float c = Dot(a, b);
+    c = c > 1.0f ? 1.0f : (c < -1.0f ? -1.0f : c);
+    const float bend = std::acos(c) * kRadToDeg;
+    if (!(bend <= 30.0f))
+        return Recompose::Geometry;
+    yaw = newYaw;
+    pitch = newPitch;
+    bendDeg = bend;
+    return Recompose::Recomposed;
+}
+
 // ---- 5. the frame-coherent pair --------------------------------------------------------------------------------
 // A render publishes the eyes it rendered from, keyed by the tracking-space head position its head look used; the
 // aim path keeps the hand directions it computed, keyed by the head position of the sample the hand came from.

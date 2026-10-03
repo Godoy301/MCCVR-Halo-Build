@@ -378,6 +378,103 @@ int main()
         Check(!SameAngles(std::nanf(""), 0.0f, 0.0f, 0.0f), "non-finite angles never match");
     }
 
+    // ---- the record recomposed through the point (Halo 3 on foot) ----
+    {
+        // The solve from the render-time eye E0 toward P 10 m out; the game's eye at the tick is E1, 140 mm along a
+        // 4 m/s strafe, moving on at that pace for one 33 ms tick more.
+        const float p[3]{10.0f * kWuPerM, 0.0f, 0.0f};
+        const float v[3]{0.0f, 4.0f * kWuPerM, 0.0f};
+        RecomposeInput base{};
+        base.onFoot = true;
+        base.intentRead = true;
+        base.intent.generation = 5;
+        base.intent.stampUs = 1000000;
+        base.intent.point[0] = p[0];
+        base.intent.rangeWu = p[0];
+        base.intent.dir[0] = 1.0f;
+        base.intent.solvedYaw = 0.0f;
+        base.intent.solvedPitch = 0.0f;
+        base.setYaw = 0.0f;
+        base.setPitch = 0.0f;
+        base.generation = 5;
+        base.nowUs = 1040000;
+        base.maxAgeUs = 150000;
+        base.eyeRead = true;
+        base.eye[1] = 0.14f * kWuPerM;
+        base.eyeVel[1] = v[1];
+        base.eyeVelValid = true;
+        base.eyeProven = true;
+        base.tickS = 0.033f;
+        float yaw = 9.0f, pitch = 9.0f, bend = -1.0f;
+        Check(RecomposeRecord(base, yaw, pitch, bend) == Recompose::Recomposed, "a fresh point and a proven eye");
+        // The line from the eye one tick on passes through P.
+        const float fire[3]{0.0f, (0.14f + 4.0f * 0.033f) * kWuPerM, 0.0f};
+        const float dir[3]{std::cos(pitch) * std::cos(yaw), std::cos(pitch) * std::sin(yaw), std::sin(pitch)};
+        Check(LineMiss(fire, dir, p) * kMmPerWu < 0.5f, "the record passes P from the game's eye one tick on");
+        Check(bend > 1.0f && bend < 2.0f, "and reports the bend from the solve (~1.6 deg at 10 m)");
+
+        const auto refused = [&](RecomposeInput in, Recompose expected, const char* what) {
+            float y = 7.0f, pt = 7.0f, b = 7.0f;
+            Check(RecomposeRecord(in, y, pt, b) == expected && y == 7.0f && pt == 7.0f && b == 7.0f, what);
+        };
+        RecomposeInput in = base;
+        in.onFoot = false;
+        refused(in, Recompose::NotOnFoot, "not on foot: kept, untouched");
+        in = base;
+        in.intentRead = false;
+        refused(in, Recompose::NoIntent, "no intent: kept");
+        in = base;
+        in.setYaw = 0.01f;   // the fixed-distance steer, a seat author: not the solve that built P
+        refused(in, Recompose::OtherSolve, "another path's setpoint is never replaced");
+        in = base;
+        in.setYaw = 6.2831853f;
+        Check(RecomposeRecord(in, yaw, pitch, bend) == Recompose::Recomposed,
+              "the same solve a full turn round is the same solve");
+        in = base;
+        in.intent.generation = 4;
+        refused(in, Recompose::PointUnusable, "another generation's point");
+        in = base;
+        in.nowUs = base.intent.stampUs + 150001;
+        refused(in, Recompose::PointUnusable, "a stale point");
+        in = base;
+        in.nowUs = base.intent.stampUs - 1;
+        refused(in, Recompose::PointUnusable, "a point from the future");
+        in = base;
+        in.intent.seated = true;
+        refused(in, Recompose::PointUnusable, "a seated point");
+        in = base;
+        in.intent.railHeld = true;
+        refused(in, Recompose::PointUnusable, "a rail-held solve");
+        in = base;
+        in.generation = 0;
+        refused(in, Recompose::PointUnusable, "no generation");
+        in = base;
+        in.intent.point[2] = std::nanf("");
+        refused(in, Recompose::PointUnusable, "a non-finite point");
+        in = base;
+        in.eyeRead = false;
+        refused(in, Recompose::NoGameEye, "no game eye at the tick");
+        in = base;
+        in.eyeProven = false;
+        refused(in, Recompose::EyeUnproven, "an unproven eye");
+        in = base;
+        in.eye[0] = p[0] - 0.05f;   // 15 cm short of P
+        refused(in, Recompose::Geometry, "P too close to the eye");
+        in = base;
+        in.eye[1] = 8.0f * kWuPerM;   // 8 m beside: a 39 deg bend
+        refused(in, Recompose::Geometry, "a bend over 30 deg");
+        in = base;
+        in.eyeVelValid = false;
+        Check(RecomposeRecord(in, yaw, pitch, bend) == Recompose::Recomposed &&
+                  std::fabs(std::atan2(-0.14f, 10.0f) - yaw) < 1.0e-4f,
+              "no velocity: from the eye itself, not carried");
+        in = base;
+        in.tickS = 5.0f;   // a stalled tick measure: the carry is clamped to 50 ms
+        Check(RecomposeRecord(in, yaw, pitch, bend) == Recompose::Recomposed &&
+                  std::fabs(std::atan2(-(0.14f + 4.0f * 0.05f), 10.0f) - yaw) < 1.0e-4f,
+              "the carry is clamped to 50 ms");
+    }
+
     // ---- the frame-coherent pair ----
     {
         EyeFrame eyes[3]{};
