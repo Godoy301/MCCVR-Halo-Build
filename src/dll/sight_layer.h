@@ -137,6 +137,9 @@ bool Sight_ConvergedDirection(GameTitle title, uint32_t generation, const float 
 // VR METRES, and whether it hit -- only while that title's aim in effect is converged. Never Reach
 // (Game_ReachSightReticleRange owns Reach).
 bool Game_SightReticleRange(float& outRangeM, bool& outHit);
+// The world units per VR metre the title's converged aim last stamped (Sight_MarkConverged): the scale
+// Game_SightReticleRange divided the traced range by. 0 before the first converged poll.
+float Sight_UnitsPerVrMetre(GameTitle title);
 
 // SCOPE CONVERGENCE: a zoom lens at the RENDERED eye looks along the intent ray, which from that eye passes
 // through the point the converged aim is bent through -- so the lens centre is the reticle's point, where

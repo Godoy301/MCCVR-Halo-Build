@@ -230,6 +230,9 @@ __declspec(noinline) uint64_t __fastcall Halo3IndependentFireDetour(
     t_halo3Fire=shot_lag::kFireOther;
     NativeShotTargetLease<0x24> lease{};
     NativeShotTargetLease<0x24> muzzleLease{};
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    Halo3ImpactFireBegin(predicted);   // dev SHOT IMPACT: this fire's shot line, projectiles and their fate
+#endif
     const auto previousMuzzle=g_halo3MuzzleRequest;
     g_halo3MuzzleRequest={weapon,barrel,predicted,&muzzleLease};
     uint64_t result=0;
@@ -275,6 +278,9 @@ __declspec(noinline) uint64_t __fastcall Halo3IndependentFireDetour(
         g_halo3MuzzleRequest=previousMuzzle;
         g_halo3FiringWeapon=previousFiringWeapon;
         t_halo3Fire=previousFire;
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        Halo3ImpactFireEnd();
+#endif
         feature.callbacks.fetch_sub(1,std::memory_order_acq_rel);
     }
     return result;
@@ -352,6 +358,9 @@ __declspec(noinline) void __fastcall Halo3IndependentAimDetour(uint32_t unit,
             PublishHalo3ShotDiagnostic(unit,origin,direction,true,false,false);
             Sight_NoteShotLagFromIntent(GameTitle::Halo3,SightShotPath::Muzzle,origin,direction,
                 t_legacyFirePredicted,false,-1);
+#if HALOMCCVR_DEV_DIAGNOSTICS
+            Halo3ImpactNoteShotLine(unit,origin,direction,true);   // dev SHOT IMPACT: the line we handed the game
+#endif
             __leave;
         }
         feature.aimOriginal(unit,origin,direction,marker,offset,project,unitAim);
@@ -391,6 +400,7 @@ __declspec(noinline) void __fastcall Halo3IndependentAimDetour(uint32_t unit,
             if(static_cast<int32_t>(unit)==LegacyCollisionIgnoredObject(GameTitle::Halo3))
                 Sight_NoteShotLagFromIntent(GameTitle::Halo3,SightShotPath::Native,origin,direction,
                     t_legacyFirePredicted,false,-1);
+            Halo3ImpactNoteShotLine(unit,origin,direction,false);   // dev SHOT IMPACT: the line we handed the game
 #endif
         }
     }

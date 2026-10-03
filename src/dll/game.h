@@ -315,6 +315,14 @@ bool Game_GetClampedAimDirection(float outDir[3], float* outRangeM = nullptr,
                                  bool* outSurface = nullptr);
 // [assess-only end]
 #endif
+#if HALOMCCVR_DEV_DIAGNOSTICS
+// THE SHOT IMPACT WITNESS's two outside feeds (dev builds only; game.cpp halo3_impact_witness.inl). Neither decides
+// anything. The compositor, each frame it draws the traced reticle (Halo 3 / ODST / Halo 4 lane, never Reach): its
+// prepared frame's serial, the eye it drew from and the ray's direction (tracking space), and the range it was drawn
+// for (VR metres, `hit` = a traced surface). The XInput hook, every poll: whether the RT fed to the game is pressed.
+void Game_DevNoteTracedReticle(uint64_t serial, const float center[3], const float dir[3], float rangeM, bool hit);
+void Game_DevNoteFireTrigger(bool pressed);
+#endif
 // THE SEAT LIMIT RETICLE (all builds; src/common/seat_limit_reticle_logic.h):
 // true while this input poll clamped the seated reticle at a natural angular
 // stop of a land vehicle's seat (a passenger's cone, a turret's or tank gun's
