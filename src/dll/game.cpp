@@ -52172,7 +52172,7 @@ static bool SeatLimitReticleStep(const SeatLimitPoll& in, SeatLimitMarkPublicati
         const uint32_t generation = TitleAdapter_GetGeneration(in.title);
         SightAuxRay ray{};
         ray.generation = generation;
-        ray.sampleMs = now;
+        ray.sampleMs = Sight_NowMs();   // the sight clock (`now` above is the gate's GetTickCount64); the publish restamps
         for (int axis = 0; axis < 3; ++axis)
         {
             ray.origin[axis] = rayOrigin[axis];

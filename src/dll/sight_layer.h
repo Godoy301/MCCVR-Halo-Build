@@ -60,14 +60,16 @@ inline float SightSmoothInverseRange(float invPerWu, bool continuous, bool hit, 
 // THE SIGHT CLOCK (2026-10-02): every stamp and every age in this layer -- rays, traces, the converged and written
 // marks, the intent point -- is QueryPerformanceCounter time, in milliseconds (Sight_NowMs) or microseconds
 // (Sight_NowUs). GetTickCount64 ticks in 15.6 ms steps, which is half of the 25-40 ms lag the shot-lag witness
-// measures. Publishers stamp with Sight_NowMs(); the trace driver's `nowMs` is Sight_NowMs() too.
+// measures. The ray publishers (Sight_PublishRay, the auxiliary rays) stamp `sampleMs` THEMSELVES at the publish,
+// so no caller's clock can reach a reader; the trace driver's `nowMs` is Sight_NowMs() too. sight_layer.cpp reads no
+// other clock (tools/check_sight_clock.py, a CTest guard).
 uint64_t Sight_NowMs();
 uint64_t Sight_NowUs();
 
 struct SightRay
 {
     uint32_t generation = 0;
-    uint64_t sampleMs = 0;  // Sight_NowMs()
+    uint64_t sampleMs = 0;  // Sight_NowMs(), stamped by Sight_PublishRay (a caller's value is ignored)
     float head[3]{};        // the rendered centre eye: the intent ray starts here
     float dir[3]{};         // unit controller direction
     float eye[3]{};         // the engine eye the title aims its shots from
@@ -260,7 +262,7 @@ void Sight_Report();
 struct SightAuxRay
 {
     uint32_t generation = 0;
-    uint64_t sampleMs = 0;
+    uint64_t sampleMs = 0;   // Sight_NowMs(), stamped by the publish (a caller's value is ignored)
     float origin[3]{};   // the game's shot origin (the engine eye on foot; the seat's eye in a seat)
     float dir[3]{};      // unit, the direction the game aims along
 };

@@ -186,7 +186,9 @@ void Sight_PublishRay(GameTitle title, const SightRay& rayIn)
     auto& p = g_rays[Slot(title)];
     p.sequence.fetch_add(1, std::memory_order_acq_rel);   // odd: a publish is in progress
     p.generation.store(ray.generation, std::memory_order_relaxed);
-    p.sampleMs.store(ray.sampleMs, std::memory_order_relaxed);
+    // Stamped HERE, on the one sight clock its readers age it against (Sight_ReadRay): a caller's GetTickCount64
+    // stamp would put its 15.6 ms steps and its offset from QPC into every freshness window.
+    p.sampleMs.store(Sight_NowMs(), std::memory_order_relaxed);
     for (int i = 0; i < 3; ++i)
     {
         p.head[i].store(ray.head[i], std::memory_order_relaxed);
@@ -1055,7 +1057,7 @@ void Sight_ReportShots()
 {
 #if HALOMCCVR_DEV_DIAGNOSTICS
     static uint64_t s_last = 0;
-    const uint64_t now = GetTickCount64();
+    const uint64_t now = Sight_NowMs();
     if (now - s_last < 2000)
         return;
     s_last = now;
@@ -1144,7 +1146,7 @@ void Sight_ReportEngineRays()
 {
 #if HALOMCCVR_DEV_DIAGNOSTICS
     static uint64_t s_last = 0;
-    const uint64_t now = GetTickCount64();
+    const uint64_t now = Sight_NowMs();
     if (now - s_last < 5000)
         return;
     s_last = now;
@@ -1182,7 +1184,7 @@ void Sight_ReportEngineRays()
 void Sight_Report()
 {
     static uint64_t s_last = 0;
-    const uint64_t now = GetTickCount64();
+    const uint64_t now = Sight_NowMs();
     if (now - s_last < 2000)
         return;
     s_last = now;
@@ -1281,7 +1283,7 @@ void Sight_ReportConverge()
     using converge::ConvergeOff;
     static converge::ConvergeEdgeLog s_edges[kTitleSlots];
     static uint64_t s_last = 0;
-    const uint64_t now = GetTickCount64();
+    const uint64_t now = Sight_NowMs();
     const auto reasonName = [](ConvergeOff why) {
         return why == ConvergeOff::None ? "Unclassified" : converge::ConvergeOffName(why);
     };
@@ -1370,7 +1372,10 @@ void PublishAuxRay(AuxRayPublication& p, const SightAuxRay& ray)
 {
     p.sequence.fetch_add(1, std::memory_order_acq_rel);
     p.generation.store(ray.generation, std::memory_order_relaxed);
-    p.sampleMs.store(ray.sampleMs, std::memory_order_relaxed);
+    // Stamped HERE on the sight clock ReadAuxRay ages it against. The seat limit ray was stamped by its caller with
+    // GetTickCount64 and read against QPC: 36 ms of clock offset (and drifting) ate its 100 ms window, so it could
+    // read never fresh.
+    p.sampleMs.store(Sight_NowMs(), std::memory_order_relaxed);
     for (int i = 0; i < 3; ++i)
     {
         p.origin[i].store(ray.origin[i], std::memory_order_relaxed);
@@ -1490,14 +1495,14 @@ void Sight_MarkSeatLimitClamped(GameTitle title)
 {
     const size_t slot = Slot(title);
     g_seatLimitClampedGeneration[slot].store(TitleAdapter_GetGeneration(title), std::memory_order_relaxed);
-    g_seatLimitClampedMs[slot].store(GetTickCount64(), std::memory_order_release);
+    g_seatLimitClampedMs[slot].store(Sight_NowMs(), std::memory_order_release);
 }
 
 bool Sight_SeatLimitClampedLive(GameTitle title)
 {
     const size_t slot = Slot(title);
     const uint64_t at = g_seatLimitClampedMs[slot].load(std::memory_order_acquire);
-    return Fresh(at, GetTickCount64(), 150) &&
+    return Fresh(at, Sight_NowMs(), 150) &&
            g_seatLimitClampedGeneration[slot].load(std::memory_order_relaxed) == TitleAdapter_GetGeneration(title);
 }
 

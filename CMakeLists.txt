@@ -918,6 +918,14 @@ if(BUILD_TESTING)
         COMMAND "${Python3_EXECUTABLE}" -O
             "${CMAKE_CURRENT_SOURCE_DIR}/tools/check_seated_claim.py"
             --self-test)
+    # The sight layer's one clock (2026-10-03): sight_layer.cpp reads only Sight_NowMs()/Sight_NowUs(), its ray
+    # publications stamp themselves (never a caller's sampleMs), and every trace driver passes Sight_NowMs() to
+    # Sight_TraceDue. A GetTickCount64 stamp aged against QPC lost its window to the clocks' offset (the seat limit
+    # ray). Python stdlib only; --self-test checks the checker.
+    add_test(NAME halomccvr_sight_clock_guard
+        COMMAND "${Python3_EXECUTABLE}" -O
+            "${CMAKE_CURRENT_SOURCE_DIR}/tools/check_sight_clock.py"
+            --self-test)
     # Isolation guard for the dev assessment marker (honest_reticle_assess, 2026-10-02): it is a SECOND marker,
     # never the player's reticle. Its code sits in [assess-only] regions inside #if HALOMCCVR_DEV_DIAGNOSTICS;
     # nothing outside them reads the key, Game_GetClampedAimDirection or the publication, and nothing inside them
