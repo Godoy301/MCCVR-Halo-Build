@@ -99,7 +99,13 @@ static int lastNotedPredicted=-2;
 static void Sight_NoteShotLagFromIntent(GameTitle,SightShotPath,const float*,const float*,int predicted,bool,int32_t)
 {++shotLagNotes;lastNotedPredicted=predicted;}
 static void PublishHalo3TickEye(uint32_t,int32_t,const float*){++tickEyes;}
-static int32_t LegacyCollisionIgnoredObject(GameTitle){return -1;}
+// The local player's unit as the crosshair re-aims see it (-1: none, the default for every other check).
+static int32_t localPlayerUnit=-1;
+static int32_t LegacyCollisionIgnoredObject(GameTitle){return localPlayerUnit;}
+// THE LOCAL PLAYER'S FIRE (shot_lag_logic.h FireMark; game.cpp t_halo3Fire): opened by the fire detour, marked by
+// its shot line, restored at its exit.
+#include "../src/common/shot_lag_logic.h"
+static thread_local int8_t t_halo3Fire=shot_lag::kFireNone;
 #include "../src/dll/halo3_independent_shots.inl"
 #undef _ReturnAddress
 
@@ -240,6 +246,9 @@ static bool queryFault=false,fireFault=false,omitCamera=false,changeGeneration=f
     replaceStorage=false,changeNativeTarget=false,changeWeapons=false,nestedFire=false;
 static uint32_t observedTargets[2]{};
 static float observedDirections[2][3]{};
+// The fire tag the firing assist sees (after the shot line), and whether another gun's line owned that assist.
+static int8_t observedFire[2]{-9,-9};
+static bool observedOwnLine[2]{};
 static int32_t __fastcall NativeCamera(uint32_t,float* position,float* direction)
 {++cameraCalls;position[0]=position[1]=position[2]=0;direction[0]=0;direction[1]=1;direction[2]=0;return 17;}
 static void __fastcall NativeQuery(int32_t user,uint8_t flags,float* direction,int16_t zoom,float* control,void* out)
@@ -272,6 +281,8 @@ static uint64_t __fastcall NativeFire(uint32_t weapon,int16_t barrel,void* data,
     float origin[3]{},direction[3]{},offset[3]{};
     const auto previous=caller;caller=imageBase+0x368B97;
     Halo3IndependentAimDetour(owner,origin,direction,0xABCDEF,offset,1,1);
+    // The assist's crosshair query comes after the shot line: what the re-aim gate reads there.
+    observedFire[slot]=t_halo3Fire;observedOwnLine[slot]=g_halo3IndependentShot.active;
     // Simulate the downstream assist replacing direction from its camera ray.
     caller=imageBase+0x13BC0D;
     Check(Halo3IndependentCameraDetour(owner,origin,direction)==17,"downstream return preserved");
@@ -332,6 +343,20 @@ int main()
     Check(Shoot(secondary)==0x123456789ABCDEF0,"secondary fires");
     Check(observedTargets[1]==0x22220005&&observedDirections[1][2]==1,"secondary query and final ray independent");
     Check(g_halo3Dual.callbacks==0&&!g_halo3IndependentShot.active,"callback scope balanced");
+    // THE LOCAL PLAYER'S FIRE and the own shot line, as the crosshair re-aim sees them at the assist.
+    Reset();localPlayerUnit=static_cast<int32_t>(owner);(void)Shoot();
+    Check(observedFire[0]==shot_lag::kFireLocal,"the local player's shot line tags his fire local before the assist");
+    Check(observedOwnLine[0],"a dual-aim shot's assist runs under its own shot line (the re-aim leaves it alone)");
+    Check(t_halo3Fire==shot_lag::kFireNone,"the fire's exit restores the tag");
+    Reset();localPlayerUnit=static_cast<int32_t>(owner)+1;(void)Shoot();
+    Check(observedFire[0]==shot_lag::kFireOther,"another unit's shot line leaves the fire another's (co-op, AI)");
+    Reset();localPlayerUnit=static_cast<int32_t>(owner);g_config.independent_dual_aim=false;(void)Shoot();
+    Check(observedFire[0]==shot_lag::kFireLocal&&!observedOwnLine[0],
+          "a single-gun local shot is the one the re-aim may take");
+    Reset();localPlayerUnit=static_cast<int32_t>(owner);nestedFire=true;(void)Shoot();
+    Check(observedFire[1]==shot_lag::kFireLocal&&t_halo3Fire==shot_lag::kFireNone,
+          "a nested fire tags its own shot and the outer exit restores none");
+    localPlayerUnit=-1;
     Reset();nestedFire=true;(void)Shoot();Check(fireCalls==2,"simultaneous/nested roles each fire once");
     Reset();fireFault=true;Check(FaultingShot()&&fireCalls==1,"native firing failure never replayed");
     Check(g_halo3Dual.fireEntries==1&&g_halo3Dual.fireReturns==0&&g_halo3Dual.fireUnwinds==1&&

@@ -833,7 +833,8 @@ bool ReachSightReadIntent(uint64_t maxAgeUs, float point[3], float eye[3], float
 // 307 over 236 shots). This query -- the anchor's own call, siteReturn -- traces through the intent point from its
 // own start instead (shot_lag::ReaimThroughPoint; within 10 mm it is left exactly as built). Fail closed: no
 // converged write live (ReachConvergedShotLive), a seat held at its stop (ReachHeldAtLimit), a point older than
-// 150 ms, another unit's query, a barrel / muzzle shot's own line (LegacyOwnShotLineActive), or a rail.
+// 150 ms, another unit's fire or query (shot_lag::FireMark), a barrel / muzzle shot's own line
+// (LegacyOwnShotLineActive), or a rail.
 bool ReachSightReaimCrosshairQuery(uint64_t flags, const float* start, const float* vector, int32_t ignoredA,
                                    uintptr_t caller, float out[3])
 {
@@ -841,12 +842,15 @@ bool ReachSightReaimCrosshairQuery(uint64_t flags, const float* start, const flo
     const uint64_t resolved = g_reachSightFlags.flags.load(std::memory_order_acquire);
     if (!site || caller != site || !resolved || flags != resolved || !start || !vector || ignoredA == -1)
         return false;
-    // The local player's query: on foot it ignores the unit; seated the unit's root (the vehicle).
-    const int32_t local = LegacyCollisionIgnoredObject(GameTitle::HaloReach);
-    // A barrel / muzzle shot owns this fire: the assist's camera is that gun's own ray (ReachMuzzleViewDetour at
-    // 0x10F954), so its query is the barrel's line, never the aim hand's point (shot_lag::GateCrosshairQuery).
+    // The local player's FIRE (t_reachFire: the unit-adjust named him as this projectile's shooter -- seated, the
+    // root check below names every occupant of the vehicle, a co-op player beside us included) and his query: on
+    // foot it ignores the unit; seated the unit's root (the vehicle). A barrel / muzzle shot owns this fire: the
+    // assist's camera is that gun's own ray (ReachMuzzleViewDetour at 0x10F954), so its query is the barrel's line,
+    // never the aim hand's point (shot_lag::GateCrosshairQuery).
+    const int8_t fire = t_reachFire;
+    const int32_t local = fire == shot_lag::kFireLocal ? LegacyCollisionIgnoredObject(GameTitle::HaloReach) : -1;
     const shot_lag::QueryGate gate = shot_lag::GateCrosshairQuery(
-        true, local != -1 && (ignoredA == local || ignoredA == ReachSightRootOf(local)),
+        true, fire, local != -1 && (ignoredA == local || ignoredA == ReachSightRootOf(local)),
         LegacyOwnShotLineActive(GameTitle::HaloReach));
     if (gate == shot_lag::QueryGate::OwnShotLine)
         Sight_NoteReaimSkipped(GameTitle::HaloReach, SightShotSite::CrosshairAssist, shot_lag::IntentUse::OwnShotLine);
@@ -904,7 +908,7 @@ void ReachSightNoteCrosshairQuery(uint64_t flags, const float* start, const floa
     const uintptr_t site = g_reachSightFlags.siteReturn.load(std::memory_order_relaxed);
     // A barrel shot's own line is not the aim hand's: its miss from P measures nothing.
     if (!site || caller != site || flags != g_reachSightFlags.flags.load(std::memory_order_relaxed) || ignoredA == -1 ||
-        LegacyOwnShotLineActive(GameTitle::HaloReach))
+        LegacyOwnShotLineActive(GameTitle::HaloReach) || t_reachFire != shot_lag::kFireLocal)
         return;
     const int32_t local = LegacyCollisionIgnoredObject(GameTitle::HaloReach);
     if (local == -1)

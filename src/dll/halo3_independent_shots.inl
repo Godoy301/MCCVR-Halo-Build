@@ -224,6 +224,10 @@ __declspec(noinline) uint64_t __fastcall Halo3IndependentFireDetour(
     // is the unit that holds the gun: a turret or vehicle for a mounted gun, never the occupant 0x3524B0 receives).
     const uint32_t previousFiringWeapon=g_halo3FiringWeapon;
     g_halo3FiringWeapon=weapon;
+    // A fire whose shooter is unknown until its shot line names it (Halo3IndependentAimDetour): no crosshair re-aim
+    // touches it before then (shot_lag::FireMark).
+    const int8_t previousFire=t_halo3Fire;
+    t_halo3Fire=shot_lag::kFireOther;
     NativeShotTargetLease<0x24> lease{};
     NativeShotTargetLease<0x24> muzzleLease{};
     const auto previousMuzzle=g_halo3MuzzleRequest;
@@ -270,6 +274,7 @@ __declspec(noinline) uint64_t __fastcall Halo3IndependentFireDetour(
         g_halo3IndependentShot=previous;
         g_halo3MuzzleRequest=previousMuzzle;
         g_halo3FiringWeapon=previousFiringWeapon;
+        t_halo3Fire=previousFire;
         feature.callbacks.fetch_sub(1,std::memory_order_acq_rel);
     }
     return result;
@@ -328,6 +333,11 @@ __declspec(noinline) void __fastcall Halo3IndependentAimDetour(uint32_t unit,
         // other addresses, and they are not shots.
         const bool firingCall=
             reinterpret_cast<uintptr_t>(_ReturnAddress())==feature.base+0x368B97;
+        // The shot line names the shooter: the OCCUPANT (0x368B82 walks the gunner chain +0x2A4 down to it), so two
+        // players in one vehicle are told apart. Its fire's crosshair query (the assist, 0x368DFE) comes after it.
+        if(firingCall)
+            t_halo3Fire=shot_lag::FireMark(t_halo3Fire,unit!=UINT32_MAX &&
+                static_cast<int32_t>(unit)==LegacyCollisionIgnoredObject(GameTitle::Halo3));
         if(scope.active && !scope.query && scope.barrel && scope.unit==unit && origin && direction &&
             firingCall)
         {

@@ -177,15 +177,31 @@ inline const char* IntentUseName(IntentUse why)
 // camera is swapped for it (Halo 3 0x13BC0D, ODST 0x161204, Reach 0x10F954) -- so its crosshair query traces that
 // gun's line, and re-aiming it through the AIM HAND's point would steer the off-hand or barrel shot onto the other
 // hand's target.
+//
+// THE LOCAL PLAYER'S FIRE. A query's ignores and start cannot tell two players in one vehicle apart (Reach names only
+// the vehicle's root; Halo 3's 1.5 m start guard admits an adjacent seat), and in networked co-op another player's
+// assist runs on this machine too (the assists take a player index: Halo 3 0x13BAD0, Reach's aim_projectile). So the
+// fire itself is tagged on the fire thread: a native fire's entry opens it as kFireOther, and its shot line -- the one
+// call that names the shooting unit (Halo 3 0x3524B0 from 0x368B92: the OCCUPANT after the gunner chain; ODST
+// 0x396B7C from 0x3AEB26; Reach's unit-adjust from 0x4C303A) -- marks it kFireLocal when that unit is the local
+// player's. The fire's exit restores the enclosing value. Only a kFireLocal fire's queries are ever re-aimed.
+inline constexpr int8_t kFireNone = -1;    // not inside a native fire on this thread
+inline constexpr int8_t kFireOther = 0;    // inside a fire whose shooter is not (yet) the local player
+inline constexpr int8_t kFireLocal = 1;    // inside the local player's fire
+inline int8_t FireMark(int8_t current, bool shooterIsLocal)
+{
+    return current == kFireNone ? kFireNone : (shooterIsLocal ? kFireLocal : kFireOther);
+}
+
 enum class QueryGate : uint8_t
 {
     Try = 0,       // consult the intent (ShouldUseIntent)
-    NotOurs,       // not the site, or not the local player's query: left alone and not counted
+    NotOurs,       // not the site, not the local player's fire, or not his query: left alone and not counted
     OwnShotLine,   // the local fire's line belongs to another gun: left alone, counted (IntentUse::OwnShotLine)
 };
-inline QueryGate GateCrosshairQuery(bool atSite, bool queryLocal, bool ownShotLine)
+inline QueryGate GateCrosshairQuery(bool atSite, int8_t fire, bool queryLocal, bool ownShotLine)
 {
-    if (!atSite || !queryLocal)
+    if (!atSite || fire != kFireLocal || !queryLocal)
         return QueryGate::NotOurs;
     if (ownShotLine)
         return QueryGate::OwnShotLine;
@@ -375,6 +391,32 @@ inline bool ExtrapolateEye(const float eye[3], const float velocity[3], float dt
     for (int axis = 0; axis < 3; ++axis)
         out[axis] = eye[axis] + velocity[axis] * dt;
     return true;
+}
+
+// The crosshair query's own evidence that it is the local player's (with GateCrosshairQuery's fire tag). On foot its
+// first ignore is the local unit itself. Seated it is the vehicle's root (the published seat chain's top: `seatC`,
+// else `seatB`) or the seat's parent (`seatB`), which another occupant's query names too, so it must also START
+// within maxStartWu of the eye the intent was built from, carried forward by that eye's velocity to now (at most
+// 100 ms): an AI gunner's camera sits elsewhere. Not enough alone for a co-op player in the next seat -- hence the
+// fire tag.
+inline bool QueryIsLocal(bool seated, int32_t ignoredA, int32_t localUnit, int32_t seatB, int32_t seatC,
+                         const IntentPoint& intent, const float* start, uint64_t nowUs, float maxStartWu)
+{
+    if (ignoredA == -1)
+        return false;
+    if (!seated)
+        return ignoredA == localUnit;
+    const int32_t root = seatC != -1 ? seatC : seatB;
+    if (ignoredA != root && ignoredA != seatB)
+        return false;
+    if (!start || !Finite3(start) || !Finite3(intent.eye))
+        return false;
+    float eye[3]{intent.eye[0], intent.eye[1], intent.eye[2]};
+    if (intent.eyeVelValid && intent.eyeStampUs && nowUs > intent.eyeStampUs)
+        (void)ExtrapolateEye(intent.eye, intent.eyeVel, float(nowUs - intent.eyeStampUs) * 1.0e-6f, 0.1f, eye);
+    const float d[3]{start[0] - eye[0], start[1] - eye[1], start[2] - eye[2]};
+    const float distance = Length(d);
+    return std::isfinite(distance) && distance <= maxStartWu;
 }
 
 // The game-basis angles of normalize(P - origin) (yaw about +Z from +X, pitch up), pitch clamped to

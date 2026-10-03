@@ -133,14 +133,64 @@ int main()
 
     // ---- the crosshair query's gate ----
     {
-        Check(GateCrosshairQuery(true, true, false) == QueryGate::Try, "the local player's query at the site is tried");
-        Check(GateCrosshairQuery(false, true, false) == QueryGate::NotOurs, "a query elsewhere is never ours");
-        Check(GateCrosshairQuery(true, false, false) == QueryGate::NotOurs, "another unit's query is never ours");
-        Check(GateCrosshairQuery(true, true, true) == QueryGate::OwnShotLine,
+        Check(GateCrosshairQuery(true, kFireLocal, true, false) == QueryGate::Try,
+              "the local player's query at the site, in his fire, is tried");
+        Check(GateCrosshairQuery(false, kFireLocal, true, false) == QueryGate::NotOurs, "a query elsewhere is never ours");
+        Check(GateCrosshairQuery(true, kFireLocal, false, false) == QueryGate::NotOurs,
+              "another unit's query is never ours");
+        Check(GateCrosshairQuery(true, kFireLocal, true, true) == QueryGate::OwnShotLine,
               "an off-hand or barrel shot's own line is left alone (never the aim hand's point)");
-        Check(GateCrosshairQuery(true, false, true) == QueryGate::NotOurs,
+        Check(GateCrosshairQuery(true, kFireLocal, false, true) == QueryGate::NotOurs,
               "another unit's query is not counted as an own-line skip");
         Check(std::strcmp(IntentUseName(IntentUse::OwnShotLine), "own shot line") == 0, "the own-line skip is named");
+        // THE LOCAL PLAYER'S FIRE: a query that passes every check of its own is still left alone in another
+        // player's fire (co-op, the next seat), or outside any fire we opened.
+        Check(GateCrosshairQuery(true, kFireOther, true, false) == QueryGate::NotOurs,
+              "a co-op player's fire is never re-aimed, whatever its query looks like");
+        Check(GateCrosshairQuery(true, kFireNone, true, false) == QueryGate::NotOurs,
+              "a query outside any native fire is never re-aimed");
+        Check(GateCrosshairQuery(true, kFireOther, true, true) == QueryGate::NotOurs,
+              "another player's barrel shot is not counted as ours");
+    }
+    {
+        // The tag's lifetime: a fire opens Other; its shot line names the shooter; outside a fire nothing marks.
+        Check(FireMark(kFireNone, true) == kFireNone, "a shot line outside a fire never tags (no fire was opened)");
+        Check(FireMark(kFireOther, true) == kFireLocal, "the local unit's shot line tags the fire local");
+        Check(FireMark(kFireOther, false) == kFireOther, "another unit's shot line leaves it another's");
+        Check(FireMark(kFireLocal, false) == kFireOther, "a later projectile by another shooter is not ours");
+        Check(FireMark(kFireLocal, true) == kFireLocal, "a second projectile of our own stays ours");
+    }
+    {
+        // The query's own evidence (on foot: the unit; seated: the vehicle, and a start at our eye).
+        IntentPoint intent{};
+        intent.eye[0] = 10.0f;
+        intent.eye[1] = 20.0f;
+        intent.eye[2] = 1.0f;
+        const float atEye[3]{10.1f, 20.0f, 1.0f};
+        const float beside[3]{10.0f, 20.0f + 2.0f * kWuPerM, 1.0f};   // 2 m away: the next seat's camera
+        const float maxWu = 1.5f * kWuPerM;
+        const uint64_t now = 5000000;
+        Check(QueryIsLocal(false, 42, 42, -1, -1, intent, atEye, now, maxWu), "on foot: our unit is ours");
+        Check(!QueryIsLocal(false, 43, 42, -1, -1, intent, atEye, now, maxWu), "on foot: another unit is not");
+        Check(!QueryIsLocal(false, -1, -1, -1, -1, intent, atEye, now, maxWu), "no unit on either side is nobody's");
+        Check(QueryIsLocal(true, 900, -1, 800, 900, intent, atEye, now, maxWu), "seated: the vehicle's root");
+        Check(QueryIsLocal(true, 800, -1, 800, 900, intent, atEye, now, maxWu), "seated: the seat's parent");
+        Check(QueryIsLocal(true, 800, -1, 800, -1, intent, atEye, now, maxWu), "seated, one level: the parent");
+        Check(!QueryIsLocal(true, 700, -1, 800, 900, intent, atEye, now, maxWu), "seated: another vehicle is not");
+        Check(!QueryIsLocal(true, 900, -1, 800, 900, intent, beside, now, maxWu),
+              "seated: a query starting 2 m from our eye is not ours");
+        // The eye carried forward: a hull at 20 m/s, 50 ms after the eye was sampled, is a metre on.
+        IntentPoint moving = intent;
+        moving.eyeVel[1] = 20.0f * kWuPerM;
+        moving.eyeVelValid = true;
+        moving.eyeStampUs = now - 50000;
+        const float ahead[3]{10.0f, 20.0f + 1.0f * kWuPerM, 1.0f};
+        Check(QueryIsLocal(true, 900, -1, 800, 900, moving, ahead, now, 0.2f * kWuPerM),
+              "seated: our eye is carried forward by its velocity to now");
+        Check(!QueryIsLocal(true, 900, -1, 800, 900, intent, ahead, now, 0.2f * kWuPerM),
+              "...without a velocity the same start is a metre off");
+        const float nan3[3]{std::nanf(""), 0.0f, 0.0f};
+        Check(!QueryIsLocal(true, 900, -1, 800, 900, intent, nan3, now, maxWu), "a non-finite start is nobody's");
     }
 
     // ---- the eye's track ----

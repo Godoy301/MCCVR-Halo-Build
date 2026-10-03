@@ -66,6 +66,9 @@ using ReachUnitAdjustFn=void(__fastcall*)(int32_t,float*,float*,const float*,con
 static ReachUnitAdjustFn g_origReachUnitAdjust=nullptr;
 static void* g_reachUnitAdjustTarget=reinterpret_cast<void*>(imageBase+0x484F24);
 static thread_local uintptr_t caller=0;
+// THE LOCAL PLAYER'S FIRE (shot_lag_logic.h FireMark; game.cpp t_reachFire): opened and restored by the fire.
+#include "../src/common/shot_lag_logic.h"
+static thread_local int8_t t_reachFire=shot_lag::kFireNone;
 #define _ReturnAddress() reinterpret_cast<void*>(::caller)
 #define __readgsqword(offset) reinterpret_cast<uint64_t>(::slots)
 #include "../src/dll/reach_muzzle_ownership.inl"
@@ -129,6 +132,9 @@ static void __fastcall NativeFire(uint32_t weapon,int16_t barrel,void* data,uint
     if(expectMuzzle)Check(velocity[0]==11,"real native velocity output retained");
     caller=imageBase+0x10F954;ReachMuzzleViewDetour(owner,0,direction,point,cameraDirection,camera);
     if(expectMuzzle)Check(point[0]==2&&point[1]==2.5f&&cameraDirection[1]==1&&camera[0]==2,"later native assist shares barrel ray");
+    // The crosshair re-aim at this assist: inside an open fire (never kFireNone), and a barrel shot's own line.
+    Check(t_reachFire!=shot_lag::kFireNone,"the fire is open while its assist runs");
+    Check(g_reachBarrelShot.active==expectMuzzle,"the barrel's own line owns exactly the barrel shot's assist");
     if(nested&&weapon==primary)
     {
         const auto request=g_reachBarrelRequest;ReachMuzzleFireDetour(secondary,0,data,simulation);
@@ -164,6 +170,7 @@ static bool FaultingShot(){__try{Shoot();}__except(EXCEPTION_EXECUTE_HANDLER){re
 static void ShotTests()
 {
     Reset();Shoot();Check(fireCalls==1&&queryCalls==1&&markerCalls==1&&aimCalls==2&&*reinterpret_cast<uint32_t*>(unitBytes+0x2C0)==0x44440007,"single native fire and exact target restoration");
+    Check(t_reachFire==shot_lag::kFireNone,"the fire's exit restores the local-fire tag");
     Reset(true);nested=true;g_reachBarrelQueryContext.flags=2;Shoot();Check(fireCalls==2&&queryCalls==2&&!g_reachBarrelShot.active&&*reinterpret_cast<uint32_t*>(unitBytes+0x2C0)==0x44440007,"nested native target leases restore LIFO");
     for(int reason=0;reason<26;++reason)
     {

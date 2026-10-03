@@ -1948,6 +1948,14 @@ namespace
     // resolver hook directly. Suppress only that owned nested callback so a
     // native game query remains the sole scheduling point.
     thread_local bool g_legacyCollisionOwnedQuery = false;
+    // THE LOCAL PLAYER'S FIRE, per title, on the fire thread (shot_lag::FireMark): kFireNone outside a native fire,
+    // kFireOther from a fire's entry, kFireLocal once its shot line names the local unit. Opened and restored by the
+    // fire detours (Halo3IndependentFireDetour, OdstMuzzleFireDetour, ReachMuzzleFireDetour), marked by the shot-line
+    // detours (Halo3IndependentAimDetour, OdstMuzzleAimDetour, ReachUnitAdjustHook); the crosshair re-aims require
+    // kFireLocal. No fire detour installed: never local, never re-aimed (fail closed).
+    thread_local int8_t t_halo3Fire = shot_lag::kFireNone;
+    thread_local int8_t t_odstFire = shot_lag::kFireNone;
+    thread_local int8_t t_reachFire = shot_lag::kFireNone;
 
     LegacyWorldCollisionFeature* LegacyCollisionForTitle(GameTitle title);
     void LegacyPublishReloadTarget(GameTitle title,uint16_t tag,uint32_t generation,
@@ -20803,6 +20811,12 @@ namespace
             1, std::memory_order_acq_rel);
         __try
         {
+            // The projectile transaction names its shooter here, before its aim_assist traces the crosshair: the
+            // local player's fire only from here (shot_lag::FireMark; ReachMuzzleFireDetour opens the fire). Seated,
+            // unitIndex is the occupant (the seated redirect below matches it to the occupation's unit).
+            if (reinterpret_cast<uintptr_t>(_ReturnAddress())==g_reachCamera.base+0x4C303F)
+                t_reachFire=shot_lag::FireMark(t_reachFire,
+                    unitIndex!=-1 && unitIndex==LegacyCollisionIgnoredObject(GameTitle::HaloReach));
             if (reinterpret_cast<uintptr_t>(_ReturnAddress())==g_reachCamera.base+0x4C303F &&
                 ReachApplyBarrelAim(unitIndex,origin,direction,basisForward,collision,simulation))
             {
