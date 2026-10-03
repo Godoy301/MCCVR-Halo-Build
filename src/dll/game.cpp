@@ -2030,6 +2030,11 @@ namespace
         int32_t ignoredA, uintptr_t caller, float out[3]);
     void LegacySightNoteCrosshairQuery(GameTitle title, uint64_t flags, const float* start, const float* vector,
         int32_t ignoredA, uintptr_t caller);
+    // True on a fire thread while another gun's own line owns the local fire: Halo 3's independent shot scope (the
+    // off-hand gun under independent dual aim, or a barrel / muzzle shot), ODST's and Reach's muzzle shot scopes. The
+    // firing assist's camera is then that gun's ray, so the crosshair re-aims leave its query alone. Defined after
+    // the scopes (halo3_independent_shots.inl, odst_muzzle_shots.inl, reach_muzzle_shots.inl).
+    bool LegacyOwnShotLineActive(GameTitle title);
     bool ReachConvergedShotLive(uint64_t nowMs);
     void ReachSightMeasureShot(int32_t unitIndex, const float* origin, const float* direction,
                                const float* cameraPoint, uint8_t firesFromCamera, uint8_t useUnitAim);
@@ -27014,6 +27019,18 @@ namespace
     #include "reach_muzzle_shots.inl"
     #include "reach_muzzle_lifecycle.inl"
     #include "reach_visual_hand_offset.inl"
+
+    // Declared with the crosshair re-aims above: the fire thread's own-shot-line scopes, read where they live.
+    bool LegacyOwnShotLineActive(GameTitle title)
+    {
+        switch (title)
+        {
+        case GameTitle::Halo3: return g_halo3IndependentShot.active;
+        case GameTitle::Halo3ODST: return g_odstMuzzleShot.active;
+        case GameTitle::HaloReach: return g_reachBarrelShot.active;
+        default: return false;
+        }
+    }
 
     // Optional per-frame read of the SAME local unit handle whose native
     // camera-info call proved the occupied seat. Keep its SEH boundary separate

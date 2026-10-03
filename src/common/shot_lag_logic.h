@@ -151,6 +151,7 @@ enum class IntentUse : uint8_t
     NaturalHeld,   // a natural cause holds the game's aim off it (a seat stop, a turret's slew)
     NotConverged,  // the converged aim is not in effect
     Bad,           // a non-finite or degenerate point
+    OwnShotLine,   // the shot is another gun's own line (an off-hand gun, a barrel shot): never the aim hand's P
     Count
 };
 
@@ -165,8 +166,30 @@ inline const char* IntentUseName(IntentUse why)
     case IntentUse::NaturalHeld: return "natural-held";
     case IntentUse::NotConverged: return "not converged";
     case IntentUse::Bad: return "bad";
+    case IntentUse::OwnShotLine: return "own shot line";
     default: return "?";
     }
+}
+
+// THE CROSSHAIR QUERY'S GATE: before any intent is consulted, may the re-aim touch this query at all? Only the local
+// player's query at a resolved crosshair site, and only while no other shot line owns the fire. Independent dual aim
+// (the off-hand gun) and barrel / muzzle shots run the fire with that GUN's own camera ray -- the firing assist's
+// camera is swapped for it (Halo 3 0x13BC0D, ODST 0x161204, Reach 0x10F954) -- so its crosshair query traces that
+// gun's line, and re-aiming it through the AIM HAND's point would steer the off-hand or barrel shot onto the other
+// hand's target.
+enum class QueryGate : uint8_t
+{
+    Try = 0,       // consult the intent (ShouldUseIntent)
+    NotOurs,       // not the site, or not the local player's query: left alone and not counted
+    OwnShotLine,   // the local fire's line belongs to another gun: left alone, counted (IntentUse::OwnShotLine)
+};
+inline QueryGate GateCrosshairQuery(bool atSite, bool queryLocal, bool ownShotLine)
+{
+    if (!atSite || !queryLocal)
+        return QueryGate::NotOurs;
+    if (ownShotLine)
+        return QueryGate::OwnShotLine;
+    return QueryGate::Try;
 }
 
 inline IntentUse ShouldUseIntent(bool published, const IntentPoint& p, uint32_t generation, uint64_t nowUs,

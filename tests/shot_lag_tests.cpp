@@ -131,6 +131,18 @@ int main()
         Check(ShouldUseIntent(true, bad, 3, 1050000, 200000, true, false) == IntentUse::Bad, "no range");
     }
 
+    // ---- the crosshair query's gate ----
+    {
+        Check(GateCrosshairQuery(true, true, false) == QueryGate::Try, "the local player's query at the site is tried");
+        Check(GateCrosshairQuery(false, true, false) == QueryGate::NotOurs, "a query elsewhere is never ours");
+        Check(GateCrosshairQuery(true, false, false) == QueryGate::NotOurs, "another unit's query is never ours");
+        Check(GateCrosshairQuery(true, true, true) == QueryGate::OwnShotLine,
+              "an off-hand or barrel shot's own line is left alone (never the aim hand's point)");
+        Check(GateCrosshairQuery(true, false, true) == QueryGate::NotOurs,
+              "another unit's query is not counted as an own-line skip");
+        Check(std::strcmp(IntentUseName(IntentUse::OwnShotLine), "own shot line") == 0, "the own-line skip is named");
+    }
+
     // ---- the eye's track ----
     {
         EyeTrack track;

@@ -566,7 +566,8 @@ void LegacySightNoteEngineTrace(GameTitle title, uint64_t flags, const float* st
 // campaign vehicles were already coherent (user, 2026-10-02) and stay byte-identical. Left alone (fail closed) when
 // the point is stale (over 150 ms) or for another generation, the converged aim is not in effect, the solve held at
 // the pitch rail, a seat is held at its stop or is a turret (the gun points elsewhere naturally), the query is not
-// the local player's, or a rail refuses (behind the start, inside 30 cm, over 3 m off or 30 deg).
+// the local player's, another gun's own line owns the fire (an off-hand gun, a barrel or muzzle shot:
+// LegacyOwnShotLineActive), or a rail refuses (behind the start, inside 30 cm, over 3 m off or 30 deg).
 // Collision-hook thread (the game's own query); lock-free reads only. The thread-local below carries the native
 // fire's `predicted` flag to the dev witness (Halo 3's fire detour sets it).
 thread_local int t_legacyFirePredicted = -1;
@@ -674,8 +675,16 @@ bool LegacySightReaimCrosshairQuery(GameTitle title, uint64_t flags, const float
         ReleaseSRWLockExclusive(&ring.lock);
     }
 #endif
-    if (!rayRead || !LegacySightQueryIsLocal(title, ignoredA, ray, seated, intent.p, start))
-        return false;   // another unit's query (an ally, an enemy), or no ray to tell: never ours to touch
+    // Another unit's query (an ally, an enemy), or no ray to tell: never ours to touch. The local fire's own shot line
+    // (an off-hand gun under independent dual aim, a barrel / muzzle shot): its assist traces that gun's ray, never
+    // the aim hand's point (shot_lag::GateCrosshairQuery).
+    const shot_lag::QueryGate gate = shot_lag::GateCrosshairQuery(
+        true, rayRead && LegacySightQueryIsLocal(title, ignoredA, ray, seated, intent.p, start),
+        LegacyOwnShotLineActive(title));
+    if (gate == shot_lag::QueryGate::OwnShotLine)
+        Sight_NoteReaimSkipped(title, SightShotSite::CrosshairAssist, shot_lag::IntentUse::OwnShotLine);
+    if (gate != shot_lag::QueryGate::Try)
+        return false;
     if (use != shot_lag::IntentUse::Use)
     {
         Sight_NoteReaimSkipped(title, SightShotSite::CrosshairAssist, use);
@@ -698,7 +707,9 @@ void LegacySightNoteCrosshairQuery(GameTitle title, uint64_t flags, const float*
     for (const auto& known : state.siteReturn)
         if (const uintptr_t at = known.load(std::memory_order_relaxed); at && at == caller)
             site = true;
-    if (!site || flags != state.flags.load(std::memory_order_acquire) || TitleAdapter_GetActiveTitle() != title)
+    // Another gun's own line (an off-hand or barrel shot) is not the aim hand's: its miss from P measures nothing.
+    if (!site || flags != state.flags.load(std::memory_order_acquire) || TitleAdapter_GetActiveTitle() != title ||
+        LegacyOwnShotLineActive(title))
         return;
     const uint32_t generation = TitleAdapter_GetGeneration(title);
     SightRay ray{};
