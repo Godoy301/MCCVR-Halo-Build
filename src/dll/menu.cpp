@@ -1147,9 +1147,11 @@ namespace
         ImGui::Text("Aim in seats");
         ImGui::TextDisabled("Seats follow Converged aim and Direct drive in Weapon & Aim, as on foot.\n"
                             "Reach fires a seat's weapon at what that seat's own crosshair hits, so the\n"
-                            "aim is bent to put that crosshair on your target. A turret's or passenger\n"
-                            "seat's limits still hold: past them the gun fires where it can, as in flat\n"
-                            "Halo, and the crosshair stays on your aim point (the tracers show the rest).\n"
+                            "aim is bent to put that crosshair on your target. A land vehicle seat's turning\n"
+                            "limits still hold (a passenger's cone, a turret's or tank gun's up/down stop):\n"
+                            "point past one and the crosshair stops at the edge, where the gun is held and\n"
+                            "the shots go. A gun still turning toward your hand is not a limit: the\n"
+                            "crosshair stays on your aim point. Aircraft have no limits.\n"
                             "A seat whose stick steers the vehicle keeps the stick.");
         {
             bool seats = g_config.seat_direct_drive != 0;
