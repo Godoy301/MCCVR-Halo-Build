@@ -139,6 +139,7 @@ struct Halo3AsSeenAim
     uint64_t camUs = 0, serial = 0, fireUs = 0;
     int64_t camTick = -1;
     uint32_t fireTick = 0;
+    uint32_t queries = 0;   // the round's own collision queries so far (one a tick): ticks from the first to the hit
     bool velValid = false;
     float vel[3]{};
 };
@@ -585,7 +586,9 @@ void Halo3AsSeenEvaluate(Halo3AsSeenPending& p, const Halo3AsSeenReticle& r)
     sample.impactUs = p.impactUs;
     sample.frameCamUs = frame.stampUs;
     sample.presentUs = r.stampUs;   // VR: the compositor building this serial's layers (its submit), not a photon
-    sample.ticksFireToImpact = static_cast<int32_t>(p.impactTick - p.aim.fireTick);
+    // Ticks from the round's first query to its hit -- its own queries, counted the same way in the flat probe (the
+    // sim tick counter, p.impactTick - p.aim.fireTick, counts the local unit's control passes instead).
+    sample.ticksFireToImpact = p.aim.queries ? static_cast<int32_t>(p.aim.queries - 1) : -1;
     sample.ticksAimToFrame = p.aim.camTick >= 0 ? static_cast<int32_t>(int64_t(frame.tick) - p.aim.camTick) : -1;
     if (p.aim.eyeValid)
     {
@@ -887,6 +890,12 @@ void Halo3ImpactWitnessNoteQuery(uintptr_t caller, const float* start, const flo
         // Within ~3 cm of the object and 5 deg of its velocity: this projectile's own segment.
         if (!shot_impact::QueryIsProjectiles(pos, vel, s, v, 0.01f, 5.0f))
             continue;
+        {
+            // AS SEEN: the round's own queries, one a tick (the flat probe counts the same thing).
+            const ptrdiff_t index = &t - w.tracker.slot;
+            if (index >= 0 && index < shot_impact::Tracker::kSlots && g_halo3AsSeen.aim[index].valid)
+                ++g_halo3AsSeen.aim[index].queries;
+        }
         if (landed && !t.impact)
         {
             t.impact = true;
