@@ -1879,6 +1879,9 @@ namespace
     // Halo 3 / ODST trace-and-reaim, the engine-crosshair check (dev; legacy_sight_trace.inl).
     void LegacySightNoteEngineTrace(GameTitle title, uint64_t flags, const float* start, const float* vector,
         uintptr_t caller);
+    // ...and the shot re-aimed through the intent point at that query (every build), with its dev witness.
+    bool LegacySightReaimCrosshairQuery(GameTitle title, uint64_t flags, const float* start, const float* vector,
+        int32_t ignoredA, uintptr_t caller, float out[3]);
     bool ReachConvergedShotLive(uint64_t nowMs);
     void ReachSightMeasureShot(int32_t unitIndex, const float* origin, const float* direction,
                                const float* cameraPoint, uint8_t firesFromCamera, uint8_t useUnitAim);
@@ -5421,13 +5424,21 @@ namespace
         uint8_t nativeResult=0;
         __try
         {
+            const uintptr_t caller=reinterpret_cast<uintptr_t>(_ReturnAddress());
+            // The crosshair / firing-assist query, re-aimed through the intent point (as Halo 3's).
+            float reaimed[3]{};
+            const float* query=desired;
             if(!g_legacyCollisionOwnedQuery)
-                LegacySightNoteEngineTrace(GameTitle::Halo3ODST,flags,start,desired,
-                    reinterpret_cast<uintptr_t>(_ReturnAddress()));
-            if(!OdstRedirectContactVector(reinterpret_cast<uintptr_t>(_ReturnAddress()),
+            {
+                LegacySightNoteEngineTrace(GameTitle::Halo3ODST,flags,start,desired,caller);
+                if(LegacySightReaimCrosshairQuery(GameTitle::Halo3ODST,flags,start,desired,ignoredObjectA,
+                        caller,reaimed))
+                    query=reaimed;
+            }
+            if(!OdstRedirectContactVector(caller,
                 flags,mode,ignoredObjectA,ignoredObjectB,ignoredObjectC,result,nativeResult))
                 nativeResult=LegacyCollisionSchedulerDetourBody(
-                    g_odstWorldCollision,flags,mode,start,desired,ignoredObjectA,
+                    g_odstWorldCollision,flags,mode,start,query,ignoredObjectA,
                     ignoredObjectB,ignoredObjectC,result);
         }
         __finally { g_odstWorldCollision.callbacks.fetch_sub(1,std::memory_order_acq_rel); }

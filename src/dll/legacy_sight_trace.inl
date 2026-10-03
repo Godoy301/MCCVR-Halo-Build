@@ -505,6 +505,85 @@ void LegacySightNoteEngineTrace(GameTitle title, uint64_t flags, const float* st
 #endif
 }
 
+// ---- THE SHOT, RE-AIMED THROUGH THE INTENT POINT (every build; shot_lag_logic.h, 2026-10-02) ------------------
+// Halo 3 and ODST decide a shot's line at its fire tick: the weapon's fire (Halo 3 0x3683A0) calls the firing
+// assist (0x13BAD0, from 0x368DFE), whose crosshair query -- the resolved crosshair site, siteReturn above -- traces
+// from the shooter's camera along the record's aim, and the shot is turned at whatever that query hits. The record's
+// angles were solved a frame or more earlier from a render-time eye, so from the tick's camera they trace a line
+// parallel to the one meant, moved by the eye's travel (in multiplayer, also by however far the rendered camera
+// leads or trails the simulation). Re-aiming THAT QUERY from its own start through the intent point puts the hit --
+// and so the shot -- on the point the player meant, whatever the mode, from whatever origin the game uses:
+//
+//      vector' = normalize(P - start) * |vector|
+//
+// On foot P is the frame-coherent intent point; in a seat it is the point the solve bent the record through
+// (SightIntent::solvePoint), so a seat's line is only ever corrected for the eye's travel, never re-targeted. A
+// query already within 10 mm of P is left exactly as the game built it (shot_lag::Reaim::AlreadyThrough): Halo 3's
+// campaign vehicles were already coherent (user, 2026-10-02) and stay byte-identical. Left alone (fail closed) when
+// the point is stale (over 150 ms) or for another generation, the converged aim is not in effect, the solve held at
+// the pitch rail, a seat is held at its stop or is a turret (the gun points elsewhere naturally), the query is not
+// the local player's, or a rail refuses (behind the start, inside 30 cm, over 3 m off or 30 deg).
+
+// True when this query belongs to the local player: on foot its first ignore is the unit itself. Seated it is the
+// vehicle's root (the published seat chain's top), which another occupant's query would name too, so it must also
+// START within 1.5 m of our own eye carried forward by its velocity to now: an AI gunner's camera sits elsewhere.
+bool LegacySightQueryIsLocal(GameTitle title, int32_t ignoredA, const SightRay& ray, bool seated,
+                             const shot_lag::IntentPoint& intent, const float* start)
+{
+    if (ignoredA == -1)
+        return false;
+    if (!seated)
+        return ignoredA == LegacyCollisionIgnoredObject(title);
+    if (ignoredA != (ray.ignoreC != -1 ? ray.ignoreC : ray.ignoreB) && ignoredA != ray.ignoreB)
+        return false;
+    float eye[3]{intent.eye[0], intent.eye[1], intent.eye[2]};
+    const uint64_t now = Sight_NowUs();
+    if (intent.eyeVelValid && intent.eyeStampUs && now > intent.eyeStampUs)
+        (void)shot_lag::ExtrapolateEye(intent.eye, intent.eyeVel, float(now - intent.eyeStampUs) * 1.0e-6f, 0.1f, eye);
+    const float d[3]{start[0] - eye[0], start[1] - eye[1], start[2] - eye[2]};
+    const float distance = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+    return std::isfinite(distance) && distance <= 1.5f * kReachWorldUnitsPerMeter;
+}
+
+// Returns true when `out` holds the re-aimed vector the native query must trace instead.
+bool LegacySightReaimCrosshairQuery(GameTitle title, uint64_t flags, const float* start, const float* vector,
+                                    int32_t ignoredA, uintptr_t caller, float out[3])
+{
+    if ((title != GameTitle::Halo3 && title != GameTitle::Halo3ODST) || !start || !vector)
+        return false;
+    auto& state = LegacySight(title);
+    bool site = false;
+    for (const auto& known : state.siteReturn)
+    {
+        const uintptr_t at = known.load(std::memory_order_relaxed);
+        if (at && at == caller)
+        {
+            site = true;
+            break;
+        }
+    }
+    const uint64_t resolved = state.flags.load(std::memory_order_acquire);
+    if (!site || !resolved || flags != resolved || TitleAdapter_GetActiveTitle() != title)
+        return false;
+    // A natural hold, in every build: a seat held at its stop or a turret points the gun elsewhere by design.
+    const bool naturalHeld = Game_SeatMuzzleRefusal(title) != converge::SeatMuzzleRefusal::None;
+    SightIntent intent{};
+    const shot_lag::IntentUse use = Sight_IntentForShot(title, kSightIntentShotMaxAgeMs, naturalHeld, intent);
+    const uint32_t generation = TitleAdapter_GetGeneration(title);
+    SightRay ray{};
+    const bool rayRead = Sight_ReadRay(title, generation, 250, ray);
+    const bool seated = intent.p.seated;
+    const float* point = seated ? intent.solvePoint : intent.p.point;
+    if (!rayRead || !LegacySightQueryIsLocal(title, ignoredA, ray, seated, intent.p, start))
+        return false;   // another unit's query (an ally, an enemy), or no ray to tell: never ours to touch
+    if (use != shot_lag::IntentUse::Use)
+    {
+        Sight_NoteReaimSkipped(title, SightShotSite::CrosshairAssist, use);
+        return false;
+    }
+    memcpy(out, vector, sizeof(float) * 3);
+    return Sight_ReaimThroughPoint(title, SightShotSite::CrosshairAssist, start, out, point);
+}
 // Cold worker, every 5 s: how the servo target was chosen per title, and why a title does not trace.
 void LegacySightReport()
 {

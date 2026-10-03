@@ -36,11 +36,29 @@ static bool Halo3RedirectContactVector(uintptr_t,uint64_t,int32_t,int32_t,int32_
 static unsigned engineNotes{};
 static void LegacySightNoteEngineTrace(GameTitle title,uint64_t f,const float* a,const float* b,uintptr_t caller)
 {++engineNotes;Check(title==GameTitle::Halo3&&f==flags&&a==start&&b==delta&&caller!=0,"engine-trace note gets the game's own query");}
+// The shot re-aim (legacy_sight_trace.inl): when it applies, the native query traces ITS vector instead; the
+// shot-lag witness sees whichever vector was traced.
+static bool reaim{};
+static unsigned reaimAsks{},crosshairNotes{};
+static const float* lastNotedQuery{};
+static constexpr float kReaimed[3]{7.0f,-8.0f,9.0f};
+static bool LegacySightReaimCrosshairQuery(GameTitle title,uint64_t f,const float* a,const float* b,int32_t ignoredA,
+    uintptr_t caller,float out[3])
+{
+    ++reaimAsks;
+    Check(title==GameTitle::Halo3&&f==flags&&a==start&&b==delta&&ignoredA==-1&&caller!=0,
+        "the re-aim sees the game's own query");
+    if(!reaim)return false;
+    out[0]=kReaimed[0];out[1]=kReaimed[1];out[2]=kReaimed[2];
+    return true;
+}
 #include "../src/dll/halo3_collision_dispatch.inl"
 static uint8_t __fastcall Original(uint64_t f,int32_t m,const float* a,const float* b,int32_t x,int32_t y,int32_t z,void* out)
 {
     ++nativeCalls;
-    Check(f==flags&&m==mode&&a==start&&b==delta&&x==-1&&y==INT32_MIN&&z==INT32_MAX&&out==&output,"all eight native arguments untouched");
+    const bool vectorAsExpected=reaim?(b!=delta&&b[0]==kReaimed[0]&&b[1]==kReaimed[1]&&b[2]==kReaimed[2]):b==delta;
+    Check(f==flags&&m==mode&&a==start&&vectorAsExpected&&x==-1&&y==INT32_MIN&&z==INT32_MAX&&out==&output,
+        "all eight native arguments untouched (the vector only when re-aimed)");
     output=0xABCD1234;
     if(nativeFault)RaiseException(0xE0123401,0,0,nullptr);
     return 0xA7;
@@ -53,8 +71,8 @@ static DWORD Invoke()
 }
 static void Reset()
 {
-    nativeCalls=ticks=engineNotes=0;output=0;returned=0xFF;
-    option=nativeFault=extraFault=redirect=g_legacyCollisionOwnedQuery=false;
+    nativeCalls=ticks=engineNotes=reaimAsks=crosshairNotes=0;output=0;returned=0xFF;lastNotedQuery=nullptr;
+    option=nativeFault=extraFault=redirect=reaim=g_legacyCollisionOwnedQuery=false;
     g_halo3WorldCollision.original=reinterpret_cast<void*>(&Original);
     g_halo3WorldCollision.installed=true;g_halo3WorldCollision.failures=0;
     g_halo3WorldCollision.engineCalls=0;
@@ -78,6 +96,17 @@ int main()
     Reset();g_legacyCollisionOwnedQuery=true;
     Check(Invoke()==0&&returned==0xA7&&nativeCalls==1&&ticks==0,"owned query cannot recursively schedule");
     Check(engineNotes==0,"the mod's own query is never noted as the game's");
+    Check(reaimAsks==0,"the mod's own query is never re-aimed");
+    // THE SHOT RE-AIM: the crosshair query traces the re-aimed vector; declined, the game's own vector exactly.
+    Reset();
+    Check(Invoke()==0&&returned==0xA7&&nativeCalls==1&&reaimAsks==1,"a declined re-aim forwards the game's own vector");
+    Reset();reaim=true;
+    Check(Invoke()==0&&returned==0xA7&&nativeCalls==1&&output==0xABCD1234,"a re-aimed query still runs the native once");
+    Check(reaimAsks==1,"the re-aim was asked once");
+    Check(engineNotes==1,"the engine-crosshair check still sees the game's own query");
+    Reset();reaim=true;nativeFault=true;
+    Check(Invoke()==0xE0123401&&nativeCalls==1&&g_halo3WorldCollision.callbacks==0,
+        "a native fault on a re-aimed query propagates and drains");
     Reset();redirect=true;
     Check(Invoke()==0&&returned==19&&nativeCalls==0&&ticks==0&&g_halo3WorldCollision.callbacks==0,"owned physical contact redirect retained");
     std::printf("PASS: %u production collision dispatch checks\n",checks);

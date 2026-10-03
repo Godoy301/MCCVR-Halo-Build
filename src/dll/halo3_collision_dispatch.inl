@@ -35,12 +35,22 @@
         uint8_t nativeResult=0;
         const uintptr_t caller=reinterpret_cast<uintptr_t>(_ReturnAddress());
         __try {
+            // The crosshair / firing-assist query traces through the intent point from its own start
+            // (LegacySightReaimCrosshairQuery: every build, fail closed). The engine-crosshair witness sees the
+            // query as the game built it; the shot-lag witness sees what was traced.
+            float reaimed[3]{};
+            const float* query=desired;
             if(!g_legacyCollisionOwnedQuery)
+            {
                 LegacySightNoteEngineTrace(GameTitle::Halo3,flags,start,desired,caller);
+                if(LegacySightReaimCrosshairQuery(GameTitle::Halo3,flags,start,desired,ignoredObjectA,
+                        caller,reaimed))
+                    query=reaimed;
+            }
             if(!Halo3RedirectContactVector(caller,flags,mode,ignoredObjectA,
                     ignoredObjectB,ignoredObjectC,result,nativeResult))
                 nativeResult=LegacyCollisionSchedulerDetourBody(
-                    g_halo3WorldCollision,flags,mode,start,desired,ignoredObjectA,
+                    g_halo3WorldCollision,flags,mode,start,query,ignoredObjectA,
                     ignoredObjectB,ignoredObjectC,result);
         }
         __finally
