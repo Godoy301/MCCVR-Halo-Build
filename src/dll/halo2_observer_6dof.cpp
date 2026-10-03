@@ -3786,7 +3786,7 @@ namespace
         const uint64_t now = GetTickCount64();
         if (Sight_TraceFaulted(kTitle) ||
             !g_halo2WorldCollision.installed.load(std::memory_order_acquire) ||
-            !Sight_TraceDue(kTitle, now))
+            !Sight_TraceDue(kTitle, Sight_NowMs()))
             return;
         const uint32_t generation = g_generation.load(std::memory_order_acquire);
         Halo2ObserverPosePublication publication{};
@@ -3811,7 +3811,7 @@ namespace
         {
             SightRay ray{};
             ray.generation = generation;
-            ray.sampleMs = now;
+            ray.sampleMs = Sight_NowMs();
             ray.unit = static_cast<int32_t>(unit);
             for (int axis = 0; axis < 3; ++axis)
             {

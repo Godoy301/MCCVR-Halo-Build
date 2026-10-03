@@ -414,7 +414,7 @@ void SightTick(uint32_t unit) noexcept
         s_local=HaloCEControls_GetLocalPlayerState(local)&&local.hasControlledUnit?local.unit:UINT32_MAX;
         s_localAtMs=now;
     }
-    if (unit==UINT32_MAX||unit!=s_local||!Sight_TraceDue(kTitle,now)) return;
+    if (unit==UINT32_MAX||unit!=s_local||!Sight_TraceDue(kTitle,Sight_NowMs())) return;
     HaloCELocalPlayerState state{};RenderContext context{};
     if (!Admitted(unit,state,context)) return;
     Vec3 head{},dir{},eye{};

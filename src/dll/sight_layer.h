@@ -21,6 +21,7 @@
 #include "../common/runtime_types.h"
 #include "../common/aim_solve_logic.h"
 #include "../common/converge_policy.h"
+#include "../common/shot_lag_logic.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -56,16 +57,30 @@ inline float SightSmoothInverseRange(float invPerWu, bool continuous, bool hit, 
         aim_solve::ema_alpha(kSightRangeTauMs, std::clamp(dtSeconds, 0.001f, 0.1f)));
 }
 
+// THE SIGHT CLOCK (2026-10-02): every stamp and every age in this layer -- rays, traces, the converged and written
+// marks, the intent point -- is QueryPerformanceCounter time, in milliseconds (Sight_NowMs) or microseconds
+// (Sight_NowUs). GetTickCount64 ticks in 15.6 ms steps, which is half of the 25-40 ms lag the shot-lag witness
+// measures. Publishers stamp with Sight_NowMs(); the trace driver's `nowMs` is Sight_NowMs() too.
+uint64_t Sight_NowMs();
+uint64_t Sight_NowUs();
+
 struct SightRay
 {
     uint32_t generation = 0;
-    uint64_t sampleMs = 0;
+    uint64_t sampleMs = 0;  // Sight_NowMs()
     float head[3]{};        // the rendered centre eye: the intent ray starts here
     float dir[3]{};         // unit controller direction
     float eye[3]{};         // the engine eye the title aims its shots from
     int32_t unit = -1;      // the local unit the ray belongs to (the trace ignores it)
     int32_t ignoreB = -1;   // further objects the trace passes through (seated: the vehicle), or -1
     int32_t ignoreC = -1;
+    // The engine eye's velocity (world units per second) over ~100 ms, estimated on the publishing thread from the
+    // published eyes (shot_lag::EyeTrack, Sight_PublishRay fills it); eyeVelValid false = unknown, never 0.
+    float eyeVel[3]{};
+    bool eyeVelValid = false;
+    // When `eye` was sampled (Sight_NowUs; 0 = at the publish). A title whose eye comes from a render passes that
+    // render's stamp, so the velocity is measured on the eye's own clock.
+    uint64_t eyeStampUs = 0;
 };
 
 struct SightTrace
@@ -164,6 +179,45 @@ void Sight_NoteMuzzleShotUnconverged(GameTitle title);
 // A seated redirect refused DEFENSIVELY because the gun points elsewhere, naturally (a seat held at its stop,
 // a rate-capped turret): the shot leaves as the game fires it. The convergence claim is not touched.
 void Sight_NoteMuzzleShotHeld(GameTitle title);
+
+// THE INTENT POINT (shot_lag_logic.h; 2026-10-02). The aim path publishes its converged intent as a WORLD POINT P,
+// not only as the angles it solved -- angles from a render-time eye land a frame or more later as a line parallel to
+// the one meant, moved by the eye's travel in between (Reach: mean 93 mm, p90 187, max 307). A shot site that knows
+// its own origin aims through P from there (Sight_ReaimThroughPoint). `point` comes from ONE frame-coherent
+// hand/camera pair where the title has one (Halo 3, ODST: the render that used the hand's head sample); `solvePoint`
+// is the point the published angles were bent through (the same unless the pair was older). Halo 3, ODST and Halo 4
+// publish from Game_ComputeAimStick; Reach keeps its own lane (ReachSightReadActuated). Any thread reads.
+struct SightIntent
+{
+    shot_lag::IntentPoint p{};
+    float solvePoint[3]{};
+};
+void Sight_PublishIntent(GameTitle title, const SightIntent& intent);
+bool Sight_ReadIntent(GameTitle title, SightIntent& out);
+// The intent's verdict for a shot site now: fresh within maxAgeMs, this generation, the converged aim live, no
+// natural hold, the solve not held at the pitch rail. `out` is filled whenever an intent was read.
+shot_lag::IntentUse Sight_IntentForShot(GameTitle title, uint64_t maxAgeMs, bool naturalHeld, SightIntent& out);
+inline constexpr uint64_t kSightIntentShotMaxAgeMs = 150;
+
+// SHOT RE-AIM SITES (every build): which of a title's shot sites re-aimed a query or shot through the intent point.
+enum class SightShotSite : uint8_t
+{
+    CrosshairAssist = 0,   // the title's own crosshair / firing-assist collision query
+    UnitAdjust,            // Reach's unit-adjust (the shot's own origin and direction)
+    Muzzle,                // shots from the muzzle (Sight_AimMuzzleShot)
+    Count
+};
+// Re-aims `vector` (from `start`) through `point`: true and `vector` replaced when it applied; false leaves it as the
+// game built it. Counted per title and site with the reason (Sight_Report logs "SHOT REAIM" every 2 s).
+bool Sight_ReaimThroughPoint(GameTitle title, SightShotSite site, const float start[3], float vector[3],
+                             const float point[3]);
+// A shot site that did not try (the intent was not usable): counted with its reason.
+void Sight_NoteReaimSkipped(GameTitle title, SightShotSite site, shot_lag::IntentUse why);
+
+// How the aim path built this title's intent point (dev): 0 this poll's hand with the render of its own frame, 1 an
+// earlier hand with the render of its frame (this poll's frame not rendered yet), 2 no kept hand has a rendered
+// frame (the solve's own pair), 3 the title publishes no camera frames (Halo 4).
+void Sight_NoteIntentPairing(GameTitle title, int kind);
 
 // Cold worker: one status line per title that is tracing, every 2 s.
 void Sight_Report();

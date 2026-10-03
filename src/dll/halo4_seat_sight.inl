@@ -704,7 +704,7 @@ void Halo4SightTraceSeated(uint32_t unit, void* instance)
         return;
     f.seatedUpdates.fetch_add(1, std::memory_order_relaxed);   // open question 1: the seated biped IS updated
     const uint64_t now = GetTickCount64();
-    if (Sight_TraceFaulted(kTitle) || !Sight_TraceDue(kTitle, now))
+    if (Sight_TraceFaulted(kTitle) || !Sight_TraceDue(kTitle, Sight_NowMs()))
         return;
     Halo4VehicleInputState seat{};
     uint32_t controlled = UINT32_MAX;

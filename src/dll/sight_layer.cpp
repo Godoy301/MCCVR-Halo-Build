@@ -27,6 +27,9 @@ struct RayPublication
     std::atomic<float> dir[3]{};
     std::atomic<float> eye[3]{};
     std::atomic<int32_t> unit{-1}, ignoreB{-1}, ignoreC{-1};
+    std::atomic<float> eyeVel[3]{};
+    std::atomic<bool> eyeVelValid{false};
+    std::atomic<uint64_t> eyeStampUs{0};
 };
 
 struct TracePublication
@@ -66,6 +69,10 @@ struct Stats
 };
 
 RayPublication g_rays[kTitleSlots];
+// The engine eye's track per title, owned by the title's ray publisher (one aim thread per title; the try-lock only
+// keeps a second publisher, should one ever appear, from tearing it -- that publish then carries no velocity).
+shot_lag::EyeTrack g_eyeTracks[kTitleSlots];
+std::atomic_flag g_eyeTrackBusy[kTitleSlots] = {};
 TracePublication g_traces[kTitleSlots];
 ConvergedStamp g_converged[kTitleSlots];
 Stats g_stats[kTitleSlots];
@@ -73,6 +80,44 @@ Stats g_stats[kTitleSlots];
 size_t Slot(GameTitle title) { return static_cast<size_t>(title) % kTitleSlots; }
 
 bool Fresh(uint64_t at, uint64_t now, uint64_t maxAge) { return at && now >= at && now - at <= maxAge; }
+
+// A seqlock over a trivially copyable value, every word atomic (the committed-aim-sample discipline): one writer per
+// slot, any reader; a torn read retries once, then reports nothing.
+template <class T>
+struct SeqBlob
+{
+    static constexpr size_t kWords = (sizeof(T) + 7) / 8;
+    std::atomic<uint32_t> sequence{0};
+    std::atomic<uint64_t> words[kWords]{};
+    void Publish(const T& value)
+    {
+        uint64_t raw[kWords]{};
+        memcpy(raw, &value, sizeof(T));
+        sequence.fetch_add(1, std::memory_order_acq_rel);
+        std::atomic_thread_fence(std::memory_order_release);
+        for (size_t i = 0; i < kWords; ++i)
+            words[i].store(raw[i], std::memory_order_relaxed);
+        sequence.fetch_add(1, std::memory_order_release);
+    }
+    bool Read(T& out) const
+    {
+        for (int attempt = 0; attempt < 2; ++attempt)
+        {
+            const uint32_t before = sequence.load(std::memory_order_acquire);
+            if (!before || (before & 1u))
+                continue;
+            uint64_t raw[kWords]{};
+            for (size_t i = 0; i < kWords; ++i)
+                raw[i] = words[i].load(std::memory_order_relaxed);
+            std::atomic_thread_fence(std::memory_order_acquire);
+            if (sequence.load(std::memory_order_relaxed) != before)
+                continue;
+            memcpy(&out, raw, sizeof(T));
+            return true;
+        }
+        return false;
+    }
+};
 
 const char* TitleName(GameTitle title)
 {
@@ -94,10 +139,50 @@ bool Sight_AimEnabled()
     return g_config.converged_aim != 0;
 }
 
-void Sight_PublishRay(GameTitle title, const SightRay& ray)
+uint64_t Sight_NowUs()
+{
+    static const int64_t s_frequency = [] {
+        LARGE_INTEGER f{};
+        QueryPerformanceFrequency(&f);
+        return f.QuadPart > 0 ? f.QuadPart : 1;
+    }();
+    LARGE_INTEGER now{};
+    QueryPerformanceCounter(&now);
+    const int64_t ticks = now.QuadPart;
+    // Split so ticks * 1e6 cannot overflow over a long uptime.
+    return static_cast<uint64_t>(ticks / s_frequency) * 1000000ull +
+           static_cast<uint64_t>((ticks % s_frequency) * 1000000ll / s_frequency);
+}
+
+uint64_t Sight_NowMs()
+{
+    return Sight_NowUs() / 1000ull;
+}
+
+void Sight_PublishRay(GameTitle title, const SightRay& rayIn)
 {
     if (!Sight_AimEnabled())
         return;
+    SightRay ray = rayIn;
+    if (!ray.eyeVelValid)
+    {
+        // The eye's velocity over ~100 ms, on this (the publishing) thread, on the eye's own clock where the
+        // publisher knows it.
+        const size_t slot = Slot(title);
+        if (!g_eyeTrackBusy[slot].test_and_set(std::memory_order_acquire))
+        {
+            auto& track = g_eyeTracks[slot];
+            static uint32_t s_trackGeneration[kTitleSlots]{};
+            if (s_trackGeneration[slot] != ray.generation)
+            {
+                track.Reset();
+                s_trackGeneration[slot] = ray.generation;
+            }
+            track.Push(ray.eyeStampUs ? ray.eyeStampUs : Sight_NowUs(), ray.eye);
+            ray.eyeVelValid = track.Velocity(120000, 30000, ray.eyeVel);
+            g_eyeTrackBusy[slot].clear(std::memory_order_release);
+        }
+    }
     auto& p = g_rays[Slot(title)];
     p.sequence.fetch_add(1, std::memory_order_acq_rel);   // odd: a publish is in progress
     p.generation.store(ray.generation, std::memory_order_relaxed);
@@ -111,6 +196,10 @@ void Sight_PublishRay(GameTitle title, const SightRay& ray)
     p.unit.store(ray.unit, std::memory_order_relaxed);
     p.ignoreB.store(ray.ignoreB, std::memory_order_relaxed);
     p.ignoreC.store(ray.ignoreC, std::memory_order_relaxed);
+    for (int i = 0; i < 3; ++i)
+        p.eyeVel[i].store(ray.eyeVelValid ? ray.eyeVel[i] : 0.0f, std::memory_order_relaxed);
+    p.eyeVelValid.store(ray.eyeVelValid, std::memory_order_relaxed);
+    p.eyeStampUs.store(ray.eyeStampUs, std::memory_order_relaxed);
     p.sequence.fetch_add(1, std::memory_order_release);
     g_stats[Slot(title)].rays.fetch_add(1, std::memory_order_relaxed);
 }
@@ -135,10 +224,14 @@ bool Sight_ReadRay(GameTitle title, uint32_t generation, uint64_t maxAgeMs, Sigh
         r.unit = p.unit.load(std::memory_order_relaxed);
         r.ignoreB = p.ignoreB.load(std::memory_order_relaxed);
         r.ignoreC = p.ignoreC.load(std::memory_order_relaxed);
+        for (int i = 0; i < 3; ++i)
+            r.eyeVel[i] = p.eyeVel[i].load(std::memory_order_relaxed);
+        r.eyeVelValid = p.eyeVelValid.load(std::memory_order_relaxed);
+        r.eyeStampUs = p.eyeStampUs.load(std::memory_order_relaxed);
         std::atomic_thread_fence(std::memory_order_acquire);
         if (p.sequence.load(std::memory_order_relaxed) != before)
             continue;
-        if (!generation || r.generation != generation || !Fresh(r.sampleMs, GetTickCount64(), maxAgeMs))
+        if (!generation || r.generation != generation || !Fresh(r.sampleMs, Sight_NowMs(), maxAgeMs))
             return false;
         for (int i = 0; i < 3; ++i)
             if (!std::isfinite(r.head[i]) || !std::isfinite(r.dir[i]) || !std::isfinite(r.eye[i]))
@@ -164,7 +257,7 @@ bool Sight_TraceDue(GameTitle title, uint64_t nowMs)
 void Sight_PublishTrace(GameTitle title, uint32_t generation, bool hit, float rangeWu, uint64_t costTicks)
 {
     auto& t = g_traces[Slot(title)];
-    const uint64_t now = GetTickCount64();
+    const uint64_t now = Sight_NowMs();
     // The range the aim converges on (SightSmoothInverseRange): the inverse range averaged over 120 ms, a
     // miss counting as the trace's far end. A new generation, or a gap in the traces (a seat, a menu, a
     // stall), starts afresh from this trace.
@@ -211,7 +304,7 @@ bool Sight_ReadTrace(GameTitle title, uint32_t generation, uint64_t maxAgeMs, Si
         std::atomic_thread_fence(std::memory_order_acquire);
         if (t.sequence.load(std::memory_order_relaxed) != before)
             continue;
-        if (!generation || r.generation != generation || !Fresh(r.sampleMs, GetTickCount64(), maxAgeMs))
+        if (!generation || r.generation != generation || !Fresh(r.sampleMs, Sight_NowMs(), maxAgeMs))
             return false;
         r.hit = r.hit && std::isfinite(r.rangeWu) && r.rangeWu > 0.0f;
         // A miss means the target is at least the whole trace away (the reticle parks); the aim's
@@ -253,7 +346,7 @@ void Sight_MarkConverged(GameTitle title, float unitsPerVrMetre)
     auto& c = g_converged[Slot(title)];
     c.generation.store(TitleAdapter_GetGeneration(title), std::memory_order_relaxed);
     c.unitsPerVrMetre.store(unitsPerVrMetre, std::memory_order_relaxed);
-    c.atMs.store(GetTickCount64(), std::memory_order_release);
+    c.atMs.store(Sight_NowMs(), std::memory_order_release);
     g_stats[Slot(title)].converged.fetch_add(1, std::memory_order_relaxed);
 }
 
@@ -261,7 +354,7 @@ bool Sight_ConvergedLive(GameTitle title)
 {
     const auto& c = g_converged[Slot(title)];
     const uint64_t at = c.atMs.load(std::memory_order_acquire);
-    return Fresh(at, GetTickCount64(), 100) &&
+    return Fresh(at, Sight_NowMs(), 100) &&
            c.generation.load(std::memory_order_relaxed) == TitleAdapter_GetGeneration(title);
 }
 
@@ -269,7 +362,7 @@ void Sight_MarkAimWritten(GameTitle title)
 {
     auto& c = g_converged[Slot(title)];
     c.writtenGeneration.store(TitleAdapter_GetGeneration(title), std::memory_order_relaxed);
-    c.writtenMs.store(GetTickCount64(), std::memory_order_release);
+    c.writtenMs.store(Sight_NowMs(), std::memory_order_release);
     g_stats[Slot(title)].written.fetch_add(1, std::memory_order_relaxed);
 }
 
@@ -277,7 +370,7 @@ bool Sight_AimWrittenLive(GameTitle title)
 {
     const auto& c = g_converged[Slot(title)];
     const uint64_t at = c.writtenMs.load(std::memory_order_acquire);
-    return Fresh(at, GetTickCount64(), 100) &&
+    return Fresh(at, Sight_NowMs(), 100) &&
            c.writtenGeneration.load(std::memory_order_relaxed) == TitleAdapter_GetGeneration(title);
 }
 
@@ -401,6 +494,149 @@ bool Sight_AimMuzzleShotFromRay(GameTitle title, uint32_t generation, const floa
     return true;
 }
 
+// ---- the intent point and the shot re-aims (shot_lag_logic.h) -------------------------------------------------
+namespace
+{
+SeqBlob<SightIntent> g_intents[kTitleSlots];
+
+struct ReaimStats
+{
+    std::atomic<uint64_t> applied{0}, through{0};
+    std::atomic<uint64_t> refused[static_cast<size_t>(shot_lag::Reaim::Count)]{};
+    std::atomic<uint64_t> skipped[static_cast<size_t>(shot_lag::IntentUse::Count)]{};
+    std::atomic<uint32_t> bendSumMilliDeg{0}, bendMaxMilliDeg{0};
+};
+ReaimStats g_reaim[kTitleSlots][static_cast<size_t>(SightShotSite::Count)];
+
+const char* SiteName(SightShotSite site)
+{
+    switch (site)
+    {
+    case SightShotSite::CrosshairAssist: return "crosshair-assist query";
+    case SightShotSite::UnitAdjust: return "unit-adjust shot";
+    case SightShotSite::Muzzle: return "muzzle shot";
+    default: return "?";
+    }
+}
+} // namespace
+
+void Sight_PublishIntent(GameTitle title, const SightIntent& intent)
+{
+    if (!Sight_AimEnabled())
+        return;
+    g_intents[Slot(title)].Publish(intent);
+}
+
+bool Sight_ReadIntent(GameTitle title, SightIntent& out)
+{
+    return g_intents[Slot(title)].Read(out);
+}
+
+shot_lag::IntentUse Sight_IntentForShot(GameTitle title, uint64_t maxAgeMs, bool naturalHeld, SightIntent& out)
+{
+    out = SightIntent{};
+    if (!Sight_AimEnabled())
+        return shot_lag::IntentUse::NotConverged;
+    const bool read = Sight_ReadIntent(title, out);
+    return shot_lag::ShouldUseIntent(read, out.p, TitleAdapter_GetGeneration(title), Sight_NowUs(),
+                                     maxAgeMs * 1000ull, Sight_ConvergedLive(title), naturalHeld);
+}
+
+bool Sight_ReaimThroughPoint(GameTitle title, SightShotSite site, const float start[3], float vector[3],
+                             const float point[3])
+{
+    const size_t s = static_cast<size_t>(site) % static_cast<size_t>(SightShotSite::Count);
+    auto& stats = g_reaim[Slot(title)][s];
+    float out[3]{};
+    float bend = 0.0f;
+    const shot_lag::Reaim why = shot_lag::ReaimThroughPoint(start, vector, point, shot_lag::ReaimRails{}, out, &bend);
+    if (why == shot_lag::Reaim::AlreadyThrough)
+    {
+        stats.through.fetch_add(1, std::memory_order_relaxed);
+        return false;
+    }
+    if (why != shot_lag::Reaim::Applied)
+    {
+        stats.refused[static_cast<size_t>(why)].fetch_add(1, std::memory_order_relaxed);
+        return false;
+    }
+    vector[0] = out[0];
+    vector[1] = out[1];
+    vector[2] = out[2];
+    stats.applied.fetch_add(1, std::memory_order_relaxed);
+    const uint32_t milli = static_cast<uint32_t>(std::min(bend * 1000.0f, 1.0e9f));
+    stats.bendSumMilliDeg.fetch_add(milli, std::memory_order_relaxed);
+    uint32_t prior = stats.bendMaxMilliDeg.load(std::memory_order_relaxed);
+    while (milli > prior && !stats.bendMaxMilliDeg.compare_exchange_weak(prior, milli, std::memory_order_relaxed)) {}
+    return true;
+}
+
+void Sight_NoteReaimSkipped(GameTitle title, SightShotSite site, shot_lag::IntentUse why)
+{
+    const size_t s = static_cast<size_t>(site) % static_cast<size_t>(SightShotSite::Count);
+    const size_t w = static_cast<size_t>(why);
+    if (w < static_cast<size_t>(shot_lag::IntentUse::Count))
+        g_reaim[Slot(title)][s].skipped[w].fetch_add(1, std::memory_order_relaxed);
+}
+
+namespace
+{
+// Cold worker (Sight_Report): one line per title and site that saw a shot in the window. The muzzle site counts
+// "used" for a shot that took the intent point (the muzzle's own rails then decide, as before).
+void ReportReaims(size_t slot)
+{
+    for (size_t s = 0; s < static_cast<size_t>(SightShotSite::Count); ++s)
+    {
+        auto& stats = g_reaim[slot][s];
+        const uint64_t applied = stats.applied.exchange(0, std::memory_order_relaxed);
+        const uint64_t through = stats.through.exchange(0, std::memory_order_relaxed);
+        const uint64_t used = stats.skipped[0].exchange(0, std::memory_order_relaxed);
+        uint64_t refused = 0, skipped = 0;
+        char reasons[256]{};
+        size_t length = 0;
+        const auto add = [&](const char* name, uint64_t n) {
+            if (!n || length + 1 >= sizeof(reasons))
+                return;
+            const int w = std::snprintf(reasons + length, sizeof(reasons) - length, "%s%s=%llu", length ? ", " : "",
+                                        name, static_cast<unsigned long long>(n));
+            if (w > 0)
+                length += std::min(static_cast<size_t>(w), sizeof(reasons) - length - 1);
+        };
+        for (size_t r = 1; r < static_cast<size_t>(shot_lag::Reaim::Count); ++r)
+        {
+            const uint64_t n = stats.refused[r].exchange(0, std::memory_order_relaxed);
+            refused += n;
+            add(shot_lag::ReaimName(static_cast<shot_lag::Reaim>(r)), n);
+        }
+        for (size_t r = 1; r < static_cast<size_t>(shot_lag::IntentUse::Count); ++r)
+        {
+            const uint64_t n = stats.skipped[r].exchange(0, std::memory_order_relaxed);
+            skipped += n;
+            add(shot_lag::IntentUseName(static_cast<shot_lag::IntentUse>(r)), n);
+        }
+        const uint32_t bendSum = stats.bendSumMilliDeg.exchange(0, std::memory_order_relaxed);
+        const uint32_t bendMax = stats.bendMaxMilliDeg.exchange(0, std::memory_order_relaxed);
+        if (!applied && !through && !refused && !skipped && !used)
+            continue;
+        if (static_cast<SightShotSite>(s) == SightShotSite::Muzzle)
+        {
+            LOG("SHOT REAIM %s %s: %llu flew through the frame-coherent intent point, %llu through the ray's point "
+                "as before%s%s%s", TitleName(static_cast<GameTitle>(slot)), SiteName(static_cast<SightShotSite>(s)),
+                static_cast<unsigned long long>(used), static_cast<unsigned long long>(skipped),
+                length ? " (" : "", length ? reasons : "", length ? ")" : "");
+            continue;
+        }
+        LOG("SHOT REAIM %s %s: %llu re-aimed through the intent point from the query's own start (mean %.2f deg, "
+            "max %.2f), %llu already through it (left alone), %llu left as the game built them%s%s%s",
+            TitleName(static_cast<GameTitle>(slot)), SiteName(static_cast<SightShotSite>(s)),
+            static_cast<unsigned long long>(applied),
+            applied ? double(bendSum) / 1000.0 / double(applied) : 0.0, double(bendMax) / 1000.0,
+            static_cast<unsigned long long>(through), static_cast<unsigned long long>(refused + skipped),
+            length ? " (" : "", length ? reasons : "", length ? ")" : "");
+    }
+}
+} // namespace
+
 bool Sight_AimMuzzleShot(GameTitle title, uint32_t generation, const float before[3], const float position[3],
                          float direction[3], float up[3])
 {
@@ -410,6 +646,17 @@ bool Sight_AimMuzzleShot(GameTitle title, uint32_t generation, const float befor
         Sight_NoteMuzzleShotUnconverged(title);
         return false;
     }
+    // THE INTENT POINT FIRST (2026-10-02): the point built from one frame-coherent hand/camera pair, through which
+    // the shot flies from this muzzle -- the ray's own head may be a camera a frame older than its hand. Without a
+    // usable intent, the ray's point as before (Sight_AimMuzzleShotFromRay keeps every gate and count).
+    SightIntent intent{};
+    const shot_lag::IntentUse use = Sight_IntentForShot(title, kSightIntentShotMaxAgeMs, false, intent);
+    Sight_NoteReaimSkipped(title, SightShotSite::Muzzle, use);
+    // A seat flies through the point its record was bent through (a seat's line is only ever corrected, never
+    // re-targeted: SightIntent::solvePoint); on foot through the frame-coherent point.
+    if (use == shot_lag::IntentUse::Use && intent.p.generation == generation)
+        return Sight_AimMuzzleShotThrough(title, intent.p.seated ? intent.solvePoint : intent.p.point, intent.p.dir,
+                                          ray.eye, before, position, direction, up);
     return Sight_AimMuzzleShotFromRay(title, generation, ray.head, ray.dir, ray.eye, before, position, direction, up);
 }
 
@@ -636,6 +883,22 @@ void Sight_NoteShot(GameTitle title, uint32_t generation, const float origin[3],
 #endif
 }
 
+#if HALOMCCVR_DEV_DIAGNOSTICS
+namespace
+{
+std::atomic<uint32_t> g_intentPairing[kTitleSlots][4]{};
+}
+#endif
+
+void Sight_NoteIntentPairing(GameTitle title, int kind)
+{
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    if (kind >= 0 && kind < 4)
+        g_intentPairing[Slot(title)][kind].fetch_add(1, std::memory_order_relaxed);
+#else
+    (void)title; (void)kind;
+#endif
+}
 void Sight_ReportShots()
 {
 #if HALOMCCVR_DEV_DIAGNOSTICS
@@ -681,6 +944,18 @@ void Sight_ReportShots()
             double(surfaceM), double(pointUp / n), double(pointRight / n), double(pointM), double(fromEye[0]),
             double(fromEye[1]), double(fromEye[2]), double(fromHead[0]), double(fromHead[1]),
             double(fromHead[2]));
+    }
+    // SHOT LAG, per title and path.
+    for (size_t slot = 0; slot < kTitleSlots; ++slot)
+    {
+        uint32_t pairing[4]{};
+        for (int k = 0; k < 4; ++k)
+            pairing[k] = g_intentPairing[slot][k].exchange(0, std::memory_order_relaxed);
+        if (pairing[0] || pairing[1] || pairing[2] || pairing[3])
+            LOG("SHOT LAG %s intent point (dev): %u from this poll's hand and the render of its own frame, %u from an "
+                "earlier hand and the render of its frame (this poll's frame not rendered yet), %u from the solve's "
+                "own ray (no kept hand had a rendered frame), %u without camera frames",
+                TitleName(static_cast<GameTitle>(slot)), pairing[0], pairing[1], pairing[2], pairing[3]);
     }
 #endif
 }
@@ -747,6 +1022,7 @@ void Sight_Report()
         const uint64_t muzzleRefused = s.muzzleRefused.exchange(0, std::memory_order_relaxed);
         const uint64_t muzzleUnconverged = s.muzzleUnconverged.exchange(0, std::memory_order_relaxed);
         const uint64_t muzzleHeld = s.muzzleHeld.exchange(0, std::memory_order_relaxed);
+        ReportReaims(i);
         if (muzzleAimed || muzzleRefused || muzzleUnconverged || muzzleHeld)
             LOG("SHOTS FROM THE MUZZLE %s: %llu aimed through the converged point, %llu refused by a rail (the "
                 "muzzle far from the eye, pulled back by the obstruction check, or the point not ahead of it), "
@@ -799,7 +1075,7 @@ void Sight_NoteNatural(GameTitle title, const converge::NaturalEvents& events)
 #if HALOMCCVR_DEV_DIAGNOSTICS
     g_natural[Slot(title)].note(events);
     if (converge::NaturalHoldsAimOff(events))
-        g_naturalHeldMs[Slot(title)].store(GetTickCount64(), std::memory_order_relaxed);
+        g_naturalHeldMs[Slot(title)].store(Sight_NowMs(), std::memory_order_relaxed);
 #else
     (void)title; (void)events;
 #endif
@@ -808,7 +1084,7 @@ void Sight_NoteNatural(GameTitle title, const converge::NaturalEvents& events)
 bool Sight_NaturalHeld(GameTitle title, uint64_t windowMs)
 {
 #if HALOMCCVR_DEV_DIAGNOSTICS
-    return Fresh(g_naturalHeldMs[Slot(title)].load(std::memory_order_relaxed), GetTickCount64(), windowMs);
+    return Fresh(g_naturalHeldMs[Slot(title)].load(std::memory_order_relaxed), Sight_NowMs(), windowMs);
 #else
     (void)title; (void)windowMs;
     return false;
@@ -940,7 +1216,7 @@ bool Sight_ReadAssessRay(GameTitle title, uint32_t generation, uint64_t maxAgeMs
         std::atomic_thread_fence(std::memory_order_acquire);
         if (p.sequence.load(std::memory_order_relaxed) != before)
             continue;
-        if (!generation || r.generation != generation || !Fresh(r.sampleMs, GetTickCount64(), maxAgeMs))
+        if (!generation || r.generation != generation || !Fresh(r.sampleMs, Sight_NowMs(), maxAgeMs))
             return false;
         const float length = std::sqrt(r.dir[0] * r.dir[0] + r.dir[1] * r.dir[1] + r.dir[2] * r.dir[2]);
         if (!std::isfinite(length) || std::fabs(length - 1.0f) > 1.0e-2f)
@@ -959,7 +1235,7 @@ void Sight_PublishAssessTrace(GameTitle title, uint32_t generation, bool hit, fl
     auto& t = g_assessTraces[Slot(title)];
     t.sequence.fetch_add(1, std::memory_order_acq_rel);
     t.generation.store(generation, std::memory_order_relaxed);
-    t.sampleMs.store(GetTickCount64(), std::memory_order_relaxed);
+    t.sampleMs.store(Sight_NowMs(), std::memory_order_relaxed);
     t.hit.store(hit ? 1u : 0u, std::memory_order_relaxed);
     t.rangeWu.store(rangeWu, std::memory_order_relaxed);
     t.sequence.fetch_add(1, std::memory_order_release);
@@ -980,7 +1256,7 @@ bool Sight_ReadAssessTrace(GameTitle title, uint32_t generation, uint64_t maxAge
         std::atomic_thread_fence(std::memory_order_acquire);
         if (t.sequence.load(std::memory_order_relaxed) != before)
             continue;
-        if (!generation || g != generation || !Fresh(at, GetTickCount64(), maxAgeMs))
+        if (!generation || g != generation || !Fresh(at, Sight_NowMs(), maxAgeMs))
             return false;
         h = h && std::isfinite(r) && r > 0.0f;
         if (!h)

@@ -626,6 +626,74 @@ namespace
     std::atomic<float> g_baseCamViewLiftZ{0};
     float BaseCamHandsZ() noexcept {return g_baseCamZ.load()+g_baseCamViewLiftZ.load();}
 
+    // THE FRAME-COHERENT CAMERA RING (shot_lag_logic.h, 2026-10-02). The intent point P = H + u * r must take its
+    // rendered eye H and its hand direction u from the SAME prepared OpenXR frame: the aim path otherwise pairs the
+    // hand of the frame being prepared with the camera of the last one rendered, and P moves by the eye's travel in
+    // that frame. Each Halo 3 / ODST render publishes the eyes it rendered from -- H (g_cam) and E (g_baseCam) --
+    // keyed by the tracking-space head position its head look read (t_headLookKey); the aim path keys each hand by
+    // the head sample its committed aim sample carried. The same head sample is the same prepared frame.
+    // Render thread writes (one slot per render, round robin, a seqlock per slot); the aim path reads.
+    thread_local float t_headLookKey[3]{};
+    thread_local bool t_headLookKeyValid = false;
+    struct CamFrameSlot
+    {
+        std::atomic<uint32_t> sequence{0};
+        std::atomic<float> key[3]{}, head[3]{}, eye[3]{};
+        std::atomic<uint64_t> stampUs{0};
+        std::atomic<uint64_t> serial{0};
+    };
+    inline constexpr size_t kCamFrameSlots = 8;
+    CamFrameSlot g_camFrames[kCamFrameSlots];
+    std::atomic<uint32_t> g_camFrameNext{0};
+
+    // Render thread, after the camera hook stored g_cam and g_baseCam from this render's head look.
+    void PublishCamFrame(const float head[3], const float eye[3]) noexcept
+    {
+        if (!t_headLookKeyValid || !shot_lag::Finite3(head) || !shot_lag::Finite3(eye) ||
+            !shot_lag::Finite3(t_headLookKey))
+            return;
+        auto& slot = g_camFrames[g_camFrameNext.fetch_add(1, std::memory_order_relaxed) % kCamFrameSlots];
+        slot.sequence.fetch_add(1, std::memory_order_acq_rel);
+        std::atomic_thread_fence(std::memory_order_release);
+        for (int axis = 0; axis < 3; ++axis)
+        {
+            slot.key[axis].store(t_headLookKey[axis], std::memory_order_relaxed);
+            slot.head[axis].store(head[axis], std::memory_order_relaxed);
+            slot.eye[axis].store(eye[axis], std::memory_order_relaxed);
+        }
+        slot.stampUs.store(Sight_NowUs(), std::memory_order_relaxed);
+        slot.serial.store(VR_CurrentPreparedSerial(), std::memory_order_relaxed);
+        slot.sequence.fetch_add(1, std::memory_order_release);
+        t_headLookKeyValid = false;   // one render, one publication
+    }
+
+    // Any thread: the ring's coherent copies (a slot being written is skipped).
+    size_t ReadCamFrames(shot_lag::EyeFrame out[kCamFrameSlots]) noexcept
+    {
+        size_t count = 0;
+        for (auto& slot : g_camFrames)
+        {
+            const uint32_t before = slot.sequence.load(std::memory_order_acquire);
+            if (!before || (before & 1u))
+                continue;
+            shot_lag::EyeFrame frame{};
+            for (int axis = 0; axis < 3; ++axis)
+            {
+                frame.key[axis] = slot.key[axis].load(std::memory_order_relaxed);
+                frame.head[axis] = slot.head[axis].load(std::memory_order_relaxed);
+                frame.eye[axis] = slot.eye[axis].load(std::memory_order_relaxed);
+            }
+            frame.stampUs = slot.stampUs.load(std::memory_order_relaxed);
+            frame.serial = slot.serial.load(std::memory_order_relaxed);
+            std::atomic_thread_fence(std::memory_order_acquire);
+            if (slot.sequence.load(std::memory_order_relaxed) != before)
+                continue;
+            frame.valid = true;
+            out[count++] = frame;
+        }
+        return count;
+    }
+
     // FIRST-PERSON WITNESSES (roomscale and the head leash; Halo 4's is g_halo4FirstPersonMs). Each title's
     // on-foot proof passes in third person too -- a death camera, a carried turret, Reach's Armor Lock,
     // scripted third person -- and roomscale's body point is the engine camera, so a third-person camera
@@ -7607,11 +7675,15 @@ namespace
         }
 
         float q[4], hpos[3];
+        t_headLookKeyValid = false;
         if (!VR_GetHeadPose(q, hpos))
         {
             g_baseCamViewLiftZ.store(0.0f, std::memory_order_relaxed);
             return false;
         }
+        // The head sample this render's view is built from: the key of its camera frame (PublishCamFrame).
+        memcpy(t_headLookKey, hpos, sizeof(t_headLookKey));
+        t_headLookKeyValid = true;
         // Head forward (OpenXR: -Z forward, +Y up).
         const float x = q[0], y = q[1], z = q[2], w = q[3];
         const float hfx = -2.0f * (w * y + x * z);
@@ -10618,6 +10690,10 @@ namespace
                 for (int j = 0; j < 3; ++j)
                 { g_camFwd[j].store(f[j]); g_camUp[j].store(u[j]); }
                 g_camValid.store(true);
+                {
+                    const float baseEye[3]{g_baseCamX.load(), g_baseCamY.load(), g_baseCamZ.load()};
+                    PublishCamFrame(p, baseEye);
+                }
 
                 // Measure the world-up axis from the engine's camera-up (see the
                 // g_worldUp declaration). Bootstrap from the first sample, then EMA
@@ -12668,11 +12744,15 @@ namespace
             float value = 0.0f;
             ~ViewLiftPublisher() {g_baseCamViewLiftZ.store(value, std::memory_order_relaxed);}
         } viewLift;
+        t_headLookKeyValid = false;
         if (!source)
             return;
         float quaternion[4], headPosition[3];
         if (!VR_GetHeadPose(quaternion, headPosition))
             return;
+        // The head sample this render's view is built from: the key of its camera frame (PublishCamFrame).
+        memcpy(t_headLookKey, headPosition, sizeof(t_headLookKey));
+        t_headLookKeyValid = true;
 
         const float x = quaternion[0], y = quaternion[1];
         const float z = quaternion[2], w = quaternion[3];
@@ -13462,6 +13542,7 @@ namespace
                 g_camUp[axis].store(transformedUp[axis]);
             }
             g_camValid.store(true, std::memory_order_release);
+            PublishCamFrame(transformedPosition, savedPosition);
             if (!g_worldUpInit.load(std::memory_order_acquire))
             {
                 const float length = sqrtf(
@@ -51414,6 +51495,93 @@ static bool ReachSeatAimFrameBindingInstalled()
 #include "type13_flight_log.inl"
 #endif
 
+// THE INTENT POINT (sight_layer.h SightIntent; shot_lag_logic.h). Input thread, every poll whose converged solve
+// resolved: P = H + u * r from ONE frame-coherent pair where the title publishes camera frames (Halo 3, ODST:
+// PublishCamFrame), else from the solve's own ray (Halo 4). The hands are kept here, keyed by the head sample of
+// the committed aim sample they came from, so a render that used that head sample pairs with its own hand even
+// when this poll's hand belongs to a frame not rendered yet. Dev counters say how P was built.
+static void PublishAimIntent(GameTitle title, const SightRay& ray, const float handKey[3], uint64_t handSerial,
+                             float rangeWu, bool seated, bool railHeld, float solvedYaw, float solvedPitch)
+{
+    static shot_lag::HandFrame s_hands[8];
+    static size_t s_next = 0;
+    static GameTitle s_title = GameTitle::None;
+    static uint32_t s_generation = 0;
+    if (s_title != title || s_generation != ray.generation)
+    {
+        for (auto& hand : s_hands)
+            hand = shot_lag::HandFrame{};
+        s_title = title;
+        s_generation = ray.generation;
+    }
+    const uint64_t now = Sight_NowUs();
+    const bool keyed = handKey && shot_lag::Finite3(handKey);
+    if (keyed)
+    {
+        shot_lag::HandFrame& hand = s_hands[s_next++ % 8];
+        hand.valid = true;
+        memcpy(hand.key, handKey, sizeof(hand.key));
+        memcpy(hand.dir, ray.dir, sizeof(hand.dir));
+        hand.stampUs = now;
+        hand.serial = handSerial;
+    }
+    SightIntent intent{};
+    shot_lag::IntentPoint& p = intent.p;
+    p.generation = ray.generation;
+    p.stampUs = now;
+    p.railHeld = railHeld;
+    p.seated = seated;
+    p.rangeWu = rangeWu;
+    p.solvedYaw = solvedYaw;
+    p.solvedPitch = solvedPitch;
+    memcpy(p.head, ray.head, sizeof(p.head));
+    memcpy(p.dir, ray.dir, sizeof(p.dir));
+    memcpy(p.eye, ray.eye, sizeof(p.eye));
+    for (int axis = 0; axis < 3; ++axis)
+        intent.solvePoint[axis] = ray.head[axis] + ray.dir[axis] * rangeWu;
+    const bool cameraFrames = title == GameTitle::Halo3 || title == GameTitle::Halo3ODST;
+    shot_lag::EyeFrame frames[kCamFrameSlots]{};
+    const size_t frameCount = cameraFrames ? ReadCamFrames(frames) : 0;
+    size_t eyeIndex = 0, handIndex = 0;
+    // A head sample repeated more than 100 ms apart is not the same frame.
+    if (keyed && frameCount &&
+        shot_lag::SelectCoherentPair(frames, frameCount, s_hands, 8, 100000, eyeIndex, handIndex))
+    {
+        const shot_lag::EyeFrame& eye = frames[eyeIndex];
+        const shot_lag::HandFrame& hand = s_hands[handIndex];
+        p.coherent = true;
+        p.serial = eye.serial;
+        memcpy(p.head, eye.head, sizeof(p.head));
+        memcpy(p.dir, hand.dir, sizeof(p.dir));
+        p.eyeStampUs = eye.stampUs;
+        Sight_NoteIntentPairing(title, hand.stampUs == now ? 0 : 1);
+    }
+    else
+        Sight_NoteIntentPairing(title, cameraFrames ? 2 : 3);
+    for (int axis = 0; axis < 3; ++axis)
+        p.point[axis] = p.head[axis] + p.dir[axis] * rangeWu;
+    // The engine eye's velocity on the render's own clock (the frames' stamps), else the ray publisher's estimate.
+    if (frameCount >= 2)
+    {
+        // Oldest first (the ring is round robin).
+        for (size_t i = 1; i < frameCount; ++i)
+            for (size_t j = i; j > 0 && frames[j].stampUs < frames[j - 1].stampUs; --j)
+                std::swap(frames[j], frames[j - 1]);
+        shot_lag::EyeTrack track;
+        for (size_t i = 0; i < frameCount; ++i)
+            track.Push(frames[i].stampUs, frames[i].eye);
+        p.eyeVelValid = track.Velocity(120000, 30000, p.eyeVel);
+        if (!p.eyeStampUs)
+            p.eyeStampUs = frames[frameCount - 1].stampUs;
+    }
+    if (!p.eyeVelValid && ray.eyeVelValid)
+    {
+        memcpy(p.eyeVel, ray.eyeVel, sizeof(p.eyeVel));
+        p.eyeVelValid = true;
+    }
+    Sight_PublishIntent(title, intent);
+}
+
 converge::SeatMuzzleRefusal Game_SeatMuzzleRefusal(GameTitle title)
 {
     bool held = false, turret = false;
@@ -51937,7 +52105,7 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
             const float cosControllerPitch = cosf(controllerPitch);
             SightRay ray{};
             ray.generation = TitleAdapter_GetGeneration(sightTitle);
-            ray.sampleMs = GetTickCount64();
+            ray.sampleMs = Sight_NowMs();
             memcpy(ray.head, sightHead, sizeof(ray.head));
             ray.dir[0] = cosControllerPitch * cosf(controllerYaw);
             ray.dir[1] = cosControllerPitch * sinf(controllerYaw);
@@ -51977,6 +52145,11 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
             {
                 desiredYaw = atan2f(bent[1], bent[0]);
                 desiredPitch = Clamp(asinf(Clamp(bent[2], -1.0f, 1.0f)), -1.45f, 1.45f);
+                // THE INTENT AS A WORLD POINT (shot_lag_logic.h): each shot site re-aims through it from its own
+                // origin. `hp` is the head sample this poll's hand came with (the committed sample's own head when
+                // two_hand_coherent_aim reads one): the key that pairs the hand with the render of the same frame.
+                PublishAimIntent(sightTitle, ray, hp, aimSupportReceipt.solveSerial, sightRangeWu, sightSeated,
+                                 s_railHold.active, desiredYaw, desiredPitch);
                 // On foot the converged aim is in effect now. In a seat too, as on foot (2026-10-01): the
                 // mark only waits for the rest of our own facts, read below (converge::SeatedClaimDecide). A
                 // seat stop or a turret's rate cap never withholds it.
@@ -52164,7 +52337,7 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
         const uint32_t generation = TitleAdapter_GetGeneration(title);
         SightAssessRay assessRay{};
         assessRay.generation = generation;
-        assessRay.sampleMs = GetTickCount64();
+        assessRay.sampleMs = Sight_NowMs();
         for (int axis = 0; axis < 3; ++axis)
         {
             assessRay.origin[axis] = shotOrigin[axis];

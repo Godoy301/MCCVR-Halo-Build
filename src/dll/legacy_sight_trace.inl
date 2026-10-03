@@ -204,8 +204,7 @@ void LegacySightTraceTick(GameTitle title, uint32_t unit, int32_t localUnit, boo
     if (!flags || localUnit == -1 || unit != static_cast<uint32_t>(localUnit) ||
         TitleAdapter_GetActiveTitle() != title)
         return;
-    const uint64_t now = GetTickCount64();
-    if (Sight_TraceFaulted(title) || !Sight_TraceDue(title, now))
+    if (Sight_TraceFaulted(title) || !Sight_TraceDue(title, Sight_NowMs()))
         return;
     const uint32_t generation = TitleAdapter_GetGeneration(title);
     SightRay ray{};
