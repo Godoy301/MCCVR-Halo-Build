@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <initializer_list>
 
 namespace
 {
@@ -77,12 +78,16 @@ int main()
         const float close[3]{0.05f, 0.0f, 0.0f};   // 15 cm
         Check(ReaimThroughPoint(start, vector, close, ReaimRails{}, out) == Reaim::PointTooClose,
               "a point within 30 cm defines no direction");
-        const float far[3]{5.0f, 2.0f, 0.0f};      // 6 m off the line
+        // Beyond the envelope (6 m + ahead * tan 30): 15.2 m ahead allows 14.8 m; 20 m across is no lag.
+        const float far[3]{5.0f, 6.6f, 0.0f};
         Check(ReaimThroughPoint(start, vector, far, ReaimRails{}, out) == Reaim::BendTooLarge,
-              "a point metres off the line is not this lag: refused");
-        const float steep[3]{1.0f, 0.8f, 0.0f};    // 0.8 wu = 2.4 m off at 38.7 deg
-        Check(ReaimThroughPoint(start, vector, steep, ReaimRails{}, out) == Reaim::BendTooLarge,
-              "a bend over 30 deg is refused even within the offset rail");
+              "a point 20 m off the line 15 m ahead is beyond any travel or camera angle: refused");
+        // Close in, a bend over 30 deg is only a few metres of travel: 2.4 m off 3 m ahead (38.7 deg).
+        const float steep[3]{1.0f, 0.8f, 0.0f};
+        float steepOut[3]{};
+        Check(ReaimThroughPoint(start, vector, steep, ReaimRails{}, steepOut) == Reaim::Applied &&
+                  LineMiss(start, steepOut, steep) < 1.0e-5f,
+              "a 38.7 deg bend 3 m ahead is 2.4 m of eye travel: applied, through P");
         const float onLine[3]{5.0f, 0.002f, 0.0f};   // 6 mm off the line
         Check(ReaimThroughPoint(start, vector, onLine, ReaimRails{}, out) == Reaim::AlreadyThrough,
               "a query already through P (within 10 mm) is left exactly as the game built it");
@@ -148,6 +153,70 @@ int main()
             std::snprintf(what, sizeof(what), "at %.0f m the re-aimed query passes P and reports its true bend",
                           double(metres));
             Check(hits, what);
+        }
+    }
+
+    {
+        // THE HORNET (Halo 3 Forge, 2026-10-03): the seat's crosshair query left the record by an ANGLE, ~4-5 deg at
+        // a fast strafe. The old 3 m rail refused it from ~40 m out, so the shots missed P by metres. A constant
+        // angle must be corrected at every range, from an oblique start at map coordinates.
+        const float start[3]{30.5f, 23.4f, -15.9f};
+        const float raw[3]{0.34f, -0.91f, -0.29f};
+        const float l = Length(raw);
+        const float d[3]{raw[0] / l, raw[1] / l, raw[2] / l};
+        float e[3]{d[1], -d[0], 0.0f};   // across the line
+        const float el = Length(e);
+        e[0] /= el; e[1] /= el;
+        const float vector[3]{d[0] * 40.0f, d[1] * 40.0f, d[2] * 40.0f};
+        const auto pointAt = [&](float metres, float angleDeg, float parallelM, float p[3]) {
+            const float ahead = metres * kWuPerM;
+            const float off = ahead * std::tan(angleDeg / kRadToDeg) + parallelM * kWuPerM;
+            for (int axis = 0; axis < 3; ++axis)
+                p[axis] = start[axis] + d[axis] * ahead + e[axis] * off;
+        };
+        for (const float metres : {20.0f, 50.0f, 100.0f, 200.0f})
+        {
+            float p[3]{}, out[3]{};
+            float bend = -1.0f;
+            pointAt(metres, 4.5f, 0.0f, p);
+            const bool ok = ReaimThroughPoint(start, vector, p, ReaimRails{}, out, &bend) == Reaim::Applied;
+            char what[160];
+            std::snprintf(what, sizeof(what), "a constant 4.5 deg camera angle at %.0f m is re-aimed through P",
+                          double(metres));
+            Check(ok && LineMiss(start, out, p) * kMmPerWu < 2.0f && Near(bend, 4.5f, 1.0e-2f), what);
+        }
+        {
+            // The logged case: 3757 mm off the game's line at 53.28 m (4.03 deg), refused before.
+            float p[3]{}, out[3]{};
+            pointAt(53.28f, std::atan2(3.757f, 53.28f) * kRadToDeg, 0.0f, p);
+            Check(ReaimThroughPoint(start, vector, p, ReaimRails{}, out) == Reaim::Applied,
+                  "the logged Hornet query, 3.76 m off at 53 m, is re-aimed");
+        }
+        // NO CLIFF inside physics: every strafe up to 30 m/s (angle atan(v / 200 m/s), the Hornet's fit, plus v over
+        // the full 150 ms a point may live and the 1.5 m a local start may sit from the eye) at every range.
+        bool all = true;
+        for (float speed = 0.0f; speed <= 30.0f; speed += 2.5f)
+            for (const float metres : {0.5f, 1.0f, 3.0f, 10.0f, 40.0f, 100.0f, 400.0f, 1000.0f})
+            {
+                float p[3]{}, out[3]{};
+                pointAt(metres, std::atan2(speed, 200.0f) * kRadToDeg, speed * 0.150f + 1.5f, p);
+                all = all && ReaimThroughPoint(start, vector, p, ReaimRails{}, out) == Reaim::Applied &&
+                      LineMiss(start, out, p) * kMmPerWu < 5.0f;
+            }
+        Check(all, "every strafe to 30 m/s at every range from 0.5 m to 1 km is re-aimed: no speed or range cliff");
+        // Still refused: what no travel or camera angle explains.
+        {
+            float p[3]{}, out[3]{7, 7, 7};
+            pointAt(100.0f, 40.0f, 0.0f, p);
+            Check(ReaimThroughPoint(start, vector, p, ReaimRails{}, out) == Reaim::BendTooLarge,
+                  "40 deg off at 100 m is beyond the 30 deg camera angle: refused");
+            pointAt(1000.0f, 31.0f, 0.0f, p);
+            Check(ReaimThroughPoint(start, vector, p, ReaimRails{}, out) == Reaim::BendTooLarge,
+                  "31 deg off at 1 km: refused");
+            pointAt(1.0f, 0.0f, 7.0f, p);   // 81.9 deg: 7 m across, 1 m ahead
+            Check(ReaimThroughPoint(start, vector, p, ReaimRails{}, out) == Reaim::BendTooLarge,
+                  "7 m across 1 m ahead is beyond 6 m of travel plus the angle: refused");
+            Check(out[0] == 7 && out[1] == 7 && out[2] == 7, "a refused bend leaves the output untouched");
         }
     }
 

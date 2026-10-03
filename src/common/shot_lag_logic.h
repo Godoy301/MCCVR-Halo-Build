@@ -47,7 +47,7 @@ enum class Reaim : uint8_t
     Degenerate,     // a zero-length query vector
     PointBehind,    // P is not ahead of the start along the query: not the line this query traces
     PointTooClose,  // P is within minRangeWu of the start: it defines no direction
-    BendTooLarge,   // the new line leaves the old by more than the rails allow: not our query, or a stale point
+    BendTooLarge,   // P is off the line by more than any eye travel plus camera angle explains (ReaimRails)
     AlreadyThrough, // the query already passes within minOffsetWu of P: left exactly as the game built it
     Count
 };
@@ -67,18 +67,39 @@ inline const char* ReaimName(Reaim why)
     }
 }
 
-// The rails. The lag being corrected is the eye's motion between the solve and the shot: at most a few metres
-// (a Hornet at 30 m/s over 80 ms is 2.4 m), so a bend that moves the line by more than maxOffsetWu where it passes
-// P, or turns it by more than maxBendDeg, is not this error -- a query from another camera, or a point the player
-// no longer means. Both refuse; nothing is clamped. A query that already passes within minOffsetWu of P is LEFT
-// ALONE (AlreadyThrough): where the game's line is already coherent -- Halo 3 campaign vehicles, user-confirmed
-// 2026-10-02 -- the re-aim must not move it by the noise in P.
+// The rails. They exist to catch OUR bugs -- a point from the wrong frame, a line that is not this query's -- and
+// must never switch the correction off for a natural cause: speed, range, or the game's own camera. Whose query it
+// is and how old P is are decided upstream, by gates that say what they refuse (QueryIsLocal: a start within 1.5 m
+// of our own eye; FireMark: our fire; ShouldUseIntent: P under 150 ms old, this generation, converged). What is
+// left for the line itself is an ENVELOPE of everything the game can legitimately put between its line and P:
+//
+//   offset of P from the line  <=  maxParallelWu  +  ahead * tan(maxAngleDeg)
+//
+//   * a PARALLEL part, the same at every range: the eye's travel between the solve and the shot plus the camera's
+//     offset from our eye. Bounded by the gates: 30 m/s for the 150 ms a point may live is 4.5 m, plus the 1.5 m a
+//     local start may sit from the eye = 6 m. Worst seen (Halo 3 Forge Hornet, 2026-10-03): 21.8 m/s over the 30 ms
+//     the shot trailed the solve (0.65 m) beside a camera start ~1.1 m from the eye.
+//   * an ANGULAR part, growing with range: the game's line may leave the record by an angle. The Hornet's crosshair
+//     query does, by close to atan(v_sideways / ~200 m/s), as if the shooter's velocity were taken off the aim (a
+//     fit, mechanism unproven: over 112 seated queries it cuts the query-vs-record angle from 3.1 deg mean to 0.4,
+//     0.2 median) -- 5.65 deg at a 15-18 m/s strafe; a 30 m/s strafe would make 8.5. 30 deg is 5x the worst seen
+//     and 3.5x that extrapolation.
+//
+// THE INCIDENT: the rail was `offset <= 3 m and bend <= 30 deg`. An absolute metres rail turns a constant ANGLE
+// into a range-and-speed cliff: the Hornet's ~4 deg at 50 m is 3.5-4 m, so from a sideways ~8 m/s up, half or more
+// of the queries were refused and the shots landed 2-6 m behind along travel ("accurate until a certain strafe
+// speed, then suddenly a good bit off horizontally", user, 2026-10-03). The envelope has no cliff inside physics:
+// at close range the parallel part admits the near-90 deg bends a few metres of travel make, at long range the
+// angle does. A point beyond it is refused (BendTooLarge); behind the start (PointBehind) bends 90 deg or more.
+// Nothing is clamped. A query that already passes within minOffsetWu of P is LEFT ALONE (AlreadyThrough): where the
+// game's line is already coherent -- Halo 3 campaign vehicles, user-confirmed 2026-10-02 -- the re-aim must not move
+// it by the noise in P.
 struct ReaimRails
 {
     float minOffsetWu = 0.010f * kWuPerMetre;
     float minRangeWu = 0.3f * kWuPerMetre;
-    float maxBendDeg = 30.0f;
-    float maxOffsetWu = 3.0f * kWuPerMetre;
+    float maxParallelWu = 6.0f * kWuPerMetre;
+    float maxAngleDeg = 30.0f;
 };
 
 // out = normalize(P - start) * |vector|: the same query, from its own start, through the point. `out` is written
@@ -110,7 +131,8 @@ inline Reaim ReaimThroughPoint(const float start[3], const float vector[3], cons
     const float bend = std::atan2(offset, ahead) * kRadToDeg;
     if (offset < rails.minOffsetWu)
         return Reaim::AlreadyThrough;
-    if (!(offset <= rails.maxOffsetWu) || !(bend <= rails.maxBendDeg))
+    const float allowed = rails.maxParallelWu + ahead * std::tan(rails.maxAngleDeg / kRadToDeg);
+    if (!(offset <= allowed))
         return Reaim::BendTooLarge;
     const float scale = length / distance;
     out[0] = toPoint[0] * scale;

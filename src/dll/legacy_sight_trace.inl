@@ -567,7 +567,8 @@ void LegacySightNoteEngineTrace(GameTitle title, uint64_t flags, const float* st
 // the point is stale (over 150 ms) or for another generation, the converged aim is not in effect, the solve held at
 // the pitch rail, a seat is held at its stop or is a turret (the gun points elsewhere naturally), the fire or the
 // query is not the local player's (shot_lag::FireMark, QueryIsLocal), another gun's own line owns the fire (an off-hand gun, a barrel or muzzle shot:
-// LegacyOwnShotLineActive), or a rail refuses (behind the start, inside 30 cm, over 3 m off or 30 deg).
+// LegacyOwnShotLineActive), or a rail refuses (behind the start, inside 30 cm, or further off the line than 6 m of
+// eye travel plus a 30 deg camera angle explains: shot_lag::ReaimRails).
 // Collision-hook thread (the game's own query); lock-free reads only. The thread-local below carries the native
 // fire's `predicted` flag to the dev witness (Halo 3's fire detour sets it).
 thread_local int t_legacyFirePredicted = -1;
