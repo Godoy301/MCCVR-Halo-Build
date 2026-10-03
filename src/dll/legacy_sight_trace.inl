@@ -54,6 +54,9 @@ LegacySightState g_legacySight[3];
 // The simulation tick period of the local unit's per-unit update (Halo 3, ODST), microseconds, smoothed; 0 until
 // measured. Every build: the record recomposition (legacy_direct_drive.inl) carries the game's eye one tick ahead.
 std::atomic<uint32_t> g_legacyTickPeriodUs[2]{};
+// The local unit's simulation ticks seen (Halo 3, ODST), wrapping: which stick call's record a later tick consumed
+// (seat_upstream::WriteRing, legacy_direct_drive.inl's seated record upstream of replication).
+std::atomic<uint32_t> g_legacySimTicks[2]{};
 
 LegacySightState& LegacySight(GameTitle title)
 {
@@ -223,6 +226,7 @@ void LegacySightTraceTick(GameTitle title, uint32_t unit, int32_t localUnit, boo
         }
         if (!s_lastUs[t] || nowUs > s_lastUs[t] + 2000 || nowUs < s_lastUs[t])
             s_lastUs[t] = nowUs;
+        g_legacySimTicks[t].fetch_add(1, std::memory_order_release);
         Sight_NoteSimTick(title);
 #if HALOMCCVR_DEV_DIAGNOSTICS
         if (title == GameTitle::Halo3)
@@ -605,6 +609,115 @@ struct LegacySeatQueryRing
 } g_legacySeatQueries;
 #endif
 
+#if HALOMCCVR_DEV_DIAGNOSTICS
+// THE MULTIPLAYER RESIDUAL, PER SEAT (dev; seat_upstream_logic.h): every local seated crosshair query, as the game
+// built it, against the seat's P -- exactly what a host firing from our record alone would trace -- and what the
+// fire-site re-aim then still had to do. Windows by seat (vehicle, seat index, mounted, gun-slaved, and whether the
+// seat's STOCK tag is third person: an unmodded host would then query from its chase camera, which this cannot
+// measure). The cold worker prints them every 5 s (LegacySightReport).
+inline constexpr uint32_t kSeatTagMounted = 1u, kSeatTagGunSlaved = 2u, kSeatTagStockChase = 4u;
+struct LegacyStockLineWindows
+{
+    SRWLOCK lock = SRWLOCK_INIT;
+    seat_upstream::StockLineWindow windows[4]{};
+} g_legacyStockLines;
+
+uint32_t LegacyHalo3SeatTag()
+{
+    Halo3SeatSnapshot seat;
+    if (!Halo3ReadSeatSnapshot(seat) || seat.parentHandle == -1)
+        return 0;
+    const uint32_t flags = Halo3OccupiedSeatFlags();
+    return (seat.identity & 0xFFu) << 16 | (static_cast<uint32_t>(seat.seatIndex + 1) & 0xFFu) << 8 |
+           (seat.mounted ? kSeatTagMounted : 0u) | (gun_slaved::CameraSlavedToGun(flags) ? kSeatTagGunSlaved : 0u) |
+           ((flags >> 4) & 1u ? kSeatTagStockChase : 0u) | 0x80000000u;
+}
+
+// The evaluator's chase path, asked (halo3_independent_shots.inl, defined after this file).
+bool Halo3AskChaseCamera(int32_t unit, float position[3], float direction[3]);
+
+// `point`: the seat's P. For a stock third-person seat the chase line an unmodded host would trace is measured too.
+void LegacySightNoteStockLine(const seat_upstream::StockLineSample& sample, bool reaimed, const float point[3])
+{
+    const uint32_t tag = LegacyHalo3SeatTag();
+    if (!tag)
+        return;
+    seat_upstream::StockLineSample host{};
+    bool unreproducible = false;
+    if (tag & kSeatTagStockChase)
+    {
+        const auto stock = seat_upstream::StockCameraFor(Halo3OccupiedSeatFlags());
+        float position[3]{}, direction[3]{};
+        if (stock == seat_upstream::StockCamera::NotReproducible)
+            unreproducible = true;
+        else if (stock == seat_upstream::StockCamera::Chase &&
+                 Halo3AskChaseCamera(LegacyCollisionIgnoredObject(GameTitle::Halo3), position, direction))
+            host = seat_upstream::MeasureStockLine(position, direction, point, nullptr);
+    }
+    auto& w = g_legacyStockLines;
+    AcquireSRWLockExclusive(&w.lock);
+    seat_upstream::StockLineWindow* slot = nullptr;
+    for (auto& window : w.windows)
+        if (window.tag == tag)
+            slot = &window;
+    if (!slot)
+        for (auto& window : w.windows)
+            if (!window.tag)
+            {
+                slot = &window;
+                break;
+            }
+    if (!slot)
+    {
+        slot = &w.windows[0];   // more seats than slots in one window: the oldest slot starts over
+        *slot = seat_upstream::StockLineWindow{};
+    }
+    slot->tag = tag;
+    slot->Add(sample);
+    slot->AddHost(host);
+    if (unreproducible)
+        ++slot->hostUnreproducible;
+    if (reaimed)
+        ++slot->reaimed;
+    else if (sample.missMm < shot_lag::ReaimRails{}.minOffsetWu * shot_lag::kMmPerWu)
+        ++slot->through;
+    ReleaseSRWLockExclusive(&w.lock);
+}
+
+void LegacySightReportStockLines()
+{
+    seat_upstream::StockLineWindow copy[4]{};
+    auto& w = g_legacyStockLines;
+    AcquireSRWLockExclusive(&w.lock);
+    for (int i = 0; i < 4; ++i)
+    {
+        copy[i] = w.windows[i];
+        w.windows[i] = seat_upstream::StockLineWindow{};
+    }
+    ReleaseSRWLockExclusive(&w.lock);
+    for (const auto& window : copy)
+    {
+        if (!window.n)
+            continue;
+        const uint32_t id = (window.tag >> 16) & 0xFFu;
+        const int seatIndex = static_cast<int>((window.tag >> 8) & 0xFFu) - 1;
+        const bool mounted = (window.tag & kSeatTagMounted) != 0;
+        char name[160]{};
+        std::snprintf(name, sizeof(name), "%s %d%s (%s%s)", Halo3VehicleIdName(id), seatIndex,
+                      mounted ? " mounted" : "",
+                      Halo3SeatIsDriver(static_cast<Halo3VehicleId>(id), seatIndex, mounted) ? "driver"
+                      : (window.tag & kSeatTagGunSlaved) ? "gun-slaved gunner"
+                                                         : "passenger/gunner",
+                      (window.tag & kSeatTagStockChase)
+                          ? "; stock chase camera: an UNMODDED host queries this seat from its chase camera, not measured"
+                          : "");
+        char line[1024]{};
+        if (window.Format("Halo 3", name, line, sizeof(line)))
+            LOG("%s", line);
+    }
+}
+#endif
+
 // True when this query belongs to the local player (shot_lag::QueryIsLocal, by identity): on foot its first ignore
 // is the unit itself; seated the vehicle's root or the seat's parent. Another occupant (an AI gunner, a co-op player
 // in the next seat) names those too; the fire tag (LegacyFireTag) is what tells his fire from ours.
@@ -704,13 +817,23 @@ bool LegacySightReaimCrosshairQuery(GameTitle title, uint64_t flags, const float
     float transported[3]{};
     point = Sight_ShotPoint(title, SightTransportSite::CrosshairAssist, intent, seated, point, transported, start);
 #if HALOMCCVR_DEV_DIAGNOSTICS
+    // THE MULTIPLAYER RESIDUAL (dev SHOT UPSTREAM): this seated query as the game built it -- what an unmodded host
+    // firing from our record would trace -- against the seat's P, before anything here touches it.
+    seat_upstream::StockLineSample stock{};
+    if (title == GameTitle::Halo3 && seated)
+        stock = seat_upstream::MeasureStockLine(start, vector, point, intent.p.eyeVelValid ? intent.p.eyeVel : nullptr);
     // Dev key seated_inherit_compensation (default 0; halo3_impact_witness.inl): a Halo 3 seated round that will
     // inherit its vehicle's sideways velocity is aimed through the point that makes its own velocity reach P.
     float compensated[3]{};
     if (title == GameTitle::Halo3 && seated && Halo3SeatedInheritPoint(point, compensated))
         point = compensated;
 #endif
-    return Sight_ReaimThroughPoint(title, SightShotSite::CrosshairAssist, start, out, point);
+    const bool reaimed = Sight_ReaimThroughPoint(title, SightShotSite::CrosshairAssist, start, out, point, seated);
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    if (stock.valid)
+        LegacySightNoteStockLine(stock, reaimed, intent.solvePoint);
+#endif
+    return reaimed;
 }
 
 // The dev SHOT LAG line's crosshair-assist path: the query the game traced (after any re-aim), per local query at
@@ -809,6 +932,7 @@ void LegacySightReport()
         if (skipped)
             LOG("SIGHT Halo 3 seat query (dev): %u more not printed", skipped);
     }
+    LegacySightReportStockLines();   // dev SHOT UPSTREAM: the multiplayer residual per seat
     for (int slot = 0; slot < 2; ++slot)
     {
         auto& window = g_legacyEngineTrace[slot];

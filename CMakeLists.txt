@@ -910,6 +910,12 @@ if(BUILD_TESTING)
     add_executable(halomccvr_shot_lag_tests tests/shot_lag_tests.cpp)
     target_include_directories(halomccvr_shot_lag_tests PRIVATE src/common)
     add_test(NAME halomccvr_shot_lag_tests COMMAND halomccvr_shot_lag_tests)
+    # The seated record upstream of replication (src/common/seat_upstream_logic.h, 2026-10-03): the stock query model
+    # and its exact inverse, the learned velocity gain, the write in effect at a tick, the seated recomposition's
+    # fail-closed rules and the stock-line witness.
+    add_executable(halomccvr_seat_upstream_tests tests/seat_upstream_tests.cpp)
+    target_include_directories(halomccvr_seat_upstream_tests PRIVATE src/common)
+    add_test(NAME halomccvr_seat_upstream_tests COMMAND halomccvr_seat_upstream_tests)
     # The shot impact witness (src/common/shot_impact_logic.h, dev, 2026-10-03): where a round actually goes -- the
     # spawned object's proof, the native's turn, inherited velocity, the round's line and impact against P, the
     # reticle's map to the world, the trigger latch and the report lines.

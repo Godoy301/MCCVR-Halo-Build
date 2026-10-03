@@ -1292,6 +1292,12 @@ void ConfigLoad(const wchar_t* path)
         if (!strcmp(key, "seated_inherit_compensation")) { g_config.seated_inherit_compensation=atoi(val)!=0?1:0; continue; }
         if (!strcmp(key, "shot_point_transport")) { g_config.shot_point_transport=atoi(val)!=0?1:0; continue; }
         if (!strcmp(key, "shot_point_transport_seated")) { g_config.shot_point_transport_seated=atoi(val)!=0?1:0; continue; }
+        if (!strcmp(key, "seat_upstream_aim"))
+        {
+            const int v = atoi(val);
+            g_config.seat_upstream_aim = v < 0 ? 0 : (v > 2 ? 2 : v);
+            continue;
+        }
         if (!strcmp(key, "honest_reticle_assess"))
         {
             const int v = atoi(val);
@@ -2208,6 +2214,10 @@ void ConfigSave()
     fprintf(f, "shot_point_transport = %d\n", g_config.shot_point_transport);
     fprintf(f, "# DEV BUILD ONLY. With shot_point_transport = 1: 1 = seated shots too. 0 = seats as before.\n");
     fprintf(f, "shot_point_transport_seated = %d\n\n", g_config.shot_point_transport_seated);
+    fprintf(f, "# DEV BUILD ONLY. Halo 3 seats: 1 = aim the seat's record so the game's own crosshair line at the\n");
+    fprintf(f, "# fire passes through the reticle's point (what a multiplayer host fires). 2 = the same for the camera an\n");
+    fprintf(f, "# unmodded host uses (a third-person seat's chase camera). 0 = as before (A/B). (default 1)\n");
+    fprintf(f, "seat_upstream_aim = %d\n\n", g_config.seat_upstream_aim);
     fprintf(f, "# DEV BUILD ONLY. Assessment: a second marker showing where the game's shot lands; your normal reticle\n");
     fprintf(f, "# is unchanged. A small magenta ring and dot, along the game's own aim from its own shot origin (Reach on\n");
     fprintf(f, "# foot: the unit's projectile aim, not the camera), to see how far the game trails the hand. Draws only;\n");

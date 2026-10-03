@@ -64,8 +64,11 @@ using Fire=uint64_t(__fastcall*)(uint32_t,int16_t,void*,int32_t,uint8_t);
 using Aim=void(__fastcall*)(uint32_t,float*,float*,uint64_t,float*,uint8_t,uint8_t);
 using Query=void(__fastcall*)(int32_t,uint8_t,float*,int16_t,float*,void*);
 using Camera=int32_t(__fastcall*)(uint32_t,float*,float*);
+// The evaluator's chase path (seat_upstream_logic.h StockCamera): bound only from a matching evaluator branch.
+using Halo3ChaseCameraFn=void(__fastcall*)(uint32_t,float*,float*);
 static struct
 {
+    std::atomic<Halo3ChaseCameraFn> chaseCamera{nullptr};
     uintptr_t base=imageBase;uint32_t generation=7;uint64_t installedAtMs=1;
     Fire fireOriginal{};Aim aimOriginal{};Query queryOriginal{};Camera cameraOriginal{};
     void* fireTarget{},*aimTarget{},*queryTarget{},*cameraTarget{};
@@ -99,6 +102,11 @@ static int lastNotedPredicted=-2;
 static void Sight_NoteShotLagFromIntent(GameTitle,SightShotPath,const float*,const float*,int predicted,bool,int32_t)
 {++shotLagNotes;lastNotedPredicted=predicted;}
 static void PublishHalo3TickEye(uint32_t,int32_t,const float*){++tickEyes;}
+// The acquisition's whole camera (seat_upstream_logic.h): position and direction, whichever path it took.
+static unsigned acqCameras{};
+static int32_t lastAcqPath=-9;
+static void PublishHalo3AcquisitionCamera(uint32_t,int32_t,int32_t path,const float*,const float*)
+{++acqCameras;lastAcqPath=path;}
 static uint64_t Sight_NowUs(){return 1000000;}
 // The local player's unit as the crosshair re-aims see it (-1: none, the default for every other check).
 static int32_t localPlayerUnit=-1;

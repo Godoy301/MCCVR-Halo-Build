@@ -64,6 +64,10 @@ __declspec(noinline) int32_t __fastcall Halo3IndependentCameraDetour(
         if(caller==feature.base+0x13B1DC && t_halo3AcquisitionUser==0 && position && !g_legacyCollisionOwnedQuery &&
             !g_halo3IndependentShot.active)
         {
+            // The whole camera, whichever path (seat_upstream_logic.h): the seated record is solved from it and the
+            // seat's velocity gain is learned from its direction.
+            if(direction)
+                PublishHalo3AcquisitionCamera(feature.generation,static_cast<int32_t>(unit),result,position,direction);
             if(shot_lag::EvaluatorTookFirstPersonPath(result))
                 PublishHalo3TickEye(feature.generation,static_cast<int32_t>(unit),position);
             else
@@ -80,6 +84,42 @@ __declspec(noinline) int32_t __fastcall Halo3IndependentCameraDetour(
     }
     __finally {feature.callbacks.fetch_sub(1,std::memory_order_acq_rel);}
     return result;
+}
+
+// THE STOCK CHASE CAMERA OF OUR SEAT, ASKED (seat_upstream_logic.h StockCamera). The evaluator's own chase path for
+// `unit` (BindHalo3ChaseCamera): its camera position and direction now, as a machine whose seat tag keeps bit 4 --
+// an unmodded host -- answers when its firing assist asks for our seat's camera. Read offline: the path writes only
+// its two out-parameters and its stack (0x3555EC, 0x34674C, the spline helpers 0x214A54 / 0x2146C0 / 0x214D80 and
+// 0xA4164 read). Only on a simulation thread (the stick call, the fire), under the lane's callback count. False:
+// unbound, the lane off, faulted or another generation, or a non-finite answer.
+__declspec(noinline) bool Halo3AskChaseCamera(int32_t unit,float position[3],float direction[3])
+{
+    auto& feature=g_halo3Dual;
+    feature.callbacks.fetch_add(1,std::memory_order_acq_rel);
+    bool ok=false;
+    __try
+    {
+        const Halo3ChaseCameraFn chase=feature.chaseCamera.load(std::memory_order_acquire);
+        if(chase && unit!=-1 && feature.enabled.load(std::memory_order_acquire) &&
+            !feature.faulted.load(std::memory_order_acquire) &&
+            feature.generation==g_halo3RuntimeGeneration.load(std::memory_order_acquire))
+        {
+            float p[3]{},d[3]{};
+            chase(static_cast<uint32_t>(unit),p,d);
+            ok=shot_lag::Finite3(p) && shot_lag::Finite3(d);
+            if(ok)
+            {
+                std::memcpy(position,p,sizeof(p));
+                std::memcpy(direction,d,sizeof(d));
+            }
+        }
+    }
+    __except(EXCEPTION_EXECUTE_HANDLER)
+    {
+        ok=false;
+    }
+    feature.callbacks.fetch_sub(1,std::memory_order_acq_rel);
+    return ok;
 }
 
 __declspec(noinline) void __fastcall Halo3IndependentQueryDetour(
