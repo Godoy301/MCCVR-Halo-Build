@@ -99,7 +99,7 @@ struct StintCheck {
     float tol = 0.03f;          // 1.7 deg
     float max_motion = 0.1f;    // 5.7 deg in one sample: more is a jump, not evidence
     unsigned needed = 30;
-    unsigned long long budget_ms = 3000;   // settled time after yaw passed
+    unsigned long long budget_ms = 3000;   // pitch evidence time after yaw passed
     unsigned long long retry_ms = 5000;    // after a failed pitch check, of updating time
     unsigned long long gap_ms = 100;
 

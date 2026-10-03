@@ -2,8 +2,9 @@
 // odst_contact_melee_runtime.inl, whose per-unit update hooks call LegacySightTraceTick (each hands it its
 // own object-table reader, which is defined there).
 //
-// TRACE-AND-REAIM for Halo 3 and ODST, on foot (sight_layer.h) -- Reach's aim (reach_sight_trace.inl) for
-// the two titles that aim with the right-stick servo instead of direct drive.
+// TRACE-AND-REAIM for Halo 3 and ODST, on foot and in C20 seats (sight_layer.h) -- Reach's aim
+// (reach_sight_trace.inl) for two titles whose bent aim is written by direct drive (aim_direct_drive, default 1;
+// legacy_direct_drive.inl) or, with it off or not yet armed, steered by the right-stick servo.
 //
 // The player points along the intent ray: from the rendered centre eye (g_cam*, the camera after head
 // look) along the controller. The engine fires from its own eye (g_baseCam*, the camera before head look:

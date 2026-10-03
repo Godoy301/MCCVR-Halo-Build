@@ -50,8 +50,10 @@
 //    Halo; see the note at the end of this file and converge_policy.h.)
 //
 // This header holds the pure, testable half of the fix: the servo's rest
-// hysteresis, scoped to turret seats -- no other seat, title, or on-foot case
-// reaches it.
+// hysteresis, scoped to turret seats and (since 2026-10-02) to the death /
+// free camera while the local player has no unit, which hunts the same
+// minimum step on both axes (aim_no_unit::ServoParks). No other seat and no
+// on-foot aim reaches it.
 
 // ---- 1. Rest hysteresis --------------------------------------------------
 //

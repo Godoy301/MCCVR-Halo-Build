@@ -57,7 +57,7 @@ public:
         AimCaps c;
         // Rung 1 is player_control.desired_angles, the accumulator's own record: after stick
         // conditioning, before the aim vector is derived, and persistent (one write steers the sim).
-        // Offered only when opted in (reach_direct_drive=3), with the hook proven by the arm-gate AND
+        // Offered only with direct drive on (reach_direct_drive=3), with the hook proven by the arm-gate AND
         // demonstrably running (its heartbeat -- a hook that stopped would otherwise leave the stick
         // neutral with nothing writing), on foot or in a seat the hand aims (Game_ReachDirectDriveAimWhy:
         // not a seat whose stick is steering, as reach_vehicle_aim allows, and whose frame -- the
@@ -267,7 +267,7 @@ void ReachAimProvider_Report() {
     if (now - last_ms < 2000) return;
     last_ms = now;
     const uint32_t polls = g_status.polls.exchange(0, std::memory_order_relaxed);
-    if (!polls) return;   // the provider is not running (another title, a menu, or the default config)
+    if (!polls) return;   // the provider is not running (another title, a menu, or aim_provider and direct drive off)
     const int rung = g_status.rung.load(std::memory_order_relaxed);
     // ready = hook installed + arm-gate armed + hook heartbeat fresh (Game_ReachDirectDriveReady).
     // why = the failing aim-write conditions (Game_ReachDirectDriveAimWhy's bits; 0 = the write may drive:

@@ -1,9 +1,9 @@
 // Included in game.cpp at file scope, just before Game_ComputeAimStick.
 //
-// HALO 3 / ODST / HALO 4 DIRECT DRIVE (legacy_direct_drive = 1). Reach's direct drive (reach_direct_drive
-// = 3) for the three sibling engines, which otherwise aim with the right-stick servo: the servo can only
-// ask the game to turn at its own turn rate, so the aim lags the hand, and it needs the game to accept
-// stick input at all. Here the aim is written where the game keeps it.
+// HALO 3 / ODST / HALO 4 DIRECT DRIVE (legacy_direct_drive = 1, derived from aim_direct_drive, default 1).
+// Reach's direct drive (reach_direct_drive = 3) for the three sibling engines, which otherwise aim with the
+// right-stick servo: the servo can only ask the game to turn at its own turn rate, so the aim lags the hand,
+// and it needs the game to accept stick input at all. Here the aim is written where the game keeps it.
 //
 // Each title has Reach's per-user control update -- the ACCUMULATOR of player_control.desired_angles
 // (desired += stick delta, then wrap and clamp) -- found 2026-09-29 by structure in each retail module
@@ -36,13 +36,14 @@
 // the AXES the hand owns there (seat_drive::Decide: a passenger, gunner or turret both; a look-steered
 // driver both at reach_vehicle_aim 2, the pitch only while the stick or wheel steers, none at 1; Halo 4 seats
 // the heading only (game.cpp); nothing in a seat whose view is not ours). Each seat stint then proves its own
-// record axis by axis before that axis is written (seat_drive::StintCheck: yaw on 30 SETTLED agreeing samples,
-// pitch the same within 3 s of settled samples after yaw passed, never before yaw; a sample where the aim or the
-// record moved is no evidence either way, so a turn, a slewing barrel or rough driving neither proves nor resets
-// it. A failed pitch retries every 5 s; a Halo 3 driver+gunner's pitch sits ~13 deg off the gun and keeps
-// failing, so it stays on the servo). The write goes through Reach's seat-limit latch
-// (aim_write::LimitLatch), pitch excepted for a LOOK-STEERED driver, whose pitch the accumulator levels as the vehicle
-// moves. A seat may also ARM the hook, on yaw agreement alone: a checkpoint that loads in a vehicle.
+// record axis by axis before that axis is written (seat_drive::StintCheck: yaw on 30 agreeing samples, judged
+// with a tolerance that grows with the motion since the last judged sample -- agree under tol + motion, disagree
+// over tol + 3 * motion, a jump over 5.7 deg is no evidence -- so a turn, a slewing barrel or flight still proves
+// it; pitch the same within 3 s of evidence time after yaw passed, never before yaw. A failed pitch retries
+// every 5 s; a Halo 3 driver+gunner's pitch sits ~13 deg off the gun and keeps failing, so it stays on the
+// servo). The write goes through Reach's seat-limit latch (aim_write::LimitLatch), pitch excepted for a
+// LOOK-STEERED driver, whose pitch the accumulator levels as the vehicle moves. A seat may also ARM the hook,
+// on yaw agreement alone: a checkpoint that loads in a vehicle.
 //
 // THE SEAT'S FRAME (2026-10-01; seat_frame_reader.h, docs/ALL-TITLES-AIM-2026-09-29.md "Seats aim in world
 // angles"). The record is NOT always in world angles: each title's rebase (Halo 3 0x355E20, ODST 0x39A600, Halo 4
@@ -557,7 +558,7 @@ bool LegacyDriveInstall(GameTitle title, uintptr_t base, size_t size)
 {
     const int slot = LegacyDriveSlot(title);
     // Installed whatever the setting, so F1's Direct drive switches it live: the hook writes only while
-    // legacy_direct_drive is on, and disarms (to re-validate) whenever it is off.
+    // legacy_direct_drive (derived from aim_direct_drive) is on, and disarms (to re-validate) whenever it is off.
     if (slot < 0)
         return false;
     auto& st = g_legacyDrive[slot];
