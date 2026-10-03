@@ -1650,10 +1650,11 @@ namespace
                     changed = true;
                 }
             }
-            ImGui::TextDisabled("DEV BUILD ONLY. Draws the crosshair where the game is REALLY aiming,\n"
-                                "drawn from your hand, instead of the aim point, so you can see how far\n"
-                                "the game trails your hand. It moves the drawing only: shots, the aim\n"
-                                "and convergence are exactly the same. Off for normal play.");
+            ImGui::TextDisabled("DEV BUILD ONLY. Draws the crosshair where the game's shot really lands\n"
+                                "(along the game's own aim from its own shot origin, not from your hand)\n"
+                                "instead of on the aim point, so you can see how far the game trails your\n"
+                                "hand. It moves the drawing only: shots, the aim and convergence are\n"
+                                "exactly the same. Off for normal play.");
 #endif
         }
         ImGui::TextDisabled("Crosshair smoothing is visual only; bullets keep the current controller ray.\n"

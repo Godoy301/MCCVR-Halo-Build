@@ -2196,14 +2196,15 @@ void ConfigSave()
     fprintf(f, "# DEV BUILD ONLY. Halo 4 seated convergence (stage 1): 1 = a seat converges like Halo 3's while\n");
     fprintf(f, "# every proof holds, and stays converged where the native assist cannot bring the shot on. 0 = seats as before.\n");
     fprintf(f, "halo4_seat_converge = %d\n\n", g_config.halo4_seat_converge);
-    fprintf(f, "# DEV BUILD ONLY. Assessment: draw the crosshair on the game's REAL aim instead of the aim point, to see\n");
-    fprintf(f, "# how far the game trails the hand. Moves the drawing only; shots, aim and convergence are unchanged.\n");
+    fprintf(f, "# DEV BUILD ONLY. Assessment: draw the crosshair where the game's shot lands (along its own aim from its\n");
+    fprintf(f, "# own shot origin, not from your hand) instead of the aim point, to see how far the game trails the\n");
+    fprintf(f, "# hand. Moves the drawing only; shots, aim and convergence are unchanged.\n");
     fprintf(f, "# 0 = off, 1 = on foot, 2 = everywhere. (default 0)\n");
     fprintf(f, "honest_reticle_assess = %d\n\n", g_config.honest_reticle_assess);
     fprintf(f, "# DEV BUILD ONLY. 1 = log the type-13 pilot controllers (Reach Sabre, Halo 4 Broadsword): REACH SF and\n");
     fprintf(f, "# H4 T13 lines. Writes nothing to the game. Read at startup. Leave at 0.\n");
     fprintf(f, "type13_log = %d\n\n", g_config.type13_log);
-    fprintf(f, "# DEV BUILD ONLY. Halo 3 / ODST seats: 1 = skip the game's vehicle-tilt rebase of the aim while the\n");
+    fprintf(f, "# DEV BUILD ONLY. Halo 3 / ODST / Reach seats: 1 = skip the game's vehicle-tilt rebase of the aim while the\n");
     fprintf(f, "# first-person seat patch is on, so seats aim in world angles as in stock. 0 = leave the rebase (A/B for\n");
     fprintf(f, "# the DRIVE seats frame check line). (default %d)\n", d.seat_aim_world_frame);
     fprintf(f, "seat_aim_world_frame = %d\n\n", g_config.seat_aim_world_frame);
@@ -2239,7 +2240,8 @@ void ConfigSave()
     fprintf(f, "# Replaces reach_direct_drive = 3 and legacy_direct_drive = 1. 0 = off. (default %d)\n",
             d.aim_direct_drive);
     fprintf(f, "aim_direct_drive = %d\n\n", g_config.aim_direct_drive);
-    fprintf(f, "# Every title but Reach, on foot. 1 = CONVERGED AIM: the game traces the ray from your eye\n");
+    fprintf(f, "# Every title (Reach also needs aim_direct_drive = 1), on foot and in Halo 3, ODST and\n");
+    fprintf(f, "# Reach seats. 1 = CONVERGED AIM: the game traces the ray from your eye\n");
     fprintf(f, "# along the controller and bends the aim so the shot passes through the point it hits, at\n");
     fprintf(f, "# any distance; the reticle sits on that point. 0 = the earlier aim, which converges on one\n");
     fprintf(f, "# fixed distance (crosshair_distance_m) and runs no trace. (default %d)\n", d.converged_aim);
