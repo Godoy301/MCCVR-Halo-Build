@@ -84,6 +84,8 @@ bool Telemetry_WeaponEventsAccepting() noexcept {return false;}
 void PublishShotDiagnostic(GameTitle,uint32_t,uint32_t,uint32_t,uint8_t,uint8_t,
     bool,bool,bool,bool,const float*,const float*) noexcept {}
 // The dev turret-shot witness (legacy_sight_trace.inl, defined in game.cpp): it only reads, so an inert stand-in.
+// The firing call's weapon (halo3_dual_wield_runtime.inl declares it before including the lane).
+static thread_local uint32_t g_halo3FiringWeapon=UINT32_MAX;
 void LegacySightNoteTurretShot(GameTitle,uint32_t,const float*,const float*) {}
 #include "../src/dll/halo3_independent_shots.inl"
 #undef _ReturnAddress

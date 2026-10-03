@@ -209,6 +209,10 @@ __declspec(noinline) uint64_t __fastcall Halo3IndependentFireDetour(
     feature.callbacks.fetch_add(1,std::memory_order_acq_rel);
     const auto previous=g_halo3IndependentShot;
     g_halo3IndependentShot={};
+    // The weapon this firing call fires, for the shot line's consumers below it on this thread (its owner, +0x168,
+    // is the unit that holds the gun: a turret or vehicle for a mounted gun, never the occupant 0x3524B0 receives).
+    const uint32_t previousFiringWeapon=g_halo3FiringWeapon;
+    g_halo3FiringWeapon=weapon;
     NativeShotTargetLease<0x24> lease{};
     NativeShotTargetLease<0x24> muzzleLease{};
     const auto previousMuzzle=g_halo3MuzzleRequest;
@@ -250,9 +254,26 @@ __declspec(noinline) uint64_t __fastcall Halo3IndependentFireDetour(
         RestoreHalo3IndependentShot(lease);
         g_halo3IndependentShot=previous;
         g_halo3MuzzleRequest=previousMuzzle;
+        g_halo3FiringWeapon=previousFiringWeapon;
         feature.callbacks.fetch_sub(1,std::memory_order_acq_rel);
     }
     return result;
+}
+
+// The unit that holds `weapon` (weapon +0x168: H3EK A844A0 / retail 3683A0 read it as the firing routine's owner,
+// and Halo3ReadOwnedWeapons proves it on every inventory read), or UINT32_MAX. Guarded: a stale handle reads as none.
+uint32_t Halo3WeaponOwner(uint32_t weapon)
+{
+    if(weapon==UINT32_MAX)return UINT32_MAX;
+    __try
+    {
+        const auto* data=Halo3MeleeSelectionObject(weapon,2);
+        return data ? *reinterpret_cast<const uint32_t*>(data+0x168) : UINT32_MAX;
+    }
+    __except(EXCEPTION_EXECUTE_HANDLER)
+    {
+        return UINT32_MAX;
+    }
 }
 
 // T-2 shot event for Halo 3. The disabled gate is passed FIRST: with recording
@@ -326,8 +347,10 @@ __declspec(noinline) void __fastcall Halo3IndependentAimDetour(uint32_t unit,
         {
             PublishHalo3ShotDiagnostic(unit,origin,direction,substituted,
                 project!=0,unitAim!=0);
-            // Dev: a gun-slaved turret's own shot against the traced point (legacy_sight_trace.inl).
-            LegacySightNoteTurretShot(GameTitle::Halo3,unit,origin,direction);
+            // Dev: a gun-slaved turret's own shot against the traced point (legacy_sight_trace.inl). The shooter is
+            // the firing weapon's OWNER: `unit` is the occupant (0x368B82 `mov ecx, esi` walks the gunner chain
+            // +0x2A4 down to it), which never equals the turret the witness waits for.
+            LegacySightNoteTurretShot(GameTitle::Halo3,Halo3WeaponOwner(g_halo3FiringWeapon),origin,direction);
         }
     }
     __finally {feature.callbacks.fetch_sub(1,std::memory_order_acq_rel);}

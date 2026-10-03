@@ -391,8 +391,11 @@ void LegacySightPublishTurretSeat(int32_t parentHandle, bool gunSettled)
 #endif
 }
 
-// The firing call (Halo 3's native weapon fire, after its final ray): one shot of `unit`.
-void LegacySightNoteTurretShot(GameTitle title, uint32_t unit, const float* origin, const float* direction)
+// The firing call (Halo 3's native weapon fire, after its final ray): one shot of the gun `shooter` holds -- the firing
+// weapon's owner (+0x168). Not the unit the shot-line call receives: that is the OCCUPANT (the firing routine walks the
+// gunner chain +0x2A4 down to it, 0x368B82 `mov ecx, esi`), so comparing it with the turret matched no shot at all and
+// the line never logged (until 2026-10-03).
+void LegacySightNoteTurretShot(GameTitle title, uint32_t shooter, const float* origin, const float* direction)
 {
 #if HALOMCCVR_DEV_DIAGNOSTICS
     if (title != GameTitle::Halo3 || !origin || !direction)
@@ -400,7 +403,7 @@ void LegacySightNoteTurretShot(GameTitle title, uint32_t unit, const float* orig
     const uint64_t at = g_legacyTurretShotSeatMs.load(std::memory_order_acquire);
     const uint64_t now = GetTickCount64();
     const int32_t parent = g_legacyTurretShotParent.load(std::memory_order_relaxed);
-    if (!at || now < at || now - at > 250 || parent == -1 || static_cast<int32_t>(unit) != parent)
+    if (!at || now < at || now - at > 250 || parent == -1 || static_cast<int32_t>(shooter) != parent)
         return;
     auto& w = g_legacyTurretShots;
     w.shots.fetch_add(1, std::memory_order_relaxed);
@@ -446,7 +449,7 @@ void LegacySightNoteTurretShot(GameTitle title, uint32_t unit, const float* orig
     w.startRightMm.store((se[0] * right[0] + se[1] * right[1] + se[2] * right[2]) * toMm, std::memory_order_relaxed);
     w.startUpMm.store((se[0] * up[0] + se[1] * up[1] + se[2] * up[2]) * toMm, std::memory_order_relaxed);
 #else
-    (void)title; (void)unit; (void)origin; (void)direction;
+    (void)title; (void)shooter; (void)origin; (void)direction;
 #endif
 }
 
