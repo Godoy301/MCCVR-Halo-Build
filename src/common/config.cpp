@@ -1290,6 +1290,8 @@ void ConfigLoad(const wchar_t* path)
         if (!strcmp(key, "sight_ray_census")) { g_config.sight_ray_census=atoi(val); continue; }
         if (!strcmp(key, "halo4_seat_converge")) { g_config.halo4_seat_converge=atoi(val)!=0?1:0; continue; }
         if (!strcmp(key, "seated_inherit_compensation")) { g_config.seated_inherit_compensation=atoi(val)!=0?1:0; continue; }
+        if (!strcmp(key, "shot_point_transport")) { g_config.shot_point_transport=atoi(val)!=0?1:0; continue; }
+        if (!strcmp(key, "shot_point_transport_seated")) { g_config.shot_point_transport_seated=atoi(val)!=0?1:0; continue; }
         if (!strcmp(key, "honest_reticle_assess"))
         {
             const int v = atoi(val);
@@ -2200,6 +2202,12 @@ void ConfigSave()
     fprintf(f, "# DEV BUILD ONLY. Halo 3 seated shots: 1 = aim so the round, which inherits its vehicle's sideways\n");
     fprintf(f, "# velocity, still flies at the reticle's point. 0 = aim straight at it (rounds lead along your travel).\n");
     fprintf(f, "seated_inherit_compensation = %d\n\n", g_config.seated_inherit_compensation);
+    fprintf(f, "# DEV BUILD ONLY. A/B for on-foot shots that trail a strafe: 1 = Halo 3 / ODST shots aim through the\n");
+    fprintf(f, "# reticle's point moved with your eye since it was sampled (what flat Halo fires with the crosshair\n");
+    fprintf(f, "# held still on your body). 0 = through the world point as before. The reticle never moves. Live.\n");
+    fprintf(f, "shot_point_transport = %d\n", g_config.shot_point_transport);
+    fprintf(f, "# DEV BUILD ONLY. With shot_point_transport = 1: 1 = seated shots too. 0 = seats as before.\n");
+    fprintf(f, "shot_point_transport_seated = %d\n\n", g_config.shot_point_transport_seated);
     fprintf(f, "# DEV BUILD ONLY. Assessment: a second marker showing where the game's shot lands; your normal reticle\n");
     fprintf(f, "# is unchanged. A small magenta ring and dot, along the game's own aim from its own shot origin (Reach on\n");
     fprintf(f, "# foot: the unit's projectile aim, not the camera), to see how far the game trails the hand. Draws only;\n");

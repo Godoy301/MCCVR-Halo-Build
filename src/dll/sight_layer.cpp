@@ -599,6 +599,130 @@ void Sight_NoteReaimSkipped(GameTitle title, SightShotSite site, shot_lag::Inten
         g_reaim[Slot(title)][s].skipped[w].fetch_add(1, std::memory_order_relaxed);
 }
 
+// ---- the shot point moved with the eye (dev key shot_point_transport; shot_lag_logic.h 4a) ----------------------
+namespace
+{
+std::atomic<SightFireEyeFn> g_fireEyeSources[kTitleSlots]{};
+#if HALOMCCVR_DEV_DIAGNOSTICS
+// One window per title and consumer: the fire thread takes the lock for one Add (plain sums), the cold worker to swap
+// the window out.
+struct TransportWitness
+{
+    SRWLOCK lock = SRWLOCK_INIT;
+    shot_lag::TransportWindow window{};
+};
+TransportWitness g_transports[kTitleSlots][static_cast<size_t>(SightTransportSite::Count)];
+
+const char* TransportSiteName(SightTransportSite site)
+{
+    switch (site)
+    {
+    case SightTransportSite::CrosshairAssist: return "crosshair-assist";
+    case SightTransportSite::Muzzle: return "muzzle";
+    case SightTransportSite::Record: return "record";
+    default: return "?";
+    }
+}
+#endif
+} // namespace
+
+void Sight_SetFireEyeSource(GameTitle title, SightFireEyeFn source)
+{
+    g_fireEyeSources[Slot(title)].store(source, std::memory_order_release);
+}
+
+bool Sight_TransportWanted(GameTitle title, bool seated)
+{
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    if (title != GameTitle::Halo3 && title != GameTitle::Halo3ODST)
+        return false;
+    return g_config.shot_point_transport != 0 && (!seated || g_config.shot_point_transport_seated != 0);
+#else
+    (void)title; (void)seated;
+    return false;
+#endif
+}
+
+shot_lag::Transport Sight_TransportIntent(GameTitle title, const SightIntent& intent, bool seated,
+                                          const float* siteEye, bool askEvaluator, float out[3], float shift[3],
+                                          shot_lag::FireEye* fire, float* fireAgeMs, float* pointAgeMs)
+{
+    const shot_lag::IntentPoint& p = intent.p;
+    shot_lag::TransportInput in{};
+    memcpy(in.point, seated ? intent.solvePoint : p.point, sizeof(in.point));
+    if (seated)
+    {
+        // The seated point was bent from the solve's eye, stamped with the newest render at the solve.
+        in.pointEyeValid = p.solveEyeStampUs != 0;
+        memcpy(in.pointEye, p.eye, sizeof(in.pointEye));
+        in.pointEyeStampUs = p.solveEyeStampUs;
+    }
+    else
+    {
+        in.pointEyeValid = p.pointEyeValid;
+        memcpy(in.pointEye, p.pointEye, sizeof(in.pointEye));
+        in.pointEyeStampUs = p.pointEyeStampUs;
+    }
+    in.velValid = p.eyeVelValid;
+    memcpy(in.vel, p.eyeVel, sizeof(in.vel));
+    in.nowUs = Sight_NowUs();
+    in.maxAgeUs = kSightTransportMaxAgeUs;
+    // E_fire: measured only on foot, and only from a title that publishes its fire-tick eye.
+    shot_lag::FireEye verdict = seated ? shot_lag::FireEye::Seated : shot_lag::FireEye::NoSource;
+    float ageMs = -1.0f;
+    if (!seated)
+        if (const SightFireEyeFn source = g_fireEyeSources[Slot(title)].load(std::memory_order_acquire))
+            verdict = source(siteEye, askEvaluator, in.fireEye, ageMs);
+    in.fireEyeValid = verdict == shot_lag::FireEye::Measured;
+    if (fire)
+        *fire = verdict;
+    if (fireAgeMs)
+        *fireAgeMs = in.fireEyeValid ? ageMs : -1.0f;
+    if (pointAgeMs)
+        *pointAgeMs = in.pointEyeStampUs && in.nowUs >= in.pointEyeStampUs
+            ? float(in.nowUs - in.pointEyeStampUs) / 1000.0f : -1.0f;
+    return shot_lag::TransportPoint(in, out, shift);
+}
+
+void Sight_NoteTransport(GameTitle title, SightTransportSite site, shot_lag::Transport how, shot_lag::FireEye fire,
+                         const float* shift, const float* dir, const float* vel, float fireAgeMs, float pointAgeMs)
+{
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    const size_t s = static_cast<size_t>(site);
+    if (s >= static_cast<size_t>(SightTransportSite::Count))
+        return;
+    const float none[3]{};
+    auto& w = g_transports[Slot(title)][s];
+    AcquireSRWLockExclusive(&w.lock);
+    w.window.Add(how, fire, shift ? shift : none, dir ? dir : none, vel, fireAgeMs, pointAgeMs);
+    ReleaseSRWLockExclusive(&w.lock);
+#else
+    (void)title; (void)site; (void)how; (void)fire; (void)shift; (void)dir; (void)vel; (void)fireAgeMs;
+    (void)pointAgeMs;
+#endif
+}
+
+const float* Sight_ShotPoint(GameTitle title, SightTransportSite site, const SightIntent& intent, bool seated,
+                             const float* reference, float storage[3], const float* siteEye)
+{
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    if (!reference || !storage || !Sight_TransportWanted(title, seated))
+        return reference;
+    float shift[3]{};
+    shot_lag::FireEye fire = shot_lag::FireEye::Count;
+    float fireAgeMs = -1.0f, pointAgeMs = -1.0f;
+    const shot_lag::Transport how =
+        Sight_TransportIntent(title, intent, seated, siteEye, site == SightTransportSite::Muzzle, storage, shift,
+                              &fire, &fireAgeMs, &pointAgeMs);
+    Sight_NoteTransport(title, site, how, fire, shift, intent.p.dir, intent.p.eyeVelValid ? intent.p.eyeVel : nullptr,
+                        fireAgeMs, pointAgeMs);
+    return shot_lag::TransportApplied(how) ? storage : reference;
+#else
+    (void)title; (void)site; (void)intent; (void)seated; (void)storage; (void)siteEye;
+    return reference;
+#endif
+}
+
 namespace
 {
 // Cold worker (Sight_Report): one line per title and site that saw a shot in the window. The muzzle site counts
@@ -674,9 +798,15 @@ bool Sight_AimMuzzleShot(GameTitle title, uint32_t generation, const float befor
     Sight_NoteReaimSkipped(title, SightShotSite::Muzzle, use);
     // A seat flies through the point its record was bent through (a seat's line is only ever corrected, never
     // re-targeted: SightIntent::solvePoint); on foot through the frame-coherent point.
+    // The dev key shot_point_transport moves that point with the eye since its camera sample (Sight_ShotPoint).
     if (use == shot_lag::IntentUse::Use && intent.p.generation == generation)
-        return Sight_AimMuzzleShotThrough(title, intent.p.seated ? intent.solvePoint : intent.p.point, intent.p.dir,
-                                          before, position, direction, up);
+    {
+        const bool seated = intent.p.seated;
+        float transported[3]{};
+        const float* point = Sight_ShotPoint(title, SightTransportSite::Muzzle, intent, seated,
+                                             seated ? intent.solvePoint : intent.p.point, transported);
+        return Sight_AimMuzzleShotThrough(title, point, intent.p.dir, before, position, direction, up);
+    }
     return Sight_AimMuzzleShotFromRay(title, generation, ray.head, ray.dir, ray.eye, before, position, direction, up);
 }
 
@@ -1151,6 +1281,34 @@ void Sight_ReportShots()
             if (window.Format(label, line, sizeof(line)))
                 LOG("%s", line);
         }
+        // The shot point moved with the eye (shot_point_transport), per consumer: what was used, and the shift.
+        for (size_t s = 0; s < static_cast<size_t>(SightTransportSite::Count); ++s)
+        {
+            auto& w = g_transports[slot][s];
+            AcquireSRWLockExclusive(&w.lock);
+            const shot_lag::TransportWindow window = w.window;
+            w.window = shot_lag::TransportWindow{};
+            ReleaseSRWLockExclusive(&w.lock);
+            char label[96]{};
+            std::snprintf(label, sizeof(label), "SHOT LAG %s transport [%s] (dev)",
+                          TitleName(static_cast<GameTitle>(slot)), TransportSiteName(static_cast<SightTransportSite>(s)));
+            char line[768]{};
+            if (window.Format(label, line, sizeof(line)))
+                LOG("%s", line);
+        }
+    }
+    // The keys themselves, whenever they change (and once at the first report), so a log names its A/B arm.
+    static int s_key = -1, s_seatedKey = -1;
+    if (g_config.shot_point_transport != s_key || g_config.shot_point_transport_seated != s_seatedKey)
+    {
+        s_key = g_config.shot_point_transport;
+        s_seatedKey = g_config.shot_point_transport_seated;
+        LOG("SHOT LAG transport (dev): shot_point_transport=%d shot_point_transport_seated=%d -- %s", s_key,
+            s_seatedKey, s_key ? (s_seatedKey ? "Halo 3 / ODST shots aim through P moved with the eye, on foot and "
+                                                "seated" : "Halo 3 / ODST on-foot shots aim through P moved with the "
+                                                "eye; seats through P")
+                               : "every shot through P as published (the SHOT IMPACT vs P' columns say where a moved "
+                                 "point would have been)");
     }
 #endif
 }

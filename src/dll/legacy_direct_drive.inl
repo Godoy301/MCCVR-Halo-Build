@@ -1530,10 +1530,21 @@ LegacyRecomposeWhy LegacyDriveRecomposeOnFoot(int slot, const LegacyDrivePublica
     }
     in.eyeProven = g_halo3TickEyeProof.load(std::memory_order_relaxed) == static_cast<uint32_t>(TickEyeProof::Proven);
     in.tickS = float(g_legacyTickPeriodUs[0].load(std::memory_order_relaxed)) * 1.0e-6f;
+    // Dev key shot_point_transport (sight_layer.h): the record through P moved with the eye, so the HUD, autoaim and
+    // the crosshair query agree with the shot sites that move it too. Its E' is the game's own eye (measured).
+    in.transport = Sight_TransportWanted(GameTitle::Halo3, false);
     float bendDeg = 0.0f;
-    const LegacyRecomposeWhy why = shot_lag::RecomposeRecord(in, yaw, pitch, bendDeg);
+    shot_lag::Transport transported = shot_lag::Transport::Count;
+    float shift[3]{};
+    const LegacyRecomposeWhy why = shot_lag::RecomposeRecord(in, yaw, pitch, bendDeg, &transported, shift);
     if (why != LegacyRecomposeWhy::Recomposed)
         return why;
+    if (in.transport)
+        Sight_NoteTransport(GameTitle::Halo3, SightTransportSite::Record, transported, shot_lag::FireEye::Measured,
+                            shift, intent.p.dir, intent.p.eyeVelValid ? intent.p.eyeVel : nullptr,
+                            nowUs >= stampUs ? float(nowUs - stampUs) / 1000.0f : -1.0f,
+                            intent.p.pointEyeStampUs && nowUs >= intent.p.pointEyeStampUs
+                                ? float(nowUs - intent.p.pointEyeStampUs) / 1000.0f : -1.0f);
     const uint32_t milli = static_cast<uint32_t>(bendDeg * 1000.0f);
     g_legacyRecomposeMilliDeg.fetch_add(milli, std::memory_order_relaxed);
     uint32_t prior = g_legacyRecomposeMaxMilliDeg.load(std::memory_order_relaxed);

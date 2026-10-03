@@ -261,6 +261,9 @@ struct Tracked
     float lastPos[3]{}, lastVel[3]{};
     uint64_t lastUs = 0;
     float impactPos[3]{};
+    // P' (P moved with the eye, shot_lag 4a) when it was known at the fire: its impact is judged against it too.
+    bool pointTValid = false;
+    float pointT[3]{};
     // A seated round: its seat window (SeatWindows index) and that seat's identity, so a window that was reassigned
     // meanwhile is never credited with it. seat < 0: on foot (group).
     int8_t seat = -1;
@@ -351,6 +354,14 @@ struct Window
     uint32_t impacts = 0, impactTravel = 0, goneWithoutImpact = 0, goneBeforeTick = 0, expired = 0;
     float impactDepthSum = 0.0f, impactAlongSum = 0.0f, impactAcrossSum = 0.0f;
     uint32_t impactCaller = 0;
+    // vs P' (P moved with the eye since its camera sample; shot_lag 4a, dev key shot_point_transport): the same round
+    // line and impact against P'. Key off: where a shot moved with the eye would have had to go. Key on: where it was
+    // aimed. Measured on every fire whichever the key, so the two arms of the A/B report the same columns.
+    uint32_t tMeasured = 0, tExtrapolated = 0, tNone = 0;
+    uint32_t tShots = 0, tTravel = 0, tShiftTravel = 0;
+    float tMissSum = 0.0f, tAlongSum = 0.0f, tShiftAlongSum = 0.0f;
+    uint32_t tImpacts = 0, tImpactTravel = 0;
+    float tImpactAlongSum = 0.0f, tImpactAcrossSum = 0.0f;
 
     void AddFire(uint32_t projectilesThisFire)
     {
@@ -447,6 +458,47 @@ struct Window
         impactCaller = caller;
     }
 
+    // A spawn whose P was known: how P' was had, the round line against it, and the shift P' - P in the player's frame.
+    void AddTransported(shot_lag::Transport how, const shot_lag::ShotLagSample& line, const Axes& shift)
+    {
+        if (how == shot_lag::Transport::Measured)
+            ++tMeasured;
+        else if (how == shot_lag::Transport::Extrapolated)
+            ++tExtrapolated;
+        else
+        {
+            ++tNone;
+            return;
+        }
+        if (line.valid)
+        {
+            ++tShots;
+            tMissSum += line.missMm;
+            if (line.travel)
+            {
+                ++tTravel;
+                tAlongSum += line.alongMm;
+            }
+        }
+        if (shift.valid && shift.travel)
+        {
+            ++tShiftTravel;
+            tShiftAlongSum += shift.alongMm;
+        }
+    }
+    void AddImpactTransported(const Axes& a)
+    {
+        if (!a.valid)
+            return;
+        ++tImpacts;
+        tImpactAcrossSum += a.acrossMm;
+        if (a.travel)
+        {
+            ++tImpactTravel;
+            tImpactAlongSum += a.alongMm;
+        }
+    }
+
     void AddInheritance(bool taken, bool ownerFlagSet, bool placedKnown, float placedAlongMps)
     {
         ++inheritChecked;
@@ -530,6 +582,26 @@ struct Window
             if (impactTravel)
                 put(", along travel %+.0f mm", mean(impactAlongSum, impactTravel));
             put(" (query +0x%X)", impactCaller);
+        }
+        if (tMeasured || tExtrapolated || tNone)
+        {
+            put("; vs P' (P moved with the eye: measured %u, extrapolated %u, none %u)", tMeasured, tExtrapolated,
+                tNone);
+            if (tShots)
+            {
+                put(": ROUND LINE miss %.0f mm", mean(tMissSum, tShots));
+                if (tTravel)
+                    put(", along travel %+.0f mm", mean(tAlongSum, tTravel));
+            }
+            if (tShiftTravel)
+                put("; P'-P along travel %+.0f mm", mean(tShiftAlongSum, tShiftTravel));
+            put("; IMPACT vs P' %u", tImpacts);
+            if (tImpacts)
+            {
+                put(": across %.0f mm", mean(tImpactAcrossSum, tImpacts));
+                if (tImpactTravel)
+                    put(", along travel %+.0f mm", mean(tImpactAlongSum, tImpactTravel));
+            }
         }
         if (inheritChecked)
         {

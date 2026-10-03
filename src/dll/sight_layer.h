@@ -205,6 +205,52 @@ bool Sight_ReadIntent(GameTitle title, SightIntent& out);
 shot_lag::IntentUse Sight_IntentForShot(GameTitle title, uint64_t maxAgeMs, bool naturalHeld, SightIntent& out);
 inline constexpr uint64_t kSightIntentShotMaxAgeMs = 150;
 
+// THE SHOT POINT MOVED WITH THE EYE (dev key shot_point_transport, 2026-10-03; shot_lag_logic.h 4a). An A/B against
+// "on foot my shots trail my strafe a little, compared with flat Halo": flat Halo fires through its crosshair from the
+// game's eye at the fire tick; P is a world point fixed at a camera sample a tick or so older. With the key on, a
+// local shot aims through P' = P + (E_fire - E_P) instead: E_P the engine eye of P's camera sample, E_fire the game's
+// eye at the fire tick -- MEASURED where the title publishes one (Halo 3 on foot, Sight_SetFireEyeSource), else
+// EXTRAPOLATED as E_P + v * age. Covered: Halo 3 and ODST -- the crosshair-assist query re-aim
+// (LegacySightReaimCrosshairQuery) and the muzzle shot (Sight_AimMuzzleShot), on foot; seats only under the second key
+// shot_point_transport_seated; and Halo 3's on-foot record recomposition (shot_lag::RecomposeRecord). Not Reach: its
+// intent lane (ReachSightReadIntent) carries no camera-sample stamp and publishes no fire-tick eye. The reticle is
+// never moved: it stays on P. Player builds compile none of it (Sight_ShotPoint returns the point it was given).
+enum class SightTransportSite : uint8_t
+{
+    CrosshairAssist = 0,   // the crosshair-assist query re-aim (Halo 3, ODST)
+    Muzzle,                // the muzzle shot (Halo 3, ODST)
+    Record,                // Halo 3's on-foot record recomposition
+    Count
+};
+// A title's eye at the fire tick (Halo 3 on foot: game.cpp Halo3FireEyeForShot), on the fire thread. `siteEye`: the
+// eye the shot site itself already holds (the crosshair query's own start), else null; `askEvaluator`: when the title
+// published no eye this tick, the site (a muzzle shot) may have it evaluated now. Returns its verdict; on Measured
+// `eye` is the eye and `ageMs` its age now.
+using SightFireEyeFn = shot_lag::FireEye (*)(const float* siteEye, bool askEvaluator, float eye[3], float& ageMs);
+void Sight_SetFireEyeSource(GameTitle title, SightFireEyeFn source);
+// The dev keys' verdict for a shot of this kind: a covered title (Halo 3, ODST), shot_point_transport on, and seated
+// shots only with shot_point_transport_seated as well. Always false in a player build.
+bool Sight_TransportWanted(GameTitle title, bool seated);
+// P' for this intent's point -- seated the solve's point (solvePoint) from the solve's eye, on foot P from its camera
+// sample -- WITHOUT consulting the keys (the impact witness asks it for every fire). `siteEye` / `askEvaluator`: as
+// SightFireEyeFn (on foot only). `out`/`shift` written only when applied; `fire` (optional) receives the fire-eye
+// verdict, `fireAgeMs` / `pointAgeMs` (optional, -1 unknown) the fire eye's and the camera sample's ages. The fire
+// thread (a fire-eye source may evaluate the title's eye).
+shot_lag::Transport Sight_TransportIntent(GameTitle title, const SightIntent& intent, bool seated,
+                                          const float* siteEye, bool askEvaluator, float out[3], float shift[3],
+                                          shot_lag::FireEye* fire = nullptr, float* fireAgeMs = nullptr,
+                                          float* pointAgeMs = nullptr);
+// The point a local shot at `site` aims through: `reference` itself, or -- the keys on (Sight_TransportWanted) -- P'
+// in `storage` when the transport applies. `siteEye`: the eye the site holds (the crosshair query's start); a muzzle
+// shot has none and asks for the title's eye. Every outcome under the keys is counted (the dev SHOT LAG transport line).
+const float* Sight_ShotPoint(GameTitle title, SightTransportSite site, const SightIntent& intent, bool seated,
+                             const float* reference, float storage[3], const float* siteEye = nullptr);
+// A consumer that transports by itself (the record recomposition): count it like Sight_ShotPoint does.
+void Sight_NoteTransport(GameTitle title, SightTransportSite site, shot_lag::Transport how, shot_lag::FireEye fire,
+                         const float* shift, const float* dir, const float* vel, float fireAgeMs, float pointAgeMs);
+// The oldest camera sample an extrapolated transport carries (identity / freshness, not a size limit).
+inline constexpr uint64_t kSightTransportMaxAgeUs = 250000;
+
 // SHOT RE-AIM SITES (every build): which of a title's shot sites re-aimed a query or shot through the intent point.
 enum class SightShotSite : uint8_t
 {

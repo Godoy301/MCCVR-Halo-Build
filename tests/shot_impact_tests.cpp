@@ -212,6 +212,46 @@ int main()
         Check(cut < sizeof(small) && small[sizeof(small) - 1] == '\0', "window: a short buffer truncates safely");
     }
 
+    // ---- vs P' (P moved with the eye; shot_lag 4a) -----------------------------------------------------------------
+    {
+        // A 4 m/s strafe along +Y, P 10 m down +X, P' 62 mm ahead of it along the travel. A round that flies through
+        // P misses P' by 62 mm BEHIND (the key-off arm); one through P' misses P by 62 mm ahead (the key-on arm).
+        const float view[3]{1, 0, 0};
+        const float eyeVel[3]{0, 4 * kWuPerM, 0};
+        const float p[3]{10 * kWuPerM, 0, 0};
+        const float pT[3]{10 * kWuPerM, 0.062f * kWuPerM, 0};
+        const float shift[3]{0, 0.062f * kWuPerM, 0};
+        const float spawn[3]{0, 0, 0};
+        const float velThroughP[3]{900 * kWuPerM, 0, 0};
+        Window w;
+        w.AddFire(1);
+        w.AddTransported(shot_lag::Transport::Measured, shot_lag::MeasureShotLag(spawn, velThroughP, pT, nullptr, eyeVel),
+                         Decompose(shift, view, eyeVel));
+        w.AddTransported(shot_lag::Transport::Extrapolated,
+                         shot_lag::MeasureShotLag(spawn, velThroughP, pT, nullptr, eyeVel),
+                         Decompose(shift, view, eyeVel));
+        w.AddTransported(shot_lag::Transport::NoPointEye, shot_lag::ShotLagSample{}, Axes{});
+        const float hit[3]{p[0] - pT[0], p[1] - pT[1], p[2] - pT[2]};   // the round landed on P
+        w.AddImpactTransported(Decompose(hit, view, eyeVel));
+        Check(w.tMeasured == 1 && w.tExtrapolated == 1 && w.tNone == 1 && w.tShots == 2 && w.tTravel == 2,
+              "vs P': counted by how P' was had; no P' is counted and never measured");
+        Check(Near(w.tAlongSum / 2.0f, -62.0f, 0.5f) && Near(w.tShiftAlongSum / 2.0f, 62.0f, 0.5f),
+              "vs P': a round through P sits 62 mm behind P' along travel, and P' is 62 mm ahead of P");
+        Check(w.tImpacts == 1 && Near(w.tImpactAlongSum, -62.0f, 0.5f), "vs P': the impact against P'");
+        char line[2048]{};
+        Check(w.Format("Halo 3 [native; authoritative]", line, sizeof(line)) > 0 &&
+                  std::strstr(line, "vs P' (P moved with the eye: measured 1, extrapolated 1, none 1): ROUND LINE miss "
+                                    "62 mm, along travel -62 mm; P'-P along travel +62 mm; IMPACT vs P' 1: across 0 mm, "
+                                    "along travel -62 mm") != nullptr,
+              "vs P': the line's columns");
+        Window none;
+        none.AddFire(1);
+        Check(none.Format("Halo 3", line, sizeof(line)) > 0 && !std::strstr(line, "vs P'"),
+              "vs P': a window that never asked prints no columns");
+        Tracked t{};
+        Check(!t.pointTValid, "a tracked round has no P' until it is given one");
+    }
+
     // ---- ReticleWindow, TriggerLatch -------------------------------------------------------------------------------
     {
         ReticleWindow r;

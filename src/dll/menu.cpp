@@ -1365,6 +1365,25 @@ namespace
                                 "in first-person seats; Reach with Direct drive). With Direct drive, seats have\n"
                                 "their aim written too (Vehicles > Aim in seats says which); a seat first checks\n"
                                 "its own aim, about a second after you sit down.");
+#if HALOMCCVR_DEV_DIAGNOSTICS
+            ImGui::Spacing();
+            bool transport = g_config.shot_point_transport != 0;
+            if (ImGui::Checkbox("Move the shot point with your eye (A/B, dev)", &transport))
+            { g_config.shot_point_transport = transport ? 1 : 0; changed = true; }
+            ImGui::TextDisabled("DEV BUILD ONLY. Halo 3 and ODST. ON: a shot aims through the reticle's point moved\n"
+                                "with your eye since it was sampled (about a frame), like flat Halo's crosshair held\n"
+                                "still on your body. OFF: through the point fixed in the world, as before. The\n"
+                                "reticle never moves. Strafe past a wall and compare. Live.");
+            if (g_config.shot_point_transport)
+            {
+                ImGui::Indent();
+                bool seated = g_config.shot_point_transport_seated != 0;
+                if (ImGui::Checkbox("In vehicle seats too (dev)", &seated))
+                { g_config.shot_point_transport_seated = seated ? 1 : 0; changed = true; }
+                ImGui::TextDisabled("OFF keeps seats as they are (the Hornet felt right that way).");
+                ImGui::Unindent();
+            }
+#endif
         }
         ImGui::Spacing();
         ImGui::Separator();
