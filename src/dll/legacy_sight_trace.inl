@@ -566,8 +566,10 @@ void LegacySightNoteEngineTrace(GameTitle title, uint64_t flags, const float* st
 // campaign vehicles were already coherent (user, 2026-10-02) and stay byte-identical. Left alone (fail closed) when
 // the point is stale (over 150 ms) or for another generation, the converged aim is not in effect, the solve held at
 // the pitch rail, a seat is held at its stop or is a turret (the gun points elsewhere naturally), the fire or the
-// query is not the local player's (shot_lag::FireMark, QueryIsLocal), another gun's own line owns the fire (an off-hand gun, a barrel or muzzle shot:
-// LegacyOwnShotLineActive), or a rail refuses (behind the start, inside 30 cm, over 3 m off or 30 deg).
+// query is not the local player's (shot_lag::FireMark, QueryIsLocal: by identity, never by distance), another gun's
+// own line owns the fire (an off-hand gun, a barrel or muzzle shot: LegacyOwnShotLineActive), or no forward line
+// through P exists (behind the start, inside 30 cm). No magnitude limit: shot_lag::ReaimRails. Every refusal is
+// counted by reason on the SHOT REAIM line.
 // Collision-hook thread (the game's own query); lock-free reads only. The thread-local below carries the native
 // fire's `predicted` flag to the dev witness (Halo 3's fire detour sets it).
 thread_local int t_legacyFirePredicted = -1;
@@ -596,15 +598,13 @@ struct LegacySeatQueryRing
 } g_legacySeatQueries;
 #endif
 
-// True when this query belongs to the local player (shot_lag::QueryIsLocal): on foot its first ignore is the unit
-// itself; seated the vehicle's root or the seat's parent, starting within 1.5 m of our own eye carried forward by its
-// velocity to now (an AI gunner's camera sits elsewhere). A co-op player in the next seat passes this; the fire tag
-// (LegacyFireTag) is what tells his fire from ours.
-bool LegacySightQueryIsLocal(GameTitle title, int32_t ignoredA, const SightRay& ray, bool seated,
-                             const shot_lag::IntentPoint& intent, const float* start)
+// True when this query belongs to the local player (shot_lag::QueryIsLocal, by identity): on foot its first ignore
+// is the unit itself; seated the vehicle's root or the seat's parent. Another occupant (an AI gunner, a co-op player
+// in the next seat) names those too; the fire tag (LegacyFireTag) is what tells his fire from ours.
+bool LegacySightQueryIsLocal(GameTitle title, int32_t ignoredA, const SightRay& ray, bool seated)
 {
     return shot_lag::QueryIsLocal(seated, ignoredA, seated ? -1 : LegacyCollisionIgnoredObject(title), ray.ignoreB,
-                                  ray.ignoreC, intent, start, Sight_NowUs(), 1.5f * kReachWorldUnitsPerMeter);
+                                  ray.ignoreC);
 }
 
 // The fire thread's tag for this title's native fire (shot_lag::FireMark; game.cpp t_halo3Fire / t_odstFire).
@@ -676,12 +676,14 @@ bool LegacySightReaimCrosshairQuery(GameTitle title, uint64_t flags, const float
     // its assist traces that gun's ray, never the aim hand's point (shot_lag::GateCrosshairQuery).
     const shot_lag::QueryGate gate = shot_lag::GateCrosshairQuery(
         true, LegacyFireTag(title),
-        rayRead && LegacySightQueryIsLocal(title, ignoredA, ray, seated, intent.p, start),
+        rayRead && LegacySightQueryIsLocal(title, ignoredA, ray, seated),
         LegacyOwnShotLineActive(title));
-    if (gate == shot_lag::QueryGate::OwnShotLine)
-        Sight_NoteReaimSkipped(title, SightShotSite::CrosshairAssist, shot_lag::IntentUse::OwnShotLine);
     if (gate != shot_lag::QueryGate::Try)
+    {
+        if (gate != shot_lag::QueryGate::NotSite)
+            Sight_NoteReaimSkipped(title, SightShotSite::CrosshairAssist, shot_lag::QueryGateSkip(gate));
         return false;
+    }
     if (use != shot_lag::IntentUse::Use)
     {
         Sight_NoteReaimSkipped(title, SightShotSite::CrosshairAssist, use);
@@ -713,7 +715,7 @@ void LegacySightNoteCrosshairQuery(GameTitle title, uint64_t flags, const float*
     SightIntent intent{};
     const bool seated = Sight_ReadIntent(title, intent) && intent.p.seated;
     if (!Sight_ReadRay(title, generation, 250, ray) ||
-        !LegacySightQueryIsLocal(title, ignoredA, ray, seated, intent.p, start))
+        !LegacySightQueryIsLocal(title, ignoredA, ray, seated))
         return;
     Sight_NoteShotLagFromIntent(title, SightShotPath::CrosshairAssist, start, vector, t_legacyFirePredicted, seated,
                                 seated ? ray.ignoreB : -1);

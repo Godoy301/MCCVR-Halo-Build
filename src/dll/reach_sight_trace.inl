@@ -853,10 +853,12 @@ bool ReachSightReaimCrosshairQuery(uint64_t flags, const float* start, const flo
     const shot_lag::QueryGate gate = shot_lag::GateCrosshairQuery(
         true, fire, local != -1 && (ignoredA == local || ignoredA == ReachSightRootOf(local)),
         LegacyOwnShotLineActive(GameTitle::HaloReach));
-    if (gate == shot_lag::QueryGate::OwnShotLine)
-        Sight_NoteReaimSkipped(GameTitle::HaloReach, SightShotSite::CrosshairAssist, shot_lag::IntentUse::OwnShotLine);
     if (gate != shot_lag::QueryGate::Try)
+    {
+        if (gate != shot_lag::QueryGate::NotSite)
+            Sight_NoteReaimSkipped(GameTitle::HaloReach, SightShotSite::CrosshairAssist, shot_lag::QueryGateSkip(gate));
         return false;
+    }
     const uint64_t nowMs = GetTickCount64();
     if (!ReachConvergedShotLive(nowMs))
     {
