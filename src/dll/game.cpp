@@ -52185,18 +52185,18 @@ static bool ReachSeatAimFrameBindingInstalled()
 #include "type13_flight_log.inl"
 #endif
 
-#if HALOMCCVR_DEV_DIAGNOSTICS   // the dev key shot_point_transport and the impact witness are its only readers
-// THE FIRE-TICK EYE, Halo 3 on foot (sight_layer.h Sight_SetFireEyeSource; dev key shot_point_transport): the eye the
-// shot leaves from at this fire, from the unit's camera evaluator (0x212198) -- the one the game proves to be the
-// engine eye (EyeProof: within 5 cm of the engine camera at rest), so E_fire - E_P is motion, not two sources' offset.
-// In order of preference:
+// THE FIRE-TICK EYE, Halo 3 on foot (sight_layer.h Sight_SetFireEyeSource; every build since flat parity, 2026-10-03:
+// the dev key shot_point_transport, default 1, is the A/B): the eye the shot leaves from at this fire, from the unit's
+// camera evaluator (0x212198) -- the one the game proves to be the engine eye (EyeProof: within 5 cm of the engine
+// camera at rest), so E_fire - E_P is motion, not two sources' offset. In order of preference:
 //   * the crosshair query's own start (`siteEye`): the firing assist asked that evaluator for it at 0x13BC0D in this
 //     very fire;
-//   * this tick's published eye (PublishHalo3TickEye: the control pass's acquisition, which runs before the weapons
-//     fire in the same tick), the local unit's and from this tick (shot_lag::FireEyeGate);
-//   * only when there is none and the site may (`askEvaluator`: a muzzle shot, never the witness), the evaluator
-//     asked for the local unit now, as the stick call does when the game skipped its acquisition
-//     (Halo3TickEyeFromEvaluator): only its first-person path is an eye.
+//   * a muzzle shot (`askEvaluator`; never the witness): the evaluator asked for the local unit NOW, inside the fire
+//     routine (0x368651), after the tick has moved the unit -- the same eye the assist would trace from;
+//   * this tick's published eye (PublishHalo3TickEye) CARRIED ONE TICK (shot_lag::CarryTickEye), the local unit's and
+//     from this tick (shot_lag::FireEyeGate). Uncarried it is the eye BEFORE this tick's move -- the eye the last
+//     render showed -- which is why the muzzle transport measured 0 mm on every moving shot until 2026-10-03 while
+//     stock flat fires one tick of strafe ahead of the crosshair the player aimed with (shot_lag_logic.h).
 // Fire thread; the evaluator call under SEH with the lane's callback count held (RemoveHalo3DualAim's quiescence).
 static shot_lag::FireEye Halo3AskEvaluatorEye(uint32_t generation, int32_t unit, float eye[3])
 {
@@ -52245,31 +52245,33 @@ static shot_lag::FireEye Halo3FireEyeForShot(const float* siteEye, bool askEvalu
         return shot_lag::FireEye::Measured;
     }
     const int32_t local = LegacyCollisionIgnoredObject(GameTitle::Halo3);
-    float vel[3]{};
+    shot_lag::FireEye asked = shot_lag::FireEye::Count;
+    if (askEvaluator)
+    {
+        asked = Halo3AskEvaluatorEye(generation, local, eye);
+        if (asked == shot_lag::FireEye::Measured)
+        {
+            ageMs = 0.0f;
+            return asked;
+        }
+    }
+    float tickEye[3]{}, vel[3]{};
     bool velValid = false;
     uint64_t stampUs = 0;
     int32_t unit = -1;
-    const bool read = ReadHalo3TickEye(generation, 250000, eye, vel, velValid, stampUs, &unit);
+    const bool read = ReadHalo3TickEye(generation, 250000, tickEye, vel, velValid, stampUs, &unit);
     const uint64_t nowUs = Sight_NowUs();
-    const shot_lag::FireEye verdict = shot_lag::FireEyeGate(read, true, unit, local, stampUs, nowUs,
-                                                            g_legacyTickPeriodUs[0].load(std::memory_order_relaxed));
-    if (verdict == shot_lag::FireEye::Measured)
-    {
-        ageMs = float(nowUs - stampUs) / 1000.0f;
-        return verdict;
-    }
-    if (askEvaluator && (verdict == shot_lag::FireEye::NotRead || verdict == shot_lag::FireEye::NotThisTick))
-    {
-        const shot_lag::FireEye asked = Halo3AskEvaluatorEye(generation, local, eye);
-        if (asked == shot_lag::FireEye::Measured)
-            ageMs = 0.0f;
-        return asked;
-    }
-    return verdict;
+    const uint32_t tickUs = g_legacyTickPeriodUs[0].load(std::memory_order_relaxed);
+    const shot_lag::FireEye verdict = shot_lag::FireEyeGate(read, true, unit, local, stampUs, nowUs, tickUs);
+    if (verdict != shot_lag::FireEye::Measured)
+        return asked != shot_lag::FireEye::Count ? asked : verdict;
+    // At rest (no velocity yet) the eye itself is the carried eye.
+    (void)shot_lag::CarryTickEye(tickEye, velValid ? vel : nullptr, float(tickUs ? tickUs : 16667) * 1.0e-6f, eye);
+    ageMs = float(nowUs - stampUs) / 1000.0f;
+    return shot_lag::FireEye::CarriedTick;
 }
 static const bool g_halo3FireEyeRegistered =
     (Sight_SetFireEyeSource(GameTitle::Halo3, &Halo3FireEyeForShot), true);
-#endif
 
 // THE INTENT POINT (sight_layer.h SightIntent; shot_lag_logic.h). Input thread, every poll whose converged solve
 // resolved: P = H + u * r from ONE frame-coherent pair where the title publishes camera frames (Halo 3, ODST:

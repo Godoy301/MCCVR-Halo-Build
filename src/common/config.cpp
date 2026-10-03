@@ -2208,9 +2208,10 @@ void ConfigSave()
     fprintf(f, "# DEV BUILD ONLY. Halo 3 seated shots: 1 = aim so the round, which inherits its vehicle's sideways\n");
     fprintf(f, "# velocity, still flies at the reticle's point. 0 = aim straight at it (rounds lead along your travel).\n");
     fprintf(f, "seated_inherit_compensation = %d\n\n", g_config.seated_inherit_compensation);
-    fprintf(f, "# DEV BUILD ONLY. A/B for on-foot shots that trail a strafe: 1 = Halo 3 / ODST shots aim through the\n");
-    fprintf(f, "# reticle's point moved with your eye since it was sampled (what flat Halo fires with the crosshair\n");
-    fprintf(f, "# held still on your body). 0 = through the world point as before. The reticle never moves. Live.\n");
+    fprintf(f, "# DEV BUILD ONLY (players always get 1). Flat parity for on-foot shots while strafing: 1 = Halo 3 /\n");
+    fprintf(f, "# ODST shots aim through the reticle's point moved with your eye since it was sampled -- what flat Halo\n");
+    fprintf(f, "# fires with the crosshair held still on your body. 0 = through the world point (rounds trail a strafe\n");
+    fprintf(f, "# by one game tick; the A/B). The reticle never moves. Live. (default %d)\n", d.shot_point_transport);
     fprintf(f, "shot_point_transport = %d\n", g_config.shot_point_transport);
     fprintf(f, "# DEV BUILD ONLY. With shot_point_transport = 1: 1 = seated shots too. 0 = seats as before.\n");
     fprintf(f, "shot_point_transport_seated = %d\n\n", g_config.shot_point_transport_seated);
