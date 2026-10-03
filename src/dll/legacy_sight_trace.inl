@@ -240,6 +240,14 @@ void LegacySightTraceTick(GameTitle title, uint32_t unit, int32_t localUnit, boo
         state.seatedTraces.fetch_add(1, std::memory_order_relaxed);
     }
     const float length = kSightTraceLengthWu;
+    // A hit object that is part of our own vehicle: its root is our root, or -- when that walk fails, as it did for
+    // the unit on the fallback path above -- it is one of the seat chain's own handles.
+    const auto isOurs = [&](int32_t object) {
+        const int32_t hitRoot = LegacySightRootOf(objectData, object);
+        return object != -1 && (hitRoot != -1 ? hitRoot == root
+            : object == root || object == ignoreB || object == ignoreC || object == ray.ignoreB ||
+              object == ray.ignoreC);
+    };
     // Native collision initializes fields through +63 (type +0, fraction +4, point +8, object +0x40).
     alignas(16) uint8_t result[0x80]{};
     bool hit = false;
@@ -276,13 +284,7 @@ void LegacySightTraceTick(GameTitle title, uint32_t unit, int32_t localUnit, boo
             break;
         int32_t object = -1;
         memcpy(&object, result + 0x40, sizeof(object));
-        // Ours: its root is our root, or -- when that walk fails, as it did for the unit on the fallback path
-        // above -- it is one of the seat chain's own handles.
-        const int32_t hitRoot = LegacySightRootOf(objectData, object);
-        const bool ours = object != -1 && (hitRoot != -1 ? hitRoot == root
-            : object == root || object == ignoreB || object == ignoreC || object == ray.ignoreB ||
-              object == ray.ignoreC);
-        if (!ours)
+        if (!isOurs(object))
             break;
         // A part of our own vehicle the ignores did not cover: not a target. Look past it.
         state.selfHits.fetch_add(1, std::memory_order_relaxed);
@@ -293,6 +295,27 @@ void LegacySightTraceTick(GameTitle title, uint32_t unit, int32_t localUnit, boo
     QueryPerformanceCounter(&after);
     Sight_PublishTrace(title, generation, hit, hit ? rangeWu : 0.0f,
                        static_cast<uint64_t>(after.QuadPart - before.QuadPart));
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    // DEV ASSESSMENT (honest_reticle_assess): the game's own aim ray from its shot origin (the engine eye, or the
+    // rendered eye for an ODST passenger whose shot O6 moves there), in this same tick, with these same ignores.
+    // Only while the key published one; nothing the aim reads moves.
+    SightAssessRay assess{};
+    if (Sight_ReadAssessRay(title, generation, kSightRayFreshMs, assess))
+    {
+        bool assessHit = false;
+        float assessRangeWu = 0.0f;
+        if (!SightAssessTraceVector(original, flags, kReachAimTraceMode, assess, length, kSightTraceSkipWu,
+                                    kLegacySightSelfStepWu, seated ? kLegacySightSelfPasses : 1, ignoreA, ignoreB,
+                                    ignoreC, isOurs, assessHit, assessRangeWu))
+        {
+            Sight_NoteTraceFault(title);
+            LOG("SIGHT %s: the assessment trace raised a native fault; the trace stays off until the title "
+                "reinstalls", LegacySightTitleName(title));
+            return;
+        }
+        Sight_PublishAssessTrace(title, generation, assessHit, assessHit ? assessRangeWu : 0.0f);
+    }
+#endif
 }
 
 // ---- engine-crosshair check (dev): does the TITLE'S OWN crosshair trace pass through the traced point? ----

@@ -881,3 +881,114 @@ void Sight_ReportConverge()
     }
 #endif
 }
+
+#if HALOMCCVR_DEV_DIAGNOSTICS
+// ---- DEV ASSESSMENT RAY and its trace (sight_layer.h). Seqlocks like the intent ray's: one writer each (the aim
+// path, the title's trace thread), any reader. Slots of their own, so nothing the aim or the scope reads moves.
+namespace
+{
+struct AssessRayPublication
+{
+    std::atomic<uint32_t> sequence{0};
+    std::atomic<uint32_t> generation{0};
+    std::atomic<uint64_t> sampleMs{0};
+    std::atomic<float> origin[3]{};
+    std::atomic<float> dir[3]{};
+};
+struct AssessTracePublication
+{
+    std::atomic<uint32_t> sequence{0};
+    std::atomic<uint32_t> generation{0};
+    std::atomic<uint64_t> sampleMs{0};
+    std::atomic<uint32_t> hit{0};
+    std::atomic<float> rangeWu{0.0f};
+};
+AssessRayPublication g_assessRays[kTitleSlots];
+AssessTracePublication g_assessTraces[kTitleSlots];
+} // namespace
+
+void Sight_PublishAssessRay(GameTitle title, const SightAssessRay& ray)
+{
+    auto& p = g_assessRays[Slot(title)];
+    p.sequence.fetch_add(1, std::memory_order_acq_rel);
+    p.generation.store(ray.generation, std::memory_order_relaxed);
+    p.sampleMs.store(ray.sampleMs, std::memory_order_relaxed);
+    for (int i = 0; i < 3; ++i)
+    {
+        p.origin[i].store(ray.origin[i], std::memory_order_relaxed);
+        p.dir[i].store(ray.dir[i], std::memory_order_relaxed);
+    }
+    p.sequence.fetch_add(1, std::memory_order_release);
+}
+
+bool Sight_ReadAssessRay(GameTitle title, uint32_t generation, uint64_t maxAgeMs, SightAssessRay& out)
+{
+    const auto& p = g_assessRays[Slot(title)];
+    for (int attempt = 0; attempt < 2; ++attempt)
+    {
+        const uint32_t before = p.sequence.load(std::memory_order_acquire);
+        if (!before || (before & 1u))
+            continue;
+        SightAssessRay r{};
+        r.generation = p.generation.load(std::memory_order_relaxed);
+        r.sampleMs = p.sampleMs.load(std::memory_order_relaxed);
+        for (int i = 0; i < 3; ++i)
+        {
+            r.origin[i] = p.origin[i].load(std::memory_order_relaxed);
+            r.dir[i] = p.dir[i].load(std::memory_order_relaxed);
+        }
+        std::atomic_thread_fence(std::memory_order_acquire);
+        if (p.sequence.load(std::memory_order_relaxed) != before)
+            continue;
+        if (!generation || r.generation != generation || !Fresh(r.sampleMs, GetTickCount64(), maxAgeMs))
+            return false;
+        const float length = std::sqrt(r.dir[0] * r.dir[0] + r.dir[1] * r.dir[1] + r.dir[2] * r.dir[2]);
+        if (!std::isfinite(length) || std::fabs(length - 1.0f) > 1.0e-2f)
+            return false;
+        for (int i = 0; i < 3; ++i)
+            if (!std::isfinite(r.origin[i]))
+                return false;
+        out = r;
+        return true;
+    }
+    return false;
+}
+
+void Sight_PublishAssessTrace(GameTitle title, uint32_t generation, bool hit, float rangeWu)
+{
+    auto& t = g_assessTraces[Slot(title)];
+    t.sequence.fetch_add(1, std::memory_order_acq_rel);
+    t.generation.store(generation, std::memory_order_relaxed);
+    t.sampleMs.store(GetTickCount64(), std::memory_order_relaxed);
+    t.hit.store(hit ? 1u : 0u, std::memory_order_relaxed);
+    t.rangeWu.store(rangeWu, std::memory_order_relaxed);
+    t.sequence.fetch_add(1, std::memory_order_release);
+}
+
+bool Sight_ReadAssessTrace(GameTitle title, uint32_t generation, uint64_t maxAgeMs, bool& hit, float& rangeWu)
+{
+    const auto& t = g_assessTraces[Slot(title)];
+    for (int attempt = 0; attempt < 2; ++attempt)
+    {
+        const uint32_t before = t.sequence.load(std::memory_order_acquire);
+        if (!before || (before & 1u))
+            continue;
+        const uint32_t g = t.generation.load(std::memory_order_relaxed);
+        const uint64_t at = t.sampleMs.load(std::memory_order_relaxed);
+        bool h = t.hit.load(std::memory_order_relaxed) != 0;
+        float r = t.rangeWu.load(std::memory_order_relaxed);
+        std::atomic_thread_fence(std::memory_order_acquire);
+        if (t.sequence.load(std::memory_order_relaxed) != before)
+            continue;
+        if (!generation || g != generation || !Fresh(at, GetTickCount64(), maxAgeMs))
+            return false;
+        h = h && std::isfinite(r) && r > 0.0f;
+        if (!h)
+            r = kSightTraceLengthWu;   // a miss: the shot meets nothing within the whole trace
+        hit = h;
+        rangeWu = r;
+        return true;
+    }
+    return false;
+}
+#endif
