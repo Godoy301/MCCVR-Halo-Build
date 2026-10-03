@@ -303,7 +303,13 @@ const char* Game_VehicleSeatTrimName(int slot, VehicleTrimBank bank);
 // published the engine's ACTUAL aim for the reticle to draw instead of the aim
 // point. `outDir` carries it as a VR-space unit vector. A player build never
 // publishes it: a seat's limit or a turret no longer moves the reticle.
-bool Game_GetClampedAimDirection(float outDir[3]);
+// `outRangeM` > 0 (dev builds): the poll PLACED the mark -- `outDir` is then the
+// ray from the rendered centre eye through the point the game's shot reaches
+// (from the game's shot origin along its aim, to the first surface), and this
+// is that point's distance in VR metres; `outSurface` says the range is a
+// traced hit. 0: draw the direction from the eye at the crosshair distance.
+bool Game_GetClampedAimDirection(float outDir[3], float* outRangeM = nullptr,
+                                 bool* outSurface = nullptr);
 // Reach-only exact-frame reticle truth: returns the completed stereo pair's
 // native seated unit aim in that pair's final center-camera local axes.
 // The compositor rotates it by the submitted stereo-center orientation.

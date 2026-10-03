@@ -248,6 +248,7 @@ bool Halo4Type13LogRemove();
 #include "../common/aim_caller_logic.h"
 #include "../common/seat_drive_policy.h"
 #include "../common/converge_policy.h"
+#include "../common/assess_reticle_logic.h"
 #include "../common/halo4_seat_aim_logic.h"
 #include "../common/log.h"
 #include "../common/config.h"
@@ -9565,6 +9566,19 @@ namespace
     std::atomic<float> g_aimClampedVrPitch{0.0f};
     std::atomic<uint64_t> g_aimClampedMs{0};
     inline constexpr uint64_t kAimClampedFreshMs = 100;
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    // ...and, when this poll could place it, WHERE the shot lands (assess_reticle_logic.h): the direction above is
+    // then the ray from the rendered centre eye through the point the game's shot reaches -- from the game's own
+    // shot origin along its aim, to the first surface -- and this is that point's distance in VR metres, so the
+    // compositor draws the mark from the eye, on the surface, at its depth. 0 = not placed (the compositor parks
+    // the game's aim from the eye at the crosshair distance). `surface`: the range is a traced hit.
+    std::atomic<float> g_aimClampedRangeVrM{0.0f};
+    std::atomic<uint32_t> g_aimClampedSurface{0};
+    // Per-source counts of placed polls, and polls the poll could not place, for the dev line (cold worker reads).
+    std::atomic<uint32_t> g_assessPlaced[static_cast<size_t>(assess_reticle::RangeSource::Count)]{};
+    std::atomic<uint32_t> g_assessUnplaced{0};
+    std::atomic<float> g_assessLastRangeVrM{0.0f};
+#endif
 
     // One input poll's publication. Constructed first thing in Game_ComputeAimStick, so EVERY return -- the
     // early blocks, Halo 2's path, the drive's -- clears the flag unless this poll set a direction: a direction
@@ -9574,6 +9588,20 @@ namespace
     {
         bool valid = false;
         float yaw = 0.0f, pitch = 0.0f;
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        float rangeVrM = 0.0f;   // > 0: placed (the direction is from the eye through the shot's point)
+        bool surface = false;
+        void place(float vrYaw, float vrPitch, float vrRangeM, bool onSurface)
+        {
+            if (!std::isfinite(vrYaw) || !std::isfinite(vrPitch) || !std::isfinite(vrRangeM) || !(vrRangeM > 0.0f))
+                return;
+            valid = true;
+            yaw = vrYaw;
+            pitch = vrPitch;
+            rangeVrM = vrRangeM;
+            surface = onSurface;
+        }
+#endif
         void set(float vrYaw, float vrPitch)
         {
             if (!std::isfinite(vrYaw) || !std::isfinite(vrPitch))
@@ -9581,6 +9609,10 @@ namespace
             valid = true;
             yaw = vrYaw;
             pitch = vrPitch;
+#if HALOMCCVR_DEV_DIAGNOSTICS
+            rangeVrM = 0.0f;   // a bare direction is not placed
+            surface = false;
+#endif
         }
         ~AimClampedPublication()
         {
@@ -9588,11 +9620,43 @@ namespace
             {
                 g_aimClampedVrYaw.store(yaw, std::memory_order_relaxed);
                 g_aimClampedVrPitch.store(pitch, std::memory_order_relaxed);
+#if HALOMCCVR_DEV_DIAGNOSTICS
+                g_aimClampedRangeVrM.store(rangeVrM, std::memory_order_relaxed);
+                g_aimClampedSurface.store(surface ? 1u : 0u, std::memory_order_relaxed);
+#endif
                 g_aimClampedMs.store(GetTickCount64(), std::memory_order_relaxed);
             }
             g_aimClampedValid.store(valid ? 1u : 0u, std::memory_order_release);
         }
     };
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    // Cold worker, every 2 s while the assessment draws: where its mark came from.
+    void AssessReticleReport()
+    {
+        static uint64_t s_last = 0;
+        const uint64_t now = GetTickCount64();
+        if (now - s_last < 2000)
+            return;
+        s_last = now;
+        using assess_reticle::RangeSource;
+        uint32_t placed[static_cast<size_t>(RangeSource::Count)]{};
+        uint32_t total = 0;
+        for (size_t i = 0; i < static_cast<size_t>(RangeSource::Count); ++i)
+            total += (placed[i] = g_assessPlaced[i].exchange(0, std::memory_order_relaxed));
+        const uint32_t unplaced = g_assessUnplaced.exchange(0, std::memory_order_relaxed);
+        if (!total && !unplaced)
+            return;
+        LOG("ASSESS reticle (honest_reticle_assess): %u polls drew the point the game's shot reaches, from the eye "
+            "(%s %u, %s %u, %s %u; last %.2f m), %u drew the game's aim from the eye at the crosshair distance "
+            "(no shot origin known)", total, assess_reticle::RangeSourceName(RangeSource::GameAimTrace),
+            placed[static_cast<size_t>(RangeSource::GameAimTrace)],
+            assess_reticle::RangeSourceName(RangeSource::IntentTrace),
+            placed[static_cast<size_t>(RangeSource::IntentTrace)],
+            assess_reticle::RangeSourceName(RangeSource::CrosshairDistance),
+            placed[static_cast<size_t>(RangeSource::CrosshairDistance)],
+            double(g_assessLastRangeVrM.load(std::memory_order_relaxed)), unplaced);
+    }
+#endif
 #if HALOMCCVR_DEV_DIAGNOSTICS
     // The natural in-game causes that used to switch convergence off, counted per title for the dev line
     // (Sight_ReportConverge: "SIGHT <title> natural (no switch-off)") and never read by a decision
@@ -46326,6 +46390,9 @@ namespace
             Sight_Report();
             Sight_ReportConverge();   // dev: converge-off edges + reasons, natural causes (empty in player builds)
             LegacySightReport();
+#if HALOMCCVR_DEV_DIAGNOSTICS
+            AssessReticleReport();   // ASSESS reticle: where the dev assessment mark came from
+#endif
             Sight_ReportEngineRays();
             Sight_ReportShots();
 #if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA && HALOMCCVR_DEV_DIAGNOSTICS
@@ -51713,6 +51780,12 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
     float halo4SeatPoint[3]{};
     bool halo4SeatPointValid = false;
 #endif
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    // DEV ASSESSMENT (honest_reticle_assess): this poll's intent-ray eyes, kept for the assessment reticle -- the
+    // rendered centre eye it is drawn from, and the game's shot origin its point is measured from.
+    bool assessEyes = false;
+    float assessHead[3]{}, assessShotOrigin[3]{};
+#endif
     // The free-camera frame publishes no intent ray and bends nothing: the ray's eye is the engine camera's
     // position, which a death or free camera moves as the servo turns it, and with no unit there is no shot.
     if (aimFrame.traceReaim)
@@ -51859,6 +51932,11 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
             ray.ignoreB = sightVehicle;
             ray.ignoreC = sightCarrier;
             Sight_PublishRay(sightTitle, ray);
+#if HALOMCCVR_DEV_DIAGNOSTICS
+            assessEyes = true;
+            memcpy(assessHead, sightHead, sizeof(assessHead));
+            memcpy(assessShotOrigin, sightEye, sizeof(assessShotOrigin));
+#endif
             float bent[3]{};
             float sightRangeWu = 0.0f;
             // The pitch rail's hysteresis (aim_solve::RailHold): this loop's own, forgotten whenever the title, its
@@ -51935,10 +52013,26 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
     // unknown keeps the game's aim. Read by the servo path's assessment, nothing else.
     bool halo4SeatAimHonest = false;
     float halo4SeatAimHonestDir[3]{};
+    // ...and the point that shot reaches, at the range our own trace of the game's aim from the seat's eye found
+    // (the native assist's crosshair trace runs along that ray), else the converged point's: the assessment draws it
+    // there, from the rendered eye.
+    float halo4SeatShotPoint[3]{};
+    bool halo4SeatShotSurface = false;
     if (converge::AssessDrawsGameAim(g_config.honest_reticle_assess, true) && halo4SeatPointValid &&
         halo4SeatSight.seated && halo4SeatSight.solve)
+    {
+        const uint32_t h4Generation = TitleAdapter_GetGeneration(GameTitle::Halo4);
+        bool aimHit = false;
+        float aimRangeWu = 0.0f;
+        const bool aimTraced = Sight_ReadAssessTrace(GameTitle::Halo4, h4Generation, kSightFreshMs, aimHit,
+                                                     aimRangeWu);
+        SightTrace intentTrace{};
+        halo4SeatShotSurface = aimTraced ? aimHit
+            : Sight_ReadTrace(GameTitle::Halo4, h4Generation, kSightFreshMs, intentTrace) && intentTrace.hit;
         halo4SeatAimHonest = Halo4SeatSightHonestAlongAim(halo4SeatSight, halo4SeatPoint, halo4AimForward,
-                                                          halo4SeatAimHonestDir);
+                                                          halo4SeatAimHonestDir, aimTraced ? aimRangeWu : 0.0f,
+                                                          halo4SeatShotPoint);
+    }
 #endif
 #if HALOMCCVR_EXPERIMENTAL_REACH_RENDER_CANDIDATE
     // Record the final game-basis aim -- exactly the target the servo below chases. The Reach aim
@@ -52021,6 +52115,95 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
     // instead of the aim point -- back through the hull's frame when the view follows the vehicle
     // (Halo3SeatAimToVrReticle), or on a slope it sits off the gun by the hull's pitch; Halo 4's aim is world
     // angles. It moves the reticle only: nothing here reads it back.
+    //
+    // WHERE THE SHOT LANDS, not a ray from the hand (2026-10-02): the game fires from its own shot origin E (the
+    // intent ray's engine eye: on foot the camera before head look; in a seat the seat's eye), so the mark is the
+    // point P = E + a * r the shot reaches along the game's aim a -- r the first surface our trace of that very
+    // ray meets (Sight_PublishAssessRay; the title's sim-thread trace runs it beside the intent ray), else the
+    // intent ray's traced point at its distance from E, else the crosshair distance -- drawn on the ray from the
+    // rendered eye H through P, at |P - H| (assess_reticle_logic.h). Drawn from the hand at a fixed distance, the
+    // game's aim sat parallel to the shot line, off by the eye-to-hand offset: the Halo 3 shots landed above it.
+    // Without the eyes (Reach outside a converged actuation, a seat whose view is not ours) the direction alone is
+    // published and the compositor draws it from the eye at the crosshair distance.
+    const auto assessToVr = [&](const float worldDir[3], float& outYaw, float& outPitch) {
+        const float length = std::sqrt(worldDir[0] * worldDir[0] + worldDir[1] * worldDir[1] +
+                                       worldDir[2] * worldDir[2]);
+        if (!std::isfinite(length) || length < 1.0e-6f)
+            return false;
+        const float n[3]{worldDir[0] / length, worldDir[1] / length, worldDir[2] / length};
+        if (halo4Aim)
+        {
+            outYaw = headYawReference + g_yawSign.load() * WrapPi(atan2f(n[1], n[0]) - gameYawReference);
+            outPitch = g_pitchSign.load() * asinf(Clamp(n[2], -1.0f, 1.0f));
+            return std::isfinite(outYaw) && std::isfinite(outPitch);
+        }
+        return Halo3SeatAimToVrReticle(n, followedVehicleFrame, hullYaw, hullPitch, gameYawReference,
+                                       headYawReference, g_yawSign.load(), g_pitchSign.load(), outYaw, outPitch);
+    };
+    // Places the mark from the rendered eye `head` at the point the shot from `shotOrigin` along the game's aim
+    // reaches. False leaves the poll's bare direction in place.
+    const auto assessPlace = [&](GameTitle title, const float head[3], const float shotOrigin[3]) {
+        const float aimLength = std::sqrt(ax * ax + ay * ay + az * az);
+        if (!std::isfinite(aimLength) || aimLength < 1.0e-4f)
+            return false;
+        const uint32_t generation = TitleAdapter_GetGeneration(title);
+        SightAssessRay assessRay{};
+        assessRay.generation = generation;
+        assessRay.sampleMs = GetTickCount64();
+        for (int axis = 0; axis < 3; ++axis)
+        {
+            assessRay.origin[axis] = shotOrigin[axis];
+            assessRay.dir[axis] = aimForward[axis] / aimLength;
+        }
+        Sight_PublishAssessRay(title, assessRay);
+        bool gameHit = false;
+        float gameRangeWu = 0.0f;
+        const bool gameTraced = Sight_ReadAssessTrace(title, generation, kSightFreshMs, gameHit, gameRangeWu);
+        // The intent ray's traced point, at its distance from the shot origin (exact while the aim is converged).
+        bool intentTraced = false, intentHit = false;
+        float intentDistanceWu = -1.0f;
+#if HALOMCCVR_EXPERIMENTAL_REACH_RENDER_CANDIDATE
+        if (title == GameTitle::HaloReach)
+        {
+            float o[3]{}, u[3]{}, e[3]{}, h[3]{}, rangeWu = 0.0f;
+            if (ReachSightReadActuated(GetTickCount64(), o, u, e, h, rangeWu))
+            {
+                intentDistanceWu = assess_reticle::DistanceToRayPoint(shotOrigin, o, u, rangeWu);
+                intentTraced = intentDistanceWu > 0.0f;
+                intentHit = g_reachSightTrace.hit.load(std::memory_order_relaxed) != 0;
+            }
+        }
+        else
+#endif
+        {
+            SightRay intentRay{};
+            SightTrace intentTrace{};
+            if (Sight_ReadRay(title, generation, kSightRayFreshMs, intentRay) &&
+                Sight_ReadTrace(title, generation, kSightFreshMs, intentTrace))
+            {
+                intentDistanceWu = assess_reticle::DistanceToRayPoint(shotOrigin, intentRay.head, intentRay.dir,
+                                                                      intentTrace.rangeWu);
+                intentTraced = intentDistanceWu > 0.0f;
+                intentHit = intentTrace.hit;
+            }
+        }
+        const float unitsPerVrMetre = g_worldScale.load(std::memory_order_relaxed);
+        const assess_reticle::RangeChoice range = assess_reticle::ChooseRange(
+            gameTraced, gameHit, gameRangeWu, intentTraced, intentHit, intentDistanceWu,
+            g_config.crosshair_distance_m * unitsPerVrMetre, kSightTraceLengthWu);
+        assess_reticle::Placement placed{};
+        float vrYaw = 0.0f, vrPitch = 0.0f;
+        if (!assess_reticle::Place(head, shotOrigin, assessRay.dir, range, unitsPerVrMetre, placed) ||
+            !assessToVr(placed.dir, vrYaw, vrPitch))
+            return false;
+        clamped.place(vrYaw, vrPitch, placed.rangeVrM, placed.surface);
+        if (clamped.rangeVrM > 0.0f)
+        {
+            g_assessPlaced[static_cast<size_t>(placed.source)].fetch_add(1, std::memory_order_relaxed);
+            g_assessLastRangeVrM.store(placed.rangeVrM, std::memory_order_relaxed);
+        }
+        return clamped.rangeVrM > 0.0f;
+    };
     const auto assessGameAim = [&](bool seatedNow) {
         if (!converge::AssessDrawsGameAim(g_config.honest_reticle_assess, seatedNow))
             return;
@@ -52031,6 +52214,22 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
                                      headYawReference, g_yawSign.load(), g_pitchSign.load(), vrYaw, vrPitch))
             return;
         clamped.set(vrYaw, vrPitch);
+        const GameTitle title = TitleAdapter_GetActiveTitle();
+        bool placed = false;
+        if (assessEyes)
+            placed = assessPlace(title, assessHead, assessShotOrigin);
+#if HALOMCCVR_EXPERIMENTAL_REACH_RENDER_CANDIDATE
+        else if (title == GameTitle::HaloReach)
+        {
+            // Reach publishes no intent ray here (its lane is its own): the eyes of the provider's last converged
+            // actuation -- Reach's engine eye (the REACHSIGHT engine trace's origin) and the rendered eye.
+            float o[3]{}, u[3]{}, e[3]{}, h[3]{}, rangeWu = 0.0f;
+            if (ReachSightReadActuated(GetTickCount64(), o, u, e, h, rangeWu))
+                placed = assessPlace(title, h, e);
+        }
+#endif
+        if (!placed)
+            g_assessUnplaced.fetch_add(1, std::memory_order_relaxed);
     };
 #endif
     // DIRECT DRIVE, Halo 3 / ODST / Halo 4 (legacy_direct_drive.inl): hand the hook the final target -- the
@@ -52326,6 +52525,13 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
                 if (std::isfinite(yaw) && std::isfinite(pitch))
                 {
                     clamped.set(yaw, pitch);
+                    // Placed at that shot's own point, from the rendered eye (the direction is already H -> Q).
+                    float headToShot[3]{};
+                    float lengthWu = 0.0f;
+                    const float unitsPerVrMetre = g_worldScale.load(std::memory_order_relaxed);
+                    if (assess_reticle::FromHead(halo4SeatSight.head, halo4SeatShotPoint, headToShot, lengthWu) &&
+                        assess_reticle::PositiveFinite(unitsPerVrMetre))
+                        clamped.place(yaw, pitch, lengthWu / unitsPerVrMetre, halo4SeatShotSurface);
                     shown = true;
                 }
             }
@@ -52518,8 +52724,12 @@ bool Game_GetReachVehicleReticleAimDirection(
 // True while the dev assessment key published the engine's ACTUAL aim this
 // poll (AimClampedPublication). `outDir` then carries it as a VR-space unit
 // vector, in the same convention the reticle uses (yaw about +Y, -Z forward).
-bool Game_GetClampedAimDirection(float outDir[3])
+bool Game_GetClampedAimDirection(float outDir[3], float* outRangeM, bool* outSurface)
 {
+    if (outRangeM)
+        *outRangeM = 0.0f;
+    if (outSurface)
+        *outSurface = false;
     if (!outDir || !g_aimClampedValid.load(std::memory_order_acquire))
         return false;
     // Only this poll's: a direction the input poll stopped refreshing (it no longer runs for this title or path)
@@ -52555,6 +52765,13 @@ bool Game_GetClampedAimDirection(float outDir[3])
     outDir[0] = sinf(yaw) * cp;
     outDir[1] = sinf(pitch);
     outDir[2] = -cosf(yaw) * cp;
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    const float rangeM = g_aimClampedRangeVrM.load(std::memory_order_relaxed);
+    if (outRangeM && std::isfinite(rangeM) && rangeM > 0.0f)
+        *outRangeM = rangeM;
+    if (outSurface)
+        *outSurface = g_aimClampedSurface.load(std::memory_order_relaxed) != 0;
+#endif
     return true;
 }
 

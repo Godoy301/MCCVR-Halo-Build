@@ -17991,25 +17991,110 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                                 }
                             }
 #endif
+                            // DEV ASSESSMENT ONLY (honest_reticle_assess), below: the mark is
+                            // drawn from the stereo centre eye on its own placement.
+                            bool assessFromEye = false;
+                            aim_solve::TracedReticle assessPlacement{};
 #if HALOMCCVR_DEV_DIAGNOSTICS
-                            // DEV ASSESSMENT ONLY (honest_reticle_assess): draw the
-                            // game's REAL aim, from the controller at the crosshair
-                            // distance, instead of the aim point -- even over the
-                            // traced reticle, so the gap can be judged by eye. It
-                            // moves the drawing only. A player build never publishes
-                            // it: a seat's stop or a turret's slew no longer moves the
-                            // reticle (2026-10-01); the game's tracers show those.
+                            // DEV ASSESSMENT ONLY (honest_reticle_assess): draw where
+                            // the game's shot REALLY lands, instead of the aim point --
+                            // even over the traced reticle, so the gap can be judged by
+                            // eye. The game fires from its own shot origin, not the
+                            // controller, so the poll publishes the ray from the
+                            // rendered eye through the point that shot reaches (the
+                            // first surface along the game's aim from that origin) and
+                            // its distance; it is drawn from the stereo centre eye like
+                            // the traced reticle, on the surface, at its depth. Drawn
+                            // from the controller at the crosshair distance (before
+                            // 2026-10-02) it sat parallel to the shot line, off by the
+                            // eye-to-hand offset. With no range the game's aim is drawn
+                            // from the eye at the crosshair distance. Not with a barrel
+                            // reticle (gun_barrel_aim: the shot follows the barrel,
+                            // which that reticle already shows). It moves the drawing
+                            // only: the scope lens never reads it. A player build never
+                            // publishes it: a seat's stop or a turret's slew no longer
+                            // moves the reticle (2026-10-01); the game's tracers show those.
                             float clampedAim[3];
-                            if (!reachNativeAim && Game_GetClampedAimDirection(clampedAim))
+                            float assessRangeM = 0.0f;
+                            bool assessSurface = false;
+                            bool assessPublished = false;
+                            if (!reachNativeAim && !primaryBarrel &&
+                                Game_GetClampedAimDirection(clampedAim, &assessRangeM, &assessSurface))
                             {
+                                assessPublished = true;
                                 aimDir[0] = clampedAim[0];
                                 aimDir[1] = clampedAim[1];
                                 aimDir[2] = clampedAim[2];
                                 tracedReticle = false;
+                                if (projection.viewCount == 2 && projectionViews.size() == 2)
+                                {
+                                    const XrPosef& left = projectionViews[0].pose;
+                                    const XrPosef& right = projectionViews[1].pose;
+                                    const float leftQuaternion[4] = {
+                                        left.orientation.x, left.orientation.y,
+                                        left.orientation.z, left.orientation.w};
+                                    const float rightQuaternion[4] = {
+                                        right.orientation.x, right.orientation.y,
+                                        right.orientation.z, right.orientation.w};
+                                    const float leftPosition[3] = {
+                                        left.position.x, left.position.y, left.position.z};
+                                    const float rightPosition[3] = {
+                                        right.position.x, right.position.y, right.position.z};
+                                    assessFromEye = ReachBuildStereoCenterPose(
+                                        leftQuaternion, leftPosition,
+                                        rightQuaternion, rightPosition, reachCenter);
+                                }
+                                if (assessFromEye)
+                                {
+                                    if (assessRangeM > 0.0f)
+                                    {
+                                        assessPlacement = aim_solve::traced_reticle_placement(
+                                            assessSurface, assessRangeM,
+                                            g_config.reticle_max_dist_m,
+                                            g_config.reticle_surface_offset_m,
+                                            g_config.reticle_min_scale_dist_m,
+                                            g_config.reticle_min_scale,
+                                            g_config.crosshair_size_deg);
+                                    }
+                                    else
+                                    {
+                                        assessPlacement.dist_m = g_config.crosshair_distance_m;
+                                        assessPlacement.width_m = 2.0f * assessPlacement.dist_m *
+                                            tanf(g_config.crosshair_size_deg * 0.5f * 0.0174533f);
+                                    }
+                                }
+                            }
+                            {
+                                static int loggedAssess = -1;
+                                static uint64_t lastAssessLogMs = 0;
+                                const uint64_t nowMs = GetTickCount64();
+                                const int state = !g_config.honest_reticle_assess ? -1
+                                    : assessFromEye ? (assessRangeM > 0.0f ? 2 : 1) : assessPublished ? 3 : 0;
+                                if (state != loggedAssess ||
+                                    (state > 0 && nowMs - lastAssessLogMs >= 2000))
+                                {
+                                    loggedAssess = state;
+                                    lastAssessLogMs = nowMs;
+                                    if (state == 2)
+                                        LOG("ASSESS reticle drawn from the eye at the shot's point: %s %.2f m -> "
+                                            "drawn at %.2f m, width %.3f m", assessSurface ? "surface" : "parked",
+                                            assessRangeM, assessPlacement.dist_m, assessPlacement.width_m);
+                                    else if (state == 1)
+                                        LOG("ASSESS reticle drawn from the eye along the game's aim at the "
+                                            "crosshair distance %.1f m (the poll knew no shot origin)",
+                                            g_config.crosshair_distance_m);
+                                    else if (state == 3)
+                                        LOG("ASSESS reticle: no stereo pair this frame, the game's aim is drawn "
+                                            "from the controller at the crosshair distance");
+                                    else if (state == 0)
+                                        LOG("ASSESS reticle not drawn this frame (no fresh game aim, a barrel "
+                                            "reticle, Reach's native vehicle reticle, or no stereo pair)");
+                                }
                             }
 #endif
                             const float dist = tracedReticle
                                 ? tracedPlacement.dist_m
+                                : assessFromEye ? assessPlacement.dist_m
                                 : g_config.crosshair_distance_m;
                             const float yaw = atan2f(aimDir[0], -aimDir[2]);
                             const float sp = fminf(fmaxf(aimDir[1], -1.0f), 1.0f);
@@ -18040,13 +18125,15 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                                 g_reticleAimPose.position;
                             if(primaryBarrel) reticleOrigin={committedPrimary.position[0],
                                 committedPrimary.position[1],committedPrimary.position[2]};
-                            if (reachNativeAim || tracedReticle)
+                            if (reachNativeAim || tracedReticle || assessFromEye)
                             {
                                 // The direction and origin share one validated
                                 // predicted-display-time stereo-center pose.
                                 // Vehicle barrels retain their native origin
                                 // and therefore their honest close parallax.
-                                // On foot this is the eye the traced ray starts at.
+                                // On foot this is the eye the traced ray starts at,
+                                // and the eye the assessment's ray to the shot's
+                                // point starts at.
                                 reticleOrigin = {
                                     reachCenter.position[0],
                                     reachCenter.position[1],
@@ -18058,6 +18145,7 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                                 reticleOrigin.z + aimDir[2] * dist};
                             const float w = tracedReticle
                                 ? tracedPlacement.width_m
+                                : assessFromEye ? assessPlacement.width_m
                                 : 2.0f * dist *
                                   tanf(g_config.crosshair_size_deg * 0.5f * 0.0174533f);
                             reticleQuad.size = {w, w};
