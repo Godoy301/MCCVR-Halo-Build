@@ -712,7 +712,8 @@ namespace
     // THE GAME'S OWN EYE AT THE SIMULATION TICK (Halo 3; legacy_direct_drive.inl's record recomposition). Halo 3's
     // native acquisition (0x13B08C, run by the control update for each local input user) asks the unit's camera
     // evaluator (0x212198, hooked as g_halo3Dual.cameraOriginal) for the eye it targets from -- the same evaluator
-    // the firing assist asks on a shot (0x13BC0D). Captured for input user 0 on every acquisition: the eye the game
+    // the firing assist asks on a shot (0x13BC0D). Captured for input user 0 on every acquisition whose evaluator took
+    // the first-person path (its return, shot_lag::EvaluatorTookFirstPersonPath; a chase eye is withheld): the eye the game
     // fires from in this mode, whatever the render shows (campaign, or a multiplayer simulation that predicts or
     // interpolates the rendered camera). Sim thread writes; any thread reads. Its velocity is measured on its own
     // clock, by the writer.
@@ -819,6 +820,109 @@ namespace
                    shot_lag::Finite3(eye);
         }
         return false;
+    }
+
+    // THE DIRECTOR'S CAMERA FOR OUTPUT USER 0 (Halo 3; shot_lag_logic.h 4d, the first-person eye identity the record
+    // recomposition and its direct evaluator ask require). Decoded once per generation from two unique sites of the
+    // module, which must agree (shot_lag::DecodeDirectorCameraSites); read on the stick call's own thread through its
+    // engine TLS, under SEH, range-checked. That thread has the block: the game's own control update reads it there,
+    // in the very passes that run the acquisition and the stick call (0xF6488, called from 0xF42D8 and 0xF66AC:
+    // TLS +0x188 + user * 0x180 is the user's director, whose vtable +0x28 it asks; the per-user camera records
+    // follow the four directors, at +0x604). Unbound or unreadable = no identity = the record keeps its solved angles.
+    // ADDR-HYGIENE: resolved (shot_lag::kHalo3DirectorCacheSitePattern / kHalo3DirectorSetModeSitePattern: the TLS
+    // index, the block and both field offsets are read from the game's own instructions, never assumed).
+    struct Halo3DirectorCameraBinding
+    {
+        std::atomic<bool> bound{false};
+        std::atomic<uint32_t> generation{0};
+        const uint32_t* tlsIndex = nullptr;
+        uint32_t blockOffset = 0, perspectiveOffset = 0, modeOffset = 0;
+    };
+    Halo3DirectorCameraBinding g_halo3DirectorCamera;
+
+    void RetireHalo3DirectorCamera() noexcept
+    {
+        g_halo3DirectorCamera.bound.store(false, std::memory_order_release);
+        g_halo3DirectorCamera.generation.store(0, std::memory_order_release);
+    }
+
+    // Cold (title install, beside InstallHalo3DualAim). Fails closed and says which link failed.
+    bool BindHalo3DirectorCamera(uintptr_t base, size_t size, uint32_t generation, const uint32_t* engineTlsIndex)
+    {
+        RetireHalo3DirectorCamera();
+        auto& b = g_halo3DirectorCamera;
+        const auto unique = [&](const char* pattern) -> uintptr_t {
+            const uintptr_t hit = sig::Find(base, size, pattern);
+            return hit && !sig::Find(hit + 1, base + size - hit - 1, pattern) ? hit : 0;
+        };
+        const uintptr_t cache = unique(shot_lag::kHalo3DirectorCacheSitePattern);
+        const uintptr_t setMode = unique(shot_lag::kHalo3DirectorSetModeSitePattern);
+        shot_lag::DirectorCameraSites sites{};
+        if (!generation || !cache || !setMode ||
+            !shot_lag::DecodeDirectorCameraSites(reinterpret_cast<const uint8_t*>(cache),
+                                                 reinterpret_cast<const uint8_t*>(setMode), sites))
+        {
+            LOG("SHOT RECORD Halo 3: StockFallback: the director's camera record did not bind (first-person model "
+                "cache site %s, set_camera_mode site %s, %s); without the first-person eye identity the record keeps "
+                "its solved angles",
+                cache ? "unique" : "missing/ambiguous", setMode ? "unique" : "missing/ambiguous",
+                cache && setMode ? "the two sites disagree" : "not decoded");
+            return false;
+        }
+        const auto* tlsIndex = reinterpret_cast<const uint32_t*>(
+            cache + shot_lag::kDirectorCacheTlsNext + static_cast<intptr_t>(sites.tlsIndexDisp));
+        if (reinterpret_cast<uintptr_t>(tlsIndex) < base || reinterpret_cast<uintptr_t>(tlsIndex) + 4 > base + size ||
+            (engineTlsIndex && engineTlsIndex != tlsIndex))
+        {
+            LOG("SHOT RECORD Halo 3: StockFallback: the director site's TLS index (+0x%llX) is outside the module or "
+                "disagrees with the engine TLS index already bound (+0x%llX); the record keeps its solved angles",
+                (unsigned long long)(reinterpret_cast<uintptr_t>(tlsIndex) - base),
+                (unsigned long long)(engineTlsIndex ? reinterpret_cast<uintptr_t>(engineTlsIndex) - base : 0));
+            return false;
+        }
+        b.tlsIndex = tlsIndex;
+        b.blockOffset = sites.blockOffset;
+        b.perspectiveOffset = sites.perspectiveOffset;
+        b.modeOffset = sites.modeOffset;
+        b.generation.store(generation, std::memory_order_release);
+        b.bound.store(true, std::memory_order_release);
+        LOG("SHOT RECORD Halo 3: first-person eye identity bound: the director's camera record of output user 0 at "
+            "engine TLS +0x%X (index at +0x%llX), perspective +0x%X, mode +0x%X (set_camera_mode +0x%llX and the "
+            "first-person model cache +0x%llX agree)", sites.blockOffset,
+            (unsigned long long)(reinterpret_cast<uintptr_t>(tlsIndex) - base), sites.perspectiveOffset,
+            sites.modeOffset, (unsigned long long)(setMode - base), (unsigned long long)(cache - base));
+        return true;
+    }
+
+    // Any thread with the engine's TLS (the stick call's). False: not bound for this generation, no record on this
+    // thread, a fault, or a value out of range -- never a guess.
+    bool ReadHalo3DirectorCamera(uint32_t generation, int32_t& mode, int32_t& perspective) noexcept
+    {
+        const auto& b = g_halo3DirectorCamera;
+        if (!generation || !b.bound.load(std::memory_order_acquire) ||
+            b.generation.load(std::memory_order_acquire) != generation || !b.tlsIndex)
+            return false;
+        int32_t m = -1, p = -1;
+        __try
+        {
+            auto** slots = reinterpret_cast<void**>(__readgsqword(0x58));
+            const uint32_t index = *b.tlsIndex;
+            const auto* tls = slots && index < 0x200 ? static_cast<const uint8_t*>(slots[index]) : nullptr;
+            const auto* block = tls ? *reinterpret_cast<const uint8_t* const*>(tls + b.blockOffset) : nullptr;
+            if (!block)
+                return false;
+            p = *reinterpret_cast<const int32_t*>(block + b.perspectiveOffset);   // output user 0
+            m = *reinterpret_cast<const int32_t*>(block + b.modeOffset);
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            return false;
+        }
+        if (!shot_lag::DirectorCameraPlausible(m, p))
+            return false;
+        mode = m;
+        perspective = p;
+        return true;
     }
 
     // FIRST-PERSON WITNESSES (roomscale and the head leash; Halo 4's is g_halo4FirstPersonMs). Each title's
@@ -16034,6 +16138,7 @@ namespace
         if (!RemoveHalo3AssistWitness()) return false;
         if (!RemoveHalo3ImpactWitness()) return false;
 #endif
+        RetireHalo3DirectorCamera();
         if (!RemoveHalo3DualAim()) return false;
         RemoveHalo3GunBand();
         if (!LegacyDriveRemove(GameTitle::Halo3)) return false;
@@ -16955,6 +17060,8 @@ namespace
         // path owns acquisition and downstream assist together, with its own
         // default-off setting and feature-only failure isolation.
         (void)InstallHalo3DualAim(base,size,runtimeGeneration);
+        // The record recomposition's first-person eye identity (shot_lag_logic.h 4d): two sites, no hook.
+        (void)BindHalo3DirectorCamera(base,size,runtimeGeneration,g_engineTlsIndex);
         // A look-steered driver's gun band (halo3_vehicle_gun_band.inl): anchors only, no hook; fails closed alone.
         (void)InstallHalo3GunBand(base,size,runtimeGeneration);
 #if HALOMCCVR_DEV_DIAGNOSTICS

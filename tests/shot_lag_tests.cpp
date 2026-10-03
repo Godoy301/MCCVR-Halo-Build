@@ -5,6 +5,7 @@
 
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <initializer_list>
 
@@ -32,6 +33,31 @@ float LineMiss(const float origin[3], const float direction[3], const float poin
     const float t = shot_lag::Dot(w, d);
     const float m[3]{w[0] - d[0] * t, w[1] - d[1] * t, w[2] - d[2] * t};
     return shot_lag::Length(m);
+}
+
+// A sig::Find-style pattern ("48 8B ?? ...") against exactly `size` bytes: every token matches and none is left over.
+bool PatternMatches(const char* pattern, const uint8_t* bytes, size_t size)
+{
+    size_t at = 0;
+    for (const char* c = pattern; *c;)
+    {
+        if (*c == ' ')
+        {
+            ++c;
+            continue;
+        }
+        if (at >= size || !c[1])
+            return false;
+        if (c[0] != '?')
+        {
+            char token[3]{c[0], c[1], 0};
+            if (static_cast<uint8_t>(std::strtoul(token, nullptr, 16)) != bytes[at])
+                return false;
+        }
+        ++at;
+        c += 2;
+    }
+    return at == size;
 }
 } // namespace
 
@@ -476,6 +502,7 @@ int main()
         base.generation = 5;
         base.nowUs = 1040000;
         base.maxAgeUs = 150000;
+        base.firstPersonEye = true;
         base.eyeRead = true;
         base.eye[1] = 0.14f * kWuPerM;
         base.eyeVel[1] = v[1];
@@ -529,6 +556,21 @@ int main()
         in.intent.point[2] = std::nanf("");
         refused(in, Recompose::PointUnusable, "a non-finite point");
         in = base;
+        in.firstPersonEye = false;
+        refused(in, Recompose::NotFirstPerson, "not our unit's first-person eye (the Monitor, an orbit camera): kept");
+        in.intent.generation = 4;
+        refused(in, Recompose::PointUnusable, "an unusable point is named before the eye's identity");
+        in = base;
+        in.firstPersonEye = false;
+        in.eyeRead = false;
+        in.eyeProven = false;
+        refused(in, Recompose::NotFirstPerson, "the identity is named before the eye's freshness and proof");
+        in = base;
+        in.firstPersonEye = false;
+        in.eyeVelValid = false;
+        in.eye[1] = 8.0f * kWuPerM;   // a camera 8 m beside a point 10 m out: the 38.7 deg a wrong eye would bend
+        refused(in, Recompose::NotFirstPerson, "a big bend from a non-first-person eye is never applied");
+        in = base;
         in.eyeRead = false;
         refused(in, Recompose::NoGameEye, "no game eye at the tick");
         in = base;
@@ -571,15 +613,16 @@ int main()
               "the carry is clamped to 50 ms");
     }
 
-    // ---- the game's eye when the acquisition did not run (4c) ----
+    // ---- the game's eye when the acquisition did not publish one (4c) ----
     {
         TickEyeFallbackInput in{};
         in.hooked = true;
         in.sameGeneration = true;
         in.unit = 0x00CA;
-        in.onFootControlled = true;
+        in.firstPersonEye = true;
+        in.acquisition = TickEyeAcquisition::Skipped;
         Check(TickEyeFallbackGate(in) == TickEyeMiss::FromEvaluator,
-              "our unit, on foot in control, hooks live: ask the evaluator");
+              "our first-person eye, the game skipped its acquisition, hooks live: ask the evaluator");
         TickEyeFallbackInput x = in;
         x.hooked = false;
         Check(TickEyeFallbackGate(x) == TickEyeMiss::NoHook, "no evaluator hook: not asked, counted");
@@ -590,25 +633,134 @@ int main()
         x.unit = -1;
         Check(TickEyeFallbackGate(x) == TickEyeMiss::NoUnit, "no local unit: not asked");
         x = in;
-        x.onFootControlled = false;
-        Check(TickEyeFallbackGate(x) == TickEyeMiss::NotOnFootControlled, "a seat or a cinematic: not asked");
+        x.firstPersonEye = false;
+        Check(TickEyeFallbackGate(x) == TickEyeMiss::NotFirstPersonEye,
+              "not a first-person eye (a seat, the Monitor, an orbit camera): not asked");
+        x = in;
+        x.acquisition = TickEyeAcquisition::RanWithoutEvaluator;
+        Check(TickEyeFallbackGate(x) == TickEyeMiss::GameDeclined,
+              "the acquisition ran and declined the unit (an unarmed Monitor): not asked");
+        x.firstPersonEye = false;
+        Check(TickEyeFallbackGate(x) == TickEyeMiss::NotFirstPersonEye, "the identity is checked before the decline");
         x = in;
         x.hooked = false;
         x.unit = -1;
-        x.onFootControlled = false;
+        x.firstPersonEye = false;
         Check(TickEyeFallbackGate(x) == TickEyeMiss::NoHook, "the hooks are checked first");
-        Check(ClassifyTickEyeAcquisition(0, 5000000, 100000) == TickEyeAcquisition::Skipped,
+        Check(EvaluatorTookFirstPersonPath(0) && !EvaluatorTookFirstPersonPath(1) && !EvaluatorTookFirstPersonPath(17),
+              "the evaluator's 0 is the first-person update; anything else the chase camera");
+        Check(ClassifyTickEyeAcquisition(0, 5000000, 16667) == TickEyeAcquisition::Skipped,
               "never ran: the game skipped its acquisition");
-        Check(ClassifyTickEyeAcquisition(4950000, 5000000, 100000) == TickEyeAcquisition::RanWithoutEvaluator,
-              "ran 50 ms ago without publishing: it never reached the evaluator");
-        Check(ClassifyTickEyeAcquisition(4800000, 5000000, 100000) == TickEyeAcquisition::Skipped,
-              "last ran 200 ms ago: skipped since");
-        Check(ClassifyTickEyeAcquisition(5100000, 5000000, 100000) == TickEyeAcquisition::Skipped,
+        Check(ClassifyTickEyeAcquisition(4990000, 5000000, 16667) == TickEyeAcquisition::RanWithoutEvaluator,
+              "ran since the previous stick call without publishing: it never reached the evaluator");
+        Check(ClassifyTickEyeAcquisition(4950000, 5000000, 16667) == TickEyeAcquisition::Skipped,
+              "last ran three ticks ago: skipped this tick");
+        Check(ClassifyTickEyeAcquisition(5100000, 5000000, 16667) == TickEyeAcquisition::Skipped,
               "a stamp from the future is not a run");
+        // This tick's eye only.
+        Check(TickEyeFromThisTick(true, 5000100, 5000000), "published after the previous stick call: this tick's");
+        Check(!TickEyeFromThisTick(true, 4990000, 5000000),
+              "published before the previous stick call: held over (the 100 ms window let one stand six ticks)");
+        Check(!TickEyeFromThisTick(true, 5000000, 5000000), "published at the previous stick call: not this tick's");
+        Check(!TickEyeFromThisTick(false, 5000100, 5000000), "not read: not this tick's");
+        Check(!TickEyeFromThisTick(true, 0, 0), "no stamp: never");
+        Check(TickEyeFromThisTick(true, 1, 0), "the first stick call takes any fresh eye");
         bool named = true;
         for (size_t r = 0; r < static_cast<size_t>(TickEyeMiss::Count); ++r)
             named = named && std::strcmp(TickEyeMissName(static_cast<TickEyeMiss>(r)), "?") != 0;
         Check(named, "every game-eye miss has a name for the SHOT RECORD line");
+    }
+
+    // ---- the first-person eye identity (4d) ----
+    {
+        FirstPersonEyeInput in{};
+        in.onFootControlled = true;
+        in.directorRead = true;
+        in.mode = kHalo3CameraModeFirstPerson;
+        in.perspective = kHalo3PerspectiveFirstPerson;
+        Check(ClassifyFirstPersonEye(in) == FirstPersonEye::Yes, "on foot in control, the first-person camera: ours");
+        for (int32_t mode = 0; mode < kHalo3CameraModeCount; ++mode)
+        {
+            if (mode == kHalo3CameraModeFirstPerson)
+                continue;
+            FirstPersonEyeInput x = in;
+            x.mode = mode;
+            char what[96];
+            std::snprintf(what, sizeof(what), "the director's %s camera is not a first-person eye",
+                          Halo3CameraModeName(mode));
+            Check(ClassifyFirstPersonEye(x) == FirstPersonEye::NotFirstPersonCamera, what);
+        }
+        FirstPersonEyeInput x = in;
+        x.mode = 1;   // the orbit the Forge director switches to on the object its flying camera hits (0x21259B)
+        x.perspective = 1;
+        Check(ClassifyFirstPersonEye(x) == FirstPersonEye::NotFirstPersonCamera, "Forge's orbit camera: refused");
+        x = in;
+        x.perspective = 3;   // a neutral perspective on the first-person camera
+        Check(ClassifyFirstPersonEye(x) == FirstPersonEye::NotFirstPersonCamera,
+              "the first-person camera from another perspective: refused");
+        x = in;
+        x.directorRead = false;
+        Check(ClassifyFirstPersonEye(x) == FirstPersonEye::DirectorUnread, "an unread director: no identity, refused");
+        x = in;
+        x.mode = 8;
+        Check(ClassifyFirstPersonEye(x) == FirstPersonEye::DirectorUnread, "a mode out of range is not a reading");
+        x = in;
+        x.perspective = -1;
+        Check(ClassifyFirstPersonEye(x) == FirstPersonEye::DirectorUnread, "a perspective out of range neither");
+        x = in;
+        x.onFootControlled = false;
+        x.directorRead = false;
+        Check(ClassifyFirstPersonEye(x) == FirstPersonEye::NotOnFootControlled, "a seat or a cinematic is named first");
+        Check(DirectorCameraPlausible(0, 0) && DirectorCameraPlausible(7, 3) && !DirectorCameraPlausible(8, 0) &&
+                  !DirectorCameraPlausible(0, 4) && !DirectorCameraPlausible(-1, 0),
+              "the director's mode is 0..7 and its perspective 0..3");
+        Check(std::strcmp(Halo3CameraModeName(1), "orbiting") == 0 &&
+                  std::strcmp(Halo3CameraModeName(3), "first person") == 0 &&
+                  std::strcmp(Halo3CameraModeName(9), "?") == 0,
+              "camera modes are named as set_camera_mode's switch numbers them");
+        bool named = true;
+        for (size_t r = 0; r < static_cast<size_t>(FirstPersonEye::Count); ++r)
+            named = named && std::strcmp(FirstPersonEyeName(static_cast<FirstPersonEye>(r)), "?") != 0;
+        Check(named, "every identity verdict has a name for the SHOT RECORD line");
+
+        // The two sites exactly as the pinned halo3.dll (B209D845...EFB63) has them: the first-person model cache's
+        // gate at +0x28AE09 and set_camera_mode's store at +0x131C44.
+        const uint8_t cache[kDirectorCacheSiteBytes]{
+            0xBD, 0x88, 0x01, 0x00, 0x00, 0x3B, 0xC6, 0x75, 0x4C, 0x3B, 0xDE, 0x74, 0x48, 0x8B, 0x0D, 0x80, 0xF1,
+            0x7A, 0x00, 0x65, 0x48, 0x8B, 0x04, 0x25, 0x58, 0x00, 0x00, 0x00, 0x48, 0x8B, 0x14, 0xC8, 0x48, 0x8D,
+            0x0C, 0x5B, 0x48, 0x8B, 0x04, 0x2A, 0x83, 0xBC, 0x88, 0x04, 0x06, 0x00, 0x00, 0x00, 0x75};
+        const uint8_t setMode[kDirectorSetModeSiteBytes]{
+            0x65, 0x48, 0x8B, 0x0C, 0x25, 0x58, 0x00, 0x00, 0x00, 0x41, 0xB8, 0x88, 0x01, 0x00, 0x00, 0x4A,
+            0x8B, 0x0C, 0xF9, 0x49, 0x8B, 0x14, 0x08, 0x48, 0x63, 0x8E, 0x58, 0x01, 0x00, 0x00, 0x4C, 0x8D,
+            0x04, 0x49, 0x42, 0x39, 0x84, 0x82, 0x04, 0x06, 0x00, 0x00, 0x75, 0x0A, 0x42, 0x39, 0xAC, 0x82,
+            0x08, 0x06, 0x00, 0x00, 0x74, 0x32, 0x42, 0x89, 0x84, 0x82, 0x04, 0x06, 0x00, 0x00};
+        Check(PatternMatches(kHalo3DirectorCacheSitePattern, cache, sizeof(cache)),
+              "the cache-site pattern matches the pinned bytes, byte for byte");
+        Check(PatternMatches(kHalo3DirectorSetModeSitePattern, setMode, sizeof(setMode)),
+              "the set_camera_mode pattern matches the pinned bytes, byte for byte");
+        DirectorCameraSites sites{};
+        Check(DecodeDirectorCameraSites(cache, setMode, sites) && sites.blockOffset == 0x188 &&
+                  sites.perspectiveOffset == 0x604 && sites.modeOffset == 0x608,
+              "decoded: block TLS +0x188, perspective +0x604, mode +0x608");
+        Check(0x28AE09u + static_cast<uint32_t>(kDirectorCacheTlsNext) + static_cast<uint32_t>(sites.tlsIndexDisp) ==
+                  0xA39F9Cu,
+              "the TLS index decodes to +0xA39F9C, the engine TLS index every other Halo 3 lane binds");
+        const auto refusedSites = [&](size_t at, bool inCache, const char* what) {
+            uint8_t c[kDirectorCacheSiteBytes], m[kDirectorSetModeSiteBytes];
+            std::memcpy(c, cache, sizeof(c));
+            std::memcpy(m, setMode, sizeof(m));
+            (inCache ? c : m)[at] ^= 0x08;
+            DirectorCameraSites out{};
+            Check(!DecodeDirectorCameraSites(c, m, out) && out.blockOffset == 0, what);
+        };
+        refusedSites(kDirectorCacheBlock, true, "the two sites' blocks disagree: nothing bound");
+        refusedSites(kDirectorCachePerspective, true, "the cache's perspective field disagrees: nothing bound");
+        refusedSites(kDirectorSetModePerspective, false, "set_camera_mode's compare disagrees: nothing bound");
+        refusedSites(kDirectorSetModePerspectiveStore, false, "set_camera_mode's store disagrees: nothing bound");
+        refusedSites(kDirectorSetModeMode, false, "the mode is not the field after the perspective: nothing bound");
+        DirectorCameraSites none{};
+        Check(!DecodeDirectorCameraSites(nullptr, setMode, none) && !DecodeDirectorCameraSites(cache, nullptr, none),
+              "a missing site binds nothing");
     }
 
     // ---- the frame-coherent pair ----
