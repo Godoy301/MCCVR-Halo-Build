@@ -832,7 +832,8 @@ bool ReachSightReadIntent(uint64_t maxAgeUs, float point[3], float eye[3], float
 // from the tick's camera that line is the one meant moved by the eye's travel (measured: mean 93 mm, p90 187, max
 // 307 over 236 shots). This query -- the anchor's own call, siteReturn -- traces through the intent point from its
 // own start instead (shot_lag::ReaimThroughPoint; within 10 mm it is left exactly as built). Fail closed: no
-// converged write live (ReachConvergedShotLive), a seat held at its stop (ReachHeldAtLimit), a point older than
+// converged write live (ReachConvergedShotLive), a seat held at its stop (ReachHeldAtLimit, or its reticle clamped
+// there: Sight_SeatLimitClampedLive), a point older than
 // 150 ms, another unit's fire or query (shot_lag::FireMark), a barrel / muzzle shot's own line
 // (LegacyOwnShotLineActive), or a rail.
 bool ReachSightReaimCrosshairQuery(uint64_t flags, const float* start, const float* vector, int32_t ignoredA,
@@ -863,7 +864,10 @@ bool ReachSightReaimCrosshairQuery(uint64_t flags, const float* start, const flo
                                shot_lag::IntentUse::NotConverged);
         return false;
     }
-    if (ReachHeldAtLimit(nowMs))
+    // A natural hold, as the muzzle path (ReachAimMuzzleShot) and Halo 3's Game_SeatMuzzleRefusal read it: the
+    // record held at its eased limit, or the seat's reticle clamped at a natural stop (the intent point is the hand's,
+    // past the stop the game holds the gun at; the query is left on the game's clamped aim, through the clamped mark).
+    if (ReachHeldAtLimit(nowMs) || Sight_SeatLimitClampedLive(GameTitle::HaloReach))
     {
         Sight_NoteReaimSkipped(GameTitle::HaloReach, SightShotSite::CrosshairAssist,
                                shot_lag::IntentUse::NaturalHeld);
