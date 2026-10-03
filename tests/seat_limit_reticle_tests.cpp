@@ -295,6 +295,55 @@ void TestTally()
     t.note(b);
     Check(t.polls == 2 && t.yawEdge == 1 && t.pitchEdge == 1 && Near(t.maxOvershootDeg, 7.5f), "the tally");
 }
+
+// The record's eased pitch limits (Halo 3 / ODST): the offsets decoded from the accumulator's clamp.
+void TestResolvePitchLimits()
+{
+    const char* why = nullptr;
+    PitchLimitSite h3{0x190, 0x194, 0x194, 0xD8, 0x190, 0xD8};
+    Check(ResolvePitchLimits(h3, 0xD4, 0x110, why) == 0x190 && !why, "Halo 3: LO +0x190, HI +0x194");
+    PitchLimitSite odst{0x344, 0x348, 0x348, 0xD8, 0x344, 0xD8};
+    Check(ResolvePitchLimits(odst, 0xD4, 0x2C0, why) == 0x344 && !why, "ODST: LO +0x344, HI +0x348");
+    PitchLimitSite s = h3;
+    s.pitchAdd = 0xD4;
+    Check(!ResolvePitchLimits(s, 0xD4, 0x110, why) && why, "a clamp of the yaw is not the pitch's");
+    s = h3;
+    s.pitchStore = 0xDC;
+    Check(!ResolvePitchLimits(s, 0xD4, 0x110, why), "a store elsewhere is not the record's pitch");
+    s = h3;
+    s.loMax = 0x198;
+    Check(!ResolvePitchLimits(s, 0xD4, 0x110, why), "the clamp must bound by the low it eased");
+    s = h3;
+    s.hiStore = 0x198;
+    Check(!ResolvePitchLimits(s, 0xD4, 0x110, why), "the high must be read and written at one place");
+    s = h3;
+    s.hiLoad = s.hiStore = 0x19C;
+    Check(!ResolvePitchLimits(s, 0xD4, 0x110, why), "the limits must be adjacent");
+    Check(ResolvePitchLimits(h3, 0xD4, 0xC4, why) == 0x190, "the angles-to-high span fits the stride exactly");
+    Check(!ResolvePitchLimits(h3, 0xD4, 0xC0, why), "the limits must lie inside one user's record");
+    s = h3;
+    s.loStore = s.loMax = 0x191;
+    s.hiLoad = s.hiStore = 0x195;
+    Check(!ResolvePitchLimits(s, 0xD4, 0x110, why), "the limits must be float-aligned");
+    s = PitchLimitSite{0xD0, 0xD4, 0xD4, 0xD8, 0xD0, 0xD8};
+    Check(!ResolvePitchLimits(s, 0xD4, 0x110, why), "the limits must lie past the angles");
+}
+
+void TestRecordPitchInterval()
+{
+    Check(RecordPitchInterval(-0.33f, 0.61f), "a seat's range is an interval");
+    Check(RecordPitchInterval(0.2f, 0.2f), "a closed range (both limits met) is one");
+    Check(!RecordPitchInterval(0.3f, 0.2f), "an unordered pair is none");
+    Check(!RecordPitchInterval(std::nanf(""), 0.2f) && !RecordPitchInterval(-0.2f, INFINITY), "non-finite is none");
+    Check(!RecordPitchInterval(-1.7f, 0.2f) && !RecordPitchInterval(-0.2f, 1.7f), "past the pole is not a pitch");
+    // End to end: a look-steered driver's hand 30 deg below the eased low (-25 deg) holds at the low.
+    Stops s{};
+    AddInterval(s, 1, -25.0f * kDeg, 35.0f * kDeg);
+    Result r{};
+    Check(Clamp(s, 1.0f, -55.0f * kDeg, 1.0f, r) && r.clamped[1] && !r.clamped[0] && Near(r.worldPitch, -25.0f * kDeg) &&
+              NearAngle(r.worldYaw, 1.0f) && Near(r.overshootDeg, 30.0f, 1e-2f),
+          "the eased low holds the reticle's pitch, the yaw untouched");
+}
 } // namespace
 
 int main()
@@ -308,6 +357,8 @@ int main()
     TestGate();
     TestTurnVr();
     TestTally();
+    TestResolvePitchLimits();
+    TestRecordPitchInterval();
     std::printf("seat_limit_reticle_tests: %u checks, %u failures\n", checks, failures);
     return failures ? 1 : 0;
 }

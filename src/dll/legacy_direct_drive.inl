@@ -285,6 +285,35 @@ constexpr int32_t kLegacyUnitAimSeatStride[2] = {static_cast<int32_t>(kHalo3Vehi
 // The occupant's aim, published to the input thread, is current for this long (the servo's feedback otherwise).
 constexpr uint64_t kLegacyOccupantAimFreshMs = 100;
 
+// THE RECORD'S EASED PITCH LIMITS, Halo 3 and ODST (seat_limit::ResolvePitchLimits; 2026-10-03). The accumulator eases
+// two record fields toward the seat's pitch range every update and clamps the pitch to them; read after the update,
+// they are a look-steered driver's pitch stops (that driver's pitch is never latched: the accumulator levels it).
+// Each site is the clamp's exact bytes -- the eased low's store, the eased high's load and store, the pitch's
+// add/max/store -- UNIQUE in the module and matched at its RVA; the six offsets are DECODED from it (`?? ?? 00 00`)
+// and must agree (ResolvePitchLimits). Measured 2026-10-03 on the retail Steam modules (Halo 3 +0x190/+0x194 at
+// 0xF86F1, ODST +0x344/+0x348 at 0x114381; the Store modules are byte-identical, MCC-EDITIONS-EVIDENCE).
+// ADDR-HYGIENE: resolved (a unique pinned signature, offsets decoded and cross-checked) and guarded per read (finite,
+// ordered, inside the pole: seat_limit::RecordPitchInterval). Not bound: a look-steered driver's reticle is never
+// clamped in pitch, as before; logged once.
+struct LegacyPitchLimitSite
+{
+    uint32_t rva;
+    const char* pattern;
+    uint8_t loStore, hiLoad, hiStore, pitchAdd, loMax, pitchStore;   // disp32 positions in the pattern
+};
+constexpr LegacyPitchLimitSite kLegacyPitchLimitSites[2] = {
+    {0xF86F1,
+     "F3 0F 11 8C 3B ?? ?? 00 00 F3 0F 10 8C 3B ?? ?? 00 00 F3 0F 5C C1 F3 0F 5F C2 44 0F 2F E0 77 04 41 0F 28 C4 "
+     "F3 0F 58 C8 41 0F 28 D6 F3 0F 11 8C 3B ?? ?? 00 00 0F 28 C1 F3 0F 58 94 3B ?? ?? 00 00 F3 0F 5F 94 3B ?? ?? 00 00 "
+     "0F 2F C2 77 03 0F 28 D1 45 0F 2E F3 F3 0F 11 94 3B ?? ?? 00 00",
+     5, 14, 49, 61, 70, 91},
+    {0x114381,
+     "F3 0F 11 8C 1F ?? ?? 00 00 F3 0F 10 8C 1F ?? ?? 00 00 F3 0F 5C C1 F3 0F 5F C2 0F 2F D8 77 03 0F 28 C3 "
+     "F3 0F 58 C8 41 0F 28 D4 F3 0F 11 8C 1F ?? ?? 00 00 0F 28 C1 F3 0F 58 94 1F ?? ?? 00 00 F3 0F 5F 94 1F ?? ?? 00 00 "
+     "0F 2F C2 77 03 0F 28 D1 45 0F 2E E3 F3 0F 11 94 1F ?? ?? 00 00",
+     5, 14, 47, 59, 68, 89},
+};
+
 struct LegacyDriveState
 {
     void* target = nullptr;
@@ -345,6 +374,10 @@ struct LegacyDriveState
         turretHandSwingBits{0};
     std::atomic<uint32_t> turretServoOccupant[2]{}, turretServoGun[2]{}, turretLagHolds[2]{};
 #endif
+    // The record's eased pitch limits (kLegacyPitchLimitSites): the low's offset, bound at install (0: not bound), and
+    // how often a look-steered driver's write published them as its pitch stops (and how often a read was refused).
+    uint32_t pitchLimitOffset = 0;
+    std::atomic<uint32_t> pitchLimitPublished{0}, pitchLimitRefused{0};
     bool stintActive = false;
     uint32_t stintKey = 0;
     bool stintPitchFailCounted = false;
@@ -665,6 +698,38 @@ bool LegacyDriveLocalOnFoot(int slot)
     return false;
 }
 
+// Install thread: bind the record's eased pitch limits (kLegacyPitchLimitSites). Returns the low's offset, 0 when not
+// bound (`why` names the first proof that failed).
+uint32_t LegacyDriveBindPitchLimits(int slot, uintptr_t base, size_t size, const char*& why)
+{
+    why = nullptr;
+    if (slot < 0 || slot > 1)
+    {
+        why = "no binding for this title";
+        return 0;
+    }
+    const auto& site = kLegacyPitchLimitSites[slot];
+    if (!LegacyDriveUniqueAt(base, size, site.rva, site.pattern))
+    {
+        why = "the accumulator's pitch clamp is missing, moved or ambiguous";
+        return 0;
+    }
+    const auto i32 = [&](uint8_t at) {
+        int32_t v = 0;
+        memcpy(&v, reinterpret_cast<const void*>(base + site.rva + at), sizeof(v));
+        return v;
+    };
+    seat_limit::PitchLimitSite s{};
+    s.loStore = i32(site.loStore);
+    s.hiLoad = i32(site.hiLoad);
+    s.hiStore = i32(site.hiStore);
+    s.pitchAdd = i32(site.pitchAdd);
+    s.loMax = i32(site.loMax);
+    s.pitchStore = i32(site.pitchStore);
+    return seat_limit::ResolvePitchLimits(s, static_cast<int32_t>(kLegacyDriveSites[slot].angles),
+                                          static_cast<int32_t>(kLegacyDriveSites[slot].stride), why);
+}
+
 // Builds the title's caller map (kLegacyCallerAnchors) and logs what it proved. Returns rung 1: the stick
 // site is proven. Otherwise the map stays empty and every caller counts as the update (as before).
 bool LegacyDriveBuildCallerMap(int slot, uintptr_t base, size_t size, aim_caller::CallerMap& map)
@@ -831,6 +896,9 @@ bool LegacyDriveInstall(GameTitle title, uintptr_t base, size_t size)
     st.unitAimOffset = slot < 2 ? LegacyDriveBindUnitAim(slot, base, size, unitAimWhy, unitAimCameraRva,
                                                          unitAimControlRva)
                                 : 0;
+    // A look-steered driver's pitch stops: the record's eased limits (Halo 3 and ODST).
+    const char* pitchLimitWhy = nullptr;
+    st.pitchLimitOffset = slot < 2 ? LegacyDriveBindPitchLimits(slot, base, size, pitchLimitWhy) : 0;
     const MH_STATUS created = MH_CreateHook(target, detour, orig);
     if (created != MH_OK || MH_EnableHook(target) != MH_OK)
     {
@@ -864,6 +932,14 @@ bool LegacyDriveInstall(GameTitle title, uintptr_t base, size_t size)
     else if (slot < 2)
         LOG("DRIVE %s: the occupant's aim vector is NOT bound (%s); a gun-slaved seat proves against the gun's "
             "camera alone, as before", site.name, unitAimWhy ? unitAimWhy : "unknown");
+    if (slot < 2 && st.pitchLimitOffset)
+        LOG("DRIVE %s: the record's eased pitch limits are +0x%X / +0x%X (the accumulator's clamp at +0x%X stores, reads "
+            "and bounds the pitch +0x%X by them): a look-steered driver's reticle stops at them",
+            site.name, st.pitchLimitOffset, st.pitchLimitOffset + 4, kLegacyPitchLimitSites[slot].rva, site.angles + 4);
+    else if (slot < 2)
+        LOG("DRIVE %s: the record's eased pitch limits are NOT bound (%s at +0x%X); a look-steered driver's reticle is "
+            "not clamped in pitch, as before", site.name, pitchLimitWhy ? pitchLimitWhy : "unknown",
+            kLegacyPitchLimitSites[slot].rva);
     return true;
 }
 
@@ -1750,6 +1826,22 @@ extern "C" void LegacyPcApplyForUser(int slot, int user, uintptr_t ret, const ui
                         {
                             seat_limit::Stops stops{};
                             seat_limit::AddLatch(stops, st.seatLatch, latchRead);
+                            // A LOOK-STEERED DRIVER's pitch is never latched (autolevel); its stops are the record's
+                            // own eased limits, read now: the update just eased them and clamped the pitch to them.
+                            if (writePitch && !pitchLatch && st.pitchLimitOffset)
+                            {
+                                const float lo = *reinterpret_cast<const float*>(pc + st.pitchLimitOffset);
+                                const float hi = *reinterpret_cast<const float*>(pc + st.pitchLimitOffset + 4);
+                                if (seat_limit::RecordPitchInterval(lo, hi))
+                                {
+                                    seat_limit::AddInterval(stops, 1, lo, hi);
+                                    st.pitchLimitPublished.fetch_add(1, std::memory_order_relaxed);
+                                }
+                                else
+                                {
+                                    st.pitchLimitRefused.fetch_add(1, std::memory_order_relaxed);
+                                }
+                            }
                             stops.rebased = seatFrame.kase == seat_frame::Case::Rebased;
                             stops.frame = seatFrame.frame;
                             st.stops.publish(seatKey, stops, nativeYaw, now);
@@ -1917,6 +2009,12 @@ void LegacyDriveReport()
                     st.occWatch[0].revoked ? "revoked" : st.stintOccupant.yaw_ok ? "proven" : "checking",
                     st.occWatch[1].revoked ? "revoked"
                         : st.stintOccupant.pitch_ok ? "proven" : st.stintOccupant.pitch_failed ? "failed" : "checking");
+            // A look-steered driver's pitch stops (the record's eased limits), when any were published.
+            const uint32_t limitPublished = st.pitchLimitPublished.exchange(0, std::memory_order_relaxed);
+            const uint32_t limitRefused = st.pitchLimitRefused.exchange(0, std::memory_order_relaxed);
+            if (limitPublished || limitRefused)
+                LOG("DRIVE %s driver pitch stops: %u writes published the record's eased limits as the reticle's pitch "
+                    "stops; %u reads refused (not a finite, ordered pitch range)", name, limitPublished, limitRefused);
             // Once per binding: a seat whose frame did not read is never written (the servo keeps it).
             if (unread && !st.frameCounters.unknownLogged.exchange(1, std::memory_order_relaxed))
                 LOG("DRIVE %s seats: the seat's frame did not read (the rebase's links or the vehicle's up failed "
