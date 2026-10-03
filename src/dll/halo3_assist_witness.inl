@@ -37,6 +37,19 @@ struct Halo3AssistWitness
 };
 Halo3AssistWitness g_halo3AssistWitness;
 
+// The assist the fire routine is running on this thread (dev; the shot impact witness, halo3_impact_witness.inl):
+// the shot's origin and the fire routine's stack pointer (its frame holds the inheritance the round will get), set
+// only for the fire routine's own call and only while it runs. `last*`: that fire's assist output, for its spawn.
+struct Halo3AssistShotContext
+{
+    bool active = false;
+    float origin[3]{};
+    uintptr_t fireRsp = 0;
+    bool lastValid = false;
+    float lastOrigin[3]{}, lastPost[3]{};
+};
+thread_local Halo3AssistShotContext t_halo3AssistShot;
+
 namespace
 {
 float Halo3AssistAngleDeg(const float a[3], const float b[3])
@@ -129,7 +142,14 @@ __declspec(noinline) uint64_t __fastcall Halo3AssistWitnessDetour(uint64_t a1, u
         float pre[3]{};
         const bool measure = reinterpret_cast<uintptr_t>(_ReturnAddress()) == w.fireReturn && direction && origin;
         if (measure)
+        {
             memcpy(pre, direction, sizeof(pre));
+            auto& shot = t_halo3AssistShot;
+            memcpy(shot.origin, origin, sizeof(shot.origin));
+            // The fire routine's rsp at its call: our entry rsp holds its return address, its rsp is one slot above.
+            shot.fireRsp = reinterpret_cast<uintptr_t>(_AddressOfReturnAddress()) + sizeof(void*);
+            shot.active = true;
+        }
         if (w.original)
             result = CallNativeWithSpareSlots(w.original, a1, a2, a3, a4, a5, a6, a7);
         if (measure)
@@ -137,11 +157,16 @@ __declspec(noinline) uint64_t __fastcall Halo3AssistWitnessDetour(uint64_t a1, u
             float post[3]{}, from[3]{};
             memcpy(post, direction, sizeof(post));
             memcpy(from, origin, sizeof(from));
+            auto& shot = t_halo3AssistShot;
+            shot.lastValid = true;
+            memcpy(shot.lastOrigin, from, sizeof(shot.lastOrigin));
+            memcpy(shot.lastPost, post, sizeof(shot.lastPost));
             Halo3AssistWitnessMeasure(pre, post, from);
         }
     }
     __finally
     {
+        t_halo3AssistShot.active = false;
         w.callbacks.fetch_sub(1, std::memory_order_acq_rel);
     }
     return result;

@@ -694,6 +694,13 @@ bool LegacySightReaimCrosshairQuery(GameTitle title, uint64_t flags, const float
         return false;
     }
     memcpy(out, vector, sizeof(float) * 3);
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    // Dev key seated_inherit_compensation (default 0; halo3_impact_witness.inl): a Halo 3 seated round that will
+    // inherit its vehicle's sideways velocity is aimed through the point that makes its own velocity reach P.
+    float compensated[3]{};
+    if (title == GameTitle::Halo3 && seated && Halo3SeatedInheritPoint(point, compensated))
+        point = compensated;
+#endif
     return Sight_ReaimThroughPoint(title, SightShotSite::CrosshairAssist, start, out, point);
 }
 

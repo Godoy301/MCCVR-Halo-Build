@@ -760,6 +760,13 @@ struct Config
     // turret is still parked by the servo. 0 = every Halo 4 seat aims as before (stage 0 still measures). For A/B
     // in the headset. (default 0)
     int halo4_seat_converge = 0;
+    // DEV BUILD ONLY (parsed and saved only in dev builds): 1 = a Halo 3 SEATED local shot whose round will inherit
+    // its vehicle's velocity (the fire routine's body-velocity branch, 0x369419) re-aims its crosshair query through
+    // P' -- the point that makes the round's own velocity, d * Vp + the inherited sideways velocity, point at P --
+    // instead of through P (shot_impact::SolveInheritedAim; game.cpp halo3_impact_witness.inl). Needs the round's
+    // speed, learned and value-proven from the weapon's earlier rounds, so the first shots of a weapon are not
+    // compensated. 0 = re-aim through P as before. For A/B in the headset. (default 0)
+    int seated_inherit_compensation = 0;
     // DEV BUILD ONLY (parsed and saved only in dev builds; the hooks are compiled out of player builds): 1 = log
     // the type-13 pilot controllers, Reach's Sabre/Seraph (haloreach+0x64828) and Halo 4's Broadsword
     // (halo4+0xAA524) -- src/dll/type13_flight_log.inl, docs/TYPE13-FLIGHT-CONTROLLERS-2026-10-01.md Phase B.
