@@ -396,6 +396,24 @@ if(MSVC)
     target_link_options(halo3xr_launcher PRIVATE "/MANIFESTUAC:level='requireAdministrator' uiAccess='false'")
 endif()
 
+# THE FLAT PROBE (dev preset only; never packaged -- package-candidate.ps1 refuses a dev cache and copies named
+# files only). HaloMCCFlatProbe.dll is the AS SEEN control arm: stock flat Halo 3 measured with the same code as the
+# VR witness (src/common/as_seen_logic.h). OBSERVE ONLY: no OpenXR, no stereo, no presentation change, no writes.
+# Loaded alone by the dev launcher's --flat-probe (tools/Install-FlatProbe.ps1 stages it).
+if(HALOMCCVR_DEV_DIAGNOSTICS)
+    add_library(halomcc_flat_probe SHARED
+        src/probe/flat_probe.cpp
+        src/common/log.cpp
+        src/dll/sigscan.cpp)
+    set_target_properties(halomcc_flat_probe PROPERTIES OUTPUT_NAME "HaloMCCFlatProbe")
+    # minhook's own sources carry minhook_lifecycle.c (MCCVR_DisableHookForRetirement), see above.
+    target_include_directories(halomcc_flat_probe PRIVATE src/common src/dll "${minhook_SOURCE_DIR}/include")
+    target_compile_definitions(halomcc_flat_probe PRIVATE
+        UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN
+        HALOMCCVR_BUILD_COMMIT="${HALOMCCVR_BUILD_COMMIT}")
+    target_link_libraries(halomcc_flat_probe PRIVATE minhook d3d11 dxgi)
+endif()
+
 # Opt-in reverse-engineering helper; never shipped or built by the default
 # preset. Some diagnostic modes write to a running game process.
 add_executable(camscan EXCLUDE_FROM_ALL tools/camscan.cpp)
@@ -922,6 +940,12 @@ if(BUILD_TESTING)
     add_executable(halomccvr_shot_impact_tests tests/shot_impact_tests.cpp)
     target_include_directories(halomccvr_shot_impact_tests PRIVATE src/common)
     add_test(NAME halomccvr_shot_impact_tests COMMAND halomccvr_shot_impact_tests)
+    # As seen (src/common/as_seen_logic.h, dev, 2026-10-03): an impact against the crosshair drawn in the first frame
+    # that shows it, binned by strafe speed and range, with the clocks between -- shared by the VR witness and the flat
+    # probe (HaloMCCFlatProbe.dll), so both hosts compute it identically.
+    add_executable(halomccvr_as_seen_tests tests/as_seen_tests.cpp)
+    target_include_directories(halomccvr_as_seen_tests PRIVATE src/common)
+    add_test(NAME halomccvr_as_seen_tests COMMAND halomccvr_as_seen_tests)
     # Source-consistency guard for the seated converged claim (2026-10-01): game.cpp assigns the claim from
     # converge::SeatedClaimDecide and nothing else, never clears sightSeatedConverged, and reads no natural-cause
     # symbol into the claim's facts. No behavioural test compiles game.cpp, so a natural-cause switch-off added

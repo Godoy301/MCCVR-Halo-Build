@@ -180,6 +180,9 @@ def check_build(path: Path, commit: str) -> dict:
         # The FA harness's unattended launch (--headless, no menu and no dialogs) is a dev-only test hook.
         require("--headless".encode("utf-16-le") not in launcher,
                 "Packaged launcher contains the dev-only --headless hook (HALOMCCVR_DEV_DIAGNOSTICS must be OFF)")
+        # The flat probe's launch (--flat-probe, HaloMCCFlatProbe.dll alone, MCC flat) is a dev-only measurement hook.
+        require("--flat-probe".encode("utf-16-le") not in launcher,
+                "Packaged launcher contains the dev-only --flat-probe hook (HALOMCCVR_DEV_DIAGNOSTICS must be OFF)")
         dll = archive.read("ModFiles/HaloMCCVR.dll")
         require(commit.encode("ascii") + b"\0" in dll and commit.encode("ascii") + b"-dirty" not in dll,
                 "Packaged DLL does not embed the exact clean source commit")

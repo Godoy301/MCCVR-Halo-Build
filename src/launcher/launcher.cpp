@@ -83,6 +83,17 @@ static bool g_headless = false;
 static constexpr bool g_headless = false;
 #endif
 
+// --flat-probe (dev builds only, 2026-10-03): the AS SEEN control arm. Starts MCC exactly as the VR launch does
+// (anti-cheat never started: Steam's direct shipping executable / the Store's NoEAC entry) but FLAT -- no VR render
+// surface arguments, no render-size environment -- and loads ONLY HaloMCCFlatProbe.dll from this folder, an
+// observe-only measurement DLL (src/probe/flat_probe.cpp). HaloMCCVR.dll is never loaded in this mode. Refused from
+// a folder named Halo_MCC_VR (the player's live install). tools/Install-FlatProbe.ps1 stages the folder.
+#if HALOMCCVR_DEV_DIAGNOSTICS
+static bool g_flatProbe = false;
+#else
+static constexpr bool g_flatProbe = false;
+#endif
+
 // Exit codes. A launch reports success only after the game has run for 12 s.
 constexpr int kExitOk = 0;
 constexpr int kExitFailed = 1;
@@ -422,8 +433,25 @@ static int LaunchInstalledMod(const std::wstring& dir)
     }
     LauncherLog("launcher started; self dir = %ls", dir.c_str());
 
-    const std::wstring dllPath = dir + L"\\HaloMCCVR.dll";
-    if (!FileExists(dllPath))
+    const std::wstring dllPath = dir + (g_flatProbe ? L"\\HaloMCCFlatProbe.dll" : L"\\HaloMCCVR.dll");
+    if (g_flatProbe)
+    {
+        const size_t leaf = dir.find_last_of(L"\\/");
+        const std::wstring folder = leaf == std::wstring::npos ? dir : dir.substr(leaf + 1);
+        LauncherLog("FLAT PROBE launch: only %ls is loaded; MCC starts flat (no VR render surface)", dllPath.c_str());
+        if (!_wcsicmp(folder.c_str(), L"Halo_MCC_VR"))
+        {
+            ErrorBox(L"The flat probe is never run from Halo_MCC_VR (the live VR install).\n\n"
+                     L"Stage it in its own folder with tools\\Install-FlatProbe.ps1.");
+            return 1;
+        }
+        if (!FileExists(dllPath))
+        {
+            ErrorBox(L"HaloMCCFlatProbe.dll is missing from:\n" + dir);
+            return 1;
+        }
+    }
+    else if (!FileExists(dllPath))
     {
         ErrorBox(L"HaloMCCVR.dll is missing from:\n" + dir +
                  L"\n\nCopy HaloMCCVR.dll from the package into this same folder,\n"
@@ -505,6 +533,11 @@ static int LaunchInstalledMod(const std::wstring& dir)
         ErrorBox(L"Both MCC editions are running. Close one before requesting VR recovery.");
         return 1;
     }
+    if ((runningSteam || runningStore) && g_flatProbe)
+    {
+        ErrorBox(L"Halo: MCC is already running. Close it, then start the flat probe again.");
+        return 1;
+    }
     if (runningSteam || runningStore)
         return OfferManualVrRecovery(runningSteam ? runningSteam : runningStore, gameExe);
 
@@ -538,22 +571,34 @@ static int LaunchInstalledMod(const std::wstring& dir)
     // CreateProcessW is given a NULL environment block. Harmless when the fit is
     // off -- the DLL only reads them in that case.
     wchar_t envBuf[16];
-    swprintf_s(envBuf, L"%d", renderWidth);
-    SetEnvironmentVariableW(L"HALO3XR_RENDER_W", envBuf);
-    swprintf_s(envBuf, L"%d", renderHeight);
-    SetEnvironmentVariableW(L"HALO3XR_RENDER_H", envBuf);
-    wchar_t renderArgs[96];
-    swprintf_s(renderArgs, L"-WINDOWED -ResX=%d -ResY=%d",
-               renderWidth, renderHeight);
+    wchar_t renderArgs[96]{};
+    if (!g_flatProbe)
+    {
+        swprintf_s(envBuf, L"%d", renderWidth);
+        SetEnvironmentVariableW(L"HALO3XR_RENDER_W", envBuf);
+        swprintf_s(envBuf, L"%d", renderHeight);
+        SetEnvironmentVariableW(L"HALO3XR_RENDER_H", envBuf);
+        swprintf_s(renderArgs, L"-WINDOWED -ResX=%d -ResY=%d",
+                   renderWidth, renderHeight);
+    }
+    else
+    {
+        // Flat: the player's own display settings, untouched.
+        SetEnvironmentVariableW(L"HALO3XR_RENDER_W", nullptr);
+        SetEnvironmentVariableW(L"HALO3XR_RENDER_H", nullptr);
+    }
     const wchar_t quote = 34;
     std::wstring cmdline(1, quote);
     cmdline += gameExe;
     cmdline += quote;
     cmdline += L' ';
     cmdline += renderArgs;
-    LauncherLog("VR render surface: %dx%d (resolution_scale %.2f; native %dx%d)",
-                renderWidth, renderHeight, resolutionScale,
-                kNativeRenderWidth, kNativeRenderHeight);
+    if (g_flatProbe)
+        LauncherLog("flat launch: no render-surface arguments (the game's own display settings)");
+    else
+        LauncherLog("VR render surface: %dx%d (resolution_scale %.2f; native %dx%d)",
+                    renderWidth, renderHeight, resolutionScale,
+                    kNativeRenderWidth, kNativeRenderHeight);
 
     // The FA harness starts this launcher (whose manifest asks for administrator
     // rights, for installs) unelevated through __COMPAT_LAYER=RunAsInvoker, so no
@@ -689,7 +734,8 @@ static int LaunchInstalledMod(const std::wstring& dir)
         LauncherLog("game loader ready; injecting");
 
         if (ModuleLoadedIn(gamePid, L"HaloMCCVR.dll") ||
-            ModuleLoadedIn(gamePid, L"halo3xr.dll"))
+            ModuleLoadedIn(gamePid, L"halo3xr.dll") ||
+            (g_flatProbe && ModuleLoadedIn(gamePid, L"HaloMCCFlatProbe.dll")))
         {
             if (coOwned)
                 CoUninitialize();
@@ -820,13 +866,17 @@ int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int showCommand)
 #if HALOMCCVR_DEV_DIAGNOSTICS
     const bool headless = args && count == 2 && !wcscmp(args[1], L"--headless");
     g_headless = headless;
+    // --flat-probe (dev): this folder's HaloMCCFlatProbe.dll alone, MCC flat (see g_flatProbe).
+    const bool flatProbe = args && count == 2 && !wcscmp(args[1], L"--flat-probe");
+    g_flatProbe = flatProbe;
 #else
     const bool headless = false;
+    const bool flatProbe = false;
 #endif
     if (args) LocalFree(args);
     try
     {
-        if (headless)
+        if (headless || flatProbe)
             return LaunchInstalledMod(launcherDir.wstring());
         const auto selected = mcc_installer::ShowLauncherMenu(instance, launcherDir, showCommand);
         return selected.empty() ? 0 : LaunchInstalledMod(selected);
