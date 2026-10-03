@@ -63,6 +63,7 @@
 #include "title_reentry_probe.h"
 #include "roomscale.h"
 #include "sight_layer.h"
+#include "seat_limit_publication.h"
 #include "telemetry_recorder.h"
 #include "../common/support_diagnostics.h"
 #include "physical_crouch_camera.h"
@@ -9627,6 +9628,63 @@ namespace
                 g_aimClampedMs.store(GetTickCount64(), std::memory_order_relaxed);
             }
             g_aimClampedValid.store(valid ? 1u : 0u, std::memory_order_release);
+        }
+    };
+
+    // THE SEAT LIMIT RETICLE (all builds; seat_limit_reticle_logic.h). Published by Game_ComputeAimStick only while a
+    // seat's reticle is clamped at a natural angular stop: the VR direction the reticle is drawn along and, when the
+    // poll could place it, the distance in VR metres to the point the clamped shot reaches (drawn from the eye, on the
+    // surface). Written once per poll by SeatLimitMarkPublication, on every return, and stamped like the assessment's,
+    // so a poll that stops running never leaves a stale mark behind.
+    std::atomic<uint32_t> g_seatLimitMarkValid{0};
+    std::atomic<float> g_seatLimitMarkVrYaw{0.0f};
+    std::atomic<float> g_seatLimitMarkVrPitch{0.0f};
+    std::atomic<float> g_seatLimitMarkRangeVrM{0.0f};
+    std::atomic<uint32_t> g_seatLimitMarkSurface{0};
+    std::atomic<uint32_t> g_seatLimitMarkFromController{0};
+    std::atomic<uint64_t> g_seatLimitMarkMs{0};
+
+    struct SeatLimitMarkPublication
+    {
+        bool valid = false;
+        float yaw = 0.0f, pitch = 0.0f, rangeVrM = 0.0f;
+        bool surface = false, fromController = false;
+        // Placed: from the eye, on the ray through the clamped shot's point, this far.
+        void place(float vrYaw, float vrPitch, float vrRangeM, bool onSurface)
+        {
+            if (!std::isfinite(vrYaw) || !std::isfinite(vrPitch) || !std::isfinite(vrRangeM) || !(vrRangeM > 0.0f))
+                return;
+            valid = true;
+            yaw = vrYaw;
+            pitch = vrPitch;
+            rangeVrM = vrRangeM;
+            surface = onSurface;
+            fromController = false;
+        }
+        // A direction only: the reticle's own direction turned by the clamp (no traced seat reticle).
+        void turn(float vrYaw, float vrPitch)
+        {
+            if (!std::isfinite(vrYaw) || !std::isfinite(vrPitch))
+                return;
+            valid = true;
+            yaw = vrYaw;
+            pitch = vrPitch;
+            rangeVrM = 0.0f;
+            surface = false;
+            fromController = true;
+        }
+        ~SeatLimitMarkPublication()
+        {
+            if (valid)
+            {
+                g_seatLimitMarkVrYaw.store(yaw, std::memory_order_relaxed);
+                g_seatLimitMarkVrPitch.store(pitch, std::memory_order_relaxed);
+                g_seatLimitMarkRangeVrM.store(rangeVrM, std::memory_order_relaxed);
+                g_seatLimitMarkSurface.store(surface ? 1u : 0u, std::memory_order_relaxed);
+                g_seatLimitMarkFromController.store(fromController ? 1u : 0u, std::memory_order_relaxed);
+                g_seatLimitMarkMs.store(GetTickCount64(), std::memory_order_relaxed);
+            }
+            g_seatLimitMarkValid.store(valid ? 1u : 0u, std::memory_order_release);
         }
     };
 #if HALOMCCVR_DEV_DIAGNOSTICS
@@ -51419,7 +51477,159 @@ converge::SeatMuzzleRefusal Game_SeatMuzzleRefusal(GameTitle title)
     default:
         break;
     }
+    // The seat's reticle is clamped at a natural stop (seat_limit_reticle_logic.h): the converged point is the hand's,
+    // past the stop. A redirect through it would carry the shot past the stop the game holds the gun at; refused, the
+    // shot leaves along the game's clamped aim, through the clamped mark.
+    held = held || Sight_SeatLimitClampedLive(title);
     return converge::SeatMuzzleRefuses(held, turret);
+}
+
+// THE SEAT LIMIT RETICLE, the aim poll's half (src/common/seat_limit_reticle_logic.h; the user's call, 2026-10-02).
+// Direct drive keeps writing the hand's aim into a seat; the game clamps it at the seat's natural angular stops (a
+// passenger's cone, a turret's or a tank gun's pitch stop) and the gun aims along the clamped direction. So the reticle
+// sits there: on the clamped direction from the seat's shot origin, at the surface that ray meets (traced by the
+// title's sim thread as the seat limit ray), drawn from the rendered eye -- or, for a title with no traced seat
+// reticle, the reticle's own direction turned by what the clamp did. Inside the stops, or while the gun only slews
+// (a rate cap, catch-up: no stop source sees those), nothing changes. The stops come from the title's sim thread (the
+// seat-limit latch, or a record's own eased limits), published after each seat write.
+struct SeatLimitPoll
+{
+    GameTitle title = GameTitle::None;
+    bool stopsFresh = false;           // `stops` is a publication from within its freshness window
+    seat_limit::Stops stops{};
+    uint32_t seatKey = 0;
+    float recordYaw = 0.0f;            // the record's yaw with those stops (kept along its up)
+    float targetYaw = 0.0f, targetPitch = 0.0f;   // the aim the drive writes, world angles
+    // Placed (traced) mark: the rendered centre eye H and the seat's shot origin E, world units.
+    bool eyes = false;
+    float head[3]{}, shotOrigin[3]{};
+    // World -> VR for a placed mark: Halo 4's world angles, or Halo3SeatAimToVrReticle (the vehicle-follow frame).
+    bool halo4Map = false, followed = false;
+    float hullYaw = 0.0f, hullPitch = 0.0f, gameYawRef = 0.0f, headYawRef = 0.0f;
+    float yawSign = -1.0f, pitchSign = 1.0f;
+    // Direction-only mark: the reticle's own VR direction, turned by the clamp.
+    float controllerVrYaw = 0.0f, controllerVrPitch = 0.0f;
+    // A placed mark whose title's world -> VR basis is not this poll's to invert (Reach: its compact camera carries
+    // view follow and pitch trim): the eye ray to the clamped point is drawn as the reticle's own direction turned by
+    // that ray's yaw / pitch away from the intent ray (`intentDir`, world, the ray the reticle already rides).
+    bool intentDelta = false;
+    float intentDir[3]{};
+};
+
+static seat_limit::Gate g_seatLimitGate;   // input thread only
+static GameTitle g_seatLimitGateTitle = GameTitle::None;
+static uint64_t g_seatLimitGateMs = 0;
+
+static bool SeatLimitWorldToVr(const SeatLimitPoll& in, const float worldDir[3], float& vrYaw, float& vrPitch)
+{
+    const float length = std::sqrt(worldDir[0] * worldDir[0] + worldDir[1] * worldDir[1] + worldDir[2] * worldDir[2]);
+    if (!std::isfinite(length) || length < 1.0e-6f)
+        return false;
+    const float n[3]{worldDir[0] / length, worldDir[1] / length, worldDir[2] / length};
+    if (in.halo4Map)
+    {
+        vrYaw = in.headYawRef + in.yawSign * WrapPi(atan2f(n[1], n[0]) - in.gameYawRef);
+        vrPitch = in.pitchSign * asinf(Clamp(n[2], -1.0f, 1.0f));
+        return std::isfinite(vrYaw) && std::isfinite(vrPitch);
+    }
+    return Halo3SeatAimToVrReticle(n, in.followed, in.hullYaw, in.hullPitch, in.gameYawRef, in.headYawRef, in.yawSign,
+                                   in.pitchSign, vrYaw, vrPitch);
+}
+
+// Not in a seat this poll that can clamp (on foot, an air vehicle, an unwritten seat, another title): nothing carries.
+static void SeatLimitLeave()
+{
+    g_seatLimitGate.leave();
+    g_seatLimitGateTitle = GameTitle::None;
+}
+
+// One seated poll. True when the reticle is clamped this poll (`mark` then holds it).
+static bool SeatLimitReticleStep(const SeatLimitPoll& in, SeatLimitMarkPublication& mark)
+{
+    const uint64_t now = GetTickCount64();
+    // Another title, or polls that stopped coming (a pause, a menu): start afresh.
+    if (in.title != g_seatLimitGateTitle || !g_seatLimitGateMs || now < g_seatLimitGateMs ||
+        now - g_seatLimitGateMs > 200)
+        g_seatLimitGate.leave();
+    g_seatLimitGateTitle = in.title;
+    g_seatLimitGateMs = now;
+    seat_limit::Stops use{};
+    const bool have = g_seatLimitGate.stops_for(in.stopsFresh, in.stops, in.seatKey, now, use);
+    seat_limit::Result r{};
+    const bool clampOk = have && seat_limit::Clamp(use, in.targetYaw, in.targetPitch, in.recordYaw, r);
+    if (!g_seatLimitGate.decide(clampOk, r.overshootDeg) || !r.any())
+        return false;
+    bool placed = false;
+    if (in.eyes)
+    {
+        // THE SEAT LIMIT RAY: the seat's shot origin along the clamped aim, traced by the title's sim thread beside the
+        // intent ray. Until its first trace lands (one ~30 ms interval after a clamp starts), the intent ray's traced
+        // point at its distance from E stands in, then the crosshair distance.
+        const uint32_t generation = TitleAdapter_GetGeneration(in.title);
+        SightAuxRay ray{};
+        ray.generation = generation;
+        ray.sampleMs = now;
+        for (int axis = 0; axis < 3; ++axis)
+        {
+            ray.origin[axis] = in.shotOrigin[axis];
+            ray.dir[axis] = r.dir[axis];
+        }
+        Sight_PublishLimitRay(in.title, ray);
+        bool limitHit = false;
+        float limitRangeWu = 0.0f;
+        const bool limitTraced = Sight_ReadLimitTrace(in.title, generation, kSightFreshMs, limitHit, limitRangeWu);
+        bool intentTraced = false, intentHit = false;
+        float intentDistanceWu = -1.0f;
+        SightRay intentRay{};
+        SightTrace intentTrace{};
+        if (!limitTraced && Sight_ReadRay(in.title, generation, kSightRayFreshMs, intentRay) &&
+            Sight_ReadTrace(in.title, generation, kSightFreshMs, intentTrace))
+        {
+            intentDistanceWu = assess_reticle::DistanceToRayPoint(in.shotOrigin, intentRay.head, intentRay.dir,
+                                                                  intentTrace.rangeWu);
+            intentTraced = intentDistanceWu > 0.0f;
+            intentHit = intentTrace.hit;
+        }
+        const float unitsPerVrMetre = g_worldScale.load(std::memory_order_relaxed);
+        const assess_reticle::RangeChoice range = assess_reticle::ChooseRange(
+            limitTraced, limitHit, limitRangeWu, intentTraced, intentHit, intentDistanceWu,
+            g_config.crosshair_distance_m * unitsPerVrMetre, kSightTraceLengthWu);
+        assess_reticle::Placement p{};
+        float vrYaw = 0.0f, vrPitch = 0.0f;
+        bool mapped = false;
+        if (assess_reticle::Place(in.head, in.shotOrigin, r.dir, range, unitsPerVrMetre, p))
+        {
+            if (in.intentDelta)
+            {
+                seat_frame::Angles toPoint{}, intent{};
+                if (seat_frame::AnglesOf(p.dir, 0.0f, toPoint) && seat_frame::AnglesOf(in.intentDir, 0.0f, intent))
+                {
+                    vrYaw = in.controllerVrYaw + in.yawSign * std::remainder(toPoint.yaw - intent.yaw, 6.28318531f);
+                    vrPitch = in.controllerVrPitch + in.pitchSign * (toPoint.pitch - intent.pitch);
+                    mapped = std::isfinite(vrYaw) && std::isfinite(vrPitch);
+                }
+            }
+            else
+                mapped = SeatLimitWorldToVr(in, p.dir, vrYaw, vrPitch);
+        }
+        if (mapped)
+        {
+            mark.place(vrYaw, vrPitch, p.rangeVrM, p.surface);
+            placed = mark.valid;
+        }
+    }
+    if (!placed)
+    {
+        float vrYaw = in.controllerVrYaw, vrPitch = in.controllerVrPitch;
+        if (!seat_limit::TurnVrByClamp(in.targetYaw, in.targetPitch, r, in.yawSign, in.pitchSign, vrYaw, vrPitch))
+            return false;
+        mark.turn(vrYaw, vrPitch);
+        if (!mark.valid)
+            return false;
+    }
+    Sight_MarkSeatLimitClamped(in.title);
+    Sight_NoteSeatLimit(in.title, r.clamped[0], r.clamped[1], r.overshootDeg);
+    return true;
 }
 
 // THE FREE CAMERA WITH NO PLAYER UNIT (src/common/aim_no_unit_logic.h): the input thread's half. The decision
@@ -51498,6 +51708,18 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
 {
     // Before any return: this poll's assessment direction (dev only), cleared unless set below.
     AimClampedPublication clamped;
+    // ...and the seat limit reticle (all builds), cleared unless a seat clamps it below. A poll that never reaches a
+    // seat that can clamp leaves the gate too (SeatLimitLeave), so nothing carries into the next seat.
+    SeatLimitMarkPublication seatLimitMark;
+    struct SeatLimitLeaveUnlessStepped
+    {
+        bool stepped = false;
+        ~SeatLimitLeaveUnlessStepped()
+        {
+            if (!stepped)
+                SeatLimitLeave();
+        }
+    } seatLimitGuard;
     // THE FREE CAMERA WITH NO PLAYER UNIT (aim_no_unit_logic.h), stepped on every poll so its edges and the
     // published decision stay current whichever return this poll takes. While it holds, the hand still steers the
     // camera (the user flies the death/free camera with it); the frame below drops every term that camera's own
@@ -51786,6 +52008,11 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
     bool assessEyes = false;
     float assessHead[3]{}, assessShotOrigin[3]{};
 #endif
+    // The seated intent ray's eyes this poll -- the rendered centre eye H and the seat's shot origin E -- for the seat
+    // limit reticle, which draws from H the point the clamped shot from E reaches.
+    bool limitEyes = false;
+    GameTitle limitEyesTitle = GameTitle::None;
+    float limitHead[3]{}, limitShotOrigin[3]{};
     // The free-camera frame publishes no intent ray and bends nothing: the ray's eye is the engine camera's
     // position, which a death or free camera moves as the servo turns it, and with no unit there is no shot.
     if (aimFrame.traceReaim)
@@ -51932,6 +52159,13 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
             ray.ignoreB = sightVehicle;
             ray.ignoreC = sightCarrier;
             Sight_PublishRay(sightTitle, ray);
+            if (sightSeated)
+            {
+                limitEyes = true;
+                limitEyesTitle = sightTitle;
+                memcpy(limitHead, sightHead, sizeof(limitHead));
+                memcpy(limitShotOrigin, sightEye, sizeof(limitShotOrigin));
+            }
 #if HALOMCCVR_DEV_DIAGNOSTICS
             assessEyes = true;
             memcpy(assessHead, sightHead, sizeof(assessHead));
@@ -52275,6 +52509,8 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
             bool driveSeated = false;
             seat_drive::Seat seatFacts{};
             uint32_t seatKey = 0;
+            // An air vehicle has no rotational limit (the user, 2026-10-02): its seats never clamp the reticle.
+            bool seatAircraft = false;
             if (!halo4Aim)
             {
                 driveSeated = followedVehicleFrame || Halo3VehicleFpActive();
@@ -52294,6 +52530,7 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
                             static_cast<uint32_t>(Halo3NativeSeatState::Active);
                         seatFacts.driver = Halo3SeatIsDriver(id, seat.seatIndex, seat.mounted);
                         seatFacts.look_steered = Halo3VehicleIsLookSteered(id);
+                        seatAircraft = id == Halo3VehicleId::Banshee || id == Halo3VehicleId::Hornet;
                         seatKey = seat_drive::SeatKey(seat.parentHandle, seat.seatIndex, seat.mounted);
                     }
                 }
@@ -52308,6 +52545,7 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
                             static_cast<uint32_t>(OdstNativeSeatState::Active);
                         seatFacts.driver = OdstSeatIsDriver(seat.identity, seat.seatIndex, seat.mounted);
                         seatFacts.look_steered = OdstVehicleIsLookSteered(seat.identity);
+                        seatAircraft = seat.identity == OdstVehicleId::Banshee || seat.identity == OdstVehicleId::Hornet;
                         seatKey = seat_drive::SeatKey(seat.parentHandle, seat.seatIndex, seat.mounted);
                     }
                 }
@@ -52368,6 +52606,36 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
                 const seat_drive::Axes live = LegacyDriveSeatAxes(driveTitle);
                 seatWritten.yaw = live.yaw && seatAxes.yaw;
                 seatWritten.pitch = live.pitch && seatAxes.pitch;
+            }
+            // THE SEAT LIMIT RETICLE (SeatLimitReticleStep): a written seat of a land vehicle whose aim the game holds
+            // at a natural stop draws the reticle where the gun is held. The stops are the seat-limit latch's, from the
+            // hook's last seat write of THIS seat; the target is what this poll hands the hook.
+            if (driveSeated && seatWritten.any() && !seatAircraft)
+            {
+                SeatLimitPoll limitPoll{};
+                limitPoll.title = driveTitle;
+                limitPoll.seatKey = seatKey;
+                uint32_t publishedKey = 0;
+                limitPoll.stopsFresh =
+                    LegacyDriveSeatStops(driveTitle, limitPoll.stops, publishedKey, limitPoll.recordYaw) &&
+                    publishedKey == seatKey;
+                limitPoll.targetYaw = desiredYaw;
+                limitPoll.targetPitch = desiredPitch;
+                limitPoll.eyes = limitEyes && limitEyesTitle == driveTitle;
+                memcpy(limitPoll.head, limitHead, sizeof(limitPoll.head));
+                memcpy(limitPoll.shotOrigin, limitShotOrigin, sizeof(limitPoll.shotOrigin));
+                limitPoll.halo4Map = halo4Aim;
+                limitPoll.followed = followedVehicleFrame;
+                limitPoll.hullYaw = hullYaw;
+                limitPoll.hullPitch = hullPitch;
+                limitPoll.gameYawRef = gameYawReference;
+                limitPoll.headYawRef = headYawReference;
+                limitPoll.yawSign = g_yawSign.load();
+                limitPoll.pitchSign = g_pitchSign.load();
+                limitPoll.controllerVrYaw = atan2f(fx, -fz);
+                limitPoll.controllerVrPitch = asinf(Clamp(fy, -1.0f, 1.0f));
+                seatLimitGuard.stepped = true;
+                (void)SeatLimitReticleStep(limitPoll, seatLimitMark);
             }
 #if HALOMCCVR_DEV_DIAGNOSTICS
             // WITNESSES ONLY (2026-10-01): what used to put the reticle on the game's aim and withhold the converged
@@ -52772,6 +53040,34 @@ bool Game_GetClampedAimDirection(float outDir[3], float* outRangeM, bool* outSur
     if (outSurface)
         *outSurface = g_aimClampedSurface.load(std::memory_order_relaxed) != 0;
 #endif
+    return true;
+}
+
+bool Game_GetSeatLimitReticle(float outDir[3], float& outRangeM, bool& outSurface, bool& outFromController)
+{
+    outRangeM = 0.0f;
+    outSurface = false;
+    outFromController = false;
+    if (!outDir || !g_seatLimitMarkValid.load(std::memory_order_acquire))
+        return false;
+    // Only this poll's: a mark the input poll stopped refreshing is never drawn.
+    const uint64_t markMs = g_seatLimitMarkMs.load(std::memory_order_relaxed);
+    const uint64_t nowMs = GetTickCount64();
+    if (!markMs || nowMs < markMs || nowMs - markMs > kAimClampedFreshMs)
+        return false;
+    const float yaw = g_seatLimitMarkVrYaw.load(std::memory_order_relaxed);
+    const float pitch = g_seatLimitMarkVrPitch.load(std::memory_order_relaxed);
+    if (!std::isfinite(yaw) || !std::isfinite(pitch))
+        return false;
+    const float cp = cosf(pitch);
+    outDir[0] = sinf(yaw) * cp;
+    outDir[1] = sinf(pitch);
+    outDir[2] = -cosf(yaw) * cp;
+    const float rangeM = g_seatLimitMarkRangeVrM.load(std::memory_order_relaxed);
+    if (std::isfinite(rangeM) && rangeM > 0.0f)
+        outRangeM = rangeM;
+    outSurface = g_seatLimitMarkSurface.load(std::memory_order_relaxed) != 0;
+    outFromController = g_seatLimitMarkFromController.load(std::memory_order_relaxed) != 0;
     return true;
 }
 

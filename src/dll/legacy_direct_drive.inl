@@ -256,6 +256,9 @@ struct LegacyDriveState
     uint32_t stintKey = 0;
     bool stintPitchFailCounted = false;
     std::atomic<uint64_t> seatYawWriteMs{0}, seatPitchWriteMs{0}, seatLimitedMs{0};
+    // THE SEAT'S STOPS for the reticle (seat_limit_publication.h): after each seat write, the latch's stops on the axes
+    // it read, in the record's frame, with that frame. Cleared by every update that did not end in a seat write.
+    SeatStopsPublication stops{};
     // The last stick call's write (sim thread), put back over what a later extra call adds (aim_caller::
     // PutBack: no stick call since, same record, a QPC cap; Halo 4 also the same publication context and a
     // plausible record; Halo 3 / ODST same_frame, as they always were).
@@ -363,6 +366,7 @@ void LegacyDriveForgetSeat(LegacyDriveState& st)
     st.seatYawWriteMs.store(0, std::memory_order_release);
     st.seatPitchWriteMs.store(0, std::memory_order_release);
     st.seatLimitedMs.store(0, std::memory_order_release);
+    st.stops.clear();
     // ...and its writes are no reference for the next stint's outcome gate.
     st.wroteSeq.fetch_add(1, std::memory_order_acq_rel);
     st.wroteValid[0].store(false, std::memory_order_relaxed);
@@ -784,6 +788,17 @@ bool LegacyDriveSeatLimited(GameTitle title)
     return at && now >= at && now - at <= 150;
 }
 
+// Input thread: the stops the hook's last seat write knew (the seat-limit latch's, record frame, with the frame), when
+// that write is under 100 ms old -- the seat limit reticle's source (seat_limit_reticle_logic.h). `seatKey`: the seat
+// they belong to; `recordYaw`: the record's yaw then. False: no fresh seat write (the reticle is not clamped from it).
+bool LegacyDriveSeatStops(GameTitle title, seat_limit::Stops& out, uint32_t& seatKey, float& recordYaw)
+{
+    const int slot = LegacyDriveSlot(title);
+    if (slot < 0 || !g_legacyDrive[slot].armed.load(std::memory_order_acquire))
+        return false;
+    return g_legacyDrive[slot].stops.read(GetTickCount64(), 100, out, seatKey, recordYaw);
+}
+
 namespace
 {
 // This (sim) thread's TLS -> the record the native update just wrote. 0 when any link is missing.
@@ -1042,6 +1057,7 @@ extern "C" void LegacyPcApplyForUser(int slot, int user, uintptr_t ret, const ui
     bool seatWrote = false;   // this update ended in a seat write (the latch keeps its last value only then)
     bool seatKept = false;    // this update continued a seat stint (its checks survive)
     bool wroteAxis[2]{};      // which axes this update's seat write wrote
+    bool latchRead[2]{};      // which axes the seat-limit latch read this update (their stops go to the reticle)
     seat_frame_rt::Live seatFrame{};   // the seat's frame this update (World unless read)
     __try
     {
@@ -1285,6 +1301,8 @@ extern "C" void LegacyPcApplyForUser(int slot, int user, uintptr_t ret, const ui
                     const float native[2]{nativeYaw, nativePitch}, target[2]{y, p};
                     float held[2]{};
                     limited = st.seatLatch.apply(native, target, held, latch);
+                    latchRead[0] = latch[0];
+                    latchRead[1] = latch[1];
                     if (latch[0])
                         y = aim_write::unwrap_to_branch(held[0], nativeYaw);
                     if (latch[1])
@@ -1331,6 +1349,15 @@ extern "C" void LegacyPcApplyForUser(int slot, int user, uintptr_t ret, const ui
                         st.seatYawWriteMs.store(writeYaw ? now : 0, std::memory_order_release);
                         st.seatPitchWriteMs.store(writePitch ? now : 0, std::memory_order_release);
                         st.seatLimitedMs.store(limited ? now : 0, std::memory_order_release);
+                        // The stops the reticle clamps against (seat_limit_reticle_logic.h): the latch's, on the axes
+                        // it read, in this update's frame. None is a valid publication (written, nothing holds it).
+                        {
+                            seat_limit::Stops stops{};
+                            seat_limit::AddLatch(stops, st.seatLatch, latchRead);
+                            stops.rebased = seatFrame.kase == seat_frame::Case::Rebased;
+                            stops.frame = seatFrame.frame;
+                            st.stops.publish(seatKey, stops, nativeYaw, now);
+                        }
                         st.wroteSeq.fetch_add(1, std::memory_order_acq_rel);
                         st.wroteYaw[1].store(st.wroteYaw[0].load(std::memory_order_relaxed), std::memory_order_relaxed);
                         st.wrotePitch[1].store(st.wrotePitch[0].load(std::memory_order_relaxed),
@@ -1385,7 +1412,10 @@ extern "C" void LegacyPcApplyForUser(int slot, int user, uintptr_t ret, const ui
             ? (st.axisTicks[a] < kLegacyDriveSeatPrimeUpdates ? st.axisTicks[a] + 1 : st.axisTicks[a])
             : 0;
     if (!seatWrote)
+    {
         st.seatLatch.reset();
+        st.stops.clear();
+    }
     if (!seatKept)
     {
         LegacyDriveForgetSeat(st);
