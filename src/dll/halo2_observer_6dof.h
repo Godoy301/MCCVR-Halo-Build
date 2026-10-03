@@ -3,6 +3,7 @@ bool Halo2Observer6Dof_OnFootFresh() noexcept;
 
 #include <cstddef>
 #include <cstdint>
+#include "../common/seat_limit_reticle_logic.h"
 void* Halo2Observer6Dof_ReloadWeapon(uint32_t weapon) noexcept;
 
 // C-H2-8. Halo 2's per-user observer is the single camera root that BOTH of
@@ -39,6 +40,10 @@ bool Halo2Observer6Dof_FootViewEngaged() noexcept;
 // Direct drive in a seat: which axes the drive wrote within 150 ms (halo2_direct_drive.inl). The stick servo
 // stands down on those.
 bool Halo2Observer6Dof_SeatDriveAxes(bool& yaw, bool& pitch) noexcept;
+// The seat limit reticle (src/common/seat_limit_reticle_logic.h): the stops the drive's last seat write knew (the yaw
+// latch's, the record's eased pitch limits; record frame) and the hand's WORLD aim it wrote for, under 100 ms old.
+bool Halo2Observer6Dof_SeatStops(seat_limit::Stops& stops, uint32_t& seatKey, float& recordYaw, float& targetYaw,
+                                  float& targetPitch) noexcept;
 void Halo2Observer6Dof_SnapTurnSettled(uint32_t generation, float targetYaw) noexcept;
 // C-H2-43: independently installed firing-only direction hook. False keeps
 // controller weapon placement dormant; it never controls camera admission.

@@ -51794,6 +51794,28 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
         // the stick is neutral; one written, the servo keeps only the other.
         bool seatYaw = false, seatPitch = false;
         Halo2Observer6Dof_SeatDriveAxes(seatYaw, seatPitch);
+        // THE SEAT LIMIT RETICLE (SeatLimitReticleStep), Halo 2: a written seat whose drive published stops (the yaw
+        // latch's and the record's eased pitch limits; none in an air vehicle). Halo 2 traces no seat, so the reticle
+        // keeps its place and turns by what the clamp does to the hand's world aim the drive wrote for.
+        if (halo2VehicleAim && (seatYaw || seatPitch))
+        {
+            SeatLimitPoll limitPoll{};
+            limitPoll.title = GameTitle::Halo2;
+            if (Halo2Observer6Dof_SeatStops(limitPoll.stops, limitPoll.seatKey, limitPoll.recordYaw,
+                                            limitPoll.targetYaw, limitPoll.targetPitch))
+            {
+                limitPoll.stopsFresh = true;
+                const float forward[3] = {0.0f, 0.0f, -1.0f};
+                float controller[3]{};
+                RotateByQuat(q, forward, controller);
+                limitPoll.controllerVrYaw = atan2f(controller[0], -controller[2]);
+                limitPoll.controllerVrPitch = asinf(Clamp(controller[1], -1.0f, 1.0f));
+                limitPoll.yawSign = g_yawSign.load();
+                limitPoll.pitchSign = g_pitchSign.load();
+                seatLimitGuard.stepped = true;
+                (void)SeatLimitReticleStep(limitPoll, seatLimitMark);
+            }
+        }
         const bool servo = ComputeHalo2ControllerAimStick(q, p, hq, hp, outRx, outRy, seatYaw, seatPitch);
         if (seatYaw && seatPitch)
         {
