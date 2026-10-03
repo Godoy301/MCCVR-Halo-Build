@@ -910,6 +910,14 @@ if(BUILD_TESTING)
         COMMAND "${Python3_EXECUTABLE}" -O
             "${CMAKE_CURRENT_SOURCE_DIR}/tools/check_seated_claim.py"
             --self-test)
+    # Isolation guard for the dev assessment marker (honest_reticle_assess, 2026-10-02): it is a SECOND marker,
+    # never the player's reticle. Its code sits in [assess-only] regions inside #if HALOMCCVR_DEV_DIAGNOSTICS;
+    # nothing outside them reads the key, Game_GetClampedAimDirection or the publication, and nothing inside them
+    # writes the reticle, a mark, a shot, the aim or the drive. --self-test proves each rule fails on a misuse.
+    add_test(NAME halomccvr_assess_isolation_guard
+        COMMAND "${Python3_EXECUTABLE}" -O
+            "${CMAKE_CURRENT_SOURCE_DIR}/tools/check_assess_isolation.py"
+            --self-test)
     add_executable(halomccvr_aim_caller_tests tests/aim_caller_tests.cpp)
     target_include_directories(halomccvr_aim_caller_tests PRIVATE src/common)
     add_test(NAME halomccvr_aim_caller_tests COMMAND halomccvr_aim_caller_tests)

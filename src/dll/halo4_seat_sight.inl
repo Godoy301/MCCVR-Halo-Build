@@ -799,7 +799,8 @@ void Halo4SightTraceSeated(uint32_t unit, void* instance)
     // SEAT LIMIT ray (while the seat's reticle is clamped at a natural stop, the ray its gun really aims along from the
     // seat's eye) and the DEV ASSESSMENT ray (honest_reticle_assess: the game's own aim from the seat's eye, the ray the
     // native seated assist's crosshair trace runs along). Only while the aim path published one; nothing the aim reads
-    // moves. False: a native fault (the trace is latched off).
+    // moves. False: a native fault -- the CALLER latches its own trace off (the seat limit ray the title's trace, the
+    // assessment only its own).
     const auto auxTrace = [&](const SightAuxRay& aux, bool& hit, float& rangeWu) {
         const auto pass = [&](float alongWu, float remainingWu) {
             halo4_seat_aim::TracePass out{};
@@ -826,13 +827,7 @@ void Halo4SightTraceSeated(uint32_t unit, void* instance)
         const auto auxResult = halo4_seat_aim::TraceLookingPast(kSightTraceLengthWu, kSightTraceSkipWu,
             kLegacySightSelfStepWu, kLegacySightSelfPasses, root, chain, chainCount, pass, Halo4SightRootOf);
         if (!auxResult.completed)
-        {
-            Sight_NoteTraceFault(kTitle);
-            f.faults.fetch_add(1, std::memory_order_relaxed);
-            LOG("SIGHT Halo 4 seated auxiliary trace: the native ray raised a fault; the trace stays off until the "
-                "title reinstalls");
             return false;
-        }
         hit = auxResult.hit;
         rangeWu = auxResult.hit ? auxResult.rangeWu : 0.0f;
         return true;
@@ -843,18 +838,31 @@ void Halo4SightTraceSeated(uint32_t unit, void* instance)
         bool limitHit = false;
         float limitRangeWu = 0.0f;
         if (!auxTrace(limit, limitHit, limitRangeWu))
+        {
+            Sight_NoteTraceFault(kTitle);
+            f.faults.fetch_add(1, std::memory_order_relaxed);
+            LOG("SIGHT Halo 4 seated seat limit trace: the native ray raised a fault; the trace stays off until the "
+                "title reinstalls");
             return;
+        }
         Sight_PublishLimitTrace(kTitle, generation, limitHit, limitRangeWu);
     }
+    // [assess-only begin]
+    // DEV ASSESSMENT (honest_reticle_assess): the game's own aim from the seat's eye. A native fault here latches only
+    // the ASSESSMENT trace off (Sight_NoteAssessTraceFault); the seat's intent trace and its fault count are the aim's.
     SightAssessRay assess{};
-    if (Sight_ReadAssessRay(kTitle, generation, kSightRayFreshMs, assess))
+    if (!Sight_AssessTraceFaulted(kTitle) && Sight_ReadAssessRay(kTitle, generation, kSightRayFreshMs, assess))
     {
         bool assessHit = false;
         float assessRangeWu = 0.0f;
         if (!auxTrace(assess, assessHit, assessRangeWu))
+        {
+            Sight_NoteAssessTraceFault(kTitle);
             return;
+        }
         Sight_PublishAssessTrace(kTitle, generation, assessHit, assessRangeWu);
     }
+    // [assess-only end]
 }
 
 // ---- the shot witness (0x1DCB8C's exit, the fire routine's call only) --------------------------------------
@@ -1461,6 +1469,7 @@ void Halo4SeatSightClaimWitness(const Halo4SeatSightPoll& seat, const float poin
     w.claim[why].fetch_add(1, std::memory_order_relaxed);
 }
 
+// [assess-only begin]
 // Stage 1, DEV ASSESSMENT ONLY (honest_reticle_assess = 2): where the shot really goes for a seat whose proofs all
 // hold (verifier item 11). The game's aim is not the shot's line: the native assist's crosshair trace runs from
 // the game's eye E along the unit's actual aim, and the shot turns from its own line (the barrel's, or the aiming
@@ -1514,6 +1523,7 @@ bool Halo4SeatSightHonestAlongAim(const Halo4SeatSightPoll& seat, const float po
     honestDir[2] = dir.z;
     return true;
 }
+// [assess-only end]
 
 // Cold worker, every 2 s: the three dev lines.
 void Halo4SeatSightReport()

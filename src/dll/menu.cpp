@@ -1646,17 +1646,18 @@ namespace
                 static const char* const kAssess[] = {"Off", "On foot", "Everywhere"};
                 int assess = g_config.honest_reticle_assess < 0 ? 0 :
                     (g_config.honest_reticle_assess > 2 ? 2 : g_config.honest_reticle_assess);
-                if (ImGui::Combo("Assess: crosshair on the game's aim (dev)", &assess, kAssess, 3))
+                if (ImGui::Combo("Assess: marker where the game's shot lands (dev)", &assess, kAssess, 3))
                 {
                     g_config.honest_reticle_assess = assess;
                     changed = true;
                 }
             }
-            ImGui::TextDisabled("DEV BUILD ONLY. Draws the crosshair where the game's shot really lands\n"
-                                "(along the game's own aim from its own shot origin, not from your hand)\n"
-                                "instead of on the aim point, so you can see how far the game trails your\n"
-                                "hand. It moves the drawing only: shots, the aim and convergence are\n"
-                                "exactly the same. Off for normal play.");
+            ImGui::TextDisabled("DEV BUILD ONLY. A second marker showing where the game's shot lands;\n"
+                                "your normal reticle is unchanged. The marker is a small magenta ring\n"
+                                "and dot, placed along the game's own aim from its own shot origin (Reach\n"
+                                "on foot: the unit's projectile aim, not the kicking camera), so you can\n"
+                                "see how far the game trails your hand. Keep aiming with your reticle:\n"
+                                "shots, the aim and convergence are exactly the same. Off for normal play.");
 #endif
         }
         ImGui::TextDisabled("Crosshair smoothing is visual only; bullets keep the current controller ray.\n"

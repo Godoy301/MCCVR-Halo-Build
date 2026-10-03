@@ -49,6 +49,11 @@
 #include "../common/subtitle_logic.h"
 #include "../common/dual_reticle_logic.h"
 #include "../common/aim_solve_logic.h"
+#if HALOMCCVR_DEV_DIAGNOSTICS
+// [assess-only begin]
+#include "../common/assess_reticle_logic.h"
+// [assess-only end]
+#endif
 #include "../common/game_menu_pointer.h"
 #include "../common/exclusive_input.h"
 #include "../common/game_menu_pointer_xr.h"
@@ -251,6 +256,18 @@ namespace
     uint32_t g_secondaryReticleGeneration=0;
     GameTitle g_secondaryReticleTitle=GameTitle::None;
     halo_ce::Snapshot<dual_reticle::ProjectedRay> g_weaponReticleRays[7][2];
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    // [assess-only begin]
+    // DEV ASSESSMENT MARKER (honest_reticle_assess): its own small swapchain, painted once with the magenta ring
+    // and dot of assess_reticle::MarkerPixel. A SECOND marker: the player's reticle chain is never touched.
+    XrSwapchain g_assessMarkerChain = XR_NULL_HANDLE;
+    std::vector<ID3D11Texture2D*> g_assessMarkerImages;
+    std::vector<ID3D11RenderTargetView*> g_assessMarkerRtvs;
+    bool g_assessMarkerAcquired = false, g_assessMarkerReady = false, g_assessMarkerFailed = false;
+    uint32_t g_assessMarkerIndex = 0;
+    uint64_t g_assessMarkerRetryMs = 0;
+    // [assess-only end]
+#endif
     XrSwapchain g_menuChain = XR_NULL_HANDLE;
     std::vector<ID3D11Texture2D*> g_menuImages;
     std::vector<ID3D11RenderTargetView*> g_menuRtvs;
@@ -8645,6 +8662,77 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         return true;
     }
 
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    // [assess-only begin]
+    // The dev assessment marker's image: created lazily, painted once, never repainted (its colour is fixed so it
+    // can never be mistaken for the reticle). Non-blocking, like the dual reticles: a busy image is retried next
+    // frame, and any failure leaves the marker off for the session -- the reticle is unaffected either way.
+    bool PrepareAssessMarkerImage()
+    {
+        if (g_assessMarkerFailed)
+            return false;
+        if (g_assessMarkerReady && !g_assessMarkerAcquired)
+            return true;
+        const bool rgba = g_xrFormat == DXGI_FORMAT_R8G8B8A8_UNORM || g_xrFormat == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
+        const bool bgra = g_xrFormat == DXGI_FORMAT_B8G8R8A8_UNORM || g_xrFormat == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB;
+        if (!rgba && !bgra)
+            return false;
+        constexpr uint32_t size = assess_reticle::kMarkerTextureSize;
+        if (g_assessMarkerChain == XR_NULL_HANDLE)
+        {
+            const uint64_t now = GetTickCount64();
+            if (now < g_assessMarkerRetryMs)
+                return false;
+            g_assessMarkerRetryMs = now + 5000;
+            if (!CreateChain(size, size, g_assessMarkerChain, g_assessMarkerImages, g_assessMarkerRtvs,
+                             "dev assessment marker"))
+                return false;
+        }
+        XrSwapchainImageAcquireInfo acquire{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
+        XrSwapchainImageWaitInfo wait{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
+        XrSwapchainImageReleaseInfo release{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
+        wait.timeout = 0;
+        if (!g_assessMarkerAcquired)
+        {
+            if (xrAcquireSwapchainImage(g_assessMarkerChain, &acquire, &g_assessMarkerIndex) != XR_SUCCESS)
+                return false;
+            g_assessMarkerAcquired = true;
+        }
+        const XrResult ready = xrWaitSwapchainImage(g_assessMarkerChain, &wait);
+        if (ready == XR_TIMEOUT_EXPIRED)
+            return false;
+        if (ready != XR_SUCCESS)
+        {
+            g_assessMarkerFailed = true;
+            LOG("ASSESS marker: image wait failed (%d); the marker stays off, the reticle is unaffected", ready);
+            return false;
+        }
+        const bool valid = g_assessMarkerIndex < g_assessMarkerImages.size();
+        if (valid)
+        {
+            std::vector<uint32_t> pixels(size * size);
+            for (uint32_t y = 0; y < size; ++y)
+                for (uint32_t x = 0; x < size; ++x)
+                    pixels[y * size + x] = assess_reticle::MarkerPixel(x, y, size, bgra);
+            g_context->UpdateSubresource(g_assessMarkerImages[g_assessMarkerIndex], 0, nullptr, pixels.data(),
+                                         size * 4, 0);
+        }
+        const XrResult released = xrReleaseSwapchainImage(g_assessMarkerChain, &release);
+        g_assessMarkerAcquired = false;
+        if (!valid || released != XR_SUCCESS)
+        {
+            g_assessMarkerFailed = true;
+            LOG("ASSESS marker: image release failed (%d); the marker stays off, the reticle is unaffected", released);
+            return false;
+        }
+        g_assessMarkerReady = true;
+        LOG("ASSESS marker: a %ux%u magenta ring-and-dot image is ready (a second marker; the reticle is unchanged)",
+            size, size);
+        return true;
+    }
+    // [assess-only end]
+#endif
+
     void ReleaseAuthoredReticleProbe()
     {
         if (g_authoredReticleSrv)
@@ -16310,6 +16398,11 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         }
 
         XrCompositionLayerQuad screenQuad, menuQuad, reticleQuad, secondaryReticleQuad, scopeQuad, fadeQuad, nativeCursorQuad, nativeSubtitleQuad;
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        // [assess-only begin]
+        XrCompositionLayerQuad assessMarkerQuad{XR_TYPE_COMPOSITION_LAYER_QUAD};   // outlives `layers` this frame
+        // [assess-only end]
+#endif
         XrCompositionLayerQuad theaterQuads[2]{};
         XrCompositionLayerProjection projection{XR_TYPE_COMPOSITION_LAYER_PROJECTION};
         XrCompositionLayerProjection theaterProjection{
@@ -17978,11 +18071,11 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                             // on the surface that ray hits, parks at a readable
                             // depth beyond it, and shrinks away up close -- see
                             // aim_solve::traced_reticle_placement. The game's
-                            // achieved aim is NOT drawn here (only the dev
-                            // assessment key draws it, from the centre eye at the
-                            // point the game's shot reaches): it is the
-                            // intent bent for the shot origin, and drawing it
-                            // from the eye would apply the bend twice.
+                            // achieved aim is NOT drawn here: it is the intent
+                            // bent for the shot origin, and drawing it from the
+                            // eye would apply the bend twice. (The dev assessment
+                            // key draws where the game's shot lands as a SECOND,
+                            // magenta marker below, and never moves this one.)
                             bool tracedReticle = false;
                             aim_solve::TracedReticle tracedPlacement{};
 #if HALOMCCVR_EXPERIMENTAL_REACH_RENDER_CANDIDATE
@@ -18120,111 +18213,8 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                                             "out of the seat)");
                                 }
                             }
-                            // DEV ASSESSMENT ONLY (honest_reticle_assess), below: the mark is
-                            // drawn from the stereo centre eye on its own placement.
-                            bool assessFromEye = false;
-                            aim_solve::TracedReticle assessPlacement{};
-#if HALOMCCVR_DEV_DIAGNOSTICS
-                            // DEV ASSESSMENT ONLY (honest_reticle_assess): draw where
-                            // the game's shot REALLY lands, instead of the aim point --
-                            // even over the traced reticle, so the gap can be judged by
-                            // eye. The game fires from its own shot origin, not the
-                            // controller, so the poll publishes the ray from the
-                            // rendered eye through the point that shot reaches (the
-                            // first surface along the game's aim from that origin) and
-                            // its distance; it is drawn from the stereo centre eye like
-                            // the traced reticle, on the surface, at its depth. Drawn
-                            // from the controller at the crosshair distance (before
-                            // 2026-10-02) it sat parallel to the shot line, off by the
-                            // eye-to-hand offset. With no range the game's aim is drawn
-                            // from the eye at the crosshair distance. Not with a barrel
-                            // reticle (gun_barrel_aim: the shot follows the barrel,
-                            // which that reticle already shows). It moves the drawing
-                            // only: the scope lens never reads it. A player build never
-                            // publishes it: a seat's stop or a turret's slew no longer
-                            // moves the reticle (2026-10-01); the game's tracers show those.
-                            float clampedAim[3];
-                            float assessRangeM = 0.0f;
-                            bool assessSurface = false;
-                            bool assessPublished = false;
-                            if (!reachNativeAim && !primaryBarrel &&
-                                Game_GetClampedAimDirection(clampedAim, &assessRangeM, &assessSurface))
-                            {
-                                assessPublished = true;
-                                aimDir[0] = clampedAim[0];
-                                aimDir[1] = clampedAim[1];
-                                aimDir[2] = clampedAim[2];
-                                tracedReticle = false;
-                                limitFromEye = false;   // the assessment draws the game's aim instead
-                                if (projection.viewCount == 2 && projectionViews.size() == 2)
-                                {
-                                    const XrPosef& left = projectionViews[0].pose;
-                                    const XrPosef& right = projectionViews[1].pose;
-                                    const float leftQuaternion[4] = {
-                                        left.orientation.x, left.orientation.y,
-                                        left.orientation.z, left.orientation.w};
-                                    const float rightQuaternion[4] = {
-                                        right.orientation.x, right.orientation.y,
-                                        right.orientation.z, right.orientation.w};
-                                    const float leftPosition[3] = {
-                                        left.position.x, left.position.y, left.position.z};
-                                    const float rightPosition[3] = {
-                                        right.position.x, right.position.y, right.position.z};
-                                    assessFromEye = ReachBuildStereoCenterPose(
-                                        leftQuaternion, leftPosition,
-                                        rightQuaternion, rightPosition, reachCenter);
-                                }
-                                if (assessFromEye)
-                                {
-                                    if (assessRangeM > 0.0f)
-                                    {
-                                        assessPlacement = aim_solve::traced_reticle_placement(
-                                            assessSurface, assessRangeM,
-                                            g_config.reticle_max_dist_m,
-                                            g_config.reticle_surface_offset_m,
-                                            g_config.reticle_min_scale_dist_m,
-                                            g_config.reticle_min_scale,
-                                            g_config.crosshair_size_deg);
-                                    }
-                                    else
-                                    {
-                                        assessPlacement.dist_m = g_config.crosshair_distance_m;
-                                        assessPlacement.width_m = 2.0f * assessPlacement.dist_m *
-                                            tanf(g_config.crosshair_size_deg * 0.5f * 0.0174533f);
-                                    }
-                                }
-                            }
-                            {
-                                static int loggedAssess = -1;
-                                static uint64_t lastAssessLogMs = 0;
-                                const uint64_t nowMs = GetTickCount64();
-                                const int state = !g_config.honest_reticle_assess ? -1
-                                    : assessFromEye ? (assessRangeM > 0.0f ? 2 : 1) : assessPublished ? 3 : 0;
-                                if (state != loggedAssess ||
-                                    (state > 0 && nowMs - lastAssessLogMs >= 2000))
-                                {
-                                    loggedAssess = state;
-                                    lastAssessLogMs = nowMs;
-                                    if (state == 2)
-                                        LOG("ASSESS reticle drawn from the eye at the shot's point: %s %.2f m -> "
-                                            "drawn at %.2f m, width %.3f m", assessSurface ? "surface" : "parked",
-                                            assessRangeM, assessPlacement.dist_m, assessPlacement.width_m);
-                                    else if (state == 1)
-                                        LOG("ASSESS reticle drawn from the eye along the game's aim at the "
-                                            "crosshair distance %.1f m (the poll knew no shot origin)",
-                                            g_config.crosshair_distance_m);
-                                    else if (state == 3)
-                                        LOG("ASSESS reticle: no stereo pair this frame, the game's aim is drawn "
-                                            "from the controller at the crosshair distance");
-                                    else if (state == 0)
-                                        LOG("ASSESS reticle not drawn this frame (no fresh game aim, a barrel "
-                                            "reticle, Reach's native vehicle reticle, or no stereo pair)");
-                                }
-                            }
-#endif
                             const float dist = tracedReticle
                                 ? tracedPlacement.dist_m
-                                : assessFromEye ? assessPlacement.dist_m
                                 : limitFromEye ? limitPlacement.dist_m
                                 : g_config.crosshair_distance_m;
                             const float yaw = atan2f(aimDir[0], -aimDir[2]);
@@ -18256,15 +18246,14 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                                 g_reticleAimPose.position;
                             if(primaryBarrel) reticleOrigin={committedPrimary.position[0],
                                 committedPrimary.position[1],committedPrimary.position[2]};
-                            if (reachNativeAim || tracedReticle || assessFromEye || limitFromEye)
+                            if (reachNativeAim || tracedReticle || limitFromEye)
                             {
                                 // The direction and origin share one validated
                                 // predicted-display-time stereo-center pose.
                                 // Vehicle barrels retain their native origin
                                 // and therefore their honest close parallax.
-                                // On foot this is the eye the traced ray starts at,
-                                // and the eye the assessment's ray to the shot's
-                                // point starts at.
+                                // On foot this is the eye the traced ray starts at.
+                                // In a clamped seat, the eye the clamped shot's ray is drawn from.
                                 reticleOrigin = {
                                     reachCenter.position[0],
                                     reachCenter.position[1],
@@ -18276,7 +18265,6 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                                 reticleOrigin.z + aimDir[2] * dist};
                             const float w = tracedReticle
                                 ? tracedPlacement.width_m
-                                : assessFromEye ? assessPlacement.width_m
                                 : limitFromEye ? limitPlacement.width_m
                                 : 2.0f * dist *
                                   tanf(g_config.crosshair_size_deg * 0.5f * 0.0174533f);
@@ -18324,6 +18312,139 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                                     origin.y+direction.y*dist,origin.z+direction.z*dist};
                                 layers.push_back(reinterpret_cast<XrCompositionLayerBaseHeader*>(&secondaryReticleQuad));
                             }
+#if HALOMCCVR_DEV_DIAGNOSTICS
+                            // [assess-only begin]
+                            // DEV ASSESSMENT MARKER (honest_reticle_assess): where the game's shot REALLY lands, as a
+                            // SECOND marker -- a small magenta ring and dot (assess_reticle::MarkerPixel) -- beside
+                            // the player's reticle, which stays exactly where it is (2026-10-02). Until then the
+                            // assessment REPLACED the reticle, so the player aimed WITH it and the test measured
+                            // itself: in Reach on foot the DMR's shots seemed to land "where the reticle is at the
+                            // height of recoil", because the mark came from the kicking camera while the shots did not.
+                            // The poll publishes the ray from the rendered eye through the point the game's shot
+                            // reaches (from its own shot origin along its aim, to the first surface) and its distance;
+                            // it is drawn from this frame's stereo centre eye, on the surface, at its depth, its width
+                            // a quarter of the reticle's there. Unplaced, at the crosshair distance. Not with a barrel
+                            // reticle or Reach's native vehicle reticle (both already show the shot's line), and not
+                            // without a stereo pair (no eye to draw it from). It reads only its own publication and
+                            // the frame's views, and writes only its own quad (tools/check_assess_isolation.py).
+                            {
+                                float assessDir[3]{};
+                                float assessRangeM = 0.0f;
+                                bool assessSurface = false;
+                                int assessState = 0;   // 0 nothing to draw, 1 parked, 2 placed, 3 no eye, 4 no image
+                                if (g_config.honest_reticle_assess && !reachNativeAim && !primaryBarrel &&
+                                    Game_GetClampedAimDirection(assessDir, &assessRangeM, &assessSurface))
+                                {
+                                    ReachStereoCenterPose assessCenter{};
+                                    bool assessEye = false;
+                                    if (projection.viewCount == 2 && projectionViews.size() == 2)
+                                    {
+                                        const XrPosef& assessLeft = projectionViews[0].pose;
+                                        const XrPosef& assessRight = projectionViews[1].pose;
+                                        const float assessLeftQ[4] = {
+                                            assessLeft.orientation.x, assessLeft.orientation.y,
+                                            assessLeft.orientation.z, assessLeft.orientation.w};
+                                        const float assessRightQ[4] = {
+                                            assessRight.orientation.x, assessRight.orientation.y,
+                                            assessRight.orientation.z, assessRight.orientation.w};
+                                        const float assessLeftP[3] = {
+                                            assessLeft.position.x, assessLeft.position.y, assessLeft.position.z};
+                                        const float assessRightP[3] = {
+                                            assessRight.position.x, assessRight.position.y, assessRight.position.z};
+                                        assessEye = ReachBuildStereoCenterPose(assessLeftQ, assessLeftP, assessRightQ,
+                                                                               assessRightP, assessCenter);
+                                    }
+                                    assessState = 3;
+                                    if (assessEye)
+                                    {
+                                        assessState = 4;
+                                        aim_solve::TracedReticle assessPlacement{};
+                                        if (assessRangeM > 0.0f)
+                                        {
+                                            assessPlacement = aim_solve::traced_reticle_placement(
+                                                assessSurface, assessRangeM,
+                                                g_config.reticle_max_dist_m,
+                                                g_config.reticle_surface_offset_m,
+                                                g_config.reticle_min_scale_dist_m,
+                                                g_config.reticle_min_scale,
+                                                g_config.crosshair_size_deg);
+                                        }
+                                        else
+                                        {
+                                            assessPlacement.dist_m = g_config.crosshair_distance_m;
+                                            assessPlacement.width_m = 2.0f * assessPlacement.dist_m *
+                                                tanf(g_config.crosshair_size_deg * 0.5f * 0.0174533f);
+                                        }
+                                        if (PrepareAssessMarkerImage())
+                                        {
+                                            assessState = assessRangeM > 0.0f ? 2 : 1;
+                                            const float assessYaw = atan2f(assessDir[0], -assessDir[2]);
+                                            const float assessPitch = asinf(fminf(fmaxf(assessDir[1], -1.0f), 1.0f));
+                                            const XrQuaternionf assessQy{0, sinf(-assessYaw * 0.5f), 0,
+                                                                         cosf(-assessYaw * 0.5f)};
+                                            const XrQuaternionf assessQp{sinf(assessPitch * 0.5f), 0, 0,
+                                                                         cosf(assessPitch * 0.5f)};
+                                            assessMarkerQuad = {XR_TYPE_COMPOSITION_LAYER_QUAD};
+                                            assessMarkerQuad.layerFlags =
+                                                XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT |
+                                                XR_COMPOSITION_LAYER_UNPREMULTIPLIED_ALPHA_BIT;
+                                            assessMarkerQuad.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
+                                            assessMarkerQuad.space = g_localSpace;
+                                            assessMarkerQuad.subImage.swapchain = g_assessMarkerChain;
+                                            assessMarkerQuad.subImage.imageRect = {
+                                                {0, 0},
+                                                {(int32_t)assess_reticle::kMarkerTextureSize,
+                                                 (int32_t)assess_reticle::kMarkerTextureSize}};
+                                            assessMarkerQuad.subImage.imageArrayIndex = 0;
+                                            assessMarkerQuad.pose.orientation = {
+                                                assessQy.w * assessQp.x + assessQy.x * assessQp.w +
+                                                    assessQy.y * assessQp.z - assessQy.z * assessQp.y,
+                                                assessQy.w * assessQp.y - assessQy.x * assessQp.z +
+                                                    assessQy.y * assessQp.w + assessQy.z * assessQp.x,
+                                                assessQy.w * assessQp.z + assessQy.x * assessQp.y -
+                                                    assessQy.y * assessQp.x + assessQy.z * assessQp.w,
+                                                assessQy.w * assessQp.w - assessQy.x * assessQp.x -
+                                                    assessQy.y * assessQp.y - assessQy.z * assessQp.z};
+                                            assessMarkerQuad.pose.position = {
+                                                assessCenter.position[0] + assessDir[0] * assessPlacement.dist_m,
+                                                assessCenter.position[1] + assessDir[1] * assessPlacement.dist_m,
+                                                assessCenter.position[2] + assessDir[2] * assessPlacement.dist_m};
+                                            const float assessWidth = assess_reticle::MarkerWidth(assessPlacement.width_m);
+                                            assessMarkerQuad.size = {assessWidth, assessWidth};
+                                            // After the reticle's quads, so it composites over them.
+                                            layers.push_back(
+                                                reinterpret_cast<XrCompositionLayerBaseHeader*>(&assessMarkerQuad));
+                                        }
+                                    }
+                                }
+                                static int loggedAssess = -1;
+                                static uint64_t lastAssessLogMs = 0;
+                                const uint64_t assessNowMs = GetTickCount64();
+                                const int assessLogState = !g_config.honest_reticle_assess ? -1 : assessState;
+                                if (assessLogState != loggedAssess ||
+                                    (assessLogState > 0 && assessNowMs - lastAssessLogMs >= 2000))
+                                {
+                                    loggedAssess = assessLogState;
+                                    lastAssessLogMs = assessNowMs;
+                                    if (assessLogState == 2)
+                                        LOG("ASSESS marker (second marker, the reticle is unchanged) at the shot's "
+                                            "point: %s %.2f m", assessSurface ? "surface" : "parked", assessRangeM);
+                                    else if (assessLogState == 1)
+                                        LOG("ASSESS marker (second marker) along the game's aim at the crosshair "
+                                            "distance %.1f m (the poll knew no shot origin)",
+                                            g_config.crosshair_distance_m);
+                                    else if (assessLogState == 3)
+                                        LOG("ASSESS marker not drawn: no stereo pair this frame");
+                                    else if (assessLogState == 4)
+                                        LOG("ASSESS marker not drawn: its image is not ready");
+                                    else if (assessLogState == 0)
+                                        LOG("ASSESS marker not drawn this frame (no fresh game aim -- Reach on foot "
+                                            "needs a fresh unit +0x214 -- a barrel reticle, or Reach's native "
+                                            "vehicle reticle)");
+                                }
+                            }
+                            // [assess-only end]
+#endif
                             static bool loggedDual=false;
                             if(loggedDual!=dualReticles) {
                                 loggedDual=dualReticles;

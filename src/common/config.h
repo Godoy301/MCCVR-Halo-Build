@@ -830,12 +830,14 @@ struct Config
     float reticle_min_scale_dist_m = 0.7f;
     float reticle_min_scale = 0.001f;
 
-    // DEV BUILD ONLY (parsed, saved and in the F1 menu only in dev builds): an ASSESSMENT aid that draws the
-    // crosshair on the game's REAL aim instead of the hand's point -- where the game's shot lands, traced from
-    // the game's own shot origin along its aim, not from the controller (src/common/assess_reticle_logic.h) --
-    // to judge by eye how far the game trails the hand. 0 = off, 1 = on foot only, 2 = everywhere (seats and turrets too). It moves where the reticle is
-    // DRAWN, even over the traced reticle, and nothing else: the converged mark, the shots, the aim write and
-    // the drive mode never read it (converge::AssessDrawsGameAim). It replaces honest_reticle_onfoot (retired
+    // DEV BUILD ONLY (parsed, saved and in the F1 menu only in dev builds): an ASSESSMENT aid -- a second marker
+    // showing where the game's shot lands; your normal reticle is unchanged. A small magenta ring and dot, where the
+    // game's shot lands, traced from the game's own shot origin along its aim, not from the controller
+    // (src/common/assess_reticle_logic.h; Reach on foot: the unit's projectile aim, unit +0x214, not the kicking
+    // camera) -- to judge by eye how far the game trails the hand. 0 = off, 1 = on foot only, 2 = everywhere
+    // (seats and turrets too). It draws that marker and nothing else: the player's reticle, the converged mark,
+    // the shots, the aim write and the drive mode never read it (converge::AssessDrawsGameAim;
+    // tools/check_assess_isolation.py). It replaces honest_reticle_onfoot (retired
     // 2026-10-01, ignored with a log line): the player-facing honest reticle was a cue for judging the stick
     // drive, and with convergence and direct drive in place the game's own tracers do that job. (default 0)
     int honest_reticle_assess = 0;

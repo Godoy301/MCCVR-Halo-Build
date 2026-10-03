@@ -137,6 +137,63 @@ int main()
         Check(!Place(head, back, ahead, one, 1.0f, untouched), "a point at the eye is refused");
     }
 
+    // ---- which game aim the mark is built from ----
+    {
+        Check(ChooseGameAimSource(false, false) == GameAimSource::AimFeedback &&
+                  ChooseGameAimSource(false, true) == GameAimSource::AimFeedback,
+              "every title but Reach on foot keeps its own aim feedback");
+        Check(ChooseGameAimSource(true, true) == GameAimSource::ReachUnitAim,
+              "Reach on foot draws the projectile's forward, unit +0x214");
+        Check(ChooseGameAimSource(true, false) == GameAimSource::None,
+              "Reach on foot with no fresh unit aim draws nothing -- never the kicking camera");
+        const float aim[3]{0.0f, 1.0f, 0.0f};
+        Check(UnitAimUsable(7, 7, 1000, 1050, 100, aim), "a fresh unit aim of this level is usable");
+        Check(!UnitAimUsable(6, 7, 1000, 1050, 100, aim), "another level's unit aim is not");
+        Check(!UnitAimUsable(7, 0, 1000, 1050, 100, aim), "no level, no unit aim");
+        Check(!UnitAimUsable(7, 7, 1000, 1101, 100, aim), "a stale unit aim is not");
+        Check(!UnitAimUsable(7, 7, 1000, 999, 100, aim), "a unit aim from the future is not");
+        Check(!UnitAimUsable(7, 7, 0, 50, 100, aim), "an unstamped unit aim is not");
+        const float zero[3]{0.0f, 0.0f, 0.0f}, bad[3]{std::nanf(""), 0.0f, 1.0f};
+        Check(!UnitAimUsable(7, 7, 1000, 1050, 100, zero) && !UnitAimUsable(7, 7, 1000, 1050, 100, bad) &&
+                  !UnitAimUsable(7, 7, 1000, 1050, 100, nullptr),
+              "a degenerate or non-finite unit aim is not");
+    }
+
+    // ---- the marker's art: a small magenta ring and dot, unmistakably not the reticle ----
+    {
+        const uint32_t n = kMarkerTextureSize;
+        const auto alpha = [](uint32_t p) { return p >> 24; };
+        const auto low = [](uint32_t p) { return p & 0xFFu; };
+        const auto mid = [](uint32_t p) { return (p >> 8) & 0xFFu; };
+        const auto high = [](uint32_t p) { return (p >> 16) & 0xFFu; };
+        const uint32_t centre = MarkerPixel(n / 2, n / 2, n, false);
+        Check(alpha(centre) == 255, "the centre dot is opaque");
+        Check(low(centre) > 200 && mid(centre) < 90 && high(centre) > 180,
+              "the dot is magenta (strong red and blue, little green): not the cyan reticle, not red, not green");
+        const float half = n * 0.5f;
+        const auto at = [&](float radius) {
+            return MarkerPixel(static_cast<uint32_t>(half + radius * half), n / 2, n, false);
+        };
+        Check(alpha(at(kMarkerRingRadius)) == 255, "the ring is opaque on its radius");
+        const float gap = 0.5f * (kMarkerDotRadius + kMarkerOutline + kMarkerRingRadius - kMarkerRingHalfWidth -
+                                  kMarkerOutline);
+        Check(alpha(at(gap)) == 0, "between the dot and the ring the marker is see-through");
+        Check(alpha(at(0.97f)) == 0 && alpha(MarkerPixel(0, 0, n, false)) == 0 &&
+                  alpha(MarkerPixel(n - 1, n - 1, n, false)) == 0,
+              "outside the ring and in the corners the marker is see-through");
+        const uint32_t rim = at(kMarkerRingRadius + kMarkerRingHalfWidth + kMarkerOutline * 0.5f);
+        Check(alpha(rim) > 0 && low(rim) < low(at(kMarkerRingRadius)), "a dark rim keeps it legible on bright ground");
+        const uint32_t swapped = MarkerPixel(n / 2, n / 2, n, true);
+        Check(low(swapped) == high(centre) && high(swapped) == low(centre) && mid(swapped) == mid(centre) &&
+                  alpha(swapped) == alpha(centre),
+              "a BGRA swapchain gets the same colour with red and blue swapped");
+        Check(MarkerPixel(1, 1, 0, false) == 0, "a zero-size texture paints nothing");
+        // Concentric with the default reticle, the marker fits inside its inner ticks (radius 7 of 32).
+        Check(kMarkerScaleOfReticle * MarkerOuterRadius() < 7.0f / 32.0f,
+              "the marker sits inside the default reticle's inner ticks when the shot lands on the aim point");
+        Check(Near(MarkerWidth(0.4f), 0.4f * kMarkerScaleOfReticle), "the marker's width follows the reticle's");
+    }
+
     std::printf("Assess reticle: %u checks, %u failures\n", checks, failures);
     return failures ? 1 : 0;
 }

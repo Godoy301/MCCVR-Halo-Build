@@ -239,6 +239,11 @@ bool Sight_TraceFaulted(GameTitle title)
 
 void Sight_ResetTitle(GameTitle title)
 {
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    // [assess-only begin]
+    Sight_ResetAssessTrace(title);   // the assessment trace's own latch, on the same reinstall
+    // [assess-only end]
+#endif
     auto& t = g_traces[Slot(title)];
     t.faulted.store(false, std::memory_order_release);
     t.lastTraceMs.store(0, std::memory_order_relaxed);
@@ -889,17 +894,12 @@ void Sight_ReportConverge()
 #endif
 }
 
-// ---- AUXILIARY RAYS and their traces (sight_layer.h SightAuxRay): the seat limit ray (all builds) and the dev
-// assessment ray. Seqlocks like the intent ray's: one writer each (the aim path, the title's trace thread), any
-// reader. Slots of their own, so nothing the aim or the scope reads moves.
+// ---- AUXILIARY RAYS and their traces (sight_layer.h SightAuxRay). Seqlocks like the intent ray's: one writer each
+// (the aim path, the title's trace thread), any reader. Slots of their own, so nothing the aim or the scope reads
+// moves. The helpers below are shared CODE only: each user owns its own publication objects, so the player-facing
+// seat limit ray (all builds) and the dev assessment ray (dev builds only, below) never share state.
 namespace
 {
-enum AuxKind : size_t
-{
-    kAuxLimit = 0,
-    kAuxAssess = 1,
-    kAuxKinds = 2
-};
 struct AuxRayPublication
 {
     std::atomic<uint32_t> sequence{0};
@@ -916,12 +916,9 @@ struct AuxTracePublication
     std::atomic<uint32_t> hit{0};
     std::atomic<float> rangeWu{0.0f};
 };
-AuxRayPublication g_auxRays[kAuxKinds][kTitleSlots];
-AuxTracePublication g_auxTraces[kAuxKinds][kTitleSlots];
 
-void PublishAuxRay(AuxKind kind, GameTitle title, const SightAuxRay& ray)
+void PublishAuxRay(AuxRayPublication& p, const SightAuxRay& ray)
 {
-    auto& p = g_auxRays[kind][Slot(title)];
     p.sequence.fetch_add(1, std::memory_order_acq_rel);
     p.generation.store(ray.generation, std::memory_order_relaxed);
     p.sampleMs.store(ray.sampleMs, std::memory_order_relaxed);
@@ -933,9 +930,8 @@ void PublishAuxRay(AuxKind kind, GameTitle title, const SightAuxRay& ray)
     p.sequence.fetch_add(1, std::memory_order_release);
 }
 
-bool ReadAuxRay(AuxKind kind, GameTitle title, uint32_t generation, uint64_t maxAgeMs, SightAuxRay& out)
+bool ReadAuxRay(const AuxRayPublication& p, uint32_t generation, uint64_t maxAgeMs, SightAuxRay& out)
 {
-    const auto& p = g_auxRays[kind][Slot(title)];
     for (int attempt = 0; attempt < 2; ++attempt)
     {
         const uint32_t before = p.sequence.load(std::memory_order_acquire);
@@ -966,9 +962,8 @@ bool ReadAuxRay(AuxKind kind, GameTitle title, uint32_t generation, uint64_t max
     return false;
 }
 
-void PublishAuxTrace(AuxKind kind, GameTitle title, uint32_t generation, bool hit, float rangeWu)
+void PublishAuxTrace(AuxTracePublication& t, uint32_t generation, bool hit, float rangeWu)
 {
-    auto& t = g_auxTraces[kind][Slot(title)];
     t.sequence.fetch_add(1, std::memory_order_acq_rel);
     t.generation.store(generation, std::memory_order_relaxed);
     t.sampleMs.store(GetTickCount64(), std::memory_order_relaxed);
@@ -977,9 +972,8 @@ void PublishAuxTrace(AuxKind kind, GameTitle title, uint32_t generation, bool hi
     t.sequence.fetch_add(1, std::memory_order_release);
 }
 
-bool ReadAuxTrace(AuxKind kind, GameTitle title, uint32_t generation, uint64_t maxAgeMs, bool& hit, float& rangeWu)
+bool ReadAuxTrace(const AuxTracePublication& t, uint32_t generation, uint64_t maxAgeMs, bool& hit, float& rangeWu)
 {
-    const auto& t = g_auxTraces[kind][Slot(title)];
     for (int attempt = 0; attempt < 2; ++attempt)
     {
         const uint32_t before = t.sequence.load(std::memory_order_acquire);
@@ -1004,6 +998,10 @@ bool ReadAuxTrace(AuxKind kind, GameTitle title, uint32_t generation, uint64_t m
     return false;
 }
 
+// THE SEAT LIMIT RAY's own slots (player-facing, every build).
+AuxRayPublication g_limitRays[kTitleSlots];
+AuxTracePublication g_limitTraces[kTitleSlots];
+
 // Sight_MarkSeatLimitClamped: when each title's seat reticle was last clamped, and in which generation.
 std::atomic<uint64_t> g_seatLimitClampedMs[kTitleSlots]{};
 std::atomic<uint32_t> g_seatLimitClampedGeneration[kTitleSlots]{};
@@ -1021,22 +1019,22 @@ SeatLimitWitness g_seatLimitWitness[kTitleSlots];
 
 void Sight_PublishLimitRay(GameTitle title, const SightAuxRay& ray)
 {
-    PublishAuxRay(kAuxLimit, title, ray);
+    PublishAuxRay(g_limitRays[Slot(title)], ray);
 }
 
 bool Sight_ReadLimitRay(GameTitle title, uint32_t generation, uint64_t maxAgeMs, SightAuxRay& out)
 {
-    return ReadAuxRay(kAuxLimit, title, generation, maxAgeMs, out);
+    return ReadAuxRay(g_limitRays[Slot(title)], generation, maxAgeMs, out);
 }
 
 void Sight_PublishLimitTrace(GameTitle title, uint32_t generation, bool hit, float rangeWu)
 {
-    PublishAuxTrace(kAuxLimit, title, generation, hit, rangeWu);
+    PublishAuxTrace(g_limitTraces[Slot(title)], generation, hit, rangeWu);
 }
 
 bool Sight_ReadLimitTrace(GameTitle title, uint32_t generation, uint64_t maxAgeMs, bool& hit, float& rangeWu)
 {
-    return ReadAuxTrace(kAuxLimit, title, generation, maxAgeMs, hit, rangeWu);
+    return ReadAuxTrace(g_limitTraces[Slot(title)], generation, maxAgeMs, hit, rangeWu);
 }
 
 void Sight_MarkSeatLimitClamped(GameTitle title)
@@ -1104,24 +1102,56 @@ static void SeatLimitReport()
             TitleName(static_cast<GameTitle>(slot)), polls, yawEdge, pitchEdge, overshoot);
     }
 }
+#endif
+
+#if HALOMCCVR_DEV_DIAGNOSTICS
+// [assess-only begin]
+// ---- DEV ASSESSMENT RAY and its trace (sight_layer.h): slots of their own, separate from the seat limit ray's,
+// and absent from a player build. With the assessment trace's own fault latch.
+namespace
+{
+AuxRayPublication g_assessRays[kTitleSlots];
+AuxTracePublication g_assessTraces[kTitleSlots];
+std::atomic<bool> g_assessTraceFaulted[kTitleSlots]{};
+std::atomic<uint32_t> g_assessTraceFaults[kTitleSlots]{};
+} // namespace
+
+void Sight_NoteAssessTraceFault(GameTitle title)
+{
+    g_assessTraceFaults[Slot(title)].fetch_add(1, std::memory_order_relaxed);
+    if (!g_assessTraceFaulted[Slot(title)].exchange(true, std::memory_order_acq_rel))
+        LOG("SIGHT %s: the ASSESSMENT trace raised a native fault; the assessment trace stays off until the title "
+            "reinstalls (the aim's own trace is untouched)", TitleName(title));
+}
+
+bool Sight_AssessTraceFaulted(GameTitle title)
+{
+    return g_assessTraceFaulted[Slot(title)].load(std::memory_order_acquire);
+}
+
+void Sight_ResetAssessTrace(GameTitle title)
+{
+    g_assessTraceFaulted[Slot(title)].store(false, std::memory_order_release);
+}
 
 void Sight_PublishAssessRay(GameTitle title, const SightAssessRay& ray)
 {
-    PublishAuxRay(kAuxAssess, title, ray);
+    PublishAuxRay(g_assessRays[Slot(title)], ray);
 }
 
 bool Sight_ReadAssessRay(GameTitle title, uint32_t generation, uint64_t maxAgeMs, SightAssessRay& out)
 {
-    return ReadAuxRay(kAuxAssess, title, generation, maxAgeMs, out);
+    return ReadAuxRay(g_assessRays[Slot(title)], generation, maxAgeMs, out);
 }
 
 void Sight_PublishAssessTrace(GameTitle title, uint32_t generation, bool hit, float rangeWu)
 {
-    PublishAuxTrace(kAuxAssess, title, generation, hit, rangeWu);
+    PublishAuxTrace(g_assessTraces[Slot(title)], generation, hit, rangeWu);
 }
 
 bool Sight_ReadAssessTrace(GameTitle title, uint32_t generation, uint64_t maxAgeMs, bool& hit, float& rangeWu)
 {
-    return ReadAuxTrace(kAuxAssess, title, generation, maxAgeMs, hit, rangeWu);
+    return ReadAuxTrace(g_assessTraces[Slot(title)], generation, maxAgeMs, hit, rangeWu);
 }
+// [assess-only end]
 #endif

@@ -160,10 +160,10 @@ inline bool AimFeedbackFinite(float x, float y, float z)
     return std::isfinite(length) && length > 1.0e-4f;
 }
 
-// DEV ASSESSMENT ONLY (honest_reticle_assess, parsed in dev builds only): draw the reticle on the game's real
-// aim instead, to judge by eye how far the game trails the hand. 0 = off, 1 = on foot only, 2 = everywhere.
-// It moves where the reticle is DRAWN and nothing else: the mark, the shots, the write and the drive mode
-// never read it.
+// DEV ASSESSMENT ONLY (honest_reticle_assess, parsed in dev builds only): draw a second marker where the game's
+// shot lands, beside the unchanged reticle, to judge by eye how far the game trails the hand. 0 = off, 1 = on foot
+// only, 2 = everywhere. It draws that marker and nothing else: the reticle, the mark, the shots, the write and the
+// drive mode never read it (tools/check_assess_isolation.py).
 inline bool AssessDrawsGameAim(int assess, bool seated) { return assess >= 2 || (assess == 1 && !seated); }
 
 // ---- the converge-off witness (dev lines only) ------------------------------------------------------------

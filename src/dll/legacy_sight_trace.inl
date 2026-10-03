@@ -304,9 +304,9 @@ void LegacySightTraceTick(GameTitle title, uint32_t unit, int32_t localUnit, boo
     {
         bool limitHit = false;
         float limitRangeWu = 0.0f;
-        if (!SightAssessTraceVector(original, flags, kReachAimTraceMode, limit, length, kSightTraceSkipWu,
-                                    kLegacySightSelfStepWu, seated ? kLegacySightSelfPasses : 1, ignoreA, ignoreB,
-                                    ignoreC, isOurs, limitHit, limitRangeWu))
+        if (!SightAuxTraceVector(original, flags, kReachAimTraceMode, limit, length, kSightTraceSkipWu,
+                                 kLegacySightSelfStepWu, seated ? kLegacySightSelfPasses : 1, ignoreA, ignoreB,
+                                 ignoreC, isOurs, limitHit, limitRangeWu))
         {
             Sight_NoteTraceFault(title);
             LOG("SIGHT %s: the seat limit trace raised a native fault; the trace stays off until the title "
@@ -316,25 +316,26 @@ void LegacySightTraceTick(GameTitle title, uint32_t unit, int32_t localUnit, boo
         Sight_PublishLimitTrace(title, generation, limitHit, limitHit ? limitRangeWu : 0.0f);
     }
 #if HALOMCCVR_DEV_DIAGNOSTICS
+    // [assess-only begin]
     // DEV ASSESSMENT (honest_reticle_assess): the game's own aim ray from its shot origin (the engine eye, or the
     // rendered eye for an ODST passenger whose shot O6 moves there), in this same tick, with these same ignores.
-    // Only while the key published one; nothing the aim reads moves.
+    // Only while the key published one; nothing the aim reads moves. A native fault here latches only the
+    // ASSESSMENT trace off (Sight_NoteAssessTraceFault); the intent trace's latch is the aim's.
     SightAssessRay assess{};
-    if (Sight_ReadAssessRay(title, generation, kSightRayFreshMs, assess))
+    if (!Sight_AssessTraceFaulted(title) && Sight_ReadAssessRay(title, generation, kSightRayFreshMs, assess))
     {
         bool assessHit = false;
         float assessRangeWu = 0.0f;
-        if (!SightAssessTraceVector(original, flags, kReachAimTraceMode, assess, length, kSightTraceSkipWu,
-                                    kLegacySightSelfStepWu, seated ? kLegacySightSelfPasses : 1, ignoreA, ignoreB,
-                                    ignoreC, isOurs, assessHit, assessRangeWu))
+        if (!SightAuxTraceVector(original, flags, kReachAimTraceMode, assess, length, kSightTraceSkipWu,
+                                 kLegacySightSelfStepWu, seated ? kLegacySightSelfPasses : 1, ignoreA, ignoreB,
+                                 ignoreC, isOurs, assessHit, assessRangeWu))
         {
-            Sight_NoteTraceFault(title);
-            LOG("SIGHT %s: the assessment trace raised a native fault; the trace stays off until the title "
-                "reinstalls", LegacySightTitleName(title));
+            Sight_NoteAssessTraceFault(title);
             return;
         }
         Sight_PublishAssessTrace(title, generation, assessHit, assessHit ? assessRangeWu : 0.0f);
     }
+    // [assess-only end]
 #endif
 }
 

@@ -145,10 +145,10 @@ bool ReachSightGuardedTrace(LegacyCollisionTestVectorFn original, uint64_t flags
 // engine-trace witnesses never see it). For collision_test_vector titles: Reach, Halo 3, ODST. False on a native fault
 // (the caller latches its trace off).
 template <class IsOurs>
-bool SightAssessTraceVector(LegacyCollisionTestVectorFn original, uint64_t flags, int32_t mode,
-                            const SightAuxRay& ray, float traceLengthWu, float skipWu, float selfStepWu, int passes,
-                            int32_t ignoreA, int32_t ignoreB, int32_t ignoreC, IsOurs isOurs, bool& hit,
-                            float& rangeWu)
+bool SightAuxTraceVector(LegacyCollisionTestVectorFn original, uint64_t flags, int32_t mode,
+                         const SightAuxRay& ray, float traceLengthWu, float skipWu, float selfStepWu, int passes,
+                         int32_t ignoreA, int32_t ignoreB, int32_t ignoreC, IsOurs isOurs, bool& hit,
+                         float& rangeWu)
 {
     alignas(16) uint8_t result[0x400]{};
     hit = false;
@@ -417,6 +417,11 @@ void ReachResolveSightFlags(uintptr_t base, size_t size)
     ReachClearSightFlags("resolving");
     // A native fault latches the trace off for the rest of THIS install; a new install tries again.
     g_reachSightTrace.faulted.store(false, std::memory_order_release);
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    // [assess-only begin]
+    Sight_ResetAssessTrace(GameTitle::HaloReach);   // ...and the assessment trace's own latch
+    // [assess-only end]
+#endif
     uint64_t expected = kReachCollisionTestFlagsInit;
 #if HALOMCCVR_DEV_DIAGNOSTICS
     if (g_config.reach_sight_fault & 4)   // fault injection, bit 2: the value check must refuse
@@ -685,9 +690,9 @@ void ReachSightTraceTick(uint32_t unit)
             bool limitHit = false;
             float limitRangeWu = 0.0f;
             const auto isOurs = [&](int32_t object) { return object != -1 && ReachSightRootOf(object) == root; };
-            if (!SightAssessTraceVector(original, flags, mode, limit, traceLengthWu, kReachSightTraceSkipWu,
-                                        kReachSightSelfStepWu, seated ? kReachSightSelfPasses : 1, ignoreA, ignoreB,
-                                        ignoreC, isOurs, limitHit, limitRangeWu))
+            if (!SightAuxTraceVector(original, flags, mode, limit, traceLengthWu, kReachSightTraceSkipWu,
+                                     kReachSightSelfStepWu, seated ? kReachSightSelfPasses : 1, ignoreA, ignoreB,
+                                     ignoreC, isOurs, limitHit, limitRangeWu))
             {
                 trace.faulted.store(true, std::memory_order_release);   // fail closed, as the intent trace does
                 return;
@@ -696,27 +701,31 @@ void ReachSightTraceTick(uint32_t unit)
         }
     }
 #if HALOMCCVR_DEV_DIAGNOSTICS
+    // [assess-only begin]
     // DEV ASSESSMENT (honest_reticle_assess): the game's own aim ray from Reach's engine eye, in this same tick and
-    // with these same ignores. Only while the key published one; nothing the aim reads moves.
+    // with these same ignores. Only while the key published one; nothing the aim reads moves. A native fault here
+    // latches only the ASSESSMENT trace off (Sight_NoteAssessTraceFault); the intent trace's latch is the aim's.
     {
         const uint32_t assessGeneration = TitleAdapter_GetGeneration(GameTitle::HaloReach);
         SightAssessRay assess{};
-        if (Sight_ReadAssessRay(GameTitle::HaloReach, assessGeneration, kSightRayFreshMs, assess))
+        if (!Sight_AssessTraceFaulted(GameTitle::HaloReach) &&
+            Sight_ReadAssessRay(GameTitle::HaloReach, assessGeneration, kSightRayFreshMs, assess))
         {
             bool assessHit = false;
             float assessRangeWu = 0.0f;
             const auto isOurs = [&](int32_t object) { return object != -1 && ReachSightRootOf(object) == root; };
-            if (!SightAssessTraceVector(original, flags, mode, assess, traceLengthWu, kReachSightTraceSkipWu,
-                                        kReachSightSelfStepWu, seated ? kReachSightSelfPasses : 1, ignoreA, ignoreB,
-                                        ignoreC, isOurs, assessHit, assessRangeWu))
+            if (!SightAuxTraceVector(original, flags, mode, assess, traceLengthWu, kReachSightTraceSkipWu,
+                                     kReachSightSelfStepWu, seated ? kReachSightSelfPasses : 1, ignoreA, ignoreB,
+                                     ignoreC, isOurs, assessHit, assessRangeWu))
             {
-                trace.faulted.store(true, std::memory_order_release);   // fail closed, as the intent trace does
+                Sight_NoteAssessTraceFault(GameTitle::HaloReach);   // the assessment's own latch, not the aim's
                 return;
             }
             Sight_PublishAssessTrace(GameTitle::HaloReach, assessGeneration, assessHit,
                                      assessHit ? assessRangeWu : 0.0f);
         }
     }
+    // [assess-only end]
 #endif
 }
 
