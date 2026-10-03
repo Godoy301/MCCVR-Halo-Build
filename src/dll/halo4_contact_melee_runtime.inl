@@ -214,6 +214,7 @@ void Halo4SightTraceTick(uint32_t unit,void* instance)
     input.resultOptions[0]=1;
     bool returned=false,onFoot=false;
 #if HALOMCCVR_DEV_DIAGNOSTICS
+    // [assess-only begin]
     // DEV ASSESSMENT (honest_reticle_assess): the game's own aim ray from the engine eye, traced in this same
     // update with the same profile, flags and ignore. Only while the key published one.
     SightAssessRay assess{};
@@ -227,6 +228,7 @@ void Halo4SightTraceTick(uint32_t unit,void* instance)
             assessInput.start[axis]=assess.origin[axis]+assess.dir[axis]*kSightTraceSkipWu;
             assessInput.end[axis]=assessInput.start[axis]+assess.dir[axis]*length;
         }
+    // [assess-only end]
 #endif
     LARGE_INTEGER before{},after{};
     __try
@@ -242,11 +244,13 @@ void Halo4SightTraceTick(uint32_t unit,void* instance)
             returned=g_halo4WorldCollision.originalRayCast(&input,&output);
             QueryPerformanceCounter(&after);
 #if HALOMCCVR_DEV_DIAGNOSTICS
+            // [assess-only begin]
             if(assessDue)
             {
                 memcpy(&assessInput.collisionFlags,&input.collisionFlags,sizeof(assessInput.collisionFlags));
                 assessReturned=g_halo4WorldCollision.originalRayCast(&assessInput,&assessOutput);
             }
+            // [assess-only end]
 #endif
         }
     }
@@ -260,6 +264,7 @@ void Halo4SightTraceTick(uint32_t unit,void* instance)
     Sight_PublishTrace(kTitle,generation,hit,hit ? kSightTraceSkipWu+output.fraction*length : 0.0f,
         static_cast<uint64_t>(after.QuadPart-before.QuadPart));
 #if HALOMCCVR_DEV_DIAGNOSTICS
+    // [assess-only begin]
     if(assessDue)
     {
         const bool assessHit=assessReturned && std::isfinite(assessOutput.fraction) &&
@@ -267,6 +272,7 @@ void Halo4SightTraceTick(uint32_t unit,void* instance)
         Sight_PublishAssessTrace(kTitle,generation,assessHit,
             assessHit ? kSightTraceSkipWu+assessOutput.fraction*length : 0.0f);
     }
+    // [assess-only end]
 #endif
 }
 

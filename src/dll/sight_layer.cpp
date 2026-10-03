@@ -883,6 +883,7 @@ void Sight_ReportConverge()
 }
 
 #if HALOMCCVR_DEV_DIAGNOSTICS
+// [assess-only begin]
 // ---- DEV ASSESSMENT RAY and its trace (sight_layer.h). Seqlocks like the intent ray's: one writer each (the aim
 // path, the title's trace thread), any reader. Slots of their own, so nothing the aim or the scope reads moves.
 namespace
@@ -991,4 +992,5 @@ bool Sight_ReadAssessTrace(GameTitle title, uint32_t generation, uint64_t maxAge
     }
     return false;
 }
+// [assess-only end]
 #endif

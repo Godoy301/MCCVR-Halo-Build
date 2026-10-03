@@ -169,6 +169,7 @@ void Sight_NoteMuzzleShotHeld(GameTitle title);
 void Sight_Report();
 
 #if HALOMCCVR_DEV_DIAGNOSTICS
+// [assess-only begin]
 // DEV ASSESSMENT RAY (honest_reticle_assess; dev builds only, src/common/assess_reticle_logic.h). The reticle the
 // assessment draws is the point the game's shot really reaches: from the game's own shot origin along the game's
 // own aim, to the first surface. The aim path publishes that ray here (only while the key draws this title); the
@@ -187,6 +188,7 @@ bool Sight_ReadAssessRay(GameTitle title, uint32_t generation, uint64_t maxAgeMs
 // rangeWu: from the ray's origin; on a miss the caller passes 0 and a read reports the trace's far end.
 void Sight_PublishAssessTrace(GameTitle title, uint32_t generation, bool hit, float rangeWu);
 bool Sight_ReadAssessTrace(GameTitle title, uint32_t generation, uint64_t maxAgeMs, bool& hit, float& rangeWu);
+// [assess-only end]
 #endif
 
 // CONVERGE-OFF WITNESS (dev; empty stubs in player builds, converge_policy.h). Natural in-game limits never

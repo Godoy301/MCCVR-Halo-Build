@@ -139,6 +139,7 @@ bool ReachSightGuardedTrace(LegacyCollisionTestVectorFn original, uint64_t flags
 }
 
 #if HALOMCCVR_DEV_DIAGNOSTICS
+// [assess-only begin]
 // DEV ASSESSMENT (honest_reticle_assess; sight_layer.h SightAssessRay): trace the game's OWN aim ray -- from its
 // shot origin along its aim -- with the same native query, flags and ignores the caller's intent trace just used,
 // looking past any other part of our own vehicle (`isOurs`) as that trace does, so the assessment reticle sits on
@@ -183,6 +184,7 @@ bool SightAssessTraceVector(LegacyCollisionTestVectorFn original, uint64_t flags
     }
     return true;
 }
+// [assess-only end]
 #endif
 // The range is smoothed over 120 ms in the provider, so ~30 Hz measures it fully.
 inline constexpr uint64_t kReachSightTraceIntervalMs = 30;
@@ -676,6 +678,7 @@ void ReachSightTraceTick(uint32_t unit)
     trace.rangeWu.store(rangeWu, std::memory_order_relaxed);
     trace.sequence.fetch_add(1, std::memory_order_release);
 #if HALOMCCVR_DEV_DIAGNOSTICS
+    // [assess-only begin]
     // DEV ASSESSMENT (honest_reticle_assess): the game's own aim ray from Reach's engine eye, in this same tick and
     // with these same ignores. Only while the key published one; nothing the aim reads moves.
     {
@@ -697,6 +700,7 @@ void ReachSightTraceTick(uint32_t unit)
                                      assessHit ? assessRangeWu : 0.0f);
         }
     }
+    // [assess-only end]
 #endif
 }
 

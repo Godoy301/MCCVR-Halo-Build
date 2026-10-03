@@ -2196,9 +2196,10 @@ void ConfigSave()
     fprintf(f, "# DEV BUILD ONLY. Halo 4 seated convergence (stage 1): 1 = a seat converges like Halo 3's while\n");
     fprintf(f, "# every proof holds, and stays converged where the native assist cannot bring the shot on. 0 = seats as before.\n");
     fprintf(f, "halo4_seat_converge = %d\n\n", g_config.halo4_seat_converge);
-    fprintf(f, "# DEV BUILD ONLY. Assessment: draw the crosshair where the game's shot lands (along its own aim from its\n");
-    fprintf(f, "# own shot origin, not from your hand) instead of the aim point, to see how far the game trails the\n");
-    fprintf(f, "# hand. Moves the drawing only; shots, aim and convergence are unchanged.\n");
+    fprintf(f, "# DEV BUILD ONLY. Assessment: a second marker showing where the game's shot lands; your normal reticle\n");
+    fprintf(f, "# is unchanged. A small magenta ring and dot, along the game's own aim from its own shot origin (Reach on\n");
+    fprintf(f, "# foot: the unit's projectile aim, not the camera), to see how far the game trails the hand. Draws only;\n");
+    fprintf(f, "# shots, aim and convergence are unchanged.\n");
     fprintf(f, "# 0 = off, 1 = on foot, 2 = everywhere. (default 0)\n");
     fprintf(f, "honest_reticle_assess = %d\n\n", g_config.honest_reticle_assess);
     fprintf(f, "# DEV BUILD ONLY. 1 = log the type-13 pilot controllers (Reach Sabre, Halo 4 Broadsword): REACH SF and\n");

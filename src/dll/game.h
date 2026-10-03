@@ -299,17 +299,22 @@ enum class VehicleTrimBank : uint8_t
 };
 int Game_VehicleSeatTrimSlotEx(VehicleTrimBank* outBank);
 const char* Game_VehicleSeatTrimName(int slot, VehicleTrimBank bank);
+#if HALOMCCVR_DEV_DIAGNOSTICS
+// [assess-only begin]
 // DEV ASSESSMENT ONLY (honest_reticle_assess): true while this input poll
-// published the engine's ACTUAL aim for the reticle to draw instead of the aim
-// point. `outDir` carries it as a VR-space unit vector. A player build never
-// publishes it: a seat's limit or a turret no longer moves the reticle.
-// `outRangeM` > 0 (dev builds): the poll PLACED the mark -- `outDir` is then the
+// published where the engine's shot goes, for the compositor to draw as a
+// SECOND marker beside the player's reticle (which it never moves). `outDir`
+// carries it as a VR-space unit vector. A player build does not contain it.
+// `outRangeM` > 0: the poll PLACED the mark -- `outDir` is then the
 // ray from the rendered centre eye through the point the game's shot reaches
 // (from the game's shot origin along its aim, to the first surface), and this
 // is that point's distance in VR metres; `outSurface` says the range is a
 // traced hit. 0: draw the direction from the eye at the crosshair distance.
+// Only the VR drawing code may call it (tools/check_assess_isolation.py).
 bool Game_GetClampedAimDirection(float outDir[3], float* outRangeM = nullptr,
                                  bool* outSurface = nullptr);
+// [assess-only end]
+#endif
 // Reach-only exact-frame reticle truth: returns the completed stereo pair's
 // native seated unit aim in that pair's final center-camera local axes.
 // The compositor rotates it by the submitted stereo-center orientation.

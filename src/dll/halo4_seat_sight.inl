@@ -795,6 +795,7 @@ void Halo4SightTraceSeated(uint32_t unit, void* instance)
         Sight_PublishTrace(kTitle, generation, result.hit, result.hit ? result.rangeWu : 0.0f, cost);
         f.published.fetch_add(1, std::memory_order_relaxed);
     }
+    // [assess-only begin]
     // DEV ASSESSMENT (honest_reticle_assess): the game's own aim from the seat's eye (the ray the native seated
     // assist's crosshair trace runs along), looking past our own vehicle exactly as the intent trace does. Only
     // while the key published one; nothing the aim reads moves.
@@ -836,6 +837,7 @@ void Halo4SightTraceSeated(uint32_t unit, void* instance)
         Sight_PublishAssessTrace(kTitle, generation, assessResult.hit,
                                  assessResult.hit ? assessResult.rangeWu : 0.0f);
     }
+    // [assess-only end]
 }
 
 // ---- the shot witness (0x1DCB8C's exit, the fire routine's call only) --------------------------------------
@@ -1442,6 +1444,7 @@ void Halo4SeatSightClaimWitness(const Halo4SeatSightPoll& seat, const float poin
     w.claim[why].fetch_add(1, std::memory_order_relaxed);
 }
 
+// [assess-only begin]
 // Stage 1, DEV ASSESSMENT ONLY (honest_reticle_assess = 2): where the shot really goes for a seat whose proofs all
 // hold (verifier item 11). The game's aim is not the shot's line: the native assist's crosshair trace runs from
 // the game's eye E along the unit's actual aim, and the shot turns from its own line (the barrel's, or the aiming
@@ -1495,6 +1498,7 @@ bool Halo4SeatSightHonestAlongAim(const Halo4SeatSightPoll& seat, const float po
     honestDir[2] = dir.z;
     return true;
 }
+// [assess-only end]
 
 // Cold worker, every 2 s: the three dev lines.
 void Halo4SeatSightReport()
