@@ -165,7 +165,8 @@ bool Sight_ScopeConvergedDirection(GameTitle title, float outDir[3]);
 // Sight_AimMuzzleShot: after the title's obstruction check moved the muzzle from `before` to `position`,
 // replace `direction` and `up` and return true; false leaves all three untouched, and the title then
 // refuses the barrel shot, so it leaves the eye exactly as before -- when the aim in effect is not
-// converged, the ray or trace is stale, or the geometry fails a rail. The intent ray and engine eye are
+// converged, the ray or trace is stale, or the geometry refuses (aim_solve::MuzzleShot, counted by reason; no
+// distance-from-the-eye limit: the muzzle's identity is each title's weapon_muzzle receipt). The intent ray and engine eye are
 // the published ray's (Halo 3, ODST, Halo 4), the caller's own (...FromRay: Halo 2, CE), or the caller's
 // converged point itself (...Through: Reach, whose aim lane is its own). Any thread; counted per title.
 // ...FromRay's pointDistance, when given, receives how far that point lies from the muzzle (world units) on
@@ -177,7 +178,7 @@ bool Sight_AimMuzzleShot(GameTitle title, uint32_t generation, const float befor
 bool Sight_AimMuzzleShotFromRay(GameTitle title, uint32_t generation, const float head[3], const float dir[3],
                                 const float eye[3], const float before[3], const float position[3],
                                 float direction[3], float up[3], float* pointDistance = nullptr);
-bool Sight_AimMuzzleShotThrough(GameTitle title, const float point[3], const float rayDir[3], const float eye[3],
+bool Sight_AimMuzzleShotThrough(GameTitle title, const float point[3], const float rayDir[3],
                                 const float before[3], const float position[3], float direction[3], float up[3]);
 // A title that could not even ask (no converged point of its own): counted with the rest.
 void Sight_NoteMuzzleShotUnconverged(GameTitle title);

@@ -63,9 +63,11 @@ struct Stats
 {
     std::atomic<uint64_t> rays{0}, traces{0}, hits{0}, misses{0}, faults{0}, converged{0}, declined{0}, written{0};
     std::atomic<uint64_t> costTicks{0}, costMaxTicks{0};
-    // Shots from the muzzle: aimed through the converged point, refused by a rail, or without a point; and
-    // (defensive) held off because the gun points elsewhere, naturally -- a seat held at its stop, a turret.
-    std::atomic<uint64_t> muzzleAimed{0}, muzzleRefused{0}, muzzleUnconverged{0}, muzzleHeld{0};
+    // Shots from the muzzle: aimed through the converged point, refused (by reason: aim_solve::MuzzleShot), or
+    // without a point; and (defensive) held off because the gun points elsewhere, naturally -- a seat held at its
+    // stop, a turret.
+    std::atomic<uint64_t> muzzleAimed{0}, muzzleUnconverged{0}, muzzleHeld{0};
+    std::atomic<uint64_t> muzzleRefused[static_cast<size_t>(aim_solve::MuzzleShot::Count)]{};
 };
 
 RayPublication g_rays[kTitleSlots];
@@ -445,20 +447,25 @@ void Sight_NoteMuzzleShotHeld(GameTitle title)
     g_stats[Slot(title)].muzzleHeld.fetch_add(1, std::memory_order_relaxed);
 }
 
-bool Sight_AimMuzzleShotThrough(GameTitle title, const float point[3], const float rayDir[3], const float eye[3],
+bool Sight_AimMuzzleShotThrough(GameTitle title, const float point[3], const float rayDir[3],
                                 const float before[3], const float position[3], float direction[3], float up[3])
 {
-    if (!point || !rayDir || !eye || !before || !position || !direction || !up)
-        return false;
-    aim_solve::Vec3 out{}, newUp{up[0], up[1], up[2]};
-    if (!aim_solve::muzzle_shot_direction(aim_solve::Vec3{before[0], before[1], before[2]},
-                                          aim_solve::Vec3{position[0], position[1], position[2]},
-                                          aim_solve::Vec3{point[0], point[1], point[2]},
-                                          aim_solve::Vec3{rayDir[0], rayDir[1], rayDir[2]},
-                                          aim_solve::Vec3{eye[0], eye[1], eye[2]}, kSightCmPerWorldUnit,
-                                          aim_solve::MuzzleShotRails{}, out, newUp))
+    auto& refused = g_stats[Slot(title)].muzzleRefused;
+    if (!point || !rayDir || !before || !position || !direction || !up)
     {
-        g_stats[Slot(title)].muzzleRefused.fetch_add(1, std::memory_order_relaxed);
+        refused[static_cast<size_t>(aim_solve::MuzzleShot::NonFinite)].fetch_add(1, std::memory_order_relaxed);
+        return false;
+    }
+    aim_solve::Vec3 out{}, newUp{up[0], up[1], up[2]};
+    const aim_solve::MuzzleShot why = aim_solve::muzzle_shot_direction(
+        aim_solve::Vec3{before[0], before[1], before[2]}, aim_solve::Vec3{position[0], position[1], position[2]},
+        aim_solve::Vec3{point[0], point[1], point[2]}, aim_solve::Vec3{rayDir[0], rayDir[1], rayDir[2]},
+        kSightCmPerWorldUnit, aim_solve::MuzzleShotRails{}, out, newUp);
+    if (why != aim_solve::MuzzleShot::Aimed)
+    {
+        const size_t r = static_cast<size_t>(why);
+        if (r < static_cast<size_t>(aim_solve::MuzzleShot::Count))
+            refused[r].fetch_add(1, std::memory_order_relaxed);
         return false;
     }
     direction[0] = out.x; direction[1] = out.y; direction[2] = out.z;
@@ -494,7 +501,8 @@ bool Sight_AimMuzzleShotFromRay(GameTitle title, uint32_t generation, const floa
         u[axis] = dir[axis] / length;
         point[axis] = head[axis] + u[axis] * range;
     }
-    if (!Sight_AimMuzzleShotThrough(title, point, u, eye, before, position, direction, up))
+    (void)eye;   // no distance-from-the-eye limit on the muzzle (aim_solve::muzzle_shot_direction)
+    if (!Sight_AimMuzzleShotThrough(title, point, u, before, position, direction, up))
         return false;
     if (pointDistance)
     {
@@ -668,7 +676,7 @@ bool Sight_AimMuzzleShot(GameTitle title, uint32_t generation, const float befor
     // re-targeted: SightIntent::solvePoint); on foot through the frame-coherent point.
     if (use == shot_lag::IntentUse::Use && intent.p.generation == generation)
         return Sight_AimMuzzleShotThrough(title, intent.p.seated ? intent.solvePoint : intent.p.point, intent.p.dir,
-                                          ray.eye, before, position, direction, up);
+                                          before, position, direction, up);
     return Sight_AimMuzzleShotFromRay(title, generation, ray.head, ray.dir, ray.eye, before, position, direction, up);
 }
 
@@ -1206,17 +1214,32 @@ void Sight_Report()
         const uint64_t declined = s.declined.exchange(0, std::memory_order_relaxed);
         const uint64_t faults = s.faults.exchange(0, std::memory_order_relaxed);
         const uint64_t muzzleAimed = s.muzzleAimed.exchange(0, std::memory_order_relaxed);
-        const uint64_t muzzleRefused = s.muzzleRefused.exchange(0, std::memory_order_relaxed);
+        uint64_t muzzleRefused = 0;
+        char muzzleWhy[160]{};
+        size_t muzzleWhyLength = 0;
+        for (size_t r = 1; r < static_cast<size_t>(aim_solve::MuzzleShot::Count); ++r)
+        {
+            const uint64_t n = s.muzzleRefused[r].exchange(0, std::memory_order_relaxed);
+            muzzleRefused += n;
+            if (!n || muzzleWhyLength + 1 >= sizeof(muzzleWhy))
+                continue;
+            const int w = std::snprintf(muzzleWhy + muzzleWhyLength, sizeof(muzzleWhy) - muzzleWhyLength,
+                                        "%s%s=%llu", muzzleWhyLength ? ", " : "",
+                                        aim_solve::MuzzleShotName(static_cast<aim_solve::MuzzleShot>(r)),
+                                        static_cast<unsigned long long>(n));
+            if (w > 0)
+                muzzleWhyLength += std::min(static_cast<size_t>(w), sizeof(muzzleWhy) - muzzleWhyLength - 1);
+        }
         const uint64_t muzzleUnconverged = s.muzzleUnconverged.exchange(0, std::memory_order_relaxed);
         const uint64_t muzzleHeld = s.muzzleHeld.exchange(0, std::memory_order_relaxed);
         ReportReaims(i);
         if (muzzleAimed || muzzleRefused || muzzleUnconverged || muzzleHeld)
-            LOG("SHOTS FROM THE MUZZLE %s: %llu aimed through the converged point, %llu refused by a rail (the "
-                "muzzle far from the eye, pulled back by the obstruction check, or the point not ahead of it), "
+            LOG("SHOTS FROM THE MUZZLE %s: %llu aimed through the converged point, %llu refused%s%s%s, "
                 "%llu without a converged point, %llu held off (a seat held at its stop, or a turret: the gun "
                 "points elsewhere); every refusal left from the eye as before",
                 TitleName(static_cast<GameTitle>(i)), (unsigned long long)muzzleAimed,
-                (unsigned long long)muzzleRefused, (unsigned long long)muzzleUnconverged,
+                (unsigned long long)muzzleRefused, muzzleWhyLength ? " (" : "", muzzleWhyLength ? muzzleWhy : "",
+                muzzleWhyLength ? ")" : "", (unsigned long long)muzzleUnconverged,
                 (unsigned long long)muzzleHeld);
         if (!rays && !traces && !converged && !declined && !faults)
             continue;

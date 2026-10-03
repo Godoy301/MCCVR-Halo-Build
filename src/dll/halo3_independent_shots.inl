@@ -31,6 +31,9 @@ thread_local Halo3IndependentShotScope g_halo3IndependentShot;
 // The input user of the native acquisition running on this thread (-1 outside one): its camera evaluator call for
 // user 0 is the game's own eye at this tick (PublishHalo3TickEye).
 thread_local int32_t t_halo3AcquisitionUser=-1;
+// When the native acquisition last ran for input user 0 (Sight_NowUs): the record's "no fresh game eye" cause --
+// the game skipped its acquisition, or it ran without reaching the evaluator (shot_lag::TickEyeAcquisition).
+std::atomic<uint64_t> g_halo3AcquisitionUser0Us{0};
 
 __declspec(noinline) void MarkHalo3IndependentShotFault()
 {g_halo3Dual.faulted.store(true,std::memory_order_release);}
@@ -85,6 +88,8 @@ __declspec(noinline) void __fastcall Halo3IndependentQueryDetour(
     g_halo3QueryCapture.active=capture;
     const int32_t previousAcquisitionUser=t_halo3AcquisitionUser;
     t_halo3AcquisitionUser=inputUser;
+    if(inputUser==0 && !g_legacyCollisionOwnedQuery)
+        g_halo3AcquisitionUser0Us.store(Sight_NowUs(),std::memory_order_relaxed);
     __try
     {
         if(!feature.queryOriginal)__leave;

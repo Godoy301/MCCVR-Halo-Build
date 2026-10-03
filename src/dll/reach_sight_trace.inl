@@ -949,7 +949,7 @@ bool ReachAimMuzzleShot(const float before[3], const float position[3], float di
         return false;
     }
     const float point[3]{o[0] + u[0] * rangeWu, o[1] + u[1] * rangeWu, o[2] + u[2] * rangeWu};
-    return Sight_AimMuzzleShotThrough(GameTitle::HaloReach, point, u, e, before, position, direction, up);
+    return Sight_AimMuzzleShotThrough(GameTitle::HaloReach, point, u, before, position, direction, up);
 }
 
 void ReachSightMeasureShot(int32_t unitIndex, const float* origin, const float* direction,

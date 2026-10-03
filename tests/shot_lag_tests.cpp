@@ -571,6 +571,46 @@ int main()
               "the carry is clamped to 50 ms");
     }
 
+    // ---- the game's eye when the acquisition did not run (4c) ----
+    {
+        TickEyeFallbackInput in{};
+        in.hooked = true;
+        in.sameGeneration = true;
+        in.unit = 0x00CA;
+        in.onFootControlled = true;
+        Check(TickEyeFallbackGate(in) == TickEyeMiss::FromEvaluator,
+              "our unit, on foot in control, hooks live: ask the evaluator");
+        TickEyeFallbackInput x = in;
+        x.hooked = false;
+        Check(TickEyeFallbackGate(x) == TickEyeMiss::NoHook, "no evaluator hook: not asked, counted");
+        x = in;
+        x.sameGeneration = false;
+        Check(TickEyeFallbackGate(x) == TickEyeMiss::NoHook, "hooks from another generation: not asked");
+        x = in;
+        x.unit = -1;
+        Check(TickEyeFallbackGate(x) == TickEyeMiss::NoUnit, "no local unit: not asked");
+        x = in;
+        x.onFootControlled = false;
+        Check(TickEyeFallbackGate(x) == TickEyeMiss::NotOnFootControlled, "a seat or a cinematic: not asked");
+        x = in;
+        x.hooked = false;
+        x.unit = -1;
+        x.onFootControlled = false;
+        Check(TickEyeFallbackGate(x) == TickEyeMiss::NoHook, "the hooks are checked first");
+        Check(ClassifyTickEyeAcquisition(0, 5000000, 100000) == TickEyeAcquisition::Skipped,
+              "never ran: the game skipped its acquisition");
+        Check(ClassifyTickEyeAcquisition(4950000, 5000000, 100000) == TickEyeAcquisition::RanWithoutEvaluator,
+              "ran 50 ms ago without publishing: it never reached the evaluator");
+        Check(ClassifyTickEyeAcquisition(4800000, 5000000, 100000) == TickEyeAcquisition::Skipped,
+              "last ran 200 ms ago: skipped since");
+        Check(ClassifyTickEyeAcquisition(5100000, 5000000, 100000) == TickEyeAcquisition::Skipped,
+              "a stamp from the future is not a run");
+        bool named = true;
+        for (size_t r = 0; r < static_cast<size_t>(TickEyeMiss::Count); ++r)
+            named = named && std::strcmp(TickEyeMissName(static_cast<TickEyeMiss>(r)), "?") != 0;
+        Check(named, "every game-eye miss has a name for the SHOT RECORD line");
+    }
+
     // ---- the frame-coherent pair ----
     {
         EyeFrame eyes[3]{};

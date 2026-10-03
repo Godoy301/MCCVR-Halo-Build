@@ -1373,13 +1373,62 @@ bool LegacyDriveRecordSnapshot(GameTitle title, float& nativeYaw, float& nativeP
 // because the record written now is first consumed by the next tick. Never P rebuilt from the current eye: that
 // would recreate the error. Kept as published (fail closed) when the setpoint is not the solve that built P (the
 // fixed-distance steer, a seat author), the point is stale, seated or held at the pitch rail, the game's eye is
-// unknown or stale (Halo 3's dual-aim hooks absent), or P sits off the solve's line from that eye by more than
-// eye travel plus a camera angle explains (shot_lag::ReaimRails, the shot's own envelope). Yaw is
+// unknown or stale (Halo 3's dual-aim hooks absent), or P is within 30 cm of that eye or behind it (no magnitude
+// limit: shot_lag::Recompose). When the game skipped its acquisition this tick, the eye is asked of the same
+// evaluator directly (Halo3TickEyeFromEvaluator; shot_lag::TickEyeMiss). Yaw is
 // atan2's like the solve's: the wrap into [0, 2*pi) below applies to it as to every write. The decision is
 // shot_lag::RecomposeRecord (pure, unit-tested); this gathers its inputs.
 using LegacyRecomposeWhy = shot_lag::Recompose;
 std::atomic<uint32_t> g_legacyRecompose[static_cast<size_t>(LegacyRecomposeWhy::Count)]{};
 std::atomic<uint32_t> g_legacyRecomposeMilliDeg{0}, g_legacyRecomposeMaxMilliDeg{0};
+// The record's game eye when the acquisition published none (shot_lag::TickEyeMiss / TickEyeAcquisition), for
+// the SHOT RECORD line.
+std::atomic<uint32_t> g_tickEyeMiss[static_cast<size_t>(shot_lag::TickEyeMiss::Count)]{};
+std::atomic<uint32_t> g_tickEyeAcquisition[static_cast<size_t>(shot_lag::TickEyeAcquisition::Count)]{};
+
+// THE GAME'S EYE, ASKED DIRECTLY (sim thread, the stick call; shot_lag_logic.h 4c). Halo 3 skips its aim
+// acquisition -- and with it the evaluator call the eye is normally published from -- by its own branch (0xF48C9).
+// The evaluator itself (0x212198, signature-bound by the dual-aim lane, InstallHalo3DualAim; called through its
+// trampoline, so our camera detour does not run) is the same eye the acquisition and the firing assist ask for.
+// Gated by identity only: the hooks live for this generation, our unit, on foot and player-controlled. The lane's
+// callback count brackets the call so RemoveHalo3DualAim's quiescence wait covers it. Returns the reason.
+shot_lag::TickEyeMiss Halo3TickEyeFromEvaluator(uint32_t generation)
+{
+    auto& feature = g_halo3Dual;
+    feature.callbacks.fetch_add(1, std::memory_order_acq_rel);
+    shot_lag::TickEyeMiss why = shot_lag::TickEyeMiss::NoHook;
+    __try
+    {
+        shot_lag::TickEyeFallbackInput in{};
+        const Halo3DualCameraFn evaluator = feature.cameraOriginal;
+        in.hooked = evaluator && feature.enabled.load(std::memory_order_acquire) &&
+            !feature.faulted.load(std::memory_order_acquire);
+        in.sameGeneration = generation && feature.generation == generation;
+        in.unit = g_halo3PlayerUnitGetter ? g_halo3PlayerUnitGetter(0) : -1;
+        int32_t scene = -1, shot = -1;
+        const uint8_t* unit = in.unit != -1 ? Halo3MeleeSelectionObject(static_cast<uint32_t>(in.unit), 0) : nullptr;
+        in.onFootControlled = unit &&
+            *reinterpret_cast<const int16_t*>(unit + kHalo3UnitSeatWordOffset) == -1 &&
+            Game_Halo3VehicleState().state == Halo3VehicleState::OnFoot &&
+            ReadCinematicControl(scene, shot) == CinematicControlState::PlayerControlled;
+        why = shot_lag::TickEyeFallbackGate(in);
+        if (why == shot_lag::TickEyeMiss::FromEvaluator)
+        {
+            float position[3]{}, direction[3]{};
+            (void)evaluator(static_cast<uint32_t>(in.unit), position, direction);
+            if (shot_lag::Finite3(position))
+                PublishHalo3TickEye(generation, in.unit, position);
+            else
+                why = shot_lag::TickEyeMiss::EvaluatorFault;
+        }
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        why = shot_lag::TickEyeMiss::EvaluatorFault;
+    }
+    feature.callbacks.fetch_sub(1, std::memory_order_acq_rel);
+    return why;
+}
 
 LegacyRecomposeWhy LegacyDriveRecomposeOnFoot(int slot, const LegacyDrivePublication& pub, float& yaw, float& pitch)
 {
@@ -1398,6 +1447,19 @@ LegacyRecomposeWhy LegacyDriveRecomposeOnFoot(int slot, const LegacyDrivePublica
     uint64_t stampUs = 0;
     in.eyeRead = in.generation &&
         ReadHalo3TickEye(in.generation, 100000, in.eye, in.eyeVel, in.eyeVelValid, stampUs);
+    if (in.generation && !in.eyeRead && in.intentRead)
+    {
+        // No eye from the acquisition: count why, then ask the evaluator directly.
+        const auto acquisition = shot_lag::ClassifyTickEyeAcquisition(
+            g_halo3AcquisitionUser0Us.load(std::memory_order_relaxed), in.nowUs, 100000);
+        g_tickEyeAcquisition[static_cast<size_t>(acquisition)].fetch_add(1, std::memory_order_relaxed);
+        const shot_lag::TickEyeMiss miss = Halo3TickEyeFromEvaluator(in.generation);
+        const size_t m = static_cast<size_t>(miss);
+        if (m < static_cast<size_t>(shot_lag::TickEyeMiss::Count))
+            g_tickEyeMiss[m].fetch_add(1, std::memory_order_relaxed);
+        if (miss == shot_lag::TickEyeMiss::FromEvaluator)
+            in.eyeRead = ReadHalo3TickEye(in.generation, 100000, in.eye, in.eyeVel, in.eyeVelValid, stampUs);
+    }
     in.eyeProven = g_halo3TickEyeProof.load(std::memory_order_relaxed) == static_cast<uint32_t>(TickEyeProof::Proven);
     in.tickS = float(g_legacyTickPeriodUs[0].load(std::memory_order_relaxed)) * 1.0e-6f;
     float bendDeg = 0.0f;
@@ -2034,6 +2096,29 @@ void LegacyDriveReport()
                 n[static_cast<size_t>(LegacyRecomposeWhy::EyeUnproven)],
                 n[static_cast<size_t>(LegacyRecomposeWhy::PointTooClose)],
                 n[static_cast<size_t>(LegacyRecomposeWhy::PointBehind)]);
+        {
+            // The game eye's misses by cause (shot_lag_logic.h 4c), whenever the acquisition published none.
+            uint32_t acq[static_cast<size_t>(shot_lag::TickEyeAcquisition::Count)]{};
+            uint32_t miss[static_cast<size_t>(shot_lag::TickEyeMiss::Count)]{};
+            uint32_t misses = 0;
+            for (size_t i = 0; i < static_cast<size_t>(shot_lag::TickEyeAcquisition::Count); ++i)
+                misses += (acq[i] = g_tickEyeAcquisition[i].exchange(0, std::memory_order_relaxed));
+            for (size_t i = 0; i < static_cast<size_t>(shot_lag::TickEyeMiss::Count); ++i)
+                miss[i] = g_tickEyeMiss[i].exchange(0, std::memory_order_relaxed);
+            using TM = shot_lag::TickEyeMiss;
+            if (misses)
+                LOG("SHOT RECORD Halo 3 game eye: the acquisition published none at %u stick calls (the game skipped "
+                    "its acquisition %u, it ran without reaching the evaluator %u); %s %u, not asked: %s %u, %s %u, "
+                    "%s %u; %s %u", misses,
+                    acq[static_cast<size_t>(shot_lag::TickEyeAcquisition::Skipped)],
+                    acq[static_cast<size_t>(shot_lag::TickEyeAcquisition::RanWithoutEvaluator)],
+                    shot_lag::TickEyeMissName(TM::FromEvaluator), miss[static_cast<size_t>(TM::FromEvaluator)],
+                    shot_lag::TickEyeMissName(TM::NoHook), miss[static_cast<size_t>(TM::NoHook)],
+                    shot_lag::TickEyeMissName(TM::NoUnit), miss[static_cast<size_t>(TM::NoUnit)],
+                    shot_lag::TickEyeMissName(TM::NotOnFootControlled),
+                    miss[static_cast<size_t>(TM::NotOnFootControlled)],
+                    shot_lag::TickEyeMissName(TM::EvaluatorFault), miss[static_cast<size_t>(TM::EvaluatorFault)]);
+        }
         // The game-eye proof's state, once per change (the ValueAgreement above PublishHalo3TickEye).
         static uint32_t s_proofLogged = 0;
         const uint32_t proof = g_halo3TickEyeProof.load(std::memory_order_relaxed);
