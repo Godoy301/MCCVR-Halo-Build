@@ -247,6 +247,7 @@ bool Halo4Type13LogRemove();
 #include "../common/aim_write_logic.h"
 #include "../common/aim_caller_logic.h"
 #include "../common/seat_drive_policy.h"
+#include "../common/gun_slaved_seat_logic.h"
 #include "../common/converge_policy.h"
 #include "../common/halo4_seat_aim_logic.h"
 #include "../common/log.h"
@@ -11810,6 +11811,18 @@ namespace
         if (!xf.valid.load(std::memory_order_relaxed))
             return false;
         return (xf.occupiedSeatFlags & kOdstSeatAllowsWeaponsBit) != 0;
+    }
+
+    // The occupied ODST seat's own flags (the live seat word: C20 clears only bit 4), or 0 when no seat is sampled.
+    // Bit 7 marks a seat whose first-person camera is its gun (gun_slaved_seat_logic.h).
+    uint32_t OdstOccupiedSeatFlags()
+    {
+        if (!OdstVehicleFpActive())
+            return 0;
+        OdstVehicleTransform& xf = g_odstVehicleTransform;
+        if (!xf.valid.load(std::memory_order_relaxed))
+            return 0;
+        return xf.occupiedSeatFlags;
     }
 
     // Hold the engine's exposure steady while a seat owns the view. Looking
@@ -52046,6 +52059,13 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
     // before writing it and reports what it wrote; an axis it does not write stays on the servo below (or the
     // steering author), and the stick is zeroed only on the written ones (seatWritten).
     seat_drive::Axes seatWritten{};
+    // GUN-SLAVED SEAT (Halo 3 / ODST seat flag bit 7, gun_slaved_seat_logic.h): this poll's seat when its first-person
+    // camera is the GUN -- the game's aim read above is then the gun's marker, slewing toward the record. The hook
+    // proves that seat against the occupant's own aim as well, and the servo below closes on it once it agrees.
+    bool gunSlavedSeat = false;
+    uint32_t gunSlavedKey = 0;
+    int32_t gunSlavedParent = -1;   // the turret vehicle (Halo 3; the dev shot witness)
+    (void)gunSlavedParent;
 #if HALOMCCVR_DEV_DIAGNOSTICS
     // This poll's natural in-game causes that used to switch a seat's convergence off (the latch holding a
     // written axis at the seat's clamp, the game's aim staying off the writes, a stall, a turret's rate cap).
@@ -52065,7 +52085,7 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
         const GameTitle driveTitle = TitleAdapter_GetActiveTitle();
         if (driveTitle == GameTitle::Halo3 || driveTitle == GameTitle::Halo3ODST ||
             driveTitle == GameTitle::Halo4)
-            LegacyDrivePublish(driveTitle, 0.0f, 0.0f, 0.0f, 0.0f, false, false, seat_drive::Axes{}, true, 0);
+            LegacyDrivePublish(driveTitle, 0.0f, 0.0f, 0.0f, 0.0f, false, false, seat_drive::Axes{}, true, 0, false);
     }
     else if (g_config.legacy_direct_drive)
     {
@@ -52096,6 +52116,11 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
                         seatFacts.driver = Halo3SeatIsDriver(id, seat.seatIndex, seat.mounted);
                         seatFacts.look_steered = Halo3VehicleIsLookSteered(id);
                         seatKey = seat_drive::SeatKey(seat.parentHandle, seat.seatIndex, seat.mounted);
+                        // The seat's ORIGINAL tag flags (C20 keeps them while it owns the view; it clears bit 4 only).
+                        gunSlavedSeat = seatFacts.view_owned &&
+                            gun_slaved::CameraSlavedToGun(Halo3OccupiedSeatFlags());
+                        gunSlavedKey = seatKey;
+                        gunSlavedParent = seat.parentHandle;
                     }
                 }
 #if HALOMCCVR_EXPERIMENTAL_ODST_BRINGUP
@@ -52110,6 +52135,9 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
                         seatFacts.driver = OdstSeatIsDriver(seat.identity, seat.seatIndex, seat.mounted);
                         seatFacts.look_steered = OdstVehicleIsLookSteered(seat.identity);
                         seatKey = seat_drive::SeatKey(seat.parentHandle, seat.seatIndex, seat.mounted);
+                        gunSlavedSeat = seatFacts.view_owned &&
+                            gun_slaved::CameraSlavedToGun(OdstOccupiedSeatFlags());
+                        gunSlavedKey = seatKey;
                     }
                 }
 #endif
@@ -52147,8 +52175,10 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
             // accumulator and so keeps every limit.
             if (halo4Aim)
                 seatAxes.pitch = false;
+            if (!driveSeated)
+                gunSlavedSeat = false;
             LegacyDrivePublish(driveTitle, desiredYaw, desiredPitch, aimYaw, aimPitch, true, driveSeated, seatAxes,
-                               seat_drive::PitchLatches(seatFacts), seatKey);
+                               seat_drive::PitchLatches(seatFacts), seatKey, gunSlavedSeat);
             if (!driveSeated && LegacyDriveLive(driveTitle))
             {
                 // The game's aim IS the written target now. A converged target is then the game's aim itself,
