@@ -294,6 +294,116 @@ void TestStintCheck()
     }
 }
 
+// Gun-slaved seats (seat flag bit 7): the camera check runs against the GUN, which trails the record; the occupant
+// check runs against the occupant's own aim, which the record drives. Either proves an axis.
+void TestCombineStints()
+{
+    using seat_drive::CombineStints;
+    using seat_drive::StintCheck;
+    {   // THE WARTHOG TURRET: the hand sweeps the pitch up and down, the record follows within a sample, and the gun
+        // trails it by a steady 13-17 deg (its slew). The camera check never passes pitch; the occupant's does.
+        StintCheck camera, occupant;
+        unsigned long long t = 1000;
+        float record = 0.0f;
+        int pitchAt = -1, yawAt = -1;
+        for (int i = 0; i < 400; ++i, t += 16)
+        {
+            record = 0.4f * std::sin(i * 0.03f);                  // the record (and the occupant's aim with it)
+            const float gun = 0.4f * std::sin((i - 9) * 0.03f) - 0.25f * std::cos(i * 0.03f);   // lagging, off
+            camera.step(true, 1.0f, record, 1.0f, gun, t);
+            occupant.step(true, 1.0f, record, 1.0f, record, t);
+            const auto v = CombineStints(camera, occupant, true);
+            if (yawAt < 0 && v.yaw_ok) yawAt = i;
+            if (pitchAt < 0 && v.pitch_ok) pitchAt = i;
+        }
+        const auto v = CombineStints(camera, occupant, true);
+        Check(!camera.pitch_ok, "(setup) the camera check never proves the turret's pitch against the gun");
+        Check(yawAt >= 0 && yawAt <= 31 && pitchAt >= 0 && pitchAt <= 31,
+              "the occupant's aim proves a turret's yaw and pitch in ~0.5 s");
+        Check(v.pitch_ok && v.pitch_by_occupant && !v.pitch_failed, "and the pitch is written, proven by the occupant");
+        // the same seat with the occupant's vector unbound: exactly the camera check, pitch failed on the servo
+        const auto off = CombineStints(camera, occupant, false);
+        Check(off.yaw_ok == camera.yaw_ok && !off.pitch_ok && off.pitch_failed == camera.pitch_failed &&
+                  !off.yaw_by_occupant && !off.pitch_by_occupant,
+              "unbound, a gun-slaved seat proves exactly as before (fail closed)");
+    }
+    {   // a turret whose YAW slews too (the Warthog's 60 deg/s yaw cap): the hand sweeps, the gun trails 10+ deg in
+        // yaw and pitch; only the occupant proves the yaw, and the pitch with it
+        StintCheck camera, occupant;
+        unsigned long long t = 1000;
+        for (int i = 0; i < 60; ++i, t += 16)
+        {
+            const float yaw = 1.0f + 0.5f * std::sin(i * 0.05f), pitch = 0.3f * std::sin(i * 0.05f);
+            const float gunYaw = 1.0f + 0.5f * std::sin((i - 12) * 0.05f) - 0.2f;
+            const float gunPitch = 0.3f * std::sin((i - 12) * 0.05f) - 0.2f;
+            camera.step(true, yaw, pitch, gunYaw, gunPitch, t);
+            occupant.step(true, yaw, pitch, yaw, pitch, t);
+        }
+        const auto v = CombineStints(camera, occupant, true);
+        Check(!camera.yaw_ok && v.yaw_ok && v.yaw_by_occupant && v.pitch_ok && v.pitch_by_occupant,
+              "a slewing yaw: the occupant proves both axes the camera cannot");
+        Check(!CombineStints(camera, occupant, true, true, false).yaw_ok,
+              "with its yaw proof revoked the slewing yaw is unproven again");
+    }
+    {   // the occupant's vector holding something else (a wrong field): it never passes, the camera check decides
+        StintCheck camera, occupant;
+        unsigned long long t = 1000;
+        for (int i = 0; i < 400; ++i, t += 16)
+        {
+            camera.step(true, 0.5f, 0.1f, 0.5f, 0.1f, t);
+            occupant.step(true, 0.5f, 0.1f, 1.5f, -0.4f, t);
+        }
+        const auto v = CombineStints(camera, occupant, true);
+        Check(v.yaw_ok && v.pitch_ok && !v.yaw_by_occupant && !v.pitch_by_occupant,
+              "a disagreeing occupant vector proves nothing; the camera check still passes as before");
+        Check(occupant.agreeing(0) == 0 && occupant.agreeing(1) == 0, "and it never earns the servo's trust");
+    }
+    {   // the outcome guard REVOKED the occupant's pitch: the camera's check alone decides it again
+        StintCheck camera, occupant;
+        unsigned long long t = 1000;
+        for (int i = 0; i < 400; ++i, t += 16)
+        {
+            camera.step(true, 0.0f, 0.1f, 0.0f, 0.33f, t);      // the gun 13 deg off the record, at rest
+            occupant.step(true, 0.0f, 0.1f, 0.0f, 0.1f, t);     // the occupant's aim on the record
+        }
+        Check(CombineStints(camera, occupant, true).pitch_by_occupant, "(setup) the occupant proved the pitch");
+        const auto v = CombineStints(camera, occupant, true, false, true);
+        Check(v.yaw_ok && !v.pitch_ok && v.pitch_failed == camera.pitch_failed && !v.pitch_by_occupant,
+              "revoked: the pitch is the camera check's again (a real offset stays on the servo)");
+        const auto y = CombineStints(camera, occupant, true, true, false);
+        Check(y.yaw_ok && !y.yaw_by_occupant, "a revoked yaw the camera also proved stays proven");
+    }
+    {   // a pitch fails only when every active check has failed it
+        StintCheck camera, occupant;
+        unsigned long long t = 1000;
+        for (int i = 0; i < 400 && !camera.pitch_failed; ++i, t += 16)
+        {
+            camera.step(true, 0.0f, 0.0f, 0.0f, 0.3f, t);
+            occupant.step(true, 0.0f, 0.0f, 0.0f, 0.3f, t);
+        }
+        Check(camera.pitch_failed && occupant.pitch_failed, "(setup) both checks failed the pitch");
+        Check(CombineStints(camera, occupant, true).pitch_failed, "both failed: the pitch waits for its retry");
+        StintCheck fresh;
+        for (int i = 0; i < 31; ++i, t += 16) fresh.step(true, 0.0f, 0.0f, 0.0f, 0.3f, t);
+        Check(!CombineStints(camera, fresh, true).pitch_failed, "an occupant check still running is not a failure");
+    }
+    {   // agreeing() counts the judged agreements, saturates when proven, and reads 0 while a failed pitch waits
+        StintCheck c;
+        unsigned long long t = 1000;
+        for (int i = 0; i < 10; ++i, t += 16) c.step(true, 0.0f, 0.0f, 0.0f, 0.0f, t);
+        Check(c.agreeing(0) == 9 && c.agreeing(1) == 9, "nine judged agreements on each axis");
+        for (int i = 0; i < 30; ++i, t += 16) c.step(true, 0.0f, 0.0f, 0.0f, 0.0f, t);
+        Check(c.agreeing(0) == c.needed && c.agreeing(1) == c.needed, "proven axes read as fully agreeing");
+        // a pitch that agrees in runs of 18 and disagrees (settled) between them never reaches 30: it fails its budget
+        // mid-run, with agreements still counted
+        StintCheck f;
+        for (int i = 0; i < 400 && !f.pitch_failed; ++i, t += 16)
+            f.step(true, 0.0f, 0.0f, 0.0f, (i % 21 < 2) ? 0.3f : 0.0f, t);
+        Check(f.pitch_failed && f.pitch_count > 0, "(setup) the pitch failed mid-run");
+        Check(f.agreeing(1) == 0, "a failed pitch reads no agreement until its retry");
+    }
+}
+
 void TestOutcomeGate()
 {
     using seat_drive::OutcomeGate;
@@ -326,6 +436,7 @@ int main()
 {
     TestPolicy();
     TestStintCheck();
+    TestCombineStints();
     TestOutcomeGate();
     std::printf("Seat drive policy: %u checks, %u failures\n", checks, failures);
     return failures ? 1 : 0;

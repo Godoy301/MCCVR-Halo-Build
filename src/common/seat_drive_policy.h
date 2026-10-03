@@ -118,6 +118,15 @@ struct StintCheck {
         last_aim_yaw = last_aim_pitch = last_native_yaw = last_native_pitch = 0.0f;
     }
 
+    // How many consecutive judged samples on this axis (0 yaw, 1 pitch) have agreed: `needed` once proven, 0
+    // while a failed pitch waits for its retry. A disagreement resets it.
+    unsigned agreeing(int axis) const
+    {
+        if (axis == 0)
+            return yaw_ok ? needed : yaw_count;
+        return pitch_ok ? needed : pitch_failed ? 0u : pitch_count;
+    }
+
     static float wrap(float a) { return std::remainder(a, 6.28318531f); }
 
     // One update of the stint. `fresh`: the aim was published recently. `new_sample`: the aim is not the one
@@ -178,6 +187,37 @@ struct StintCheck {
         }
     }
 };
+
+// TWO REFERENCES, ONE STINT (gun-slaved seats, gun_slaved_seat_logic.h). In a seat whose first-person camera is
+// the gun (seat flag bit 7), the camera's forward -- `camera`, the reference every seat used until 2026-10-02 --
+// is a gun that slews toward the record at its own rate, so it agrees with the record only once the gun has caught
+// up. `occupant` runs the same check against the occupant's own aim vector, which the record drives directly; it is
+// active only in such a seat with that vector bound. An axis passes when EITHER check passes it, so a seat is never
+// slower to prove than before (fail closed to the camera check, which runs exactly as it always has), and a
+// gun-slaved seat proves as soon as the record agrees with what it drives. Each check keeps its own counts and
+// budget; the pitch is on the servo until its retry only when every active check has failed it. An axis whose
+// occupant proof the outcome guard REVOKED (gun_slaved::OffsetWatch: the gun came to rest off the record) is the
+// camera check's alone again for the rest of the stint.
+struct StintVerdict
+{
+    bool yaw_ok = false, pitch_ok = false, pitch_failed = false;
+    bool yaw_by_occupant = false, pitch_by_occupant = false;   // proven by the occupant's check alone
+};
+
+inline StintVerdict CombineStints(const StintCheck& camera, const StintCheck& occupant, bool occupantActive,
+                                  bool yawRevoked = false, bool pitchRevoked = false)
+{
+    StintVerdict v;
+    const bool occYaw = occupantActive && !yawRevoked && occupant.yaw_ok;
+    const bool occPitch = occupantActive && !pitchRevoked && occupant.pitch_ok;
+    v.yaw_ok = camera.yaw_ok || occYaw;
+    v.pitch_ok = v.yaw_ok && (camera.pitch_ok || occPitch);
+    v.pitch_failed =
+        !v.pitch_ok && camera.pitch_failed && (!occupantActive || pitchRevoked || occupant.pitch_failed);
+    v.yaw_by_occupant = occYaw && !camera.yaw_ok;
+    v.pitch_by_occupant = v.pitch_ok && occPitch && !camera.pitch_ok;
+    return v;
+}
 
 // OUTCOME WITNESS (dev lines only since 2026-10-01). A written seat's aim can still fall short downstream of
 // the record (a gun's rate cap, an aiming clip), where the seat-limit latch cannot see it. While the game's
