@@ -131,6 +131,19 @@ void Halo2DriveForgetSeat(Halo2DriveState& st) noexcept
     st.yawTicks = 0;
     st.seatYawMs.store(0, std::memory_order_release);
     st.seatPitchMs.store(0, std::memory_order_release);
+    st.stops.clear();
+    st.stintAircraft = false;
+}
+
+// An air vehicle (Halo 2's own identity of the seat's vehicle): no rotational limit there, so its seats never clamp
+// the reticle (the user, 2026-10-02). Unknown identity: not an aircraft (a stop it never shows clamps nothing).
+bool Halo2SeatIsAircraft(uint32_t parent) noexcept
+{
+    const char* name = halo2_vehicle_identity::Name(ReadHalo2VehicleIdentity(parent));
+    if (!name)
+        return false;
+    const auto starts = [name](const char* prefix) { return std::strncmp(name, prefix, std::strlen(prefix)) == 0; };
+    return starts("Banshee") || starts("Phantom") || starts("Pelican") || starts("Falcon") || starts("Longsword");
 }
 
 void Halo2DriveApply(int user, uint64_t returnAddress) noexcept
@@ -262,6 +275,7 @@ void Halo2DriveApply(int user, uint64_t returnAddress) noexcept
                     Halo2DriveForgetSeat(st);
                     st.stintActive = true;
                     st.stintKey = key;
+                    st.stintAircraft = Halo2SeatIsAircraft(seatParent);
                     st.seatStints.fetch_add(1, std::memory_order_relaxed);
                 }
                 const bool yawWas = st.stint.yaw_ok, pitchWas = st.stint.pitch_ok;
@@ -305,12 +319,13 @@ void Halo2DriveApply(int user, uint64_t returnAddress) noexcept
                 // Never a converged aim here: there is no seated trace yet, and an on-foot one could still be
                 // fresh for 150 ms after sitting down.
                 float direction[3]{};
-                float yaw = 0.0f, pitch = 0.0f, handWorldYaw = 0.0f;
+                float yaw = 0.0f, pitch = 0.0f, handWorldYaw = 0.0f, handWorldPitch = 0.0f;
                 // ...in the record's frame (case b: R^-1 of it), where the latch and the pitch limits live.
                 bool handAim = Game_Halo2SeatAimActive() &&
                     BuildPublishedControllerAimDirection(direction, nullptr, false) &&
                     Halo2DriveYawPitch(direction, yaw, pitch);
                 handWorldYaw = yaw;
+                handWorldPitch = pitch;
                 handAim = handAim && seat_frame_rt::ToRecord(seatFrame, yaw, pitch, nativeYaw);
                 const bool writeYaw = axes.yaw && st.stint.yaw_ok && handAim;
                 const bool writePitch = axes.pitch && st.stint.yaw_ok && st.stint.pitch_ok && handAim;
@@ -331,9 +346,11 @@ void Halo2DriveApply(int user, uint64_t returnAddress) noexcept
                 // update's write and holds this one at it, after a short prime. Then [0, 2pi), as the native.
                 float y = aim_write::unwrap_to_branch(yaw, nativeYaw);
                 bool limited = false;
+                bool yawLatchRead[2]{};
                 if (writeYaw)
                 {
                     const bool latch[2]{st.yawTicks >= kHalo2SeatPrimeUpdates, false};
+                    yawLatchRead[0] = latch[0];
                     const float native[2]{nativeYaw, nativePitch}, target[2]{y, nativePitch};
                     float held[2]{};
                     limited = st.yawLatch.apply(native, target, held, latch);
@@ -366,6 +383,21 @@ void Halo2DriveApply(int user, uint64_t returnAddress) noexcept
                 st.yawTicks = writeYaw ? (st.yawTicks < kHalo2SeatPrimeUpdates ? st.yawTicks + 1 : st.yawTicks) : 0;
                 st.seatYawMs.store(writeYaw ? now : 0, std::memory_order_release);
                 st.seatPitchMs.store(writePitch ? now : 0, std::memory_order_release);
+                // The stops the reticle clamps against (seat_limit_reticle_logic.h), with the hand's world aim: the yaw
+                // latch's, and the record's own eased pitch limits -- the accumulator clamps the pitch to them whoever
+                // moves it, the write or the stick servo. Not in an air vehicle.
+                if (st.stintAircraft)
+                    st.stops.clear();
+                else
+                {
+                    seat_limit::Stops stops{};
+                    seat_limit::AddLatch(stops, st.yawLatch, yawLatchRead);
+                    if (std::isfinite(low) && std::isfinite(high) && low <= high)
+                        seat_limit::AddInterval(stops, 1, low, high);
+                    stops.rebased = seatFrame.kase == seat_frame::Case::Rebased;
+                    stops.frame = seatFrame.frame;
+                    st.stops.publish(key, stops, nativeYaw, now, handWorldYaw, handWorldPitch);
+                }
                 st.seatWrites.fetch_add(1, std::memory_order_relaxed);
                 if (limited)
                     st.seatHeld.fetch_add(1, std::memory_order_relaxed);
@@ -472,6 +504,7 @@ void Halo2DriveApply(int user, uint64_t returnAddress) noexcept
     {
         st.yawLatch.reset();
         st.yawTicks = 0;
+        st.stops.clear();
         st.seatYawMs.store(0, std::memory_order_release);
         st.seatPitchMs.store(0, std::memory_order_release);
     }

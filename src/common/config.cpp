@@ -2214,9 +2214,11 @@ void ConfigSave()
 #endif
     fprintf(f, "# Vehicle seats: which seats your hand aims. With aim_direct_drive = 1 the seat's aim is written\n");
     fprintf(f, "# as on foot (Reach, Halo 3, ODST, Halo 4, Halo 2); Halo 3 and ODST seats also converge whenever\n");
-    fprintf(f, "# converged_aim is on (0 here keeps their old seat aim). A turret's or passenger seat's limits\n");
-    fprintf(f, "# still hold: past them the gun fires where it can, as in flat Halo, and the crosshair stays on\n");
-    fprintf(f, "# your aim point. A driver whose stick or wheel steers keeps it for steering. 0 = off (vehicles\n");
+    fprintf(f, "# converged_aim is on (0 here keeps their old seat aim). A land vehicle seat's turning limits\n");
+    fprintf(f, "# still hold (a passenger's cone, a turret's or tank gun's pitch stop): past one the crosshair\n");
+    fprintf(f, "# stops at the edge, where the gun is held and the shots go; a gun still turning toward your\n");
+    fprintf(f, "# hand keeps the crosshair on your aim point; aircraft have no limits. A driver whose stick or\n");
+    fprintf(f, "# wheel steers keeps it for steering. 0 = off (vehicles\n");
     fprintf(f, "# keep the old stick aim), 1 = gunners, passengers, and drivers whose gun turns apart from the\n");
     fprintf(f, "# hull (a driver whose look steers the vehicle keeps the stick; Halo 4 and Halo 2 cannot tell a\n");
     fprintf(f, "# seat's role yet, so 1 keeps every seat there on the stick), 2 = every seat you aim,\n");

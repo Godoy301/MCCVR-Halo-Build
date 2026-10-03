@@ -24,6 +24,7 @@
 #include "physical_crouch_camera.h"
 #include "sigscan.h"
 #include "seat_frame_reader.h"
+#include "seat_limit_publication.h"
 #include "../common/physical_crouch_native_read.h"
 #include "../common/physical_crouch_additional_witnesses.h"
 
@@ -830,6 +831,11 @@ namespace
         std::atomic<uint64_t> seatYawMs{0}, seatPitchMs{0};
         std::atomic<uint32_t> seatWrites{0}, seatHeld{0}, seatWaits{0}, seatStints{0}, seatYawChecks{0},
             seatPitchChecks{0}, seatPitchFails{0};
+        // THE SEAT'S STOPS for the reticle (seat_limit_publication.h): after each seat write, the yaw latch's stop and
+        // the record's own eased pitch limits, in the record's frame, with the hand's world aim the write was for.
+        // Not for an air vehicle (stintAircraft, read once per stint): no rotational limit there (the user).
+        SeatStopsPublication stops{};
+        bool stintAircraft = false;
     };
     Halo2DriveState g_halo2Drive;
     // The view's own heading on foot under the drive (halo2_foot_view.h). Observer thread only.
@@ -6576,6 +6582,15 @@ bool Halo2Observer6Dof_FootViewEngaged() noexcept
     return at && now >= at && now - at <= 100;
 }
 
+bool Halo2Observer6Dof_SeatStops(seat_limit::Stops& stops, uint32_t& seatKey, float& recordYaw, float& targetYaw,
+                                  float& targetPitch) noexcept
+{
+    if (!g_halo2Drive.armed.load(std::memory_order_acquire))
+        return false;
+    return g_halo2Drive.stops.read(GetTickCount64(), 100, stops, seatKey, recordYaw, &targetYaw, &targetPitch) &&
+        std::isfinite(targetYaw) && std::isfinite(targetPitch);
+}
+
 bool Halo2Observer6Dof_SeatDriveAxes(bool& yaw, bool& pitch) noexcept
 {
     const uint64_t now = GetTickCount64();
@@ -7111,6 +7126,7 @@ bool Halo2Observer6Dof_RecoveryPending() noexcept { return false; }
 bool Halo2Observer6Dof_Armed() noexcept { return false; }
 bool Halo2Observer6Dof_FootViewEngaged() noexcept { return false; }
 bool Halo2Observer6Dof_SeatDriveAxes(bool& yaw, bool& pitch) noexcept { yaw = pitch = false; return false; }
+bool Halo2Observer6Dof_SeatStops(seat_limit::Stops&, uint32_t&, float&, float&, float&) noexcept { return false; }
 bool Halo2Observer6Dof_LastKnownSeated() noexcept { return false; }
 // A definite "not seated", as this build always answered: Game_TitleSeated keeps its observer-off result.
 bool Halo2Observer6Dof_LastKnownSeatValid() noexcept { return true; }

@@ -795,46 +795,65 @@ void Halo4SightTraceSeated(uint32_t unit, void* instance)
         Sight_PublishTrace(kTitle, generation, result.hit, result.hit ? result.rangeWu : 0.0f, cost);
         f.published.fetch_add(1, std::memory_order_relaxed);
     }
-    // DEV ASSESSMENT (honest_reticle_assess): the game's own aim from the seat's eye (the ray the native seated
-    // assist's crosshair trace runs along), looking past our own vehicle exactly as the intent trace does. Only
-    // while the key published one; nothing the aim reads moves.
-    SightAssessRay assess{};
-    if (Sight_ReadAssessRay(kTitle, generation, kSightRayFreshMs, assess))
-    {
-        const auto assessTrace = [&](float alongWu, float remainingWu) {
-            halo4_seat_aim::TracePass pass{};
+    // AUXILIARY RAYS (sight_layer.h SightAuxRay), looking past our own vehicle exactly as the intent trace does: the
+    // SEAT LIMIT ray (while the seat's reticle is clamped at a natural stop, the ray its gun really aims along from the
+    // seat's eye) and the DEV ASSESSMENT ray (honest_reticle_assess: the game's own aim from the seat's eye, the ray the
+    // native seated assist's crosshair trace runs along). Only while the aim path published one; nothing the aim reads
+    // moves. False: a native fault (the trace is latched off).
+    const auto auxTrace = [&](const SightAuxRay& aux, bool& hit, float& rangeWu) {
+        const auto pass = [&](float alongWu, float remainingWu) {
+            halo4_seat_aim::TracePass out{};
             Halo4PhysicsRayCastInput input{};
             Halo4PhysicsRayCastResult output{};
             input.profile = 0x1A;
             memcpy(&input.collisionFlags, &collisionFlags, sizeof(collisionFlags));
             for (int axis = 0; axis < 3; ++axis)
             {
-                input.start[axis] = assess.origin[axis] + assess.dir[axis] * alongWu;
-                input.end[axis] = input.start[axis] + assess.dir[axis] * remainingWu;
+                input.start[axis] = aux.origin[axis] + aux.dir[axis] * alongWu;
+                input.end[axis] = input.start[axis] + aux.dir[axis] * remainingWu;
             }
             for (int i = 0; i < chainCount; ++i)
                 input.ignoredObjects[i] = chain[i];
             input.ignoredObjectCount = static_cast<uint8_t>(chainCount);
             input.resultOptions[0] = 1;
             bool returned = false;
-            pass.completed = Halo4SeatGuardedRayCast(&input, &output, returned);
-            pass.hit = returned;
-            pass.fraction = output.fraction;
-            pass.object = output.type == 4 ? output.objectIndex : -1;
-            return pass;
+            out.completed = Halo4SeatGuardedRayCast(&input, &output, returned);
+            out.hit = returned;
+            out.fraction = output.fraction;
+            out.object = output.type == 4 ? output.objectIndex : -1;
+            return out;
         };
-        const auto assessResult = halo4_seat_aim::TraceLookingPast(kSightTraceLengthWu, kSightTraceSkipWu,
-            kLegacySightSelfStepWu, kLegacySightSelfPasses, root, chain, chainCount, assessTrace, Halo4SightRootOf);
-        if (!assessResult.completed)
+        const auto auxResult = halo4_seat_aim::TraceLookingPast(kSightTraceLengthWu, kSightTraceSkipWu,
+            kLegacySightSelfStepWu, kLegacySightSelfPasses, root, chain, chainCount, pass, Halo4SightRootOf);
+        if (!auxResult.completed)
         {
             Sight_NoteTraceFault(kTitle);
             f.faults.fetch_add(1, std::memory_order_relaxed);
-            LOG("SIGHT Halo 4 seated assessment trace: the native ray raised a fault; the trace stays off until the "
+            LOG("SIGHT Halo 4 seated auxiliary trace: the native ray raised a fault; the trace stays off until the "
                 "title reinstalls");
-            return;
+            return false;
         }
-        Sight_PublishAssessTrace(kTitle, generation, assessResult.hit,
-                                 assessResult.hit ? assessResult.rangeWu : 0.0f);
+        hit = auxResult.hit;
+        rangeWu = auxResult.hit ? auxResult.rangeWu : 0.0f;
+        return true;
+    };
+    SightAuxRay limit{};
+    if (Sight_ReadLimitRay(kTitle, generation, kSightRayFreshMs, limit))
+    {
+        bool limitHit = false;
+        float limitRangeWu = 0.0f;
+        if (!auxTrace(limit, limitHit, limitRangeWu))
+            return;
+        Sight_PublishLimitTrace(kTitle, generation, limitHit, limitRangeWu);
+    }
+    SightAssessRay assess{};
+    if (Sight_ReadAssessRay(kTitle, generation, kSightRayFreshMs, assess))
+    {
+        bool assessHit = false;
+        float assessRangeWu = 0.0f;
+        if (!auxTrace(assess, assessHit, assessRangeWu))
+            return;
+        Sight_PublishAssessTrace(kTitle, generation, assessHit, assessRangeWu);
     }
 }
 

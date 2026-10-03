@@ -415,8 +415,10 @@ bool Sight_AimMuzzleShot(GameTitle title, uint32_t generation, const float befor
 
 bool Sight_ScopeConvergedLive(GameTitle title)
 {
+    // A seat clamped at a natural stop: the hand's ray runs past the stop the gun is held at, so the lens keeps the
+    // game's own (clamped) aim, as it does under the stick servo.
     return g_config.scope_converge && Sight_AimEnabled() && Sight_ConvergedLive(title) &&
-           Sight_AimWrittenLive(title);
+           Sight_AimWrittenLive(title) && !Sight_SeatLimitClampedLive(title);
 }
 
 bool Sight_ScopeConvergedDirection(GameTitle title, float outDir[3])
@@ -815,6 +817,10 @@ bool Sight_NaturalHeld(GameTitle title, uint64_t windowMs)
 #endif
 }
 
+#if HALOMCCVR_DEV_DIAGNOSTICS
+static void SeatLimitReport();
+#endif
+
 void Sight_ReportConverge()
 {
 #if HALOMCCVR_DEV_DIAGNOSTICS
@@ -843,6 +849,7 @@ void Sight_ReportConverge()
     if (now - s_last < 2000)
         return;
     s_last = now;
+    SeatLimitReport();
     // SUMMARIES, every 2 s per title: why it was off (our code's reasons only), and the natural causes it stayed
     // on through.
     for (size_t slot = 0; slot < kTitleSlots; ++slot)
@@ -882,12 +889,18 @@ void Sight_ReportConverge()
 #endif
 }
 
-#if HALOMCCVR_DEV_DIAGNOSTICS
-// ---- DEV ASSESSMENT RAY and its trace (sight_layer.h). Seqlocks like the intent ray's: one writer each (the aim
-// path, the title's trace thread), any reader. Slots of their own, so nothing the aim or the scope reads moves.
+// ---- AUXILIARY RAYS and their traces (sight_layer.h SightAuxRay): the seat limit ray (all builds) and the dev
+// assessment ray. Seqlocks like the intent ray's: one writer each (the aim path, the title's trace thread), any
+// reader. Slots of their own, so nothing the aim or the scope reads moves.
 namespace
 {
-struct AssessRayPublication
+enum AuxKind : size_t
+{
+    kAuxLimit = 0,
+    kAuxAssess = 1,
+    kAuxKinds = 2
+};
+struct AuxRayPublication
 {
     std::atomic<uint32_t> sequence{0};
     std::atomic<uint32_t> generation{0};
@@ -895,7 +908,7 @@ struct AssessRayPublication
     std::atomic<float> origin[3]{};
     std::atomic<float> dir[3]{};
 };
-struct AssessTracePublication
+struct AuxTracePublication
 {
     std::atomic<uint32_t> sequence{0};
     std::atomic<uint32_t> generation{0};
@@ -903,13 +916,12 @@ struct AssessTracePublication
     std::atomic<uint32_t> hit{0};
     std::atomic<float> rangeWu{0.0f};
 };
-AssessRayPublication g_assessRays[kTitleSlots];
-AssessTracePublication g_assessTraces[kTitleSlots];
-} // namespace
+AuxRayPublication g_auxRays[kAuxKinds][kTitleSlots];
+AuxTracePublication g_auxTraces[kAuxKinds][kTitleSlots];
 
-void Sight_PublishAssessRay(GameTitle title, const SightAssessRay& ray)
+void PublishAuxRay(AuxKind kind, GameTitle title, const SightAuxRay& ray)
 {
-    auto& p = g_assessRays[Slot(title)];
+    auto& p = g_auxRays[kind][Slot(title)];
     p.sequence.fetch_add(1, std::memory_order_acq_rel);
     p.generation.store(ray.generation, std::memory_order_relaxed);
     p.sampleMs.store(ray.sampleMs, std::memory_order_relaxed);
@@ -921,15 +933,15 @@ void Sight_PublishAssessRay(GameTitle title, const SightAssessRay& ray)
     p.sequence.fetch_add(1, std::memory_order_release);
 }
 
-bool Sight_ReadAssessRay(GameTitle title, uint32_t generation, uint64_t maxAgeMs, SightAssessRay& out)
+bool ReadAuxRay(AuxKind kind, GameTitle title, uint32_t generation, uint64_t maxAgeMs, SightAuxRay& out)
 {
-    const auto& p = g_assessRays[Slot(title)];
+    const auto& p = g_auxRays[kind][Slot(title)];
     for (int attempt = 0; attempt < 2; ++attempt)
     {
         const uint32_t before = p.sequence.load(std::memory_order_acquire);
         if (!before || (before & 1u))
             continue;
-        SightAssessRay r{};
+        SightAuxRay r{};
         r.generation = p.generation.load(std::memory_order_relaxed);
         r.sampleMs = p.sampleMs.load(std::memory_order_relaxed);
         for (int i = 0; i < 3; ++i)
@@ -954,9 +966,9 @@ bool Sight_ReadAssessRay(GameTitle title, uint32_t generation, uint64_t maxAgeMs
     return false;
 }
 
-void Sight_PublishAssessTrace(GameTitle title, uint32_t generation, bool hit, float rangeWu)
+void PublishAuxTrace(AuxKind kind, GameTitle title, uint32_t generation, bool hit, float rangeWu)
 {
-    auto& t = g_assessTraces[Slot(title)];
+    auto& t = g_auxTraces[kind][Slot(title)];
     t.sequence.fetch_add(1, std::memory_order_acq_rel);
     t.generation.store(generation, std::memory_order_relaxed);
     t.sampleMs.store(GetTickCount64(), std::memory_order_relaxed);
@@ -965,9 +977,9 @@ void Sight_PublishAssessTrace(GameTitle title, uint32_t generation, bool hit, fl
     t.sequence.fetch_add(1, std::memory_order_release);
 }
 
-bool Sight_ReadAssessTrace(GameTitle title, uint32_t generation, uint64_t maxAgeMs, bool& hit, float& rangeWu)
+bool ReadAuxTrace(AuxKind kind, GameTitle title, uint32_t generation, uint64_t maxAgeMs, bool& hit, float& rangeWu)
 {
-    const auto& t = g_assessTraces[Slot(title)];
+    const auto& t = g_auxTraces[kind][Slot(title)];
     for (int attempt = 0; attempt < 2; ++attempt)
     {
         const uint32_t before = t.sequence.load(std::memory_order_acquire);
@@ -990,5 +1002,126 @@ bool Sight_ReadAssessTrace(GameTitle title, uint32_t generation, uint64_t maxAge
         return true;
     }
     return false;
+}
+
+// Sight_MarkSeatLimitClamped: when each title's seat reticle was last clamped, and in which generation.
+std::atomic<uint64_t> g_seatLimitClampedMs[kTitleSlots]{};
+std::atomic<uint32_t> g_seatLimitClampedGeneration[kTitleSlots]{};
+
+#if HALOMCCVR_DEV_DIAGNOSTICS
+// The dev SEAT LIMIT witness: polls clamped per title, which edge, and the worst overshoot (float bits).
+struct SeatLimitWitness
+{
+    std::atomic<uint32_t> polls{0}, yawEdge{0}, pitchEdge{0};
+    std::atomic<uint32_t> maxOvershootBits{0};
+};
+SeatLimitWitness g_seatLimitWitness[kTitleSlots];
+#endif
+} // namespace
+
+void Sight_PublishLimitRay(GameTitle title, const SightAuxRay& ray)
+{
+    PublishAuxRay(kAuxLimit, title, ray);
+}
+
+bool Sight_ReadLimitRay(GameTitle title, uint32_t generation, uint64_t maxAgeMs, SightAuxRay& out)
+{
+    return ReadAuxRay(kAuxLimit, title, generation, maxAgeMs, out);
+}
+
+void Sight_PublishLimitTrace(GameTitle title, uint32_t generation, bool hit, float rangeWu)
+{
+    PublishAuxTrace(kAuxLimit, title, generation, hit, rangeWu);
+}
+
+bool Sight_ReadLimitTrace(GameTitle title, uint32_t generation, uint64_t maxAgeMs, bool& hit, float& rangeWu)
+{
+    return ReadAuxTrace(kAuxLimit, title, generation, maxAgeMs, hit, rangeWu);
+}
+
+void Sight_MarkSeatLimitClamped(GameTitle title)
+{
+    const size_t slot = Slot(title);
+    g_seatLimitClampedGeneration[slot].store(TitleAdapter_GetGeneration(title), std::memory_order_relaxed);
+    g_seatLimitClampedMs[slot].store(GetTickCount64(), std::memory_order_release);
+}
+
+bool Sight_SeatLimitClampedLive(GameTitle title)
+{
+    const size_t slot = Slot(title);
+    const uint64_t at = g_seatLimitClampedMs[slot].load(std::memory_order_acquire);
+    return Fresh(at, GetTickCount64(), 150) &&
+           g_seatLimitClampedGeneration[slot].load(std::memory_order_relaxed) == TitleAdapter_GetGeneration(title);
+}
+
+void Sight_NoteSeatLimit(GameTitle title, bool yawEdge, bool pitchEdge, float overshootDeg)
+{
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    auto& w = g_seatLimitWitness[Slot(title)];
+    w.polls.fetch_add(1, std::memory_order_relaxed);
+    if (yawEdge)
+        w.yawEdge.fetch_add(1, std::memory_order_relaxed);
+    if (pitchEdge)
+        w.pitchEdge.fetch_add(1, std::memory_order_relaxed);
+    if (std::isfinite(overshootDeg) && overshootDeg > 0.0f)
+    {
+        uint32_t seen = w.maxOvershootBits.load(std::memory_order_relaxed);
+        uint32_t bits = 0;
+        std::memcpy(&bits, &overshootDeg, sizeof(bits));
+        for (;;)
+        {
+            float seenValue = 0.0f;
+            std::memcpy(&seenValue, &seen, sizeof(seenValue));
+            if (!(overshootDeg > seenValue) ||
+                w.maxOvershootBits.compare_exchange_weak(seen, bits, std::memory_order_relaxed))
+                break;
+        }
+    }
+#else
+    (void)title;
+    (void)yawEdge;
+    (void)pitchEdge;
+    (void)overshootDeg;
+#endif
+}
+
+#if HALOMCCVR_DEV_DIAGNOSTICS
+// Cold worker (from Sight_ReportConverge's 2 s summary): one line per title whose seat reticle clamped.
+static void SeatLimitReport()
+{
+    for (size_t slot = 0; slot < kTitleSlots; ++slot)
+    {
+        auto& w = g_seatLimitWitness[slot];
+        const uint32_t polls = w.polls.exchange(0, std::memory_order_relaxed);
+        const uint32_t yawEdge = w.yawEdge.exchange(0, std::memory_order_relaxed);
+        const uint32_t pitchEdge = w.pitchEdge.exchange(0, std::memory_order_relaxed);
+        const uint32_t bits = w.maxOvershootBits.exchange(0, std::memory_order_relaxed);
+        if (!polls)
+            continue;
+        float overshoot = 0.0f;
+        std::memcpy(&overshoot, &bits, sizeof(overshoot));
+        LOG("SEAT LIMIT %s: reticle clamped %u polls (yaw edge %u, pitch edge %u), max overshoot %.1f deg",
+            TitleName(static_cast<GameTitle>(slot)), polls, yawEdge, pitchEdge, overshoot);
+    }
+}
+
+void Sight_PublishAssessRay(GameTitle title, const SightAssessRay& ray)
+{
+    PublishAuxRay(kAuxAssess, title, ray);
+}
+
+bool Sight_ReadAssessRay(GameTitle title, uint32_t generation, uint64_t maxAgeMs, SightAssessRay& out)
+{
+    return ReadAuxRay(kAuxAssess, title, generation, maxAgeMs, out);
+}
+
+void Sight_PublishAssessTrace(GameTitle title, uint32_t generation, bool hit, float rangeWu)
+{
+    PublishAuxTrace(kAuxAssess, title, generation, hit, rangeWu);
+}
+
+bool Sight_ReadAssessTrace(GameTitle title, uint32_t generation, uint64_t maxAgeMs, bool& hit, float& rangeWu)
+{
+    return ReadAuxTrace(kAuxAssess, title, generation, maxAgeMs, hit, rangeWu);
 }
 #endif
