@@ -39,15 +39,15 @@ inline bool Finite3(const float a[3])
 }
 
 // ---- 1. re-aim through the point ---------------------------------------------------------------------------
-// Why a re-aim was refused (the caller leaves its query or shot exactly as the game built it).
+// Why a re-aim was refused (the caller leaves its query or shot exactly as the game built it). Only geometric
+// impossibilities: no line from this start through P points into the query's forward hemisphere, or none is defined.
 enum class Reaim : uint8_t
 {
     Applied = 0,
     NonFinite,      // any input not finite
     Degenerate,     // a zero-length query vector
-    PointBehind,    // P is not ahead of the start along the query: not the line this query traces
+    PointBehind,    // P is not ahead of the start along the query: no forward line through it
     PointTooClose,  // P is within minRangeWu of the start: it defines no direction
-    BendTooLarge,   // P is off the line by more than any eye travel plus camera angle explains (ReaimRails)
     AlreadyThrough, // the query already passes within minOffsetWu of P: left exactly as the game built it
     Count
 };
@@ -61,45 +61,30 @@ inline const char* ReaimName(Reaim why)
     case Reaim::Degenerate: return "degenerate";
     case Reaim::PointBehind: return "point behind";
     case Reaim::PointTooClose: return "point too close";
-    case Reaim::BendTooLarge: return "bend too large";
     case Reaim::AlreadyThrough: return "already through";
     default: return "?";
     }
 }
 
-// The rails. They exist to catch OUR bugs -- a point from the wrong frame, a line that is not this query's -- and
-// must never switch the correction off for a natural cause: speed, range, or the game's own camera. Whose query it
-// is and how old P is are decided upstream, by gates that say what they refuse (QueryIsLocal: a start within 1.5 m
-// of our own eye; FireMark: our fire; ShouldUseIntent: P under 150 ms old, this generation, converged). What is
-// left for the line itself is an ENVELOPE of everything the game can legitimately put between its line and P:
+// NO MAGNITUDE LIMIT (user's decision, 2026-10-03). A size limit cannot tell a correct big correction from a wrong
+// one, so all it does is hide problems -- and it hid one: the rail was `offset <= 3 m and bend <= 30 deg`, and an
+// absolute metres rail turns a constant ANGLE into a range-and-speed cliff. The Halo 3 Hornet's crosshair query
+// leaves the record by an angle that grows with sideways speed (5.65 deg at a 15-18 m/s strafe; it fits
+// atan(v_sideways / ~200 m/s), mechanism unproven), 3.5-4 m at 50 m, so from ~8 m/s sideways half or more of the
+// queries were refused and the shots landed 2-6 m behind along travel ("accurate until a certain strafe speed, then
+// suddenly a good bit off horizontally", user, 2026-10-03).
 //
-//   offset of P from the line  <=  maxParallelWu  +  ahead * tan(maxAngleDeg)
-//
-//   * a PARALLEL part, the same at every range: the eye's travel between the solve and the shot plus the camera's
-//     offset from our eye. Bounded by the gates: 30 m/s for the 150 ms a point may live is 4.5 m, plus the 1.5 m a
-//     local start may sit from the eye = 6 m. Worst seen (Halo 3 Forge Hornet, 2026-10-03): 21.8 m/s over the 30 ms
-//     the shot trailed the solve (0.65 m) beside a camera start ~1.1 m from the eye.
-//   * an ANGULAR part, growing with range: the game's line may leave the record by an angle. The Hornet's crosshair
-//     query does, by close to atan(v_sideways / ~200 m/s), as if the shooter's velocity were taken off the aim (a
-//     fit, mechanism unproven: over 112 seated queries it cuts the query-vs-record angle from 3.1 deg mean to 0.4,
-//     0.2 median) -- 5.65 deg at a 15-18 m/s strafe; a 30 m/s strafe would make 8.5. 30 deg is 5x the worst seen
-//     and 3.5x that extrapolation.
-//
-// THE INCIDENT: the rail was `offset <= 3 m and bend <= 30 deg`. An absolute metres rail turns a constant ANGLE
-// into a range-and-speed cliff: the Hornet's ~4 deg at 50 m is 3.5-4 m, so from a sideways ~8 m/s up, half or more
-// of the queries were refused and the shots landed 2-6 m behind along travel ("accurate until a certain strafe
-// speed, then suddenly a good bit off horizontally", user, 2026-10-03). The envelope has no cliff inside physics:
-// at close range the parallel part admits the near-90 deg bends a few metres of travel make, at long range the
-// angle does. A point beyond it is refused (BendTooLarge); behind the start (PointBehind) bends 90 deg or more.
-// Nothing is clamped. A query that already passes within minOffsetWu of P is LEFT ALONE (AlreadyThrough): where the
-// game's line is already coherent -- Halo 3 campaign vehicles, user-confirmed 2026-10-02 -- the re-aim must not move
-// it by the noise in P.
+// Whether P is meaningful for THIS query is decided by identity and freshness, never by how far it is: the local
+// player's fire (FireMark) and query (QueryIsLocal: his unit, or his vehicle's seat chain), P this generation and
+// under 150 ms old with the converged aim live and no natural hold (ShouldUseIntent). What is left here is geometry:
+// behind the start or within minRangeWu of it no forward line through P exists. Every refusal is counted by reason
+// (Sight_ReaimThroughPoint, the SHOT REAIM line). A query that already passes within minOffsetWu of P is LEFT ALONE
+// (AlreadyThrough): where the game's line is already coherent -- Halo 3 campaign vehicles, user-confirmed
+// 2026-10-02 -- the re-aim must not move it by the noise in P.
 struct ReaimRails
 {
     float minOffsetWu = 0.010f * kWuPerMetre;
     float minRangeWu = 0.3f * kWuPerMetre;
-    float maxParallelWu = 6.0f * kWuPerMetre;
-    float maxAngleDeg = 30.0f;
 };
 
 // out = normalize(P - start) * |vector|: the same query, from its own start, through the point. `out` is written
@@ -131,9 +116,6 @@ inline Reaim ReaimThroughPoint(const float start[3], const float vector[3], cons
     const float bend = std::atan2(offset, ahead) * kRadToDeg;
     if (offset < rails.minOffsetWu)
         return Reaim::AlreadyThrough;
-    const float allowed = rails.maxParallelWu + ahead * std::tan(rails.maxAngleDeg / kRadToDeg);
-    if (!(offset <= allowed))
-        return Reaim::BendTooLarge;
     const float scale = length / distance;
     out[0] = toPoint[0] * scale;
     out[1] = toPoint[1] * scale;
@@ -175,6 +157,9 @@ enum class IntentUse : uint8_t
     NotConverged,  // the converged aim is not in effect
     Bad,           // a non-finite or degenerate point
     OwnShotLine,   // the shot is another gun's own line (an off-hand gun, a barrel shot): never the aim hand's P
+    OutsideFire,   // a crosshair query at the site outside any native fire (QueryGate::OutsideFire)
+    OtherFire,     // inside a fire whose shooter is not the local player (QueryGate::OtherFire)
+    NotOurQuery,   // inside our fire, but the query ignores neither our unit nor our seat chain (QueryGate)
     Count
 };
 
@@ -190,6 +175,9 @@ inline const char* IntentUseName(IntentUse why)
     case IntentUse::NotConverged: return "not converged";
     case IntentUse::Bad: return "bad";
     case IntentUse::OwnShotLine: return "own shot line";
+    case IntentUse::OutsideFire: return "outside a fire";
+    case IntentUse::OtherFire: return "another shooter's fire";
+    case IntentUse::NotOurQuery: return "not our query";
     default: return "?";
     }
 }
@@ -201,8 +189,8 @@ inline const char* IntentUseName(IntentUse why)
 // gun's line, and re-aiming it through the AIM HAND's point would steer the off-hand or barrel shot onto the other
 // hand's target.
 //
-// THE LOCAL PLAYER'S FIRE. A query's ignores and start cannot tell two players in one vehicle apart (Reach names only
-// the vehicle's root; Halo 3's 1.5 m start guard admits an adjacent seat), and in networked co-op another player's
+// THE LOCAL PLAYER'S FIRE. A query's ignores cannot tell two players in one vehicle apart (Reach and Halo 3 name only
+// the vehicle's root or the seat's parent), and in networked co-op another player's
 // assist runs on this machine too (the assists take a player index: Halo 3 0x13BAD0, Reach's aim_projectile). So the
 // fire itself is tagged on the fire thread: a native fire's entry opens it as kFireOther, and its shot line -- the one
 // call that names the shooting unit (Halo 3 0x3524B0 from 0x368B92: the OCCUPANT after the gunner chain; ODST
@@ -216,19 +204,42 @@ inline int8_t FireMark(int8_t current, bool shooterIsLocal)
     return current == kFireNone ? kFireNone : (shooterIsLocal ? kFireLocal : kFireOther);
 }
 
+// Every verdict but NotSite is counted by the caller (QueryGateSkip -> the SHOT REAIM line): a refusal nobody can see
+// is how the Halo 3 Banshee's queries went unre-aimed for a whole stint (2026-10-03).
 enum class QueryGate : uint8_t
 {
     Try = 0,       // consult the intent (ShouldUseIntent)
-    NotOurs,       // not the site, not the local player's fire, or not his query: left alone and not counted
-    OwnShotLine,   // the local fire's line belongs to another gun: left alone, counted (IntentUse::OwnShotLine)
+    NotSite,       // not a resolved crosshair site: not a query this path owns, not counted
+    OutsideFire,   // at the site but outside any native fire
+    OtherFire,     // inside another shooter's fire
+    NotOurQuery,   // inside our fire, but not our unit's or seat chain's query
+    OwnShotLine,   // the local fire's line belongs to another gun (IntentUse::OwnShotLine)
 };
 inline QueryGate GateCrosshairQuery(bool atSite, int8_t fire, bool queryLocal, bool ownShotLine)
 {
-    if (!atSite || fire != kFireLocal || !queryLocal)
-        return QueryGate::NotOurs;
+    if (!atSite)
+        return QueryGate::NotSite;
+    if (fire == kFireNone)
+        return QueryGate::OutsideFire;
+    if (fire != kFireLocal)
+        return QueryGate::OtherFire;
+    if (!queryLocal)
+        return QueryGate::NotOurQuery;
     if (ownShotLine)
         return QueryGate::OwnShotLine;
     return QueryGate::Try;
+}
+// The skip reason a counted gate verdict is logged under (Try and NotSite: none, IntentUse::Use).
+inline IntentUse QueryGateSkip(QueryGate gate)
+{
+    switch (gate)
+    {
+    case QueryGate::OutsideFire: return IntentUse::OutsideFire;
+    case QueryGate::OtherFire: return IntentUse::OtherFire;
+    case QueryGate::NotOurQuery: return IntentUse::NotOurQuery;
+    case QueryGate::OwnShotLine: return IntentUse::OwnShotLine;
+    default: return IntentUse::Use;
+    }
 }
 
 inline IntentUse ShouldUseIntent(bool published, const IntentPoint& p, uint32_t generation, uint64_t nowUs,
@@ -416,30 +427,23 @@ inline bool ExtrapolateEye(const float eye[3], const float velocity[3], float dt
     return true;
 }
 
-// The crosshair query's own evidence that it is the local player's (with GateCrosshairQuery's fire tag). On foot its
-// first ignore is the local unit itself. Seated it is the vehicle's root (the published seat chain's top: `seatC`,
-// else `seatB`) or the seat's parent (`seatB`), which another occupant's query names too, so it must also START
-// within maxStartWu of the eye the intent was built from, carried forward by that eye's velocity to now (at most
-// 100 ms): an AI gunner's camera sits elsewhere. Not enough alone for a co-op player in the next seat -- hence the
-// fire tag.
-inline bool QueryIsLocal(bool seated, int32_t ignoredA, int32_t localUnit, int32_t seatB, int32_t seatC,
-                         const IntentPoint& intent, const float* start, uint64_t nowUs, float maxStartWu)
+// The crosshair query's own evidence that it is the local player's (with GateCrosshairQuery's fire tag): BY IDENTITY.
+// On foot its first ignore is the local unit itself. Seated it is the vehicle's root (the published seat chain's top:
+// `seatC`, else `seatB`) or the seat's parent (`seatB`). Another occupant's query names those too; the fire tag is
+// what tells his fire from ours (an AI gunner's or a co-op player's fire is never kFireLocal), exactly as Reach has
+// always gated it. There was a distance check here too -- the query must start within 1.5 m of our eye, carried
+// forward at most 100 ms -- and it was a size limit posing as identity: a Halo 3 Banshee stint (2026-10-03) started
+// its queries 2.3-2.4 m from the solve's eye, ahead along its travel, while they ran along our own record (within
+// 0.05 deg); carried forward that sat on the 1.5 m edge, and none of that stint's queries was re-aimed or counted.
+// Where a seat's camera sits relative to our eye is the seat's geometry and timing, not whose query it is.
+inline bool QueryIsLocal(bool seated, int32_t ignoredA, int32_t localUnit, int32_t seatB, int32_t seatC)
 {
     if (ignoredA == -1)
         return false;
     if (!seated)
         return ignoredA == localUnit;
     const int32_t root = seatC != -1 ? seatC : seatB;
-    if (ignoredA != root && ignoredA != seatB)
-        return false;
-    if (!start || !Finite3(start) || !Finite3(intent.eye))
-        return false;
-    float eye[3]{intent.eye[0], intent.eye[1], intent.eye[2]};
-    if (intent.eyeVelValid && intent.eyeStampUs && nowUs > intent.eyeStampUs)
-        (void)ExtrapolateEye(intent.eye, intent.eyeVel, float(nowUs - intent.eyeStampUs) * 1.0e-6f, 0.1f, eye);
-    const float d[3]{start[0] - eye[0], start[1] - eye[1], start[2] - eye[2]};
-    const float distance = Length(d);
-    return std::isfinite(distance) && distance <= maxStartWu;
+    return ignoredA == root || ignoredA == seatB;
 }
 
 // The game-basis angles of normalize(P - origin) (yaw about +Z from +X, pitch up), pitch clamped to
@@ -484,7 +488,10 @@ inline bool SameAngles(float yawA, float pitchA, float yawB, float pitchB, float
 // normalize(P - E'): P the published intent point, E' the game's own eye at the stick call carried one simulation
 // tick ahead (the record written now is first consumed by the next tick). Never P rebuilt from the current eye. Kept
 // as published (fail closed) for every reason below, in this order; `yaw`/`pitch`/`bendDeg` are written only on
-// Recomposed.
+// Recomposed. No magnitude limit (user's decision, 2026-10-03; see ReaimRails): under the old fixed 30 deg cap from
+// the setpoint (Halo 3 Forge, 2026-10-03) 25.7 deg was applied and 43 writes refused, every one at a seat entry --
+// the game's eye flies metres toward the seat while the record is still the on-foot one, so the bend grows as P
+// comes close -- or at the mission's end. Plain on-foot windows bent at most 6.8 deg.
 enum class Recompose : uint8_t
 {
     Recomposed = 0,
@@ -494,7 +501,8 @@ enum class Recompose : uint8_t
     PointUnusable,  // another generation, stale (or from the future), seated, held at the pitch rail, or non-finite
     NoGameEye,      // the game's eye at the tick is unknown or stale
     EyeUnproven,    // that eye is not (yet) proven to be the engine eye (EyeProof)
-    Geometry,       // P within 30 cm of the eye, or the result bends over 30 deg from the setpoint
+    PointTooClose,  // P within 30 cm of the eye (or non-finite): it defines no direction
+    PointBehind,    // P not ahead of the eye along the setpoint: no forward line through it
     Count
 };
 struct RecomposeInput
@@ -532,15 +540,17 @@ inline Recompose RecomposeRecord(const RecomposeInput& in, float& yaw, float& pi
         (void)ExtrapolateEye(in.eye, in.eyeVel, in.tickS, 0.05f, fire);
     float newYaw = 0.0f, newPitch = 0.0f;
     if (!AnglesTowardPoint(fire, p.point, 0.3f * kWuPerMetre, 1.45f, newYaw, newPitch))
-        return Recompose::Geometry;
+        return Recompose::PointTooClose;
     const float a[3]{std::cos(in.setPitch) * std::cos(in.setYaw), std::cos(in.setPitch) * std::sin(in.setYaw),
                      std::sin(in.setPitch)};
     const float b[3]{std::cos(newPitch) * std::cos(newYaw), std::cos(newPitch) * std::sin(newYaw), std::sin(newPitch)};
+    // Behind the eye along the setpoint (the eye has passed P): no forward line through it.
+    const float toPoint[3]{p.point[0] - fire[0], p.point[1] - fire[1], p.point[2] - fire[2]};
+    if (!(Dot(toPoint, a) > 0.0f))
+        return Recompose::PointBehind;
     float c = Dot(a, b);
     c = c > 1.0f ? 1.0f : (c < -1.0f ? -1.0f : c);
     const float bend = std::acos(c) * kRadToDeg;
-    if (!(bend <= 30.0f))
-        return Recompose::Geometry;
     yaw = newYaw;
     pitch = newPitch;
     bendDeg = bend;

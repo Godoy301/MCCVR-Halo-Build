@@ -1373,7 +1373,8 @@ bool LegacyDriveRecordSnapshot(GameTitle title, float& nativeYaw, float& nativeP
 // because the record written now is first consumed by the next tick. Never P rebuilt from the current eye: that
 // would recreate the error. Kept as published (fail closed) when the setpoint is not the solve that built P (the
 // fixed-distance steer, a seat author), the point is stale, seated or held at the pitch rail, the game's eye is
-// unknown or stale (Halo 3's dual-aim hooks absent), or the result bends over 30 deg from the solve. Yaw is
+// unknown or stale (Halo 3's dual-aim hooks absent), or P sits off the solve's line from that eye by more than
+// eye travel plus a camera angle explains (shot_lag::ReaimRails, the shot's own envelope). Yaw is
 // atan2's like the solve's: the wrap into [0, 2*pi) below applies to it as to every write. The decision is
 // shot_lag::RecomposeRecord (pure, unit-tested); this gathers its inputs.
 using LegacyRecomposeWhy = shot_lag::Recompose;
@@ -2023,7 +2024,7 @@ void LegacyDriveReport()
             LOG("SHOT RECORD Halo 3 on foot: %u stick writes recomposed through the intent point from the game's own "
                 "eye a tick ahead (%.1f ms; mean %.2f deg from the solve, max %.2f), %u kept as solved (no intent %u, "
                 "another solve %u, point stale/seated/rail-held %u, no fresh game eye %u, game eye unproven %u, "
-                "geometry %u)",
+                "point within 30 cm %u, point behind the eye %u)",
                 n[0], double(g_legacyTickPeriodUs[0].load(std::memory_order_relaxed)) / 1000.0,
                 n[0] ? double(sum) / 1000.0 / double(n[0]) : 0.0, double(max) / 1000.0, total - n[0],
                 n[static_cast<size_t>(LegacyRecomposeWhy::NoIntent)],
@@ -2031,7 +2032,8 @@ void LegacyDriveReport()
                 n[static_cast<size_t>(LegacyRecomposeWhy::PointUnusable)],
                 n[static_cast<size_t>(LegacyRecomposeWhy::NoGameEye)],
                 n[static_cast<size_t>(LegacyRecomposeWhy::EyeUnproven)],
-                n[static_cast<size_t>(LegacyRecomposeWhy::Geometry)]);
+                n[static_cast<size_t>(LegacyRecomposeWhy::PointTooClose)],
+                n[static_cast<size_t>(LegacyRecomposeWhy::PointBehind)]);
         // The game-eye proof's state, once per change (the ValueAgreement above PublishHalo3TickEye).
         static uint32_t s_proofLogged = 0;
         const uint32_t proof = g_halo3TickEyeProof.load(std::memory_order_relaxed);

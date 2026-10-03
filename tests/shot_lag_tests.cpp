@@ -78,16 +78,21 @@ int main()
         const float close[3]{0.05f, 0.0f, 0.0f};   // 15 cm
         Check(ReaimThroughPoint(start, vector, close, ReaimRails{}, out) == Reaim::PointTooClose,
               "a point within 30 cm defines no direction");
-        // Beyond the envelope (6 m + ahead * tan 30): 15.2 m ahead allows 14.8 m; 20 m across is no lag.
-        const float far[3]{5.0f, 6.6f, 0.0f};
-        Check(ReaimThroughPoint(start, vector, far, ReaimRails{}, out) == Reaim::BendTooLarge,
-              "a point 20 m off the line 15 m ahead is beyond any travel or camera angle: refused");
-        // Close in, a bend over 30 deg is only a few metres of travel: 2.4 m off 3 m ahead (38.7 deg).
-        const float steep[3]{1.0f, 0.8f, 0.0f};
+        // NO MAGNITUDE LIMIT: a big bend is applied however big, as long as P is ahead and defined.
+        const float far[3]{5.0f, 6.6f, 0.0f};      // 20 m off the line 15 m ahead (52.9 deg)
+        float farOut[3]{};
+        Check(ReaimThroughPoint(start, vector, far, ReaimRails{}, farOut) == Reaim::Applied &&
+                  LineMiss(start, farOut, far) < 1.0e-5f,
+              "a point 20 m off the line 15 m ahead is applied, through P");
+        const float steep[3]{0.4f, 1.0f, 0.0f};    // 3 m off 1.2 m ahead (68.2 deg)
         float steepOut[3]{};
-        Check(ReaimThroughPoint(start, vector, steep, ReaimRails{}, steepOut) == Reaim::Applied &&
-                  LineMiss(start, steepOut, steep) < 1.0e-5f,
-              "a 38.7 deg bend 3 m ahead is 2.4 m of eye travel: applied, through P");
+        float bend = -1.0f;
+        Check(ReaimThroughPoint(start, vector, steep, ReaimRails{}, steepOut, &bend) == Reaim::Applied &&
+                  LineMiss(start, steepOut, steep) < 1.0e-5f && Near(bend, 68.2f, 0.05f),
+              "a 68 deg bend up close is applied, through P");
+        const float nearlyBeside[3]{0.01f, 1.0f, 0.0f};   // 89.4 deg, still ahead
+        Check(ReaimThroughPoint(start, vector, nearlyBeside, ReaimRails{}, steepOut) == Reaim::Applied,
+              "a point just ahead of beside the start is applied (89 deg)");
         const float onLine[3]{5.0f, 0.002f, 0.0f};   // 6 mm off the line
         Check(ReaimThroughPoint(start, vector, onLine, ReaimRails{}, out) == Reaim::AlreadyThrough,
               "a query already through P (within 10 mm) is left exactly as the game built it");
@@ -192,31 +197,35 @@ int main()
             Check(ReaimThroughPoint(start, vector, p, ReaimRails{}, out) == Reaim::Applied,
                   "the logged Hornet query, 3.76 m off at 53 m, is re-aimed");
         }
-        // NO CLIFF inside physics: every strafe up to 30 m/s (angle atan(v / 200 m/s), the Hornet's fit, plus v over
-        // the full 150 ms a point may live and the 1.5 m a local start may sit from the eye) at every range.
+        // NO CLIFF: every strafe to 30 m/s (angle atan(v / 200 m/s), the Hornet's fit, plus v over the full 150 ms
+        // a point may live and a 2.4 m camera start) at every range -- and big bends beyond any of that.
         bool all = true;
         for (float speed = 0.0f; speed <= 30.0f; speed += 2.5f)
             for (const float metres : {0.5f, 1.0f, 3.0f, 10.0f, 40.0f, 100.0f, 400.0f, 1000.0f})
             {
                 float p[3]{}, out[3]{};
-                pointAt(metres, std::atan2(speed, 200.0f) * kRadToDeg, speed * 0.150f + 1.5f, p);
+                pointAt(metres, std::atan2(speed, 200.0f) * kRadToDeg, speed * 0.150f + 2.4f, p);
                 all = all && ReaimThroughPoint(start, vector, p, ReaimRails{}, out) == Reaim::Applied &&
                       LineMiss(start, out, p) * kMmPerWu < 5.0f;
             }
         Check(all, "every strafe to 30 m/s at every range from 0.5 m to 1 km is re-aimed: no speed or range cliff");
-        // Still refused: what no travel or camera angle explains.
+        for (const float metres : {50.0f, 300.0f, 1000.0f})
         {
-            float p[3]{}, out[3]{7, 7, 7};
-            pointAt(100.0f, 40.0f, 0.0f, p);
-            Check(ReaimThroughPoint(start, vector, p, ReaimRails{}, out) == Reaim::BendTooLarge,
-                  "40 deg off at 100 m is beyond the 30 deg camera angle: refused");
-            pointAt(1000.0f, 31.0f, 0.0f, p);
-            Check(ReaimThroughPoint(start, vector, p, ReaimRails{}, out) == Reaim::BendTooLarge,
-                  "31 deg off at 1 km: refused");
-            pointAt(1.0f, 0.0f, 7.0f, p);   // 81.9 deg: 7 m across, 1 m ahead
-            Check(ReaimThroughPoint(start, vector, p, ReaimRails{}, out) == Reaim::BendTooLarge,
-                  "7 m across 1 m ahead is beyond 6 m of travel plus the angle: refused");
-            Check(out[0] == 7 && out[1] == 7 && out[2] == 7, "a refused bend leaves the output untouched");
+            float p[3]{}, out[3]{};
+            float bend = -1.0f;
+            pointAt(metres, 12.0f, 0.0f, p);
+            char what[160];
+            std::snprintf(what, sizeof(what), "a 12 deg bend at %.0f m is re-aimed through P", double(metres));
+            Check(ReaimThroughPoint(start, vector, p, ReaimRails{}, out, &bend) == Reaim::Applied &&
+                      LineMiss(start, out, p) * kMmPerWu < 5.0f && Near(bend, 12.0f, 1.0e-2f), what);
+        }
+        {
+            float p[3]{}, out[3]{};
+            float bend = -1.0f;
+            pointAt(1.0f, 0.0f, 2.5f, p);   // 68.2 deg: 2.5 m of travel beside a point 1 m ahead
+            Check(ReaimThroughPoint(start, vector, p, ReaimRails{}, out, &bend) == Reaim::Applied &&
+                      LineMiss(start, out, p) * kMmPerWu < 1.0f && bend > 60.0f,
+                  "a 68 deg bend 1 m ahead is re-aimed through P");
         }
     }
 
@@ -255,22 +264,36 @@ int main()
     {
         Check(GateCrosshairQuery(true, kFireLocal, true, false) == QueryGate::Try,
               "the local player's query at the site, in his fire, is tried");
-        Check(GateCrosshairQuery(false, kFireLocal, true, false) == QueryGate::NotOurs, "a query elsewhere is never ours");
-        Check(GateCrosshairQuery(true, kFireLocal, false, false) == QueryGate::NotOurs,
-              "another unit's query is never ours");
+        Check(GateCrosshairQuery(false, kFireLocal, true, false) == QueryGate::NotSite,
+              "a query elsewhere is never ours (and not counted)");
+        Check(GateCrosshairQuery(true, kFireLocal, false, false) == QueryGate::NotOurQuery,
+              "another unit's query in our fire is never ours, counted");
         Check(GateCrosshairQuery(true, kFireLocal, true, true) == QueryGate::OwnShotLine,
               "an off-hand or barrel shot's own line is left alone (never the aim hand's point)");
-        Check(GateCrosshairQuery(true, kFireLocal, false, true) == QueryGate::NotOurs,
+        Check(GateCrosshairQuery(true, kFireLocal, false, true) == QueryGate::NotOurQuery,
               "another unit's query is not counted as an own-line skip");
         Check(std::strcmp(IntentUseName(IntentUse::OwnShotLine), "own shot line") == 0, "the own-line skip is named");
         // THE LOCAL PLAYER'S FIRE: a query that passes every check of its own is still left alone in another
         // player's fire (co-op, the next seat), or outside any fire we opened.
-        Check(GateCrosshairQuery(true, kFireOther, true, false) == QueryGate::NotOurs,
+        Check(GateCrosshairQuery(true, kFireOther, true, false) == QueryGate::OtherFire,
               "a co-op player's fire is never re-aimed, whatever its query looks like");
-        Check(GateCrosshairQuery(true, kFireNone, true, false) == QueryGate::NotOurs,
+        Check(GateCrosshairQuery(true, kFireNone, true, false) == QueryGate::OutsideFire,
               "a query outside any native fire is never re-aimed");
-        Check(GateCrosshairQuery(true, kFireOther, true, true) == QueryGate::NotOurs,
+        Check(GateCrosshairQuery(true, kFireOther, true, true) == QueryGate::OtherFire,
               "another player's barrel shot is not counted as ours");
+        // EVERY counted verdict has its own logged reason; Try and NotSite log none.
+        Check(QueryGateSkip(QueryGate::OutsideFire) == IntentUse::OutsideFire &&
+                  QueryGateSkip(QueryGate::OtherFire) == IntentUse::OtherFire &&
+                  QueryGateSkip(QueryGate::NotOurQuery) == IntentUse::NotOurQuery &&
+                  QueryGateSkip(QueryGate::OwnShotLine) == IntentUse::OwnShotLine &&
+                  QueryGateSkip(QueryGate::Try) == IntentUse::Use && QueryGateSkip(QueryGate::NotSite) == IntentUse::Use,
+              "each gate refusal maps to its own skip reason");
+        bool named = true;
+        for (size_t r = 0; r < static_cast<size_t>(IntentUse::Count); ++r)
+            named = named && std::strcmp(IntentUseName(static_cast<IntentUse>(r)), "?") != 0;
+        for (size_t r = 0; r < static_cast<size_t>(Reaim::Count); ++r)
+            named = named && std::strcmp(ReaimName(static_cast<Reaim>(r)), "?") != 0;
+        Check(named, "every skip and refusal reason has a name for the SHOT REAIM line");
     }
     {
         // The tag's lifetime: a fire opens Other; its shot line names the shooter; outside a fire nothing marks.
@@ -281,36 +304,21 @@ int main()
         Check(FireMark(kFireLocal, true) == kFireLocal, "a second projectile of our own stays ours");
     }
     {
-        // The query's own evidence (on foot: the unit; seated: the vehicle, and a start at our eye).
-        IntentPoint intent{};
-        intent.eye[0] = 10.0f;
-        intent.eye[1] = 20.0f;
-        intent.eye[2] = 1.0f;
-        const float atEye[3]{10.1f, 20.0f, 1.0f};
-        const float beside[3]{10.0f, 20.0f + 2.0f * kWuPerM, 1.0f};   // 2 m away: the next seat's camera
-        const float maxWu = 1.5f * kWuPerM;
-        const uint64_t now = 5000000;
-        Check(QueryIsLocal(false, 42, 42, -1, -1, intent, atEye, now, maxWu), "on foot: our unit is ours");
-        Check(!QueryIsLocal(false, 43, 42, -1, -1, intent, atEye, now, maxWu), "on foot: another unit is not");
-        Check(!QueryIsLocal(false, -1, -1, -1, -1, intent, atEye, now, maxWu), "no unit on either side is nobody's");
-        Check(QueryIsLocal(true, 900, -1, 800, 900, intent, atEye, now, maxWu), "seated: the vehicle's root");
-        Check(QueryIsLocal(true, 800, -1, 800, 900, intent, atEye, now, maxWu), "seated: the seat's parent");
-        Check(QueryIsLocal(true, 800, -1, 800, -1, intent, atEye, now, maxWu), "seated, one level: the parent");
-        Check(!QueryIsLocal(true, 700, -1, 800, 900, intent, atEye, now, maxWu), "seated: another vehicle is not");
-        Check(!QueryIsLocal(true, 900, -1, 800, 900, intent, beside, now, maxWu),
-              "seated: a query starting 2 m from our eye is not ours");
-        // The eye carried forward: a hull at 20 m/s, 50 ms after the eye was sampled, is a metre on.
-        IntentPoint moving = intent;
-        moving.eyeVel[1] = 20.0f * kWuPerM;
-        moving.eyeVelValid = true;
-        moving.eyeStampUs = now - 50000;
-        const float ahead[3]{10.0f, 20.0f + 1.0f * kWuPerM, 1.0f};
-        Check(QueryIsLocal(true, 900, -1, 800, 900, moving, ahead, now, 0.2f * kWuPerM),
-              "seated: our eye is carried forward by its velocity to now");
-        Check(!QueryIsLocal(true, 900, -1, 800, 900, intent, ahead, now, 0.2f * kWuPerM),
-              "...without a velocity the same start is a metre off");
-        const float nan3[3]{std::nanf(""), 0.0f, 0.0f};
-        Check(!QueryIsLocal(true, 900, -1, 800, 900, intent, nan3, now, maxWu), "a non-finite start is nobody's");
+        // The query's own evidence, BY IDENTITY (on foot: the unit; seated: the vehicle's root or the seat's
+        // parent). Where the query starts is not evidence: the Halo 3 Banshee's starts 2.3-2.4 m from our eye.
+        Check(QueryIsLocal(false, 42, 42, -1, -1), "on foot: our unit is ours");
+        Check(!QueryIsLocal(false, 43, 42, -1, -1), "on foot: another unit is not");
+        Check(!QueryIsLocal(false, -1, -1, -1, -1), "no unit on either side is nobody's");
+        Check(QueryIsLocal(true, 900, -1, 800, 900), "seated: the vehicle's root");
+        Check(QueryIsLocal(true, 800, -1, 800, 900), "seated: the seat's parent");
+        Check(QueryIsLocal(true, 800, -1, 800, -1), "seated, one level: the parent");
+        Check(!QueryIsLocal(true, 700, -1, 800, 900), "seated: another vehicle is not");
+        Check(!QueryIsLocal(true, -1, -1, 800, 900), "seated: no ignore is nobody's");
+        Check(!QueryIsLocal(true, 900, -1, -1, -1), "seated without a published seat chain: nobody's");
+        // Another occupant names the same vehicle: his query passes this, his FIRE never tags local.
+        Check(QueryIsLocal(true, 900, -1, 800, 900) &&
+                  GateCrosshairQuery(true, kFireOther, true, false) == QueryGate::OtherFire,
+              "an AI gunner or co-op player in our vehicle: his query is the vehicle's, his fire is not ours");
     }
 
     // ---- the eye's track ----
@@ -527,11 +535,30 @@ int main()
         in.eyeProven = false;
         refused(in, Recompose::EyeUnproven, "an unproven eye");
         in = base;
-        in.eye[0] = p[0] - 0.05f;   // 15 cm short of P
-        refused(in, Recompose::Geometry, "P too close to the eye");
+        in.eyeVelValid = false;
+        in.eye[0] = p[0] - 0.05f;   // 15 cm short of P, on the line
+        in.eye[1] = 0.0f;
+        refused(in, Recompose::PointTooClose, "P within 30 cm of the eye defines no direction");
         in = base;
-        in.eye[1] = 8.0f * kWuPerM;   // 8 m beside: a 39 deg bend
-        refused(in, Recompose::Geometry, "a bend over 30 deg");
+        in.eyeVelValid = false;
+        in.eye[0] = p[0] + 1.0f * kWuPerM;   // the eye a metre past P
+        refused(in, Recompose::PointBehind, "P behind the eye along the setpoint: no forward line");
+        // NO MAGNITUDE LIMIT: big legitimate bends are recomposed, through P.
+        const auto through = [&](const RecomposeInput& rin, float minBend, const char* what) {
+            float y = 0.0f, pt = 0.0f, b = 0.0f;
+            const bool ok = RecomposeRecord(rin, y, pt, b) == Recompose::Recomposed;
+            const float d[3]{std::cos(pt) * std::cos(y), std::cos(pt) * std::sin(y), std::sin(pt)};
+            Check(ok && LineMiss(rin.eye, d, p) * kMmPerWu < 0.5f && b > minBend, what);
+        };
+        in = base;
+        in.eyeVelValid = false;
+        in.eye[1] = 8.0f * kWuPerM;   // 8 m beside a point 10 m out: 38.7 deg
+        through(in, 38.0f, "8 m beside a point 10 m out (38.7 deg) is recomposed through P");
+        in = base;
+        in.eyeVelValid = false;
+        in.eye[0] = p[0] - 1.0f * kWuPerM;   // close in: 2 m beside a point 1 m ahead (63.4 deg)
+        in.eye[1] = 2.0f * kWuPerM;
+        through(in, 60.0f, "a 63 deg bend up close is recomposed through P");
         in = base;
         in.eyeVelValid = false;
         Check(RecomposeRecord(in, yaw, pitch, bend) == Recompose::Recomposed &&
