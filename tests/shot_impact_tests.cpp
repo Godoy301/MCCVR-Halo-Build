@@ -276,6 +276,134 @@ int main()
               "map: wrap");
     }
 
+    // ---- the inherited velocity and the aim that allows for it ------------------------------------------------------
+    {
+        const float speed2 = 100.0f;   // object units: only the ratios matter
+        // A Warthog-like 15 units/s sideways (and some forward) under a 100 units/s round.
+        const float vb[3]{4.0f, 15.0f, 0.5f};
+        const float vo[3]{4.0f, 15.0f, 0.5f};
+        const float e[3]{1.0f, 0.0f, 0.0f};
+        float d[3]{}, residual = NAN;
+        int iterations = 0;
+        Check(SolveInheritedAim(e, vb, vo, speed2, d, &residual, &iterations), "solve: a solution");
+        float u[3]{};
+        RoundVelocity(d, vb, vo, speed2, u);
+        Check(residual <= 1.0e-3f && AngleDeg(u, e) <= 1.0e-3f, "solve: the round's velocity points at P");
+        Check(iterations > 0 && iterations <= 16, "solve: converges in a few steps");
+        Check(d[1] < 0.0f && Near(Length(d), 1.0f, 1e-5f), "solve: aims against the inherited sideways velocity");
+        // The sideways part across e is 15 (and 0.5 up); the round's sideways velocity d_perp * s must cancel it.
+        float drifted[3]{};
+        RoundVelocity(e, vb, vo, speed2, drifted);
+        Check(AngleDeg(drifted, e) > 8.0f, "solve: without it the round flies off P");
+        // No inheritance: the direction is e itself.
+        const float zero[3]{0, 0, 0};
+        Check(SolveInheritedAim(e, zero, vo, speed2, d) && AngleDeg(d, e) < 1.0e-4f, "solve: nothing to allow for");
+        // Arbitrary geometry, a body velocity with a large part along the shot (the branch removes it).
+        const float e2[3]{0.3f, -0.8f, 0.2f};
+        const float vb2[3]{-20.0f, 30.0f, 5.0f};
+        Check(SolveInheritedAim(e2, vb2, nullptr, 400.0f, d, &residual), "solve: general geometry");
+        RoundVelocity(d, vb2, nullptr, 400.0f, u);
+        Check(AngleDeg(u, e2) <= 1.0e-3f, "solve: general geometry reaches P");
+        // Refusals.
+        const float huge[3]{0, 200.0f, 0};
+        Check(!SolveInheritedAim(e, huge, nullptr, speed2, d), "solve: a sideways velocity over the round's speed");
+        Check(!SolveInheritedAim(e, vb, vo, 0.0f, d), "solve: no speed");
+        const float nan3[3]{NAN, 0, 0};
+        Check(!SolveInheritedAim(nan3, vb, vo, speed2, d) && !SolveInheritedAim(e, nan3, vo, speed2, d),
+              "solve: non-finite");
+        Check(!SolveInheritedAim(zero, vb, vo, speed2, d), "solve: no direction");
+        // The compensated point: same range from the origin, along the solved direction.
+        const float origin[3]{1.0f, 2.0f, 3.0f};
+        const float p[3]{11.0f, 2.0f, 3.0f};
+        float shifted[3]{};
+        Check(CompensatedPoint(origin, p, vb, vo, speed2, shifted), "point: compensated");
+        const float to[3]{shifted[0] - origin[0], shifted[1] - origin[1], shifted[2] - origin[2]};
+        const float tl = Length(to);
+        Check(Near(tl, 10.0f, 1e-4f), "point: at P's range");
+        const float dn[3]{to[0] / tl, to[1] / tl, to[2] / tl};
+        RoundVelocity(dn, vb, vo, speed2, u);
+        const float toP[3]{p[0] - origin[0], p[1] - origin[1], p[2] - origin[2]};
+        Check(AngleDeg(u, toP) <= 1.0e-3f, "point: a round aimed through it flies at P");
+        Check(!CompensatedPoint(origin, origin, vb, vo, speed2, shifted), "point: P at the origin");
+    }
+
+    // ---- LateralAlongTravel -------------------------------------------------------------------------------------------
+    {
+        const float fwd[3]{1, 0, 0};
+        const float vel[3]{5.0f, 2.0f * kWuPerM, 0.0f};
+        float mps = 0.0f;
+        Check(LateralAlongTravel(vel, fwd, eyeVel, 1.0f, mps) && Near(mps, 2.0f, 1e-3f),
+              "lateral: the sideways part along travel");
+        Check(LateralAlongTravel(vel, fwd, eyeVel, 30.0f, mps) && Near(mps, 60.0f, 1e-2f), "lateral: scaled by unit");
+        const float along[3]{3.0f, 0, 0};
+        Check(!LateralAlongTravel(vel, fwd, along, 1.0f, mps), "lateral: no travel across the forward");
+        Check(!LateralAlongTravel(vel, fwd, nullptr, 1.0f, mps), "lateral: no eye velocity");
+    }
+
+    // ---- UnitsTrack, SpeedAgrees, SpeedTable, SeatWindows ------------------------------------------------------------
+    {
+        UnitsTrack units;
+        Check(!units.Known() && units.Scale() == 1.0f, "units: unknown reads as 1");
+        // Stored per tick: a round of 0.5 stored units moves 0.5 wu in each 1/60 s tick.
+        for (int i = 0; i < 8; ++i)
+            units.Add(0.5f, 1.0f / 60.0f, 0.5f);
+        Check(units.Known() && Near(units.Scale(), 60.0f, 1e-2f), "units: a per-tick velocity reads 60 wu/s per unit");
+        UnitsTrack perSecond;
+        for (int i = 0; i < 8; ++i)
+            perSecond.Add(5.0f, 0.016f, 5.0f / 0.016f);
+        Check(Near(perSecond.Scale(), 1.0f, 1e-4f), "units: a per-second velocity reads 1");
+        perSecond.Add(1.0f, 0.001f, 1.0f);   // under 5 ms: noise
+        perSecond.Add(1.0f, 0.5f, 1.0f);     // over 100 ms: noise
+        Check(perSecond.samples == 8, "units: noisy steps ignored");
+
+        Check(SpeedAgrees(300.0f, 1.0f, 300.0f) && SpeedAgrees(150.0f, 0.5f, 300.0f), "speed: scale x tag");
+        Check(!SpeedAgrees(300.0f, 1.0f, 290.0f) && !SpeedAgrees(0.0f, 1.0f, 0.0f), "speed: disagreement refused");
+
+        SpeedTable table;
+        float v = 0.0f;
+        table.Note(7, true, 300.0f, 1);
+        Check(!table.Lookup(7, v), "speed table: one round is not proof");
+        table.Note(7, true, 300.0f, 2);
+        Check(table.Lookup(7, v) && v == 300.0f, "speed table: two agreeing rounds are");
+        table.Note(7, true, 250.0f, 3);
+        Check(!table.Lookup(7, v), "speed table: a new speed starts the proof over");
+        table.Note(7, true, 250.0f, 4);
+        Check(table.Lookup(7, v) && v == 250.0f, "speed table: and proves again");
+        table.Note(7, false, 0.0f, 5);
+        Check(!table.Lookup(7, v), "speed table: a disagreeing round forgets the weapon");
+        table.Note(9, false, 100.0f, 6);
+        Check(!table.Lookup(9, v), "speed table: never learned from a disagreeing round");
+        Check(!table.Lookup(UINT32_MAX, v), "speed table: no weapon");
+
+        SeatWindows seats;
+        const SeatKey a{1, 2, false}, b{3, 4, true};
+        const int ia = seats.Index(a, 10);
+        const int ib = seats.Index(b, 11);
+        Check(ia != ib && seats.Index(a, 12) == ia && seats.dropped == 0, "seats: one window per seat");
+        seats.Index(SeatKey{5, 6, false}, 13);
+        seats.Index(SeatKey{7, 8, false}, 14);
+        const int ie = seats.Index(SeatKey{9, 9, false}, 15);
+        Check(seats.dropped == 1 && ie == ib, "seats: full -> the least recently used seat is dropped");
+    }
+
+    // ---- the seated window's line ------------------------------------------------------------------------------------
+    {
+        Window w;
+        w.AddFire(1);
+        w.AddInheritance(true, true, true, 4.5f);
+        w.AddInheritance(false, true, false, 0.0f);
+        w.speedProven = 2;
+        w.fromAssist = 1;
+        w.compensated = 1;
+        char line[1536]{};
+        Check(w.Format("Halo 3 SEATED [x]", line, sizeof(line)) > 0 &&
+                  std::strstr(line, "INHERITANCE branch taken 1/2 (owner flag 2), placed sideways along travel +4.50") &&
+                  std::strstr(line, "judged against the assist's output 1") &&
+                  std::strstr(line, "round speed = scale x tag initial speed 2, off 0") &&
+                  std::strstr(line, "compensated 1"),
+              "seated window: the inheritance, speed and compensation fields");
+    }
+
     std::printf("%u checks, %u failures\n", checks, failures);
     return failures ? 1 : 0;
 }

@@ -17,6 +17,13 @@
 //   path's own map, from the rendered eye of its frame, at the range it was drawn for) against P; how old P was at
 //   the fire (its hand, its camera), whether P's frame was older than the reticle's; and RT-to-fire latency.
 //
+//   SHOT IMPACT Halo 3 SEATED [gun owner def, weapon def, the vehicle's gun | his own weapon] (dev): the same, per
+//   seat, for the local player's seated fires (the shot line names him the shooter; his unit's parent is set), judged
+//   against the assist's output (the line our seated re-aim made), plus INHERITANCE: the fire routine's branch flag,
+//   the owner flag it tests first, and the placement's sideways velocity along travel -- and whether each round's
+//   speed is the constructor's (scale x the tag's initial speed). SHOT IMPACT Halo 3 seated: the measured velocity
+//   unit and the compensation's counts (dev key seated_inherit_compensation, Halo3SeatedInheritPoint).
+//
 // HOW THE GAME SPAWNS A ROUND (pinned retail halo3.dll; read with capstone, every RVA checked against the bytes):
 //   * the fire routine 0x3683A0 (pdata to 0x369FB9) builds a placement block on its frame (rbp+0xD0) through
 //     0x341508, writes position (+0x1C), forward (+0x28, after spread 0x109648) and translational velocity (+0x40),
@@ -64,16 +71,31 @@ struct Halo3ImpactWitness
     // Decoded from object_new's copy of the placement block.
     uint32_t placePos = 0, placeFwd = 0, placeVel = 0, objPos = 0, objFwd = 0, objVel = 0;
     uint8_t projectileType = 0xFF;
+    // The fire routine's frame (seated rounds; decoded at install, frameProven when every anchor agreed): rbp - rsp,
+    // the inheritance flag byte [rsp+flag], the body velocity [rbp+body], the shooter's velocity the shot line
+    // reported [rbp+occupant], and the owner's flag word (+ownerFlag, bit ownerBit) the branch first tests.
+    bool frameProven = false;
+    uint32_t rbpDelta = 0, flagDisp = 0, bodyDisp = 0, occupantDisp = 0, ownerFlagDisp = 0;
+    uint8_t ownerFlagBit = 0;
+    // The projectile constructor's speed (speedProven): it adds forward x (object +scale) x (tag +tagSpeed).
+    bool speedAnchors = false;
+    uint32_t scaleDisp = 0, tagSpeedDisp = 0;
     std::atomic<bool> ready{false};
     std::atomic<int> armed{0};
     std::atomic<uint32_t> faults{0};
     // Everything below is under `lock`.
     SRWLOCK lock = SRWLOCK_INIT;
     shot_impact::Tracker tracker;
-    shot_impact::Window windows[4];   // [muzzle][predicted]
+    shot_impact::Window windows[4];   // on foot: [muzzle][predicted]
+    shot_impact::SeatWindows seats;   // seated: per gun owner and weapon
+    shot_impact::UnitsTrack units;    // the object velocity's unit, measured (never reset: a property of the build)
+    shot_impact::SpeedTable speeds;   // each weapon's proven round speed (the compensation reads it)
     shot_impact::ReticleWindow reticle;
     shot_impact::TriggerLatch trigger;
     uint32_t nested = 0, ourLineThroughP = 0, ourLineOffP = 0;
+    // The compensation (seated_inherit_compensation), per window.
+    uint32_t compApplied = 0, compNoInherit = 0, compNoSpeed = 0, compNoFrame = 0, compNoSolution = 0;
+    float compShiftMmSum = 0.0f, compShiftMmMax = 0.0f, compResidualMax = 0.0f;
 };
 Halo3ImpactWitness g_halo3Impact;
 
@@ -100,7 +122,12 @@ struct Halo3ImpactFire
     uint32_t projectiles = 0;
     float lineOrigin[3]{}, lineDir[3]{};
     bool pointKnown = false;
-    shot_lag::IntentPoint point{};
+    shot_lag::IntentPoint point{};   // seated: point = the intent's solvePoint (the point the seated re-aim uses)
+    // Seated (the occupant's parent link is set): the gun's owner, its definition, the weapon's.
+    bool seated = false;
+    shot_impact::SeatKey seat{};
+    uint32_t weaponDef = UINT32_MAX;
+    bool compensated = false;
 };
 thread_local Halo3ImpactFire t_halo3ImpactFire;
 
@@ -146,6 +173,96 @@ bool Halo3ImpactReadObject(uint32_t handle, float pos[3], float fwd[3], float ve
     }
 }
 
+// Any live object's data (Halo3ContactObject's checked table walk), or null. Guarded.
+const uint8_t* Halo3ImpactObjectData(uint32_t handle)
+{
+    __try
+    {
+        if (!Halo3ContactObject(handle))
+            return nullptr;
+        const auto* table = *reinterpret_cast<const uint8_t* const*>(Halo3ContactTls() + 0x38);
+        const auto* entries = *reinterpret_cast<const uint8_t* const*>(table + 0x48);
+        return *reinterpret_cast<const uint8_t* const*>(entries + (handle & 0xFFFF) * 0x18 + 0x10);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return nullptr;
+    }
+}
+
+// An object's definition (its tag datum, object +0), or UINT32_MAX.
+uint32_t Halo3ImpactDefinition(uint32_t handle)
+{
+    __try
+    {
+        const auto* data = Halo3ImpactObjectData(handle);
+        return data ? *reinterpret_cast<const uint32_t*>(data) : UINT32_MAX;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return UINT32_MAX;
+    }
+}
+
+// The fire routine's inheritance, read from its own frame (frameProven): the branch flag, the body velocity and the
+// shooter's velocity the shot line reported. `fireRsp`: the routine's rsp at the call we are inside of.
+bool Halo3ImpactReadFireFrame(uintptr_t fireRsp, bool& taken, float body[3], float occupant[3])
+{
+    const auto& w = g_halo3Impact;
+    if (!w.frameProven || !fireRsp)
+        return false;
+    __try
+    {
+        taken = *reinterpret_cast<const uint8_t*>(fireRsp + w.flagDisp) != 0;
+        const uintptr_t rbp = fireRsp + w.rbpDelta;
+        memcpy(body, reinterpret_cast<const void*>(rbp + w.bodyDisp), sizeof(float) * 3);
+        memcpy(occupant, reinterpret_cast<const void*>(rbp + w.occupantDisp), sizeof(float) * 3);
+        return true;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        g_halo3Impact.faults.fetch_add(1, std::memory_order_relaxed);
+        return false;
+    }
+}
+
+// The flag the fire routine tests on the gun's owner before it asks for the body velocity (0x368B97). Guarded.
+bool Halo3ImpactOwnerFlag(uint32_t owner)
+{
+    const auto& w = g_halo3Impact;
+    __try
+    {
+        const auto* data = Halo3ImpactObjectData(owner);
+        return data && ((*reinterpret_cast<const uint32_t*>(data + w.ownerFlagDisp) >> w.ownerFlagBit) & 1u) != 0;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return false;
+    }
+}
+
+// The projectile's speed as the constructor computed it: (object +scale) x (its tag +tagSpeed). Guarded.
+bool Halo3ImpactReadRoundSpeed(uint32_t handle, float& scale, float& tagSpeed)
+{
+    const auto& w = g_halo3Impact;
+    if (!w.speedAnchors)
+        return false;
+    __try
+    {
+        const auto* object = Halo3MeleeSelectionObject(handle, w.projectileType);
+        const auto* tag = object ? Halo3LoadedTagDefinition(*reinterpret_cast<const uint32_t*>(object)) : nullptr;
+        if (!tag)
+            return false;
+        memcpy(&scale, object + w.scaleDisp, sizeof(scale));
+        memcpy(&tagSpeed, tag + w.tagSpeedDisp, sizeof(tagSpeed));
+        return std::isfinite(scale) && std::isfinite(tagSpeed);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return false;
+    }
+}
+
 // The rendered eye of a prepared frame (the camera ring, PublishCamFrame), by serial.
 bool Halo3ImpactFrameBySerial(uint64_t serial, shot_lag::EyeFrame& out)
 {
@@ -162,17 +279,20 @@ bool Halo3ImpactFrameBySerial(uint64_t serial, shot_lag::EyeFrame& out)
     return false;
 }
 
-// The local fire's P (the intent the shot sites read), fresh and this generation's.
-bool Halo3ImpactReadPoint(uint64_t nowUs, shot_lag::IntentPoint& out)
+// The local fire's P (the intent the shot sites read), fresh and this generation's. Seated: the point the seated
+// re-aim aims through (SightIntent::solvePoint), and only an intent that says it is seated.
+bool Halo3ImpactReadPoint(uint64_t nowUs, bool seated, shot_lag::IntentPoint& out)
 {
     SightIntent intent{};
     const uint32_t generation = TitleAdapter_GetGeneration(GameTitle::Halo3);
     if (!Sight_ReadIntent(GameTitle::Halo3, intent) || !generation || intent.p.generation != generation ||
         !intent.p.stampUs || nowUs < intent.p.stampUs || nowUs - intent.p.stampUs > 250000ull ||
-        !shot_lag::Finite3(intent.p.point))
+        intent.p.seated != seated)
         return false;
     out = intent.p;
-    return true;
+    if (seated)
+        memcpy(out.point, intent.solvePoint, sizeof(out.point));
+    return shot_lag::Finite3(out.point);
 }
 
 // The reticle the player saw at this fire, against P (and P's age), into the reticle window. Under the lock.
@@ -227,6 +347,33 @@ void Halo3ImpactMeasureReticle(const shot_lag::IntentPoint& p, uint64_t nowUs)
     r.AddOffset(shot_impact::Decompose(offset, p.dir, p.eyeVelValid ? p.eyeVel : nullptr),
                 float(nowUs - seen.stampUs) / 1000.0f, shot_lag::Length(keyDelta) * 1000.0f);
 }
+
+// The window a fire reports into (under the lock): on foot its group's; seated its seat's (`seat` receives the
+// index, -1 on foot).
+shot_impact::Window& Halo3ImpactFireWindow(const Halo3ImpactFire& fire, uint64_t nowUs, int& seat)
+{
+    auto& w = g_halo3Impact;
+    if (!fire.seated)
+    {
+        seat = -1;
+        return w.windows[Halo3ImpactGroup(fire)];
+    }
+    seat = w.seats.Index(fire.seat, nowUs);
+    return w.seats.window[seat];
+}
+
+// A tracked round's window (under the lock), or null when its seat's window has since been given to another seat.
+shot_impact::Window* Halo3ImpactTrackedWindow(const shot_impact::Tracked& t)
+{
+    auto& w = g_halo3Impact;
+    if (t.seat < 0)
+        return &w.windows[t.group & 3];
+    const int i = t.seat;
+    if (i >= shot_impact::SeatWindows::kSeats || !w.seats.used[i])
+        return nullptr;
+    const shot_impact::SeatKey key{t.seatOwnerDef, t.seatWeaponDef, t.seatOwnGun};
+    return w.seats.key[i] == key ? &w.seats.window[i] : nullptr;
+}
 } // namespace
 
 // The fire detour's entry and exit (Halo3IndependentFireDetour). A fire inside a fire is not measured.
@@ -245,6 +392,7 @@ void Halo3ImpactFireBegin(uint8_t predicted)
     fire = Halo3ImpactFire{};
     fire.open = true;
     fire.predicted = predicted ? 1 : 0;
+    t_halo3AssistShot.lastValid = false;   // this fire's assist output, once it runs
 }
 
 void Halo3ImpactFireEnd()
@@ -255,33 +403,53 @@ void Halo3ImpactFireEnd()
     if (fire.local && fire.lineSeen)
     {
         AcquireSRWLockExclusive(&g_halo3Impact.lock);
-        g_halo3Impact.windows[Halo3ImpactGroup(fire)].AddFire(fire.projectiles);
+        int seat = -1;
+        auto& window = Halo3ImpactFireWindow(fire, Sight_NowUs(), seat);
+        window.AddFire(fire.projectiles);
+        if (fire.compensated)
+            ++window.compensated;
         ReleaseSRWLockExclusive(&g_halo3Impact.lock);
     }
     fire = Halo3ImpactFire{};
 }
 
 // The fire's shot line as it leaves the shot-line call (0x368B97): what we handed the game. `muzzle`: the muzzle
-// lane's ray. Only the local player's own weapon on foot (the gun's owner is the unit itself) is measured.
+// lane's ray. The local player's fire only: on foot his own weapon (the gun's owner is the unit itself); SEATED (his
+// unit's parent link is set) any gun the shot line names him the shooter of -- the vehicle's or turret's own gun
+// (its owner is the vehicle) or a passenger's personal weapon (its owner is the unit).
 void Halo3ImpactNoteShotLine(uint32_t unit, const float origin[3], const float direction[3], bool muzzle)
 {
     auto& fire = t_halo3ImpactFire;
     if (!fire.open || fire.lineSeen || !origin || !direction)
         return;
     fire.lineSeen = true;
-    fire.local = t_halo3Fire == shot_lag::kFireLocal && unit != UINT32_MAX &&
-                 Halo3WeaponOwner(g_halo3FiringWeapon) == unit;
+    fire.local = t_halo3Fire == shot_lag::kFireLocal && unit != UINT32_MAX;
     if (!fire.local || !shot_lag::Finite3(origin) || !shot_lag::Finite3(direction))
     {
         fire.local = false;
         return;
     }
+    const uint32_t owner = Halo3WeaponOwner(g_halo3FiringWeapon);
+    uint32_t parent = UINT32_MAX;
+    if (const auto* occupant = Halo3ImpactObjectData(unit))
+        memcpy(&parent, occupant + kHalo3ObjectParentOffset, sizeof(parent));
+    fire.seated = parent != UINT32_MAX;
+    if (!fire.seated && owner != unit)
+    {
+        fire.local = false;   // on foot, a gun he does not hold: not his shot to judge
+        return;
+    }
+    fire.weaponDef = Halo3ImpactDefinition(g_halo3FiringWeapon);
+    if (fire.seated)
+        fire.seat = shot_impact::SeatKey{Halo3ImpactDefinition(owner), fire.weaponDef, owner == unit};
     fire.muzzle = muzzle;
     memcpy(fire.lineOrigin, origin, sizeof(fire.lineOrigin));
     memcpy(fire.lineDir, direction, sizeof(fire.lineDir));
     const uint64_t nowUs = Sight_NowUs();
-    fire.pointKnown = Halo3ImpactReadPoint(nowUs, fire.point);
+    fire.pointKnown = Halo3ImpactReadPoint(nowUs, fire.seated, fire.point);
     auto& w = g_halo3Impact;
+    if (fire.seated)
+        return;   // the SHOT RETICLE line is the on-foot reticle's
     AcquireSRWLockExclusive(&w.lock);
     const float latency = w.trigger.Fire(nowUs);
     if (latency >= 0.0f)
@@ -308,7 +476,7 @@ void Halo3ImpactNoteShotLine(uint32_t unit, const float origin[3], const float d
 
 // object_new returned `handle` for a projectile the fire routine placed (`placement*`: the block before the call).
 void Halo3ImpactNoteSpawn(int32_t handle, const float placementPos[3], const float placementFwd[3],
-                          const float placementVel[3])
+                          const float placementVel[3], uintptr_t fireRsp)
 {
     auto& fire = t_halo3ImpactFire;
     auto& w = g_halo3Impact;
@@ -316,12 +484,38 @@ void Halo3ImpactNoteSpawn(int32_t handle, const float placementPos[3], const flo
     float pos[3]{}, fwd[3]{}, vel[3]{};
     const bool read = handle != -1 && Halo3ImpactReadObject(static_cast<uint32_t>(handle), pos, fwd, vel);
     const bool proven = read && shot_impact::SpawnProven(placementPos, placementFwd, placementVel, pos, fwd, vel);
-    auto& window = w.windows[Halo3ImpactGroup(fire)];
     // A velocity still equal to the placement's has not had the projectile's initial speed added (its constructor
     // has not run inside object_new): its direction is not the round's. The tick reads give the line instead.
     const float added[3]{vel[0] - placementVel[0], vel[1] - placementVel[1], vel[2] - placementVel[2]};
-    const bool constructed = shot_lag::Length(added) > 1.0e-4f;
+    const float addedSpeed = shot_lag::Length(added);
+    const bool constructed = addedSpeed > 1.0e-4f;
+    // The constructor's speed, value-proven: what it added == (object scale) x (the tag's initial speed).
+    float scale = NAN, tagSpeed = NAN;
+    const bool speedRead = proven && constructed && Halo3ImpactReadRoundSpeed(static_cast<uint32_t>(handle), scale,
+                                                                                tagSpeed);
+    const bool speedAgrees = speedRead && shot_impact::SpeedAgrees(addedSpeed, scale, tagSpeed);
+    // The fire routine's inheritance, from its own frame (seated fires only: the on-foot lines stay as they were).
+    bool taken = false, ownerFlag = false;
+    float body[3]{}, occupant[3]{};
+    const bool frame = fire.seated && Halo3ImpactReadFireFrame(fireRsp, taken, body, occupant);
+    if (frame)
+        ownerFlag = Halo3ImpactOwnerFlag(Halo3WeaponOwner(g_halo3FiringWeapon));
+    // A seated round is judged against what the assist produced (the line our re-aim made it fly), else the shot line.
+    const auto& assist = t_halo3AssistShot;
+    const bool fromAssist = fire.seated && assist.lastValid && shot_lag::Finite3(assist.lastPost);
+    const uint64_t nowUs = Sight_NowUs();
     AcquireSRWLockExclusive(&w.lock);
+    int seat = -1;
+    auto& window = Halo3ImpactFireWindow(fire, nowUs, seat);
+    if (speedRead)
+    {
+        if (speedAgrees)
+            ++window.speedProven;
+        else
+            ++window.speedOff;
+        w.speeds.Note(fire.weaponDef, speedAgrees, scale * tagSpeed, nowUs);
+    }
+    const float velScale = w.units.Scale();
     if (!proven)
         ++window.unproven;
     else if (!fire.pointKnown)
@@ -330,13 +524,32 @@ void Halo3ImpactNoteSpawn(int32_t handle, const float placementPos[3], const flo
     {
         const shot_lag::IntentPoint& p = fire.point;
         const float* eyeVel = p.eyeVelValid ? p.eyeVel : nullptr;
+        if (frame)
+        {
+            // The placement's own velocity off its forward is exactly what the branch added (the rest of it lies
+            // along the forward: 0x368BD6..0x368C14).
+            float placedAlong = 0.0f;
+            const bool placedKnown =
+                shot_impact::LateralAlongTravel(placementVel, placementFwd, eyeVel, velScale, placedAlong);
+            window.AddInheritance(taken, ownerFlag, placedKnown, placedAlong);
+        }
         if (constructed)
-            window.AddSpawn(shot_impact::MeasureSpawn(fire.lineDir, fwd, vel, pos, p.point, eyeVel));
+        {
+            window.AddSpawn(shot_impact::MeasureSpawn(fromAssist ? assist.lastPost : fire.lineDir, fwd, vel, pos,
+                                                      p.point, eyeVel, velScale));
+            if (fromAssist)
+                ++window.fromAssist;
+        }
         else
             ++window.noInitialSpeed;
-        shot_impact::Tracked& t = w.tracker.Arm(Sight_NowUs());
+        shot_impact::Tracked& t = w.tracker.Arm(nowUs);
         t.handle = static_cast<uint32_t>(handle);
         t.group = static_cast<uint8_t>(Halo3ImpactGroup(fire));
+        t.seat = static_cast<int8_t>(seat);
+        t.seatOwnerDef = fire.seat.ownerDef;
+        t.seatWeaponDef = fire.seat.weaponDef;
+        t.seatOwnGun = fire.seat.ownGun;
+        t.lastUs = nowUs;
         memcpy(t.point, p.point, sizeof(t.point));
         memcpy(t.view, p.dir, sizeof(t.view));
         t.eyeVelValid = p.eyeVelValid;
@@ -365,10 +578,12 @@ __declspec(noinline) int32_t __fastcall Halo3ImpactObjectNewDetour(void* placeme
         const bool placed = ours && Halo3ImpactCopy3(static_cast<const uint8_t*>(placement) + w.placePos, placementPos) &&
                             Halo3ImpactCopy3(static_cast<const uint8_t*>(placement) + w.placeFwd, placementFwd) &&
                             Halo3ImpactCopy3(static_cast<const uint8_t*>(placement) + w.placeVel, placementVel);
+        // The fire routine's rsp at its call: our entry rsp holds its return address, its rsp is one slot above.
+        const uintptr_t fireRsp = reinterpret_cast<uintptr_t>(_AddressOfReturnAddress()) + sizeof(void*);
         if (w.original)
             result = w.original(placement);
         if (placed)
-            Halo3ImpactNoteSpawn(result, placementPos, placementFwd, placementVel);
+            Halo3ImpactNoteSpawn(result, placementPos, placementFwd, placementVel, fireRsp);
     }
     __finally
     {
@@ -437,7 +652,13 @@ void Halo3ImpactWitnessTick()
     {
         if (!t.armed)
             continue;
-        auto& window = w.windows[t.group & 3];
+        shot_impact::Window* tracked = Halo3ImpactTrackedWindow(t);
+        if (!tracked)
+        {
+            t.armed = false;   // its seat's window went to another seat: nothing left to credit
+            continue;
+        }
+        auto& window = *tracked;
         const float* eyeVel = t.eyeVelValid ? t.eyeVel : nullptr;
         float pos[3]{}, fwd[3]{}, vel[3]{};
         if (!Halo3ImpactReadObject(t.handle, pos, fwd, vel))
@@ -457,8 +678,16 @@ void Halo3ImpactWitnessTick()
             t.armed = false;
             continue;
         }
-        if (t.samples < shot_impact::Tracker::kSamples &&
-            (pos[0] != t.lastPos[0] || pos[1] != t.lastPos[1] || pos[2] != t.lastPos[2]))
+        const bool moved = pos[0] != t.lastPos[0] || pos[1] != t.lastPos[1] || pos[2] != t.lastPos[2];
+        if (moved)
+        {
+            // The stored velocity's unit: this step over the wall time since the last read, against the speed.
+            const float step[3]{pos[0] - t.lastPos[0], pos[1] - t.lastPos[1], pos[2] - t.lastPos[2]};
+            if (t.lastUs && nowUs > t.lastUs)
+                w.units.Add(shot_lag::Length(step), float(nowUs - t.lastUs) * 1.0e-6f, shot_lag::Length(t.lastVel));
+            t.lastUs = nowUs;
+        }
+        if (t.samples < shot_impact::Tracker::kSamples && moved)
         {
             ++t.samples;
             window.AddTick(shot_lag::MeasureShotLag(pos, vel, t.point, nullptr, eyeVel),
@@ -490,6 +719,60 @@ void Halo3ImpactNoteReticle(uint64_t serial, const float center[3], const float 
     r.rangeM = rangeM;
     r.hit = hit;
     ReleaseSRWLockExclusive(&r.lock);
+}
+
+// THE COMPENSATION (dev key seated_inherit_compensation, default 0; LegacySightReaimCrosshairQuery calls it for a
+// Halo 3 SEATED crosshair query it is about to re-aim through P). Inside the local seated fire's own assist only: the
+// fire routine has already decided the inheritance (its flag byte, 0x368BC8) and fetched the body velocity
+// (0x368BC3), and the shot line has reported the shooter's velocity (0x368B92), all in its frame; the round's speed
+// is the weapon's value-proven one (SpeedTable). Then `out` = the point that makes u(d) = d * Vp + inheritance point
+// at P from the shot's origin (shot_impact::CompensatedPoint), and the assist turns the shot toward it. False leaves
+// the re-aim through P exactly as before.
+bool Halo3SeatedInheritPoint(const float point[3], float out[3])
+{
+    auto& w = g_halo3Impact;
+    if (!g_config.seated_inherit_compensation || !w.ready.load(std::memory_order_acquire) || !point || !out)
+        return false;
+    const auto& shot = t_halo3AssistShot;
+    auto& fire = t_halo3ImpactFire;
+    if (!shot.active || !fire.open || !fire.local || !fire.seated)
+        return false;
+    bool taken = false;
+    float body[3]{}, occupant[3]{};
+    const bool frame = Halo3ImpactReadFireFrame(shot.fireRsp, taken, body, occupant);
+    float speed = 0.0f;
+    bool speedKnown = false;
+    if (frame && taken)
+    {
+        AcquireSRWLockShared(&w.lock);
+        speedKnown = w.speeds.Lookup(fire.weaponDef, speed);
+        ReleaseSRWLockShared(&w.lock);
+    }
+    float residual = NAN;
+    const bool applied = frame && taken && speedKnown &&
+                         shot_impact::CompensatedPoint(shot.origin, point, body, occupant, speed, out, &residual);
+    AcquireSRWLockExclusive(&w.lock);
+    if (!frame)
+        ++w.compNoFrame;
+    else if (!taken)
+        ++w.compNoInherit;
+    else if (!speedKnown)
+        ++w.compNoSpeed;
+    else if (!applied)
+        ++w.compNoSolution;
+    else
+    {
+        ++w.compApplied;
+        const float shift[3]{out[0] - point[0], out[1] - point[1], out[2] - point[2]};
+        const float mm = shot_lag::Length(shift) * shot_lag::kMmPerWu;
+        w.compShiftMmSum += mm;
+        w.compShiftMmMax = mm > w.compShiftMmMax ? mm : w.compShiftMmMax;
+        if (std::isfinite(residual) && residual > w.compResidualMax)
+            w.compResidualMax = residual;
+    }
+    ReleaseSRWLockExclusive(&w.lock);
+    fire.compensated = fire.compensated || applied;
+    return applied;
 }
 
 void Halo3ImpactNoteTrigger(bool pressed)
@@ -566,6 +849,145 @@ bool Halo3ImpactTypeNamed(uintptr_t slot, const char* name)
     {
         return false;
     }
+}
+
+// Does the type definition the table slot points at hold `function` among its first 0x100 bytes (its callbacks)?
+bool Halo3ImpactTypeHolds(uintptr_t slot, uintptr_t function)
+{
+    __try
+    {
+        const auto* definition = *reinterpret_cast<const uint8_t* const*>(slot);
+        if (!definition)
+            return false;
+        for (size_t at = 0; at < 0x100; at += sizeof(uintptr_t))
+            if (*reinterpret_cast<const uintptr_t*>(definition + at) == function)
+                return true;
+        return false;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return false;
+    }
+}
+
+template <typename T>
+T Halo3ImpactAt(uintptr_t address)
+{
+    T value{};
+    memcpy(&value, reinterpret_cast<const void*>(address), sizeof(T));
+    return value;
+}
+
+// THE FIRE ROUTINE'S FRAME (seated inheritance). Every displacement decoded from the bytes, each site unique and
+// inside the fire routine (pdata), and the three sites must name the same slots:
+//   prologue (the dual lane's pinned entry): 7 pushes, lea rbp, [rax+D]; mov eax, S; call __chkstk; sub rsp, rax
+//     -> rbp - rsp = 7*8 + S + D (0x100 in this build);
+//   0x368B89: lea r9, [rbp+V]; ...; call <the shot line>; mov eax, [rbx+F]; mov r15d, 1; shr eax, B
+//     -> the shooter's velocity output V (0x28) and the owner flag F bit B (+0xA8, bit 3);
+//   0x368BAE: lea rdx, [rbp+Y]; call <body velocity>; mov [rsp+G], r15b; test al, al; jne; mov [rsp+G], dil
+//     -> the body velocity Y (0x98) and the inheritance flag G (0x45);
+//   0x369419: cmp [rsp+G], dil; je; movss xmm3, [rbp+Y+4]; movss xmm2, [rbp+Y]; ...; movss xmm4, [rbp+Y+8]
+//     -> the consumer reads the same flag and the same three floats.
+void Halo3ImpactProveFrame(uintptr_t base, size_t size, uintptr_t fireEntry)
+{
+    auto& w = g_halo3Impact;
+    w.frameProven = false;
+    static constexpr char kOccupant[] =
+        "4C 8D 4D ?? 4C 89 5C 24 20 E8 ?? ?? ?? ?? 8B 83 ?? ?? 00 00 41 BF 01 00 00 00 C1 E8 ??";
+    static constexpr char kBody[] =
+        "40 88 7C 24 20 4C 8D 85 ?? ?? 00 00 8B CE 48 8D 95 ?? ?? 00 00 E8 ?? ?? ?? ?? 44 88 7C 24 ?? 84 C0 75 05 40 "
+        "88 7C 24 ??";
+    static constexpr char kConsumer[] =
+        "40 38 7C 24 ?? 0F 84 ?? ?? ?? ?? F3 0F 10 9D ?? ?? 00 00 F3 0F 10 95 ?? ?? 00 00 0F 28 EB F3 0F 10 A5 ?? ?? 00 "
+        "00";
+    const uintptr_t occupant = Halo3ImpactUnique(base, size, kOccupant);
+    const uintptr_t body = Halo3ImpactUnique(base, size, kBody);
+    const uintptr_t consumer = Halo3ImpactUnique(base, size, kConsumer);
+    const auto* p = reinterpret_cast<const uint8_t*>(fireEntry);
+    static constexpr uint8_t kPushes[]{0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57};
+    const bool prologue = fireEntry && memcmp(p + 18, kPushes, sizeof(kPushes)) == 0 && p[29] == 0x48 &&
+                          p[30] == 0x8D && p[31] == 0xA8 && p[36] == 0xB8 && p[41] == 0xE8 && p[46] == 0x48 &&
+                          p[47] == 0x2B && p[48] == 0xE0;
+    const bool sites = occupant && body && consumer && Halo3ImpactFunctionOf(occupant) == fireEntry &&
+                       Halo3ImpactFunctionOf(body) == fireEntry && Halo3ImpactFunctionOf(consumer) == fireEntry;
+    if (!prologue || !sites)
+    {
+        LOG("SHOT IMPACT Halo 3 witness: the fire routine's frame did not prove (prologue %d, sites %d/%d/%d inside it "
+            "%d); seated rounds are measured without their inheritance, and the compensation stays off",
+            prologue ? 1 : 0, occupant ? 1 : 0, body ? 1 : 0, consumer ? 1 : 0, sites ? 1 : 0);
+        return;
+    }
+    const int64_t rbpFromEntry = Halo3ImpactAt<int32_t>(fireEntry + 32);
+    const int64_t frame = Halo3ImpactAt<uint32_t>(fireEntry + 37);
+    const int64_t delta = 7 * 8 + frame + rbpFromEntry;
+    // The shot line the occupant site calls must be the dual lane's (0x3524B0).
+    const uintptr_t lineCall = occupant + 14 + static_cast<intptr_t>(Halo3ImpactAt<int32_t>(occupant + 10));
+    const uint8_t occupantDisp = Halo3ImpactAt<uint8_t>(occupant + 3);
+    const uint32_t ownerFlagDisp = Halo3ImpactAt<uint32_t>(occupant + 16);
+    const uint8_t ownerBit = Halo3ImpactAt<uint8_t>(occupant + 28);
+    const uint32_t bodyDisp = Halo3ImpactAt<uint32_t>(body + 17);
+    const uint8_t flag = Halo3ImpactAt<uint8_t>(body + 30);
+    const bool agree = Halo3ImpactAt<uint8_t>(body + 39) == flag && Halo3ImpactAt<uint8_t>(consumer + 4) == flag &&
+                       Halo3ImpactAt<uint32_t>(consumer + 23) == bodyDisp &&
+                       Halo3ImpactAt<uint32_t>(consumer + 15) == bodyDisp + 4 &&
+                       Halo3ImpactAt<uint32_t>(consumer + 34) == bodyDisp + 8 &&
+                       lineCall == reinterpret_cast<uintptr_t>(g_halo3Dual.aimTarget) && occupantDisp < 0x80 &&
+                       ownerBit < 32 && delta > 0 && delta < 0x1000 && bodyDisp < 0x1000 && ownerFlagDisp < 0x1000;
+    if (!agree)
+    {
+        LOG("SHOT IMPACT Halo 3 witness: the fire routine's frame sites disagree (flag +0x%X, body +0x%X, rbp-rsp "
+            "0x%llX, shot line call %s); seated inheritance unmeasured, compensation off", flag, bodyDisp,
+            static_cast<long long>(delta), lineCall == reinterpret_cast<uintptr_t>(g_halo3Dual.aimTarget) ? "ok" : "MOVED");
+        return;
+    }
+    w.rbpDelta = static_cast<uint32_t>(delta);
+    w.flagDisp = flag;
+    w.bodyDisp = bodyDisp;
+    w.occupantDisp = occupantDisp;
+    w.ownerFlagDisp = ownerFlagDisp;
+    w.ownerFlagBit = ownerBit;
+    w.frameProven = true;
+    LOG("SHOT IMPACT Halo 3 witness (dev): the fire routine's frame: rbp = rsp + 0x%X; inheritance flag [rsp+0x%X], body "
+        "velocity [rbp+0x%X] (+0x%llX/+0x%llX/+0x%llX), shooter velocity [rbp+0x%X], owner flag +0x%X bit %u",
+        w.rbpDelta, flag, bodyDisp, static_cast<unsigned long long>(body - base),
+        static_cast<unsigned long long>(consumer - base), static_cast<unsigned long long>(occupant - base),
+        occupantDisp, ownerFlagDisp, ownerBit);
+}
+
+// THE ROUND'S SPEED. The projectile constructor (a callback of the "projectile" type definition) adds
+//   forward x (object +S) x (tag +T)
+// to the object's velocity: 0x384E98 `movss xmm3, [rbx+S]` (S = 0x1B8), 0x384FA0 `mulss xmm3, [r9+T]` (T = 0x23C, r9 =
+// the projectile's tag, the instance-table walk of Halo3LoadedTagDefinition) followed by the forward x/velocity x
+// multiply-add, whose displacements must be the object's forward and velocity the placement copy proved. Every round
+// then re-proves it (SpeedAgrees).
+void Halo3ImpactProveSpeed(uintptr_t base, size_t size, uintptr_t typeSlot)
+{
+    auto& w = g_halo3Impact;
+    w.speedAnchors = false;
+    static constexpr char kScale[] = "F3 0F 10 9B ?? ?? 00 00 0F 28 C3 41 B8 C8 00 00 00 F3 0F 59 C4 F3 0F 11 83";
+    static constexpr char kSpeed[] =
+        "F3 41 0F 59 99 ?? ?? 00 00 48 8D 53 1C 66 44 89 64 24 ?? B1 01 0F 57 D2 0F 28 C3 0F 28 CB F3 0F 59 43 ?? F3 "
+        "0F 58 43 ?? F3 0F 11 43 ??";
+    const uintptr_t scale = Halo3ImpactUnique(base, size, kScale);
+    const uintptr_t speed = Halo3ImpactUnique(base, size, kSpeed);
+    const uintptr_t constructor = speed ? Halo3ImpactFunctionOf(speed) : 0;
+    const bool ok = scale && speed && constructor && Halo3ImpactFunctionOf(scale) == constructor &&
+                    Halo3ImpactTypeHolds(typeSlot, constructor) &&
+                    Halo3ImpactAt<uint8_t>(speed + 34) == w.objFwd && Halo3ImpactAt<uint8_t>(speed + 39) == w.objVel &&
+                    Halo3ImpactAt<uint8_t>(speed + 44) == w.objVel;
+    if (!ok)
+    {
+        LOG("SHOT IMPACT Halo 3 witness: the round's speed did not prove (scale %d, speed %d, one function %d, the "
+            "projectile type's constructor %d); no speed check, compensation off", scale ? 1 : 0, speed ? 1 : 0,
+            constructor && scale && Halo3ImpactFunctionOf(scale) == constructor ? 1 : 0,
+            constructor && Halo3ImpactTypeHolds(typeSlot, constructor) ? 1 : 0);
+        return;
+    }
+    w.scaleDisp = Halo3ImpactAt<uint32_t>(scale + 4);
+    w.tagSpeedDisp = Halo3ImpactAt<uint32_t>(speed + 5);
+    w.speedAnchors = w.scaleDisp < 0x1000 && w.tagSpeedDisp < 0x1000;
+    LOG("SHOT IMPACT Halo 3 witness (dev): the round's speed = object +0x%X x tag +0x%X (constructor +0x%llX)",
+        w.scaleDisp, w.tagSpeedDisp, static_cast<unsigned long long>(constructor - base));
 }
 } // namespace
 
@@ -646,12 +1068,20 @@ void InstallHalo3ImpactWitness(uintptr_t base, size_t size)
     w.objFwd = objFwd;
     w.objVel = objVel;
     w.projectileType = projectileType;
+    // Optional halves (each fails closed alone): the fire's frame (seated inheritance, the compensation) and the
+    // round's speed (its check, the compensation).
+    Halo3ImpactProveFrame(base, size, fireEntry);
+    Halo3ImpactProveSpeed(base, size, base + tableRva + projectileType * 8u);
     AcquireSRWLockExclusive(&w.lock);
     w.tracker = shot_impact::Tracker{};
     for (auto& window : w.windows)
         window = shot_impact::Window{};
+    w.seats = shot_impact::SeatWindows{};
+    w.speeds = shot_impact::SpeedTable{};
     w.reticle = shot_impact::ReticleWindow{};
     w.trigger = shot_impact::TriggerLatch{};
+    w.compApplied = w.compNoInherit = w.compNoSpeed = w.compNoFrame = w.compNoSolution = 0;
+    w.compShiftMmSum = w.compShiftMmMax = w.compResidualMax = 0.0f;
     w.armed.store(0, std::memory_order_release);
     ReleaseSRWLockExclusive(&w.lock);
     void* const target = reinterpret_cast<void*>(entry);
@@ -682,14 +1112,41 @@ void Halo3ImpactWitnessReport()
 {
     auto& w = g_halo3Impact;
     shot_impact::Window windows[4];
+    shot_impact::Window seatWindows[shot_impact::SeatWindows::kSeats];
+    shot_impact::SeatKey seatKeys[shot_impact::SeatWindows::kSeats];
+    bool seatUsed[shot_impact::SeatWindows::kSeats]{};
     shot_impact::ReticleWindow reticle;
-    uint32_t nested = 0, through = 0, off = 0, evicted = 0;
+    uint32_t nested = 0, through = 0, off = 0, evicted = 0, seatsDropped = 0;
+    uint32_t compApplied = 0, compNoInherit = 0, compNoSpeed = 0, compNoFrame = 0, compNoSolution = 0;
+    float compShiftSum = 0.0f, compShiftMax = 0.0f, compResidualMax = 0.0f;
+    shot_impact::UnitsTrack units;
     AcquireSRWLockExclusive(&w.lock);
     for (int g = 0; g < 4; ++g)
     {
         windows[g] = w.windows[g];
         w.windows[g] = shot_impact::Window{};
     }
+    for (int s = 0; s < shot_impact::SeatWindows::kSeats; ++s)
+    {
+        // The seat keeps its slot (a round in flight still credits it); only its counts start over.
+        seatUsed[s] = w.seats.used[s];
+        seatKeys[s] = w.seats.key[s];
+        seatWindows[s] = w.seats.window[s];
+        w.seats.window[s] = shot_impact::Window{};
+    }
+    seatsDropped = w.seats.dropped;
+    w.seats.dropped = 0;
+    compApplied = w.compApplied;
+    compNoInherit = w.compNoInherit;
+    compNoSpeed = w.compNoSpeed;
+    compNoFrame = w.compNoFrame;
+    compNoSolution = w.compNoSolution;
+    compShiftSum = w.compShiftMmSum;
+    compShiftMax = w.compShiftMmMax;
+    compResidualMax = w.compResidualMax;
+    w.compApplied = w.compNoInherit = w.compNoSpeed = w.compNoFrame = w.compNoSolution = 0;
+    w.compShiftMmSum = w.compShiftMmMax = w.compResidualMax = 0.0f;
+    units = w.units;
     reticle = w.reticle;
     w.reticle = shot_impact::ReticleWindow{};
     nested = w.nested;
@@ -705,6 +1162,30 @@ void Halo3ImpactWitnessReport()
     for (int g = 0; g < 4; ++g)
         if (windows[g].Format(kLabels[g], line, sizeof(line)))
             LOG("%s", line);
+    bool seatedAny = false;
+    for (int s = 0; s < shot_impact::SeatWindows::kSeats; ++s)
+    {
+        if (!seatUsed[s])
+            continue;
+        char label[128]{};
+        std::snprintf(label, sizeof(label), "Halo 3 SEATED [gun owner def 0x%08X, weapon def 0x%08X, %s]",
+                      seatKeys[s].ownerDef, seatKeys[s].weaponDef,
+                      seatKeys[s].ownGun ? "his own weapon" : "the vehicle's gun");
+        if (seatWindows[s].Format(label, line, sizeof(line)))
+        {
+            LOG("%s", line);
+            seatedAny = true;
+        }
+    }
+    if (seatedAny || compApplied || compNoInherit || compNoSpeed || compNoFrame || compNoSolution || seatsDropped)
+        LOG("SHOT IMPACT Halo 3 seated (dev): velocity unit %.2f wu/s per stored unit (%u steps%s); compensation key %d: "
+            "applied %u (P moved mean %.0f max %.0f mm, residual max %.4f deg), no inheritance %u, no proven speed %u, "
+            "frame unproven %u, no solution %u; seats dropped %u",
+            static_cast<double>(units.Scale()), units.samples, units.Known() ? "" : ", NOT YET KNOWN: speeds read as wu/s",
+            g_config.seated_inherit_compensation, compApplied,
+            compApplied ? static_cast<double>(compShiftSum / static_cast<float>(compApplied)) : 0.0,
+            static_cast<double>(compShiftMax), static_cast<double>(compResidualMax), compNoInherit, compNoSpeed,
+            compNoFrame, compNoSolution, seatsDropped);
     if (reticle.Format("Halo 3", line, sizeof(line)))
         LOG("%s; our muzzle line through P %u, off it %u%s", line, through, off,
             nested || evicted ? " (nested fires or evicted projectiles: see below)" : "");

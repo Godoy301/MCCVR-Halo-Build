@@ -147,11 +147,14 @@ struct Spawn
     float tofMs = 0.0f;               // range / speed
 };
 
-// `requested`: the direction we handed the game (any length). `forward`, `velocity` (wu/s), `spawn`: the object's.
-// `point`: P. `eyeVel`: the engine eye's velocity (wu/s), may be null.
+// `requested`: the direction we handed the game (any length). `forward`, `velocity` (object units), `spawn`: the
+// object's. `point`: P. `eyeVel`: the engine eye's velocity (wu/s), may be null. `velScale`: wu/s per object velocity
+// unit (UnitsTrack; 1 when the object stores wu/s) -- only the speeds and ratios depend on it, never a direction.
 inline Spawn MeasureSpawn(const float requested[3], const float forward[3], const float velocity[3],
-                          const float spawn[3], const float point[3], const float* eyeVel)
+                          const float spawn[3], const float point[3], const float* eyeVel, float velScale = 1.0f)
 {
+    if (!std::isfinite(velScale) || !(velScale > 0.0f))
+        velScale = 1.0f;
     Spawn s{};
     if (!Finite3(requested) || !Finite3(forward) || !Finite3(velocity) || !Finite3(spawn) || !Finite3(point))
         return s;
@@ -168,10 +171,10 @@ inline Spawn MeasureSpawn(const float requested[3], const float forward[3], cons
     s.turnDeg = AngleDeg(d, f);
     const float turnOffset[3]{(f[0] - d[0]) * range, (f[1] - d[1]) * range, (f[2] - d[2]) * range};
     s.turn = Decompose(turnOffset, d, eyeVel);
-    s.speedMps = vl * kMetresPerWu;
+    s.speedMps = vl * velScale * kMetresPerWu;
     const float va = Dot(velocity, f);
     const float lateral[3]{velocity[0] - f[0] * va, velocity[1] - f[1] * va, velocity[2] - f[2] * va};
-    s.lateralMps = Length(lateral) * kMetresPerWu;
+    s.lateralMps = Length(lateral) * velScale * kMetresPerWu;
     s.driftAngleDeg = AngleDeg(f, velocity);
     if (eyeVel && Finite3(eyeVel))
     {
@@ -182,7 +185,7 @@ inline Spawn MeasureSpawn(const float requested[3], const float forward[3], cons
         {
             const float deviation[3]{velocity[0] - d[0] * vl, velocity[1] - d[1] * vl, velocity[2] - d[2] * vl};
             s.deviationTravel = true;
-            s.deviationAlongMps = Dot(deviation, edp) / edpl * kMetresPerWu;
+            s.deviationAlongMps = Dot(deviation, edp) / edpl * velScale * kMetresPerWu;
         }
         const float ea = Dot(eyeVel, f);
         const float ep[3]{eyeVel[0] - f[0] * ea, eyeVel[1] - f[1] * ea, eyeVel[2] - f[2] * ea};
@@ -191,12 +194,12 @@ inline Spawn MeasureSpawn(const float requested[3], const float forward[3], cons
         {
             s.lateralTravel = true;
             const float t[3]{ep[0] / epl, ep[1] / epl, ep[2] / epl};
-            s.lateralAlongMps = Dot(lateral, t) * kMetresPerWu;
+            s.lateralAlongMps = Dot(lateral, t) * velScale * kMetresPerWu;
             // A ratio from under 1 m/s of travel is noise.
             if (epl * kMetresPerWu >= 1.0f)
             {
                 s.inheritKnown = true;
-                s.inheritRatio = Dot(lateral, t) / epl;
+                s.inheritRatio = Dot(lateral, t) * velScale / epl;
             }
         }
     }
@@ -256,7 +259,13 @@ struct Tracked
     bool eyeVelValid = false;
     float spawnPos[3]{}, spawnVel[3]{};
     float lastPos[3]{}, lastVel[3]{};
+    uint64_t lastUs = 0;
     float impactPos[3]{};
+    // A seated round: its seat window (SeatWindows index) and that seat's identity, so a window that was reassigned
+    // meanwhile is never credited with it. seat < 0: on foot (group).
+    int8_t seat = -1;
+    uint32_t seatOwnerDef = UINT32_MAX, seatWeaponDef = UINT32_MAX;
+    bool seatOwnGun = false;
 };
 
 struct Tracker
@@ -307,6 +316,13 @@ struct Window
     uint32_t fires = 0, projectiles = 0, maxPerFire = 0, firesWithout = 0;
     uint32_t unproven = 0, noPoint = 0, unmeasured = 0;
     uint32_t noInitialSpeed = 0;   // the object's velocity had no initial speed yet at spawn (lines from ticks only)
+    // The fire routine's inheritance (read from the fire's own frame and placement block):
+    uint32_t inheritChecked = 0, inheritTaken = 0, ownerFlag = 0;   // fires read; branch taken; owner flag set
+    uint32_t placedTravel = 0;
+    float placedAlongSum = 0.0f;      // the placement's velocity off its forward, along travel (m/s): the inheritance
+    uint32_t fromAssist = 0;          // spawns judged against the assist's output (else the shot line)
+    uint32_t speedProven = 0, speedOff = 0;   // the constructor's added speed == scale x the tag's initial speed
+    uint32_t compensated = 0;         // fires whose query aimed through the compensated point
     // spawn: the line(S, velocity) against P, per eye-speed bucket
     uint32_t n[kBuckets]{};
     float missSum[kBuckets]{}, alongSum[kBuckets]{}, acrossSum[kBuckets]{};
@@ -431,6 +447,18 @@ struct Window
         impactCaller = caller;
     }
 
+    void AddInheritance(bool taken, bool ownerFlagSet, bool placedKnown, float placedAlongMps)
+    {
+        ++inheritChecked;
+        inheritTaken += taken ? 1u : 0u;
+        ownerFlag += ownerFlagSet ? 1u : 0u;
+        if (placedKnown && std::isfinite(placedAlongMps))
+        {
+            ++placedTravel;
+            placedAlongSum += placedAlongMps;
+        }
+    }
+
     bool Empty() const { return !fires && !projectiles && !unproven && !impacts && !goneWithoutImpact && !expired; }
 
     // "SHOT IMPACT <label> (dev): ..." -- the whole line. Returns the characters written (0: nothing to report).
@@ -503,6 +531,18 @@ struct Window
                 put(", along travel %+.0f mm", mean(impactAlongSum, impactTravel));
             put(" (query +0x%X)", impactCaller);
         }
+        if (inheritChecked)
+        {
+            put("; INHERITANCE branch taken %u/%u (owner flag %u)", inheritTaken, inheritChecked, ownerFlag);
+            if (placedTravel)
+                put(", placed sideways along travel %+.2f m/s", mean(placedAlongSum, placedTravel));
+        }
+        if (fromAssist)
+            put("; judged against the assist's output %u", fromAssist);
+        if (speedProven || speedOff)
+            put("; round speed = scale x tag initial speed %u, off %u", speedProven, speedOff);
+        if (compensated)
+            put("; compensated %u", compensated);
         put("; gone without a matched hit %u (%u before a tick), expired %u", goneWithoutImpact, goneBeforeTick,
             expired);
         return used;
@@ -670,5 +710,262 @@ inline bool TrackingDirToWorld(const float dir[3], float gameYawRef, float headY
     out[2] = std::sin(pitch);
     return Finite3(out);
 }
+
+// ---- 8. the inherited velocity, and the aim that allows for it ---------------------------------------------------
+// `velocity`'s part off `forward`, along the travel axis (the eye's velocity with its forward part removed), in m/s
+// (velScale: wu/s per stored unit). False without a travel axis (under 5 cm/s across the forward) or on bad input.
+inline bool LateralAlongTravel(const float velocity[3], const float forward[3], const float* eyeVel, float velScale,
+                               float& outMps)
+{
+    if (!Finite3(velocity) || !Finite3(forward) || !eyeVel || !Finite3(eyeVel) || !std::isfinite(velScale) ||
+        !(velScale > 0.0f))
+        return false;
+    const float fl = Length(forward);
+    if (!(fl > 1.0e-6f))
+        return false;
+    const float f[3]{forward[0] / fl, forward[1] / fl, forward[2] / fl};
+    const float va = Dot(velocity, f), ea = Dot(eyeVel, f);
+    const float lateral[3]{velocity[0] - f[0] * va, velocity[1] - f[1] * va, velocity[2] - f[2] * va};
+    const float ep[3]{eyeVel[0] - f[0] * ea, eyeVel[1] - f[1] * ea, eyeVel[2] - f[2] * ea};
+    const float epl = Length(ep);
+    if (!std::isfinite(epl) || !(epl * kMetresPerWu > 0.05f))
+        return false;
+    outMps = Dot(lateral, ep) / epl * velScale * kMetresPerWu;
+    return std::isfinite(outMps);
+}
+
+// The fire routine's model of a round's velocity (retail halo3.dll; game.cpp halo3_impact_witness.inl): the placement
+// velocity is d * max(0, vo . d) (vo: the shooter's velocity as the shot line reports it, 0x368BD6..0x368C14), plus,
+// when the inheritance branch is taken (0x369419..0x3694AF), the body velocity vb with its part along d removed; the
+// projectile's constructor (0x384D3C) then adds d * Vp. So
+//   u(d) = d * (Vp + max(0, vo . d)) + (vb - d (vb . d)).
+// Object velocity units throughout (the caller's choice: they only have to agree). `vb`/`vo` may be null (zero).
+inline void RoundVelocity(const float d[3], const float* vb, const float* vo, float speed, float out[3])
+{
+    const float along = vo ? Dot(vo, d) : 0.0f;
+    const float s = speed + (along > 0.0f ? along : 0.0f);
+    const float b = vb ? Dot(vb, d) : 0.0f;
+    for (int axis = 0; axis < 3; ++axis)
+        out[axis] = d[axis] * s + (vb ? vb[axis] - d[axis] * b : 0.0f);
+}
+
+// The direction d whose round velocity u(d) points along `e` (the shot origin toward P). Fixed point on the sideways
+// part: with p = vb - d (vb . d) frozen, d * s + p = lambda * e has the closed form
+//   lambda = e.p + sqrt((e.p)^2 - |p|^2 + s^2),  d = (lambda e - p) / s,
+// and p is re-evaluated at the new d. It converges in a few steps while |vb| << Vp (every gun's case). False (out
+// untouched) without a solution: a non-finite input, no speed, a sideways velocity at least the round's speed, or a
+// residual over maxResidualDeg after the iterations. `residualDeg` / `iterations` report the final step.
+inline bool SolveInheritedAim(const float e[3], const float vb[3], const float* vo, float speed, float out[3],
+                              float* residualDeg = nullptr, int* iterations = nullptr, float maxResidualDeg = 0.01f)
+{
+    if (!Finite3(e) || !Finite3(vb) || (vo && !Finite3(vo)) || !std::isfinite(speed) || !(speed > 0.0f) || !out)
+        return false;
+    const float el = Length(e);
+    if (!(el > 1.0e-6f))
+        return false;
+    const float u[3]{e[0] / el, e[1] / el, e[2] / el};
+    float d[3]{u[0], u[1], u[2]};
+    float residual = NAN;
+    int n = 0;
+    while (n < 16)
+    {
+        ++n;
+        const float along = vo ? Dot(vo, d) : 0.0f;
+        const float s = speed + (along > 0.0f ? along : 0.0f);
+        const float b = Dot(vb, d);
+        const float p[3]{vb[0] - d[0] * b, vb[1] - d[1] * b, vb[2] - d[2] * b};
+        const float ep = Dot(u, p);
+        const float disc = ep * ep - Dot(p, p) + s * s;
+        if (!std::isfinite(disc) || !(disc > 0.0f))
+            return false;
+        const float lambda = ep + std::sqrt(disc);
+        float next[3]{(lambda * u[0] - p[0]) / s, (lambda * u[1] - p[1]) / s, (lambda * u[2] - p[2]) / s};
+        const float nl = Length(next);
+        if (!std::isfinite(nl) || !(nl > 1.0e-6f))
+            return false;
+        for (int axis = 0; axis < 3; ++axis)
+            next[axis] /= nl;
+        const float step = AngleDeg(d, next);
+        d[0] = next[0];
+        d[1] = next[1];
+        d[2] = next[2];
+        float velocity[3]{};
+        RoundVelocity(d, vb, vo, speed, velocity);
+        residual = AngleDeg(velocity, u);
+        if (!(step >= 1.0e-5f))   // converged (or a NaN step: the residual below decides)
+            break;
+    }
+    if (residualDeg)
+        *residualDeg = residual;
+    if (iterations)
+        *iterations = n;
+    if (!std::isfinite(residual) || residual > maxResidualDeg || Dot(d, u) <= 0.0f)
+        return false;
+    out[0] = d[0];
+    out[1] = d[1];
+    out[2] = d[2];
+    return true;
+}
+
+// The point the crosshair query is re-aimed through so the assist turns the shot from `origin` along the solved d:
+// origin + d * |P - origin| (the same range as P, so the traced surface is met beside P, not in front or behind).
+inline bool CompensatedPoint(const float origin[3], const float point[3], const float vb[3], const float* vo,
+                             float speed, float out[3], float* residualDeg = nullptr)
+{
+    if (!Finite3(origin) || !Finite3(point) || !out)
+        return false;
+    const float e[3]{point[0] - origin[0], point[1] - origin[1], point[2] - origin[2]};
+    const float range = Length(e);
+    if (!std::isfinite(range) || !(range > 1.0e-3f))
+        return false;
+    float d[3]{};
+    if (!SolveInheritedAim(e, vb, vo, speed, d, residualDeg))
+        return false;
+    for (int axis = 0; axis < 3; ++axis)
+        out[axis] = origin[axis] + d[axis] * range;
+    return Finite3(out);
+}
+
+// ---- 9. the object velocity's unit, measured ---------------------------------------------------------------------
+// Blam objects may store velocity per second or per tick. A tracked round's position step between two reads, over
+// the wall time between them, against its stored speed, says which: the ratio is wu/s per stored unit (1 for wu/s,
+// the tick rate for wu/tick). Steps under 5 ms or over 100 ms apart, or rounds slower than 1e-3 stored units, are
+// noise; the scale is trusted after 8 samples.
+struct UnitsTrack
+{
+    uint32_t samples = 0;
+    float ratioSum = 0.0f;
+    void Add(float stepWu, float dtS, float storedSpeed)
+    {
+        if (!std::isfinite(stepWu) || !std::isfinite(dtS) || !std::isfinite(storedSpeed) || dtS < 0.005f ||
+            dtS > 0.1f || !(storedSpeed > 1.0e-3f))
+            return;
+        const float ratio = stepWu / dtS / storedSpeed;
+        if (!std::isfinite(ratio) || ratio <= 0.0f || ratio > 1000.0f)
+            return;
+        ++samples;
+        ratioSum += ratio;
+    }
+    bool Known() const { return samples >= 8; }
+    float Scale() const { return Known() ? ratioSum / float(samples) : 1.0f; }
+};
+
+// ---- 10. a weapon's round speed, value-proven --------------------------------------------------------------------
+// The constructor adds d * (scale x the projectile tag's initial speed); the witness proves that product against the
+// speed it actually added to the object, and keeps it per firing weapon definition for the compensation (which runs
+// before the round exists). A weapon whose round disagrees is forgotten.
+inline bool SpeedAgrees(float added, float scale, float tagSpeed)
+{
+    if (!std::isfinite(added) || !std::isfinite(scale) || !std::isfinite(tagSpeed) || !(added > 0.0f))
+        return false;
+    const float expected = scale * tagSpeed;
+    return std::fabs(added - expected) <= 1.0e-3f * added + 1.0e-4f;
+}
+struct SpeedTable
+{
+    static constexpr int kSlots = 8;
+    static constexpr uint32_t kProof = 2;   // rounds that must agree before the speed is used
+    struct Entry
+    {
+        uint32_t weaponDef = UINT32_MAX;
+        float speed = 0.0f;
+        uint32_t proven = 0;
+        uint64_t atUs = 0;
+    } entry[kSlots]{};
+    void Note(uint32_t weaponDef, bool agrees, float speed, uint64_t nowUs)
+    {
+        if (weaponDef == UINT32_MAX)
+            return;
+        int slot = -1, oldest = 0;
+        for (int i = 0; i < kSlots; ++i)
+        {
+            if (entry[i].weaponDef == weaponDef)
+                slot = i;
+            if (entry[i].atUs < entry[oldest].atUs)
+                oldest = i;
+        }
+        const bool usable = agrees && std::isfinite(speed) && speed > 0.0f;
+        if (slot < 0)
+        {
+            if (!usable)
+                return;
+            slot = oldest;
+            entry[slot] = Entry{};
+            entry[slot].weaponDef = weaponDef;
+        }
+        Entry& e = entry[slot];
+        if (!usable || (e.proven && std::fabs(e.speed - speed) > 1.0e-3f * speed))
+        {
+            e = Entry{};   // a disagreeing round (or a new speed): start the proof over
+            if (usable)
+            {
+                e.weaponDef = weaponDef;
+                e.speed = speed;
+                e.proven = 1;
+                e.atUs = nowUs;
+            }
+            return;
+        }
+        e.atUs = nowUs;
+        e.speed = speed;
+        ++e.proven;
+    }
+    bool Lookup(uint32_t weaponDef, float& speed) const
+    {
+        for (const auto& e : entry)
+            if (weaponDef != UINT32_MAX && e.weaponDef == weaponDef && e.proven >= kProof)
+            {
+                speed = e.speed;
+                return true;
+            }
+        return false;
+    }
+};
+
+// ---- 11. per seat ------------------------------------------------------------------------------------------------
+// A seat's window, keyed by the gun's owner definition (the vehicle or turret; the unit itself for a passenger's own
+// weapon) and the weapon definition. Full: the least recently used is dropped (its counts with it).
+struct SeatKey
+{
+    uint32_t ownerDef = UINT32_MAX, weaponDef = UINT32_MAX;
+    bool ownGun = false;   // the gun's owner is the occupant itself (a passenger's personal weapon)
+    bool operator==(const SeatKey& o) const
+    {
+        return ownerDef == o.ownerDef && weaponDef == o.weaponDef && ownGun == o.ownGun;
+    }
+};
+struct SeatWindows
+{
+    static constexpr int kSeats = 4;
+    SeatKey key[kSeats]{};
+    bool used[kSeats]{};
+    uint64_t lastUs[kSeats]{};
+    Window window[kSeats]{};
+    uint32_t dropped = 0;
+    int Index(const SeatKey& k, uint64_t nowUs)
+    {
+        int free = -1, oldest = 0;
+        for (int i = 0; i < kSeats; ++i)
+        {
+            if (used[i] && key[i] == k)
+            {
+                lastUs[i] = nowUs;
+                return i;
+            }
+            if (!used[i] && free < 0)
+                free = i;
+            if (lastUs[i] < lastUs[oldest])
+                oldest = i;
+        }
+        const int slot = free >= 0 ? free : oldest;
+        if (free < 0)
+            ++dropped;
+        used[slot] = true;
+        key[slot] = k;
+        lastUs[slot] = nowUs;
+        window[slot] = Window{};
+        return slot;
+    }
+};
 
 } // namespace shot_impact

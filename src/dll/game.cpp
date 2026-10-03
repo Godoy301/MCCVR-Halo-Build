@@ -2016,6 +2016,7 @@ namespace
     void Halo3ImpactNoteReticle(uint64_t serial, const float center[3], const float dir[3], float rangeM, bool hit);
     void Halo3ImpactNoteTrigger(bool pressed);
     void Halo3ImpactWitnessReport();
+    bool Halo3SeatedInheritPoint(const float point[3], float out[3]);
 #endif
     bool DisableAndRemoveHalo3ContactMelee();
     void ReportHalo3ContactMelee();

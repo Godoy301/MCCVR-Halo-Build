@@ -1289,6 +1289,7 @@ void ConfigLoad(const wchar_t* path)
         if (!strcmp(key, "reach_collision_census")) { g_config.reach_collision_census=atoi(val); continue; }
         if (!strcmp(key, "sight_ray_census")) { g_config.sight_ray_census=atoi(val); continue; }
         if (!strcmp(key, "halo4_seat_converge")) { g_config.halo4_seat_converge=atoi(val)!=0?1:0; continue; }
+        if (!strcmp(key, "seated_inherit_compensation")) { g_config.seated_inherit_compensation=atoi(val)!=0?1:0; continue; }
         if (!strcmp(key, "honest_reticle_assess"))
         {
             const int v = atoi(val);
@@ -2196,6 +2197,9 @@ void ConfigSave()
     fprintf(f, "# DEV BUILD ONLY. Halo 4 seated convergence (stage 1): 1 = a seat converges like Halo 3's while\n");
     fprintf(f, "# every proof holds, and stays converged where the native assist cannot bring the shot on. 0 = seats as before.\n");
     fprintf(f, "halo4_seat_converge = %d\n\n", g_config.halo4_seat_converge);
+    fprintf(f, "# DEV BUILD ONLY. Halo 3 seated shots: 1 = aim so the round, which inherits its vehicle's sideways\n");
+    fprintf(f, "# velocity, still flies at the reticle's point. 0 = aim straight at it (rounds lead along your travel).\n");
+    fprintf(f, "seated_inherit_compensation = %d\n\n", g_config.seated_inherit_compensation);
     fprintf(f, "# DEV BUILD ONLY. Assessment: a second marker showing where the game's shot lands; your normal reticle\n");
     fprintf(f, "# is unchanged. A small magenta ring and dot, along the game's own aim from its own shot origin (Reach on\n");
     fprintf(f, "# foot: the unit's projectile aim, not the camera), to see how far the game trails the hand. Draws only;\n");
