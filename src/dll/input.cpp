@@ -36,6 +36,8 @@
 // Game_ComputeAimStick. If no physical gamepad is plugged in, a connected one
 // is fabricated. The game then runs all input through its normal sensitivity
 // and turn-rate paths, keeping bullets, reticle, vehicles and turrets correct.
+// (Where direct drive writes the aim -- aim_direct_drive, default 1 -- the
+// substituted right stick stands neutral on the axes written.)
 
 namespace
 {
@@ -750,11 +752,11 @@ namespace
         }
         else
 #endif
-        // Experimental: the per-game aim provider owns Reach's aim stick when enabled, and always for
-        // direct drive (mode 3), whose WriteState rung only the provider actuates (it then returns a
-        // neutral stick, so the state write is the only driver). Its StickLoop rung IS
-        // Game_ComputeAimStick, so whatever it does not take over aims exactly as the shipped path.
-        // Both off (the default) leaves the call untouched.
+        // The per-game aim provider owns Reach's aim stick when aim_provider is on (experimental), and always
+        // for direct drive (mode 3, on by default through aim_direct_drive), whose WriteState rung only the
+        // provider actuates (it then returns a neutral stick, so the state write is the only driver). Its
+        // StickLoop rung IS Game_ComputeAimStick, so whatever it does not take over aims exactly as the
+        // shipped path. With both off the call is left untouched.
         if ((g_config.aim_provider || g_config.reach_direct_drive == 3) &&
             TitleAdapter_GetActiveTitle() == GameTitle::HaloReach)
             haveStick = ReachAimProvider_ProduceStick(rx, ry);

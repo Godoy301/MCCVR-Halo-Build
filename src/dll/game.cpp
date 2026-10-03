@@ -34161,7 +34161,7 @@ namespace
         // the vehicle-tilt rebase's bit-4 jne; the WaitThread poll applies the skip while R-V27 is enabled.
         (void)SeatAimFrameInstall(GameTitle::HaloReach, base, size, generation);
 
-        // Reach DIRECT DRIVE (reach_direct_drive==3, opt-in): hook the per-user control update
+        // Reach DIRECT DRIVE (reach_direct_drive==3, from aim_direct_drive): hook the per-user control update
         // haloreach+0x6375C -- the ACCUMULATOR of player_control.desired_angles (value-scan 2026-09-25,
         // one-shot write proof 2026-09-26) -- and, after it runs on the sim thread, overwrite desired
         // yaw+0x94 / pitch+0x98 with the VR aim: upstream of the derived aim vector AND of replication.
@@ -51524,6 +51524,8 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
     // angular error between the game's aim and the controller ray. The game
     // integrates it through its normal turn-rate path, so bullets, reticle
     // logic, vehicles and turrets all behave as if the player aimed manually.
+    // (With direct drive -- aim_direct_drive, default 1 -- armed and writing,
+    // the stick stands neutral on every axis it writes; this loop steers the rest.)
     // Diagnostic: when aim steering is not running, log WHICH precondition
     // failed (once per distinct reason) so a dead aim is explainable from the
     // log alone.

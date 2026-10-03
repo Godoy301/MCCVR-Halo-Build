@@ -17920,15 +17920,17 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                                     }
                                 }
                             }
-                            // REACH TRACE-AND-REAIM CONVERGED (on foot or seated):
-                            // Halo: Campaign Evolved's reticle. The marker rides the
+                            // TRACE-AND-REAIM CONVERGED (every title, on foot or seated;
+                            // Reach through its own lane, the rest through the sight
+                            // layer): Halo: Campaign Evolved's reticle. The marker rides the
                             // same EYE-anchored ray the aim converges on (the
                             // controller's direction from the centre eye), sits
                             // on the surface that ray hits, parks at a readable
                             // depth beyond it, and shrinks away up close -- see
                             // aim_solve::traced_reticle_placement. The game's
                             // achieved aim is NOT drawn here (only the dev
-                            // assessment key draws it, from the hand): it is the
+                            // assessment key draws it, from the centre eye at the
+                            // point the game's shot reaches): it is the
                             // intent bent for the shot origin, and drawing it
                             // from the eye would apply the bend twice.
                             bool tracedReticle = false;

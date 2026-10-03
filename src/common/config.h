@@ -700,11 +700,13 @@ struct Config
     // old files that set those are still read, as aliases that can only turn it on. (default 1: direct drive is
     // the aim path everything else builds on; no release ever shipped this key, so no saved file holds an old 0)
     int aim_direct_drive = 1;
-    // Every title but Reach (Reach's is reach_direct_drive = 3), ON FOOT: CONVERGED AIM (1). The game traces
-    // the ray from your eye along the controller and bends the aim so the shot, which leaves from the
-    // character's eye, passes through the point that ray hits; the reticle is drawn on that point. 0 = the
-    // earlier aim: the controller's ray converges on one fixed distance (crosshair_distance_m), and no trace
-    // runs. (default 1)
+    // EVERY TITLE, live from F1 > Weapon & aim > "Converged aim" (Reach's also needs direct drive; with it off
+    // Reach keeps its own convergence), on foot and in Halo 3, ODST and Reach seats (reach_vehicle_aim):
+    // CONVERGED AIM (1). The game traces the ray from your eye along the controller and bends the aim so the
+    // shot, which leaves from the character's eye, passes through the point that ray hits; the reticle is
+    // drawn on that point. 0 = the earlier aim: the controller's ray converges on one fixed distance
+    // (crosshair_distance_m), and no trace runs. (default 1; until 2026-09-29 it covered every title but
+    // Reach, on foot only)
     int converged_aim = 1;
     // Swing angle in degrees for the reach_direct_drive=1 test (about world-up). (default 45)
     int reach_dd_test_deg = 45;
@@ -764,8 +766,9 @@ struct Config
     // The hooks write nothing to the game; at 0 they are not installed at all (no detour: a true control run).
     // Read at startup. Leave at 0 for play.
     int type13_log = 0;
-    // DEV BUILD ONLY (parsed and saved only in dev builds; a player build always uses 1), Halo 3 / ODST seats:
-    // 1 = skip the game's vehicle-tilt rebase of a player's aim (halo3+0x355EFA / halo3odst+0x39A6C4) while the
+    // DEV BUILD ONLY (parsed and saved only in dev builds; a player build always uses 1), Halo 3 / ODST / Reach
+    // seats (Reach since 2026-10-01: R-V27's `allows weapons` passenger seats): 1 = skip the game's vehicle-tilt
+    // rebase of a player's aim (halo3+0x355EFA / halo3odst+0x39A6C4 / haloreach+0x48AE8F) while the
     // first-person seat patch is enabled, so seats aim in world angles as in stock (src/dll/seat_aim_world_frame.inl).
     // 0 = leave the game's rebase in place: the A/B arm for the dev "frame check" line. Followed live. (default 1)
     int seat_aim_world_frame = 1;
@@ -811,21 +814,23 @@ struct Config
     float crosshair_distance_m = 41.0f; // how far along the aim ray it floats
     float crosshair_size_deg = 10.10f;  // apparent (angular) size
 
-    // Halo Reach ON FOOT, while trace-and-reaim converges: Halo: Campaign Evolved's reticle placement
+    // EVERY TITLE, while the aim converges (Reach through its own trace, the others through the sight
+    // layer -- vr.cpp's traced_reticle_placement): Halo: Campaign Evolved's reticle placement
     // (its aimreticulemaxdist / surfaceoff / minscale knobs, same defaults). The crosshair sits on the
     // surface the aim ray hits, pulled back reticle_surface_offset_m; it parks at reticle_max_dist_m
     // beyond that and on a miss; and it shrinks away as the surface comes closer than
     // reticle_min_scale_dist_m (to reticle_min_scale there). The ray starts at the player's eye, so
     // parking it short never moves it off the thing being aimed at. It holds crosshair_size_deg at the
-    // cap. crosshair_distance_m still applies everywhere else (vehicles, the fallback aim).
+    // cap. crosshair_distance_m still applies whenever the aim is not converged (the fallback aim).
     float reticle_max_dist_m = 6.0f;
     float reticle_surface_offset_m = 0.5f;
     float reticle_min_scale_dist_m = 0.7f;
     float reticle_min_scale = 0.001f;
 
     // DEV BUILD ONLY (parsed, saved and in the F1 menu only in dev builds): an ASSESSMENT aid that draws the
-    // crosshair on the game's REAL aim instead of the hand's point, to judge by eye how far the game trails the
-    // hand. 0 = off, 1 = on foot only, 2 = everywhere (seats and turrets too). It moves where the reticle is
+    // crosshair on the game's REAL aim instead of the hand's point -- where the game's shot lands, traced from
+    // the game's own shot origin along its aim, not from the controller (src/common/assess_reticle_logic.h) --
+    // to judge by eye how far the game trails the hand. 0 = off, 1 = on foot only, 2 = everywhere (seats and turrets too). It moves where the reticle is
     // DRAWN, even over the traced reticle, and nothing else: the converged mark, the shots, the aim write and
     // the drive mode never read it (converge::AssessDrawsGameAim). It replaces honest_reticle_onfoot (retired
     // 2026-10-01, ignored with a log line): the player-facing honest reticle was a cue for judging the stick
