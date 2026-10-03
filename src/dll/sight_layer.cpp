@@ -646,14 +646,11 @@ void Sight_SetFireEyeSource(GameTitle title, SightFireEyeFn source)
 
 bool Sight_TransportWanted(GameTitle title, bool seated)
 {
-#if HALOMCCVR_DEV_DIAGNOSTICS
+    // Every build (flat parity, 2026-10-03): the keys are dev-only, so a player build keeps their defaults -- on foot
+    // transported (shot_point_transport 1), seats not (shot_point_transport_seated 0).
     if (title != GameTitle::Halo3 && title != GameTitle::Halo3ODST)
         return false;
     return g_config.shot_point_transport != 0 && (!seated || g_config.shot_point_transport_seated != 0);
-#else
-    (void)title; (void)seated;
-    return false;
-#endif
 }
 
 shot_lag::Transport Sight_TransportIntent(GameTitle title, const SightIntent& intent, bool seated,
@@ -686,7 +683,7 @@ shot_lag::Transport Sight_TransportIntent(GameTitle title, const SightIntent& in
     if (!seated)
         if (const SightFireEyeFn source = g_fireEyeSources[Slot(title)].load(std::memory_order_acquire))
             verdict = source(siteEye, askEvaluator, in.fireEye, ageMs);
-    in.fireEyeValid = verdict == shot_lag::FireEye::Measured;
+    in.fireEyeValid = shot_lag::FireEyeUsable(verdict);
     if (fire)
         *fire = verdict;
     if (fireAgeMs)
@@ -715,10 +712,23 @@ void Sight_NoteTransport(GameTitle title, SightTransportSite site, shot_lag::Tra
 #endif
 }
 
+namespace
+{
+// The fire thread's last shot point decision (Sight_LastShotPoint): the dev impact witness judges each round against
+// the very P' its shot was aimed through.
+thread_local SightLastShotPoint t_lastShotPoint{};
+} // namespace
+
+bool Sight_LastShotPoint(SightLastShotPoint& out)
+{
+    out = t_lastShotPoint;
+    return out.valid;
+}
+
 const float* Sight_ShotPoint(GameTitle title, SightTransportSite site, const SightIntent& intent, bool seated,
                              const float* reference, float storage[3], const float* siteEye)
 {
-#if HALOMCCVR_DEV_DIAGNOSTICS
+    // Every build (flat parity, 2026-10-03; the dev key shot_point_transport, default 1, is the A/B).
     if (!reference || !storage || !Sight_TransportWanted(title, seated))
         return reference;
     float shift[3]{};
@@ -729,11 +739,20 @@ const float* Sight_ShotPoint(GameTitle title, SightTransportSite site, const Sig
                               &fire, &fireAgeMs, &pointAgeMs);
     Sight_NoteTransport(title, site, how, fire, shift, intent.p.dir, intent.p.eyeVelValid ? intent.p.eyeVel : nullptr,
                         fireAgeMs, pointAgeMs);
-    return shot_lag::TransportApplied(how) ? storage : reference;
-#else
-    (void)title; (void)site; (void)intent; (void)seated; (void)storage; (void)siteEye;
-    return reference;
-#endif
+    const bool applied = shot_lag::TransportApplied(how);
+    SightLastShotPoint& last = t_lastShotPoint;
+    last = SightLastShotPoint{};
+    last.valid = applied;
+    last.site = site;
+    last.how = how;
+    last.fire = fire;
+    last.stampUs = Sight_NowUs();
+    if (applied)
+    {
+        memcpy(last.point, storage, sizeof(last.point));
+        memcpy(last.shift, shift, sizeof(last.shift));
+    }
+    return applied ? storage : reference;
 }
 
 namespace

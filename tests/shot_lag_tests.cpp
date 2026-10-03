@@ -708,6 +708,55 @@ int main()
                   FireEyeGate(true, true, 42, 42, 0, 1000, 33333) == FireEye::NotThisTick,
               "an eye from the future or unstamped");
 
+        // FLAT PARITY (2026-10-03): the acquisition's eye is the eye BEFORE the tick's move -- the eye the last render
+        // showed, E_P -- so used as E_fire it moved P by nothing (the muzzle transport's 0 mm on every moving shot).
+        // The usable fire eyes, and the acquisition's eye carried one tick.
+        Check(FireEyeUsable(FireEye::Measured) && FireEyeUsable(FireEye::CarriedTick) &&
+                  !FireEyeUsable(FireEye::NotThisTick) && !FireEyeUsable(FireEye::NoSource) &&
+                  !FireEyeUsable(FireEye::Seated) && !FireEyeUsable(FireEye::Count),
+              "flat parity: measured and carried-a-tick are usable fire eyes, nothing else");
+        {
+            // Strafing +Y at 6 m/s; the render showed E_P, the acquisition at the next tick answers the same eye.
+            const float acquisition[3]{1.0f, 2.0f, 0.5f};
+            const float strafe[3]{0.0f, 6.0f * kWuPerM, 0.0f};
+            float carried[3]{};
+            Check(CarryTickEye(acquisition, strafe, 0.016667f, carried) &&
+                      Near((carried[1] - acquisition[1]) * kMmPerWu, 100.0f, 0.1f) && carried[0] == acquisition[0],
+                  "flat parity: the acquisition's eye carried one 60 Hz tick at 6 m/s moves 100 mm along the strafe");
+            float rest[3]{9.0f, 9.0f, 9.0f};
+            Check(!CarryTickEye(acquisition, nullptr, 0.016667f, rest) && rest[0] == acquisition[0] &&
+                      rest[1] == acquisition[1] && rest[2] == acquisition[2],
+                  "flat parity: no velocity -> the eye itself (at rest that is the carried eye)");
+            float clamped[3]{};
+            Check(CarryTickEye(acquisition, strafe, 0.5f, clamped) &&
+                      Near((clamped[1] - acquisition[1]) * kMmPerWu, 300.0f, 0.1f),
+                  "flat parity: the carry is clamped to 50 ms");
+            // P' through the carried eye: 100 mm along the strafe, and the line from the carried eye through P' is
+            // parallel to the solved line from E_P through P -- the line flat Halo fires.
+            TransportInput t{};
+            t.point[0] = 1.0f + 10.0f * kWuPerM;
+            t.point[1] = 2.0f;
+            t.point[2] = 0.5f;
+            t.pointEyeValid = true;
+            std::memcpy(t.pointEye, acquisition, sizeof(t.pointEye));
+            t.pointEyeStampUs = 1000000;
+            t.fireEyeValid = true;
+            std::memcpy(t.fireEye, carried, sizeof(t.fireEye));
+            t.nowUs = 1015700;
+            float pt[3]{}, sh[3]{};
+            Check(TransportPoint(t, pt, sh) == Transport::Measured && Near(sh[1] * kMmPerWu, 100.0f, 0.1f),
+                  "flat parity: P moves one tick of strafe ahead");
+            const float lineNew[3]{pt[0] - carried[0], pt[1] - carried[1], pt[2] - carried[2]};
+            const float lineOld[3]{t.point[0] - acquisition[0], t.point[1] - acquisition[1], t.point[2] - acquisition[2]};
+            Check(Near(lineNew[1] / Length(lineNew), lineOld[1] / Length(lineOld), 1.0e-6f) &&
+                      Near(lineNew[0] / Length(lineNew), lineOld[0] / Length(lineOld), 1.0e-6f),
+                  "flat parity: from the fire eye the line through P' is the solved line, moved with the body");
+            // The bug this replaces: the uncarried acquisition eye as E_fire moves P by nothing.
+            std::memcpy(t.fireEye, acquisition, sizeof(t.fireEye));
+            Check(TransportPoint(t, pt, sh) == Transport::Measured && Near(Length(sh), 0.0f, 1.0e-9f),
+                  "flat parity: the uncarried acquisition eye moves P by 0 mm (the muzzle bug)");
+        }
+
         {
             bool named = true;
             for (int i = 0; i < static_cast<int>(Transport::Count); ++i)

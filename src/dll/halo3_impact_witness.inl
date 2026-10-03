@@ -190,6 +190,7 @@ Halo3AsSeen g_halo3AsSeen;
 struct Halo3ImpactFire
 {
     bool open = false;
+    uint64_t beginUs = 0;   // Sight_NowUs at the fire detour's entry
     bool lineSeen = false;
     bool local = false;
     bool muzzle = false;
@@ -376,9 +377,18 @@ bool Halo3ImpactReadPoint(uint64_t nowUs, bool seated, shot_lag::IntentPoint& ou
         memcpy(out.point, intent.solvePoint, sizeof(out.point));
     if (!shot_lag::Finite3(out.point))
         return false;
-    // E_fire from this tick's published eye (else extrapolated), whichever the key: a witness never calls the game.
-    // A shot under the key may instead have asked the evaluator (a tick that skipped its acquisition): rare, and
-    // the same eye.
+    // P' as THIS fire's shot used it (the muzzle site decides before the shot line: Sight_LastShotPoint on this thread,
+    // stamped inside this fire); else from this tick's eye carried a tick, whichever the key -- a witness never calls
+    // the game itself.
+    SightLastShotPoint last{};
+    if (!seated && Sight_LastShotPoint(last) && t_halo3ImpactFire.beginUs && last.stampUs >= t_halo3ImpactFire.beginUs &&
+        last.stampUs <= nowUs)
+    {
+        how = last.how;
+        memcpy(pointT, last.point, sizeof(float) * 3);
+        memcpy(shiftT, last.shift, sizeof(float) * 3);
+        return true;
+    }
     how = Sight_TransportIntent(GameTitle::Halo3, intent, seated, nullptr, false, pointT, shiftT);
     return true;
 }
@@ -622,6 +632,7 @@ void Halo3ImpactFireBegin(uint8_t predicted)
     }
     fire = Halo3ImpactFire{};
     fire.open = true;
+    fire.beginUs = Sight_NowUs();
     fire.predicted = predicted ? 1 : 0;
     t_halo3AssistShot.lastValid = false;   // this fire's assist output, once it runs
 }
@@ -691,11 +702,14 @@ void Halo3ImpactNoteShotLine(uint32_t unit, const float origin[3], const float d
     else
     {
         Halo3ImpactMeasureReticle(fire.point, nowUs);
-        // The circular check: does the line we handed the game pass through this P (the muzzle lane built it so)?
+        // The circular check: does the line we handed the game pass through the point the muzzle lane built it
+        // through -- P' when this fire's shot was transported (flat parity), else P?
         if (muzzle)
         {
-            const shot_lag::ShotLagSample ours =
-                shot_lag::MeasureShotLag(origin, direction, fire.point.point, nullptr, nullptr);
+            const bool transported =
+                shot_lag::TransportApplied(fire.transport) && Sight_TransportWanted(GameTitle::Halo3, false);
+            const shot_lag::ShotLagSample ours = shot_lag::MeasureShotLag(
+                origin, direction, transported ? fire.pointT : fire.point.point, nullptr, nullptr);
             if (ours.valid && ours.missMm <= 1.0f)
                 ++w.ourLineThroughP;
             else

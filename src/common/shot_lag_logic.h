@@ -545,8 +545,32 @@ enum class FireEye : uint8_t
     NotThisTick,    // older than this tick (or from the future)
     ChasePath,      // asked the evaluator: it took the chase-camera path (not a first-person eye)
     Faulted,        // asked the evaluator: it faulted or answered a non-finite eye
+    CarriedTick,    // usable: this tick's published eye carried one measured tick ahead (CarryTickEye), because the
+                    // evaluator could not be asked at the fire -- the acquisition's eye is the eye BEFORE the tick
+                    // moves the unit, one tick behind the eye the shot leaves from (flat probe, 2026-10-03)
     Count
 };
+// A fire-eye verdict whose eye is E_fire.
+inline bool FireEyeUsable(FireEye f) { return f == FireEye::Measured || f == FireEye::CarriedTick; }
+
+// THE FIRE EYE IS AFTER THE TICK'S MOVE (Halo 3, the flat probe and the VR transport line, 2026-10-03). Within a
+// simulation tick the control pass runs the aim acquisition FIRST -- its camera evaluator answers the eye the last
+// render showed (E_P: the muzzle transport measured 0 mm between them on every moving shot) -- then the unit moves, then
+// its weapon fires: the shot leaves from, and the firing assist traces from, the eye one tick of travel AHEAD (stock
+// flat: the round lands on the crosshair of the frame after the fire, and +1 tick of strafe off the crosshair the
+// player fired through). So E_fire is the evaluator asked AT the fire; failing that, the acquisition's eye carried one
+// measured tick, as the record's recomposition carries it (4b).
+inline bool CarryTickEye(const float eye[3], const float* velocity, float tickS, float out[3])
+{
+    if (!Finite3(eye) || !out)
+        return false;
+    if (!velocity || !Finite3(velocity) || !std::isfinite(tickS) || !(tickS > 0.0f))
+    {
+        std::memcpy(out, eye, sizeof(float) * 3);
+        return false;   // the eye itself: nothing to carry it by
+    }
+    return ExtrapolateEye(eye, velocity, tickS, 0.05f, out);
+}
 inline const char* FireEyeName(FireEye f)
 {
     switch (f)
@@ -560,6 +584,7 @@ inline const char* FireEyeName(FireEye f)
     case FireEye::NotThisTick: return "not this tick";
     case FireEye::ChasePath: return "chase path";
     case FireEye::Faulted: return "faulted";
+    case FireEye::CarriedTick: return "this tick's eye carried a tick";
     default: return "?";
     }
 }

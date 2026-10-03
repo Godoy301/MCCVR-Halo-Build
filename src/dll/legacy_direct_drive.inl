@@ -1530,8 +1530,10 @@ LegacyRecomposeWhy LegacyDriveRecomposeOnFoot(int slot, const LegacyDrivePublica
     }
     in.eyeProven = g_halo3TickEyeProof.load(std::memory_order_relaxed) == static_cast<uint32_t>(TickEyeProof::Proven);
     in.tickS = float(g_legacyTickPeriodUs[0].load(std::memory_order_relaxed)) * 1.0e-6f;
-    // Dev key shot_point_transport (sight_layer.h): the record through P moved with the eye, so the HUD, autoaim and
-    // the crosshair query agree with the shot sites that move it too. Its E' is the game's own eye (measured).
+    // Flat parity (sight_layer.h Sight_TransportWanted; every build, the dev key shot_point_transport the A/B): the
+    // record through P moved with the eye, so the HUD, autoaim, the crosshair query and a multiplayer host firing from
+    // this record agree with the shot sites that move it too. Its E' is this tick's eye carried one tick (the eye the
+    // shot leaves from after the tick's move); from E' the line through P' is parallel to the solved one, as flat fires.
     in.transport = Sight_TransportWanted(GameTitle::Halo3, false);
     float bendDeg = 0.0f;
     shot_lag::Transport transported = shot_lag::Transport::Count;
@@ -1540,7 +1542,7 @@ LegacyRecomposeWhy LegacyDriveRecomposeOnFoot(int slot, const LegacyDrivePublica
     if (why != LegacyRecomposeWhy::Recomposed)
         return why;
     if (in.transport)
-        Sight_NoteTransport(GameTitle::Halo3, SightTransportSite::Record, transported, shot_lag::FireEye::Measured,
+        Sight_NoteTransport(GameTitle::Halo3, SightTransportSite::Record, transported, shot_lag::FireEye::CarriedTick,
                             shift, intent.p.dir, intent.p.eyeVelValid ? intent.p.eyeVel : nullptr,
                             nowUs >= stampUs ? float(nowUs - stampUs) / 1000.0f : -1.0f,
                             intent.p.pointEyeStampUs && nowUs >= intent.p.pointEyeStampUs
