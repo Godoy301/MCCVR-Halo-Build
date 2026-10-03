@@ -101,12 +101,13 @@ inline Reaim ReaimThroughPoint(const float start[3], const float vector[3], cons
         return Reaim::PointBehind;
     if (!(distance > rails.minRangeWu))
         return Reaim::PointTooClose;
-    // How far P sits off the old line, and the angle between the two lines.
-    const float offsetSq = distance * distance - ahead * ahead;
-    const float offset = offsetSq > 0.0f ? std::sqrt(offsetSq) : 0.0f;
-    float cosine = ahead / distance;
-    cosine = cosine > 1.0f ? 1.0f : (cosine < -1.0f ? -1.0f : cosine);
-    const float bend = std::acos(cosine) * kRadToDeg;
+    // How far P sits off the old line, and the angle between the two lines -- from the perpendicular VECTOR, never
+    // as distance^2 - ahead^2: that difference of two large squares cancels catastrophically in float (at 1 km its
+    // rounding alone is ~0.5 m of "offset", so a query already through P read as off it), and acos near 1 is as bad.
+    // toPoint - d * ahead keeps an absolute error of a few ulps of the range (well under a millimetre at 1 km).
+    const float perpendicular[3]{toPoint[0] - d[0] * ahead, toPoint[1] - d[1] * ahead, toPoint[2] - d[2] * ahead};
+    const float offset = Length(perpendicular);
+    const float bend = std::atan2(offset, ahead) * kRadToDeg;
     if (offset < rails.minOffsetWu)
         return Reaim::AlreadyThrough;
     if (!(offset <= rails.maxOffsetWu) || !(bend <= rails.maxBendDeg))

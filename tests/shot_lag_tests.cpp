@@ -100,6 +100,57 @@ int main()
         Check(out[0] == 7 && out[1] == 7 && out[2] == 7, "no refusal wrote the output");
     }
 
+    {
+        // FAR POINTS: "already through" must hold at range. distance^2 - ahead^2 in float cancels to noise beyond
+        // ~20 m (48 mm at 100 m, ~0.5 m at 1 km), so a query exactly through P read as off it and was bent. Oblique
+        // directions from a start at map-sized coordinates, a few of them so no lucky rounding hides the noise.
+        const float start[3]{123.456f, -78.9f, 12.3f};
+        const float dirs[4][3]{{0.6f, 0.7f, 0.3f}, {-0.31f, 0.88f, -0.12f}, {0.577f, -0.577f, 0.577f},
+                               {0.99f, 0.05f, -0.13f}};
+        const float ranges[3]{100.0f, 300.0f, 1000.0f};
+        for (const float metres : ranges)
+        {
+            const float rangeWu = metres * kWuPerM;
+            bool through = true, near = true, applied = true, hits = true;
+            for (const auto& raw : dirs)
+            {
+                const float l = Length(raw);
+                const float d[3]{raw[0] / l, raw[1] / l, raw[2] / l};
+                // A unit vector across the line.
+                float e[3]{d[1], -d[0], 0.0f};
+                const float el = Length(e);
+                e[0] /= el; e[1] /= el;
+                const float vector[3]{d[0] * 40.0f, d[1] * 40.0f, d[2] * 40.0f};   // the query's own length
+                const auto pointOff = [&](float offMm, float out[3]) {
+                    const float off = offMm / kMmPerWu;
+                    for (int axis = 0; axis < 3; ++axis)
+                        out[axis] = start[axis] + d[axis] * rangeWu + e[axis] * off;
+                };
+                float p[3]{}, out[3]{};
+                pointOff(0.0f, p);
+                through = through && ReaimThroughPoint(start, vector, p, ReaimRails{}, out) == Reaim::AlreadyThrough;
+                pointOff(5.0f, p);
+                near = near && ReaimThroughPoint(start, vector, p, ReaimRails{}, out) == Reaim::AlreadyThrough;
+                pointOff(15.0f, p);
+                float bend = -1.0f;
+                const bool ok = ReaimThroughPoint(start, vector, p, ReaimRails{}, out, &bend) == Reaim::Applied;
+                applied = applied && ok;
+                hits = hits && ok && LineMiss(start, out, p) * kMmPerWu < 2.0f &&
+                       Near(bend, std::atan2(15.0f, metres * 1000.0f) * kRadToDeg, 2.0e-4f);
+            }
+            char what[160];
+            std::snprintf(what, sizeof(what), "at %.0f m a query exactly through P is already through", double(metres));
+            Check(through, what);
+            std::snprintf(what, sizeof(what), "at %.0f m a query 5 mm off P is already through", double(metres));
+            Check(near, what);
+            std::snprintf(what, sizeof(what), "at %.0f m a query 15 mm off P is re-aimed", double(metres));
+            Check(applied, what);
+            std::snprintf(what, sizeof(what), "at %.0f m the re-aimed query passes P and reports its true bend",
+                          double(metres));
+            Check(hits, what);
+        }
+    }
+
     // ---- the published intent: when the shot site may use it ----
     {
         IntentPoint p{};
