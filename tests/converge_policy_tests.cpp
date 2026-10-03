@@ -1,6 +1,7 @@
 // Convergence policy (src/common/converge_policy.h): what switches the converged aim off (our code only), the
 // dev assessment key's scope, and the natural-cause witnesses that are never an input to a decision.
 #include "converge_policy.h"
+#include "shot_lag_logic.h"
 #include <cmath>
 #include <cstdio>
 #include <type_traits>
@@ -196,6 +197,115 @@ void TestSeatMuzzleRefusal()
     Check(Claims(true, true, true), "the claim stands whatever the muzzle guard decides");
 }
 
+// ---- the crosshair-assist re-aim in a seat (converge::SeatAssistReaimRefuses; 2026-10-03) ----------------------
+float Deg(float rad) { return rad * 57.2957795f; }
+void Fwd(float yawDeg, float pitchDeg, float out[3])
+{
+    const float y = yawDeg / 57.2957795f, p = pitchDeg / 57.2957795f;
+    out[0] = std::cos(p) * std::cos(y);
+    out[1] = std::cos(p) * std::sin(y);
+    out[2] = std::sin(p);
+}
+float AngleDeg(const float a[3], const float b[3])
+{
+    const float c[3]{a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]};
+    return Deg(std::atan2(shot_lag::Length(c), shot_lag::Dot(a, b)));
+}
+// The firing assist as Halo 3 runs it for a seated shot (0x13BAD0; HALO3-VEHICLE-EVIDENCE.md "Vehicle guns"): the
+// crosshair query from `start` along `query` hits the wall x = wallX; the shot leaving the barrel along `barrel` is
+// turned toward hit - origin by at most `capDeg`. Returns the turn taken; `out` is the shot's direction.
+float Assist(const float start[3], const float query[3], float wallX, const float origin[3], const float barrel[3],
+             float capDeg, float out[3])
+{
+    const float t = (wallX - start[0]) / query[0];
+    const float hit[3]{start[0] + query[0] * t, start[1] + query[1] * t, start[2] + query[2] * t};
+    float to[3]{hit[0] - origin[0], hit[1] - origin[1], hit[2] - origin[2]};
+    const float tl = shot_lag::Length(to);
+    for (float& v : to)
+        v /= tl;
+    const float angle = AngleDeg(barrel, to);
+    if (angle <= capDeg)
+    {
+        for (int i = 0; i < 3; ++i)
+            out[i] = to[i];
+        return angle;
+    }
+    // Rotate toward by the cap, in the plane of the two directions.
+    float perp[3]{to[0] - barrel[0] * shot_lag::Dot(barrel, to), to[1] - barrel[1] * shot_lag::Dot(barrel, to),
+                  to[2] - barrel[2] * shot_lag::Dot(barrel, to)};
+    const float pl = shot_lag::Length(perp);
+    const float c = capDeg / 57.2957795f;
+    for (int i = 0; i < 3; ++i)
+        out[i] = barrel[i] * std::cos(c) + perp[i] / pl * std::sin(c);
+    return capDeg;
+}
+// How far the shot's line from `origin` along `dir` passes from `p`, in millimetres.
+float MissMm(const float origin[3], const float dir[3], const float p[3])
+{
+    const float v[3]{p[0] - origin[0], p[1] - origin[1], p[2] - origin[2]};
+    const float c[3]{v[1] * dir[2] - v[2] * dir[1], v[2] * dir[0] - v[0] * dir[2], v[0] * dir[1] - v[1] * dir[0]};
+    return shot_lag::Length(c) * shot_lag::kMmPerWu;
+}
+
+void TestSeatAssistReaim()
+{
+    Check(SeatAssistReaimRefuses(false, false) == SeatMuzzleRefusal::None, "a free seat is re-aimed");
+    Check(SeatAssistReaimRefuses(false, true) == SeatMuzzleRefusal::None,
+          "a turret is NOT refused for being one: the assist's own seat cap bounds a catch-up shot");
+    Check(SeatAssistReaimRefuses(true, false) == SeatMuzzleRefusal::HeldAtLimit, "a seat held at its stop refuses");
+    Check(SeatAssistReaimRefuses(true, true) == SeatMuzzleRefusal::HeldAtLimit, "a turret held at its stop refuses");
+    // The muzzle redirect keeps refusing a turret: that is an identity guard (the muzzle is not the turret's gun).
+    Check(SeatMuzzleRefuses(false, true) == SeatMuzzleRefusal::Turret, "the muzzle redirect still refuses a turret");
+
+    // THE GAUSS TURRET (impact2.log, 2026-10-03, 12:48:22): the record runs through the point P at 87.8 m from the
+    // gun's camera (the solve's eye); at the fire the camera -- the line the assist traces -- sits +0.5 deg yaw and
+    // +1.1 deg pitch off it, and the barrel, 208 mm behind, 64 mm across and 58 mm below the camera, is already on the
+    // camera's crosshair (the assist turned it 0.01-0.06 deg). Unit vectors in world units, x along the record.
+    const float cap = 21.0f;
+    const float start[3]{0.0f, 0.0f, 0.0f};
+    const float range = 87.8f * shot_lag::kWuPerMetre;
+    const float p[3]{range, 0.0f, 0.0f};
+    float camera[3]{};
+    Fwd(0.5f, 1.1f, camera);
+    float query[3]{camera[0] * 128.0f, camera[1] * 128.0f, camera[2] * 128.0f};
+    const float origin[3]{-0.208f / 3.048f, 0.064f / 3.048f, -0.058f / 3.048f};
+    float barrel[3]{};
+    {
+        const float t = range / camera[0];
+        float to[3]{camera[0] * t - origin[0], camera[1] * t - origin[1], camera[2] * t - origin[2]};
+        const float l = shot_lag::Length(to);
+        for (int i = 0; i < 3; ++i)
+            barrel[i] = to[i] / l;
+    }
+    float shot[3]{};
+    // As the game builds it (the turret refused): the shot follows the camera's crosshair, ~1.8 m off P.
+    const float turnedStock = Assist(start, query, range, origin, barrel, cap, shot);
+    Check(turnedStock < 0.01f && MissMm(origin, shot, p) > 1500.0f,
+          "unre-aimed, the gauss slug follows the gun camera's crosshair 1.5+ m beside the point at 88 m");
+    // Re-aimed through P from the query's own start (no turret refusal): the assist carries the shot onto P.
+    const bool held = SeatAssistReaimRefuses(false, true) != SeatMuzzleRefusal::None;
+    float reaimed[3]{};
+    Check(!held && shot_lag::ReaimThroughPoint(start, query, p, shot_lag::ReaimRails{}, reaimed) ==
+                       shot_lag::Reaim::Applied,
+          "the turret's crosshair query is re-aimed");
+    const float turned = Assist(start, reaimed, range, origin, barrel, cap, shot);
+    Check(MissMm(origin, shot, p) < 1.0f, "re-aimed, the gauss slug passes through the point (< 1 mm)");
+    Check(turned > 1.0f && turned < 1.5f, "...by a turn of ~1.2 deg, far inside the game's 21 deg seat cap");
+
+    // CATCH-UP: the gun still 40 deg off the point under its rate cap. The game bends the shot toward P by its own
+    // cap and no further -- the re-aim adds no limit and removes none.
+    float slewing[3]{};
+    Fwd(40.0f, 0.0f, slewing);
+    const float slewQuery[3]{slewing[0] * 128.0f, slewing[1] * 128.0f, slewing[2] * 128.0f};
+    float slewReaimed[3]{};
+    Check(shot_lag::ReaimThroughPoint(start, slewQuery, p, shot_lag::ReaimRails{}, slewReaimed) ==
+              shot_lag::Reaim::Applied,
+          "a catch-up query is re-aimed too");
+    const float slewTurn = Assist(start, slewReaimed, range, origin, slewing, cap, shot);
+    Check(std::fabs(slewTurn - cap) < 1e-3f && std::fabs(AngleDeg(slewing, shot) - cap) < 0.01f,
+          "a catch-up shot turns by the game's seat cap, no further");
+}
+
 void TestConvergeOffWitness()
 {
     ConvergeOffWitness w;
@@ -323,6 +433,7 @@ int main()
     TestStallWitness();
     TestReachStamps();
     TestSeatMuzzleRefusal();
+    TestSeatAssistReaim();
     TestNames();
     TestConvergeOffWitness();
     TestConvergeEdgeLog();

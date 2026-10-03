@@ -160,6 +160,9 @@ bool Game_AimFreeCamera();
 // seat's stop (Halo 3, ODST, Halo 4), or a rate-capped turret (Halo 3, ODST, where the muzzle owner check
 // cannot see a stationary turret). Refuses the redirect only; nothing else reads it. Any thread.
 converge::SeatMuzzleRefusal Game_SeatMuzzleRefusal(GameTitle title);
+// The crosshair-assist re-aim, seated (Halo 3, ODST; converge::SeatAssistReaimRefuses): only a seat held at its natural
+// stop refuses -- never a turret for being one (the game's own assist cap bounds a catch-up shot). Any thread.
+converge::SeatMuzzleRefusal Game_SeatAssistReaimRefusal(GameTitle title);
 // DEV (reach_direct_drive=4): true while the MASTER desired_angles persistence test owns Reach's aim;
 // the XInput hook then holds the aim stick neutral. Defined only in experimental Reach builds.
 bool Game_ReachDdTestOwnsAim();

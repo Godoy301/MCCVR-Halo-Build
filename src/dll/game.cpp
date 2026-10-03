@@ -52058,9 +52058,12 @@ static void PublishAimIntent(GameTitle title, const SightRay& ray, const float h
     Sight_PublishIntent(title, intent);
 }
 
-converge::SeatMuzzleRefusal Game_SeatMuzzleRefusal(GameTitle title)
+// The local seat's natural holds, as both seated shot paths read them: `held` -- the direct drive held at the seat's
+// stop, or the seat's reticle clamped at a natural stop; `turret` -- a rate-capped turret seat (Halo 3, ODST).
+static void SeatNaturalHolds(GameTitle title, bool& held, bool& turret)
 {
-    bool held = false, turret = false;
+    held = false;
+    turret = false;
     switch (title)
     {
     case GameTitle::Halo3:
@@ -52080,7 +52083,20 @@ converge::SeatMuzzleRefusal Game_SeatMuzzleRefusal(GameTitle title)
     // past the stop. A redirect through it would carry the shot past the stop the game holds the gun at; refused, the
     // shot leaves along the game's clamped aim, through the clamped mark.
     held = held || Sight_SeatLimitClampedLive(title);
+}
+
+converge::SeatMuzzleRefusal Game_SeatMuzzleRefusal(GameTitle title)
+{
+    bool held = false, turret = false;
+    SeatNaturalHolds(title, held, turret);
     return converge::SeatMuzzleRefuses(held, turret);
+}
+
+converge::SeatMuzzleRefusal Game_SeatAssistReaimRefusal(GameTitle title)
+{
+    bool held = false, turret = false;
+    SeatNaturalHolds(title, held, turret);
+    return converge::SeatAssistReaimRefuses(held, turret);
 }
 
 // THE SEAT LIMIT RETICLE, the aim poll's half (src/common/seat_limit_reticle_logic.h; the user's call, 2026-10-02).

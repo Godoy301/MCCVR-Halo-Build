@@ -153,6 +153,27 @@ inline SeatMuzzleRefusal SeatMuzzleRefuses(bool heldAtLimit, bool turretSeat)
     return SeatMuzzleRefusal::None;
 }
 
+// THE CROSSHAIR-ASSIST RE-AIM in a seat (Halo 3 / ODST; 2026-10-03) -- a different decision from the muzzle redirect
+// above. The re-aim moves only the firing assist's own crosshair query (Halo 3 0x13BAD0 from the fire routine,
+// ODST 0x1610D4) through the point; the GAME then turns the shot from its barrel toward that query's hit, in a seat by
+// at most max(21 deg, the weapon's own angle) -- its own cap, on every seated shot. So a turret needs no refusal here:
+//   * a gun-slaved turret's camera -- the line the assist traces -- sits off the record the drive writes, and moves
+//     again at the fire (the Warthog gauss turret 0x069C, 2026-10-03: its query ~0.5 deg yaw and ~1.1 deg pitch off
+//     the record at every fire, against ~0.8 deg at rest; its slugs landed 1.7-2.1 m beside the reticle at 87-89 m
+//     while the chaingun's stayed within 0.2 m). Re-aimed, the assist carries the shot onto the point whatever the
+//     camera's offset at the fire;
+//   * while the gun catches up under its rate cap the game bends the shot toward the point by no more than it bends
+//     any seated shot -- turn-rate catch-up is not a limit (the user, 2026-10-02), as for a look-steered driver's
+//     hull-fixed guns, whose catch-up shots this re-aim already turns.
+// Only a seat HELD at its natural stop refuses: the reticle is clamped there and the shot leaves along the clamped
+// aim, through the clamped mark. Reach's crosshair re-aim never refused a turret (reach_sight_trace.inl); Halo 3 and
+// ODST now match it. `turretSeat` is taken so the decision is explicit and tested: it never refuses by itself.
+inline SeatMuzzleRefusal SeatAssistReaimRefuses(bool heldAtLimit, bool turretSeat)
+{
+    (void)turretSeat;
+    return heldAtLimit ? SeatMuzzleRefusal::HeldAtLimit : SeatMuzzleRefusal::None;
+}
+
 // The game's aim feedback as a direction: finite and not degenerate.
 inline bool AimFeedbackFinite(float x, float y, float z)
 {
