@@ -766,8 +766,9 @@ bool ReachAimMuzzleShot(const float before[3], const float position[3], float di
         return false;
     }
     // Defensive (Reach publishes no muzzle palette in a seat today): a seat held at its stop points the barrel
-    // elsewhere, so a shot bent through the point from it would follow neither line. Left as the game fires it.
-    if (ReachHeldAtLimit(now))
+    // elsewhere, so a shot bent through the point from it would follow neither line. Left as the game fires it --
+    // along the clamped aim, through the seat limit reticle (Sight_SeatLimitClampedLive) -- never past the stop.
+    if (ReachHeldAtLimit(now) || Sight_SeatLimitClampedLive(GameTitle::HaloReach))
     {
         Sight_NoteMuzzleShotHeld(GameTitle::HaloReach);
         return false;

@@ -141,6 +141,10 @@ static std::atomic<unsigned long long> g_reachWrittenConvergedMs{0};
 // Read only defensively: the muzzle redirect refuses while it is live, and the dev engine-trace witness
 // skips those updates. It never withdraws the converged stamp above and never shapes the write.
 static std::atomic<unsigned long long> g_reachHeldAtLimitMs{0};
+// THE SEAT'S STOPS for the seat limit reticle (seat_limit_publication.h): after each seated write of the first local
+// player, the seat-limit latch's stops in the record's frame, with that frame. Cleared by every stick update that did
+// not end in a seated write, and by the no-unit call.
+static SeatStopsPublication g_reachSeatStops;
 // Whether the published setpoint is for a SEAT: there the game's own update clamps the record to the
 // seat's limits before the hook writes, and the hook keeps its write inside them (aim_write::LimitLatch).
 static std::atomic<bool>               g_reachDriveSeated{false};
@@ -51152,6 +51156,7 @@ extern "C" void ReachPcApplyForUser(int user, const uint8_t* entryRsp)
             s_putBack.invalidate();
             g_reachWrittenConvergedMs.store(0, std::memory_order_release);
             g_reachHeldAtLimitMs.store(0, std::memory_order_release);
+            g_reachSeatStops.clear();
         }
         else
         {
@@ -51269,6 +51274,17 @@ extern "C" void ReachPcApplyForUser(int user, const uint8_t* entryRsp)
                     {
                         const float written[2]{pair[0], pair[1]};
                         s_seatLimit.wrote(written);
+                        if (user == 0)
+                        {
+                            // The stops the reticle clamps against (seat_limit_reticle_logic.h): the latch's, on the axes
+                            // it read (yaw; pitch unless a look-steered driver's), in this update's frame.
+                            seat_limit::Stops stops{};
+                            const bool latchAxes[2]{true, drivenPitchLatch != false};
+                            seat_limit::AddLatch(stops, s_seatLimit, latchAxes);
+                            stops.rebased = seatFrame.kase == seat_frame::Case::Rebased;
+                            stops.frame = seatFrame.frame;
+                            g_reachSeatStops.publish(0, stops, pair[0], tick);
+                        }
                     }
                     if (user == 0)
                     {
@@ -51297,6 +51313,8 @@ extern "C" void ReachPcApplyForUser(int user, const uint8_t* entryRsp)
                     converge::ReachStampUpdate(wrote != 0, drivenConverged, limited != 0);
                 g_reachWrittenConvergedMs.store(stamps.converged ? tick : 0, std::memory_order_release);
                 g_reachHeldAtLimitMs.store(stamps.heldAtLimit ? tick : 0, std::memory_order_release);
+                if (!(wrote && drivenSeated))
+                    g_reachSeatStops.clear();
 #if HALOMCCVR_DEV_DIAGNOSTICS
                 if (wrote && drivenSeated)
                 {
@@ -51326,6 +51344,15 @@ extern "C" void ReachPcApplyForUser(int user, const uint8_t* entryRsp)
         g_reachApplyYaw.store(yaw, std::memory_order_relaxed);
         g_reachApplyPitch.store(pitch, std::memory_order_relaxed);
     }
+}
+
+// Input thread: the stops Reach's last seated write knew (the seat-limit latch's), under 100 ms old, while the drive is
+// armed. The seat limit reticle's source for Reach.
+static bool ReachSeatStops(seat_limit::Stops& stops, float& recordYaw)
+{
+    uint32_t key = 0;
+    return g_reachPcArmed.load(std::memory_order_acquire) &&
+        g_reachSeatStops.read(GetTickCount64(), 100, stops, key, recordYaw);
 }
 
 // The direct-drive hook's once-a-second status, logged from the cold worker. "wrote N/M per s": M is the
@@ -52295,7 +52322,47 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
     // provider takes it as its intent and, when it selects WriteState, publishes the converged
     // setpoint to the direct-drive hook instead of servoing a stick toward it.
     if (TitleAdapter_GetActiveTitle() == GameTitle::HaloReach)
+    {
         ReachRecordDesiredAim(desiredYaw, desiredPitch);
+        // THE SEAT LIMIT RETICLE (SeatLimitReticleStep), Reach: a land vehicle's seat the drive writes and the
+        // seat-limit latch holds at a stop. The target is the aim the provider actuated -- its engine eye's line
+        // through the converged point -- when that record is fresh (the eyes then place the mark: the seat limit
+        // ray from Reach's engine eye, drawn from the rendered eye), else this poll's desired aim (turned in place).
+        ReachVehicleId limitVehicle = ReachVehicleId::Unknown;
+        int limitSeat = -1;
+        if (aimFrame.directDrive && ReachCurrentSeat(limitVehicle, limitSeat) && !ReachVehicleIsAircraft(limitVehicle))
+        {
+            SeatLimitPoll limitPoll{};
+            limitPoll.title = GameTitle::HaloReach;
+            limitPoll.seatKey = (static_cast<uint32_t>(limitVehicle) << 8) | static_cast<uint32_t>(limitSeat + 1);
+            limitPoll.stopsFresh = ReachSeatStops(limitPoll.stops, limitPoll.recordYaw);
+            limitPoll.targetYaw = desiredYaw;
+            limitPoll.targetPitch = desiredPitch;
+            float o[3]{}, u[3]{}, e[3]{}, h[3]{}, rangeWu = 0.0f;
+            if (ReachSightReadActuated(GetTickCount64(), o, u, e, h, rangeWu))
+            {
+                const float point[3]{o[0] + u[0] * rangeWu, o[1] + u[1] * rangeWu, o[2] + u[2] * rangeWu};
+                const float toPoint[3]{point[0] - e[0], point[1] - e[1], point[2] - e[2]};
+                seat_frame::Angles actuated{};
+                if (seat_frame::AnglesOf(toPoint, desiredYaw, actuated))
+                {
+                    limitPoll.targetYaw = actuated.yaw;
+                    limitPoll.targetPitch = actuated.pitch;
+                    limitPoll.eyes = true;
+                    memcpy(limitPoll.head, h, sizeof(limitPoll.head));
+                    memcpy(limitPoll.shotOrigin, e, sizeof(limitPoll.shotOrigin));
+                    limitPoll.intentDelta = true;
+                    memcpy(limitPoll.intentDir, u, sizeof(limitPoll.intentDir));
+                }
+            }
+            limitPoll.yawSign = g_yawSign.load();
+            limitPoll.pitchSign = g_pitchSign.load();
+            limitPoll.controllerVrYaw = atan2f(fx, -fz);
+            limitPoll.controllerVrPitch = asinf(Clamp(fy, -1.0f, 1.0f));
+            seatLimitGuard.stepped = true;
+            (void)SeatLimitReticleStep(limitPoll, seatLimitMark);
+        }
+    }
 #endif
 
     float aimForward[3] = {
