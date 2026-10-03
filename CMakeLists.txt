@@ -897,6 +897,9 @@ if(BUILD_TESTING)
     add_executable(halomccvr_assess_reticle_tests tests/assess_reticle_tests.cpp)
     target_include_directories(halomccvr_assess_reticle_tests PRIVATE src/common)
     add_test(NAME halomccvr_assess_reticle_tests COMMAND halomccvr_assess_reticle_tests)
+    add_executable(halomccvr_shot_lag_tests tests/shot_lag_tests.cpp)
+    target_include_directories(halomccvr_shot_lag_tests PRIVATE src/common)
+    add_test(NAME halomccvr_shot_lag_tests COMMAND halomccvr_shot_lag_tests)
     # Source-consistency guard for the seated converged claim (2026-10-01): game.cpp assigns the claim from
     # converge::SeatedClaimDecide and nothing else, never clears sightSeatedConverged, and reads no natural-cause
     # symbol into the claim's facts. No behavioural test compiles game.cpp, so a natural-cause switch-off added
