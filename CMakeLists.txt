@@ -857,6 +857,11 @@ if(BUILD_TESTING)
     add_executable(halomccvr_seat_drive_policy_tests tests/seat_drive_policy_tests.cpp)
     target_include_directories(halomccvr_seat_drive_policy_tests PRIVATE src/common)
     add_test(NAME halomccvr_seat_drive_policy_tests COMMAND halomccvr_seat_drive_policy_tests)
+    # Gun-slaved seats (src/common/gun_slaved_seat_logic.h): seat flag bit 7, the occupant-aim binding, the servo's
+    # feedback and lag gate, the gun-settle gate of the crosshair witness and the nod witness.
+    add_executable(halomccvr_gun_slaved_seat_tests tests/gun_slaved_seat_tests.cpp)
+    target_include_directories(halomccvr_gun_slaved_seat_tests PRIVATE src/common)
+    add_test(NAME halomccvr_gun_slaved_seat_tests COMMAND halomccvr_gun_slaved_seat_tests)
     # The free camera with no player unit (src/common/aim_no_unit_logic.h): the death/respawn debounce, its
     # fail-open rules and the frame the aim servo composes while the player has no unit.
     add_executable(halomccvr_aim_no_unit_tests tests/aim_no_unit_tests.cpp)

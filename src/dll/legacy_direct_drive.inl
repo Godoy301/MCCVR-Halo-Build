@@ -76,6 +76,22 @@
 // its own proof fails). An unproven stick site leaves every call counting as the update, as before.
 // "Updates" are therefore stick calls, and the control pass runs once per MAIN-LOOP ITERATION -- a rendered
 // frame -- ahead of that frame's 0..N sim ticks: ~120 per second at 120 fps, not the sim's 60 Hz.
+//
+// GUN-SLAVED SEATS (Halo 3 / ODST seat flag bit 7, gun_slaved_seat_logic.h; 2026-10-02). In a seat whose first-
+// person camera is the GUN -- the Warthog turret's gunner -- the game's aim the input thread publishes is the gun's
+// marker, and the gun slews toward the record at its own rate. Proving the record against it proved it against a
+// quantity that lags by design: every turret entry spent 1-2 s unwritten, short ones never wrote, a pause restarted
+// the wait, and a pitch left on the stick servo nodded. So such a seat ALSO proves its record against the
+// OCCUPANT's own aim vector -- the field the camera reads in every other seat and on foot, and the one the control
+// update re-derives the record from (both found by signature at install, LegacyDriveBindUnitAim). A second
+// StintCheck (stintOccupant) runs beside the camera's; an axis is proven when EITHER passes it
+// (seat_drive::CombineStints), so the seat is never slower than before and fails closed to the camera check when
+// the vector is unbound or disagrees. The arm gate takes either reference on yaw. The occupant's aim (world
+// angles, with how long it has agreed with the record per axis) is published for the input thread, whose stick
+// servo closes on it instead of the slewing gun once it is trusted (gun_slaved::ServoFeedback). The writes are
+// unchanged: world angles, case (a), both axes. The gun stays the outcome -- for the witnesses, and for one guard:
+// an axis written on the occupant's proof alone loses it for the stint if the gun comes to REST more than 3 deg off
+// the record (gun_slaved::OffsetWatch: lag ends when the gun stops, a real marker offset does not).
 
 // SEATEXIT witness (dev builds only): every accumulator call is recorded into a fixed ring
 // (seat_exit_witness.h). The macro's argument is compiled only in a dev build.
@@ -222,6 +238,53 @@ constexpr uint32_t kHalo4RecordUnitOffset = 0x120;
 constexpr uint32_t kHalo4RecordUnitLoadRva = 0xA8C15;
 constexpr const char* kHalo4RecordUnitLoad = "8B 8C 1F 20 01 00 00";
 
+// THE OCCUPANT'S AIM VECTOR, Halo 3 and ODST (gun_slaved_seat_logic.h). Two consumers, each a pattern that must be
+// UNIQUE in the module (found anywhere: the offsets are decoded from the matched instructions, never assumed):
+//   * the first-person camera's forward read, through the seat-flag test that swaps it for the gun's marker
+//     (Halo 3 0x17DB44 in 0x17DAEC, ODST 0x1AC6C8 in 0x1AC670): `movsd xmm0,[unit+X]; ...; mov eax,[unit+X+8]`,
+//     then the seat block's `imul rdx, rax, stride` and `shr eax, 7; test r?b, al`;
+//   * the control update's reset of the record from the same vector (Halo 3 0xF7075 in 0xF66AC, ODST 0x112C50 in
+//     0x112184): `movsd xmm0,[unit+X]; ...; mov eax,[unit+X+8]`, atan2/asin, `movss [record+0xD8]` (pitch) and
+//     `movss [record+0xD4]` (yaw).
+// Measured 2026-10-02 on the retail Steam modules (Halo 3 X = 0x1AC, ODST X = 0x1A4; the Store modules are byte-
+// identical, MCC-EDITIONS-EVIDENCE). ADDR-HYGIENE: resolved (unique signatures, decoded and cross-checked:
+// gun_slaved::ResolveUnitAimOffset), then guarded per seat stint by the occupant's own ValueAgreement -- the
+// record must agree with e(vector) for 30 judged samples per axis before that check proves anything, and the
+// vector must read as a unit normal. Not bound: every gun-slaved seat proves against the camera, as before.
+struct LegacyUnitAimSite
+{
+    const char* camera;
+    uint8_t camForward, camForwardZ, camStride, camShift;
+};
+constexpr const char* kLegacyUnitAimControl =
+    "44 84 AB ?? ?? 00 00 0F 84 ?? ?? ?? ?? F2 0F 10 83 ?? ?? 00 00 48 8D 54 24 ?? 8B 83 ?? ?? 00 00 41 8B ?? "
+    "F2 0F 11 44 24 ?? 89 44 24 ?? E8 ?? ?? ?? ?? F3 0F 10 7C 24 ?? F3 0F 10 74 24 ?? 0F 28 C7 0F 28 D6 F3 0F 59 C7 "
+    "F3 0F 59 D6 F3 0F 58 C2 E8 ?? ?? ?? ?? 0F 28 C8 F3 0F 10 44 24 ?? E8 ?? ?? ?? ?? F3 41 0F 11 84 36 ?? ?? 00 00 "
+    "0F 28 CF 0F 28 C6 E8 ?? ?? ?? ?? F3 0F 10 35 ?? ?? ?? ?? F3 0F 58 C6 0F 28 CE E8 ?? ?? ?? ?? "
+    "F3 41 0F 11 84 36 ?? ?? 00 00";
+constexpr uint8_t kLegacyUnitAimCtlForward = 17, kLegacyUnitAimCtlForwardZ = 28, kLegacyUnitAimCtlPitch = 105,
+                  kLegacyUnitAimCtlYaw = 146;
+constexpr LegacyUnitAimSite kLegacyUnitAimSites[2] = {
+    {"F2 0F 10 86 ?? ?? 00 00 F2 0F 11 03 8B 86 ?? ?? 00 00 89 43 08 83 7E 10 FF 0F 84 ?? ?? ?? ?? 0F B7 46 10 "
+     "41 B9 01 00 00 00 48 8D 14 40 49 8B 04 2E 4C 8B 40 48 41 8B C1 41 8A 4C D0 03 D3 E0 A9 03 10 00 00 "
+     "0F 84 ?? ?? ?? ?? 49 8B 44 D0 10 33 ED 48 8B 15 ?? ?? ?? ?? 0F B7 08 48 8B 05 ?? ?? ?? ?? 44 8B 44 C8 04 "
+     "8B C5 45 85 C0 74 04 4A 8D 04 82 8B 88 ?? ?? 00 00 85 C9 75 05 48 8B CD EB 04 48 8D 0C 8A 48 0F BF 86 "
+     "?? ?? 00 00 48 69 D0 ?? ?? 00 00 8B 04 0A C1 E8 ?? 41 84 C1 74 ?? 8B 4E 10 4C 8D 44 24 30 40 88 6C 24 28 "
+     "BA ?? 00 00 00",
+     4, 14, 144, 153},
+    {"F2 0F 10 86 ?? ?? 00 00 41 83 CB FF F2 0F 11 03 8B 86 ?? ?? 00 00 89 43 08 44 39 5E 10 0F 84 ?? ?? ?? ?? "
+     "0F B7 46 10 45 8D 53 02 4C 8D 04 40 49 8B 04 2E 4C 8B 48 48 41 8B C2 43 8A 4C C1 03 D3 E0 A9 03 20 00 00 "
+     "0F 84 ?? ?? ?? ?? 0F B7 96 ?? ?? 00 00 66 41 3B D3 0F 84 ?? ?? ?? ?? 4B 8B 44 C1 10 33 ED 4C 8B 05 "
+     "?? ?? ?? ?? 0F B7 08 48 8B 05 ?? ?? ?? ?? 44 8B 4C C8 04 8B C5 45 85 C9 74 04 4B 8D 04 88 8B 88 ?? ?? 00 00 "
+     "85 C9 75 05 48 8B CD EB 04 49 8D 0C 88 48 0F BF C2 48 69 D0 ?? ?? 00 00 8B 04 0A C1 E8 ?? 41 84 C2 74 ?? "
+     "8B 4E 10 4C 8D 44 24 30 45 8B CA 40 88 6C 24 28 BA ?? 00 00 00",
+     4, 18, 159, 168},
+};
+constexpr int32_t kLegacyUnitAimSeatStride[2] = {static_cast<int32_t>(kHalo3VehicleSeatStride),
+                                                 static_cast<int32_t>(kOdstVehicleSeatStride)};
+// The occupant's aim, published to the input thread, is current for this long (the servo's feedback otherwise).
+constexpr uint64_t kLegacyOccupantAimFreshMs = 100;
+
 struct LegacyDriveState
 {
     void* target = nullptr;
@@ -245,6 +308,7 @@ struct LegacyDriveState
     std::atomic<uint64_t> setMs{0};
     std::atomic<bool> setValid{false};
     std::atomic<bool> setSeated{false};      // the setpoint is a seat's (seat_direct_drive)
+    std::atomic<bool> setGunSlaved{false};   // seated: the seat's first-person camera is the gun (flag bit 7)
     std::atomic<uint32_t> setAxes{0};        // seated: bit 0 yaw, bit 1 pitch -- the axes the hand owns there
     std::atomic<bool> setPitchLatch{true};   // seated: the latch may read pitch limits (not a look-steered driver's)
     std::atomic<uint32_t> setSeatKey{0};     // seated: which seat (seat_drive::SeatKey)
@@ -253,6 +317,34 @@ struct LegacyDriveState
     aim_write::LimitLatch seatLatch{};
     uint32_t axisTicks[2]{};                 // per axis: consecutive seat writes of it (capped at the prime)
     seat_drive::StintCheck stint{};
+    // Gun-slaved seats: the same check against the occupant's own aim vector (see the header). `unitAimOffset` is
+    // the vector's offset in the unit, bound at install (0: not bound -- the camera check alone, as before).
+    seat_drive::StintCheck stintOccupant{};
+    bool stintOccupantActive = false;
+    uint32_t unitAimOffset = 0;
+    std::atomic<uint32_t> seatOccYawChecks{0}, seatOccPitchChecks{0}, seatOccUnread{0}, seatOccUpdates{0};
+    // The outcome guard per axis (gun_slaved::OffsetWatch; [0] yaw wraps): an axis written on the occupant's proof
+    // alone loses that proof for the stint if the gun comes to rest off the record.
+    gun_slaved::OffsetWatch occWatch[2]{{0.0524f, 0.00175f, 30, true}, {}};
+    std::atomic<uint32_t> seatOccRevoked[2]{};
+    // The occupant's aim for the input thread (seqlock): WORLD angles, the seat it was read in, and how many judged
+    // samples in a row it has agreed with the record per axis (low 16 bits yaw, high 16 pitch).
+    std::atomic<uint32_t> occSeq{0};
+    std::atomic<float> occYaw{0.0f}, occPitch{0.0f};
+    std::atomic<uint64_t> occMs{0};
+    std::atomic<uint32_t> occKey{0}, occAgree{0};
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    // Gun-slaved seats, per report window (deg as float bits): the largest |record - occupant's aim| and
+    // |record - gun| this stint's updates saw, in the record's frame.
+    std::atomic<uint32_t> occRecordMaxBits{0}, gunRecordMaxBits{0};
+    // ...and the input thread's turret witnesses (LegacyDriveTurretWitness, LegacyDriveTurretServo): polls, the
+    // longest gun settle (ms), the peak gun slew (deg/s), the gun's and the hand's pitch reversals and largest swings
+    // (deg), the servo's feedback per axis (occupant / gun) and the pacer's held polls.
+    std::atomic<uint32_t> turretPolls{0}, turretSettleMaxMs{0}, turretSettles{0}, turretPeakSlewBits{0};
+    std::atomic<uint32_t> turretGunReversals{0}, turretGunSwingBits{0}, turretHandReversals{0},
+        turretHandSwingBits{0};
+    std::atomic<uint32_t> turretServoOccupant[2]{}, turretServoGun[2]{}, turretLagHolds[2]{};
+#endif
     bool stintActive = false;
     uint32_t stintKey = 0;
     bool stintPitchFailCounted = false;
@@ -353,6 +445,12 @@ bool LegacyDriveAgrees(bool fresh, float nativeYaw, float nativePitch, float aim
 void LegacyDriveForgetSeat(LegacyDriveState& st)
 {
     st.stint.reset();
+    st.stintOccupant.reset();
+    st.stintOccupantActive = false;
+    st.occWatch[0].reset();
+    st.occWatch[1].reset();
+    // The input thread's servo stops closing on this stint's occupant at once.
+    st.occMs.store(0, std::memory_order_release);
     st.stintActive = false;
     st.stintKey = 0;
     st.stintPitchFailCounted = false;
@@ -370,6 +468,14 @@ void LegacyDriveForgetSeat(LegacyDriveState& st)
     st.wroteValid[1].store(false, std::memory_order_relaxed);
     st.wroteSeq.fetch_add(1, std::memory_order_release);
     st.stintSampleMs = 0;
+}
+
+// This stint's per-axis verdict: the camera's check, or a gun-slaved seat's occupant check where its outcome guard
+// has not revoked it (seat_drive::CombineStints).
+seat_drive::StintVerdict LegacyDriveVerdict(const LegacyDriveState& st)
+{
+    return seat_drive::CombineStints(st.stint, st.stintOccupant, st.stintOccupantActive, st.occWatch[0].revoked,
+                                     st.occWatch[1].revoked);
 }
 
 #if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA
@@ -434,6 +540,88 @@ bool LegacyDriveUniqueAt(uintptr_t base, size_t size, uint32_t rva, const char* 
         return false;
     const uintptr_t next = first + 1;
     return next >= base + size || !sig::Find(next, static_cast<size_t>(base + size - next), pattern);
+}
+
+// The unique match of `pattern` anywhere in the module, or 0 (none, or more than one).
+uintptr_t LegacyDriveUniqueAnywhere(uintptr_t base, size_t size, const char* pattern)
+{
+    const uintptr_t first = sig::Find(base, size, pattern);
+    if (!first)
+        return 0;
+    const uintptr_t next = first + 1;
+    if (next < base + size && sig::Find(next, static_cast<size_t>(base + size - next), pattern))
+        return 0;
+    return first;
+}
+
+// Install thread: bind the occupant's aim vector (kLegacyUnitAimSites). Returns the offset, 0 when not bound; `why`
+// names the first proof that failed and `cameraRva` / `controlRva` where the two consumers were found.
+uint32_t LegacyDriveBindUnitAim(int slot, uintptr_t base, size_t size, const char*& why, uint32_t& cameraRva,
+                                uint32_t& controlRva)
+{
+    why = nullptr;
+    cameraRva = controlRva = 0;
+    if (slot < 0 || slot > 1)
+    {
+        why = "no binding for this title";
+        return 0;
+    }
+    const auto& site = kLegacyUnitAimSites[slot];
+    const uintptr_t camera = LegacyDriveUniqueAnywhere(base, size, site.camera);
+    const uintptr_t control = LegacyDriveUniqueAnywhere(base, size, kLegacyUnitAimControl);
+    if (!camera)
+    {
+        why = "the camera function's forward read is missing or ambiguous";
+        return 0;
+    }
+    if (!control)
+    {
+        why = "the control update's reset from the vector is missing or ambiguous";
+        return 0;
+    }
+    cameraRva = static_cast<uint32_t>(camera - base);
+    controlRva = static_cast<uint32_t>(control - base);
+    const auto i32 = [](uintptr_t at) {
+        int32_t v = 0;
+        memcpy(&v, reinterpret_cast<const void*>(at), sizeof(v));
+        return v;
+    };
+    gun_slaved::UnitAimSites s{};
+    s.cameraForward = i32(camera + site.camForward);
+    s.cameraForwardZ = i32(camera + site.camForwardZ);
+    s.cameraSeatStride = i32(camera + site.camStride);
+    s.cameraFlagShift = *reinterpret_cast<const uint8_t*>(camera + site.camShift);
+    s.controlForward = i32(control + kLegacyUnitAimCtlForward);
+    s.controlForwardZ = i32(control + kLegacyUnitAimCtlForwardZ);
+    s.controlPitchWrite = i32(control + kLegacyUnitAimCtlPitch);
+    s.controlYawWrite = i32(control + kLegacyUnitAimCtlYaw);
+    return gun_slaved::ResolveUnitAimOffset(s, kLegacyUnitAimSeatStride[slot],
+                                            static_cast<int32_t>(kLegacyDriveSites[slot].angles), why);
+}
+
+// Sim thread: the occupant's aim vector as WORLD angles, read from `unit` through the seat frame binding's own
+// salt-checked object walk (the same table the rebase reads). False when unbound, unknown or not a unit normal.
+bool LegacyDriveReadOccupantAim(const LegacyDriveState& st, uint32_t unit, float& yaw, float& pitch)
+{
+    if (!st.unitAimOffset || unit == seat_frame::kNone || !st.frame.ready.load(std::memory_order_acquire))
+        return false;
+    float v[3]{};
+    bool copied = false;
+    __try
+    {
+        const seat_frame_rt::RawMem mem{&st.frame, nullptr};
+        const uintptr_t data = mem.Object(unit, 0);
+        if (data)
+        {
+            memcpy(v, reinterpret_cast<const void*>(data + st.unitAimOffset), sizeof(v));
+            copied = true;
+        }
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        copied = false;
+    }
+    return copied && gun_slaved::AnglesFromVector(v, yaw, pitch);
 }
 
 // Whether the local player's unit is on foot, from the title's own state (sim thread). Unknown = not.
@@ -633,6 +821,12 @@ bool LegacyDriveInstall(GameTitle title, uintptr_t base, size_t size)
     const char* frameWhy = nullptr;
     const bool frameBound = seat_frame_rt::Bind(st.frame, *kLegacyFrameSites[slot], base, size, frameWhy);
     st.frameCounters.unknownLogged.store(0, std::memory_order_relaxed);
+    // Gun-slaved seats: the occupant's aim vector (Halo 3 and ODST; Halo 4's slaved turrets are its own lane).
+    const char* unitAimWhy = nullptr;
+    uint32_t unitAimCameraRva = 0, unitAimControlRva = 0;
+    st.unitAimOffset = slot < 2 ? LegacyDriveBindUnitAim(slot, base, size, unitAimWhy, unitAimCameraRva,
+                                                         unitAimControlRva)
+                                : 0;
     const MH_STATUS created = MH_CreateHook(target, detour, orig);
     if (created != MH_OK || MH_EnableHook(target) != MH_OK)
     {
@@ -658,6 +852,14 @@ bool LegacyDriveInstall(GameTitle title, uintptr_t base, size_t size)
     else
         LOG("DRIVE %s: seat frame reader NOT bound (%s at +0x%X); seats are never written (the stick servo keeps "
             "every seat)", site.name, frameWhy ? frameWhy : "unknown", kLegacyFrameSites[slot]->gateRva);
+    if (slot < 2 && st.unitAimOffset)
+        LOG("DRIVE %s: the occupant's aim vector is unit +0x%X (the first-person camera's read +0x%X and the control "
+            "update's reset +0x%X agree): a gun-slaved seat (flag bit 7, a turret whose camera is its gun) proves its "
+            "record against it as well as the gun, and its stick servo closes on it once it agrees", site.name,
+            st.unitAimOffset, unitAimCameraRva, unitAimControlRva);
+    else if (slot < 2)
+        LOG("DRIVE %s: the occupant's aim vector is NOT bound (%s); a gun-slaved seat proves against the gun's "
+            "camera alone, as before", site.name, unitAimWhy ? unitAimWhy : "unknown");
     return true;
 }
 
@@ -694,9 +896,11 @@ bool LegacyDriveRemove(GameTitle title)
 // Input thread: the servo's target (the converged aim when it resolves) and the game's own aim. `seated`:
 // the local player is in a seat; `axes` (seat_drive::Decide) are the axes the hand owns there -- none keeps
 // the seat on the servo, exactly as before; `pitchLatch`: the seat-limit latch may read pitch limits;
-// `seatKey`: which seat, so a check passed in one seat never carries into the next.
+// `seatKey`: which seat, so a check passed in one seat never carries into the next. `gunSlaved`: the seat's
+// first-person camera is its gun (seat flag bit 7), so `aim` is the gun and the stint also proves the record against
+// the occupant's own aim.
 void LegacyDrivePublish(GameTitle title, float yaw, float pitch, float aimYaw, float aimPitch, bool valid,
-                        bool seated, seat_drive::Axes axes, bool pitchLatch, uint32_t seatKey)
+                        bool seated, seat_drive::Axes axes, bool pitchLatch, uint32_t seatKey, bool gunSlaved)
 {
     const int slot = LegacyDriveSlot(title);
     if (slot < 0)
@@ -715,6 +919,7 @@ void LegacyDrivePublish(GameTitle title, float yaw, float pitch, float aimYaw, f
                      std::memory_order_relaxed);
     st.setPitchLatch.store(pitchLatch, std::memory_order_relaxed);
     st.setSeatKey.store(seatKey, std::memory_order_relaxed);
+    st.setGunSlaved.store(seated && gunSlaved, std::memory_order_relaxed);
     st.seq.fetch_add(1, std::memory_order_release);
 }
 
@@ -785,6 +990,96 @@ bool LegacyDriveSeatLimited(GameTitle title)
     return at && now >= at && now - at <= 150;
 }
 
+// Input thread, a gun-slaved seat (Halo 3 / ODST): the occupant's own aim in WORLD angles, as the hook last read it
+// for seat `seatKey`, and how many judged samples in a row it has agreed with the record per axis ([0] yaw, [1]
+// pitch). False when unbound, torn, stale (kLegacyOccupantAimFreshMs) or another seat's: the servo then closes on the
+// camera's forward, as before.
+bool LegacyDriveOccupantAim(GameTitle title, uint32_t seatKey, float& yaw, float& pitch, unsigned agreeing[2])
+{
+    const int slot = LegacyDriveSlot(title);
+    if (slot < 0 || slot > 1 || !seatKey)
+        return false;
+    const auto& st = g_legacyDrive[slot];
+    for (int attempt = 0; attempt < 2; ++attempt)
+    {
+        const uint32_t before = st.occSeq.load(std::memory_order_acquire);
+        if (before & 1u)
+            continue;
+        const uint64_t at = st.occMs.load(std::memory_order_relaxed);
+        const uint32_t key = st.occKey.load(std::memory_order_relaxed);
+        const uint32_t agree = st.occAgree.load(std::memory_order_relaxed);
+        const float y = st.occYaw.load(std::memory_order_relaxed);
+        const float p = st.occPitch.load(std::memory_order_relaxed);
+        std::atomic_thread_fence(std::memory_order_acquire);
+        if (st.occSeq.load(std::memory_order_relaxed) != before)
+            continue;
+        const uint64_t now = GetTickCount64();
+        if (!at || now < at || now - at > kLegacyOccupantAimFreshMs || key != seatKey || !std::isfinite(y) ||
+            !std::isfinite(p))
+            return false;
+        yaw = y;
+        pitch = p;
+        agreeing[0] = agree & 0xFFFFu;
+        agreeing[1] = agree >> 16;
+        return true;
+    }
+    return false;
+}
+
+#if HALOMCCVR_DEV_DIAGNOSTICS
+// Input thread, dev, every poll of a gun-slaved seat: the gun's settle episodes on the writes (`settle`, stepped by
+// the caller), its slew, and the pitch reversals of the gun against the hand's target -- a gun that reverses where the
+// hand does not is the loop's own nod. For the 2 s turret line (LegacyDriveReport).
+void LegacyDriveTurretWitness(GameTitle title, float gunYaw, float gunPitch, float handPitch, gun_slaved::GunSettle& settle)
+{
+    const int slot = LegacyDriveSlot(title);
+    if (slot < 0 || slot > 1)
+        return;
+    auto& st = g_legacyDrive[slot];
+    static gun_slaved::SlewRate s_slew[2];
+    static gun_slaved::NodWitness s_gunNod[2], s_handNod[2];
+    const uint64_t now = GetTickCount64();
+    st.turretPolls.fetch_add(1, std::memory_order_relaxed);
+    if (settle.episodeDone)
+    {
+        settle.episodeDone = false;
+        st.turretSettles.fetch_add(1, std::memory_order_relaxed);
+        const uint32_t ms = static_cast<uint32_t>((std::min)(settle.lastSettleMs, uint64_t{0xFFFFFFFFu}));
+        uint32_t cur = st.turretSettleMaxMs.load(std::memory_order_relaxed);
+        while (ms > cur && !st.turretSettleMaxMs.compare_exchange_weak(cur, ms, std::memory_order_relaxed)) {}
+    }
+    aim_caller::AtomicMaxFloat(st.turretPeakSlewBits, s_slew[slot].step(gunYaw, gunPitch, now));
+    s_gunNod[slot].step(gunPitch);
+    s_handNod[slot].step(handPitch);
+    unsigned reversals = 0;
+    float swing = 0.0f;
+    s_gunNod[slot].take(reversals, swing);
+    st.turretGunReversals.fetch_add(reversals, std::memory_order_relaxed);
+    aim_caller::AtomicMaxFloat(st.turretGunSwingBits, swing * gun_slaved::kRadToDeg);
+    s_handNod[slot].take(reversals, swing);
+    st.turretHandReversals.fetch_add(reversals, std::memory_order_relaxed);
+    aim_caller::AtomicMaxFloat(st.turretHandSwingBits, swing * gun_slaved::kRadToDeg);
+}
+
+// Input thread, dev: what a gun-slaved seat's stick servo closed on this poll per axis (`feedback`: 1 the occupant,
+// 0 the gun, -1 not steered) and the pacer's held polls since the last call.
+void LegacyDriveTurretServo(GameTitle title, const int feedback[2], const unsigned held[2])
+{
+    const int slot = LegacyDriveSlot(title);
+    if (slot < 0 || slot > 1)
+        return;
+    auto& st = g_legacyDrive[slot];
+    for (int a = 0; a < 2; ++a)
+    {
+        if (feedback[a] == 1)
+            st.turretServoOccupant[a].fetch_add(1, std::memory_order_relaxed);
+        else if (feedback[a] == 0)
+            st.turretServoGun[a].fetch_add(1, std::memory_order_relaxed);
+        st.turretLagHolds[a].fetch_add(held[a], std::memory_order_relaxed);
+    }
+}
+#endif
+
 namespace
 {
 // This (sim) thread's TLS -> the record the native update just wrote. 0 when any link is missing.
@@ -806,7 +1101,7 @@ struct LegacyDrivePublication
     float yaw = 0.0f, pitch = 0.0f, aimYaw = 0.0f, aimPitch = 0.0f;
     uint64_t setMs = 0;
     uint32_t axesBits = 0, seatKey = 0;
-    bool valid = false, seated = false, pitchLatch = true, coherent = false;
+    bool valid = false, seated = false, pitchLatch = true, coherent = false, gunSlaved = false;
     // What a stick write was made under, for the put-back (aim_caller::Context).
     aim_caller::Context context() const { return {seated, seatKey, axesBits, pitchLatch}; }
 };
@@ -829,6 +1124,7 @@ LegacyDrivePublication LegacyDriveReadPublication(const LegacyDriveState& st)
         p.axesBits = st.setAxes.load(std::memory_order_relaxed);
         p.pitchLatch = st.setPitchLatch.load(std::memory_order_relaxed);
         p.seatKey = st.setSeatKey.load(std::memory_order_relaxed);
+        p.gunSlaved = st.setGunSlaved.load(std::memory_order_relaxed);
         std::atomic_thread_fence(std::memory_order_acquire);   // the loads above stay before the re-read
         p.coherent = st.seq.load(std::memory_order_relaxed) == before;
     }
@@ -1130,15 +1426,35 @@ extern "C" void LegacyPcApplyForUser(int slot, int user, uintptr_t ret, const ui
                 (!onFoot && seatConfirmed && g_config.seat_direct_drive && fresh) ? axesBits : 0u;
             const bool seatWrite = wantAxes != 0;
             seatKept = seatWrite;
+            // A GUN-SLAVED SEAT (flag bit 7, the header): `aim` is the gun, so the occupant's own aim vector is read
+            // as well, from the same unit the rebase rotates, and proven against the record beside it.
+            const bool occupantActive = seatWrite && pub.gunSlaved && st.unitAimOffset != 0;
+            float occupantYaw = std::numeric_limits<float>::quiet_NaN(), occupantPitch = occupantYaw;
+            float occupantWorldYaw = occupantYaw, occupantWorldPitch = occupantYaw;
+            bool occupantRead = false;
             // THE SEAT'S FRAME, read now from the unit the rebase will rotate this tick (see the header). In case
             // (b) the hand's aim and the game's aim go into the record's frame; unread, nothing is written.
             if (seatWrite)
             {
-                seatFrame = seat_frame_rt::Read(st.frame, nullptr, LegacyDriveSeatUnit(slot, st, pc));
+                const uint32_t seatUnit = LegacyDriveSeatUnit(slot, st, pc);
+                seatFrame = seat_frame_rt::Read(st.frame, nullptr, seatUnit);
                 seat_frame_rt::Count(st.frameCounters, seatFrame.kase);
+                if (occupantActive)
+                {
+                    occupantRead = LegacyDriveReadOccupantAim(st, seatUnit, occupantWorldYaw, occupantWorldPitch);
+                    st.seatOccUpdates.fetch_add(1, std::memory_order_relaxed);
+                    if (!occupantRead)
+                        st.seatOccUnread.fetch_add(1, std::memory_order_relaxed);
+                }
 #if HALOMCCVR_DEV_DIAGNOSTICS
-                // THE FRAME CHECK: the record (as the accumulator left it) through R against the game's world aim.
-                seat_frame_rt::NoteFrameCheck(st.frameCounters, seatFrame, nativeYaw, nativePitch, aimYaw, aimPitch);
+                // THE FRAME CHECK: the record (as the accumulator left it) through R against the game's world aim --
+                // in a gun-slaved seat the occupant's, which the record drives (the gun only follows it).
+                if (occupantRead)
+                    seat_frame_rt::NoteFrameCheck(st.frameCounters, seatFrame, nativeYaw, nativePitch,
+                                                  occupantWorldYaw, occupantWorldPitch);
+                else
+                    seat_frame_rt::NoteFrameCheck(st.frameCounters, seatFrame, nativeYaw, nativePitch, aimYaw,
+                                                  aimPitch);
 #endif
                 if (!seat_frame_rt::ToRecord(seatFrame, yaw, pitch, nativeYaw) ||
                     !seat_frame_rt::ToRecord(seatFrame, aimYaw, aimPitch, nativeYaw))
@@ -1152,6 +1468,12 @@ extern "C" void LegacyPcApplyForUser(int slot, int user, uintptr_t ret, const ui
                     st.seatedSkips.fetch_add(1, std::memory_order_relaxed);
                     st.agree = 0;
                     break;
+                }
+                if (occupantRead)
+                {
+                    occupantYaw = occupantWorldYaw;
+                    occupantPitch = occupantWorldPitch;
+                    occupantRead = seat_frame_rt::ToRecord(seatFrame, occupantYaw, occupantPitch, nativeYaw);
                 }
             }
 #if HALOMCCVR_DEV_DIAGNOSTICS
@@ -1198,29 +1520,98 @@ extern "C" void LegacyPcApplyForUser(int slot, int user, uintptr_t ret, const ui
                     st.seatStints.fetch_add(1, std::memory_order_relaxed);
                 }
                 st.stintStaleUpdates = 0;
-                const bool yawWas = st.stint.yaw_ok, pitchWas = st.stint.pitch_ok;
+                st.stintOccupantActive = occupantActive;
+                const seat_drive::StintVerdict was =
+                    LegacyDriveVerdict(st);
                 const bool newSample = setMs != st.stintSampleMs;
                 st.stintSampleMs = setMs;
                 st.stint.step(fresh, nativeYaw, nativePitch, aimYaw, aimPitch, now, newSample);
-                if (!yawWas && st.stint.yaw_ok)
+                // The occupant's vector is read on this thread, on the record's own clock, every update: each read is
+                // a sample (a repeat of the same tick is a still sample, which the check reads as such).
+                if (occupantActive)
+                    st.stintOccupant.step(fresh && occupantRead, nativeYaw, nativePitch, occupantYaw, occupantPitch,
+                                          now, true);
+                const seat_drive::StintVerdict v =
+                    LegacyDriveVerdict(st);
+                if (!was.yaw_ok && v.yaw_ok)
+                {
                     st.seatYawChecks.fetch_add(1, std::memory_order_relaxed);
-                if (!pitchWas && st.stint.pitch_ok)
+                    if (v.yaw_by_occupant)
+                        st.seatOccYawChecks.fetch_add(1, std::memory_order_relaxed);
+                }
+                if (!was.pitch_ok && v.pitch_ok)
+                {
                     st.seatPitchChecks.fetch_add(1, std::memory_order_relaxed);
+                    if (v.pitch_by_occupant)
+                        st.seatOccPitchChecks.fetch_add(1, std::memory_order_relaxed);
+                }
                 // Counted only where the seat wants its pitch (a Halo 4 seat never does); each failed attempt
                 // once (the check retries every 5 s).
-                if (st.stint.pitch_failed && !st.stintPitchFailCounted && (wantAxes & kLegacyDriveAxisPitch))
+                if (v.pitch_failed && !st.stintPitchFailCounted && (wantAxes & kLegacyDriveAxisPitch))
                 {
                     st.stintPitchFailCounted = true;
                     st.seatPitchFails.fetch_add(1, std::memory_order_relaxed);
                 }
-                else if (!st.stint.pitch_failed)
+                else if (!v.pitch_failed)
                     st.stintPitchFailCounted = false;
+                // THE OUTCOME GUARD: an axis written on the occupant's proof alone is watched for the gun coming to
+                // rest off the record (a real offset, not lag); then the camera's check decides it again.
+                if (occupantActive && fresh && newSample)
+                {
+                    const bool byOccupant[2]{v.yaw_by_occupant, v.pitch_by_occupant};
+                    const float record[2]{nativeYaw, nativePitch}, gun[2]{aimYaw, aimPitch};
+                    for (int a = 0; a < 2; ++a)
+                    {
+                        auto& watch = st.occWatch[a];
+                        if (watch.revoked)
+                            continue;
+                        if (!byOccupant[a])
+                        {
+                            watch.have = false;
+                            watch.count = 0;
+                            continue;
+                        }
+                        if (watch.step(record[a], gun[a]))
+                            st.seatOccRevoked[a].fetch_add(1, std::memory_order_relaxed);
+                    }
+                }
+                // For the input thread's servo: the occupant's WORLD aim and how long it has agreed per axis.
+                if (occupantActive && occupantRead)
+                {
+                    const uint32_t yawAgree =
+                        st.occWatch[0].revoked ? 0u : (std::min)(st.stintOccupant.agreeing(0), 0xFFFFu);
+                    const uint32_t pitchAgree =
+                        st.occWatch[1].revoked ? 0u : (std::min)(st.stintOccupant.agreeing(1), 0xFFFFu);
+                    st.occSeq.fetch_add(1, std::memory_order_acq_rel);
+                    st.occYaw.store(occupantWorldYaw, std::memory_order_relaxed);
+                    st.occPitch.store(occupantWorldPitch, std::memory_order_relaxed);
+                    st.occKey.store(seatKey, std::memory_order_relaxed);
+                    st.occAgree.store(yawAgree | pitchAgree << 16, std::memory_order_relaxed);
+                    st.occMs.store(now, std::memory_order_relaxed);
+                    st.occSeq.fetch_add(1, std::memory_order_release);
+                }
+#if HALOMCCVR_DEV_DIAGNOSTICS
+                // The turret line (dev): the record against the occupant's aim and against the gun, record frame.
+                if (occupantActive)
+                {
+                    if (occupantRead)
+                        aim_caller::AtomicMaxFloat(st.occRecordMaxBits, gun_slaved::AngleBetweenDeg(
+                            nativeYaw, nativePitch, occupantYaw, occupantPitch));
+                    if (fresh)
+                        aim_caller::AtomicMaxFloat(st.gunRecordMaxBits, gun_slaved::AngleBetweenDeg(
+                            nativeYaw, nativePitch, aimYaw, aimPitch));
+                }
+#endif
             }
             if (!st.armed.load(std::memory_order_acquire))
             {
                 // ValueAgreement: the record must hold the game's own aim before it is ever written -- both
                 // axes on foot; yaw in a seat, whose pitch need not (its own check decides that axis).
-                const bool armAgree = seatWrite ? LegacyDriveYawAgrees(fresh, nativeYaw, aimYaw) : agrees;
+                // A gun-slaved seat may arm on the occupant's own aim as well as the gun's.
+                const bool armAgree = seatWrite
+                    ? (LegacyDriveYawAgrees(fresh, nativeYaw, aimYaw) ||
+                       (occupantRead && LegacyDriveYawAgrees(fresh, nativeYaw, occupantYaw)))
+                    : agrees;
                 st.agree = armAgree ? st.agree + 1 : 0;
                 if (st.agree >= kLegacyDriveAgreeUpdates)
                 {
@@ -1244,14 +1635,18 @@ extern "C" void LegacyPcApplyForUser(int slot, int user, uintptr_t ret, const ui
             bool writeYaw = true, writePitch = true;
             if (seatWrite)
             {
-                writeYaw = (wantAxes & kLegacyDriveAxisYaw) && st.stint.yaw_ok;
-                writePitch = (wantAxes & kLegacyDriveAxisPitch) && st.stint.yaw_ok && st.stint.pitch_ok;
+                // Either reference proves an axis (seat_drive::CombineStints): the camera's, or -- in a gun-slaved
+                // seat -- the occupant's.
+                const seat_drive::StintVerdict v =
+                    LegacyDriveVerdict(st);
+                writeYaw = (wantAxes & kLegacyDriveAxisYaw) && v.yaw_ok;
+                writePitch = (wantAxes & kLegacyDriveAxisPitch) && v.yaw_ok && v.pitch_ok;
                 if (!writeYaw && !writePitch)
                 {
                     // Waiting on a check only while one is pending; a pitch that failed its check is on the
                     // servo until its retry, which is not a wait.
-                    const bool pending = ((wantAxes & kLegacyDriveAxisYaw) && !st.stint.yaw_ok) ||
-                        ((wantAxes & kLegacyDriveAxisPitch) && !st.stint.pitch_ok && !st.stint.pitch_failed);
+                    const bool pending = ((wantAxes & kLegacyDriveAxisYaw) && !v.yaw_ok) ||
+                        ((wantAxes & kLegacyDriveAxisPitch) && !v.pitch_ok && !v.pitch_failed);
                     if (pending)
                         st.seatUnverified.fetch_add(1, std::memory_order_relaxed);
                     LEGACY_DRIVE_WITNESS(ds.outcome = seat_witness::DriveUnverified);
@@ -1399,10 +1794,13 @@ extern "C" void LegacyPcApplyForUser(int slot, int user, uintptr_t ret, const ui
         st.seatLimitedMs.store(0, std::memory_order_release);
     }
 #if HALOMCCVR_DEV_DIAGNOSTICS
-    ds.flags |= (st.armed.load(std::memory_order_relaxed) ? seat_witness::DriveArmed : 0) |
-        (st.stintActive ? seat_witness::DriveStint : 0) | (st.stint.yaw_ok ? seat_witness::DriveYawOk : 0) |
-        (st.stint.pitch_ok ? seat_witness::DrivePitchOk : 0) |
-        (st.stint.pitch_failed ? seat_witness::DrivePitchFailed : 0);
+    {
+        const seat_drive::StintVerdict v =
+            LegacyDriveVerdict(st);
+        ds.flags |= (st.armed.load(std::memory_order_relaxed) ? seat_witness::DriveArmed : 0) |
+            (st.stintActive ? seat_witness::DriveStint : 0) | (v.yaw_ok ? seat_witness::DriveYawOk : 0) |
+            (v.pitch_ok ? seat_witness::DrivePitchOk : 0) | (v.pitch_failed ? seat_witness::DrivePitchFailed : 0);
+    }
     SeatWitness_RecordDrive(ds);
 #endif
     st.callbacks.fetch_sub(1, std::memory_order_acq_rel);
@@ -1466,13 +1864,29 @@ void LegacyDriveReport()
             const bool unread = seat_frame_rt::CaseText(st.frameCounters, frames, sizeof(frames));
             if (stints || yawWrites || pitchWrites || unverified || yawChecks || pitchChecks || pitchFails || held ||
                 frames[0])
+            {
+                const seat_drive::StintVerdict v =
+                    LegacyDriveVerdict(st);
                 LOG("DRIVE %s seats: new stints %u; checks passed yaw %u pitch %u, pitch checks failed %u (retried after 5 s); writes "
                     "yaw %u pitch %u (held at a seat limit %u); updates waiting on a check %u; this stint yaw %s, "
                     "pitch %s; %s",
                     name, stints, yawChecks, pitchChecks, pitchFails, yawWrites, pitchWrites, held, unverified,
-                    st.stint.yaw_ok ? "proven" : "checking",
-                    st.stint.pitch_ok ? "proven" : st.stint.pitch_failed ? "servo until its retry" : "checking",
+                    v.yaw_ok ? "proven" : "checking",
+                    v.pitch_ok ? "proven" : v.pitch_failed ? "servo until its retry" : "checking",
                     frames[0] ? frames : "frame not read");
+            }
+            // Gun-slaved seats (flag bit 7): what the occupant's own aim proved, and reads that failed.
+            const uint32_t occUpdates = st.seatOccUpdates.exchange(0), occYaw = st.seatOccYawChecks.exchange(0),
+                           occPitch = st.seatOccPitchChecks.exchange(0), occUnread = st.seatOccUnread.exchange(0),
+                           revokedYaw = st.seatOccRevoked[0].exchange(0), revokedPitch = st.seatOccRevoked[1].exchange(0);
+            if (occUpdates || occYaw || occPitch || revokedYaw || revokedPitch)
+                LOG("DRIVE %s gun-slaved seat (its camera is the gun): %u updates proved against the occupant's own aim "
+                    "too; checks it passed alone yaw %u pitch %u; revoked (the gun came to rest > 3 deg off the record) "
+                    "yaw %u pitch %u; vector unreadable %u; this stint the occupant's check yaw %s, pitch %s",
+                    name, occUpdates, occYaw, occPitch, revokedYaw, revokedPitch, occUnread,
+                    st.occWatch[0].revoked ? "revoked" : st.stintOccupant.yaw_ok ? "proven" : "checking",
+                    st.occWatch[1].revoked ? "revoked"
+                        : st.stintOccupant.pitch_ok ? "proven" : st.stintOccupant.pitch_failed ? "failed" : "checking");
             // Once per binding: a seat whose frame did not read is never written (the servo keeps it).
             if (unread && !st.frameCounters.unknownLogged.exchange(1, std::memory_order_relaxed))
                 LOG("DRIVE %s seats: the seat's frame did not read (the rebase's links or the vehicle's up failed "
@@ -1485,6 +1899,36 @@ void LegacyDriveReport()
             seat_frame_rt::FrameCheckText(st.frameCounters, check, sizeof(check));
             if (check[0])
                 LOG("DRIVE %s seats (dev): %s", name, check);   // frame check: max |R*e(record) - game aim| ...
+        }
+        {
+            // THE TURRET LINE (gun-slaved seats): the record against the occupant's aim and the gun, how the gun
+            // landed on the writes, its peak slew, the gun's pitch reversals against the hand's (a nod reverses where
+            // the hand does not), and what the stick servo closed on.
+            const float occMax = aim_caller::BitsToFloat(st.occRecordMaxBits.exchange(0, std::memory_order_relaxed));
+            const float gunMax = aim_caller::BitsToFloat(st.gunRecordMaxBits.exchange(0, std::memory_order_relaxed));
+            const uint32_t polls = st.turretPolls.exchange(0, std::memory_order_relaxed);
+            const uint32_t settles = st.turretSettles.exchange(0, std::memory_order_relaxed);
+            const uint32_t settleMax = st.turretSettleMaxMs.exchange(0, std::memory_order_relaxed);
+            const float slew = aim_caller::BitsToFloat(st.turretPeakSlewBits.exchange(0, std::memory_order_relaxed));
+            const uint32_t gunRev = st.turretGunReversals.exchange(0, std::memory_order_relaxed);
+            const float gunSwing = aim_caller::BitsToFloat(st.turretGunSwingBits.exchange(0, std::memory_order_relaxed));
+            const uint32_t handRev = st.turretHandReversals.exchange(0, std::memory_order_relaxed);
+            const float handSwing =
+                aim_caller::BitsToFloat(st.turretHandSwingBits.exchange(0, std::memory_order_relaxed));
+            uint32_t occFb[2], gunFb[2], holds[2];
+            for (int a = 0; a < 2; ++a)
+            {
+                occFb[a] = st.turretServoOccupant[a].exchange(0, std::memory_order_relaxed);
+                gunFb[a] = st.turretServoGun[a].exchange(0, std::memory_order_relaxed);
+                holds[a] = st.turretLagHolds[a].exchange(0, std::memory_order_relaxed);
+            }
+            if (polls || occMax > 0.0f || gunMax > 0.0f)
+                LOG("DRIVE %s turret (dev): record vs the occupant's aim max %.2f deg, vs the gun max %.2f deg; gun "
+                    "settled on the writes %u times, longest %u ms, peak slew %.0f deg/s; pitch reversals gun %u (max "
+                    "swing %.1f deg) vs hand %u (max swing %.1f deg) in %u polls; servo closed on the occupant yaw %u "
+                    "pitch %u, on the gun yaw %u pitch %u, pacer held yaw %u pitch %u",
+                    name, occMax, gunMax, settles, settleMax, slew, gunRev, gunSwing, handRev, handSwing, polls,
+                    occFb[0], occFb[1], gunFb[0], gunFb[1], holds[0], holds[1]);
         }
         // THE CENSUS: calls per sim tick and per caller. "stick per tick" is frames per tick (2.00 at 120 fps
         // over a 60 Hz sim); ~1.00 at 120 fps would mean the pass runs per tick after all.

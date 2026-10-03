@@ -247,6 +247,7 @@ bool Halo4Type13LogRemove();
 #include "../common/aim_write_logic.h"
 #include "../common/aim_caller_logic.h"
 #include "../common/seat_drive_policy.h"
+#include "../common/gun_slaved_seat_logic.h"
 #include "../common/converge_policy.h"
 #include "../common/assess_reticle_logic.h"
 #include "../common/halo4_seat_aim_logic.h"
@@ -11874,6 +11875,18 @@ namespace
         if (!xf.valid.load(std::memory_order_relaxed))
             return false;
         return (xf.occupiedSeatFlags & kOdstSeatAllowsWeaponsBit) != 0;
+    }
+
+    // The occupied ODST seat's own flags (the live seat word: C20 clears only bit 4), or 0 when no seat is sampled.
+    // Bit 7 marks a seat whose first-person camera is its gun (gun_slaved_seat_logic.h).
+    uint32_t OdstOccupiedSeatFlags()
+    {
+        if (!OdstVehicleFpActive())
+            return 0;
+        OdstVehicleTransform& xf = g_odstVehicleTransform;
+        if (!xf.valid.load(std::memory_order_relaxed))
+            return 0;
+        return xf.occupiedSeatFlags;
     }
 
     // Hold the engine's exposure steady while a seat owns the view. Looking
@@ -52247,6 +52260,13 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
     // before writing it and reports what it wrote; an axis it does not write stays on the servo below (or the
     // steering author), and the stick is zeroed only on the written ones (seatWritten).
     seat_drive::Axes seatWritten{};
+    // GUN-SLAVED SEAT (Halo 3 / ODST seat flag bit 7, gun_slaved_seat_logic.h): this poll's seat when its first-person
+    // camera is the GUN -- the game's aim read above is then the gun's marker, slewing toward the record. The hook
+    // proves that seat against the occupant's own aim as well, and the servo below closes on it once it agrees.
+    bool gunSlavedSeat = false;
+    uint32_t gunSlavedKey = 0;
+    int32_t gunSlavedParent = -1;   // the turret vehicle (Halo 3; the dev shot witness)
+    (void)gunSlavedParent;
 #if HALOMCCVR_DEV_DIAGNOSTICS
     // This poll's natural in-game causes that used to switch a seat's convergence off (the latch holding a
     // written axis at the seat's clamp, the game's aim staying off the writes, a stall, a turret's rate cap).
@@ -52266,7 +52286,7 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
         const GameTitle driveTitle = TitleAdapter_GetActiveTitle();
         if (driveTitle == GameTitle::Halo3 || driveTitle == GameTitle::Halo3ODST ||
             driveTitle == GameTitle::Halo4)
-            LegacyDrivePublish(driveTitle, 0.0f, 0.0f, 0.0f, 0.0f, false, false, seat_drive::Axes{}, true, 0);
+            LegacyDrivePublish(driveTitle, 0.0f, 0.0f, 0.0f, 0.0f, false, false, seat_drive::Axes{}, true, 0, false);
     }
     else if (g_config.legacy_direct_drive)
     {
@@ -52297,6 +52317,11 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
                         seatFacts.driver = Halo3SeatIsDriver(id, seat.seatIndex, seat.mounted);
                         seatFacts.look_steered = Halo3VehicleIsLookSteered(id);
                         seatKey = seat_drive::SeatKey(seat.parentHandle, seat.seatIndex, seat.mounted);
+                        // The seat's ORIGINAL tag flags (C20 keeps them while it owns the view; it clears bit 4 only).
+                        gunSlavedSeat = seatFacts.view_owned &&
+                            gun_slaved::CameraSlavedToGun(Halo3OccupiedSeatFlags());
+                        gunSlavedKey = seatKey;
+                        gunSlavedParent = seat.parentHandle;
                     }
                 }
 #if HALOMCCVR_EXPERIMENTAL_ODST_BRINGUP
@@ -52311,6 +52336,9 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
                         seatFacts.driver = OdstSeatIsDriver(seat.identity, seat.seatIndex, seat.mounted);
                         seatFacts.look_steered = OdstVehicleIsLookSteered(seat.identity);
                         seatKey = seat_drive::SeatKey(seat.parentHandle, seat.seatIndex, seat.mounted);
+                        gunSlavedSeat = seatFacts.view_owned &&
+                            gun_slaved::CameraSlavedToGun(OdstOccupiedSeatFlags());
+                        gunSlavedKey = seatKey;
                     }
                 }
 #endif
@@ -52348,8 +52376,10 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
             // accumulator and so keeps every limit.
             if (halo4Aim)
                 seatAxes.pitch = false;
+            if (!driveSeated)
+                gunSlavedSeat = false;
             LegacyDrivePublish(driveTitle, desiredYaw, desiredPitch, aimYaw, aimPitch, true, driveSeated, seatAxes,
-                               seat_drive::PitchLatches(seatFacts), seatKey);
+                               seat_drive::PitchLatches(seatFacts), seatKey, gunSlavedSeat);
             if (!driveSeated && LegacyDriveLive(driveTitle))
             {
                 // The game's aim IS the written target now. A converged target is then the game's aim itself,
@@ -52377,7 +52407,6 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
             // and the mark no longer follow it, nor the game's aim trailing the writes downstream of the record (a
             // gun's rate cap, an aiming clip), nor a turret. Counted for the dev line, decided on by nothing.
             natural.latchHeld = seatWritten.any() && LegacyDriveSeatLimited(driveTitle);
-            natural.turretSlew = seatWritten.any() && !halo4Aim && OccupiedTurretSeat();
             {
                 // The game's aim against the nearer of the hook's last two writes, never this poll's target (the
                 // aim trails the newest write by up to a tick): a miss held there is downstream of the record.
@@ -52385,6 +52414,33 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
                 bool writtenValid[2]{};
                 const bool haveWrites = seatWritten.any() &&
                     LegacyDriveSeatWrites(driveTitle, writtenYaw, writtenPitch, writtenValid);
+                // A TURRET's gun slews onto the writes at its own rate, so its line is off the point while it
+                // travels -- by design, not a miss of the solve. Until 2026-10-02 every turret poll was skipped, so
+                // a turret's shot line was never measured; now the gun counts as slewing only until it has SETTLED
+                // (within 1 deg of the nearer of the last two writes for 120 ms), and the engine-crosshair witness
+                // scores it from then on.
+                static gun_slaved::GunSettle s_turretSettle;
+                const bool turretNow = seatWritten.any() && !halo4Aim && (OccupiedTurretSeat() || gunSlavedSeat);
+                bool gunSettled = false;
+                if (turretNow && haveWrites && seatWritten.yaw && seatWritten.pitch)
+                {
+                    float gunMiss = gun_slaved::AngleBetweenDeg(aimYaw, aimPitch, writtenYaw[0], writtenPitch[0]);
+                    if (writtenValid[1])
+                        gunMiss = std::fmin(gunMiss, gun_slaved::AngleBetweenDeg(aimYaw, aimPitch, writtenYaw[1],
+                                                                                writtenPitch[1]));
+                    gunSettled = s_turretSettle.step(gunMiss / 57.2957795f, GetTickCount64());
+                }
+                else
+                {
+                    s_turretSettle.reset();
+                }
+                natural.turretSlew = turretNow && !gunSettled;
+                if (gunSlavedSeat && !halo4Aim)
+                {
+                    LegacyDriveTurretWitness(driveTitle, aimYaw, aimPitch, desiredPitch, s_turretSettle);
+                    if (driveTitle == GameTitle::Halo3)
+                        LegacySightPublishTurretSeat(gunSlavedParent, gunSettled);
+                }
                 static seat_drive::OutcomeGate s_seatYawWitness, s_seatOutcomeWitness;
                 if (seatWritten.yaw && !seatWritten.pitch && haveWrites)
                 {
@@ -52446,15 +52502,40 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
         }
     }
 
-    const float errYaw = WrapPi(desiredYaw - aimYaw);
-    const float errPitch = desiredPitch - aimPitch;
+    // THE SERVO'S FEEDBACK. The camera's forward, as always -- except in a gun-slaved seat (flag bit 7), where that
+    // forward is the gun, slewing toward what the stick already asked for: closing on it ran the record past the
+    // target and the gun nodded. There each axis closes on the occupant's own aim (the record's twin, read by the
+    // hook) once it has agreed with the record for gun_slaved::kServoTrustSamples samples this stint; until then, or
+    // with no fresh read, on the gun as before. Either way the gun-slaved servo is paced (gun_slaved::ServoPacer).
+    float servoAimYaw = aimYaw, servoAimPitch = aimPitch;
+    const bool gunSlavedServo = gunSlavedSeat && !halo4Aim && !freeCamera;
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    int servoFeedback[2]{-1, -1};   // per axis: 1 the occupant, 0 the gun, -1 not steered (dev witness)
+#endif
+    if (gunSlavedServo)
+    {
+        float occupantYaw = 0.0f, occupantPitch = 0.0f;
+        unsigned agreeing[2]{};
+        const bool occupantFresh = LegacyDriveOccupantAim(TitleAdapter_GetActiveTitle(), gunSlavedKey, occupantYaw,
+                                                          occupantPitch, agreeing);
+        if (gun_slaved::ServoFeedback(true, occupantFresh, agreeing[0]) == gun_slaved::Feedback::Occupant)
+            servoAimYaw = occupantYaw;
+        if (gun_slaved::ServoFeedback(true, occupantFresh, agreeing[1]) == gun_slaved::Feedback::Occupant)
+            servoAimPitch = occupantPitch;
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        servoFeedback[0] = seatWritten.yaw ? -1 : servoAimYaw == aimYaw ? 0 : 1;
+        servoFeedback[1] = seatWritten.pitch ? -1 : servoAimPitch == aimPitch ? 0 : 1;
+#endif
+    }
+    const float errYaw = WrapPi(desiredYaw - servoAimYaw);
+    const float errPitch = desiredPitch - servoAimPitch;
 
     // A turret's gun is a rate-capped machine, not the occupant's weapon: the
     // servo below parks it instead of hunting (its reticle stays on the hand's
     // point, 2026-10-01). Halo 4's seats are read from its own stamp below;
     // OccupiedTurretSeat's state is another title's.
     // (No seat at all in the free-camera frame: a seat state left over from the death must not count.)
-    bool turretSeat = !halo4Aim && !freeCamera && OccupiedTurretSeat();
+    bool turretSeat = !halo4Aim && !freeCamera && (OccupiedTurretSeat() || gunSlavedServo);
 #if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA && HALOMCCVR_DEV_DIAGNOSTICS
     // Stage 1 (dev key halo4_seat_converge): a Halo 4 slaved-turret seat (seat flag bit 7, whose aim camera IS
     // the turret marker's line) is a turret here too -- for the servo's PARKING only (its pitch is on this servo);
@@ -52560,6 +52641,17 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
     // gun is within a third of a degree the loop commands exactly zero, and it
     // takes authority again only past a band that the measured step widens.
     static AimServoAxis servoPitch, servoYaw;
+    // A gun-slaved seat's pacer per axis (gun_slaved::ServoPacer): one pulse, then wait for the feedback to answer.
+    static gun_slaved::ServoPacer servoPacerPitch, servoPacerYaw;
+    servoPacerYaw.wrap = true;
+    static bool servoWasPaced = false;
+    // Afresh on entering a gun-slaved seat, after the drive wrote both axes, and around a free-camera edge.
+    if (!gunSlavedServo || !servoWasPaced || s_turretServoStale || g_aimFreeCameraServoReset)
+    {
+        servoPacerPitch.reset();
+        servoPacerYaw.reset();
+    }
+    servoWasPaced = gunSlavedServo;
     static float servoLastPitchCommand = 0.0f;
     static float servoLastYawCommand = 0.0f;
     static bool servoWasTurret = false;
@@ -52590,8 +52682,8 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
                 "60 deg/s yaw and NO pitch cap), so the loop parks instead "
                 "of hunting; the reticle stays on the hand's point");
         }
-        AimServoObserve(servoPitch, aimPitch, servoLastPitchCommand);
-        AimServoObserve(servoYaw, aimYaw, servoLastYawCommand);
+        AimServoObserve(servoPitch, servoAimPitch, servoLastPitchCommand);
+        AimServoObserve(servoYaw, servoAimYaw, servoLastYawCommand);
         ++servoFrames;
     }
     else if (servoWasTurret)
@@ -52618,9 +52710,20 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
     const bool servoParks = aim_no_unit::ServoParks(turretSeat, freeCamera);
 
     outRy = servoParks
-        ? AimServoCommand(servoPitch, errPitch, k, kAimServoRestEnterRadians,
-                          kAimServoRestExitRadians)
+        ? AimServoCommand(servoPitch, errPitch, k,
+                          gunSlavedServo ? servoPacerPitch.enter(kAimServoRestEnterRadians) : kAimServoRestEnterRadians,
+                          gunSlavedServo ? servoPacerPitch.exit(kAimServoRestExitRadians) : kAimServoRestExitRadians)
         : Clamp(errPitch * k, -1.0f, 1.0f);
+    if (gunSlavedServo)
+        outRy = servoPacerPitch.pace(servoAimPitch, errPitch, seatWritten.pitch ? 0.0f : outRy, kAimServoStickFloor);
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    if (gunSlavedServo)
+    {
+        unsigned held[2]{servoPacerYaw.holds, servoPacerPitch.holds};
+        servoPacerYaw.holds = servoPacerPitch.holds = 0;
+        LegacyDriveTurretServo(TitleAdapter_GetActiveTitle(), servoFeedback, held);
+    }
+#endif
 
     // C9: with the view reference following the hull, a look-steered driver's
     // yaw error stops depending on the vehicle's heading â€” the closed loop has
@@ -52676,10 +52779,17 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
         return true;
     }
 #endif
-    outRx = servoParks
-        ? -AimServoCommand(servoYaw, errYaw, k, kAimServoRestEnterRadians,
-                           kAimServoRestExitRadians)
-        : Clamp(-errYaw * k, -1.0f, 1.0f);
+    {
+        float yawCommand = servoParks
+            ? AimServoCommand(servoYaw, errYaw, k,
+                              gunSlavedServo ? servoPacerYaw.enter(kAimServoRestEnterRadians) : kAimServoRestEnterRadians,
+                              gunSlavedServo ? servoPacerYaw.exit(kAimServoRestExitRadians) : kAimServoRestExitRadians)
+            : Clamp(errYaw * k, -1.0f, 1.0f);
+        if (gunSlavedServo)
+            yawCommand = servoPacerYaw.pace(servoAimYaw, errYaw, seatWritten.yaw ? 0.0f : yawCommand,
+                                            kAimServoStickFloor);
+        outRx = -yawCommand;
+    }
     // A seat axis the direct drive writes is not steered as well (the other axis is still waiting on its
     // check, or this seat's policy leaves it on this servo).
     if (seatWritten.yaw)
