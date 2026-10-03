@@ -196,6 +196,7 @@ void Halo4SightTraceTick(uint32_t unit,void* instance)
     const uint64_t unitAt=g_halo4SightUnitAtMs.load(std::memory_order_acquire);
     if(!unitAt || now<unitAt || now-unitAt>250 ||
         unit!=static_cast<uint32_t>(g_halo4SightUnit.load(std::memory_order_relaxed))) return;
+    Sight_NoteSimTick(kTitle);   // dev: the SHOT LAG line's measured tick
     if(Sight_TraceFaulted(kTitle) || !Sight_TraceDue(kTitle,Sight_NowMs())) return;
     const uint32_t generation=TitleAdapter_GetGeneration(kTitle);
     SightRay ray{};

@@ -1996,12 +1996,18 @@ namespace
         uintptr_t caller, float out[3]);
     bool ReachSightReadIntent(uint64_t maxAgeUs, float point[3], float eye[3], float vel[3], bool& velValid,
         uint64_t& atUs);
+    void ReachSightNoteShotLag(SightShotPath path, const float* origin, const float* direction, bool seated,
+        int32_t seat);
+    void ReachSightNoteCrosshairQuery(uint64_t flags, const float* start, const float* vector, int32_t ignoredA,
+        uintptr_t caller);
     // Halo 3 / ODST trace-and-reaim, the engine-crosshair check (dev; legacy_sight_trace.inl).
     void LegacySightNoteEngineTrace(GameTitle title, uint64_t flags, const float* start, const float* vector,
         uintptr_t caller);
     // ...and the shot re-aimed through the intent point at that query (every build), with its dev witness.
     bool LegacySightReaimCrosshairQuery(GameTitle title, uint64_t flags, const float* start, const float* vector,
         int32_t ignoredA, uintptr_t caller, float out[3]);
+    void LegacySightNoteCrosshairQuery(GameTitle title, uint64_t flags, const float* start, const float* vector,
+        int32_t ignoredA, uintptr_t caller);
     bool ReachConvergedShotLive(uint64_t nowMs);
     void ReachSightMeasureShot(int32_t unitIndex, const float* origin, const float* direction,
                                const float* cameraPoint, uint8_t firesFromCamera, uint8_t useUnitAim);
@@ -5554,6 +5560,7 @@ namespace
                 if(LegacySightReaimCrosshairQuery(GameTitle::Halo3ODST,flags,start,desired,ignoredObjectA,
                         caller,reaimed))
                     query=reaimed;
+                LegacySightNoteCrosshairQuery(GameTitle::Halo3ODST,flags,start,query,ignoredObjectA,caller);
             }
             if(!OdstRedirectContactVector(caller,
                 flags,mode,ignoredObjectA,ignoredObjectB,ignoredObjectC,result,nativeResult))
@@ -5618,6 +5625,7 @@ namespace
                     ignoredObjectC);
                 if (ReachSightReaimCrosshairQuery(flags,start,vector,ignoredObjectA,caller,reaimed))
                     query=reaimed;
+                ReachSightNoteCrosshairQuery(flags,start,query,ignoredObjectA,caller);   // dev
             }
             if (!ReachRedirectContactVector(caller,flags,mode,ignoredObjectA,
                     ignoredObjectB,ignoredObjectC,result,nativeResult))
@@ -20410,6 +20418,7 @@ namespace
                 else
                     Sight_NoteReaimSkipped(GameTitle::HaloReach,SightShotSite::UnitAdjust,shot_lag::IntentUse::Stale);
                 ReachSightMeasureShot(unitIndex,origin,direction,optionalCameraPoint,firesFromCamera,useUnitAim);
+                ReachSightNoteShotLag(SightShotPath::UnitAdjust,origin,direction,false,-1);
                 return;
             }
             float handDirection[3]{};
@@ -20488,6 +20497,9 @@ namespace
                 seatedNow.key.unitHandle == unitIndex)
             {
                 g_reachVehicleShotConverged.fetch_add(1, std::memory_order_relaxed);
+                // Dev SHOT LAG: the seated shot before the assist turns it (its line is the crosshair-assist path).
+                ReachSightNoteShotLag(SightShotPath::UnitAdjust, origin, direction, true,
+                                      seatedNow.key.directParent);
                 return;
             }
         }

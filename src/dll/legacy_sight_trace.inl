@@ -223,6 +223,7 @@ void LegacySightTraceTick(GameTitle title, uint32_t unit, int32_t localUnit, boo
         }
         if (!s_lastUs[t] || nowUs > s_lastUs[t] + 2000 || nowUs < s_lastUs[t])
             s_lastUs[t] = nowUs;
+        Sight_NoteSimTick(title);
     }
     if (Sight_TraceFaulted(title) || !Sight_TraceDue(title, Sight_NowMs()))
         return;
@@ -543,6 +544,33 @@ void LegacySightNoteEngineTrace(GameTitle title, uint64_t flags, const float* st
 // the point is stale (over 150 ms) or for another generation, the converged aim is not in effect, the solve held at
 // the pitch rail, a seat is held at its stop or is a turret (the gun points elsewhere naturally), the query is not
 // the local player's, or a rail refuses (behind the start, inside 30 cm, over 3 m off or 30 deg).
+// Collision-hook thread (the game's own query); lock-free reads only. The thread-local below carries the native
+// fire's `predicted` flag to the dev witness (Halo 3's fire detour sets it).
+thread_local int t_legacyFirePredicted = -1;
+bool LegacyDriveRecordSnapshot(GameTitle title, float& nativeYaw, float& nativePitch, float& setYaw, float& setPitch);
+
+#if HALOMCCVR_DEV_DIAGNOSTICS
+// THE HORNET CAPTURE (dev, Halo 3 seats): the 2-5 deg the crosshair line was seen off the solve in a flying seat.
+// Each seated crosshair query, before the re-aim: its start and direction, the point, the driver record and the
+// setpoint, the hull's velocity (the eye's) and tilt. A ring; the cold worker prints what is new every 5 s.
+struct LegacySeatQueryRecord
+{
+    float start[3]{}, dir[3]{}, point[3]{}, solveEye[3]{}, vel[3]{};
+    float recordYaw = 0.0f, recordPitch = 0.0f, setYaw = 0.0f, setPitch = 0.0f, hullYaw = 0.0f, hullPitch = 0.0f;
+    float missMm = 0.0f, bendDeg = 0.0f;
+    uint8_t recordValid = 0, hullValid = 0, velValid = 0, reaimed = 0;
+    int32_t ignoredA = -1, vehicle = -1;
+    uint64_t atUs = 0;
+};
+inline constexpr uint32_t kLegacySeatQueryRing = 16;
+struct LegacySeatQueryRing
+{
+    SRWLOCK lock = SRWLOCK_INIT;
+    LegacySeatQueryRecord records[kLegacySeatQueryRing]{};
+    uint32_t written = 0;
+    uint32_t printed = 0;   // cold worker only
+} g_legacySeatQueries;
+#endif
 
 // True when this query belongs to the local player: on foot its first ignore is the unit itself. Seated it is the
 // vehicle's root (the published seat chain's top), which another occupant's query would name too, so it must also
@@ -594,6 +622,35 @@ bool LegacySightReaimCrosshairQuery(GameTitle title, uint64_t flags, const float
     const bool rayRead = Sight_ReadRay(title, generation, 250, ray);
     const bool seated = intent.p.seated;
     const float* point = seated ? intent.solvePoint : intent.p.point;
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    // The capture first, from the query as the game built it.
+    if (title == GameTitle::Halo3 && seated && use != shot_lag::IntentUse::Missing)
+    {
+        LegacySeatQueryRecord r{};
+        memcpy(r.start, start, sizeof(r.start));
+        const float vl = std::sqrt(vector[0] * vector[0] + vector[1] * vector[1] + vector[2] * vector[2]);
+        if (std::isfinite(vl) && vl > 1.0e-6f)
+            for (int axis = 0; axis < 3; ++axis)
+                r.dir[axis] = vector[axis] / vl;
+        memcpy(r.point, point, sizeof(r.point));
+        memcpy(r.solveEye, intent.p.eye, sizeof(r.solveEye));
+        memcpy(r.vel, intent.p.eyeVel, sizeof(r.vel));
+        r.velValid = intent.p.eyeVelValid ? 1 : 0;
+        r.recordValid = LegacyDriveRecordSnapshot(title, r.recordYaw, r.recordPitch, r.setYaw, r.setPitch) ? 1 : 0;
+        r.hullValid = Halo3ReadRollStableFollow(r.hullYaw, r.hullPitch) ? 1 : 0;
+        const shot_lag::ShotLagSample m = shot_lag::MeasureShotLag(start, vector, point, nullptr, nullptr);
+        r.missMm = m.valid ? m.missMm : -1.0f;
+        r.ignoredA = ignoredA;
+        r.vehicle = rayRead ? ray.ignoreB : -1;
+        r.atUs = Sight_NowUs();
+        r.reaimed = use == shot_lag::IntentUse::Use ? 1 : 0;
+        auto& ring = g_legacySeatQueries;
+        AcquireSRWLockExclusive(&ring.lock);
+        ring.records[ring.written % kLegacySeatQueryRing] = r;
+        ++ring.written;
+        ReleaseSRWLockExclusive(&ring.lock);
+    }
+#endif
     if (!rayRead || !LegacySightQueryIsLocal(title, ignoredA, ray, seated, intent.p, start))
         return false;   // another unit's query (an ally, an enemy), or no ray to tell: never ours to touch
     if (use != shot_lag::IntentUse::Use)
@@ -604,6 +661,36 @@ bool LegacySightReaimCrosshairQuery(GameTitle title, uint64_t flags, const float
     memcpy(out, vector, sizeof(float) * 3);
     return Sight_ReaimThroughPoint(title, SightShotSite::CrosshairAssist, start, out, point);
 }
+
+// The dev SHOT LAG line's crosshair-assist path: the query the game traced (after any re-aim), per local query at
+// a resolved crosshair site. Collision-hook thread.
+void LegacySightNoteCrosshairQuery(GameTitle title, uint64_t flags, const float* start, const float* vector,
+                                   int32_t ignoredA, uintptr_t caller)
+{
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    if ((title != GameTitle::Halo3 && title != GameTitle::Halo3ODST) || !start || !vector)
+        return;
+    auto& state = LegacySight(title);
+    bool site = false;
+    for (const auto& known : state.siteReturn)
+        if (const uintptr_t at = known.load(std::memory_order_relaxed); at && at == caller)
+            site = true;
+    if (!site || flags != state.flags.load(std::memory_order_acquire) || TitleAdapter_GetActiveTitle() != title)
+        return;
+    const uint32_t generation = TitleAdapter_GetGeneration(title);
+    SightRay ray{};
+    SightIntent intent{};
+    const bool seated = Sight_ReadIntent(title, intent) && intent.p.seated;
+    if (!Sight_ReadRay(title, generation, 250, ray) ||
+        !LegacySightQueryIsLocal(title, ignoredA, ray, seated, intent.p, start))
+        return;
+    Sight_NoteShotLagFromIntent(title, SightShotPath::CrosshairAssist, start, vector, t_legacyFirePredicted, seated,
+                                seated ? ray.ignoreB : -1);
+#else
+    (void)title; (void)flags; (void)start; (void)vector; (void)ignoredA; (void)caller;
+#endif
+}
+
 // Cold worker, every 5 s: how the servo target was chosen per title, and why a title does not trace.
 void LegacySightReport()
 {
@@ -633,6 +720,42 @@ void LegacySightReport()
             static_cast<unsigned long long>(seatUnnamed));
     }
 #if HALOMCCVR_DEV_DIAGNOSTICS
+    {
+        // THE HORNET CAPTURE: what is new in the ring (at most 4 lines per report).
+        auto& ring = g_legacySeatQueries;
+        LegacySeatQueryRecord copy[4]{};
+        uint32_t taken = 0, skipped = 0;
+        AcquireSRWLockExclusive(&ring.lock);
+        if (ring.written - ring.printed > kLegacySeatQueryRing)
+            ring.printed = ring.written - kLegacySeatQueryRing;
+        skipped = ring.written - ring.printed > 4 ? ring.written - ring.printed - 4 : 0;
+        ring.printed += skipped;
+        while (ring.printed != ring.written && taken < 4)
+            copy[taken++] = ring.records[ring.printed++ % kLegacySeatQueryRing];
+        ReleaseSRWLockExclusive(&ring.lock);
+        for (uint32_t i = 0; i < taken; ++i)
+        {
+            const auto& r = copy[i];
+            const float qYaw = std::atan2(r.dir[1], r.dir[0]) * 57.29578f;
+            const float qPitch = std::asin(std::clamp(r.dir[2], -1.0f, 1.0f)) * 57.29578f;
+            const float speed = std::sqrt(r.vel[0] * r.vel[0] + r.vel[1] * r.vel[1] + r.vel[2] * r.vel[2]) * 3.048f;
+            const float se[3]{r.start[0] - r.solveEye[0], r.start[1] - r.solveEye[1], r.start[2] - r.solveEye[2]};
+            LOG("SIGHT Halo 3 seat query (dev, the Hornet capture): start %.3f,%.3f,%.3f wu (minus the solve's eye "
+                "%+.0f,%+.0f,%+.0f mm), dir yaw %.2f pitch %.2f deg; the point %.0f mm off it%s; record yaw %.2f pitch "
+                "%.2f, setpoint yaw %.2f pitch %.2f deg%s; hull yaw %.2f pitch %.2f deg%s; eye velocity %.2f,%.2f,"
+                "%.2f m/s (|%.1f|)%s; ignore %d vehicle %d",
+                double(r.start[0]), double(r.start[1]), double(r.start[2]), double(se[0] * 3048.0f),
+                double(se[1] * 3048.0f), double(se[2] * 3048.0f), double(qYaw), double(qPitch), double(r.missMm),
+                r.reaimed ? " (re-aimed)" : " (left)", double(r.recordYaw * 57.29578f),
+                double(r.recordPitch * 57.29578f), double(r.setYaw * 57.29578f), double(r.setPitch * 57.29578f),
+                r.recordValid ? "" : " (no record)", double(r.hullYaw * 57.29578f), double(r.hullPitch * 57.29578f),
+                r.hullValid ? "" : " (no hull frame)", double(r.vel[0] * 3.048f), double(r.vel[1] * 3.048f),
+                double(r.vel[2] * 3.048f), double(speed), r.velValid ? "" : " (unknown)", int(r.ignoredA),
+                int(r.vehicle));
+        }
+        if (skipped)
+            LOG("SIGHT Halo 3 seat query (dev): %u more not printed", skipped);
+    }
     for (int slot = 0; slot < 2; ++slot)
     {
         auto& window = g_legacyEngineTrace[slot];

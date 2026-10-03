@@ -1258,6 +1258,20 @@ void LegacyDriveCensusNote(LegacyDriveState& st, const LegacyDriveSite& site, in
     st.census.note(tickOk, tick, caller, st.setSeated.load(std::memory_order_relaxed));
 }
 #endif
+// Any thread (the dev Hornet capture): the record as the last stick call found it and the setpoint it last read.
+bool LegacyDriveRecordSnapshot(GameTitle title, float& nativeYaw, float& nativePitch, float& setYaw, float& setPitch)
+{
+    const int slot = LegacyDriveSlot(title);
+    if (slot < 0)
+        return false;
+    const auto& st = g_legacyDrive[slot];
+    nativeYaw = st.nativeYaw.load(std::memory_order_relaxed);
+    nativePitch = st.nativePitch.load(std::memory_order_relaxed);
+    setYaw = st.yaw.load(std::memory_order_relaxed);
+    setPitch = st.pitch.load(std::memory_order_relaxed);
+    return st.installed.load(std::memory_order_acquire) && std::isfinite(nativeYaw) && std::isfinite(setYaw);
+}
+
 // THE RECORD THROUGH THE INTENT POINT (Halo 3 on foot; shot_lag_logic.h, 2026-10-02). The shot itself is re-aimed
 // at the firing assist's crosshair query (legacy_sight_trace.inl). The RECORD -- the angles the HUD, autoaim, melee
 // and the network read -- was solved on the input thread from the render-time eye, so it still points the line

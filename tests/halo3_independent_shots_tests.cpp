@@ -87,8 +87,14 @@ void PublishShotDiagnostic(GameTitle,uint32_t,uint32_t,uint32_t,uint8_t,uint8_t,
 void LegacySightNoteTurretShot(GameTitle,uint32_t,const float*,const float*) {}
 // The shot-lag fix (sight_layer.h / game.cpp): the fire's `predicted` flag rides a thread-local for the witness, and
 // the acquisition's camera evaluator publishes the game's own eye. Both only read the native results.
+enum class SightShotPath : uint8_t {Native=0,CrosshairAssist,Muzzle,UnitAdjust,Count};
+static thread_local int t_legacyFirePredicted=-1;
 static unsigned shotLagNotes{},tickEyes{};
+static int lastNotedPredicted=-2;
+static void Sight_NoteShotLagFromIntent(GameTitle,SightShotPath,const float*,const float*,int predicted,bool,int32_t)
+{++shotLagNotes;lastNotedPredicted=predicted;}
 static void PublishHalo3TickEye(uint32_t,int32_t,const float*){++tickEyes;}
+static int32_t LegacyCollisionIgnoredObject(GameTitle){return -1;}
 #include "../src/dll/halo3_independent_shots.inl"
 #undef _ReturnAddress
 

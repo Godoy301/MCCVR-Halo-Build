@@ -238,6 +238,9 @@ __declspec(noinline) void __fastcall OdstMuzzleAimDetour(uint32_t unit,float* or
             std::memcpy(origin,shot.position,12);std::memcpy(direction,shot.direction,12);
             feature.aimOriginal(unit,origin,direction,velocity,nullptr,0,0);
             if(std::isfinite(origin[0])&&std::isfinite(origin[1])&&std::isfinite(origin[2]))std::memcpy(shot.position,origin,12);
+            // Dev SHOT LAG, the muzzle path: the final muzzle ray.
+            Sight_NoteShotLagFromIntent(GameTitle::Halo3ODST,SightShotPath::Muzzle,origin,direction,
+                t_legacyFirePredicted,false,-1);
         }
         else
         {
@@ -250,6 +253,14 @@ __declspec(noinline) void __fastcall OdstMuzzleAimDetour(uint32_t unit,float* or
                     std::clamp(g_config.crosshair_distance_m,2.f,50.f)*Game_GetWorldScale(),candidate))
                     std::memcpy(direction,candidate,12);
             }
+#if HALOMCCVR_DEV_DIAGNOSTICS
+            // Dev SHOT LAG, the native path: the local player's own shot, as the record aimed it from the fire tick's
+            // origin (a seat's shot leaves through the crosshair-assist line, measured there).
+            if(origin&&direction&&reinterpret_cast<uintptr_t>(_ReturnAddress())==feature.base+0x3AEB2B&&
+                static_cast<int32_t>(unit)==LegacyCollisionIgnoredObject(GameTitle::Halo3ODST))
+                Sight_NoteShotLagFromIntent(GameTitle::Halo3ODST,SightShotPath::Native,origin,direction,
+                    t_legacyFirePredicted,false,-1);
+#endif
         }
     }
     __finally {feature.callbacks.fetch_sub(1,std::memory_order_acq_rel);}
@@ -265,7 +276,14 @@ __declspec(noinline) uint64_t __fastcall OdstMuzzleFireDetour(uint32_t weapon,in
         __try {ready=PrepareOdstIndependentShot(weapon,controllerLease);}
         __except(EXCEPTION_EXECUTE_HANDLER){MarkOdstMuzzleFault();}
         if(!ready){RestoreOdstMuzzleTarget(controllerLease);g_odstMuzzleShot={};}
-        if(feature.fireOriginal)result=feature.fireOriginal(weapon,barrel,data,index,predicted);
+        if(feature.fireOriginal)
+        {
+            // The shot-lag witness labels this fire's crosshair query and aim with the fire's own flag.
+            const int previousPredicted=t_legacyFirePredicted;
+            t_legacyFirePredicted=predicted?1:0;
+            __try {result=feature.fireOriginal(weapon,barrel,data,index,predicted);}
+            __finally {t_legacyFirePredicted=previousPredicted;}
+        }
     }
     __finally
     {

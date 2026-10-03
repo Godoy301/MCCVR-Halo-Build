@@ -4556,8 +4556,12 @@ namespace
         }
         // The firing assist aims at the point `distance` along the shot: the converged point itself, from the
         // same trace sample the direction was built from.
-        return Sight_AimMuzzleShotFromRay(GameTitle::Halo2, TitleAdapter_GetGeneration(GameTitle::Halo2), head,
-                                          dir, eye, before, position, direction, up, &distance);
+        const bool aimed = Sight_AimMuzzleShotFromRay(GameTitle::Halo2, TitleAdapter_GetGeneration(GameTitle::Halo2),
+                                                      head, dir, eye, before, position, direction, up, &distance);
+        if (aimed)   // dev SHOT LAG: the muzzle shot against the point it was aimed through
+            Sight_NoteShotLagFromRay(GameTitle::Halo2, SightShotPath::Muzzle, position, direction, head, dir, eye,
+                                     false);
+        return aimed;
     }
 
     #include "halo2_dual_wield_runtime.inl"

@@ -80,6 +80,13 @@ static int LegacyAnatomicalRenderNodeCount(GameTitle value,uint16_t tag,uint32_t
 #define __readgsqword(offset) reinterpret_cast<uint64_t>(::slots)
 #include "../src/dll/odst_muzzle_publication.inl"
 #undef __readgsqword
+// The shot-lag fix (sight_layer.h / game.cpp): the fire's `predicted` flag rides a thread-local for the witness.
+enum class SightShotPath : uint8_t {Native=0,CrosshairAssist,Muzzle,UnitAdjust,Count};
+static thread_local int t_legacyFirePredicted=-1;
+static unsigned shotLagNotes{};
+static void Sight_NoteShotLagFromIntent(GameTitle,SightShotPath,const float*,const float*,int,bool,int32_t)
+{++shotLagNotes;}
+static int32_t LegacyCollisionIgnoredObject(GameTitle){return -1;}
 static thread_local uintptr_t caller{};
 #define _ReturnAddress() reinterpret_cast<void*>(::caller)
 #include "../src/dll/odst_muzzle_shots.inl"

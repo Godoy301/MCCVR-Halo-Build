@@ -52,6 +52,8 @@ static bool LegacySightReaimCrosshairQuery(GameTitle title,uint64_t f,const floa
     out[0]=kReaimed[0];out[1]=kReaimed[1];out[2]=kReaimed[2];
     return true;
 }
+static void LegacySightNoteCrosshairQuery(GameTitle,uint64_t,const float*,const float* b,int32_t,uintptr_t)
+{++crosshairNotes;lastNotedQuery=b;}
 #include "../src/dll/halo3_collision_dispatch.inl"
 static uint8_t __fastcall Original(uint64_t f,int32_t m,const float* a,const float* b,int32_t x,int32_t y,int32_t z,void* out)
 {
@@ -97,12 +99,16 @@ int main()
     Check(Invoke()==0&&returned==0xA7&&nativeCalls==1&&ticks==0,"owned query cannot recursively schedule");
     Check(engineNotes==0,"the mod's own query is never noted as the game's");
     Check(reaimAsks==0,"the mod's own query is never re-aimed");
+    Check(crosshairNotes==0,"the mod's own query is never witnessed as a shot");
     // THE SHOT RE-AIM: the crosshair query traces the re-aimed vector; declined, the game's own vector exactly.
     Reset();
     Check(Invoke()==0&&returned==0xA7&&nativeCalls==1&&reaimAsks==1,"a declined re-aim forwards the game's own vector");
+    Check(crosshairNotes==1&&lastNotedQuery==delta,"the witness sees the game's own vector when nothing was re-aimed");
     Reset();reaim=true;
     Check(Invoke()==0&&returned==0xA7&&nativeCalls==1&&output==0xABCD1234,"a re-aimed query still runs the native once");
     Check(reaimAsks==1,"the re-aim was asked once");
+    Check(crosshairNotes==1&&lastNotedQuery&&lastNotedQuery!=delta&&lastNotedQuery[0]==kReaimed[0],
+        "the witness sees the re-aimed vector that was traced");
     Check(engineNotes==1,"the engine-crosshair check still sees the game's own query");
     Reset();reaim=true;nativeFault=true;
     Check(Invoke()==0xE0123401&&nativeCalls==1&&g_halo3WorldCollision.callbacks==0,

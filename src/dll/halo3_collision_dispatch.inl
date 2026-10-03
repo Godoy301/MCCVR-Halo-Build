@@ -46,6 +46,7 @@
                 if(LegacySightReaimCrosshairQuery(GameTitle::Halo3,flags,start,desired,ignoredObjectA,
                         caller,reaimed))
                     query=reaimed;
+                LegacySightNoteCrosshairQuery(GameTitle::Halo3,flags,start,query,ignoredObjectA,caller);
             }
             if(!Halo3RedirectContactVector(caller,flags,mode,ignoredObjectA,
                     ignoredObjectB,ignoredObjectC,result,nativeResult))

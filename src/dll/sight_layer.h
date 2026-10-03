@@ -214,6 +214,37 @@ bool Sight_ReaimThroughPoint(GameTitle title, SightShotSite site, const float st
 // A shot site that did not try (the intent was not usable): counted with its reason.
 void Sight_NoteReaimSkipped(GameTitle title, SightShotSite site, shot_lag::IntentUse why);
 
+// SHOT LAG WITNESS (dev; empty in player builds). Per shot, after the native call decided its final ray: the miss of
+// the shot line from the point the player meant, split along / across the player's travel, with the eye's speed and
+// the stale-eye term (shot origin minus the eye the solve used). One window per title and PATH (how the shot was
+// aimed), logged by the cold worker every 2 s:
+//   SHOT LAG <title> [<path>; <mode>] (dev): N shots; speed 0-1 m/s: n, miss X mm (along a, across c); 1-4: ...;
+//     4-10: ...; 10+: ...; mean lag axis along travel B mm; stale eye along travel S mm (implied dt T ms);
+//     at range R m; seated=0/1 seat=<id>
+// `mode`: the fire's own `predicted` flag where the title passes one (Halo 3 / ODST distributed simulation predicts
+// local shots outside the campaign), and the measured simulation tick. Read-only: nothing decides on it.
+enum class SightShotPath : uint8_t
+{
+    Native = 0,        // the game's own aim, as the record put it
+    CrosshairAssist,   // the crosshair / firing-assist query (after any re-aim)
+    Muzzle,            // shots from the muzzle
+    UnitAdjust,        // Reach's unit-adjust, after any re-aim
+    Count
+};
+// `reference` = P (world units); `solveEye` = the eye the solve used (may be null); `eyeVel` (wu/s, may be null).
+// `predicted`: -1 unknown, else the fire's flag.
+void Sight_NoteShotLag(GameTitle title, SightShotPath path, const float origin[3], const float direction[3],
+                       const float reference[3], const float* solveEye, const float* eyeVel, int predicted,
+                       bool seated, int32_t seat);
+// The same, with the reference, eye and velocity from this title's published intent point (else its ray and trace).
+void Sight_NoteShotLagFromIntent(GameTitle title, SightShotPath path, const float origin[3], const float direction[3],
+                                 int predicted, bool seated, int32_t seat);
+// The same for a title that publishes no intent (Halo 2, CE): the point is the caller's own intent ray (head, dir) at
+// the range the aim converged on, the eye its own; the velocity is measured from these eyes by the witness itself.
+void Sight_NoteShotLagFromRay(GameTitle title, SightShotPath path, const float origin[3], const float direction[3],
+                              const float head[3], const float rayDir[3], const float eye[3], bool seated);
+// A simulation tick of `title` seen by a per-tick hook (dev): the witness reports the measured tick period.
+void Sight_NoteSimTick(GameTitle title);
 // How the aim path built this title's intent point (dev): 0 this poll's hand with the render of its own frame, 1 an
 // earlier hand with the render of its frame (this poll's frame not rendered yet), 2 no kept hand has a rendered
 // frame (the solve's own pair), 3 the title publishes no camera frames (Halo 4).

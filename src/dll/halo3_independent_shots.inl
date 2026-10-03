@@ -244,6 +244,9 @@ __declspec(noinline) uint64_t __fastcall Halo3IndependentFireDetour(
             feature.fireEntries.fetch_add(1,std::memory_order_relaxed);
             if(data)feature.fireWithData.fetch_add(1,std::memory_order_relaxed);
             if(predicted)feature.firePredicted.fetch_add(1,std::memory_order_relaxed);
+            // The shot-lag witness labels this fire's crosshair query and aim with the fire's own flag.
+            const int previousPredicted=t_legacyFirePredicted;
+            t_legacyFirePredicted=predicted?1:0;
             __try
             {
                 result=feature.fireOriginal(weapon,barrel,data,index,predicted);
@@ -251,6 +254,7 @@ __declspec(noinline) uint64_t __fastcall Halo3IndependentFireDetour(
             }
             __finally
             {
+                t_legacyFirePredicted=previousPredicted;
                 if(AbnormalTermination())feature.fireUnwinds.fetch_add(1,std::memory_order_relaxed);
             }
         }
@@ -315,6 +319,8 @@ __declspec(noinline) void __fastcall Halo3IndependentAimDetour(uint32_t unit,
             // The muzzle ray is what the engine consumed, and the native call
             // has already produced the final origin/direction.
             PublishHalo3ShotDiagnostic(unit,origin,direction,true,false,false);
+            Sight_NoteShotLagFromIntent(GameTitle::Halo3,SightShotPath::Muzzle,origin,direction,
+                t_legacyFirePredicted,false,-1);
             __leave;
         }
         feature.aimOriginal(unit,origin,direction,marker,offset,project,unitAim);
@@ -339,6 +345,14 @@ __declspec(noinline) void __fastcall Halo3IndependentAimDetour(uint32_t unit,
                 project!=0,unitAim!=0);
             // Dev: a gun-slaved turret's own shot against the traced point (legacy_sight_trace.inl).
             LegacySightNoteTurretShot(GameTitle::Halo3,unit,origin,direction);
+            // Dev SHOT LAG, the native path: the record's aim from the fire tick's origin (the firing assist may
+            // still turn it at its crosshair hit afterwards -- that is the crosshair-assist path's line). The local
+            // player's own unit only (a seat's shot is the vehicle's: the crosshair-assist line covers it).
+#if HALOMCCVR_DEV_DIAGNOSTICS
+            if(static_cast<int32_t>(unit)==LegacyCollisionIgnoredObject(GameTitle::Halo3))
+                Sight_NoteShotLagFromIntent(GameTitle::Halo3,SightShotPath::Native,origin,direction,
+                    t_legacyFirePredicted,false,-1);
+#endif
         }
     }
     __finally {feature.callbacks.fetch_sub(1,std::memory_order_acq_rel);}

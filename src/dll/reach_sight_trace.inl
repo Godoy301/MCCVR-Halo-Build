@@ -555,6 +555,8 @@ void ReachSightTraceTick(uint32_t unit)
     // lookup per unit.
     static uint64_t s_lastTraceMs = 0, s_localAtMs = 0;
     static int32_t s_localUnit = -1;
+    if (s_localUnit != -1 && unit == static_cast<uint32_t>(s_localUnit))
+        Sight_NoteSimTick(GameTitle::HaloReach);   // dev: the SHOT LAG line's measured tick
     if (s_lastTraceMs && now >= s_lastTraceMs && now - s_lastTraceMs < kReachSightTraceIntervalMs)
     {
         REACH_SIGHT_DEV_COUNT(trace.blockedRate);
@@ -837,6 +839,46 @@ bool ReachSightReaimCrosshairQuery(uint64_t flags, const float* start, const flo
     }
     memcpy(out, vector, sizeof(float) * 3);
     return Sight_ReaimThroughPoint(GameTitle::HaloReach, SightShotSite::CrosshairAssist, start, out, point);
+}
+
+// The dev SHOT LAG line for Reach: the shot (origin, direction) against the provider's intent point.
+void ReachSightNoteShotLag(SightShotPath path, const float* origin, const float* direction, bool seated, int32_t seat)
+{
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    float point[3]{}, eye[3]{}, vel[3]{};
+    bool velValid = false;
+    uint64_t atUs = 0;
+    if (!origin || !direction || !ReachSightReadIntent(250000ull, point, eye, vel, velValid, atUs))
+    {
+        Sight_NoteShotLag(GameTitle::HaloReach, path, nullptr, nullptr, nullptr, nullptr, nullptr, -1, seated, seat);
+        return;
+    }
+    Sight_NoteShotLag(GameTitle::HaloReach, path, origin, direction, point, eye, velValid ? vel : nullptr, -1, seated,
+                      seat);
+#else
+    (void)path; (void)origin; (void)direction; (void)seated; (void)seat;
+#endif
+}
+
+// The dev SHOT LAG line's crosshair-assist path: the local player's query at the crosshair site, as traced.
+void ReachSightNoteCrosshairQuery(uint64_t flags, const float* start, const float* vector, int32_t ignoredA,
+                                  uintptr_t caller)
+{
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    const uintptr_t site = g_reachSightFlags.siteReturn.load(std::memory_order_relaxed);
+    if (!site || caller != site || flags != g_reachSightFlags.flags.load(std::memory_order_relaxed) || ignoredA == -1)
+        return;
+    const int32_t local = LegacyCollisionIgnoredObject(GameTitle::HaloReach);
+    if (local == -1)
+        return;
+    const int32_t root = ReachSightRootOf(local);
+    if (ignoredA != local && ignoredA != root)
+        return;
+    ReachSightNoteShotLag(SightShotPath::CrosshairAssist, start, vector, ignoredA != local,
+                          ignoredA != local ? root : -1);
+#else
+    (void)flags; (void)start; (void)vector; (void)ignoredA; (void)caller;
+#endif
 }
 
 // SHOTS FROM THE MUZZLE (sight_layer.h), Reach: the converged point is the one the direct drive last wrote

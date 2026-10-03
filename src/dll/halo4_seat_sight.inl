@@ -1056,6 +1056,9 @@ void Halo4SeatSightMeasureShot(const float pre[3], const float post[3], const fl
     const float up[3]{right[1] * d[2] - right[2] * d[1], right[2] * d[0] - right[0] * d[2],
                       right[0] * d[1] - right[1] * d[0]};
     const float se[3]{origin[0] - ray.eye[0], origin[1] - ray.eye[1], origin[2] - ray.eye[2]};
+    // SHOT LAG: the seated shot as the native assist left it, against the same point, from the eye the solve used.
+    Sight_NoteShotLag(GameTitle::Halo4, SightShotPath::CrosshairAssist, origin, post, p, ray.eye,
+                      ray.eyeVelValid ? ray.eyeVel : nullptr, -1, true, ray.ignoreB);
     AcquireSRWLockExclusive(&w.lock);
     ++w.shots;
     if (smoothed)

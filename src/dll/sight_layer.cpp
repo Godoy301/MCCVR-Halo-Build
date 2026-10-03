@@ -720,6 +720,35 @@ struct ShotWitness
 ShotWitness g_shots[kTitleSlots];
 constexpr float kMmPerWu = 3048.0f;
 
+// SHOT LAG (sight_layer.h): one window per title and path. The firing path takes the lock for one Add (plain sums,
+// no allocation); the cold worker takes it to swap the window out.
+struct ShotLagWitness
+{
+    SRWLOCK lock = SRWLOCK_INIT;
+    shot_lag::ShotLagWindow window{};
+    uint32_t predicted = 0, unpredicted = 0;
+};
+ShotLagWitness g_shotLag[kTitleSlots][static_cast<size_t>(SightShotPath::Count)];
+// The simulation's tick period per title, measured by a per-tick hook (Sight_NoteSimTick).
+struct SimTickClock
+{
+    std::atomic<uint64_t> lastUs{0}, sumUs{0};
+    std::atomic<uint32_t> ticks{0};
+};
+SimTickClock g_simTicks[kTitleSlots];
+
+const char* ShotPathName(SightShotPath path)
+{
+    switch (path)
+    {
+    case SightShotPath::Native: return "native";
+    case SightShotPath::CrosshairAssist: return "crosshair-assist";
+    case SightShotPath::Muzzle: return "muzzle";
+    case SightShotPath::UnitAdjust: return "unit-adjust";
+    default: return "?";
+    }
+}
+
 void AddRelaxed(std::atomic<float>& total, float value)
 {
     float current = total.load(std::memory_order_relaxed);
@@ -883,12 +912,107 @@ void Sight_NoteShot(GameTitle title, uint32_t generation, const float origin[3],
 #endif
 }
 
+void Sight_NoteShotLag(GameTitle title, SightShotPath path, const float origin[3], const float direction[3],
+                       const float reference[3], const float* solveEye, const float* eyeVel, int predicted,
+                       bool seated, int32_t seat)
+{
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    const size_t p = static_cast<size_t>(path);
+    if (p >= static_cast<size_t>(SightShotPath::Count))
+        return;
+    shot_lag::ShotLagSample sample{};
+    if (origin && direction && reference)
+        sample = shot_lag::MeasureShotLag(origin, direction, reference, solveEye, eyeVel);
+    auto& w = g_shotLag[Slot(title)][p];
+    AcquireSRWLockExclusive(&w.lock);
+    w.window.Add(sample, seated, seat);
+    if (predicted > 0)
+        ++w.predicted;
+    else if (predicted == 0)
+        ++w.unpredicted;
+    ReleaseSRWLockExclusive(&w.lock);
+#else
+    (void)title; (void)path; (void)origin; (void)direction; (void)reference; (void)solveEye; (void)eyeVel;
+    (void)predicted; (void)seated; (void)seat;
+#endif
+}
+
+void Sight_NoteShotLagFromIntent(GameTitle title, SightShotPath path, const float origin[3], const float direction[3],
+                                 int predicted, bool seated, int32_t seat)
+{
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    const uint32_t generation = TitleAdapter_GetGeneration(title);
+    SightIntent intent{};
+    const uint64_t nowUs = Sight_NowUs();
+    // The point the player meant: the published intent (any converged state; the witness judges every shot), else
+    // the intent ray at the range the aim converged on.
+    if (Sight_ReadIntent(title, intent) && generation && intent.p.generation == generation && intent.p.stampUs &&
+        nowUs >= intent.p.stampUs && nowUs - intent.p.stampUs <= 250000ull)
+    {
+        Sight_NoteShotLag(title, path, origin, direction, intent.p.point, intent.p.eye,
+                          intent.p.eyeVelValid ? intent.p.eyeVel : nullptr, predicted, seated, seat);
+        return;
+    }
+    SightRay ray{};
+    SightTrace trace{};
+    if (Sight_ReadRay(title, generation, kSightRayFreshMs, ray) &&
+        Sight_ReadTrace(title, generation, kSightFreshMs, trace) && trace.AimRangeWu() > 0.0f)
+    {
+        const float range = trace.AimRangeWu();
+        const float point[3]{ray.head[0] + ray.dir[0] * range, ray.head[1] + ray.dir[1] * range,
+                             ray.head[2] + ray.dir[2] * range};
+        Sight_NoteShotLag(title, path, origin, direction, point, ray.eye, ray.eyeVelValid ? ray.eyeVel : nullptr,
+                          predicted, seated, seat);
+        return;
+    }
+    Sight_NoteShotLag(title, path, nullptr, nullptr, nullptr, nullptr, nullptr, predicted, seated, seat);
+#else
+    (void)title; (void)path; (void)origin; (void)direction; (void)predicted; (void)seated; (void)seat;
+#endif
+}
+
 #if HALOMCCVR_DEV_DIAGNOSTICS
 namespace
 {
 std::atomic<uint32_t> g_intentPairing[kTitleSlots][4]{};
+// The witness's own eye tracks, for titles that publish no ray (Halo 2, CE): fed from their firing sites.
+shot_lag::EyeTrack g_witnessTracks[kTitleSlots];
+SRWLOCK g_witnessTrackLock = SRWLOCK_INIT;
 }
 #endif
+
+void Sight_NoteShotLagFromRay(GameTitle title, SightShotPath path, const float origin[3], const float direction[3],
+                              const float head[3], const float rayDir[3], const float eye[3], bool seated)
+{
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    SightTrace trace{};
+    const uint32_t generation = TitleAdapter_GetGeneration(title);
+    if (!head || !rayDir || !eye || !Sight_ReadTrace(title, generation, kSightFreshMs, trace) ||
+        !(trace.AimRangeWu() > 0.0f))
+    {
+        Sight_NoteShotLag(title, path, nullptr, nullptr, nullptr, nullptr, nullptr, -1, seated, -1);
+        return;
+    }
+    const float length = std::sqrt(rayDir[0] * rayDir[0] + rayDir[1] * rayDir[1] + rayDir[2] * rayDir[2]);
+    if (!std::isfinite(length) || length < 1.0e-6f)
+    {
+        Sight_NoteShotLag(title, path, nullptr, nullptr, nullptr, nullptr, nullptr, -1, seated, -1);
+        return;
+    }
+    const float range = trace.AimRangeWu();
+    const float point[3]{head[0] + rayDir[0] / length * range, head[1] + rayDir[1] / length * range,
+                         head[2] + rayDir[2] / length * range};
+    float velocity[3]{};
+    AcquireSRWLockExclusive(&g_witnessTrackLock);
+    auto& track = g_witnessTracks[Slot(title)];
+    track.Push(Sight_NowUs(), eye);
+    const bool known = track.Velocity(120000, 30000, velocity);
+    ReleaseSRWLockExclusive(&g_witnessTrackLock);
+    Sight_NoteShotLag(title, path, origin, direction, point, eye, known ? velocity : nullptr, -1, seated, -1);
+#else
+    (void)title; (void)path; (void)origin; (void)direction; (void)head; (void)rayDir; (void)eye; (void)seated;
+#endif
+}
 
 void Sight_NoteIntentPairing(GameTitle title, int kind)
 {
@@ -899,6 +1023,27 @@ void Sight_NoteIntentPairing(GameTitle title, int kind)
     (void)title; (void)kind;
 #endif
 }
+
+void Sight_NoteSimTick(GameTitle title)
+{
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    auto& c = g_simTicks[Slot(title)];
+    const uint64_t now = Sight_NowUs();
+    const uint64_t last = c.lastUs.exchange(now, std::memory_order_relaxed);
+    // Several units per tick come through the per-unit hooks: only a gap of over 2 ms is a new tick, and one of
+    // over 250 ms is a stall, not a period.
+    if (last && now > last && now - last > 2000 && now - last < 250000)
+    {
+        c.sumUs.fetch_add(now - last, std::memory_order_relaxed);
+        c.ticks.fetch_add(1, std::memory_order_relaxed);
+    }
+    else if (last && now > last && now - last <= 2000)
+        c.lastUs.store(last, std::memory_order_relaxed);   // the same tick: keep its start
+#else
+    (void)title;
+#endif
+}
+
 void Sight_ReportShots()
 {
 #if HALOMCCVR_DEV_DIAGNOSTICS
@@ -956,6 +1101,34 @@ void Sight_ReportShots()
                 "earlier hand and the render of its frame (this poll's frame not rendered yet), %u from the solve's "
                 "own ray (no kept hand had a rendered frame), %u without camera frames",
                 TitleName(static_cast<GameTitle>(slot)), pairing[0], pairing[1], pairing[2], pairing[3]);
+        const uint32_t ticks = g_simTicks[slot].ticks.exchange(0, std::memory_order_relaxed);
+        const uint64_t tickSum = g_simTicks[slot].sumUs.exchange(0, std::memory_order_relaxed);
+        for (size_t p = 0; p < static_cast<size_t>(SightShotPath::Count); ++p)
+        {
+            auto& w = g_shotLag[slot][p];
+            AcquireSRWLockExclusive(&w.lock);
+            const shot_lag::ShotLagWindow window = w.window;
+            const uint32_t predicted = w.predicted, unpredicted = w.unpredicted;
+            w.window = shot_lag::ShotLagWindow{};
+            w.predicted = w.unpredicted = 0;
+            ReleaseSRWLockExclusive(&w.lock);
+            if (!window.shots && !window.unmeasured)
+                continue;
+            char label[160]{};
+            char mode[64]{};
+            if (predicted || unpredicted)
+                std::snprintf(mode, sizeof(mode), "fire predicted %u/%u", predicted, predicted + unpredicted);
+            else
+                std::snprintf(mode, sizeof(mode), "fire predicted n/a");
+            char tick[48]{};
+            if (ticks)
+                std::snprintf(tick, sizeof(tick), "; sim tick %.1f ms", double(tickSum) / double(ticks) / 1000.0);
+            std::snprintf(label, sizeof(label), "%s [%s; %s%s]", TitleName(static_cast<GameTitle>(slot)),
+                          ShotPathName(static_cast<SightShotPath>(p)), mode, tick);
+            char line[1024]{};
+            if (window.Format(label, line, sizeof(line)))
+                LOG("%s", line);
+        }
     }
 #endif
 }
