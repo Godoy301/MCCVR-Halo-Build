@@ -82,6 +82,51 @@ inline void AddInterval(Stops& s, int axis, float lo, float hi)
     s.axis[axis].max = hi;
 }
 
+// THE RECORD'S OWN EASED PITCH LIMITS, Halo 3 and ODST (2026-10-03). The accumulator (Halo 3 0xF7DF0, ODST 0x113AB8)
+// eases two record fields toward the seat's pitch range every update and clamps the record's pitch to them -- in Halo
+// 3 at 0xF86F1..0xF8747: `movss [rec+LO], xmm1` (the eased low), `movss xmm1, [rec+HI]` ... `movss [rec+HI], xmm1`,
+// then `addss xmm2, [rec+PITCH]` (pitch + this update's delta), `maxss xmm2, [rec+LO]`, the min against HI, and
+// `movss [rec+PITCH], xmm2`. A look-steered driver's pitch is not latched (the accumulator levels it as the vehicle
+// moves, which the latch would read as a stop), so these two fields, read after the update, ARE that driver's pitch
+// stops: exact, moving with the autolevel, never a false latch. The offsets are DECODED from the matched clamp (each
+// read twice, as the code reads them) and must name the record's own pitch, two adjacent floats, inside the record.
+struct PitchLimitSite
+{
+    int32_t loStore = 0;     // movss [rec+LO], xmm1
+    int32_t hiLoad = 0;      // movss xmm1, [rec+HI]
+    int32_t hiStore = 0;     // movss [rec+HI], xmm1
+    int32_t pitchAdd = 0;    // addss xmm2, [rec+PITCH]
+    int32_t loMax = 0;       // maxss xmm2, [rec+LO]
+    int32_t pitchStore = 0;  // movss [rec+PITCH], xmm2
+};
+
+// The LO offset (HI is LO + 4), or 0 with `why` naming the first disagreement. `angles`: the record's desired-angle
+// pair (yaw, then pitch at +4); `stride`: the per-user record's size. Offsets are from the drive's record pointer
+// (globals + user * stride), which sits a header before the user's own block -- so they may exceed the stride (Halo 3
+// +0x190 with a 0x110 stride) -- but from the angles to the high limit must fit inside one user's block.
+inline uint32_t ResolvePitchLimits(const PitchLimitSite& s, int32_t angles, int32_t stride, const char*& why)
+{
+    why = nullptr;
+    if (s.pitchAdd != angles + 4 || s.pitchStore != angles + 4)
+        why = "the clamp does not read and write the record's own pitch";
+    else if (s.loStore != s.loMax)
+        why = "the clamp's low bound is not the eased low it stores";
+    else if (s.hiLoad != s.hiStore)
+        why = "the eased high is not read and written at one place";
+    else if (s.hiLoad != s.loStore + 4)
+        why = "the eased limits are not two adjacent floats";
+    else if (s.loStore <= angles + 4 || s.hiLoad + 4 - angles > stride || (s.loStore & 3) != 0)
+        why = "the eased limits are not inside the record";
+    return why ? 0u : static_cast<uint32_t>(s.loStore);
+}
+
+// A pitch interval as read off a live record: finite, ordered, and within the pole (a seat's range never reaches past
+// it). Anything else is no stop (the reticle is not clamped from it).
+inline bool RecordPitchInterval(float lo, float hi)
+{
+    return std::isfinite(lo) && std::isfinite(hi) && lo <= hi && lo >= -1.6f && hi <= 1.6f;
+}
+
 // One axis: `t` held inside its stops. `edge` receives how far past the stop t was (radians, >= 0; 0 inside). Yaw
 // differences wrap (remainder over 2pi); with both stops the nearer violated one wins.
 inline float ClampAxis(bool wraps, const AxisStops& s, float t, float& edge)

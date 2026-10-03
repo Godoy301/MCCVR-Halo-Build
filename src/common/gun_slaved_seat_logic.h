@@ -18,6 +18,8 @@
 //
 // Everything here is engine-free and unit-tested (tests/gun_slaved_seat_tests.cpp).
 
+#include "seat_frame_logic.h"
+
 #include <cmath>
 #include <cstdint>
 
@@ -432,6 +434,245 @@ private:
         }
         lastTurn = peak;
         haveTurn = true;
+    }
+};
+
+// ---- the gun's own offset from the occupant's aim (2026-10-03) -------------------------------------------------
+// The firing assist (Halo 3 0x13BAD0) aims the shot at the crosshair of the GUN's camera -- the marker the seat's
+// first-person camera rides (0x212198 -> 0x17DAEC) -- not at the occupant's aim the record drives. On the Warthog's
+// gauss turret (definition 0x069C) that camera's forward sits ~2.3-2.4 deg off the occupant's aim even at rest, the
+// same across a 44 deg swing (the chaingun 0x0697: ~0.5 deg): a fixed rotation of the marker on the gun. The solve
+// aims the camera's ray through the point, so a record written as that ray left the shots ~1 deg off the point.
+//
+// So the offset is LEARNED, as yaw / pitch in the turret's own frame (its object frame: a fixed rotation of the gun
+// on its mount reads the same there whatever the hull's tilt): delta = angles(gun camera) - angles(occupant aim),
+// sampled only while the gun has come to rest on its aim and the hand is still (no lag in it), averaged per stint
+// and remembered per definition, and refused when it is not a small fixed rotation (over 5 deg). Then it is fed
+// FORWARD, once, as a static calibration: the record is written as the camera ray through the point MINUS delta, so
+// the camera -- record plus delta -- lands on the ray. Nothing closes a loop on it. Everything that read the gun as
+// a stand-in for the record (the camera check, the outcome guard, the servo's gun feedback) takes the gun minus
+// delta: the occupant's aim the gun implies.
+
+// The angles of a WORLD direction (yaw, pitch) in frame `f` (the angles of F^-1 e(yaw, pitch)).
+inline bool AnglesInFrame(const seat_frame::Frame& f, float yaw, float pitch, float fallbackYaw,
+                          seat_frame::Angles& out) noexcept
+{
+    return seat_frame::RecordFromWorld(f, yaw, pitch, fallbackYaw, out);
+}
+
+// One offset sample: the gun's camera minus the occupant's aim, both world angles, as (yaw, pitch) in frame `f`, and
+// the plain angle between the two directions (radians). False when either does not resolve.
+inline bool OffsetInFrame(const seat_frame::Frame& f, float gunYaw, float gunPitch, float occYaw, float occPitch,
+                          float& dYaw, float& dPitch, float& separationRad) noexcept
+{
+    seat_frame::Angles gun{}, occ{};
+    if (!AnglesInFrame(f, gunYaw, gunPitch, 0.0f, gun) || !AnglesInFrame(f, occYaw, occPitch, gun.yaw, occ))
+        return false;
+    dYaw = std::remainder(gun.yaw - occ.yaw, kTwoPi);
+    dPitch = gun.pitch - occ.pitch;
+    float g[3], o[3];
+    seat_frame::Forward(gunYaw, gunPitch, g);
+    seat_frame::Forward(occYaw, occPitch, o);
+    separationRad = seat_frame::SeparationDeg(g, o) / kRadToDeg;   // atan2: exact at small angles, unlike acos
+    return std::isfinite(dYaw) && std::isfinite(dPitch) && std::isfinite(separationRad);
+}
+
+// A world direction moved by (sYaw, sPitch) in frame `f`, back in world angles. The record to write is the ray
+// through the point shifted by -delta; the occupant's aim a gun implies is the gun shifted by -delta.
+inline bool ShiftInFrame(const seat_frame::Frame& f, float yaw, float pitch, float sYaw, float sPitch, float& outYaw,
+                         float& outPitch) noexcept
+{
+    seat_frame::Angles a{}, w{};
+    if (!std::isfinite(sYaw) || !std::isfinite(sPitch) || !AnglesInFrame(f, yaw, pitch, 0.0f, a))
+        return false;
+    float p = a.pitch + sPitch;
+    p = p > 1.55f ? 1.55f : (p < -1.55f ? -1.55f : p);
+    if (!seat_frame::WorldFromRecord(f, a.yaw + sYaw, p, w))
+        return false;
+    // The yaw on the branch the input was on (never a 2pi jump in what the caller compares).
+    outYaw = yaw + std::remainder(w.yaw - yaw, kTwoPi);
+    outPitch = w.pitch;
+    return std::isfinite(outYaw) && std::isfinite(outPitch);
+}
+
+// "The gun has come to rest and the hand is still": the gun's camera and the occupant's aim each stayed within
+// `gunTol` of where they were, and the hand's target within `handTol`, for `needMs`. Any of them moving re-anchors
+// the timer there. World angles (gun yaw, gun pitch, occupant yaw, occupant pitch, hand yaw, hand pitch); yaw wraps.
+struct Stillness
+{
+    float gunTol = 0.00175f;          // 0.1 deg
+    float handTol = 0.0087f;          // 0.5 deg: a held hand jitters
+    unsigned long long needMs = 100;
+
+    bool have = false;
+    float anchor[6]{};
+    unsigned long long sinceMs = 0;
+
+    void reset() noexcept
+    {
+        have = false;
+        sinceMs = 0;
+    }
+
+    // True once everything has stayed put for needMs.
+    bool step(const float v[6], unsigned long long nowMs) noexcept
+    {
+        for (int i = 0; i < 6; ++i)
+            if (!std::isfinite(v[i]))
+            {
+                have = false;
+                return false;
+            }
+        bool still = have && nowMs >= sinceMs;
+        for (int i = 0; still && i < 6; ++i)
+        {
+            const float d = (i % 2 == 0) ? std::remainder(v[i] - anchor[i], kTwoPi) : v[i] - anchor[i];
+            still = std::fabs(d) <= (i < 4 ? gunTol : handTol);
+        }
+        if (!still)
+        {
+            for (int i = 0; i < 6; ++i)
+                anchor[i] = v[i];
+            sinceMs = nowMs;
+            have = true;
+            return false;
+        }
+        return nowMs - sinceMs >= needMs;
+    }
+};
+
+// THE LEARNER: an exponential average of the offset over the samples Stillness admits. A sample farther than
+// `refuseRad` from the occupant's aim is not a fixed rotation of a marker (a gun still lagging, a stop the gun holds
+// and the record does not, a wrong field): refused, counted, never averaged. Usable after `ready` samples -- or at
+// once when seeded from the definition's last stint.
+struct OffsetLearner
+{
+    float alpha = 0.05f;
+    float refuseRad = 0.0873f;        // 5 deg
+    unsigned ready = 12;              // ~0.1 s of still samples at 120 polls/s
+
+    bool have = false;
+    float yaw = 0.0f, pitch = 0.0f;
+    unsigned samples = 0, refused = 0;
+
+    void reset() noexcept
+    {
+        have = false;
+        yaw = pitch = 0.0f;
+        samples = refused = 0;
+    }
+
+    void seed(float y, float p, unsigned n) noexcept
+    {
+        if (!std::isfinite(y) || !std::isfinite(p) || !n)
+            return;
+        have = true;
+        yaw = y;
+        pitch = p;
+        samples = n < ready ? n : ready;
+    }
+
+    // True when the sample was averaged in.
+    bool step(float dYaw, float dPitch, float separationRad) noexcept
+    {
+        if (!std::isfinite(dYaw) || !std::isfinite(dPitch) || !std::isfinite(separationRad))
+            return false;
+        if (separationRad > refuseRad)
+        {
+            ++refused;
+            return false;
+        }
+        if (!have)
+        {
+            yaw = dYaw;
+            pitch = dPitch;
+            have = true;
+        }
+        else
+        {
+            yaw += alpha * (dYaw - yaw);
+            pitch += alpha * (dPitch - pitch);
+        }
+        ++samples;
+        return true;
+    }
+
+    bool usable() const noexcept { return have && samples >= ready; }
+};
+
+// The offset per gun DEFINITION (a gauss turret is a gauss turret on every Warthog), so the next stint in one starts
+// calibrated. A few entries, oldest replaced; keyed with the runtime generation (a new session is a new tag set).
+struct OffsetBook
+{
+    struct Entry
+    {
+        uint32_t definition = 0xFFFFFFFFu, generation = 0;
+        float yaw = 0.0f, pitch = 0.0f;
+        unsigned samples = 0;
+    };
+    Entry e[8]{};
+    unsigned next = 0;
+
+    const Entry* find(uint32_t definition, uint32_t generation) const noexcept
+    {
+        for (const auto& x : e)
+            if (x.samples && x.definition == definition && x.generation == generation)
+                return &x;
+        return nullptr;
+    }
+
+    void store(uint32_t definition, uint32_t generation, float yaw, float pitch, unsigned samples) noexcept
+    {
+        if (definition == 0xFFFFFFFFu || !samples || !std::isfinite(yaw) || !std::isfinite(pitch))
+            return;
+        for (auto& x : e)
+            if (x.samples && x.definition == definition && x.generation == generation)
+            {
+                x.yaw = yaw;
+                x.pitch = pitch;
+                x.samples = samples;
+                return;
+            }
+        Entry& slot = e[next % 8];
+        next = (next + 1) % 8;
+        slot = Entry{definition, generation, yaw, pitch, samples};
+    }
+};
+
+// The dev line's account of one window: the sample offsets, and the gun's angles in the turret frame they were taken
+// over (is the offset the same across the gun's range?).
+struct OffsetRange
+{
+    unsigned samples = 0;
+    float minYaw = 0.0f, maxYaw = 0.0f, minPitch = 0.0f, maxPitch = 0.0f;
+    float gunMinYaw = 0.0f, gunMaxYaw = 0.0f, gunMinPitch = 0.0f, gunMaxPitch = 0.0f;
+
+    void reset() noexcept { *this = OffsetRange{}; }
+
+    void note(float dYaw, float dPitch, float gunYaw, float gunPitch) noexcept
+    {
+        if (!std::isfinite(dYaw) || !std::isfinite(dPitch) || !std::isfinite(gunYaw) || !std::isfinite(gunPitch))
+            return;
+        const float gy = std::remainder(gunYaw, kTwoPi);   // about the turret's nose, (-pi, pi]
+        if (!samples)
+        {
+            minYaw = maxYaw = dYaw;
+            minPitch = maxPitch = dPitch;
+            gunMinYaw = gunMaxYaw = gy;
+            gunMinPitch = gunMaxPitch = gunPitch;
+        }
+        else
+        {
+            minYaw = dYaw < minYaw ? dYaw : minYaw;
+            maxYaw = dYaw > maxYaw ? dYaw : maxYaw;
+            minPitch = dPitch < minPitch ? dPitch : minPitch;
+            maxPitch = dPitch > maxPitch ? dPitch : maxPitch;
+            gunMinYaw = gy < gunMinYaw ? gy : gunMinYaw;
+            gunMaxYaw = gy > gunMaxYaw ? gy : gunMaxYaw;
+            gunMinPitch = gunPitch < gunMinPitch ? gunPitch : gunMinPitch;
+            gunMaxPitch = gunPitch > gunMaxPitch ? gunPitch : gunMaxPitch;
+        }
+        ++samples;
     }
 };
 } // namespace gun_slaved

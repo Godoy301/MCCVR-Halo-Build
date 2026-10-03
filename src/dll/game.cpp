@@ -232,6 +232,9 @@ bool LegacyDriveInstall(GameTitle title, uintptr_t base, size_t size);
 bool LegacyDriveRemove(GameTitle title);
 bool LegacyDriveLive(GameTitle title);
 void LegacyDriveReport();
+// The vehicle-gun aim lane's cold-worker lines (the gun camera's offset in Halo 3 gun-slaved seats, the look-steered
+// drivers' gun band): edges in every build, windows in dev builds.
+void GunAimReport();
 // Halo 3 / ODST / Reach seats aim in world angles (seat_aim_world_frame.inl): the vehicle-tilt rebase is skipped
 // while the first-person seat patch (C20; Reach: R-V27) is enabled. Install/remove with the title; the WaitThread
 // poll follows the setting.
@@ -253,6 +256,7 @@ bool Halo4Type13LogRemove();
 #include "../common/aim_caller_logic.h"
 #include "../common/seat_drive_policy.h"
 #include "../common/gun_slaved_seat_logic.h"
+#include "../common/vehicle_gun_band_logic.h"
 #include "../common/converge_policy.h"
 #include "../common/shot_point_logic.h"
 #if HALOMCCVR_DEV_DIAGNOSTICS
@@ -1977,6 +1981,14 @@ namespace
     bool RemoveHalo3DualAim();
     void PublishHalo3DualAim();
     void ReportHalo3DualAim();
+    // A look-steered driver's gun band (halo3_vehicle_gun_band.inl): anchors only, no hook.
+    bool InstallHalo3GunBand(uintptr_t base, size_t size, uint32_t generation);
+    void RemoveHalo3GunBand();
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    // The firing assist witness (dev; halo3_assist_witness.inl): a hook on 0x13BAD0, witness only.
+    void InstallHalo3AssistWitness(uintptr_t base, size_t size);
+    bool RemoveHalo3AssistWitness();
+#endif
     bool DisableAndRemoveHalo3ContactMelee();
     void ReportHalo3ContactMelee();
     void Halo3PublishContactHand(int hand,const FpInterpolationContext& context,
@@ -8291,6 +8303,17 @@ namespace
         uint32_t vehicleId =
             static_cast<uint32_t>(Halo3VehicleId::Unknown);
         int32_t mountedTurret = 0;
+        // 2026-10-03: the validated OBJECT frame the seat camera's node frame
+        // above was placed from (the direct parent's +0x50/+0x5C/+0x68, or the
+        // carrier's for a mounted gunner: a mounted turret's object frame is
+        // mount-fixed), and the direct parent's definition. The vehicle-gun aim
+        // lane measures in this frame on both threads: the sim thread reads the
+        // same object fields at a shot (halo3_vehicle_gun_band.inl), so a gun
+        // direction learned there means the same thing here.
+        float hullPos[3];
+        float hullFwd[3];
+        float hullUp[3];
+        uint32_t definitionIndex = 0xFFFFFFFFu;
     };
     Halo3VehicleTransform g_halo3VehicleTransform;
 
@@ -9357,6 +9380,10 @@ namespace
                 memcpy(xf.fwd, meshFrame.fwd, sizeof(xf.fwd));
                 memcpy(xf.up, meshFrame.up, sizeof(xf.up));
                 memcpy(xf.rawFwd, meshFrame.fwd, sizeof(xf.rawFwd));
+                memcpy(xf.hullPos, world.pos, sizeof(xf.hullPos));
+                memcpy(xf.hullFwd, world.fwd, sizeof(xf.hullFwd));
+                memcpy(xf.hullUp, world.up, sizeof(xf.hullUp));
+                xf.definitionIndex = defIndex;
                 memcpy(xf.anchor, cameraAnchor, sizeof(xf.anchor));
                 memcpy(xf.anchorBase, bodyAnchor, sizeof(xf.anchorBase));
                 xf.anchorValid = anchorValid ? 1u : 0u;
@@ -9593,6 +9620,11 @@ namespace
         int carrierHandle = -1;
         uint32_t identity = static_cast<uint32_t>(Halo3VehicleId::Unknown);
         bool mounted = false;
+        // The object (hull) frame and the direct parent's definition (Halo3VehicleTransform).
+        float hullPos[3] = {0.0f, 0.0f, 0.0f};
+        float hullFwd[3] = {0.0f, 0.0f, 0.0f};
+        float hullUp[3] = {0.0f, 0.0f, 0.0f};
+        uint32_t definitionIndex = 0xFFFFFFFFu;
     };
 
     bool Halo3ReadSeatSnapshot(Halo3SeatSnapshot& out)
@@ -9621,6 +9653,10 @@ namespace
         out.carrierHandle = xf.carrierHandle;
         out.identity = xf.vehicleId;
         out.mounted = xf.mountedTurret != 0;
+        memcpy(out.hullPos, xf.hullPos, sizeof(out.hullPos));
+        memcpy(out.hullFwd, xf.hullFwd, sizeof(out.hullFwd));
+        memcpy(out.hullUp, xf.hullUp, sizeof(out.hullUp));
+        out.definitionIndex = xf.definitionIndex;
         if (xf.seq.load(std::memory_order_acquire) != seq)
             return false;
         for (int i = 0; i < 3; ++i)
@@ -15960,7 +15996,11 @@ namespace
         // before any new module can overwrite its target/original pair.
         if (!RemoveHalo3Avatar()) return false;
         if (!RemoveHalo3WeaponHaptics()) return false;
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        if (!RemoveHalo3AssistWitness()) return false;
+#endif
         if (!RemoveHalo3DualAim()) return false;
+        RemoveHalo3GunBand();
         if (!LegacyDriveRemove(GameTitle::Halo3)) return false;
         if (!DisableAndRemoveHalo3ContactMelee()) return false;
         for (size_t i = g_installedGameHookCount; i > 0; --i)
@@ -16880,6 +16920,11 @@ namespace
         // path owns acquisition and downstream assist together, with its own
         // default-off setting and feature-only failure isolation.
         (void)InstallHalo3DualAim(base,size,runtimeGeneration);
+        // A look-steered driver's gun band (halo3_vehicle_gun_band.inl): anchors only, no hook; fails closed alone.
+        (void)InstallHalo3GunBand(base,size,runtimeGeneration);
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        InstallHalo3AssistWitness(base,size);   // SHOT Halo 3 assist (dev): the turn, cap hits, residual
+#endif
 
         uintptr_t renderHit = sig::Find(base, size, kRenderViewSig);
         uintptr_t prepareHit = sig::Find(base, size, kPrepareViewSig);
@@ -26949,8 +26994,10 @@ namespace
     #include "legacy_sight_trace.inl"
     #include "reach_contact_melee_runtime.inl"
     #include "halo3_contact_melee_runtime.inl"
+    #include "halo3_vehicle_gun_band.inl"
     #include "halo3_physical_crouch.inl"
     #include "halo3_dual_wield_runtime.inl"
+    #include "halo3_assist_witness.inl"
     #include "halo3_weapon_haptics.inl"
     #include "halo3_avatar.inl"
     #include "odst_contact_melee_runtime.inl"
@@ -46827,6 +46874,7 @@ namespace
             Halo4SeatSightReport();   // SIGHT Halo 4 seat eye / seated trace, SHOT Halo 4 seated
 #endif
             LegacyDriveReport();
+            GunAimReport();   // DRIVE Halo 3 gun-slaved seat (the gun camera's offset), SEAT LIMIT Halo 3 gun band
             SeatAimFrameSync();   // Halo 3 / ODST seat aim: follow the first-person seat settings
 #if HALOMCCVR_DEV_DIAGNOSTICS
             Type13LogReport();   // the type-13 pilot-controller log lines (REACH SF, H4 T13)
@@ -52004,6 +52052,22 @@ struct SeatLimitPoll
     // that ray's yaw / pitch away from the intent ray (`intentDir`, world, the ray the reticle already rides).
     bool intentDelta = false;
     float intentDir[3]{};
+    // A Halo 3 gun-slaved seat with its camera's offset fed forward (GunOffsetStep): the target is the RECORD's (the ray
+    // minus the offset), so the clamped record's ray is put back by the offset -- that is where the gun's crosshair,
+    // and so the shot, really goes at the stop.
+    bool gunOffset = false;
+    seat_frame::Frame gunOffsetFrame{};
+    float gunOffsetYaw = 0.0f, gunOffsetPitch = 0.0f;
+    // A Halo 3 look-steered LAND driver's GUN BAND (halo3_vehicle_gun_band.inl, vehicle_gun_band_logic.h): the guns
+    // fire from `bandOrigin` along their hull-fixed barrels, and the assist turns a shot toward the crosshair point by
+    // at most the cap -- so the shot's elevation relative to the hull's up is held to [bandLo, bandHi]. Its yaw is not
+    // (the hull turns toward the hand: catch-up). Needs the eyes: the crosshair point is E along the (record-clamped)
+    // aim at `targetRangeWu`, the distance from E to the point the aim was solved through.
+    bool band = false;
+    seat_frame::Frame bandHull{};
+    float bandLo = 0.0f, bandHi = 0.0f;
+    float bandOrigin[3]{};
+    float targetRangeWu = 0.0f;
 };
 
 static seat_limit::Gate g_seatLimitGate;   // input thread only
@@ -52044,12 +52108,45 @@ static bool SeatLimitReticleStep(const SeatLimitPoll& in, SeatLimitMarkPublicati
     g_seatLimitGateTitle = in.title;
     g_seatLimitGateMs = now;
     seat_limit::Stops use{};
-    const bool have = g_seatLimitGate.stops_for(in.stopsFresh, in.stops, in.seatKey, now, use);
+    const bool haveStops = g_seatLimitGate.stops_for(in.stopsFresh, in.stops, in.seatKey, now, use);
+    // The record's stops first (none: the target itself, exactly)...
     seat_limit::Result r{};
-    const bool clampOk = have && seat_limit::Clamp(use, in.targetYaw, in.targetPitch, in.recordYaw, r);
-    if (!g_seatLimitGate.decide(clampOk, r.overshootDeg) || !r.any())
+    const bool clampOk = (haveStops || in.band) &&
+        seat_limit::Clamp(haveStops ? use : seat_limit::Stops{}, in.targetYaw, in.targetPitch, in.recordYaw, r);
+    // ...then a look-steered driver's GUN BAND, on the shot's own line: from the guns toward the point the (clamped) aim's
+    // crosshair reaches. Past the band the shot leaves at its edge, from the guns.
+    gun_band::ShotClamp bandShot{};
+    bool bandClamped = false;
+    if (clampOk && in.band && in.eyes && in.targetRangeWu > 0.0f)
+    {
+        const float point[3]{in.shotOrigin[0] + r.dir[0] * in.targetRangeWu,
+                             in.shotOrigin[1] + r.dir[1] * in.targetRangeWu,
+                             in.shotOrigin[2] + r.dir[2] * in.targetRangeWu};
+        bandClamped = gun_band::ClampShot(in.bandHull, in.bandLo, in.bandHi, in.bandOrigin, point, bandShot) &&
+            bandShot.clamped;
+    }
+    float overshoot = r.any() ? r.overshootDeg : 0.0f;
+    if (bandClamped && bandShot.overshootDeg > overshoot)
+        overshoot = bandShot.overshootDeg;
+    if (!g_seatLimitGate.decide(clampOk, overshoot) || !(r.any() || bandClamped))
         return false;
     bool placed = false;
+    // The ray the gun really aims along at the stop: the clamped aim, put back by a gun camera's fed-forward offset --
+    // or, held at a driver's gun band, the shot itself, from the guns.
+    float rayDir[3]{r.dir[0], r.dir[1], r.dir[2]};
+    const float* rayOrigin = bandClamped ? in.bandOrigin : in.shotOrigin;
+    if (bandClamped)
+    {
+        for (int axis = 0; axis < 3; ++axis)
+            rayDir[axis] = bandShot.dir[axis];
+    }
+    else if (in.gunOffset)
+    {
+        float y = 0.0f, p = 0.0f;
+        if (gun_slaved::ShiftInFrame(in.gunOffsetFrame, r.worldYaw, r.worldPitch, in.gunOffsetYaw, in.gunOffsetPitch, y,
+                                     p))
+            seat_frame::Forward(y, p, rayDir);
+    }
     if (in.eyes)
     {
         // THE SEAT LIMIT RAY: the seat's shot origin along the clamped aim, traced by the title's sim thread beside the
@@ -52061,8 +52158,8 @@ static bool SeatLimitReticleStep(const SeatLimitPoll& in, SeatLimitMarkPublicati
         ray.sampleMs = now;
         for (int axis = 0; axis < 3; ++axis)
         {
-            ray.origin[axis] = in.shotOrigin[axis];
-            ray.dir[axis] = r.dir[axis];
+            ray.origin[axis] = rayOrigin[axis];
+            ray.dir[axis] = rayDir[axis];
         }
         Sight_PublishLimitRay(in.title, ray);
         bool limitHit = false;
@@ -52075,8 +52172,8 @@ static bool SeatLimitReticleStep(const SeatLimitPoll& in, SeatLimitMarkPublicati
         if (!limitTraced && Sight_ReadRay(in.title, generation, kSightRayFreshMs, intentRay) &&
             Sight_ReadTrace(in.title, generation, kSightFreshMs, intentTrace))
         {
-            intentDistanceWu = shot_point::DistanceToRayPoint(in.shotOrigin, intentRay.head, intentRay.dir,
-                                                              intentTrace.rangeWu);
+            intentDistanceWu = shot_point::DistanceToRayPoint(rayOrigin, intentRay.head, intentRay.dir,
+                                                                  intentTrace.rangeWu);
             intentTraced = intentDistanceWu > 0.0f;
             intentHit = intentTrace.hit;
         }
@@ -52087,7 +52184,7 @@ static bool SeatLimitReticleStep(const SeatLimitPoll& in, SeatLimitMarkPublicati
         shot_point::Placement p{};
         float vrYaw = 0.0f, vrPitch = 0.0f;
         bool mapped = false;
-        if (shot_point::Place(in.head, in.shotOrigin, r.dir, range, unitsPerVrMetre, p))
+        if (shot_point::Place(in.head, rayOrigin, rayDir, range, unitsPerVrMetre, p))
         {
             if (in.intentDelta)
             {
@@ -52110,16 +52207,232 @@ static bool SeatLimitReticleStep(const SeatLimitPoll& in, SeatLimitMarkPublicati
     }
     if (!placed)
     {
+        // Turned in place by what the clamp did to the target (a band-held shot: by its line's angles, an approximation
+        // -- the line starts at the guns, not the eye).
+        seat_limit::Result turned = r;
+        if (bandClamped)
+        {
+            turned.worldYaw = bandShot.worldYaw;
+            turned.worldPitch = bandShot.worldPitch;
+        }
         float vrYaw = in.controllerVrYaw, vrPitch = in.controllerVrPitch;
-        if (!seat_limit::TurnVrByClamp(in.targetYaw, in.targetPitch, r, in.yawSign, in.pitchSign, vrYaw, vrPitch))
+        if (!seat_limit::TurnVrByClamp(in.targetYaw, in.targetPitch, turned, in.yawSign, in.pitchSign, vrYaw, vrPitch))
             return false;
         mark.turn(vrYaw, vrPitch);
         if (!mark.valid)
             return false;
     }
     Sight_MarkSeatLimitClamped(in.title);
-    Sight_NoteSeatLimit(in.title, r.clamped[0], r.clamped[1], r.overshootDeg);
+    Sight_NoteSeatLimit(in.title, r.clamped[0], r.clamped[1], overshoot, bandClamped);
     return true;
+}
+
+// THE GUN CAMERA'S OWN OFFSET, the aim poll's half (Halo 3 gun-slaved seats; gun_slaved_seat_logic.h, "the gun's own
+// offset"; 2026-10-03). In a seat whose first-person camera is the gun (seat flag bit 7) the firing assist aims the
+// shot at that camera's crosshair, and the camera sits a fixed rotation off the occupant's aim the record drives (the
+// gauss turret ~2.4 deg, the chaingun ~0.5 deg, both constant across the gun's travel). The poll learns that rotation
+// in the turret's object frame while the gun is at rest on its aim and the hand is still, and feeds it FORWARD: the
+// record is written as the ray through the point minus it, so the camera -- the record plus it -- lands on the ray.
+// Where the gun stands in for the record (the drive's camera check and outcome guard, the servo's gun feedback, the
+// turret witnesses) it is read minus the offset: the occupant's aim it implies. Nothing closes a loop on it. Halo 3
+// only: ODST's seat snapshot carries no object frame to measure it in.
+struct GunOffsetState
+{
+    gun_slaved::OffsetLearner learner{};
+    gun_slaved::Stillness still{};
+    gun_slaved::OffsetBook book{};
+    uint32_t key = 0, definition = 0xFFFFFFFFu, generation = 0;
+    uint64_t lastMs = 0;
+    bool announced = false, refusalAnnounced = false;
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    gun_slaved::OffsetRange range{};
+    uint64_t rangeMs = 0;
+    uint32_t applied = 0, refusedAtWindow = 0;
+#endif
+};
+static GunOffsetState g_gunOffset;   // input thread only
+
+// The cold worker's view (GunAimReport): one release edge at a time (learned / refused), and the dev window.
+struct GunOffsetNotes
+{
+    std::atomic<uint32_t> seq{0};            // odd while written
+    std::atomic<uint32_t> kind{0};           // 1 learned (fed forward from now), 2 seeded from the definition, 3 refused
+    std::atomic<uint32_t> definition{0}, samples{0}, refused{0};
+    std::atomic<float> yaw{0.0f}, pitch{0.0f};
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    std::atomic<uint32_t> windowSeq{0};
+    std::atomic<uint32_t> windowSamples{0}, windowApplied{0}, windowRefused{0}, windowDefinition{0};
+    std::atomic<float> window[10]{};         // delta yaw min/max, pitch min/max; gun yaw min/max, pitch min/max; the average
+#endif
+};
+static GunOffsetNotes g_gunOffsetNotes;
+
+static void GunOffsetNote(uint32_t kind, uint32_t definition, const gun_slaved::OffsetLearner& l)
+{
+    auto& n = g_gunOffsetNotes;
+    n.seq.fetch_add(1, std::memory_order_acq_rel);
+    n.kind.store(kind, std::memory_order_relaxed);
+    n.definition.store(definition, std::memory_order_relaxed);
+    n.samples.store(l.samples, std::memory_order_relaxed);
+    n.refused.store(l.refused, std::memory_order_relaxed);
+    n.yaw.store(l.yaw, std::memory_order_relaxed);
+    n.pitch.store(l.pitch, std::memory_order_relaxed);
+    n.seq.fetch_add(1, std::memory_order_release);
+}
+
+// The turret's object frame from the snapshot's forward and up: orthonormalised, l = u x f (the game's own frame order;
+// the same hull frame the gun band measures in, vehicle_gun_band_logic.h).
+static bool GunOffsetTurretFrame(const float fwd[3], const float up[3], seat_frame::Frame& out)
+{
+    return gun_band::HullFrame(fwd, up, out);
+}
+
+// One poll of a Halo 3 gun-slaved seat. `gun*`: the gun camera's world aim (the published camera forward); `hand*`:
+// the hand's own direction. True, with the offset to feed forward, once it is usable for this stint.
+static bool GunOffsetStep(uint32_t seatKey, uint32_t definition, const seat_frame::Frame& turret, float gunYaw,
+                          float gunPitch, float handYaw, float handPitch, float& dYaw, float& dPitch)
+{
+    auto& s = g_gunOffset;
+    const uint64_t now = GetTickCount64();
+    const uint32_t generation = TitleAdapter_GetGeneration(GameTitle::Halo3);
+    if (seatKey != s.key || definition != s.definition || generation != s.generation || !s.lastMs ||
+        now < s.lastMs || now - s.lastMs > 500)
+    {
+        // A new stint: start from what this gun definition taught the last one, if anything.
+        s.learner.reset();
+        s.still.reset();
+        if (const auto* e = s.book.find(definition, generation))
+            s.learner.seed(e->yaw, e->pitch, e->samples);
+        s.key = seatKey;
+        s.definition = definition;
+        s.generation = generation;
+        s.announced = s.refusalAnnounced = false;
+        if (s.learner.usable())
+        {
+            s.announced = true;
+            GunOffsetNote(2, definition, s.learner);
+        }
+    }
+    s.lastMs = now;
+    float occYaw = 0.0f, occPitch = 0.0f;
+    unsigned agreeing[2]{};
+    if (LegacyDriveOccupantAim(GameTitle::Halo3, seatKey, occYaw, occPitch, agreeing))
+    {
+        const float v[6]{gunYaw, gunPitch, occYaw, occPitch, handYaw, handPitch};
+        float y = 0.0f, p = 0.0f, sep = 0.0f;
+        if (s.still.step(v, now) && gun_slaved::OffsetInFrame(turret, gunYaw, gunPitch, occYaw, occPitch, y, p, sep) &&
+            s.learner.step(y, p, sep))
+        {
+            s.book.store(definition, generation, s.learner.yaw, s.learner.pitch, s.learner.samples);
+#if HALOMCCVR_DEV_DIAGNOSTICS
+            seat_frame::Angles gunFrame{};
+            if (gun_slaved::AnglesInFrame(turret, gunYaw, gunPitch, 0.0f, gunFrame))
+                s.range.note(y, p, gunFrame.yaw, gunFrame.pitch);
+#endif
+        }
+    }
+    else
+    {
+        s.still.reset();
+    }
+    if (s.learner.usable() && !s.announced)
+    {
+        s.announced = true;
+        GunOffsetNote(1, definition, s.learner);
+    }
+    // Fail closed, once a stint: samples keep arriving over 5 deg and none was ever averaged in.
+    if (!s.learner.usable() && !s.refusalAnnounced && s.learner.refused >= 30)
+    {
+        s.refusalAnnounced = true;
+        GunOffsetNote(3, definition, s.learner);
+    }
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    if (!s.rangeMs || now < s.rangeMs || now - s.rangeMs >= 2000)
+    {
+        auto& n = g_gunOffsetNotes;
+        n.windowSeq.fetch_add(1, std::memory_order_acq_rel);
+        n.windowSamples.store(s.range.samples, std::memory_order_relaxed);
+        n.windowApplied.store(s.applied, std::memory_order_relaxed);
+        n.windowRefused.store(s.learner.refused - (std::min)(s.refusedAtWindow, s.learner.refused),
+                              std::memory_order_relaxed);
+        n.windowDefinition.store(definition, std::memory_order_relaxed);
+        const float w[10]{s.range.minYaw, s.range.maxYaw, s.range.minPitch, s.range.maxPitch, s.range.gunMinYaw,
+                          s.range.gunMaxYaw, s.range.gunMinPitch, s.range.gunMaxPitch,
+                          s.learner.have ? s.learner.yaw : std::numeric_limits<float>::quiet_NaN(),
+                          s.learner.have ? s.learner.pitch : std::numeric_limits<float>::quiet_NaN()};
+        for (int i = 0; i < 10; ++i)
+            n.window[i].store(w[i], std::memory_order_relaxed);
+        n.windowSeq.fetch_add(1, std::memory_order_release);
+        s.range.reset();
+        s.applied = 0;
+        s.refusedAtWindow = s.learner.refused;
+        s.rangeMs = now;
+    }
+#endif
+    if (!s.learner.usable())
+        return false;
+    dYaw = s.learner.yaw;
+    dPitch = s.learner.pitch;
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    ++s.applied;
+#endif
+    return true;
+}
+
+// Cold worker, every 2 s: the offset's edges (all builds) and, dev, the window -- is the offset the same across the
+// gun's range?
+void GunAimReport()
+{
+    static uint64_t s_last = 0;
+    const uint64_t now = GetTickCount64();
+    if (now - s_last < 2000)
+        return;
+    s_last = now;
+    Halo3GunBandReport();   // SEAT LIMIT Halo 3 gun band: the driver's guns learned / animated / no weapon angle
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    Halo3AssistWitnessReport();   // SHOT Halo 3 assist (dev)
+#endif
+    auto& n = g_gunOffsetNotes;
+    static uint32_t s_seenSeq = 0;
+    const uint32_t seq = n.seq.load(std::memory_order_acquire);
+    if (seq != s_seenSeq && !(seq & 1u))
+    {
+        s_seenSeq = seq;
+        const uint32_t kind = n.kind.load(std::memory_order_relaxed);
+        const uint32_t definition = n.definition.load(std::memory_order_relaxed);
+        const float yaw = n.yaw.load(std::memory_order_relaxed) * 57.29578f;
+        const float pitch = n.pitch.load(std::memory_order_relaxed) * 57.29578f;
+        if (kind == 1 || kind == 2)
+            LOG("DRIVE Halo 3 gun-slaved seat: gun 0x%04X's camera sits %+.2f deg yaw, %+.2f deg pitch (turret frame) off "
+                "the occupant's aim (%s); the record is written that much short of the ray through the point, so the "
+                "gun's crosshair lands on it", definition & 0xFFFFu, yaw, pitch,
+                kind == 1 ? "learned this stint from the gun at rest" : "remembered from this gun's last stint");
+        else if (kind == 3)
+            LOG("DRIVE Halo 3 gun-slaved seat: gun 0x%04X's camera offset NOT learned (%u samples refused: over 5 deg "
+                "from the occupant's aim, not a fixed rotation of a marker); the record is written as the ray, as before",
+                definition & 0xFFFFu, n.refused.load(std::memory_order_relaxed));
+    }
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    static uint32_t s_seenWindow = 0;
+    const uint32_t window = n.windowSeq.load(std::memory_order_acquire);
+    if (window != s_seenWindow && !(window & 1u))
+    {
+        s_seenWindow = window;
+        const uint32_t samples = n.windowSamples.load(std::memory_order_relaxed);
+        const uint32_t applied = n.windowApplied.load(std::memory_order_relaxed);
+        const uint32_t refused = n.windowRefused.load(std::memory_order_relaxed);
+        float w[10];
+        for (int i = 0; i < 10; ++i)
+            w[i] = n.window[i].load(std::memory_order_relaxed) * 57.29578f;
+        if (samples || applied || refused)
+            LOG("DRIVE Halo 3 gun offset (dev): gun 0x%04X delta yaw %+.2f pitch %+.2f deg (fed forward in %u polls); "
+                "%u still samples this window: delta yaw %+.2f..%+.2f, pitch %+.2f..%+.2f deg over the gun's yaw "
+                "%+.1f..%+.1f, pitch %+.1f..%+.1f deg (turret frame); refused %u (over 5 deg)",
+                n.windowDefinition.load(std::memory_order_relaxed) & 0xFFFFu, w[8], w[9], applied, samples,
+                samples ? w[0] : 0.0f, samples ? w[1] : 0.0f, samples ? w[2] : 0.0f, samples ? w[3] : 0.0f,
+                samples ? w[4] : 0.0f, samples ? w[5] : 0.0f, samples ? w[6] : 0.0f, samples ? w[7] : 0.0f, refused);
+    }
+#endif
 }
 
 // THE FREE CAMERA WITH NO PLAYER UNIT (src/common/aim_no_unit_logic.h): the input thread's half. The decision
@@ -52533,6 +52846,9 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
     bool limitEyes = false;
     GameTitle limitEyesTitle = GameTitle::None;
     float limitHead[3]{}, limitShotOrigin[3]{};
+    // ...and how far from E the point the seated aim was solved through lies (the crosshair point a driver's gun band
+    // judges the shot against); 0 until a seated solve sets it, then the crosshair distance stands in.
+    float limitTargetRangeWu = 0.0f;
     // The free-camera frame publishes no intent ray and bends nothing: the ray's eye is the engine camera's
     // position, which a death or free camera moves as the servo turns it, and with no unit there is no shot.
     if (aimFrame.traceReaim)
@@ -52730,6 +53046,13 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
                 {
                     sightSeatedConverged = true;
                     sightSeatedTitle = sightTitle;
+                    const float toPoint[3]{ray.head[0] + ray.dir[0] * sightRangeWu - ray.eye[0],
+                                           ray.head[1] + ray.dir[1] * sightRangeWu - ray.eye[1],
+                                           ray.head[2] + ray.dir[2] * sightRangeWu - ray.eye[2]};
+                    const float toPointWu = std::sqrt(toPoint[0] * toPoint[0] + toPoint[1] * toPoint[1] +
+                                                      toPoint[2] * toPoint[2]);
+                    if (std::isfinite(toPointWu) && toPointWu > 0.0f)
+                        limitTargetRangeWu = toPointWu;
 #if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA && HALOMCCVR_DEV_DIAGNOSTICS
                     // The point the aim was bent through, for the Halo 4 seat's claim below.
                     if (sightTitle == GameTitle::Halo4)
@@ -53093,6 +53416,20 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
     uint32_t gunSlavedKey = 0;
     int32_t gunSlavedParent = -1;   // the turret vehicle (Halo 3; the dev shot witness)
     (void)gunSlavedParent;
+    // THE GUN CAMERA'S OWN OFFSET (GunOffsetStep; Halo 3 gun-slaved seats): the turret's object frame and definition,
+    // and -- once learned -- the offset fed forward. `driveAim*` is the game's aim as the drive and the servo read it:
+    // the camera forward, minus the offset in such a seat (the occupant's aim the gun implies).
+    bool gunOffsetFrameValid = false;
+    seat_frame::Frame gunOffsetTurret{};
+    uint32_t gunOffsetDefinition = 0xFFFFFFFFu;
+    bool gunOffsetOn = false;
+    float gunOffsetYaw = 0.0f, gunOffsetPitch = 0.0f;
+    float driveAimYaw = aimYaw, driveAimPitch = aimPitch;
+    // A HALO 3 LOOK-STEERED LAND DRIVER's gun band (halo3_vehicle_gun_band.inl): the hull frame, the band and the
+    // guns' world origin, when the band is current for the seat's own vehicle.
+    bool bandValid = false;
+    seat_frame::Frame bandHull{};
+    float bandLo = 0.0f, bandHi = 0.0f, bandOrigin[3]{};
 #if HALOMCCVR_DEV_DIAGNOSTICS
     // This poll's natural in-game causes that used to switch a seat's convergence off (the latch holding a
     // written axis at the seat's clamp, the game's aim staying off the writes, a stall, a turret's rate cap).
@@ -53151,6 +53488,21 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
                             gun_slaved::CameraSlavedToGun(Halo3OccupiedSeatFlags());
                         gunSlavedKey = seatKey;
                         gunSlavedParent = seat.parentHandle;
+                        gunOffsetDefinition = seat.definitionIndex;
+                        gunOffsetFrameValid = gunSlavedSeat && seat.definitionIndex <= 0xFFFFu &&
+                            GunOffsetTurretFrame(seat.hullFwd, seat.hullUp, gunOffsetTurret);
+                        // A look-steered land driver: its guns' elevation band, learned from its own shots.
+                        float originLocal[3]{};
+                        if (seatFacts.driver && seatFacts.look_steered && !seatAircraft && !seat.mounted &&
+                            Halo3GunBandRead(seat.parentHandle, seat.definitionIndex, bandLo, bandHi, originLocal) &&
+                            gun_band::HullFrame(seat.hullFwd, seat.hullUp, bandHull) && seat_frame::Finite3(seat.hullPos))
+                        {
+                            float offset[3]{};
+                            gun_band::ToWorld(bandHull, originLocal, offset);
+                            for (int axis = 0; axis < 3; ++axis)
+                                bandOrigin[axis] = seat.hullPos[axis] + offset[axis];
+                            bandValid = true;
+                        }
                     }
                 }
 #if HALOMCCVR_EXPERIMENTAL_ODST_BRINGUP
@@ -53208,8 +53560,29 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
                 seatAxes.pitch = false;
             if (!driveSeated)
                 gunSlavedSeat = false;
-            LegacyDrivePublish(driveTitle, desiredYaw, desiredPitch, aimYaw, aimPitch, true, driveSeated, seatAxes,
-                               seat_drive::PitchLatches(seatFacts), seatKey, gunSlavedSeat);
+            // THE GUN CAMERA'S OWN OFFSET (GunOffsetStep): once learned for this Halo 3 gun-slaved seat, the record is
+            // written as the ray through the point minus it, and the gun is read minus it wherever it stands in for the
+            // record. Not learned (or no frame): the ray and the gun exactly as before.
+            if (gunSlavedSeat && gunOffsetFrameValid && driveSeated && !halo4Aim && driveTitle == GameTitle::Halo3 &&
+                seatAxes.any() &&
+                GunOffsetStep(gunSlavedKey, gunOffsetDefinition, gunOffsetTurret, aimYaw, aimPitch, intentYaw,
+                              intentPitch, gunOffsetYaw, gunOffsetPitch))
+            {
+                float recordYaw = 0.0f, recordPitch = 0.0f, impliedYaw = 0.0f, impliedPitch = 0.0f;
+                if (gun_slaved::ShiftInFrame(gunOffsetTurret, desiredYaw, desiredPitch, -gunOffsetYaw, -gunOffsetPitch,
+                                             recordYaw, recordPitch) &&
+                    gun_slaved::ShiftInFrame(gunOffsetTurret, aimYaw, aimPitch, -gunOffsetYaw, -gunOffsetPitch,
+                                             impliedYaw, impliedPitch))
+                {
+                    desiredYaw = recordYaw;
+                    desiredPitch = Clamp(recordPitch, -1.45f, 1.45f);
+                    driveAimYaw = impliedYaw;
+                    driveAimPitch = impliedPitch;
+                    gunOffsetOn = true;
+                }
+            }
+            LegacyDrivePublish(driveTitle, desiredYaw, desiredPitch, driveAimYaw, driveAimPitch, true, driveSeated,
+                               seatAxes, seat_drive::PitchLatches(seatFacts), seatKey, gunSlavedSeat);
             if (!driveSeated && LegacyDriveLive(driveTitle))
             {
                 // The game's aim IS the written target now. A converged target is then the game's aim itself,
@@ -53260,6 +53633,18 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
                 limitPoll.pitchSign = g_pitchSign.load();
                 limitPoll.controllerVrYaw = atan2f(fx, -fz);
                 limitPoll.controllerVrPitch = asinf(Clamp(fy, -1.0f, 1.0f));
+                limitPoll.gunOffset = gunOffsetOn;
+                limitPoll.gunOffsetFrame = gunOffsetTurret;
+                limitPoll.gunOffsetYaw = gunOffsetYaw;
+                limitPoll.gunOffsetPitch = gunOffsetPitch;
+                limitPoll.band = bandValid && driveTitle == GameTitle::Halo3;
+                limitPoll.bandHull = bandHull;
+                limitPoll.bandLo = bandLo;
+                limitPoll.bandHi = bandHi;
+                memcpy(limitPoll.bandOrigin, bandOrigin, sizeof(limitPoll.bandOrigin));
+                limitPoll.targetRangeWu = limitTargetRangeWu > 0.0f
+                    ? limitTargetRangeWu
+                    : Clamp(g_config.crosshair_distance_m, 2.0f, 50.0f) * g_worldScale.load(std::memory_order_relaxed);
                 seatLimitGuard.stepped = true;
                 (void)SeatLimitReticleStep(limitPoll, seatLimitMark);
             }
@@ -53286,10 +53671,12 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
                 bool gunSettled = false;
                 if (turretNow && haveWrites && seatWritten.yaw && seatWritten.pitch)
                 {
-                    float gunMiss = gun_slaved::AngleBetweenDeg(aimYaw, aimPitch, writtenYaw[0], writtenPitch[0]);
+                    // The gun as the record it implies (minus a fed-forward camera offset): it settles ON the writes.
+                    float gunMiss = gun_slaved::AngleBetweenDeg(driveAimYaw, driveAimPitch, writtenYaw[0],
+                                                                writtenPitch[0]);
                     if (writtenValid[1])
-                        gunMiss = std::fmin(gunMiss, gun_slaved::AngleBetweenDeg(aimYaw, aimPitch, writtenYaw[1],
-                                                                                writtenPitch[1]));
+                        gunMiss = std::fmin(gunMiss, gun_slaved::AngleBetweenDeg(driveAimYaw, driveAimPitch,
+                                                                                writtenYaw[1], writtenPitch[1]));
                     gunSettled = s_turretSettle.step(gunMiss / 57.2957795f, GetTickCount64());
                 }
                 else
@@ -53299,7 +53686,7 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
                 natural.turretSlew = turretNow && !gunSettled;
                 if (gunSlavedSeat && !halo4Aim)
                 {
-                    LegacyDriveTurretWitness(driveTitle, aimYaw, aimPitch, desiredPitch, s_turretSettle);
+                    LegacyDriveTurretWitness(driveTitle, driveAimYaw, driveAimPitch, desiredPitch, s_turretSettle);
                     if (driveTitle == GameTitle::Halo3)
                         LegacySightPublishTurretSeat(gunSlavedParent, gunSettled);
                 }
@@ -53371,7 +53758,8 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
     // target and the gun nodded. There each axis closes on the occupant's own aim (the record's twin, read by the
     // hook) once it has agreed with the record for gun_slaved::kServoTrustSamples samples this stint; until then, or
     // with no fresh read, on the gun as before. Either way the gun-slaved servo is paced (gun_slaved::ServoPacer).
-    float servoAimYaw = aimYaw, servoAimPitch = aimPitch;
+    // (A Halo 3 gun-slaved seat with its camera's offset fed forward reads the gun minus it: driveAim*.)
+    float servoAimYaw = driveAimYaw, servoAimPitch = driveAimPitch;
     const bool gunSlavedServo = gunSlavedSeat && !halo4Aim && !freeCamera;
 #if HALOMCCVR_DEV_DIAGNOSTICS
     int servoFeedback[2]{-1, -1};   // per axis: 1 the occupant, 0 the gun, -1 not steered (dev witness)
@@ -53387,8 +53775,8 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
         if (gun_slaved::ServoFeedback(true, occupantFresh, agreeing[1]) == gun_slaved::Feedback::Occupant)
             servoAimPitch = occupantPitch;
 #if HALOMCCVR_DEV_DIAGNOSTICS
-        servoFeedback[0] = seatWritten.yaw ? -1 : servoAimYaw == aimYaw ? 0 : 1;
-        servoFeedback[1] = seatWritten.pitch ? -1 : servoAimPitch == aimPitch ? 0 : 1;
+        servoFeedback[0] = seatWritten.yaw ? -1 : servoAimYaw == driveAimYaw ? 0 : 1;
+        servoFeedback[1] = seatWritten.pitch ? -1 : servoAimPitch == driveAimPitch ? 0 : 1;
 #endif
     }
     const float errYaw = WrapPi(desiredYaw - servoAimYaw);

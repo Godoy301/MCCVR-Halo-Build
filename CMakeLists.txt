@@ -899,6 +899,11 @@ if(BUILD_TESTING)
     add_executable(halomccvr_seat_limit_reticle_tests tests/seat_limit_reticle_tests.cpp)
     target_include_directories(halomccvr_seat_limit_reticle_tests PRIVATE src/common)
     add_test(NAME halomccvr_seat_limit_reticle_tests COMMAND halomccvr_seat_limit_reticle_tests)
+    # A look-steered land driver's gun band (src/common/vehicle_gun_band_logic.h, 2026-10-03): the barrels learned in
+    # the hull frame (animated barrels refused), the firing assist's cap, and the clamp of the shot's elevation.
+    add_executable(halomccvr_vehicle_gun_band_tests tests/vehicle_gun_band_tests.cpp)
+    target_include_directories(halomccvr_vehicle_gun_band_tests PRIVATE src/common)
+    add_test(NAME halomccvr_vehicle_gun_band_tests COMMAND halomccvr_vehicle_gun_band_tests)
     add_executable(halomccvr_assess_reticle_tests tests/assess_reticle_tests.cpp)
     target_include_directories(halomccvr_assess_reticle_tests PRIVATE src/common)
     add_test(NAME halomccvr_assess_reticle_tests COMMAND halomccvr_assess_reticle_tests)
