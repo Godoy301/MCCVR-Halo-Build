@@ -557,6 +557,67 @@ inline Recompose RecomposeRecord(const RecomposeInput& in, float& yaw, float& pi
     return Recompose::Recomposed;
 }
 
+// ---- 4c. the game's eye when its acquisition did not run (Halo 3 on foot) ----------------------------------------
+// The record's eye (4b) is published from the evaluator call inside Halo 3's aim acquisition (0x13B08C, called at
+// 0xF4CC8 from the control update's targeting pass 0xF42D8). The game SKIPS that acquisition -- by its own branch,
+// not ours: `call 0xF4060; test al, al; je` at 0xF48C9 -- whenever 0xF4060 says no: a local input user's control
+// flag (+0x18 bit 0 of its 0x30-byte record in the thread table at TLS +0xC0) is set, or 0xF3710 holds (not yet
+// named; it reads game-mode and interface state). Read from the pinned module B209D845...EFB63, offline. The stick call still runs every tick. In the Forge log (2026-10-03)
+// every stretch without the eye (up to 24 s) is one where the first-person view model is not drawn and roomscale's
+// on-foot proof fails on every frame, no shot is fired, and the stretch ends a few seconds before a vehicle entry
+// or the first on-foot shot: consistent with Forge's Monitor (editor) mode, unconfirmed.
+// So the eye is asked of the same evaluator directly at the stick call when the acquisition has not published one,
+// gated by identity only (the hooks live, this generation, our unit, on foot and in player control). Each miss is
+// counted by cause on the SHOT RECORD line, whichever way it ends.
+enum class TickEyeMiss : uint8_t
+{
+    FromEvaluator = 0,  // asked the evaluator directly: the eye is published
+    NoHook,             // the acquisition / evaluator hooks are not installed, disabled, faulted or another generation's
+    NoUnit,             // no local unit
+    NotOnFootControlled,// a seat, a cinematic or scripted control: our own on-foot proof failed; not asked
+    EvaluatorFault,     // the direct call faulted or answered a non-finite eye
+    Count
+};
+inline const char* TickEyeMissName(TickEyeMiss why)
+{
+    switch (why)
+    {
+    case TickEyeMiss::FromEvaluator: return "asked the evaluator directly";
+    case TickEyeMiss::NoHook: return "hooks absent";
+    case TickEyeMiss::NoUnit: return "no unit";
+    case TickEyeMiss::NotOnFootControlled: return "not on foot in control";
+    case TickEyeMiss::EvaluatorFault: return "evaluator faulted";
+    default: return "?";
+    }
+}
+struct TickEyeFallbackInput
+{
+    bool hooked = false;            // the evaluator's trampoline is live, the lane enabled and not faulted
+    bool sameGeneration = false;    // the hooks were installed for this generation
+    int32_t unit = -1;              // the local player's unit
+    bool onFootControlled = false;  // on foot (no seat word), player-controlled (no cinematic)
+};
+// FromEvaluator: ask. Anything else: the reason not to.
+inline TickEyeMiss TickEyeFallbackGate(const TickEyeFallbackInput& in)
+{
+    if (!in.hooked || !in.sameGeneration)
+        return TickEyeMiss::NoHook;
+    if (in.unit == -1)
+        return TickEyeMiss::NoUnit;
+    if (!in.onFootControlled)
+        return TickEyeMiss::NotOnFootControlled;
+    return TickEyeMiss::FromEvaluator;
+}
+// Why the acquisition did not publish, for the same line: it did not run for input user 0 within the window (the
+// game skipped it), or it ran and never reached the evaluator.
+enum class TickEyeAcquisition : uint8_t { Skipped = 0, RanWithoutEvaluator, Count };
+inline TickEyeAcquisition ClassifyTickEyeAcquisition(uint64_t lastAcquisitionUs, uint64_t nowUs, uint64_t windowUs)
+{
+    return lastAcquisitionUs && nowUs >= lastAcquisitionUs && nowUs - lastAcquisitionUs <= windowUs
+               ? TickEyeAcquisition::RanWithoutEvaluator
+               : TickEyeAcquisition::Skipped;
+}
+
 // ---- 5. the frame-coherent pair --------------------------------------------------------------------------------
 // A render publishes the eyes it rendered from, keyed by the tracking-space head position its head look used; the
 // aim path keeps the hand directions it computed, keyed by the head position of the sample the hand came from.
