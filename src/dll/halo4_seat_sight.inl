@@ -798,9 +798,10 @@ void Halo4SightTraceSeated(uint32_t unit, void* instance)
     // [assess-only begin]
     // DEV ASSESSMENT (honest_reticle_assess): the game's own aim from the seat's eye (the ray the native seated
     // assist's crosshair trace runs along), looking past our own vehicle exactly as the intent trace does. Only
-    // while the key published one; nothing the aim reads moves.
+    // while the key published one; nothing the aim reads moves. A native fault here latches only the ASSESSMENT
+    // trace off (Sight_NoteAssessTraceFault); the seat's intent trace and its fault count are the aim's.
     SightAssessRay assess{};
-    if (Sight_ReadAssessRay(kTitle, generation, kSightRayFreshMs, assess))
+    if (!Sight_AssessTraceFaulted(kTitle) && Sight_ReadAssessRay(kTitle, generation, kSightRayFreshMs, assess))
     {
         const auto assessTrace = [&](float alongWu, float remainingWu) {
             halo4_seat_aim::TracePass pass{};
@@ -828,10 +829,7 @@ void Halo4SightTraceSeated(uint32_t unit, void* instance)
             kLegacySightSelfStepWu, kLegacySightSelfPasses, root, chain, chainCount, assessTrace, Halo4SightRootOf);
         if (!assessResult.completed)
         {
-            Sight_NoteTraceFault(kTitle);
-            f.faults.fetch_add(1, std::memory_order_relaxed);
-            LOG("SIGHT Halo 4 seated assessment trace: the native ray raised a fault; the trace stays off until the "
-                "title reinstalls");
+            Sight_NoteAssessTraceFault(kTitle);
             return;
         }
         Sight_PublishAssessTrace(kTitle, generation, assessResult.hit,

@@ -216,12 +216,15 @@ void Halo4SightTraceTick(uint32_t unit,void* instance)
 #if HALOMCCVR_DEV_DIAGNOSTICS
     // [assess-only begin]
     // DEV ASSESSMENT (honest_reticle_assess): the game's own aim ray from the engine eye, traced in this same
-    // update with the same profile, flags and ignore. Only while the key published one.
+    // update with the same profile, flags and ignore. Only while the key published one. Its native call has its
+    // own __try: a fault in it latches only the ASSESSMENT trace off (Sight_NoteAssessTraceFault), never the
+    // intent trace (the outer handler's Sight_NoteTraceFault is the aim's).
     SightAssessRay assess{};
-    const bool assessDue=Sight_ReadAssessRay(kTitle,generation,kSightRayFreshMs,assess);
+    const bool assessDue=!Sight_AssessTraceFaulted(kTitle) &&
+        Sight_ReadAssessRay(kTitle,generation,kSightRayFreshMs,assess);
     Halo4PhysicsRayCastInput assessInput=input;
     Halo4PhysicsRayCastResult assessOutput{};
-    bool assessReturned=false;
+    bool assessReturned=false,assessFaulted=false;
     if(assessDue)
         for(int axis=0;axis<3;++axis)
         {
@@ -248,7 +251,14 @@ void Halo4SightTraceTick(uint32_t unit,void* instance)
             if(assessDue)
             {
                 memcpy(&assessInput.collisionFlags,&input.collisionFlags,sizeof(assessInput.collisionFlags));
-                assessReturned=g_halo4WorldCollision.originalRayCast(&assessInput,&assessOutput);
+                __try
+                {
+                    assessReturned=g_halo4WorldCollision.originalRayCast(&assessInput,&assessOutput);
+                }
+                __except(EXCEPTION_EXECUTE_HANDLER)
+                {
+                    assessFaulted=true;
+                }
             }
             // [assess-only end]
 #endif
@@ -265,7 +275,9 @@ void Halo4SightTraceTick(uint32_t unit,void* instance)
         static_cast<uint64_t>(after.QuadPart-before.QuadPart));
 #if HALOMCCVR_DEV_DIAGNOSTICS
     // [assess-only begin]
-    if(assessDue)
+    if(assessFaulted)
+        Sight_NoteAssessTraceFault(kTitle);   // the assessment's own latch, not the aim's
+    else if(assessDue)
     {
         const bool assessHit=assessReturned && std::isfinite(assessOutput.fraction) &&
             assessOutput.fraction>=0.0f && assessOutput.fraction<=1.0f;

@@ -420,6 +420,11 @@ void ReachResolveSightFlags(uintptr_t base, size_t size)
     ReachClearSightFlags("resolving");
     // A native fault latches the trace off for the rest of THIS install; a new install tries again.
     g_reachSightTrace.faulted.store(false, std::memory_order_release);
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    // [assess-only begin]
+    Sight_ResetAssessTrace(GameTitle::HaloReach);   // ...and the assessment trace's own latch
+    // [assess-only end]
+#endif
     uint64_t expected = kReachCollisionTestFlagsInit;
 #if HALOMCCVR_DEV_DIAGNOSTICS
     if (g_config.reach_sight_fault & 4)   // fault injection, bit 2: the value check must refuse
@@ -680,11 +685,13 @@ void ReachSightTraceTick(uint32_t unit)
 #if HALOMCCVR_DEV_DIAGNOSTICS
     // [assess-only begin]
     // DEV ASSESSMENT (honest_reticle_assess): the game's own aim ray from Reach's engine eye, in this same tick and
-    // with these same ignores. Only while the key published one; nothing the aim reads moves.
+    // with these same ignores. Only while the key published one; nothing the aim reads moves. A native fault here
+    // latches only the ASSESSMENT trace off (Sight_NoteAssessTraceFault); the intent trace's latch is the aim's.
     {
         const uint32_t assessGeneration = TitleAdapter_GetGeneration(GameTitle::HaloReach);
         SightAssessRay assess{};
-        if (Sight_ReadAssessRay(GameTitle::HaloReach, assessGeneration, kSightRayFreshMs, assess))
+        if (!Sight_AssessTraceFaulted(GameTitle::HaloReach) &&
+            Sight_ReadAssessRay(GameTitle::HaloReach, assessGeneration, kSightRayFreshMs, assess))
         {
             bool assessHit = false;
             float assessRangeWu = 0.0f;
@@ -693,7 +700,7 @@ void ReachSightTraceTick(uint32_t unit)
                                         kReachSightSelfStepWu, seated ? kReachSightSelfPasses : 1, ignoreA, ignoreB,
                                         ignoreC, isOurs, assessHit, assessRangeWu))
             {
-                trace.faulted.store(true, std::memory_order_release);   // fail closed, as the intent trace does
+                Sight_NoteAssessTraceFault(GameTitle::HaloReach);   // the assessment's own latch, not the aim's
                 return;
             }
             Sight_PublishAssessTrace(GameTitle::HaloReach, assessGeneration, assessHit,

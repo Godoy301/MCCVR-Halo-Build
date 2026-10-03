@@ -63,7 +63,7 @@ SOURCES = [
     r"\bg_aimClamped\w*",
     r"\bkAimClampedFreshMs\b",
     r"\bAimClampedPublication\b",
-    r"\bSight_(?:Read|Publish)Assess\w*",
+    r"\bSight_\w*Assess\w*",
     r"\bSightAssess\w*",
     r"\bassess_reticle::",
     r"\bHalo4SeatSightHonestAlongAim\b",
@@ -81,6 +81,10 @@ FILE_SOURCES = {"src/dll/game.cpp": [r"\bclamped\b"]}
 
 SINKS = [
     r"\bSight_Mark\w*",
+    # The intent trace's fault latch belongs to the aim: an assessment fault latches only its own
+    # (Sight_NoteAssessTraceFault), never the title's trace.
+    r"\bSight_NoteTraceFault\b",
+    r"\bfaulted\b",
     r"\bSight_Publish(?!Assess)\w*",
     r"\bSight_NoteConverge\w*",
     r"\bSight_NoteMuzzle\w*",
@@ -115,11 +119,6 @@ EXEMPT = [
     r"\blayers\.push_back\(\s*reinterpret_cast<XrCompositionLayerBaseHeader\*>\(\s*&assessMarkerQuad\s*\)\s*\)",
     # The assessment's own witness counters in the Halo 4 seat lane (dev lines only).
     r"\bg_h4SeatEyeWitness\.honest\w*",
-    r"\bf\.faults\.fetch_add\(",
-    # Fail closed: a native fault inside the SHARED collision query means the hook itself is unsafe, so the
-    # assessment's trace latches the title's trace off exactly as the intent trace's own fault does.
-    r"\btrace\.faulted\.store\(\s*true\b",
-    r"\bSight_NoteTraceFault\(",
 ]
 
 MUTATORS = (r"store|fetch_add|fetch_sub|fetch_or|fetch_and|fetch_xor|exchange|compare_exchange_weak|"
@@ -630,6 +629,13 @@ def run_self_test():
     must_fail("src/dll/game.cpp", "        if (!converge::AssessDrawsGameAim(g_config.honest_reticle_assess, seatedNow))\n",
               "        if (g_config.honest_reticle_assess == 0)\n",
               "game.cpp reading the key other than through AssessDrawsGameAim must be rejected")
+    # The assessment's trace fault must latch only its own trace, never the aim's.
+    must_fail("src/dll/game.cpp", "        g_assessUnplaced.fetch_add(1);\n",
+              "        g_assessUnplaced.fetch_add(1);\n        trace.faulted.store(true, std::memory_order_release);\n",
+              "an assessment region latching the intent trace's faulted flag must be rejected")
+    must_fail("src/dll/game.cpp", "        g_assessUnplaced.fetch_add(1);\n",
+              "        g_assessUnplaced.fetch_add(1);\n        Sight_NoteTraceFault(title);\n",
+              "an assessment region calling Sight_NoteTraceFault must be rejected")
     # The dev gate and the region structure.
     must_fail("src/dll/vr.cpp", "#if HALOMCCVR_DEV_DIAGNOSTICS\n// [assess-only begin]\nXrSwapchain",
               "#if !HALOMCCVR_DEV_DIAGNOSTICS\n// [assess-only begin]\nXrSwapchain",

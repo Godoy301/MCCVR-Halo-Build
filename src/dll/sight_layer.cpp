@@ -239,6 +239,11 @@ bool Sight_TraceFaulted(GameTitle title)
 
 void Sight_ResetTitle(GameTitle title)
 {
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    // [assess-only begin]
+    Sight_ResetAssessTrace(title);   // the assessment trace's own latch, on the same reinstall
+    // [assess-only end]
+#endif
     auto& t = g_traces[Slot(title)];
     t.faulted.store(false, std::memory_order_release);
     t.lastTraceMs.store(0, std::memory_order_relaxed);
@@ -906,7 +911,27 @@ struct AssessTracePublication
 };
 AssessRayPublication g_assessRays[kTitleSlots];
 AssessTracePublication g_assessTraces[kTitleSlots];
+std::atomic<bool> g_assessTraceFaulted[kTitleSlots]{};
+std::atomic<uint32_t> g_assessTraceFaults[kTitleSlots]{};
 } // namespace
+
+void Sight_NoteAssessTraceFault(GameTitle title)
+{
+    g_assessTraceFaults[Slot(title)].fetch_add(1, std::memory_order_relaxed);
+    if (!g_assessTraceFaulted[Slot(title)].exchange(true, std::memory_order_acq_rel))
+        LOG("SIGHT title %d: the ASSESSMENT trace raised a native fault; the assessment trace stays off until the "
+            "title reinstalls (the aim's own trace is untouched)", static_cast<int>(title));
+}
+
+bool Sight_AssessTraceFaulted(GameTitle title)
+{
+    return g_assessTraceFaulted[Slot(title)].load(std::memory_order_acquire);
+}
+
+void Sight_ResetAssessTrace(GameTitle title)
+{
+    g_assessTraceFaulted[Slot(title)].store(false, std::memory_order_release);
+}
 
 void Sight_PublishAssessRay(GameTitle title, const SightAssessRay& ray)
 {

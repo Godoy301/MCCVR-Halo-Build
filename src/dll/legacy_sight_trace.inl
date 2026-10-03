@@ -300,9 +300,10 @@ void LegacySightTraceTick(GameTitle title, uint32_t unit, int32_t localUnit, boo
     // [assess-only begin]
     // DEV ASSESSMENT (honest_reticle_assess): the game's own aim ray from its shot origin (the engine eye, or the
     // rendered eye for an ODST passenger whose shot O6 moves there), in this same tick, with these same ignores.
-    // Only while the key published one; nothing the aim reads moves.
+    // Only while the key published one; nothing the aim reads moves. A native fault here latches only the
+    // ASSESSMENT trace off (Sight_NoteAssessTraceFault); the intent trace's latch is the aim's.
     SightAssessRay assess{};
-    if (Sight_ReadAssessRay(title, generation, kSightRayFreshMs, assess))
+    if (!Sight_AssessTraceFaulted(title) && Sight_ReadAssessRay(title, generation, kSightRayFreshMs, assess))
     {
         bool assessHit = false;
         float assessRangeWu = 0.0f;
@@ -310,9 +311,7 @@ void LegacySightTraceTick(GameTitle title, uint32_t unit, int32_t localUnit, boo
                                     kLegacySightSelfStepWu, seated ? kLegacySightSelfPasses : 1, ignoreA, ignoreB,
                                     ignoreC, isOurs, assessHit, assessRangeWu))
         {
-            Sight_NoteTraceFault(title);
-            LOG("SIGHT %s: the assessment trace raised a native fault; the trace stays off until the title "
-                "reinstalls", LegacySightTitleName(title));
+            Sight_NoteAssessTraceFault(title);
             return;
         }
         Sight_PublishAssessTrace(title, generation, assessHit, assessHit ? assessRangeWu : 0.0f);

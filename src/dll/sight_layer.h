@@ -188,6 +188,12 @@ bool Sight_ReadAssessRay(GameTitle title, uint32_t generation, uint64_t maxAgeMs
 // rangeWu: from the ray's origin; on a miss the caller passes 0 and a read reports the trace's far end.
 void Sight_PublishAssessTrace(GameTitle title, uint32_t generation, bool hit, float rangeWu);
 bool Sight_ReadAssessTrace(GameTitle title, uint32_t generation, uint64_t maxAgeMs, bool& hit, float& rangeWu);
+// The assessment trace's OWN fault latch. A native fault in the assessment's trace switches off only the assessment
+// trace for that title, until the title reinstalls (Sight_ResetTitle, or Reach's install); the title's intent trace
+// (Sight_NoteTraceFault / its own faulted flag) belongs to the aim and is never touched by the assessment.
+void Sight_NoteAssessTraceFault(GameTitle title);
+bool Sight_AssessTraceFaulted(GameTitle title);
+void Sight_ResetAssessTrace(GameTitle title);
 // [assess-only end]
 #endif
 
