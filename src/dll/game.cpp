@@ -36,6 +36,7 @@
 #include "../common/halo4_contact_melee_logic.h"
 #include "../common/seat_aim_frame_logic.h"
 #include "../common/shot_impact_logic.h"
+#include "../common/as_seen_logic.h"
 #include <windows.h>
 #include <tlhelp32.h>
 #include <array>
@@ -651,6 +652,11 @@ namespace
     // Render thread writes (one slot per render, round robin, a seqlock per slot); the aim path reads.
     thread_local float t_headLookKey[3]{};
     thread_local bool t_headLookKeyValid = false;
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    // The head ORIENTATION that render's head look read with that key (dev AS SEEN: the reticle quad's tracking
+    // direction is mapped into the world through the frame's own camera, as the compositor shows it over the scene).
+    thread_local float t_headLookQuat[4]{0.0f, 0.0f, 0.0f, 1.0f};
+#endif
     struct CamFrameSlot
     {
         std::atomic<uint32_t> sequence{0};
@@ -2206,6 +2212,9 @@ namespace
     void Halo3ImpactNoteShotLine(uint32_t unit, const float origin[3], const float direction[3], bool muzzle);
     void Halo3ImpactNoteReticle(uint64_t serial, const float center[3], const float dir[3], float rangeM, bool hit);
     void Halo3ImpactNoteTrigger(bool pressed);
+    // AS SEEN (dev; halo3_impact_witness.inl, as_seen_logic.h): one note per prepared frame's render.
+    void Halo3AsSeenNoteFrame(const float head[3], const float eye[3], const float fwd[3], const float up[3],
+                              const float aimFwd[3], const float headKey[3], const float headQuat[4]);
     void Halo3ImpactWitnessReport();
     bool Halo3SeatedInheritPoint(const float point[3], float out[3]);
 #endif
@@ -8077,6 +8086,9 @@ namespace
         // The head sample this render's view is built from: the key of its camera frame (PublishCamFrame).
         memcpy(t_headLookKey, hpos, sizeof(t_headLookKey));
         t_headLookKeyValid = true;
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        memcpy(t_headLookQuat, q, sizeof(t_headLookQuat));
+#endif
         // Head forward (OpenXR: -Z forward, +Y up).
         const float x = q[0], y = q[1], z = q[2], w = q[3];
         const float hfx = -2.0f * (w * y + x * z);
@@ -11228,7 +11240,21 @@ namespace
                 g_camValid.store(true);
                 {
                     const float baseEye[3]{g_baseCamX.load(), g_baseCamY.load(), g_baseCamZ.load()};
+#if HALOMCCVR_DEV_DIAGNOSTICS
+                    const bool keyedRender = t_headLookKeyValid;
+                    float renderKey[3]{};
+                    memcpy(renderKey, t_headLookKey, sizeof(renderKey));
+#endif
                     PublishCamFrame(p, baseEye);
+#if HALOMCCVR_DEV_DIAGNOSTICS
+                    // Dev AS SEEN (halo3_impact_witness.inl): this render's eyes, its scene camera basis, the game's
+                    // own aim forward and the head pose it was built from -- the frame an impact is first seen in.
+                    if (keyedRender)
+                    {
+                        const float aimForward[3]{g_aimFwdX.load(), g_aimFwdY.load(), g_aimFwdZ.load()};
+                        Halo3AsSeenNoteFrame(p, baseEye, f, u, aimForward, renderKey, t_headLookQuat);
+                    }
+#endif
                 }
 
                 // Measure the world-up axis from the engine's camera-up (see the

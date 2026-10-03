@@ -19,6 +19,11 @@
 //   path's own map, from the rendered eye of its frame, at the range it was drawn for) against P; how old P was at
 //   the fire (its hand, its camera), whether P's frame was older than the reticle's; and RT-to-fire latency.
 //
+//   AS SEEN Halo 3 VR [...] (dev): each on-foot impact against the reticle drawn in the FIRST prepared frame rendered
+//   after it (SEEN), against the game's own crosshair line in that frame (STOCK), and against P's line (AT FIRE), per
+//   strafe-speed and range bin, with the clocks between (as_seen_logic.h; the flat probe computes the same line for
+//   stock Halo 3); AS SEEN Halo 3 VR camera (dev): did the engine eye move on every prepared frame while moving?
+//
 //   SHOT IMPACT Halo 3 SEATED [gun owner def, weapon def, the vehicle's gun | his own weapon] (dev): the same, per
 //   seat, for the local player's seated fires (the shot line names him the shooter; his unit's parent is set), judged
 //   against the assist's output (the line our seated re-aim made), plus INHERITANCE: the fire routine's branch flag,
@@ -112,6 +117,73 @@ struct Halo3ImpactReticle
     bool hit = false;
 };
 Halo3ImpactReticle g_halo3ImpactReticle;
+
+// AS SEEN (as_seen_logic.h; 2026-10-03, the user's strafe report: "in flat the impact marks happen at the reticle
+// when strafing, in VR they are offset by practically half the reticle behind"). SHOT IMPACT proved the round lands on
+// P; the player judges it against the reticle on screen WHEN THE IMPACT APPEARS. So, per tracked round that hits:
+//   * at the spawn: P's line (its rendered eye H_P along u), its camera sample (the engine eye E_P, its stamp, the
+//     prepared frame it rendered in and that frame's sim tick), the fire's stamp and tick;
+//   * at the hit (the projectile's own collision query): the impact point, its stamp and sim tick -> pending;
+//   * the FIRST prepared frame whose render follows the hit (CamCopyHook, one note per prepared serial): its rendered
+//     eye H_F, engine eye E_F, its scene camera basis and head pose, the game's aim forward, its sim tick;
+//   * the reticle the compositor drew for THAT serial (Game_DevNoteTracedReticle): its tracking direction mapped into
+//     the world through that frame's own camera (as the compositor shows it over the scene), from H_F.
+// Then SEEN = the impact against that reticle line; STOCK = against the game's own crosshair line in that frame
+// (E_F along the aim forward: what flat would show for the same motion); AT FIRE = against P's line; and the clocks.
+// Everything here is under g_halo3Impact.lock; the frame note takes it once per prepared frame.
+struct Halo3AsSeenAim
+{
+    bool valid = false;
+    float head[3]{}, dir[3]{}, eye[3]{};   // H_P, u, E_P
+    bool eyeValid = false;
+    uint64_t camUs = 0, serial = 0, fireUs = 0;
+    int64_t camTick = -1;
+    uint32_t fireTick = 0;
+    bool velValid = false;
+    float vel[3]{};
+};
+struct Halo3AsSeenFrame
+{
+    bool valid = false;
+    uint64_t serial = 0, stampUs = 0;
+    uint32_t tick = 0;
+    float head[3]{}, eye[3]{}, fwd[3]{}, up[3]{}, aimFwd[3]{}, key[3]{}, quat[4]{};
+};
+struct Halo3AsSeenPending
+{
+    bool used = false;
+    bool framed = false;
+    float impact[3]{};
+    uint64_t impactUs = 0;
+    uint32_t impactTick = 0;
+    Halo3AsSeenAim aim{};
+    Halo3AsSeenFrame frame{};
+};
+struct Halo3AsSeenReticle
+{
+    bool valid = false;
+    uint64_t serial = 0, stampUs = 0;
+    float center[3]{}, dir[3]{};
+};
+struct Halo3AsSeen
+{
+    static constexpr int kFrames = 32, kReticles = 16, kPending = 16;
+    Halo3AsSeenAim aim[shot_impact::Tracker::kSlots]{};
+    Halo3AsSeenFrame frames[kFrames]{};
+    uint32_t frameNext = 0;
+    Halo3AsSeenReticle reticles[kReticles]{};
+    uint32_t reticleNext = 0;
+    Halo3AsSeenPending pending[kPending]{};
+    std::atomic<uint32_t> pendingCount{0};   // used slots: the frame note takes the lock only while any wait
+    as_seen::Window window{};
+    as_seen::CameraCensus census{};
+    // The reticle's world direction two ways -- through the frame's own camera (as drawn over the scene) and through
+    // the aim path's map (TrackingDirToWorld) -- and the reticle's origin against the head sample the frame rendered.
+    uint32_t mapN = 0;
+    double mapSumDeg = 0.0, mapMaxDeg = 0.0, originSumMm = 0.0;
+    uint32_t evictedPending = 0;
+};
+Halo3AsSeen g_halo3AsSeen;
 
 // One native fire on this thread: opened by the fire detour, filled by its shot line and its object_new.
 struct Halo3ImpactFire
@@ -389,6 +461,147 @@ shot_impact::Window* Halo3ImpactTrackedWindow(const shot_impact::Tracked& t)
     const shot_impact::SeatKey key{t.seatOwnerDef, t.seatWeaponDef, t.seatOwnGun};
     return w.seats.key[i] == key ? &w.seats.window[i] : nullptr;
 }
+
+// ---- AS SEEN helpers (all under g_halo3Impact.lock) ----------------------------------------------------------------
+// The sim tick of the prepared frame `serial` rendered in (the frame ring), or -1.
+int64_t Halo3AsSeenTickOfSerial(uint64_t serial)
+{
+    if (!serial)
+        return -1;
+    for (const auto& f : g_halo3AsSeen.frames)
+        if (f.valid && f.serial == serial)
+            return f.tick;
+    return -1;
+}
+
+// v rotated by the inverse of the unit quaternion q (x, y, z, w): tracking space -> the head's own frame.
+void Halo3AsSeenRotateInverse(const float q[4], const float v[3], float out[3])
+{
+    const float qv[3]{-q[0], -q[1], -q[2]};
+    const float w = q[3];
+    const float t[3]{2.0f * (qv[1] * v[2] - qv[2] * v[1]), 2.0f * (qv[2] * v[0] - qv[0] * v[2]),
+                     2.0f * (qv[0] * v[1] - qv[1] * v[0])};
+    out[0] = v[0] + w * t[0] + (qv[1] * t[2] - qv[2] * t[1]);
+    out[1] = v[1] + w * t[1] + (qv[2] * t[0] - qv[0] * t[2]);
+    out[2] = v[2] + w * t[2] + (qv[0] * t[1] - qv[1] * t[0]);
+}
+
+// The reticle's tracking direction as the compositor shows it over this frame's scene: into the head's frame (OpenXR:
+// +X right, +Y up, -Z forward) with the head pose the render used, then out through the camera basis the head look
+// wrote for that render (forward, up, left = up x forward).
+bool Halo3AsSeenReticleWorld(const Halo3AsSeenFrame& frame, const float trackingDir[3], float out[3])
+{
+    const float ql = std::sqrt(frame.quat[0] * frame.quat[0] + frame.quat[1] * frame.quat[1] +
+                               frame.quat[2] * frame.quat[2] + frame.quat[3] * frame.quat[3]);
+    if (!std::isfinite(ql) || ql < 0.5f || !shot_lag::Finite3(trackingDir) || !shot_lag::Finite3(frame.fwd) ||
+        !shot_lag::Finite3(frame.up))
+        return false;
+    const float q[4]{frame.quat[0] / ql, frame.quat[1] / ql, frame.quat[2] / ql, frame.quat[3] / ql};
+    float local[3]{};
+    Halo3AsSeenRotateInverse(q, trackingDir, local);
+    const float* f = frame.fwd;
+    const float* u = frame.up;
+    const float left[3]{u[1] * f[2] - u[2] * f[1], u[2] * f[0] - u[0] * f[2], u[0] * f[1] - u[1] * f[0]};
+    for (int axis = 0; axis < 3; ++axis)
+        out[axis] = -local[2] * f[axis] + local[1] * u[axis] - local[0] * left[axis];
+    const float l = shot_lag::Length(out);
+    if (!std::isfinite(l) || l < 1.0e-6f)
+        return false;
+    for (int axis = 0; axis < 3; ++axis)
+        out[axis] /= l;
+    return true;
+}
+
+// The engine eye's velocity at `frame` from the ring (50-200 ms back), else `fallback`.
+bool Halo3AsSeenEyeVel(const Halo3AsSeenFrame& frame, const float* fallback, float out[3])
+{
+    const Halo3AsSeenFrame* best = nullptr;
+    for (const auto& f : g_halo3AsSeen.frames)
+    {
+        if (!f.valid || f.stampUs >= frame.stampUs)
+            continue;
+        const uint64_t dt = frame.stampUs - f.stampUs;
+        if (dt < 50000 || dt > 200000)
+            continue;
+        if (!best || f.stampUs > best->stampUs)
+            best = &f;
+    }
+    if (best)
+    {
+        const float dt = float(frame.stampUs - best->stampUs) * 1.0e-6f;
+        for (int axis = 0; axis < 3; ++axis)
+            out[axis] = (frame.eye[axis] - best->eye[axis]) / dt;
+        if (shot_lag::Finite3(out))
+            return true;
+    }
+    if (fallback && shot_lag::Finite3(fallback))
+    {
+        memcpy(out, fallback, sizeof(float) * 3);
+        return true;
+    }
+    return false;
+}
+
+// A framed pending impact and the reticle drawn for its frame: one sample.
+void Halo3AsSeenEvaluate(Halo3AsSeenPending& p, const Halo3AsSeenReticle& r)
+{
+    auto& s = g_halo3AsSeen;
+    const Halo3AsSeenFrame& frame = p.frame;
+    float drawn[3]{};
+    if (!Halo3AsSeenReticleWorld(frame, r.dir, drawn))
+    {
+        ++s.window.noLine;
+        return;
+    }
+    // The same direction through the aim path's map: what the aim assumed the reticle meant.
+    float mapped[3]{};
+    if (shot_impact::TrackingDirToWorld(r.dir, g_gameYawRef, g_headYawRef, g_yawSign.load(), g_pitchSign.load(),
+                                        mapped))
+    {
+        const float deg = shot_impact::AngleDeg(drawn, mapped);
+        if (std::isfinite(deg))
+        {
+            ++s.mapN;
+            s.mapSumDeg += deg;
+            s.mapMaxDeg = deg > s.mapMaxDeg ? deg : s.mapMaxDeg;
+            const float keyDelta[3]{r.center[0] - frame.key[0], r.center[1] - frame.key[1],
+                                    r.center[2] - frame.key[2]};
+            s.originSumMm += shot_lag::Length(keyDelta) * 1000.0f;
+        }
+    }
+    float vel[3]{};
+    const bool velKnown = Halo3AsSeenEyeVel(frame, p.aim.velValid ? p.aim.vel : nullptr, vel);
+    const float* v = velKnown ? vel : nullptr;
+    as_seen::Sample sample{};
+    sample.seen = as_seen::Measure(p.impact, frame.head, drawn, v);
+    sample.stockValid = shot_lag::Finite3(frame.aimFwd);
+    if (sample.stockValid)
+        sample.stock = as_seen::Measure(p.impact, frame.eye, frame.aimFwd, v);
+    sample.atFireValid = p.aim.valid;
+    if (sample.atFireValid)
+        sample.atFire = as_seen::Measure(p.impact, p.aim.head, p.aim.dir, v);
+    sample.aimCamUs = p.aim.camUs;
+    sample.fireUs = p.aim.fireUs;
+    sample.impactUs = p.impactUs;
+    sample.frameCamUs = frame.stampUs;
+    sample.presentUs = r.stampUs;   // VR: the compositor building this serial's layers (its submit), not a photon
+    sample.ticksFireToImpact = static_cast<int32_t>(p.impactTick - p.aim.fireTick);
+    sample.ticksAimToFrame = p.aim.camTick >= 0 ? static_cast<int32_t>(int64_t(frame.tick) - p.aim.camTick) : -1;
+    if (p.aim.eyeValid)
+    {
+        const float moved[3]{frame.eye[0] - p.aim.eye[0], frame.eye[1] - p.aim.eye[1], frame.eye[2] - p.aim.eye[2]};
+        sample.eyeMovedAlongMm = as_seen::AlongTravelMm(moved, drawn, v, &sample.eyeMovedKnown);
+    }
+    s.window.Add(sample, g_config.crosshair_size_deg * 0.5f);
+}
+
+// Free a pending slot.
+void Halo3AsSeenRelease(Halo3AsSeenPending& p)
+{
+    if (p.used)
+        g_halo3AsSeen.pendingCount.fetch_sub(1, std::memory_order_acq_rel);
+    p = Halo3AsSeenPending{};
+}
 } // namespace
 
 // The fire detour's entry and exit (Halo3IndependentFireDetour). A fire inside a fire is not measured.
@@ -584,6 +797,26 @@ void Halo3ImpactNoteSpawn(int32_t handle, const float placementPos[3], const flo
         memcpy(t.spawnVel, vel, sizeof(t.spawnVel));
         memcpy(t.lastPos, pos, sizeof(t.lastPos));
         memcpy(t.lastVel, vel, sizeof(t.lastVel));
+        // AS SEEN: P's line and its camera sample, for when this round's impact first appears (on foot only: the
+        // seated reticle is another line).
+        const ptrdiff_t index = &t - w.tracker.slot;
+        if (index >= 0 && index < shot_impact::Tracker::kSlots)
+        {
+            Halo3AsSeenAim& a = g_halo3AsSeen.aim[index];
+            a = Halo3AsSeenAim{};
+            a.valid = !fire.seated;
+            memcpy(a.head, p.head, sizeof(a.head));
+            memcpy(a.dir, p.dir, sizeof(a.dir));
+            a.eyeValid = p.pointEyeValid && shot_lag::Finite3(p.pointEye);
+            memcpy(a.eye, p.pointEye, sizeof(a.eye));
+            a.camUs = p.pointEyeStampUs;
+            a.serial = p.serial;
+            a.camTick = Halo3AsSeenTickOfSerial(p.serial);
+            a.fireUs = nowUs;
+            a.fireTick = g_legacySimTicks[0].load(std::memory_order_acquire);
+            a.velValid = p.eyeVelValid;
+            memcpy(a.vel, p.eyeVel, sizeof(a.vel));
+        }
     }
     w.armed.store(w.tracker.Armed(), std::memory_order_release);
     ReleaseSRWLockExclusive(&w.lock);
@@ -659,6 +892,36 @@ void Halo3ImpactWitnessNoteQuery(uintptr_t caller, const float* start, const flo
             t.impact = true;
             memcpy(t.impactPos, point, sizeof(t.impactPos));
             t.impactCaller = static_cast<uint32_t>(caller - w.base);
+            // AS SEEN: wait for the first frame rendered after this hit (Halo3AsSeenNoteFrame).
+            const ptrdiff_t index = &t - w.tracker.slot;
+            if (index >= 0 && index < shot_impact::Tracker::kSlots && g_halo3AsSeen.aim[index].valid)
+            {
+                auto& s = g_halo3AsSeen;
+                Halo3AsSeenPending* slot = nullptr;
+                for (auto& candidate : s.pending)
+                    if (!candidate.used)
+                    {
+                        slot = &candidate;
+                        break;
+                    }
+                if (!slot)
+                {
+                    // Full: the oldest gives way (counted).
+                    slot = &s.pending[0];
+                    for (auto& candidate : s.pending)
+                        if (candidate.impactUs < slot->impactUs)
+                            slot = &candidate;
+                    Halo3AsSeenRelease(*slot);
+                    ++s.evictedPending;
+                }
+                slot->used = true;
+                s.pendingCount.fetch_add(1, std::memory_order_acq_rel);
+                memcpy(slot->impact, point, sizeof(slot->impact));
+                slot->impactUs = Sight_NowUs();
+                slot->impactTick = g_legacySimTicks[0].load(std::memory_order_acquire);
+                slot->aim = s.aim[index];
+                s.aim[index].valid = false;
+            }
         }
         break;
     }
@@ -749,7 +1012,84 @@ void Halo3ImpactNoteReticle(uint64_t serial, const float center[3], const float 
     memcpy(r.dir, dir, sizeof(r.dir));
     r.rangeM = rangeM;
     r.hit = hit;
+    const uint64_t stampUs = r.stampUs;
     ReleaseSRWLockExclusive(&r.lock);
+
+    // AS SEEN: keep this serial's reticle, and judge every impact whose first frame it is.
+    auto& w = g_halo3Impact;
+    auto& s = g_halo3AsSeen;
+    AcquireSRWLockExclusive(&w.lock);
+    Halo3AsSeenReticle& kept = s.reticles[s.reticleNext++ % Halo3AsSeen::kReticles];
+    kept.valid = true;
+    kept.serial = serial;
+    kept.stampUs = stampUs;
+    memcpy(kept.center, center, sizeof(kept.center));
+    memcpy(kept.dir, dir, sizeof(kept.dir));
+    if (s.pendingCount.load(std::memory_order_acquire))
+        for (auto& p : s.pending)
+        {
+            if (!p.used || !p.framed)
+                continue;
+            if (p.frame.serial == serial)
+            {
+                Halo3AsSeenEvaluate(p, kept);
+                Halo3AsSeenRelease(p);
+            }
+            else if (p.frame.serial + 3 < serial)
+            {
+                ++s.window.noLine;   // its frame drew no traced reticle (off, a seat, a miss of the gate)
+                Halo3AsSeenRelease(p);
+            }
+        }
+    ReleaseSRWLockExclusive(&w.lock);
+}
+
+// The render thread, once per keyed render (CamCopyHook): the first render of each prepared serial is noted. An impact
+// that hit before this render is first shown by it; its reticle arrives with the compositor's layer for the serial.
+void Halo3AsSeenNoteFrame(const float head[3], const float eye[3], const float fwd[3], const float up[3],
+                          const float aimFwd[3], const float headKey[3], const float headQuat[4])
+{
+    auto& w = g_halo3Impact;
+    if (!w.ready.load(std::memory_order_acquire) || !head || !eye || !fwd || !up || !aimFwd || !headKey || !headQuat)
+        return;
+    const uint64_t serial = VR_CurrentPreparedSerial();
+    static thread_local uint64_t s_lastSerial = 0;
+    if (!serial || serial == s_lastSerial)
+        return;
+    s_lastSerial = serial;
+    const uint64_t nowUs = Sight_NowUs();
+    auto& s = g_halo3AsSeen;
+    AcquireSRWLockExclusive(&w.lock);
+    Halo3AsSeenFrame& f = s.frames[s.frameNext++ % Halo3AsSeen::kFrames];
+    f.valid = true;
+    f.serial = serial;
+    f.stampUs = nowUs;
+    f.tick = g_legacySimTicks[0].load(std::memory_order_acquire);
+    memcpy(f.head, head, sizeof(f.head));
+    memcpy(f.eye, eye, sizeof(f.eye));
+    memcpy(f.fwd, fwd, sizeof(f.fwd));
+    memcpy(f.up, up, sizeof(f.up));
+    memcpy(f.aimFwd, aimFwd, sizeof(f.aimFwd));
+    memcpy(f.key, headKey, sizeof(f.key));
+    memcpy(f.quat, headQuat, sizeof(f.quat));
+    s.census.Add(eye, nowUs);
+    if (s.pendingCount.load(std::memory_order_acquire))
+        for (auto& p : s.pending)
+        {
+            if (!p.used || p.framed || p.impactUs > nowUs)
+                continue;
+            p.framed = true;
+            p.frame = f;
+            // Its reticle may already be here (the compositor ran first).
+            for (const auto& r : s.reticles)
+                if (r.valid && r.serial == serial)
+                {
+                    Halo3AsSeenEvaluate(p, r);
+                    Halo3AsSeenRelease(p);
+                    break;
+                }
+        }
+    ReleaseSRWLockExclusive(&w.lock);
 }
 
 // THE COMPENSATION (dev key seated_inherit_compensation, default 0; LegacySightReaimCrosshairQuery calls it for a
@@ -1114,6 +1454,16 @@ void InstallHalo3ImpactWitness(uintptr_t base, size_t size)
     w.compApplied = w.compNoInherit = w.compNoSpeed = w.compNoFrame = w.compNoSolution = 0;
     w.compShiftMmSum = w.compShiftMmMax = w.compResidualMax = 0.0f;
     w.armed.store(0, std::memory_order_release);
+    for (auto& p : g_halo3AsSeen.pending)
+        Halo3AsSeenRelease(p);
+    for (auto& a : g_halo3AsSeen.aim)
+        a = Halo3AsSeenAim{};
+    for (auto& f : g_halo3AsSeen.frames)
+        f = Halo3AsSeenFrame{};
+    for (auto& r : g_halo3AsSeen.reticles)
+        r = Halo3AsSeenReticle{};
+    g_halo3AsSeen.window = as_seen::Window{};
+    g_halo3AsSeen.census = as_seen::CameraCensus{};
     ReleaseSRWLockExclusive(&w.lock);
     void* const target = reinterpret_cast<void*>(entry);
     if (MH_CreateHook(target, reinterpret_cast<void*>(&Halo3ImpactObjectNewDetour),
@@ -1186,7 +1536,46 @@ void Halo3ImpactWitnessReport()
     evicted = w.tracker.evicted;
     w.nested = w.ourLineThroughP = w.ourLineOffP = 0;
     w.tracker.evicted = 0;
+    // AS SEEN: an impact no frame showed within half a second is dropped (counted); then the window and the census.
+    auto& asSeen = g_halo3AsSeen;
+    {
+        const uint64_t nowUs = Sight_NowUs();
+        for (auto& p : asSeen.pending)
+            if (p.used && nowUs > p.impactUs + 500000)
+            {
+                if (p.framed)
+                    ++asSeen.window.noLine;
+                else
+                    ++asSeen.window.unframed;
+                Halo3AsSeenRelease(p);
+            }
+    }
+    const as_seen::Window seenWindow = asSeen.window;
+    asSeen.window = as_seen::Window{};
+    char censusClause[512]{};
+    const bool censusAny = asSeen.census.Format(censusClause, sizeof(censusClause));
+    asSeen.census.ResetCounts();
+    const uint32_t mapN = asSeen.mapN, evictedPending = asSeen.evictedPending;
+    const double mapMean = mapN ? asSeen.mapSumDeg / mapN : 0.0, mapMax = asSeen.mapMaxDeg;
+    const double originMean = mapN ? asSeen.originSumMm / mapN : 0.0;
+    asSeen.mapN = asSeen.evictedPending = 0;
+    asSeen.mapSumDeg = asSeen.mapMaxDeg = asSeen.originSumMm = 0.0;
     ReleaseSRWLockExclusive(&w.lock);
+    {
+        static char seenLine[4096];   // the cold worker only
+        if (seenWindow.Format("Halo 3 VR [vs the reticle quad as drawn over that frame; STOCK = the engine camera "
+                              "along its aim, as flat draws it; radii = crosshair_size_deg / 2]",
+                              seenLine, sizeof(seenLine)))
+            LOG("%s; reticle direction as drawn vs the aim path's map: mean %.3f max %.3f deg over %u, its origin vs "
+                "the frame's head sample %.1f mm%s", seenLine, mapMean, mapMax, mapN, originMean,
+                evictedPending ? " (pending impacts evicted: see the count)" : "");
+        if (evictedPending)
+            LOG("AS SEEN Halo 3 VR (dev): %u pending impacts evicted (more than %d awaiting a frame)", evictedPending,
+                Halo3AsSeen::kPending);
+        if (censusAny)
+            LOG("AS SEEN Halo 3 VR camera (dev; one note per prepared frame, the engine eye before head look): %s",
+                censusClause);
+    }
     static const char* const kLabels[4]{"Halo 3 [native; authoritative]", "Halo 3 [native; predicted]",
                                         "Halo 3 [muzzle; authoritative]", "Halo 3 [muzzle; predicted]"};
     char line[2048]{};

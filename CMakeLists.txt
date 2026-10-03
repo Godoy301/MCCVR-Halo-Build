@@ -922,6 +922,12 @@ if(BUILD_TESTING)
     add_executable(halomccvr_shot_impact_tests tests/shot_impact_tests.cpp)
     target_include_directories(halomccvr_shot_impact_tests PRIVATE src/common)
     add_test(NAME halomccvr_shot_impact_tests COMMAND halomccvr_shot_impact_tests)
+    # As seen (src/common/as_seen_logic.h, dev, 2026-10-03): an impact against the crosshair drawn in the first frame
+    # that shows it, binned by strafe speed and range, with the clocks between -- shared by the VR witness and the flat
+    # probe (HaloMCCFlatProbe.dll), so both hosts compute it identically.
+    add_executable(halomccvr_as_seen_tests tests/as_seen_tests.cpp)
+    target_include_directories(halomccvr_as_seen_tests PRIVATE src/common)
+    add_test(NAME halomccvr_as_seen_tests COMMAND halomccvr_as_seen_tests)
     # Source-consistency guard for the seated converged claim (2026-10-01): game.cpp assigns the claim from
     # converge::SeatedClaimDecide and nothing else, never clears sightSeatedConverged, and reads no natural-cause
     # symbol into the claim's facts. No behavioural test compiles game.cpp, so a natural-cause switch-off added
