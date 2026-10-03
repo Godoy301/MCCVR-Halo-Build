@@ -1596,12 +1596,12 @@ namespace
                                           0.3f, 20.0f, "%.1f");
             changed |= vr_menu::SliderFloat("Crosshair distance (m)", &g_config.crosshair_distance_m,
                                           2.0f, 50.0f, "%.0f");
-            ImGui::TextDisabled("Where the crosshair floats when it is not traced (other games, and\n"
-                                "Reach whenever the traced aim cannot resolve).");
+            ImGui::TextDisabled("Where the crosshair floats when it is not traced (while the aim is\n"
+                                "not converged, or no trace has resolved yet).");
             ImGui::Spacing();
-            ImGui::Text("Halo: Reach traced crosshair");
-            ImGui::TextDisabled("While Reach converges your aim, the crosshair sits on the surface you aim\n"
-                                "at, on the line from your eye along the gun, as in Halo: Campaign Evolved.");
+            ImGui::Text("Traced crosshair (every game)");
+            ImGui::TextDisabled("While your aim converges, the crosshair sits on the surface you aim at,\n"
+                                "on the line from your eye along the gun, as in Halo: Campaign Evolved.");
             changed |= vr_menu::SliderFloat("Max crosshair distance (m)", &g_config.reticle_max_dist_m,
                                           1.0f, 50.0f, "%.1f");
             changed |= vr_menu::SliderFloat("Gap in front of surfaces (m)", &g_config.reticle_surface_offset_m,

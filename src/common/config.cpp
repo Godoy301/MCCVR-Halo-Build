@@ -2115,7 +2115,7 @@ void ConfigSave()
     fprintf(f, "# Apparent size of the crosshair, in degrees.\n");
     fprintf(f, "# (default %.2f, range 0.3 to 20)\n", d.crosshair_size_deg);
     fprintf(f, "crosshair_size_deg = %.2f\n\n", g_config.crosshair_size_deg);
-    fprintf(f, "# Halo: Reach on foot: the crosshair sits on the surface you aim at, pulled\n");
+    fprintf(f, "# Every game, while the aim converges: the crosshair sits on the surface you aim at, pulled\n");
     fprintf(f, "# back reticle_surface_offset_m, and parks at reticle_max_dist_m beyond that.\n");
     fprintf(f, "# It shrinks away as a surface comes closer than reticle_min_scale_dist_m\n");
     fprintf(f, "# (to reticle_min_scale). Distances in meters. (defaults %.1f, %.2f, %.2f, %.3f)\n",

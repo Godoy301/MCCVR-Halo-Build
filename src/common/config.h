@@ -811,13 +811,14 @@ struct Config
     float crosshair_distance_m = 41.0f; // how far along the aim ray it floats
     float crosshair_size_deg = 10.10f;  // apparent (angular) size
 
-    // Halo Reach ON FOOT, while trace-and-reaim converges: Halo: Campaign Evolved's reticle placement
+    // EVERY TITLE, while the aim converges (Reach through its own trace, the others through the sight
+    // layer -- vr.cpp's traced_reticle_placement): Halo: Campaign Evolved's reticle placement
     // (its aimreticulemaxdist / surfaceoff / minscale knobs, same defaults). The crosshair sits on the
     // surface the aim ray hits, pulled back reticle_surface_offset_m; it parks at reticle_max_dist_m
     // beyond that and on a miss; and it shrinks away as the surface comes closer than
     // reticle_min_scale_dist_m (to reticle_min_scale there). The ray starts at the player's eye, so
     // parking it short never moves it off the thing being aimed at. It holds crosshair_size_deg at the
-    // cap. crosshair_distance_m still applies everywhere else (vehicles, the fallback aim).
+    // cap. crosshair_distance_m still applies whenever the aim is not converged (the fallback aim).
     float reticle_max_dist_m = 6.0f;
     float reticle_surface_offset_m = 0.5f;
     float reticle_min_scale_dist_m = 0.7f;
