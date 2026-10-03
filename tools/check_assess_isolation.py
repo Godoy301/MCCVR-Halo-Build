@@ -24,7 +24,11 @@ Assessment code lives between ``// [assess-only begin]`` and
      is read in game.cpp only as the first argument of AssessDrawsGameAim;
   4. no region mentions a sink: the convergence mark, the drive, the aim write,
      the shots/muzzle, the player's reticle (aimDir, tracedReticle,
-     tracedPlacement, reticleQuad, g_reticle*...), the scope, the servo;
+     tracedPlacement, reticleQuad, g_reticle*...), the scope, the servo, the
+     intent trace's fault latch, and the PLAYER-FACING seat limit reticle (its
+     Sight_*Limit* ray/trace slots, mark and publication), which has slots of its
+     own and shares only pure geometry code (shot_point_logic.h) with the
+     assessment -- rule 2 keeps every assessment symbol out of it in turn;
   5. inside a region, every assignment, increment, memcpy/memset/std::copy
      destination and mutating call (store, fetch_add, push_back...) targets a
      name DECLARED in a region of that file -- except the listed exemptions
@@ -55,6 +59,7 @@ END = re.compile(r"//\s*\[assess-only end\]")
 # key (it must still be dev-gated in the .cpp files), and the pure headers that define the policy and the geometry.
 PLUMBING_DEV_GATED = {"src/common/config.cpp", "src/dll/menu.cpp"}
 PLUMBING_FREE = {"src/common/config.h", "src/common/assess_reticle_logic.h", "src/common/converge_policy.h"}
+# shot_point_logic.h is NOT here: it is the shared, player-facing geometry, and must carry no assessment symbol.
 
 SOURCES = [
     r"\bhonest_reticle_assess\b",
@@ -77,9 +82,16 @@ SOURCES = [
     r"\bhalo4SeatShot\w*",
 ]
 # Common words that are assessment symbols only in one file.
-FILE_SOURCES = {"src/dll/game.cpp": [r"\bclamped\b"]}
+# (`r.clamped[0]` is another struct's member, not the assessment's publication.)
+FILE_SOURCES = {"src/dll/game.cpp": [r"(?<![.>])\bclamped\b"]}
 
 SINKS = [
+    # The PLAYER-FACING seat limit reticle (every build): its own ray/trace slots, mark and publication. The
+    # assessment never shares or touches them.
+    r"\bSight_\w*Limit\w*",
+    r"\b(?:g_)?[sS]eatLimit\w*",
+    r"\bGame_GetSeatLimitReticle\b",
+    r"\blimit(?:Dir|Placement|FromEye|FromController|State|RangeM|Surface)\b",
     r"\bSight_Mark\w*",
     # The intent trace's fault latch belongs to the aim: an assessment fault latches only its own
     # (Sight_NoteAssessTraceFault), never the title's trace.
@@ -636,6 +648,16 @@ def run_self_test():
     must_fail("src/dll/game.cpp", "        g_assessUnplaced.fetch_add(1);\n",
               "        g_assessUnplaced.fetch_add(1);\n        Sight_NoteTraceFault(title);\n",
               "an assessment region calling Sight_NoteTraceFault must be rejected")
+    # The seat limit reticle (player-facing, every build) and the assessment never share state.
+    must_fail("src/dll/game.cpp", "        g_assessUnplaced.fetch_add(1);\n",
+              "        g_assessUnplaced.fetch_add(1);\n        Sight_PublishLimitRay(title, ray);\n",
+              "an assessment region writing the seat limit ray's slot must be rejected")
+    must_fail("src/dll/game.cpp", "    outRx = desiredYaw;\n",
+              "    bool h; float r; if (Sight_ReadAssessTrace(t, 1, 100, h, r)) outRx = r;\n",
+              "the seat limit (or any player code) reading the assessment's slot must be rejected")
+    must_fail("src/dll/game.cpp", "    outRx = desiredYaw;\n",
+              "    if (nowMs - markMs > kAimClampedFreshMs) outRx = 0.0f;\n",
+              "player code borrowing the assessment publication's constants must be rejected")
     # The dev gate and the region structure.
     must_fail("src/dll/vr.cpp", "#if HALOMCCVR_DEV_DIAGNOSTICS\n// [assess-only begin]\nXrSwapchain",
               "#if !HALOMCCVR_DEV_DIAGNOSTICS\n// [assess-only begin]\nXrSwapchain",

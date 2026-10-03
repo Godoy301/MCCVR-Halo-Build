@@ -9044,6 +9044,37 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                     texel[2];
             }
         }
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        // Reach crosshair opacity evidence: captured alpha vs the alpha (and
+        // colour) the headset is given, against what the flat game adds.
+        // Reuses this readback - no extra GPU work - and logs at most every
+        // 2 s from the render thread that already owns this upload.
+        if (TitleAdapter_GetActiveTitle() == GameTitle::HaloReach)
+        {
+            static uint64_t lastReachAlphaLogMs = 0;
+            const uint64_t nowMs = GetTickCount64();
+            if (nowMs - lastReachAlphaLogMs >= 2000)
+            {
+                const AuthoredReticleAlphaSummary s =
+                    SummarizeAuthoredReticleAlpha(
+                        rows, mapped.RowPitch, kAuthoredReticleProbeSize);
+                if (s.inkTexels)
+                {
+                    lastReachAlphaLogMs = nowMs;
+                    LOG("REACHHUD alpha (8x8 mip means, 0-255): captured "
+                        "alpha mean %u peak %u | colour flat adds %u, VR "
+                        "added before straight-alpha %u, VR adds now %u | "
+                        "drawn alpha mean %u peak %u | ink texels %u, alpha "
+                        "below colour in %u",
+                        s.capturedAlphaMean, s.capturedAlphaPeak,
+                        s.addedColourPeak, s.legacyAddedColourPeak,
+                        s.drawnAddedColourPeak, s.drawnAlphaMean,
+                        s.drawnAlphaPeak, s.inkTexels,
+                        s.alphaBelowColourTexels);
+                }
+            }
+        }
+#endif
         g_context->Unmap(g_authoredReticleProbeStaging, 0);
         g_authoredReticleLastAlphaInk=alphaInk;
         g_authoredReticleLastColorInk=colorInk;
@@ -9363,15 +9394,34 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
 
         D3D11_TEXTURE2D_DESC sourceDesc{};
         source->GetDesc(&sourceDesc);
-        const bool copied = Blit(source, sourceDesc,
-                                 g_reticleImages[index], kReticleSize,
-                                 kReticleSize,
-                                 GetRtv(
-                                     g_reticleImages, g_reticleRtvs, index,
-                                     TitleAdapter_GetActiveTitle() ==
-                                         GameTitle::Halo4 ||
-                                     TitleAdapter_GetActiveTitle() ==
-                                         GameTitle::HaloCE), true);
+        const GameTitle uploadTitle = TitleAdapter_GetActiveTitle();
+        // Reach now takes the shader path too (straight-alpha conversion, see
+        // VrBlitNeedsReachReticleStraightAlpha), so it needs a view of the XR
+        // image - and the same typed retry, because SteamVR can expose a
+        // TYPELESS image that has no default view.
+        bool copied = Blit(source, sourceDesc,
+                           g_reticleImages[index], kReticleSize,
+                           kReticleSize,
+                           GetRtv(
+                               g_reticleImages, g_reticleRtvs, index,
+                               uploadTitle == GameTitle::Halo4 ||
+                               uploadTitle == GameTitle::HaloCE ||
+                               uploadTitle == GameTitle::HaloReach), true);
+        if (!copied && uploadTitle == GameTitle::HaloReach)
+        {
+            // Failure isolation: if the conversion cannot run (no view, no
+            // shader pipeline), publish the art the way Reach did before it -
+            // too faint at partial opacity, but never no crosshair at all.
+            copied = Blit(source, sourceDesc, g_reticleImages[index],
+                          kReticleSize, kReticleSize, nullptr, false);
+            static std::atomic<bool> loggedStraightAlphaLoss{false};
+            if (!loggedStraightAlphaLoss.exchange(
+                    true, std::memory_order_relaxed))
+                LOG("Reach crosshair: straight-alpha upload unavailable; "
+                    "publishing the capture by direct copy (it will read "
+                    "fainter than flat at partial opacity) - copied=%d",
+                    copied ? 1 : 0);
+        }
         const XrResult releaseResult =
             xrReleaseSwapchainImage(g_reticleChain, &release);
         const bool released = requireSuccessfulRelease
@@ -18086,8 +18136,86 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                                 }
                             }
 #endif
+                            // THE SEAT LIMIT RETICLE (all builds; seat_limit_reticle_logic.h): a
+                            // land vehicle's seat whose gun the game holds at a natural angular
+                            // stop (a passenger's cone, a turret's or tank gun's pitch stop) draws
+                            // the reticle where the gun is held -- on the ray from the stereo
+                            // centre eye through the point the clamped shot reaches, at its depth,
+                            // like the traced reticle. A title with no traced seat reticle turns
+                            // the reticle's own direction by the clamp and keeps its origin and
+                            // distance. Not with a barrel reticle (the barrel already shows the
+                            // gun) or Reach's native vehicle reticle.
+                            bool limitFromEye = false;
+                            aim_solve::TracedReticle limitPlacement{};
+                            {
+                                float limitDir[3]{};
+                                float limitRangeM = 0.0f;
+                                bool limitSurface = false, limitFromController = false;
+                                int limitState = 0;   // 0 none, 1 placed from the eye, 2 turned in place
+                                if (!reachNativeAim && !primaryBarrel &&
+                                    Game_GetSeatLimitReticle(limitDir, limitRangeM, limitSurface,
+                                                             limitFromController))
+                                {
+                                    aimDir[0] = limitDir[0];
+                                    aimDir[1] = limitDir[1];
+                                    aimDir[2] = limitDir[2];
+                                    limitState = 2;
+                                    if (!limitFromController && limitRangeM > 0.0f &&
+                                        projection.viewCount == 2 && projectionViews.size() == 2)
+                                    {
+                                        const XrPosef& left = projectionViews[0].pose;
+                                        const XrPosef& right = projectionViews[1].pose;
+                                        const float leftQuaternion[4] = {
+                                            left.orientation.x, left.orientation.y,
+                                            left.orientation.z, left.orientation.w};
+                                        const float rightQuaternion[4] = {
+                                            right.orientation.x, right.orientation.y,
+                                            right.orientation.z, right.orientation.w};
+                                        const float leftPosition[3] = {
+                                            left.position.x, left.position.y, left.position.z};
+                                        const float rightPosition[3] = {
+                                            right.position.x, right.position.y, right.position.z};
+                                        limitFromEye = ReachBuildStereoCenterPose(
+                                            leftQuaternion, leftPosition,
+                                            rightQuaternion, rightPosition, reachCenter);
+                                        if (limitFromEye)
+                                        {
+                                            limitPlacement = aim_solve::traced_reticle_placement(
+                                                limitSurface, limitRangeM,
+                                                g_config.reticle_max_dist_m,
+                                                g_config.reticle_surface_offset_m,
+                                                g_config.reticle_min_scale_dist_m,
+                                                g_config.reticle_min_scale,
+                                                g_config.crosshair_size_deg);
+                                            tracedReticle = false;
+                                            limitState = 1;
+                                        }
+                                    }
+                                }
+                                // A line per change, at most one a second (a hand worked along a stop
+                                // engages and releases it often; the dev SEAT LIMIT line counts them).
+                                static int loggedLimit = 0;
+                                static uint64_t lastLimitLogMs = 0;
+                                const uint64_t limitNowMs = GetTickCount64();
+                                if (limitState != loggedLimit && limitNowMs - lastLimitLogMs >= 1000)
+                                {
+                                    loggedLimit = limitState;
+                                    lastLimitLogMs = limitNowMs;
+                                    if (limitState == 1)
+                                        LOG("RETICLE seat limit: clamped at the seat's stop, drawn from the eye "
+                                            "at the clamped shot's point (%s %.2f m)",
+                                            limitSurface ? "surface" : "parked", limitRangeM);
+                                    else if (limitState == 2)
+                                        LOG("RETICLE seat limit: clamped at the seat's stop, the reticle turned "
+                                            "by the clamp in place");
+                                    else
+                                        LOG("RETICLE seat limit: released (back inside the seat's stops, or "
+                                            "out of the seat)");
+                                }
+                            }
                             const float dist = tracedReticle
                                 ? tracedPlacement.dist_m
+                                : limitFromEye ? limitPlacement.dist_m
                                 : g_config.crosshair_distance_m;
                             const float yaw = atan2f(aimDir[0], -aimDir[2]);
                             const float sp = fminf(fmaxf(aimDir[1], -1.0f), 1.0f);
@@ -18118,13 +18246,14 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                                 g_reticleAimPose.position;
                             if(primaryBarrel) reticleOrigin={committedPrimary.position[0],
                                 committedPrimary.position[1],committedPrimary.position[2]};
-                            if (reachNativeAim || tracedReticle)
+                            if (reachNativeAim || tracedReticle || limitFromEye)
                             {
                                 // The direction and origin share one validated
                                 // predicted-display-time stereo-center pose.
                                 // Vehicle barrels retain their native origin
                                 // and therefore their honest close parallax.
                                 // On foot this is the eye the traced ray starts at.
+                                // In a clamped seat, the eye the clamped shot's ray is drawn from.
                                 reticleOrigin = {
                                     reachCenter.position[0],
                                     reachCenter.position[1],
@@ -18136,6 +18265,7 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                                 reticleOrigin.z + aimDir[2] * dist};
                             const float w = tracedReticle
                                 ? tracedPlacement.width_m
+                                : limitFromEye ? limitPlacement.width_m
                                 : 2.0f * dist *
                                   tanf(g_config.crosshair_size_deg * 0.5f * 0.0174533f);
                             reticleQuad.size = {w, w};

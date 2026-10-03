@@ -98,6 +98,24 @@ constexpr bool VrBlitNeedsHalo4ReticleAlphaRepair(
     return halo4Title && destinationWidth == 512 && destinationHeight == 512;
 }
 
+// Reach's authored crosshair capture holds PREMULTIPLIED colour (the game drew
+// its translucent widget over a transparent-black target), but the aim quad is
+// composited as UNPREMULTIPLIED. A direct copy therefore applied the game's own
+// fade twice, which is why Reach's DMR crosshair read far fainter in the
+// headset than flat. The authored upload takes the shader path, whose fix()
+// converts to straight alpha (src/common/authored_reticle_logic.h explains and
+// tests the arithmetic). Only that exact 512-square authored upload: Reach's
+// eye, menu and every other blit stay byte-preserving.
+constexpr bool VrBlitNeedsReachReticleStraightAlpha(
+    bool reachTitle, bool authoredUpload, uint32_t sourceWidth,
+    uint32_t sourceHeight, uint32_t destinationWidth,
+    uint32_t destinationHeight) noexcept
+{
+    return reachTitle && authoredUpload && sourceWidth == 512 &&
+        sourceHeight == 512 && destinationWidth == 512 &&
+        destinationHeight == 512;
+}
+
 // Stage 3BQ's explicit typed RTV retry is also selected by CE's verified RGB
 // authored upload. Other swapchain consumers retain their established default-
 // descriptor behavior even if their first view creation fails.

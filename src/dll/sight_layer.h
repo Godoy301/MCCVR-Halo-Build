@@ -168,21 +168,44 @@ void Sight_NoteMuzzleShotHeld(GameTitle title);
 // Cold worker: one status line per title that is tracing, every 2 s.
 void Sight_Report();
 
+// AN AUXILIARY RAY: one the title's simulation-thread trace runs beside the intent ray, in the same tick, with the
+// same native query, flags and ignores, into a slot of its own -- from a shot origin along a direction the game
+// really aims, to the first surface. Nothing the aim converges on reads it: the intent ray, its trace, the smoothed
+// range, the scope, the shots and the writes are untouched.
+struct SightAuxRay
+{
+    uint32_t generation = 0;
+    uint64_t sampleMs = 0;
+    float origin[3]{};   // the game's shot origin (the engine eye on foot; the seat's eye in a seat)
+    float dir[3]{};      // unit, the direction the game aims along
+};
+
+// SEAT LIMIT RAY (all builds; src/common/seat_limit_reticle_logic.h). While a seat's reticle is clamped at a natural
+// angular stop (a passenger's cone, a turret's or a tank gun's pitch stop), the aim path publishes the ray the gun
+// really aims along -- the seat's engine eye along the limit-clamped direction -- and the title's trace runs it as an
+// auxiliary ray, so the reticle sits on the surface the gun's shots meet. Only while a seat is clamped: nothing is
+// traced otherwise. rangeWu: from the ray's origin; on a miss the caller passes 0 and a read reports the far end.
+void Sight_PublishLimitRay(GameTitle title, const SightAuxRay& ray);
+bool Sight_ReadLimitRay(GameTitle title, uint32_t generation, uint64_t maxAgeMs, SightAuxRay& out);
+void Sight_PublishLimitTrace(GameTitle title, uint32_t generation, bool hit, float rangeWu);
+bool Sight_ReadLimitTrace(GameTitle title, uint32_t generation, uint64_t maxAgeMs, bool& hit, float& rangeWu);
+// The seat's reticle is clamped at a natural stop (stamped by each aim poll that clamps it; live for 150 ms). While
+// it holds, a muzzle redirect is refused (the shot leaves along the game's clamped aim, through the clamped mark,
+// never past the stop) and the zoom lens keeps the game's aim instead of the hand's ray. Any thread.
+void Sight_MarkSeatLimitClamped(GameTitle title);
+bool Sight_SeatLimitClampedLive(GameTitle title);
+// Dev witness (empty in player builds): each clamped poll's edges and overshoot, and every 2 s per title
+//   SEAT LIMIT <title>: reticle clamped N polls (yaw edge Y, pitch edge P), max overshoot X deg
+void Sight_NoteSeatLimit(GameTitle title, bool yawEdge, bool pitchEdge, float overshootDeg);
+
 #if HALOMCCVR_DEV_DIAGNOSTICS
 // [assess-only begin]
 // DEV ASSESSMENT RAY (honest_reticle_assess; dev builds only, src/common/assess_reticle_logic.h). The reticle the
 // assessment draws is the point the game's shot really reaches: from the game's own shot origin along the game's
 // own aim, to the first surface. The aim path publishes that ray here (only while the key draws this title); the
-// title's simulation-thread trace, in the same tick and with the same ignores as the intent ray, traces it too
-// and publishes the result in a slot of its own. Nothing else reads either: the intent ray, its trace, the
-// smoothed range the aim converges on, the scope, the shots and the writes are untouched.
-struct SightAssessRay
-{
-    uint32_t generation = 0;
-    uint64_t sampleMs = 0;
-    float origin[3]{};   // the game's shot origin (the engine eye on foot; the seat's eye in a seat)
-    float dir[3]{};      // unit, the game's own aim
-};
+// title's simulation-thread trace traces it as an auxiliary ray (above) into slots of its OWN: it never shares a
+// slot or a latch with the seat limit ray, and a player build does not contain it.
+using SightAssessRay = SightAuxRay;
 void Sight_PublishAssessRay(GameTitle title, const SightAssessRay& ray);
 bool Sight_ReadAssessRay(GameTitle title, uint32_t generation, uint64_t maxAgeMs, SightAssessRay& out);
 // rangeWu: from the ray's origin; on a miss the caller passes 0 and a read reports the trace's far end.

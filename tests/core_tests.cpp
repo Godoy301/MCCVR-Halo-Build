@@ -1434,6 +1434,62 @@ int main()
               "authored invalid colour rejected");
     }
     {
+        // Reach's captured crosshair is premultiplied (drawn over transparent
+        // black); the aim quad blends as straight alpha. Converting first
+        // must add exactly the colour the flat game adds - not colour x alpha
+        // again, which is what made the faded DMR crosshair so faint in VR.
+        const float rgb[3]{0.55f, 0.80f, 1.0f};
+        const float background = 0.25f;
+        for (float opacity : {0.1f, 0.35f, 0.6f, 1.0f})
+        {
+            // Premultiplied/over encoding: alpha channel = coverage.
+            const AuthoredReticleStraightTexel straight = AuthoredReticleStraightAlpha(
+                rgb[0] * opacity, rgb[1] * opacity, rgb[2] * opacity, opacity);
+            const float flatBlue = rgb[2] * opacity + background * (1.0f - opacity);
+            Check(std::fabs(CompositeUnpremultipliedChannel(straight.b, straight.a, background) -
+                            flatBlue) < 1.0e-5f &&
+                      std::fabs(CompositeUnpremultipliedChannel(straight.g, straight.a, background) -
+                                (rgb[1] * opacity + background * (1.0f - opacity))) < 1.0e-5f,
+                  "straight alpha: the VR quad equals the flat blend");
+            Check(std::fabs(CompositePremultipliedChannel(rgb[2] * opacity, opacity, background) -
+                            flatBlue) < 1.0e-5f,
+                  "straight alpha: the premultiplied reading of the capture is the flat blend");
+            const float legacy = CompositeUnpremultipliedChannel(rgb[2] * opacity, opacity, background);
+            Check(opacity == 1.0f ? std::fabs(legacy - flatBlue) < 1.0e-5f
+                                  : legacy < flatBlue - 0.05f * opacity,
+                  "straight alpha: copying premultiplied art in applied the fade twice");
+            // Alpha channel written with the colour factors: coverage squared.
+            const AuthoredReticleStraightTexel squared = AuthoredReticleStraightAlpha(
+                rgb[0] * opacity, rgb[1] * opacity, rgb[2] * opacity, opacity * opacity);
+            Check(std::fabs(squared.a * squared.b - rgb[2] * opacity) < 1.0e-5f &&
+                      std::fabs(squared.a * squared.r - rgb[0] * opacity) < 1.0e-5f &&
+                      squared.r <= 1.0f && squared.g <= 1.0f && squared.b <= 1.0f,
+                  "straight alpha: an under-reporting alpha still adds the flat colour");
+        }
+        const AuthoredReticleStraightTexel none = AuthoredReticleStraightAlpha(0, 0, 0, 0);
+        Check(none.a == 0.0f && none.r == 0.0f, "straight alpha: transparent stays transparent");
+
+        // The development summary of a probe readback.
+        constexpr uint32_t size = 4;
+        constexpr size_t pitch = size * 4 + 8;
+        std::array<uint8_t, pitch * size> rows{};
+        uint8_t* t = rows.data() + 1 * pitch + 2 * 4;   // premultiplied, alpha 90
+        t[0] = 50; t[1] = 72; t[2] = 90; t[3] = 90;
+        t = rows.data() + 2 * pitch + 1 * 4;            // alpha under colour
+        t[0] = 10; t[1] = 20; t[2] = 60; t[3] = 30;
+        const AuthoredReticleAlphaSummary s =
+            SummarizeAuthoredReticleAlpha(rows.data(), pitch, size);
+        Check(s.inkTexels == 2 && s.alphaBelowColourTexels == 1 &&
+                  s.capturedAlphaPeak == 90 && s.capturedAlphaMean == 60 &&
+                  s.addedColourPeak == 90 && s.legacyAddedColourPeak == 32 &&
+                  s.drawnAlphaPeak == 90 && s.drawnAlphaMean == 75 &&
+                  s.drawnAddedColourPeak == 90,
+              "alpha summary: captured vs drawn alpha and the colour each adds");
+        Check(SummarizeAuthoredReticleAlpha(nullptr, pitch, size).inkTexels == 0 &&
+                  SummarizeAuthoredReticleAlpha(rows.data(), size * 4 - 1, size).inkTexels == 0,
+              "alpha summary: no data or a short pitch is refused");
+    }
+    {
         // Where the art sits in its texture: a square ring of ink centred on
         // (32, 18) of a 64x64 readback, i.e. well above the texture centre, as
         // Halo 4's capture left the magnum's art. Rows carry padding, as a

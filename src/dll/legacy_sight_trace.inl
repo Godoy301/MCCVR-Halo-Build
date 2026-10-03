@@ -296,6 +296,25 @@ void LegacySightTraceTick(GameTitle title, uint32_t unit, int32_t localUnit, boo
     QueryPerformanceCounter(&after);
     Sight_PublishTrace(title, generation, hit, hit ? rangeWu : 0.0f,
                        static_cast<uint64_t>(after.QuadPart - before.QuadPart));
+    // THE SEAT LIMIT RAY (seat_limit_reticle_logic.h): while a seat's reticle is clamped at a natural stop, the ray
+    // its gun really aims along -- from the seat's shot origin along the limit-clamped direction -- in this same tick,
+    // with these same ignores. Only while the aim path published one; nothing the aim reads moves.
+    SightAuxRay limit{};
+    if (Sight_ReadLimitRay(title, generation, kSightRayFreshMs, limit))
+    {
+        bool limitHit = false;
+        float limitRangeWu = 0.0f;
+        if (!SightAuxTraceVector(original, flags, kReachAimTraceMode, limit, length, kSightTraceSkipWu,
+                                 kLegacySightSelfStepWu, seated ? kLegacySightSelfPasses : 1, ignoreA, ignoreB,
+                                 ignoreC, isOurs, limitHit, limitRangeWu))
+        {
+            Sight_NoteTraceFault(title);
+            LOG("SIGHT %s: the seat limit trace raised a native fault; the trace stays off until the title "
+                "reinstalls", LegacySightTitleName(title));
+            return;
+        }
+        Sight_PublishLimitTrace(title, generation, limitHit, limitHit ? limitRangeWu : 0.0f);
+    }
 #if HALOMCCVR_DEV_DIAGNOSTICS
     // [assess-only begin]
     // DEV ASSESSMENT (honest_reticle_assess): the game's own aim ray from its shot origin (the engine eye, or the
@@ -307,9 +326,9 @@ void LegacySightTraceTick(GameTitle title, uint32_t unit, int32_t localUnit, boo
     {
         bool assessHit = false;
         float assessRangeWu = 0.0f;
-        if (!SightAssessTraceVector(original, flags, kReachAimTraceMode, assess, length, kSightTraceSkipWu,
-                                    kLegacySightSelfStepWu, seated ? kLegacySightSelfPasses : 1, ignoreA, ignoreB,
-                                    ignoreC, isOurs, assessHit, assessRangeWu))
+        if (!SightAuxTraceVector(original, flags, kReachAimTraceMode, assess, length, kSightTraceSkipWu,
+                                 kLegacySightSelfStepWu, seated ? kLegacySightSelfPasses : 1, ignoreA, ignoreB,
+                                 ignoreC, isOurs, assessHit, assessRangeWu))
         {
             Sight_NoteAssessTraceFault(title);
             return;

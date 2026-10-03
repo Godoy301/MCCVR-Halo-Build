@@ -138,18 +138,17 @@ bool ReachSightGuardedTrace(LegacyCollisionTestVectorFn original, uint64_t flags
     return true;
 }
 
-#if HALOMCCVR_DEV_DIAGNOSTICS
-// [assess-only begin]
-// DEV ASSESSMENT (honest_reticle_assess; sight_layer.h SightAssessRay): trace the game's OWN aim ray -- from its
-// shot origin along its aim -- with the same native query, flags and ignores the caller's intent trace just used,
-// looking past any other part of our own vehicle (`isOurs`) as that trace does, so the assessment reticle sits on
-// the surface the shot meets. An owned query like the intent trace (the engine-trace witnesses never see it). For
-// collision_test_vector titles: Reach, Halo 3, ODST. False on a native fault (the caller latches its trace off).
+// AN AUXILIARY RAY (sight_layer.h SightAuxRay: the seat limit ray in every build, the dev assessment ray): trace a
+// ray the game really aims along -- from its shot origin along that direction -- with the same native query, flags
+// and ignores the caller's intent trace just used, looking past any other part of our own vehicle (`isOurs`) as that
+// trace does, so the reticle drawn on it sits on the surface the shot meets. An owned query like the intent trace (the
+// engine-trace witnesses never see it). For collision_test_vector titles: Reach, Halo 3, ODST. False on a native fault
+// (the caller latches its trace off).
 template <class IsOurs>
-bool SightAssessTraceVector(LegacyCollisionTestVectorFn original, uint64_t flags, int32_t mode,
-                            const SightAssessRay& ray, float traceLengthWu, float skipWu, float selfStepWu, int passes,
-                            int32_t ignoreA, int32_t ignoreB, int32_t ignoreC, IsOurs isOurs, bool& hit,
-                            float& rangeWu)
+bool SightAuxTraceVector(LegacyCollisionTestVectorFn original, uint64_t flags, int32_t mode,
+                         const SightAuxRay& ray, float traceLengthWu, float skipWu, float selfStepWu, int passes,
+                         int32_t ignoreA, int32_t ignoreB, int32_t ignoreC, IsOurs isOurs, bool& hit,
+                         float& rangeWu)
 {
     alignas(16) uint8_t result[0x400]{};
     hit = false;
@@ -184,8 +183,6 @@ bool SightAssessTraceVector(LegacyCollisionTestVectorFn original, uint64_t flags
     }
     return true;
 }
-// [assess-only end]
-#endif
 // The range is smoothed over 120 ms in the provider, so ~30 Hz measures it fully.
 inline constexpr uint64_t kReachSightTraceIntervalMs = 30;
 
@@ -682,6 +679,27 @@ void ReachSightTraceTick(uint32_t unit)
     trace.hitType.store(type, std::memory_order_relaxed);
     trace.rangeWu.store(rangeWu, std::memory_order_relaxed);
     trace.sequence.fetch_add(1, std::memory_order_release);
+    // THE SEAT LIMIT RAY (seat_limit_reticle_logic.h): while a seat's reticle is clamped at a natural stop, the ray
+    // its gun really aims along, from Reach's engine eye, in this same tick and with these same ignores. Only while
+    // the aim path published one; nothing the aim reads moves.
+    {
+        const uint32_t limitGeneration = TitleAdapter_GetGeneration(GameTitle::HaloReach);
+        SightAuxRay limit{};
+        if (Sight_ReadLimitRay(GameTitle::HaloReach, limitGeneration, kSightRayFreshMs, limit))
+        {
+            bool limitHit = false;
+            float limitRangeWu = 0.0f;
+            const auto isOurs = [&](int32_t object) { return object != -1 && ReachSightRootOf(object) == root; };
+            if (!SightAuxTraceVector(original, flags, mode, limit, traceLengthWu, kReachSightTraceSkipWu,
+                                     kReachSightSelfStepWu, seated ? kReachSightSelfPasses : 1, ignoreA, ignoreB,
+                                     ignoreC, isOurs, limitHit, limitRangeWu))
+            {
+                trace.faulted.store(true, std::memory_order_release);   // fail closed, as the intent trace does
+                return;
+            }
+            Sight_PublishLimitTrace(GameTitle::HaloReach, limitGeneration, limitHit, limitHit ? limitRangeWu : 0.0f);
+        }
+    }
 #if HALOMCCVR_DEV_DIAGNOSTICS
     // [assess-only begin]
     // DEV ASSESSMENT (honest_reticle_assess): the game's own aim ray from Reach's engine eye, in this same tick and
@@ -696,9 +714,9 @@ void ReachSightTraceTick(uint32_t unit)
             bool assessHit = false;
             float assessRangeWu = 0.0f;
             const auto isOurs = [&](int32_t object) { return object != -1 && ReachSightRootOf(object) == root; };
-            if (!SightAssessTraceVector(original, flags, mode, assess, traceLengthWu, kReachSightTraceSkipWu,
-                                        kReachSightSelfStepWu, seated ? kReachSightSelfPasses : 1, ignoreA, ignoreB,
-                                        ignoreC, isOurs, assessHit, assessRangeWu))
+            if (!SightAuxTraceVector(original, flags, mode, assess, traceLengthWu, kReachSightTraceSkipWu,
+                                     kReachSightSelfStepWu, seated ? kReachSightSelfPasses : 1, ignoreA, ignoreB,
+                                     ignoreC, isOurs, assessHit, assessRangeWu))
             {
                 Sight_NoteAssessTraceFault(GameTitle::HaloReach);   // the assessment's own latch, not the aim's
                 return;
@@ -757,8 +775,9 @@ bool ReachAimMuzzleShot(const float before[3], const float position[3], float di
         return false;
     }
     // Defensive (Reach publishes no muzzle palette in a seat today): a seat held at its stop points the barrel
-    // elsewhere, so a shot bent through the point from it would follow neither line. Left as the game fires it.
-    if (ReachHeldAtLimit(now))
+    // elsewhere, so a shot bent through the point from it would follow neither line. Left as the game fires it --
+    // along the clamped aim, through the seat limit reticle (Sight_SeatLimitClampedLive) -- never past the stop.
+    if (ReachHeldAtLimit(now) || Sight_SeatLimitClampedLive(GameTitle::HaloReach))
     {
         Sight_NoteMuzzleShotHeld(GameTitle::HaloReach);
         return false;

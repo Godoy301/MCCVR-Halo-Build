@@ -315,6 +315,18 @@ bool Game_GetClampedAimDirection(float outDir[3], float* outRangeM = nullptr,
                                  bool* outSurface = nullptr);
 // [assess-only end]
 #endif
+// THE SEAT LIMIT RETICLE (all builds; src/common/seat_limit_reticle_logic.h):
+// true while this input poll clamped the seated reticle at a natural angular
+// stop of a land vehicle's seat (a passenger's cone, a turret's or tank gun's
+// pitch stop), so it sits where the gun is held. `outDir`: VR-space unit
+// vector, the reticle's convention. `outRangeM` > 0: the poll PLACED it -- the
+// ray from the rendered centre eye through the point the clamped shot reaches
+// (from the seat's shot origin along the clamped aim, to the first surface),
+// this far in VR metres, `outSurface` a traced hit. `outFromController`: a
+// title with no traced seat reticle; `outDir` is the reticle's own direction
+// turned by the clamp, drawn from wherever the reticle already is.
+bool Game_GetSeatLimitReticle(float outDir[3], float& outRangeM, bool& outSurface,
+                              bool& outFromController);
 // Reach-only exact-frame reticle truth: returns the completed stereo pair's
 // native seated unit aim in that pair's final center-camera local axes.
 // The compositor rotates it by the submitted stereo-center orientation.
