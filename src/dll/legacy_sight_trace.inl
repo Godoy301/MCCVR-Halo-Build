@@ -565,11 +565,14 @@ void LegacySightNoteEngineTrace(GameTitle title, uint64_t flags, const float* st
 //      vector' = normalize(P - start) * |vector|
 //
 // On foot P is the frame-coherent intent point; in a seat it is the point the solve bent the record through
-// (SightIntent::solvePoint), so a seat's line is only ever corrected for the eye's travel, never re-targeted. A
+// (SightIntent::solvePoint), so a seat's line is only ever corrected for the eye's travel, never re-targeted -- except
+// in a gun-slaved turret, whose query traces the GUN's camera, which sits off the record and moves at the fire (the
+// gauss turret; converge::SeatAssistReaimRefuses): there the re-aim carries its shot onto the reticle's point. A
 // query already within 10 mm of P is left exactly as the game built it (shot_lag::Reaim::AlreadyThrough): Halo 3's
 // campaign vehicles were already coherent (user, 2026-10-02) and stay byte-identical. Left alone (fail closed) when
 // the point is stale (over 150 ms) or for another generation, the converged aim is not in effect, the solve held at
-// the pitch rail, a seat is held at its stop or is a turret (the gun points elsewhere naturally), the fire or the
+// the pitch rail, a seat is held at its stop (a turret is NOT refused for being one since 2026-10-03: the assist's own
+// seat cap bounds a shot fired while the gun catches up), the fire or the
 // query is not the local player's (shot_lag::FireMark, QueryIsLocal: by identity, never by distance), another gun's
 // own line owns the fire (an off-hand gun, a barrel or muzzle shot: LegacyOwnShotLineActive), or no forward line
 // through P exists (behind the start, inside 30 cm). No magnitude limit: shot_lag::ReaimRails. Every refusal is
@@ -637,8 +640,9 @@ bool LegacySightReaimCrosshairQuery(GameTitle title, uint64_t flags, const float
     const uint64_t resolved = state.flags.load(std::memory_order_acquire);
     if (!site || !resolved || flags != resolved || TitleAdapter_GetActiveTitle() != title)
         return false;
-    // A natural hold, in every build: a seat held at its stop or a turret points the gun elsewhere by design.
-    const bool naturalHeld = Game_SeatMuzzleRefusal(title) != converge::SeatMuzzleRefusal::None;
+    // A natural hold, in every build: a seat held at its stop points the gun elsewhere by design. A turret is not one
+    // (converge::SeatAssistReaimRefuses): the assist's own seat cap bounds what the re-aim can bend.
+    const bool naturalHeld = Game_SeatAssistReaimRefusal(title) != converge::SeatMuzzleRefusal::None;
     SightIntent intent{};
     const shot_lag::IntentUse use = Sight_IntentForShot(title, kSightIntentShotMaxAgeMs, naturalHeld, intent);
     const uint32_t generation = TitleAdapter_GetGeneration(title);
@@ -824,9 +828,10 @@ void LegacySightReport()
         const uint32_t shots = w.shots.exchange(0, std::memory_order_relaxed);
         if (shots)
             LOG("SIGHT Halo 3 turret shots (dev): %u shots of the gun-slaved seat's gun (%u with the gun settled on "
-                "the writes, %u with no fresh traced point); the point is %.0f mm off the shot's line (max settled "
-                "%.0f, max while slewing %.0f) at %.2f m; the shot's line vs eye->point %.2f deg; its start minus "
-                "the solve's eye (the gun's camera marker) [along,right,up] %.0f,%.0f,%.0f mm",
+                "the writes, %u with no fresh traced point); the point is %.0f mm off the barrel's line, before the "
+                "firing assist turns it (max settled %.0f, max while slewing %.0f) at %.2f m; that line vs eye->point "
+                "%.2f deg; its start minus the solve's eye (the gun's camera marker) [along,right,up] %.0f,%.0f,%.0f "
+                "mm (where the shot really goes: SHOT Halo 3 assist / SHOT IMPACT SEATED)",
                 shots, w.settled.exchange(0, std::memory_order_relaxed),
                 w.noPoint.exchange(0, std::memory_order_relaxed), double(w.missMm.load()),
                 double(aim_caller::BitsToFloat(w.maxMissSettledBits.exchange(0, std::memory_order_relaxed))),

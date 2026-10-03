@@ -427,22 +427,38 @@ void TestOffsetLearner()
     OffsetLearner l;
     Check(!l.usable(), "nothing learned yet");
     for (unsigned i = 0; i < l.ready - 1; ++i)
-        l.step(0.004f, 0.041f, 0.041f);
+        l.step(0.004f, 0.041f);
     Check(!l.usable(), "one sample short of ready");
-    l.step(0.004f, 0.041f, 0.041f);
+    l.step(0.004f, 0.041f);
     Check(l.usable() && std::fabs(l.pitch - 0.041f) < 1e-6f, "ready after `ready` samples, at the sample's value");
     for (int i = 0; i < 200; ++i)
-        l.step(0.002f, 0.039f, 0.039f);
+        l.step(0.002f, 0.039f);
     Check(std::fabs(l.pitch - 0.039f) < 1e-4f && std::fabs(l.yaw - 0.002f) < 1e-4f,
           "the average converges on a new steady offset");
     OffsetLearner noisy;
     for (int i = 0; i < 400; ++i)
-        noisy.step(0.0f, (i % 2) ? 0.042f : 0.036f, 0.04f);
+        noisy.step(0.0f, (i % 2) ? 0.042f : 0.036f);
     Check(std::fabs(noisy.pitch - 0.039f) < 4e-4f, "alternating samples average to their mean, not the last one");
+    // Refused by identity only, never by size (2026-10-03: the "over 5 deg" refusal is gone).
     const unsigned samples = l.samples;
-    Check(!l.step(0.0f, 0.10f, 0.10f) && l.refused == 1 && l.samples == samples && std::fabs(l.pitch - 0.039f) < 1e-4f,
-          "a 5.7 deg sample is refused and averages nothing in");
-    Check(l.step(0.0f, 0.08f, 0.08f), "4.6 deg is accepted");
+    Check(!l.step(0.0f, 0.02f, OffsetRefusal::HeldAtStop) && l.refused == 1 &&
+              l.refusedBy[static_cast<unsigned>(OffsetRefusal::HeldAtStop)] == 1 && l.samples == samples &&
+              std::fabs(l.pitch - 0.039f) < 1e-4f,
+          "a sample with the seat held at its stop is refused, counted by reason, and averages nothing in");
+    Check(!l.step(0.0f, 0.02f, OffsetRefusal::OccupantUnproven) &&
+              l.refusedBy[static_cast<unsigned>(OffsetRefusal::OccupantUnproven)] == 1 && l.refused == 2,
+          "a sample before the occupant's aim is proven is refused by its own reason");
+    Check(!l.step(std::nanf(""), 0.02f) && l.refusedBy[static_cast<unsigned>(OffsetRefusal::NonFinite)] == 1 &&
+              l.refused == 3 && l.samples == samples,
+          "a non-finite sample is counted as one, never averaged");
+    Check(l.step(0.0f, 0.10f) && l.samples == samples + 1, "a 5.7 deg sample is averaged in: no size limit");
+    Check(l.step(0.0f, 0.30f), "...nor at 17 deg");
+    l.reset();
+    Check(!l.refused && !l.refusedBy[static_cast<unsigned>(OffsetRefusal::HeldAtStop)], "a reset clears the counts");
+    Check(OffsetSampleRefusal(true, false) == OffsetRefusal::None, "proven and free: a sample");
+    Check(OffsetSampleRefusal(false, false) == OffsetRefusal::OccupantUnproven, "unproven occupant: refused");
+    Check(OffsetSampleRefusal(true, true) == OffsetRefusal::HeldAtStop, "held at a stop: refused");
+    Check(OffsetSampleRefusal(false, true) == OffsetRefusal::HeldAtStop, "held wins: the stop explains the gap");
     OffsetLearner s;
     s.seed(0.001f, 0.04f, 100);
     Check(s.usable() && s.samples == s.ready, "seeded from the definition: usable at once");
@@ -486,7 +502,7 @@ void TestOffsetRange()
 void TestFeedForward()
 {
     const seat_frame::Frame tilt = TiltedFrame();
-    const float trueYaw = 0.0035f, truePitch = 0.0410f;   // ~0.2 and 2.35 deg (the gauss turret)
+    const float trueYaw = 0.0035f, truePitch = 0.0410f;   // ~0.2 and 2.35 deg (an example: larger than any measured)
     OffsetLearner learner;
     Stillness still;
     unsigned long long now = 0;
@@ -504,7 +520,7 @@ void TestFeedForward()
                 continue;
             float dy = 0.0f, dp = 0.0f, sep = 0.0f;
             if (OffsetInFrame(tilt, gunW.yaw, gunW.pitch, occW.yaw, occW.pitch, dy, dp, sep))
-                learner.step(dy, dp, sep);
+                learner.step(dy, dp, OffsetSampleRefusal(true, false));
         }
     }
     Check(learner.usable() && std::fabs(learner.yaw - trueYaw) < 1e-4f && std::fabs(learner.pitch - truePitch) < 1e-4f,

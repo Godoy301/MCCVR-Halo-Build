@@ -440,14 +440,20 @@ private:
 // ---- the gun's own offset from the occupant's aim (2026-10-03) -------------------------------------------------
 // The firing assist (Halo 3 0x13BAD0) aims the shot at the crosshair of the GUN's camera -- the marker the seat's
 // first-person camera rides (0x212198 -> 0x17DAEC) -- not at the occupant's aim the record drives. On the Warthog's
-// gauss turret (definition 0x069C) that camera's forward sits ~2.3-2.4 deg off the occupant's aim even at rest, the
-// same across a 44 deg swing (the chaingun 0x0697: ~0.5 deg): a fixed rotation of the marker on the gun. The solve
-// aims the camera's ray through the point, so a record written as that ray left the shots ~1 deg off the point.
+// gauss turret (definition 0x069C) that camera's forward sits off the occupant's aim (CORRECTED 2026-10-03: the
+// "~2.3-2.4 deg at rest" first written here was the 2 s window's MAX of the gun against the record -- the gun's own
+// swing with the hand still -- not a steady offset; the still samples of 2026-10-03 read ~0.6-0.9 deg, and at each
+// fire the assist's query sat ~0.5 deg yaw / ~1.1 deg pitch off the record). The solve aims the camera's ray through
+// the point, so a record written as that ray left the gauss's slugs ~1.2 deg off it. The shot itself is now carried
+// onto the point at the fire by the crosshair-assist re-aim (converge::SeatAssistReaimRefuses), whatever the offset
+// at that instant; this calibration only points the gun's camera at the point while it is at rest.
 //
 // So the offset is LEARNED, as yaw / pitch in the turret's own frame (its object frame: a fixed rotation of the gun
 // on its mount reads the same there whatever the hull's tilt): delta = angles(gun camera) - angles(occupant aim),
 // sampled only while the gun has come to rest on its aim and the hand is still (no lag in it), averaged per stint
-// and remembered per definition, and refused when it is not a small fixed rotation (over 5 deg). Then it is fed
+// and remembered per definition. A sample is refused by identity only (OffsetSampleRefusal) -- the occupant's aim not
+// proven against the record this stint, or the seat held at its stop (the gun rests where the hand's record does
+// not) -- never by its size (the 5 deg refusal until 2026-10-03; the user's rule). Then it is fed
 // FORWARD, once, as a static calibration: the record is written as the camera ray through the point MINUS delta, so
 // the camera -- record plus delta -- lands on the ray. Nothing closes a loop on it. Everything that read the gun as
 // a stand-in for the record (the camera check, the outcome guard, the servo's gun feedback) takes the gun minus
@@ -541,25 +547,52 @@ struct Stillness
     }
 };
 
-// THE LEARNER: an exponential average of the offset over the samples Stillness admits. A sample farther than
-// `refuseRad` from the occupant's aim is not a fixed rotation of a marker (a gun still lagging, a stop the gun holds
-// and the record does not, a wrong field): refused, counted, never averaged. Usable after `ready` samples -- or at
+// Why a still sample is not averaged in: identity and freshness only, never the sample's size (2026-10-03; it was
+// "over 5 deg" before). The cases the size refusal stood for are named instead:
+//   * HeldAtStop -- the seat is held at its natural stop (the drive's seat-limit latch, or the reticle clamped there):
+//     the gun rests at the stop, the hand's record need not;
+//   * OccupantUnproven -- the occupant's aim has not agreed with the record for the servo's trust count this stint
+//     (gun_slaved::kServoTrustSamples): the field is not yet proven to be the aim the record drives (a wrong field);
+//   * NonFinite -- an angle that did not resolve.
+// A gun still lagging is not a refusal: Stillness never admits one (the gun and the occupant must both be at rest).
+enum class OffsetRefusal : uint8_t
+{
+    None = 0,
+    NonFinite,
+    OccupantUnproven,
+    HeldAtStop,
+    Count
+};
+
+inline OffsetRefusal OffsetSampleRefusal(bool occupantProven, bool heldAtStop) noexcept
+{
+    if (heldAtStop)
+        return OffsetRefusal::HeldAtStop;
+    if (!occupantProven)
+        return OffsetRefusal::OccupantUnproven;
+    return OffsetRefusal::None;
+}
+
+// THE LEARNER: an exponential average of the offset over the samples Stillness admits. A sample refused by the caller
+// (OffsetSampleRefusal) or non-finite is counted by reason and never averaged. Usable after `ready` samples -- or at
 // once when seeded from the definition's last stint.
 struct OffsetLearner
 {
     float alpha = 0.05f;
-    float refuseRad = 0.0873f;        // 5 deg
     unsigned ready = 12;              // ~0.1 s of still samples at 120 polls/s
 
     bool have = false;
     float yaw = 0.0f, pitch = 0.0f;
     unsigned samples = 0, refused = 0;
+    unsigned refusedBy[static_cast<unsigned>(OffsetRefusal::Count)]{};
 
     void reset() noexcept
     {
         have = false;
         yaw = pitch = 0.0f;
         samples = refused = 0;
+        for (unsigned& n : refusedBy)
+            n = 0;
     }
 
     void seed(float y, float p, unsigned n) noexcept
@@ -572,13 +605,15 @@ struct OffsetLearner
         samples = n < ready ? n : ready;
     }
 
-    // True when the sample was averaged in.
-    bool step(float dYaw, float dPitch, float separationRad) noexcept
+    // True when the sample was averaged in. `why`: the caller's identity verdict on it (OffsetSampleRefusal).
+    bool step(float dYaw, float dPitch, OffsetRefusal why = OffsetRefusal::None) noexcept
     {
-        if (!std::isfinite(dYaw) || !std::isfinite(dPitch) || !std::isfinite(separationRad))
-            return false;
-        if (separationRad > refuseRad)
+        if (why == OffsetRefusal::None && (!std::isfinite(dYaw) || !std::isfinite(dPitch)))
+            why = OffsetRefusal::NonFinite;
+        if (why != OffsetRefusal::None)
         {
+            if (why < OffsetRefusal::Count)
+                ++refusedBy[static_cast<unsigned>(why)];
             ++refused;
             return false;
         }

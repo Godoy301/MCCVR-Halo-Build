@@ -52058,9 +52058,12 @@ static void PublishAimIntent(GameTitle title, const SightRay& ray, const float h
     Sight_PublishIntent(title, intent);
 }
 
-converge::SeatMuzzleRefusal Game_SeatMuzzleRefusal(GameTitle title)
+// The local seat's natural holds, as both seated shot paths read them: `held` -- the direct drive held at the seat's
+// stop, or the seat's reticle clamped at a natural stop; `turret` -- a rate-capped turret seat (Halo 3, ODST).
+static void SeatNaturalHolds(GameTitle title, bool& held, bool& turret)
 {
-    bool held = false, turret = false;
+    held = false;
+    turret = false;
     switch (title)
     {
     case GameTitle::Halo3:
@@ -52080,7 +52083,20 @@ converge::SeatMuzzleRefusal Game_SeatMuzzleRefusal(GameTitle title)
     // past the stop. A redirect through it would carry the shot past the stop the game holds the gun at; refused, the
     // shot leaves along the game's clamped aim, through the clamped mark.
     held = held || Sight_SeatLimitClampedLive(title);
+}
+
+converge::SeatMuzzleRefusal Game_SeatMuzzleRefusal(GameTitle title)
+{
+    bool held = false, turret = false;
+    SeatNaturalHolds(title, held, turret);
     return converge::SeatMuzzleRefuses(held, turret);
+}
+
+converge::SeatMuzzleRefusal Game_SeatAssistReaimRefusal(GameTitle title)
+{
+    bool held = false, turret = false;
+    SeatNaturalHolds(title, held, turret);
+    return converge::SeatAssistReaimRefuses(held, turret);
 }
 
 // THE SEAT LIMIT RETICLE, the aim poll's half (src/common/seat_limit_reticle_logic.h; the user's call, 2026-10-02).
@@ -52308,10 +52324,12 @@ struct GunOffsetState
 #if HALOMCCVR_DEV_DIAGNOSTICS
     gun_slaved::OffsetRange range{};
     uint64_t rangeMs = 0;
-    uint32_t applied = 0, refusedAtWindow = 0;
+    uint32_t applied = 0;
+    unsigned refusedAtWindow[static_cast<unsigned>(gun_slaved::OffsetRefusal::Count)]{};
 #endif
 };
 static GunOffsetState g_gunOffset;   // input thread only
+constexpr unsigned kGunOffsetRefusals = static_cast<unsigned>(gun_slaved::OffsetRefusal::Count);
 
 // The cold worker's view (GunAimReport): one release edge at a time (learned / refused), and the dev window.
 struct GunOffsetNotes
@@ -52319,10 +52337,12 @@ struct GunOffsetNotes
     std::atomic<uint32_t> seq{0};            // odd while written
     std::atomic<uint32_t> kind{0};           // 1 learned (fed forward from now), 2 seeded from the definition, 3 refused
     std::atomic<uint32_t> definition{0}, samples{0}, refused{0};
+    std::atomic<uint32_t> refusedBy[kGunOffsetRefusals]{};   // per gun_slaved::OffsetRefusal
     std::atomic<float> yaw{0.0f}, pitch{0.0f};
 #if HALOMCCVR_DEV_DIAGNOSTICS
     std::atomic<uint32_t> windowSeq{0};
-    std::atomic<uint32_t> windowSamples{0}, windowApplied{0}, windowRefused{0}, windowDefinition{0};
+    std::atomic<uint32_t> windowSamples{0}, windowApplied{0}, windowDefinition{0};
+    std::atomic<uint32_t> windowRefusedBy[kGunOffsetRefusals]{};
     std::atomic<float> window[10]{};         // delta yaw min/max, pitch min/max; gun yaw min/max, pitch min/max; the average
 #endif
 };
@@ -52336,6 +52356,8 @@ static void GunOffsetNote(uint32_t kind, uint32_t definition, const gun_slaved::
     n.definition.store(definition, std::memory_order_relaxed);
     n.samples.store(l.samples, std::memory_order_relaxed);
     n.refused.store(l.refused, std::memory_order_relaxed);
+    for (unsigned i = 0; i < kGunOffsetRefusals; ++i)
+        n.refusedBy[i].store(l.refusedBy[i], std::memory_order_relaxed);
     n.yaw.store(l.yaw, std::memory_order_relaxed);
     n.pitch.store(l.pitch, std::memory_order_relaxed);
     n.seq.fetch_add(1, std::memory_order_release);
@@ -52362,6 +52384,10 @@ static bool GunOffsetStep(uint32_t seatKey, uint32_t definition, const seat_fram
         // A new stint: start from what this gun definition taught the last one, if anything.
         s.learner.reset();
         s.still.reset();
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        for (unsigned& at : s.refusedAtWindow)
+            at = 0;   // the learner's counts restart with the stint
+#endif
         if (const auto* e = s.book.find(definition, generation))
             s.learner.seed(e->yaw, e->pitch, e->samples);
         s.key = seatKey;
@@ -52381,15 +52407,27 @@ static bool GunOffsetStep(uint32_t seatKey, uint32_t definition, const seat_fram
     {
         const float v[6]{gunYaw, gunPitch, occYaw, occPitch, handYaw, handPitch};
         float y = 0.0f, p = 0.0f, sep = 0.0f;
-        if (s.still.step(v, now) && gun_slaved::OffsetInFrame(turret, gunYaw, gunPitch, occYaw, occPitch, y, p, sep) &&
-            s.learner.step(y, p, sep))
+        if (s.still.step(v, now))
         {
-            s.book.store(definition, generation, s.learner.yaw, s.learner.pitch, s.learner.samples);
+            // Refused by identity only (gun_slaved::OffsetSampleRefusal), never by the sample's size: the occupant's
+            // aim proven against the record on both axes (the servo's own trust count), and the seat not held at its
+            // stop. A sample whose angles do not resolve is counted as NonFinite.
+            bool held = false, turretSeat = false;
+            SeatNaturalHolds(GameTitle::Halo3, held, turretSeat);
+            (void)turretSeat;
+            const bool occupantProven = agreeing[0] >= gun_slaved::kServoTrustSamples &&
+                                        agreeing[1] >= gun_slaved::kServoTrustSamples;
+            if (!gun_slaved::OffsetInFrame(turret, gunYaw, gunPitch, occYaw, occPitch, y, p, sep))
+                y = p = std::numeric_limits<float>::quiet_NaN();
+            if (s.learner.step(y, p, gun_slaved::OffsetSampleRefusal(occupantProven, held)))
+            {
+                s.book.store(definition, generation, s.learner.yaw, s.learner.pitch, s.learner.samples);
 #if HALOMCCVR_DEV_DIAGNOSTICS
-            seat_frame::Angles gunFrame{};
-            if (gun_slaved::AnglesInFrame(turret, gunYaw, gunPitch, 0.0f, gunFrame))
-                s.range.note(y, p, gunFrame.yaw, gunFrame.pitch);
+                seat_frame::Angles gunFrame{};
+                if (gun_slaved::AnglesInFrame(turret, gunYaw, gunPitch, 0.0f, gunFrame))
+                    s.range.note(y, p, gunFrame.yaw, gunFrame.pitch);
 #endif
+            }
         }
     }
     else
@@ -52401,7 +52439,7 @@ static bool GunOffsetStep(uint32_t seatKey, uint32_t definition, const seat_fram
         s.announced = true;
         GunOffsetNote(1, definition, s.learner);
     }
-    // Fail closed, once a stint: samples keep arriving over 5 deg and none was ever averaged in.
+    // Fail closed, once a stint: still samples keep arriving refused (by reason) and none was ever averaged in.
     if (!s.learner.usable() && !s.refusalAnnounced && s.learner.refused >= 30)
     {
         s.refusalAnnounced = true;
@@ -52414,8 +52452,12 @@ static bool GunOffsetStep(uint32_t seatKey, uint32_t definition, const seat_fram
         n.windowSeq.fetch_add(1, std::memory_order_acq_rel);
         n.windowSamples.store(s.range.samples, std::memory_order_relaxed);
         n.windowApplied.store(s.applied, std::memory_order_relaxed);
-        n.windowRefused.store(s.learner.refused - (std::min)(s.refusedAtWindow, s.learner.refused),
-                              std::memory_order_relaxed);
+        for (unsigned i = 0; i < kGunOffsetRefusals; ++i)
+        {
+            const unsigned total = s.learner.refusedBy[i];
+            n.windowRefusedBy[i].store(total - (std::min)(s.refusedAtWindow[i], total), std::memory_order_relaxed);
+            s.refusedAtWindow[i] = total;
+        }
         n.windowDefinition.store(definition, std::memory_order_relaxed);
         const float w[10]{s.range.minYaw, s.range.maxYaw, s.range.minPitch, s.range.maxPitch, s.range.gunMinYaw,
                           s.range.gunMaxYaw, s.range.gunMinPitch, s.range.gunMaxPitch,
@@ -52426,7 +52468,6 @@ static bool GunOffsetStep(uint32_t seatKey, uint32_t definition, const seat_fram
         n.windowSeq.fetch_add(1, std::memory_order_release);
         s.range.reset();
         s.applied = 0;
-        s.refusedAtWindow = s.learner.refused;
         s.rangeMs = now;
     }
 #endif
@@ -52470,9 +52511,14 @@ void GunAimReport()
                 "gun's crosshair lands on it", definition & 0xFFFFu, yaw, pitch,
                 kind == 1 ? "learned this stint from the gun at rest" : "remembered from this gun's last stint");
         else if (kind == 3)
-            LOG("DRIVE Halo 3 gun-slaved seat: gun 0x%04X's camera offset NOT learned (%u samples refused: over 5 deg "
-                "from the occupant's aim, not a fixed rotation of a marker); the record is written as the ray, as before",
-                definition & 0xFFFFu, n.refused.load(std::memory_order_relaxed));
+            LOG("DRIVE Halo 3 gun-slaved seat: gun 0x%04X's camera offset NOT learned (%u still samples refused: the "
+                "occupant's aim not proven against the record %u, the seat held at its stop %u, angles unresolved %u); "
+                "the record is written as the ray, as before (the shot is still re-aimed through the point at the fire)",
+                definition & 0xFFFFu, n.refused.load(std::memory_order_relaxed),
+                n.refusedBy[static_cast<unsigned>(gun_slaved::OffsetRefusal::OccupantUnproven)].load(
+                    std::memory_order_relaxed),
+                n.refusedBy[static_cast<unsigned>(gun_slaved::OffsetRefusal::HeldAtStop)].load(std::memory_order_relaxed),
+                n.refusedBy[static_cast<unsigned>(gun_slaved::OffsetRefusal::NonFinite)].load(std::memory_order_relaxed));
     }
 #if HALOMCCVR_DEV_DIAGNOSTICS
     static uint32_t s_seenWindow = 0;
@@ -52482,17 +52528,25 @@ void GunAimReport()
         s_seenWindow = window;
         const uint32_t samples = n.windowSamples.load(std::memory_order_relaxed);
         const uint32_t applied = n.windowApplied.load(std::memory_order_relaxed);
-        const uint32_t refused = n.windowRefused.load(std::memory_order_relaxed);
+        const uint32_t unproven = n.windowRefusedBy[static_cast<unsigned>(gun_slaved::OffsetRefusal::OccupantUnproven)]
+                                      .load(std::memory_order_relaxed);
+        const uint32_t heldAtStop =
+            n.windowRefusedBy[static_cast<unsigned>(gun_slaved::OffsetRefusal::HeldAtStop)].load(std::memory_order_relaxed);
+        const uint32_t unresolved =
+            n.windowRefusedBy[static_cast<unsigned>(gun_slaved::OffsetRefusal::NonFinite)].load(std::memory_order_relaxed);
+        const uint32_t refused = unproven + heldAtStop + unresolved;
         float w[10];
         for (int i = 0; i < 10; ++i)
             w[i] = n.window[i].load(std::memory_order_relaxed) * 57.29578f;
         if (samples || applied || refused)
             LOG("DRIVE Halo 3 gun offset (dev): gun 0x%04X delta yaw %+.2f pitch %+.2f deg (fed forward in %u polls); "
                 "%u still samples this window: delta yaw %+.2f..%+.2f, pitch %+.2f..%+.2f deg over the gun's yaw "
-                "%+.1f..%+.1f, pitch %+.1f..%+.1f deg (turret frame); refused %u (over 5 deg)",
+                "%+.1f..%+.1f, pitch %+.1f..%+.1f deg (turret frame); refused %u (occupant's aim unproven %u, held at a stop %u, "
+                "unresolved %u; never by size)",
                 n.windowDefinition.load(std::memory_order_relaxed) & 0xFFFFu, w[8], w[9], applied, samples,
                 samples ? w[0] : 0.0f, samples ? w[1] : 0.0f, samples ? w[2] : 0.0f, samples ? w[3] : 0.0f,
-                samples ? w[4] : 0.0f, samples ? w[5] : 0.0f, samples ? w[6] : 0.0f, samples ? w[7] : 0.0f, refused);
+                samples ? w[4] : 0.0f, samples ? w[5] : 0.0f, samples ? w[6] : 0.0f, samples ? w[7] : 0.0f, refused,
+                unproven, heldAtStop, unresolved);
     }
 #endif
 }
