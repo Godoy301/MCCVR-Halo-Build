@@ -767,6 +767,17 @@ struct Config
     // speed, learned and value-proven from the weapon's earlier rounds, so the first shots of a weapon are not
     // compensated. 0 = re-aim through P as before. For A/B in the headset. (default 0)
     int seated_inherit_compensation = 0;
+    // DEV BUILD ONLY (parsed, saved and in the menu only in dev builds): THE SHOT POINT MOVED WITH THE EYE -- an A/B
+    // for "on foot my shots trail my strafe a little, compared with flat Halo" (shot_lag_logic.h 4a; sight_layer.h
+    // Sight_ShotPoint). 1 = a Halo 3 / ODST local shot (the crosshair-assist re-aim, the muzzle shot, and Halo 3's
+    // on-foot record) aims through P' = P + (the eye at the fire tick - the eye of P's camera sample) instead of the
+    // world point P: what flat Halo fires when the crosshair is held still relative to the body. 0 = through P as
+    // published. The reticle stays on P either way. Live (read per shot). (default 0)
+    int shot_point_transport = 0;
+    // DEV BUILD ONLY: with shot_point_transport on, 1 = seated shots too (extrapolated from the eye's velocity; a seat
+    // has no fire-tick eye). 0 = seats keep P (the Halo 3 Hornet was confirmed right that way, 2026-10-03, and a
+    // seated round also inherits its vehicle's velocity: seated_inherit_compensation). (default 0)
+    int shot_point_transport_seated = 0;
     // DEV BUILD ONLY (parsed and saved only in dev builds; the hooks are compiled out of player builds): 1 = log
     // the type-13 pilot controllers, Reach's Sabre/Seraph (haloreach+0x64828) and Halo 4's Broadsword
     // (halo4+0xAA524) -- src/dll/type13_flight_log.inl, docs/TYPE13-FLIGHT-CONTROLLERS-2026-10-01.md Phase B.

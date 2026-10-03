@@ -613,6 +613,189 @@ int main()
               "the carry is clamped to 50 ms");
     }
 
+    // ---- P transported with the eye (4a, dev key shot_point_transport) ----
+    {
+        // P 10 m down +X from the camera sample's eye E_P (the origin); a 4 m/s strafe along +Y; the fire 15.6 ms
+        // after that sample, the game's eye there 60 mm along the strafe.
+        const float p[3]{10.0f * kWuPerM, 0.0f, 0.0f};
+        const float v[3]{0.0f, 4.0f * kWuPerM, 0.0f};
+        TransportInput base{};
+        std::memcpy(base.point, p, sizeof(p));
+        base.pointEyeValid = true;
+        base.pointEyeStampUs = 1000000;
+        base.velValid = true;
+        std::memcpy(base.vel, v, sizeof(v));
+        base.nowUs = 1015600;
+        base.maxAgeUs = 250000;
+        float out[3]{}, shift[3]{};
+
+        TransportInput in = base;
+        in.fireEyeValid = true;
+        in.fireEye[1] = 0.060f * kWuPerM;
+        Check(TransportPoint(in, out, shift) == Transport::Measured, "a fire-tick eye: measured");
+        Check(Near(out[1] * kMmPerWu, 60.0f, 0.01f) && Near(shift[1] * kMmPerWu, 60.0f, 0.01f) && out[0] == p[0],
+              "P' = P + (E_fire - E_P), measured over the velocity's estimate (62.4 mm)");
+        {
+            // From E_fire the line through P' is the solved line from E_P moved, parallel: what flat Halo fires.
+            const float a[3]{out[0] - in.fireEye[0], out[1] - in.fireEye[1], out[2] - in.fireEye[2]};
+            const float b[3]{p[0] - in.pointEye[0], p[1] - in.pointEye[1], p[2] - in.pointEye[2]};
+            const float la = Length(a), lb = Length(b);
+            Check(Near(a[0] / la, b[0] / lb, 1.0e-6f) && Near(a[1] / la, b[1] / lb, 1.0e-6f),
+                  "the line from the fire eye through P' is parallel to the solved line");
+        }
+        in = base;
+        Check(TransportPoint(in, out, shift) == Transport::Extrapolated &&
+                  Near(shift[1] * kMmPerWu, 62.4f, 0.01f) && Near(out[1] * kMmPerWu, 62.4f, 0.01f),
+              "no fire eye: E_P + v * age (4 m/s x 15.6 ms = 62.4 mm)");
+        in = base;
+        in.fireEyeValid = true;
+        in.fireEye[0] = std::nanf("");
+        Check(TransportPoint(in, out, shift) == Transport::Extrapolated, "a non-finite fire eye is not measured");
+
+        const auto refused = [&](const TransportInput& rin, Transport expected, const char* what) {
+            float o[3]{7.0f, 7.0f, 7.0f}, s[3]{7.0f, 7.0f, 7.0f};
+            Check(TransportPoint(rin, o, s) == expected && o[0] == 7.0f && s[0] == 7.0f && !TransportApplied(expected),
+                  what);
+        };
+        in = base;
+        in.pointEyeValid = false;
+        refused(in, Transport::NoPointEye, "P's camera sample unknown: P as published, untouched");
+        in = base;
+        in.pointEyeStampUs = 0;
+        in.fireEyeValid = true;
+        refused(in, Transport::NoPointEye, "a camera sample with no stamp is unknown even with a fire eye");
+        in = base;
+        in.pointEye[2] = std::nanf("");
+        refused(in, Transport::NoPointEye, "a non-finite camera sample");
+        in = base;
+        in.velValid = false;
+        refused(in, Transport::NoFireEye, "no fire eye and no velocity");
+        in = base;
+        in.nowUs = base.pointEyeStampUs - 1;
+        refused(in, Transport::StaleEye, "extrapolating from a camera sample in the future");
+        in = base;
+        in.nowUs = base.pointEyeStampUs + 250001;
+        refused(in, Transport::StaleEye, "extrapolating from a camera sample older than maxAgeUs");
+        in.fireEyeValid = true;
+        Check(TransportPoint(in, out, shift) == Transport::Measured,
+              "a measured eye needs no extrapolation, so the sample's age does not refuse it");
+        in = base;
+        in.point[1] = std::nanf("");
+        refused(in, Transport::Bad, "a non-finite P");
+        Check(TransportPoint(base, nullptr, shift) == Transport::Bad, "no output: bad");
+        in = base;
+        in.fireEyeValid = true;
+        in.fireEye[1] = 5.0f * kWuPerM;   // NO MAGNITUDE LIMIT: a 5 m move is transported as measured
+        Check(TransportPoint(in, out, shift) == Transport::Measured && Near(shift[1], 5.0f * kWuPerM, 1.0e-5f),
+              "no size limit: a 5 m eye move is carried whole");
+
+        // The fire-tick eye's gate: identity, then this tick.
+        Check(FireEyeGate(true, true, 42, 42, 1000000, 1001000, 33333) == FireEye::Measured, "our proven eye, 1 ms old");
+        Check(FireEyeGate(false, true, 42, 42, 1000000, 1001000, 33333) == FireEye::NotRead, "nothing read");
+        Check(FireEyeGate(true, false, 42, 42, 1000000, 1001000, 33333) == FireEye::Unproven, "unproven");
+        Check(FireEyeGate(true, true, 41, 42, 1000000, 1001000, 33333) == FireEye::OtherUnit, "another unit's eye");
+        Check(FireEyeGate(true, true, -1, -1, 1000000, 1001000, 33333) == FireEye::OtherUnit, "no unit is nobody's");
+        Check(FireEyeGate(true, true, 42, 42, 1000000, 1000000 + 24998, 33333) == FireEye::Measured &&
+                  FireEyeGate(true, true, 42, 42, 1000000, 1000000 + 24999, 33333) == FireEye::NotThisTick,
+              "three quarters of the measured tick (33.3 ms -> 25 ms) is this tick");
+        Check(FireEyeGate(true, true, 42, 42, 1000000, 1000000 + 13000, 16667) == FireEye::NotThisTick &&
+                  FireEyeGate(true, true, 42, 42, 1000000, 1000000 + 12000, 16667) == FireEye::Measured,
+              "at 60 Hz (16.7 ms -> 12.5 ms) a 13 ms old eye is the previous tick's");
+        Check(FireEyeGate(true, true, 42, 42, 1000000, 1000000 + 24999, 0) == FireEye::Measured &&
+                  FireEyeGate(true, true, 42, 42, 1000000, 1000000 + 25000, 0) == FireEye::NotThisTick,
+              "an unmeasured tick: 25 ms");
+        Check(FireEyeGate(true, true, 42, 42, 1000000, 999999, 33333) == FireEye::NotThisTick &&
+                  FireEyeGate(true, true, 42, 42, 0, 1000, 33333) == FireEye::NotThisTick,
+              "an eye from the future or unstamped");
+
+        {
+            bool named = true;
+            for (int i = 0; i < static_cast<int>(Transport::Count); ++i)
+                named = named && std::strcmp(TransportName(static_cast<Transport>(i)), "?") != 0;
+            for (int i = 0; i < static_cast<int>(FireEye::Count); ++i)
+                named = named && std::strcmp(FireEyeName(static_cast<FireEye>(i)), "?") != 0;
+            Check(named && std::strcmp(FireEyeName(FireEye::Count), "?") == 0, "every verdict has a name for the log");
+        }
+
+        // The report window.
+        TransportWindow w;
+        const float dir[3]{1.0f, 0.0f, 0.0f};
+        const float ahead[3]{0.0f, 0.060f * kWuPerM, 0.0f};
+        w.Add(Transport::Measured, FireEye::Measured, ahead, dir, v, 1.5f, 15.6f);
+        const float ahead2[3]{0.0f, 0.080f * kWuPerM, 0.0f};
+        w.Add(Transport::Extrapolated, FireEye::NotThisTick, ahead2, dir, v, -1.0f, 20.0f);
+        const float still[3]{0.0f, 0.0f, 0.0f};
+        const float tiny[3]{0.002f * kWuPerM, 0.0f, 0.0f};
+        w.Add(Transport::Measured, FireEye::Measured, tiny, dir, still, 0.5f, 10.0f);
+        w.Add(Transport::NoPointEye, FireEye::Count, still, dir, nullptr, -1.0f, -1.0f);
+        w.Add(Transport::NoFireEye, FireEye::Seated, still, dir, nullptr, -1.0f, -1.0f);
+        Check(w.Total() == 5 && w.applied == 3 && w.travel == 2 && w.rest == 1, "window: counts");
+        Check(Near(w.alongSum / 2.0f, 70.0f, 0.01f) && Near(w.alongMax, 80.0f, 0.01f),
+              "window: the shift along travel (+ = ahead)");
+        char line[768]{};
+        const size_t used = w.Format("SHOT LAG Halo 3 transport [muzzle] (dev)", line, sizeof(line));
+        Check(used > 0 && std::strstr(line, "SHOT LAG Halo 3 transport [muzzle] (dev): transported 3 (measured 2, "
+                                            "extrapolated 1), P as published 2 (no camera sample 1, no fire eye or "
+                                            "velocity 1)") != nullptr,
+              "window: what was used, and why not");
+        Check(std::strstr(line, "along travel +70 mm (max +80, 2 moving)") && std::strstr(line, "at rest |2| mm (1)"),
+              "window: the shift along travel, and at rest (a cross-source offset would show here)");
+        Check(std::strstr(line, "camera sample 15.2 ms old") && std::strstr(line, "fire eye 1.0 ms old") &&
+                  std::strstr(line, "fire eye: measured 2, seated 1, not this tick 1"),
+              "window: the ages and the fire-eye verdicts");
+        TransportWindow empty;
+        Check(empty.Format("x", line, sizeof(line)) == 0, "window: nothing to report is no line");
+        char small[24]{};
+        Check(w.Format("SHOT LAG Halo 3 transport", small, sizeof(small)) < sizeof(small) &&
+                  small[sizeof(small) - 1] == 0,
+              "window: a short buffer truncates safely");
+    }
+
+    // ---- the record through P' (4a with 4b) ----
+    {
+        // As the record test above: E_P (P's camera sample) at the origin, P 10 m out, E' 272 mm along a 4 m/s strafe
+        // (140 mm at the tick plus one 33 ms tick carried). Transported, the record from E' is the solved line moved.
+        const float p[3]{10.0f * kWuPerM, 0.0f, 0.0f};
+        RecomposeInput in{};
+        in.onFoot = true;
+        in.intentRead = true;
+        in.intent.generation = 5;
+        in.intent.stampUs = 1000000;
+        std::memcpy(in.intent.point, p, sizeof(p));
+        in.intent.rangeWu = p[0];
+        in.intent.dir[0] = 1.0f;
+        in.intent.pointEyeValid = true;
+        in.intent.pointEyeStampUs = 990000;
+        in.generation = 5;
+        in.nowUs = 1040000;
+        in.maxAgeUs = 150000;
+        in.firstPersonEye = true;
+        in.eyeRead = true;
+        in.eye[1] = 0.14f * kWuPerM;
+        in.eyeVel[1] = 4.0f * kWuPerM;
+        in.eyeVelValid = true;
+        in.eyeProven = true;
+        in.tickS = 0.033f;
+        float yaw = 9.0f, pitch = 9.0f, bend = -1.0f, shift[3]{};
+        Transport how = Transport::Bad;
+        in.transport = true;
+        Check(RecomposeRecord(in, yaw, pitch, bend, &how, shift) == Recompose::Recomposed && how == Transport::Measured,
+              "transported: recomposed, measured from the game's eye");
+        Check(std::fabs(yaw) < 1.0e-5f && std::fabs(pitch) < 1.0e-5f && bend < 1.0e-3f,
+              "the record is the solved direction (straight down +X): a body-fixed aim, as flat Halo");
+        Check(Near(shift[1] * kMmPerWu, (0.14f + 4.0f * 0.033f) * 1000.0f, 0.05f), "the shift is E' - E_P");
+        in.intent.pointEyeValid = false;
+        how = Transport::Bad;
+        Check(RecomposeRecord(in, yaw, pitch, bend, &how, shift) == Recompose::Recomposed &&
+                  how == Transport::NoPointEye &&
+                  std::fabs(std::atan2(-(0.14f + 4.0f * 0.033f), 10.0f) - yaw) < 1.0e-4f,
+              "no camera sample: through P as published, and said so");
+        in.transport = false;
+        how = Transport::Bad;
+        Check(RecomposeRecord(in, yaw, pitch, bend, &how) == Recompose::Recomposed && how == Transport::Count,
+              "the key off: no transport asked");
+    }
+
     // ---- the game's eye when the acquisition did not publish one (4c) ----
     {
         TickEyeFallbackInput in{};

@@ -796,7 +796,7 @@ namespace
     }
 
     bool ReadHalo3TickEye(uint32_t generation, uint64_t maxAgeUs, float eye[3], float vel[3], bool& velValid,
-                          uint64_t& stampUs) noexcept
+                          uint64_t& stampUs, int32_t* unitOut = nullptr) noexcept
     {
         const auto& p = g_halo3TickEye;
         for (int attempt = 0; attempt < 2; ++attempt)
@@ -805,6 +805,8 @@ namespace
             if (!before || (before & 1u))
                 continue;
             const uint32_t g = p.generation.load(std::memory_order_relaxed);
+            if (unitOut)
+                *unitOut = p.unit.load(std::memory_order_relaxed);
             for (int axis = 0; axis < 3; ++axis)
             {
                 eye[axis] = p.eye[axis].load(std::memory_order_relaxed);
@@ -52072,6 +52074,92 @@ static bool ReachSeatAimFrameBindingInstalled()
 #include "type13_flight_log.inl"
 #endif
 
+#if HALOMCCVR_DEV_DIAGNOSTICS   // the dev key shot_point_transport and the impact witness are its only readers
+// THE FIRE-TICK EYE, Halo 3 on foot (sight_layer.h Sight_SetFireEyeSource; dev key shot_point_transport): the eye the
+// shot leaves from at this fire, from the unit's camera evaluator (0x212198) -- the one the game proves to be the
+// engine eye (EyeProof: within 5 cm of the engine camera at rest), so E_fire - E_P is motion, not two sources' offset.
+// In order of preference:
+//   * the crosshair query's own start (`siteEye`): the firing assist asked that evaluator for it at 0x13BC0D in this
+//     very fire;
+//   * this tick's published eye (PublishHalo3TickEye: the control pass's acquisition, which runs before the weapons
+//     fire in the same tick), the local unit's and from this tick (shot_lag::FireEyeGate);
+//   * only when there is none and the site may (`askEvaluator`: a muzzle shot, never the witness), the evaluator
+//     asked for the local unit now, as the stick call does when the game skipped its acquisition
+//     (Halo3TickEyeFromEvaluator): only its first-person path is an eye.
+// Fire thread; the evaluator call under SEH with the lane's callback count held (RemoveHalo3DualAim's quiescence).
+static shot_lag::FireEye Halo3AskEvaluatorEye(uint32_t generation, int32_t unit, float eye[3])
+{
+    auto& feature = g_halo3Dual;
+    feature.callbacks.fetch_add(1, std::memory_order_acq_rel);
+    shot_lag::FireEye why = shot_lag::FireEye::NoSource;
+    __try
+    {
+        const Halo3DualCameraFn evaluator = feature.cameraOriginal;
+        if (evaluator && feature.enabled.load(std::memory_order_acquire) &&
+            !feature.faulted.load(std::memory_order_acquire) && generation && feature.generation == generation &&
+            unit != -1)
+        {
+            float position[3]{}, direction[3]{};
+            const int32_t path = evaluator(static_cast<uint32_t>(unit), position, direction);
+            if (!shot_lag::EvaluatorTookFirstPersonPath(path))
+                why = shot_lag::FireEye::ChasePath;
+            else if (shot_lag::Finite3(position))
+            {
+                memcpy(eye, position, sizeof(position));
+                why = shot_lag::FireEye::Measured;
+            }
+            else
+                why = shot_lag::FireEye::Faulted;
+        }
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        why = shot_lag::FireEye::Faulted;
+    }
+    feature.callbacks.fetch_sub(1, std::memory_order_acq_rel);
+    return why;
+}
+static shot_lag::FireEye Halo3FireEyeForShot(const float* siteEye, bool askEvaluator, float eye[3], float& ageMs)
+{
+    ageMs = -1.0f;
+    const uint32_t generation = TitleAdapter_GetGeneration(GameTitle::Halo3);
+    if (!generation || TitleAdapter_GetActiveTitle() != GameTitle::Halo3)
+        return shot_lag::FireEye::NoSource;
+    if (g_halo3TickEyeProof.load(std::memory_order_relaxed) != static_cast<uint32_t>(TickEyeProof::Proven))
+        return shot_lag::FireEye::Unproven;
+    if (siteEye && shot_lag::Finite3(siteEye))
+    {
+        memcpy(eye, siteEye, sizeof(float) * 3);
+        ageMs = 0.0f;
+        return shot_lag::FireEye::Measured;
+    }
+    const int32_t local = LegacyCollisionIgnoredObject(GameTitle::Halo3);
+    float vel[3]{};
+    bool velValid = false;
+    uint64_t stampUs = 0;
+    int32_t unit = -1;
+    const bool read = ReadHalo3TickEye(generation, 250000, eye, vel, velValid, stampUs, &unit);
+    const uint64_t nowUs = Sight_NowUs();
+    const shot_lag::FireEye verdict = shot_lag::FireEyeGate(read, true, unit, local, stampUs, nowUs,
+                                                            g_legacyTickPeriodUs[0].load(std::memory_order_relaxed));
+    if (verdict == shot_lag::FireEye::Measured)
+    {
+        ageMs = float(nowUs - stampUs) / 1000.0f;
+        return verdict;
+    }
+    if (askEvaluator && (verdict == shot_lag::FireEye::NotRead || verdict == shot_lag::FireEye::NotThisTick))
+    {
+        const shot_lag::FireEye asked = Halo3AskEvaluatorEye(generation, local, eye);
+        if (asked == shot_lag::FireEye::Measured)
+            ageMs = 0.0f;
+        return asked;
+    }
+    return verdict;
+}
+static const bool g_halo3FireEyeRegistered =
+    (Sight_SetFireEyeSource(GameTitle::Halo3, &Halo3FireEyeForShot), true);
+#endif
+
 // THE INTENT POINT (sight_layer.h SightIntent; shot_lag_logic.h). Input thread, every poll whose converged solve
 // resolved: P = H + u * r from ONE frame-coherent pair where the title publishes camera frames (Halo 3, ODST:
 // PublishCamFrame), else from the solve's own ray (Halo 4). The hands are kept here, keyed by the head sample of
@@ -52120,6 +52208,20 @@ static void PublishAimIntent(GameTitle title, const SightRay& ray, const float h
     shot_lag::EyeFrame frames[kCamFrameSlots]{};
     const size_t frameCount = cameraFrames ? ReadCamFrames(frames) : 0;
     size_t eyeIndex = 0, handIndex = 0;
+    // The solve's eye is the newest render's engine eye (g_baseCam at this poll): stamped with the newest frame, the
+    // camera sample a seated point and a pairless point were built from (shot_lag::IntentPoint::pointEye; the dev
+    // key shot_point_transport moves P with the eye from there).
+    uint64_t newestFrameUs = 0;
+    for (size_t i = 0; i < frameCount; ++i)
+        if (frames[i].valid && frames[i].stampUs > newestFrameUs)
+            newestFrameUs = frames[i].stampUs;
+    p.solveEyeStampUs = newestFrameUs;
+    if (newestFrameUs)
+    {
+        p.pointEyeValid = true;
+        memcpy(p.pointEye, ray.eye, sizeof(p.pointEye));
+        p.pointEyeStampUs = newestFrameUs;
+    }
     // A head sample repeated more than 100 ms apart is not the same frame. A hand older than 50 ms (renders stalled:
     // the newest hand whose frame rendered is several polls back) is the aim of that moment, not of now: the poll's
     // own pair stands instead. The point is stamped with the HAND's own stamp, so a consumer ages it from when the
@@ -52137,6 +52239,10 @@ static void PublishAimIntent(GameTitle title, const SightRay& ray, const float h
         memcpy(p.head, eye.head, sizeof(p.head));
         memcpy(p.dir, hand.dir, sizeof(p.dir));
         p.eyeStampUs = eye.stampUs;
+        // P's camera sample is this frame's: its engine eye and render time.
+        p.pointEyeValid = true;
+        memcpy(p.pointEye, eye.eye, sizeof(p.pointEye));
+        p.pointEyeStampUs = eye.stampUs;
         Sight_NoteIntentPairing(title, hand.stampUs == now ? 0 : 1);
     }
     else

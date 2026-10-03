@@ -11,7 +11,9 @@
 //   spawned object's position and VELOCITY against P, per eye-speed bin, along/across travel); the native's turn after
 //   our line (forward vs the direction we handed it); velocity off the forward (what the shooter's motion added, and
 //   how much of the eye's speed that is); speed, flight time, range; later ticks (the same object re-read: moved off
-//   its spawn line?); IMPACT vs P (the hit point of the projectile's own collision query)
+//   its spawn line?); IMPACT vs P (the hit point of the projectile's own collision query); and the round line and the
+//   impact vs P' -- P moved with the eye since its camera sample (dev key shot_point_transport, shot_lag_logic.h 4a),
+//   computed on every fire whichever the key, so both arms of the A/B report against both points
 //
 //   SHOT RETICLE Halo 3 (dev): the reticle the compositor last drew (its ray mapped to the world through the aim
 //   path's own map, from the rendered eye of its frame, at the range it was drawn for) against P; how old P was at
@@ -123,6 +125,10 @@ struct Halo3ImpactFire
     float lineOrigin[3]{}, lineDir[3]{};
     bool pointKnown = false;
     shot_lag::IntentPoint point{};   // seated: point = the intent's solvePoint (the point the seated re-aim uses)
+    // P' -- that point moved with the eye since its camera sample (Sight_TransportIntent, keys not consulted) -- and
+    // P' - P, valid when `transport` applied. Every fire is judged against both, whichever the key.
+    shot_lag::Transport transport = shot_lag::Transport::Count;
+    float pointT[3]{}, shiftT[3]{};
     // Seated (the occupant's parent link is set): the gun's owner, its definition, the weapon's.
     bool seated = false;
     shot_impact::SeatKey seat{};
@@ -281,9 +287,12 @@ bool Halo3ImpactFrameBySerial(uint64_t serial, shot_lag::EyeFrame& out)
 
 // The local fire's P (the intent the shot sites read), fresh and this generation's. Seated: the point the seated
 // re-aim aims through (SightIntent::solvePoint), and only an intent that says it is seated.
-bool Halo3ImpactReadPoint(uint64_t nowUs, bool seated, shot_lag::IntentPoint& out)
+// `how` / `pointT` / `shiftT`: P moved with the eye (Sight_TransportIntent), for the vs P' columns.
+bool Halo3ImpactReadPoint(uint64_t nowUs, bool seated, shot_lag::IntentPoint& out, shot_lag::Transport& how,
+                          float pointT[3], float shiftT[3])
 {
     SightIntent intent{};
+    how = shot_lag::Transport::Count;
     const uint32_t generation = TitleAdapter_GetGeneration(GameTitle::Halo3);
     if (!Sight_ReadIntent(GameTitle::Halo3, intent) || !generation || intent.p.generation != generation ||
         !intent.p.stampUs || nowUs < intent.p.stampUs || nowUs - intent.p.stampUs > 250000ull ||
@@ -292,7 +301,13 @@ bool Halo3ImpactReadPoint(uint64_t nowUs, bool seated, shot_lag::IntentPoint& ou
     out = intent.p;
     if (seated)
         memcpy(out.point, intent.solvePoint, sizeof(out.point));
-    return shot_lag::Finite3(out.point);
+    if (!shot_lag::Finite3(out.point))
+        return false;
+    // E_fire from this tick's published eye (else extrapolated), whichever the key: a witness never calls the game.
+    // A shot under the key may instead have asked the evaluator (a tick that skipped its acquisition): rare, and
+    // the same eye.
+    how = Sight_TransportIntent(GameTitle::Halo3, intent, seated, nullptr, false, pointT, shiftT);
+    return true;
 }
 
 // The reticle the player saw at this fire, against P (and P's age), into the reticle window. Under the lock.
@@ -446,7 +461,7 @@ void Halo3ImpactNoteShotLine(uint32_t unit, const float origin[3], const float d
     memcpy(fire.lineOrigin, origin, sizeof(fire.lineOrigin));
     memcpy(fire.lineDir, direction, sizeof(fire.lineDir));
     const uint64_t nowUs = Sight_NowUs();
-    fire.pointKnown = Halo3ImpactReadPoint(nowUs, fire.seated, fire.point);
+    fire.pointKnown = Halo3ImpactReadPoint(nowUs, fire.seated, fire.point, fire.transport, fire.pointT, fire.shiftT);
     auto& w = g_halo3Impact;
     if (fire.seated)
         return;   // the SHOT RETICLE line is the on-foot reticle's
@@ -533,12 +548,19 @@ void Halo3ImpactNoteSpawn(int32_t handle, const float placementPos[3], const flo
                 shot_impact::LateralAlongTravel(placementVel, placementFwd, eyeVel, velScale, placedAlong);
             window.AddInheritance(taken, ownerFlag, placedKnown, placedAlong);
         }
+        const bool transported = shot_lag::TransportApplied(fire.transport);
         if (constructed)
         {
             window.AddSpawn(shot_impact::MeasureSpawn(fromAssist ? assist.lastPost : fire.lineDir, fwd, vel, pos,
                                                       p.point, eyeVel, velScale));
             if (fromAssist)
                 ++window.fromAssist;
+            // The same round line against P' (P moved with the eye), and the shift P' - P in the player's frame.
+            window.AddTransported(fire.transport,
+                                  transported ? shot_lag::MeasureShotLag(pos, vel, fire.pointT, nullptr, eyeVel)
+                                              : shot_lag::ShotLagSample{},
+                                  transported ? shot_impact::Decompose(fire.shiftT, p.dir, eyeVel)
+                                              : shot_impact::Axes{});
         }
         else
             ++window.noInitialSpeed;
@@ -551,6 +573,9 @@ void Halo3ImpactNoteSpawn(int32_t handle, const float placementPos[3], const flo
         t.seatOwnGun = fire.seat.ownGun;
         t.lastUs = nowUs;
         memcpy(t.point, p.point, sizeof(t.point));
+        t.pointTValid = transported;
+        if (transported)
+            memcpy(t.pointT, fire.pointT, sizeof(t.pointT));
         memcpy(t.view, p.dir, sizeof(t.view));
         t.eyeVelValid = p.eyeVelValid;
         if (p.eyeVelValid)
@@ -668,6 +693,12 @@ void Halo3ImpactWitnessTick()
                 const float offset[3]{t.impactPos[0] - t.point[0], t.impactPos[1] - t.point[1],
                                       t.impactPos[2] - t.point[2]};
                 window.AddImpact(shot_impact::Decompose(offset, t.view, eyeVel), t.impactCaller);
+                if (t.pointTValid)
+                {
+                    const float offsetT[3]{t.impactPos[0] - t.pointT[0], t.impactPos[1] - t.pointT[1],
+                                           t.impactPos[2] - t.pointT[2]};
+                    window.AddImpactTransported(shot_impact::Decompose(offsetT, t.view, eyeVel));
+                }
             }
             else
             {
@@ -1158,7 +1189,7 @@ void Halo3ImpactWitnessReport()
     ReleaseSRWLockExclusive(&w.lock);
     static const char* const kLabels[4]{"Halo 3 [native; authoritative]", "Halo 3 [native; predicted]",
                                         "Halo 3 [muzzle; authoritative]", "Halo 3 [muzzle; predicted]"};
-    char line[1536]{};
+    char line[2048]{};
     for (int g = 0; g < 4; ++g)
         if (windows[g].Format(kLabels[g], line, sizeof(line)))
             LOG("%s", line);

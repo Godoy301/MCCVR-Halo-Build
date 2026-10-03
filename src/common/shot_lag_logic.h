@@ -145,6 +145,14 @@ struct IntentPoint
     bool eyeVelValid = false;
     float rangeWu = 0.0f;
     float solvedYaw = 0.0f, solvedPitch = 0.0f;   // the angles the solve published from it (game basis)
+    // THE CAMERA SAMPLE P WAS BUILT FROM (TransportPoint, 4a): the engine eye under the rendered eye `head` -- the
+    // coherent pair's own frame eye, else the solve's eye -- and when that render ran. 0 / invalid: unknown.
+    bool pointEyeValid = false;
+    float pointEye[3]{};
+    uint64_t pointEyeStampUs = 0;
+    // When the solve's eye `eye` was rendered (the newest camera frame at the solve; 0 unknown): a seated shot's
+    // point (SightIntent::solvePoint) was bent from that eye.
+    uint64_t solveEyeStampUs = 0;
 };
 
 // The shot site's verdict on a published point. `maxAgeUs`: older is stale (the player no longer means it).
@@ -428,6 +436,280 @@ inline bool ExtrapolateEye(const float eye[3], const float velocity[3], float dt
     return true;
 }
 
+// ---- 4a. P transported with the eye (dev key shot_point_transport, 2026-10-03) ---------------------------------
+// A/B for "my shots trail my strafe a little, compared with flat Halo". Flat Halo fires through its crosshair from the
+// game's eye AT THE FIRE TICK: a crosshair held still relative to the body moves with the body. P is a WORLD point
+// fixed at the camera sample it was built from, a tick or so older than the fire (the Halo 3 impact witness, impact1:
+// P's camera ~15.6 ms old at the fire, its hand ~10 ms), so with a body-fixed aim a strafing shot lands v * age (10-20
+// cm) behind where flat's would. Transported, P moves with the eye's own motion since that sample:
+//
+//      P' = P + (E_fire - E_P)
+//
+// E_P the engine eye of the camera sample P was built from (IntentPoint::pointEye), E_fire the eye the shot leaves
+// from at the fire tick. From E_fire the line through P' is exactly parallel to the solved line from E_P, so it is
+// what flat Halo would fire. E_fire MEASURED wherever the title has it (Halo 3 on foot, from the unit's camera
+// evaluator that EyeProof proves to be the engine eye: the crosshair query's own start, the evaluator asked at a
+// muzzle shot, else this tick's published eye -- FireEyeGate); otherwise EXTRAPOLATED from E_P's velocity over its age
+// at the fire (E_P + v * age). Which was used is counted. No magnitude limit (the user's standing rule): a
+// transport is refused only for identity or freshness -- an unknown camera sample, no eye and no velocity, an E_P from
+// the future or older than maxAgeUs.
+enum class Transport : uint8_t
+{
+    Measured = 0,   // E_fire is the game's own eye at the fire tick
+    Extrapolated,   // no fire-tick eye: E_fire = E_P + v * (now - E_P's stamp)
+    NoPointEye,     // P's camera sample unknown (no eye, no stamp, non-finite): P is used as published
+    NoFireEye,      // no fire-tick eye and no velocity: P as published
+    StaleEye,       // extrapolating, E_P stamped after now or older than maxAgeUs: P as published
+    Bad,            // P (or the result) non-finite
+    Count
+};
+inline const char* TransportName(Transport t)
+{
+    switch (t)
+    {
+    case Transport::Measured: return "measured";
+    case Transport::Extrapolated: return "extrapolated";
+    case Transport::NoPointEye: return "no camera sample";
+    case Transport::NoFireEye: return "no fire eye or velocity";
+    case Transport::StaleEye: return "camera sample stale";
+    case Transport::Bad: return "bad";
+    default: return "?";
+    }
+}
+inline bool TransportApplied(Transport t) { return t == Transport::Measured || t == Transport::Extrapolated; }
+
+struct TransportInput
+{
+    float point[3]{};          // P (on foot the frame-coherent point, seated the solve's point)
+    bool pointEyeValid = false;
+    float pointEye[3]{};       // E_P
+    uint64_t pointEyeStampUs = 0;
+    bool fireEyeValid = false; // E_fire measured (its identity and freshness are FireEyeGate's)
+    float fireEye[3]{};
+    bool velValid = false;     // the engine eye's velocity, wu/s (the extrapolation)
+    float vel[3]{};
+    uint64_t nowUs = 0;
+    uint64_t maxAgeUs = 0;     // the oldest E_P an extrapolation carries
+};
+// `out` = P' and `shift` = P' - P, written only when applied (Measured / Extrapolated).
+inline Transport TransportPoint(const TransportInput& in, float out[3], float shift[3])
+{
+    if (!out || !shift || !Finite3(in.point))
+        return Transport::Bad;
+    if (!in.pointEyeValid || !in.pointEyeStampUs || !Finite3(in.pointEye))
+        return Transport::NoPointEye;
+    float s[3]{};
+    Transport how = Transport::Measured;
+    if (in.fireEyeValid && Finite3(in.fireEye))
+    {
+        for (int axis = 0; axis < 3; ++axis)
+            s[axis] = in.fireEye[axis] - in.pointEye[axis];
+    }
+    else if (in.velValid && Finite3(in.vel))
+    {
+        if (in.nowUs < in.pointEyeStampUs || in.nowUs - in.pointEyeStampUs > in.maxAgeUs)
+            return Transport::StaleEye;
+        const float dt = float(in.nowUs - in.pointEyeStampUs) * 1.0e-6f;
+        for (int axis = 0; axis < 3; ++axis)
+            s[axis] = in.vel[axis] * dt;
+        how = Transport::Extrapolated;
+    }
+    else
+        return Transport::NoFireEye;
+    const float p[3]{in.point[0] + s[0], in.point[1] + s[1], in.point[2] + s[2]};
+    if (!Finite3(s) || !Finite3(p))
+        return Transport::Bad;
+    for (int axis = 0; axis < 3; ++axis)
+    {
+        out[axis] = p[axis];
+        shift[axis] = s[axis];
+    }
+    return how;
+}
+
+// THE FIRE-TICK EYE's gate (Halo 3 on foot, a site with no eye of its own and no evaluator asked -- the published
+// tick eye; the other two sources are this fire's by construction): the eye the title published is usable as E_fire
+// only when it is the
+// local player's (his unit's), proven to be the engine eye (EyeProof), and from THIS tick -- younger than three
+// quarters of the measured simulation tick (25 ms while the tick is unmeasured), so a tick that skipped its
+// acquisition never lends the shot the previous tick's eye. A seat never has one: there the published eye and the
+// render's engine eye are not the same point by design (EyeProof).
+enum class FireEye : uint8_t
+{
+    Measured = 0,   // usable
+    NoSource,       // the title publishes no fire-tick eye (ODST), or its hooks are absent
+    Seated,         // a seated shot: never measured
+    NotRead,        // none readable for this generation
+    Unproven,       // not (yet) proven to be the engine eye
+    OtherUnit,      // published for another unit
+    NotThisTick,    // older than this tick (or from the future)
+    ChasePath,      // asked the evaluator: it took the chase-camera path (not a first-person eye)
+    Faulted,        // asked the evaluator: it faulted or answered a non-finite eye
+    Count
+};
+inline const char* FireEyeName(FireEye f)
+{
+    switch (f)
+    {
+    case FireEye::Measured: return "measured";
+    case FireEye::NoSource: return "no source";
+    case FireEye::Seated: return "seated";
+    case FireEye::NotRead: return "not read";
+    case FireEye::Unproven: return "unproven";
+    case FireEye::OtherUnit: return "another unit's";
+    case FireEye::NotThisTick: return "not this tick";
+    case FireEye::ChasePath: return "chase path";
+    case FireEye::Faulted: return "faulted";
+    default: return "?";
+    }
+}
+inline FireEye FireEyeGate(bool read, bool proven, int32_t eyeUnit, int32_t localUnit, uint64_t stampUs,
+                           uint64_t nowUs, uint64_t tickUs)
+{
+    if (!read)
+        return FireEye::NotRead;
+    if (!proven)
+        return FireEye::Unproven;
+    if (eyeUnit == -1 || eyeUnit != localUnit)
+        return FireEye::OtherUnit;
+    const uint64_t window = tickUs ? tickUs * 3 / 4 : 25000;
+    if (!stampUs || nowUs < stampUs || nowUs - stampUs >= window)
+        return FireEye::NotThisTick;
+    return FireEye::Measured;
+}
+
+// A report window of transports (one per title and consumer; dev): what was used, by kind, and the shift P' - P --
+// along the player's travel (the engine eye's velocity with its component along the view removed; + = ahead of where
+// he is going), its magnitude, and its magnitude AT REST (eye under 0.25 m/s: it should be ~0; anything else is an
+// offset between the two eyes' sources, not motion). Plain sums, owned by the caller's lock.
+struct TransportWindow
+{
+    uint32_t n[static_cast<size_t>(Transport::Count)]{};
+    uint32_t fireEye[static_cast<size_t>(FireEye::Count)]{};
+    uint32_t travel = 0;
+    float alongSum = 0.0f, alongMax = 0.0f;   // mm
+    uint32_t applied = 0;
+    float magnitudeSum = 0.0f;                // mm
+    uint32_t rest = 0;
+    float restSum = 0.0f;                     // mm
+    uint32_t fireAges = 0;
+    float fireAgeSum = 0.0f;                  // ms, measured transports
+    uint32_t pointAges = 0;
+    float pointAgeSum = 0.0f;                 // ms, the camera sample's age at the fire
+
+    // `fireEyeAgeMs` < 0: none. `pointEyeAgeMs` < 0: unknown. `fire`: the fire-eye verdict, or Count when none was
+    // asked. `dir` (any length) and `vel` (wu/s, may be null) only split the shift.
+    void Add(Transport how, FireEye fire, const float shift[3], const float dir[3], const float* vel,
+             float fireEyeAgeMs, float pointEyeAgeMs)
+    {
+        const size_t h = static_cast<size_t>(how);
+        if (h < static_cast<size_t>(Transport::Count))
+            ++n[h];
+        const size_t f = static_cast<size_t>(fire);
+        if (f < static_cast<size_t>(FireEye::Count))
+            ++fireEye[f];
+        if (!TransportApplied(how) || !Finite3(shift))
+            return;
+        ++applied;
+        const float magnitude = Length(shift) * kMmPerWu;
+        magnitudeSum += magnitude;
+        if (how == Transport::Measured && fireEyeAgeMs >= 0.0f && std::isfinite(fireEyeAgeMs))
+        {
+            ++fireAges;
+            fireAgeSum += fireEyeAgeMs;
+        }
+        if (pointEyeAgeMs >= 0.0f && std::isfinite(pointEyeAgeMs))
+        {
+            ++pointAges;
+            pointAgeSum += pointEyeAgeMs;
+        }
+        if (!vel || !Finite3(vel))
+            return;
+        if (Length(vel) * kMetresPerWu < 0.25f)
+        {
+            ++rest;
+            restSum += magnitude;
+        }
+        const float dl = dir && Finite3(dir) ? Length(dir) : 0.0f;
+        if (!(dl > 1.0e-6f))
+            return;
+        const float d[3]{dir[0] / dl, dir[1] / dl, dir[2] / dl};
+        const float along = Dot(vel, d);
+        const float vp[3]{vel[0] - d[0] * along, vel[1] - d[1] * along, vel[2] - d[2] * along};
+        const float vpl = Length(vp);
+        if (!std::isfinite(vpl) || !(vpl * kMetresPerWu > 0.05f))
+            return;
+        const float a = Dot(shift, vp) / vpl * kMmPerWu;
+        if (!std::isfinite(a))
+            return;
+        ++travel;
+        alongSum += a;
+        if (std::fabs(a) > std::fabs(alongMax))
+            alongMax = a;
+    }
+    uint32_t Total() const
+    {
+        uint32_t t = 0;
+        for (uint32_t c : n)
+            t += c;
+        return t;
+    }
+    // "<label>: transported N (measured a, extrapolated b), P as published M (reasons); ..." Returns the characters
+    // written (0: nothing to report).
+    size_t Format(const char* label, char* out, size_t size) const
+    {
+        if (!out || !size || !Total())
+            return 0;
+        size_t used = 0;
+        const auto put = [&](const char* fmt, auto... args) {
+            if (used >= size)
+                return;
+            const int w = std::snprintf(out + used, size - used, fmt, args...);
+            if (w > 0)
+                used += static_cast<size_t>(w) < size - used ? static_cast<size_t>(w) : size - used - 1;
+        };
+        const auto mean = [](float sum, uint32_t count) { return count ? double(sum / float(count)) : 0.0; };
+        put("%s: transported %u (measured %u, extrapolated %u), P as published %u", label, applied,
+            n[static_cast<size_t>(Transport::Measured)], n[static_cast<size_t>(Transport::Extrapolated)],
+            Total() - applied);
+        bool any = false;
+        for (size_t i = 0; i < static_cast<size_t>(Transport::Count); ++i)
+        {
+            if (TransportApplied(static_cast<Transport>(i)) || !n[i])
+                continue;
+            put("%s%s %u", any ? ", " : " (", TransportName(static_cast<Transport>(i)), n[i]);
+            any = true;
+        }
+        if (any)
+            put(")");
+        if (applied)
+        {
+            put("; shift mean |%.0f| mm", mean(magnitudeSum, applied));
+            if (travel)
+                put(", along travel %+.0f mm (max %+.0f, %u moving)", mean(alongSum, travel), double(alongMax), travel);
+            else
+                put(", along travel n/a");
+            if (rest)
+                put(", at rest |%.0f| mm (%u)", mean(restSum, rest), rest);
+            if (pointAges)
+                put("; camera sample %.1f ms old", mean(pointAgeSum, pointAges));
+            if (fireAges)
+                put("; fire eye %.1f ms old", mean(fireAgeSum, fireAges));
+        }
+        uint32_t asked = 0;
+        for (uint32_t c : fireEye)
+            asked += c;
+        if (asked)
+        {
+            put("; fire eye: measured %u", fireEye[static_cast<size_t>(FireEye::Measured)]);
+            for (size_t i = 1; i < static_cast<size_t>(FireEye::Count); ++i)
+                if (fireEye[i])
+                    put(", %s %u", FireEyeName(static_cast<FireEye>(i)), fireEye[i]);
+        }
+        return used;
+    }
+};
+
 // The crosshair query's own evidence that it is the local player's (with GateCrosshairQuery's fire tag): BY IDENTITY.
 // On foot its first ignore is the local unit itself. Seated it is the vehicle's root (the published seat chain's top:
 // `seatC`, else `seatB`) or the seat's parent (`seatB`). Another occupant's query names those too; the fire tag is
@@ -522,8 +804,14 @@ struct RecomposeInput
     bool eyeVelValid = false;
     bool eyeProven = false;
     float tickS = 0.0f;                     // the measured simulation tick; the carry is clamped to 50 ms
+    // Dev key shot_point_transport (4a): recompose through P' = P + (E' - E_P) instead of P -- E' the game's eye
+    // carried a tick ahead (below), measured. Where P's camera sample is unknown, through P as published.
+    bool transport = false;
 };
-inline Recompose RecomposeRecord(const RecomposeInput& in, float& yaw, float& pitch, float& bendDeg)
+// `how` (optional): the transport's verdict, Transport::Count when none was asked; `shift` (optional): P' - P when
+// applied. Both written only on Recomposed.
+inline Recompose RecomposeRecord(const RecomposeInput& in, float& yaw, float& pitch, float& bendDeg,
+                                 Transport* how = nullptr, float* shift = nullptr)
 {
     if (!in.onFoot)
         return Recompose::NotOnFoot;
@@ -544,14 +832,32 @@ inline Recompose RecomposeRecord(const RecomposeInput& in, float& yaw, float& pi
     float fire[3]{in.eye[0], in.eye[1], in.eye[2]};
     if (in.eyeVelValid)
         (void)ExtrapolateEye(in.eye, in.eyeVel, in.tickS, 0.05f, fire);
+    float target[3]{p.point[0], p.point[1], p.point[2]};
+    float moved[3]{};
+    Transport transported = Transport::Count;
+    if (in.transport)
+    {
+        TransportInput t{};
+        std::memcpy(t.point, p.point, sizeof(t.point));
+        t.pointEyeValid = p.pointEyeValid;
+        std::memcpy(t.pointEye, p.pointEye, sizeof(t.pointEye));
+        t.pointEyeStampUs = p.pointEyeStampUs;
+        t.fireEyeValid = true;
+        std::memcpy(t.fireEye, fire, sizeof(t.fireEye));
+        t.nowUs = in.nowUs;
+        float out[3]{};
+        transported = TransportPoint(t, out, moved);
+        if (TransportApplied(transported))
+            std::memcpy(target, out, sizeof(target));
+    }
     float newYaw = 0.0f, newPitch = 0.0f;
-    if (!AnglesTowardPoint(fire, p.point, 0.3f * kWuPerMetre, 1.45f, newYaw, newPitch))
+    if (!AnglesTowardPoint(fire, target, 0.3f * kWuPerMetre, 1.45f, newYaw, newPitch))
         return Recompose::PointTooClose;
     const float a[3]{std::cos(in.setPitch) * std::cos(in.setYaw), std::cos(in.setPitch) * std::sin(in.setYaw),
                      std::sin(in.setPitch)};
     const float b[3]{std::cos(newPitch) * std::cos(newYaw), std::cos(newPitch) * std::sin(newYaw), std::sin(newPitch)};
     // Behind the eye along the setpoint (the eye has passed P): no forward line through it.
-    const float toPoint[3]{p.point[0] - fire[0], p.point[1] - fire[1], p.point[2] - fire[2]};
+    const float toPoint[3]{target[0] - fire[0], target[1] - fire[1], target[2] - fire[2]};
     if (!(Dot(toPoint, a) > 0.0f))
         return Recompose::PointBehind;
     float c = Dot(a, b);
@@ -560,6 +866,10 @@ inline Recompose RecomposeRecord(const RecomposeInput& in, float& yaw, float& pi
     yaw = newYaw;
     pitch = newPitch;
     bendDeg = bend;
+    if (how)
+        *how = transported;
+    if (shift && TransportApplied(transported))
+        std::memcpy(shift, moved, sizeof(moved));
     return Recompose::Recomposed;
 }
 

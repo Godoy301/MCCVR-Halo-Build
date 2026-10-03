@@ -698,6 +698,11 @@ bool LegacySightReaimCrosshairQuery(GameTitle title, uint64_t flags, const float
         return false;
     }
     memcpy(out, vector, sizeof(float) * 3);
+    // Dev key shot_point_transport (default 0; sight_layer.h Sight_ShotPoint): through P moved with the eye since its
+    // camera sample -- the game's eye at this fire tick where it publishes one -- instead of the world point P.
+    // Counted on the dev SHOT LAG transport line; a player build returns `point` itself.
+    float transported[3]{};
+    point = Sight_ShotPoint(title, SightTransportSite::CrosshairAssist, intent, seated, point, transported, start);
 #if HALOMCCVR_DEV_DIAGNOSTICS
     // Dev key seated_inherit_compensation (default 0; halo3_impact_witness.inl): a Halo 3 seated round that will
     // inherit its vehicle's sideways velocity is aimed through the point that makes its own velocity reach P.
