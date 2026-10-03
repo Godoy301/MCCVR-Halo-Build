@@ -1012,7 +1012,7 @@ std::atomic<uint32_t> g_seatLimitClampedGeneration[kTitleSlots]{};
 // The dev SEAT LIMIT witness: polls clamped per title, which edge, and the worst overshoot (float bits).
 struct SeatLimitWitness
 {
-    std::atomic<uint32_t> polls{0}, yawEdge{0}, pitchEdge{0};
+    std::atomic<uint32_t> polls{0}, yawEdge{0}, pitchEdge{0}, gunBand{0};
     std::atomic<uint32_t> maxOvershootBits{0};
 };
 SeatLimitWitness g_seatLimitWitness[kTitleSlots];
@@ -1054,7 +1054,7 @@ bool Sight_SeatLimitClampedLive(GameTitle title)
            g_seatLimitClampedGeneration[slot].load(std::memory_order_relaxed) == TitleAdapter_GetGeneration(title);
 }
 
-void Sight_NoteSeatLimit(GameTitle title, bool yawEdge, bool pitchEdge, float overshootDeg)
+void Sight_NoteSeatLimit(GameTitle title, bool yawEdge, bool pitchEdge, float overshootDeg, bool gunBand)
 {
 #if HALOMCCVR_DEV_DIAGNOSTICS
     auto& w = g_seatLimitWitness[Slot(title)];
@@ -1063,6 +1063,8 @@ void Sight_NoteSeatLimit(GameTitle title, bool yawEdge, bool pitchEdge, float ov
         w.yawEdge.fetch_add(1, std::memory_order_relaxed);
     if (pitchEdge)
         w.pitchEdge.fetch_add(1, std::memory_order_relaxed);
+    if (gunBand)
+        w.gunBand.fetch_add(1, std::memory_order_relaxed);
     if (std::isfinite(overshootDeg) && overshootDeg > 0.0f)
     {
         uint32_t seen = w.maxOvershootBits.load(std::memory_order_relaxed);
@@ -1082,6 +1084,7 @@ void Sight_NoteSeatLimit(GameTitle title, bool yawEdge, bool pitchEdge, float ov
     (void)yawEdge;
     (void)pitchEdge;
     (void)overshootDeg;
+    (void)gunBand;
 #endif
 }
 
@@ -1095,13 +1098,14 @@ static void SeatLimitReport()
         const uint32_t polls = w.polls.exchange(0, std::memory_order_relaxed);
         const uint32_t yawEdge = w.yawEdge.exchange(0, std::memory_order_relaxed);
         const uint32_t pitchEdge = w.pitchEdge.exchange(0, std::memory_order_relaxed);
+        const uint32_t gunBand = w.gunBand.exchange(0, std::memory_order_relaxed);
         const uint32_t bits = w.maxOvershootBits.exchange(0, std::memory_order_relaxed);
         if (!polls)
             continue;
         float overshoot = 0.0f;
         std::memcpy(&overshoot, &bits, sizeof(overshoot));
-        LOG("SEAT LIMIT %s: reticle clamped %u polls (yaw edge %u, pitch edge %u), max overshoot %.1f deg",
-            TitleName(static_cast<GameTitle>(slot)), polls, yawEdge, pitchEdge, overshoot);
+        LOG("SEAT LIMIT %s: reticle clamped %u polls (yaw edge %u, pitch edge %u, gun band %u), max overshoot %.1f deg",
+            TitleName(static_cast<GameTitle>(slot)), polls, yawEdge, pitchEdge, gunBand, overshoot);
     }
 }
 

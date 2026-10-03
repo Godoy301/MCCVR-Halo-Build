@@ -86,6 +86,9 @@ void PublishShotDiagnostic(GameTitle,uint32_t,uint32_t,uint32_t,uint8_t,uint8_t,
 // The dev turret-shot witness (legacy_sight_trace.inl, defined in game.cpp): it only reads, so an inert stand-in.
 // The firing call's weapon (halo3_dual_wield_runtime.inl declares it before including the lane).
 static thread_local uint32_t g_halo3FiringWeapon=UINT32_MAX;
+// A look-steered driver's gun band (halo3_vehicle_gun_band.inl): counted here, learned there.
+static unsigned gunBandShots=0;
+static void Halo3GunBandNoteShot(uint32_t,uint32_t,uint32_t,int16_t,const float*,const float*,bool){++gunBandShots;}
 void LegacySightNoteTurretShot(GameTitle,uint32_t,const float*,const float*) {}
 #include "../src/dll/halo3_independent_shots.inl"
 #undef _ReturnAddress

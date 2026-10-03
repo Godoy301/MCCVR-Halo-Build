@@ -195,8 +195,9 @@ bool Sight_ReadLimitTrace(GameTitle title, uint32_t generation, uint64_t maxAgeM
 void Sight_MarkSeatLimitClamped(GameTitle title);
 bool Sight_SeatLimitClampedLive(GameTitle title);
 // Dev witness (empty in player builds): each clamped poll's edges and overshoot, and every 2 s per title
-//   SEAT LIMIT <title>: reticle clamped N polls (yaw edge Y, pitch edge P), max overshoot X deg
-void Sight_NoteSeatLimit(GameTitle title, bool yawEdge, bool pitchEdge, float overshootDeg);
+//   SEAT LIMIT <title>: reticle clamped N polls (yaw edge Y, pitch edge P, gun band G), max overshoot X deg
+// `gunBand`: a look-steered driver's shot held at its guns' elevation band (Halo 3; halo3_vehicle_gun_band.inl).
+void Sight_NoteSeatLimit(GameTitle title, bool yawEdge, bool pitchEdge, float overshootDeg, bool gunBand = false);
 
 #if HALOMCCVR_DEV_DIAGNOSTICS
 // DEV ASSESSMENT RAY (honest_reticle_assess; dev builds only, src/common/assess_reticle_logic.h). The reticle the

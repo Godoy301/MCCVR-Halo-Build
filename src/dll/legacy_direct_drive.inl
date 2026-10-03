@@ -1845,6 +1845,10 @@ extern "C" void LegacyPcApplyForUser(int slot, int user, uintptr_t ret, const ui
                             stops.rebased = seatFrame.kase == seat_frame::Case::Rebased;
                             stops.frame = seatFrame.frame;
                             st.stops.publish(seatKey, stops, nativeYaw, now);
+                            // Halo 3: a look-steered driver's gun band is current while its updates run
+                            // (halo3_vehicle_gun_band.inl; the aim poll checks the vehicle and definition itself).
+                            if (slot == 0 && !pitchLatch)
+                                Halo3GunBandMarkDriver(now);
                         }
                         st.wroteSeq.fetch_add(1, std::memory_order_acq_rel);
                         st.wroteYaw[1].store(st.wroteYaw[0].load(std::memory_order_relaxed), std::memory_order_relaxed);

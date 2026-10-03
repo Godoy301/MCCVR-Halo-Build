@@ -347,10 +347,16 @@ __declspec(noinline) void __fastcall Halo3IndependentAimDetour(uint32_t unit,
         {
             PublishHalo3ShotDiagnostic(unit,origin,direction,substituted,
                 project!=0,unitAim!=0);
+            const uint32_t owner=Halo3WeaponOwner(g_halo3FiringWeapon);
+            // A look-steered driver's gun band (halo3_vehicle_gun_band.inl): the barrel's own line, before the assist
+            // (0x368DFE) turns it -- only for a shot the native aimed, never one this mod substituted.
+            if(!substituted && !scope.active)
+                Halo3GunBandNoteShot(unit,owner,g_halo3FiringWeapon,g_halo3MuzzleRequest.barrel,origin,direction,
+                    unitAim!=0);
             // Dev: a gun-slaved turret's own shot against the traced point (legacy_sight_trace.inl). The shooter is
             // the firing weapon's OWNER: `unit` is the occupant (0x368B82 `mov ecx, esi` walks the gunner chain
             // +0x2A4 down to it), which never equals the turret the witness waits for.
-            LegacySightNoteTurretShot(GameTitle::Halo3,Halo3WeaponOwner(g_halo3FiringWeapon),origin,direction);
+            LegacySightNoteTurretShot(GameTitle::Halo3,owner,origin,direction);
         }
     }
     __finally {feature.callbacks.fetch_sub(1,std::memory_order_acq_rel);}
