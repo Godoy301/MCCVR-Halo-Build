@@ -633,11 +633,27 @@ uint32_t LegacyHalo3SeatTag()
            ((flags >> 4) & 1u ? kSeatTagStockChase : 0u) | 0x80000000u;
 }
 
-void LegacySightNoteStockLine(const seat_upstream::StockLineSample& sample, bool reaimed)
+// The evaluator's chase path, asked (halo3_independent_shots.inl, defined after this file).
+bool Halo3AskChaseCamera(int32_t unit, float position[3], float direction[3]);
+
+// `point`: the seat's P. For a stock third-person seat the chase line an unmodded host would trace is measured too.
+void LegacySightNoteStockLine(const seat_upstream::StockLineSample& sample, bool reaimed, const float point[3])
 {
     const uint32_t tag = LegacyHalo3SeatTag();
     if (!tag)
         return;
+    seat_upstream::StockLineSample host{};
+    bool unreproducible = false;
+    if (tag & kSeatTagStockChase)
+    {
+        const auto stock = seat_upstream::StockCameraFor(Halo3OccupiedSeatFlags());
+        float position[3]{}, direction[3]{};
+        if (stock == seat_upstream::StockCamera::NotReproducible)
+            unreproducible = true;
+        else if (stock == seat_upstream::StockCamera::Chase &&
+                 Halo3AskChaseCamera(LegacyCollisionIgnoredObject(GameTitle::Halo3), position, direction))
+            host = seat_upstream::MeasureStockLine(position, direction, point, nullptr);
+    }
     auto& w = g_legacyStockLines;
     AcquireSRWLockExclusive(&w.lock);
     seat_upstream::StockLineWindow* slot = nullptr;
@@ -658,6 +674,9 @@ void LegacySightNoteStockLine(const seat_upstream::StockLineSample& sample, bool
     }
     slot->tag = tag;
     slot->Add(sample);
+    slot->AddHost(host);
+    if (unreproducible)
+        ++slot->hostUnreproducible;
     if (reaimed)
         ++slot->reaimed;
     else if (sample.missMm < shot_lag::ReaimRails{}.minOffsetWu * shot_lag::kMmPerWu)
@@ -807,7 +826,7 @@ bool LegacySightReaimCrosshairQuery(GameTitle title, uint64_t flags, const float
     const bool reaimed = Sight_ReaimThroughPoint(title, SightShotSite::CrosshairAssist, start, out, point, seated);
 #if HALOMCCVR_DEV_DIAGNOSTICS
     if (stock.valid)
-        LegacySightNoteStockLine(stock, reaimed);
+        LegacySightNoteStockLine(stock, reaimed, intent.solvePoint);
 #endif
     return reaimed;
 }

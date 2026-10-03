@@ -772,6 +772,10 @@ struct Config
     // at the fire tick -- from this pass's camera, along the occupant's aim with the seat's learned velocity term --
     // passes through the point, and the host computes the same shot (src/common/seat_upstream_logic.h). The fire-site
     // re-aim stays as the local backstop. Gun-slaved seats (turret, Gauss) keep their own gun-offset path.
+    // 2 = the same, solved for the camera an UNMODDED host queries the seat from: in a seat whose stock tag is third
+    // person its CHASE camera (this machine's first-person seat patch clears that bit locally), asked of the
+    // evaluator's own chase path; this machine's own stock line then sits off the point by the chase offset and the
+    // fire-site re-aim carries the local shot. For multiplayer A/B (the dev SHOT UPSTREAM line measures both lines).
     // 0 = the record keeps the render-time solve, as before: the A/B arm for the dev SHOT UPSTREAM line. (default 1)
     int seat_upstream_aim = 1;
     // DEV BUILD ONLY (parsed and saved only in dev builds; the hooks are compiled out of player builds): 1 = log

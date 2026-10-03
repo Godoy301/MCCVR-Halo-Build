@@ -292,12 +292,31 @@ void TestStockLineWindow()
     w.tag = 1;
     w.Add(s);
     w.Add(s);
-    char line[512]{};
+    char line[1024]{};
     Check(w.Format("Halo 3", "hornet driver", line, sizeof(line)) > 0 && std::strstr(line, "mean 1000 mm") &&
               std::strstr(line, "SHOT UPSTREAM Halo 3 seat hornet driver"),
           "the dev line reads the stock line's miss");
     seat_upstream::StockLineWindow empty;
     Check(empty.Format("Halo 3", "x", line, sizeof(line)) == 0, "an empty window prints nothing");
+    // An unmodded host's chase line, measured beside ours (a stock third-person seat).
+    const float chaseStart[3]{-4.0f * kWuPerM, 0.0f, 1.5f * kWuPerM};
+    w.AddHost(seat_upstream::MeasureStockLine(chaseStart, vector, point, nullptr));
+    w.hostUnreproducible = 3;
+    Check(w.Format("Halo 3", "hornet 0 (driver)", line, sizeof(line)) > 0 &&
+              std::strstr(line, "an UNMODDED host's chase line") && std::strstr(line, "over 1") &&
+              std::strstr(line, "3 queries of a stock third-person seat"),
+          "the dev line carries the unmodded host's chase line and the unreproducible count");
+}
+
+void TestStockCamera()
+{
+    using seat_upstream::StockCamera;
+    Check(seat_upstream::StockCameraFor(0u) == StockCamera::SameAsHere, "a first-person seat: the same camera");
+    Check(seat_upstream::StockCameraFor(1u << 7) == StockCamera::SameAsHere, "gun-slaved alone: not third person");
+    Check(seat_upstream::StockCameraFor(1u << 4) == StockCamera::NotReproducible,
+          "third person by bit 4 alone: the chase path here would read the unit's own track");
+    Check(seat_upstream::StockCameraFor((1u << 4) | 1u) == StockCamera::Chase, "bit 0 keeps the seat's track");
+    Check(seat_upstream::StockCameraFor((1u << 4) | (1u << 2)) == StockCamera::Chase, "bit 2 keeps the seat's track");
 }
 } // namespace
 
@@ -308,6 +327,7 @@ int main()
     TestWriteRing();
     TestRecomposeSeat();
     TestStockLineWindow();
+    TestStockCamera();
     std::printf("%u checks, %u failures\n", checks, failures);
     return failures ? 1 : 0;
 }

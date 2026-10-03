@@ -240,6 +240,32 @@ struct WriteRing
     }
 };
 
+// ---- 3b. the camera an UNMODDED machine queries our seat from ------------------------------------------------------
+// The evaluator's path is the seat's decision (0x1326E8): a seat whose LOADED flags carry bit 4 (third person) takes
+// the chase path 0x2144C0 -- whose answer is the unit's camera position plus a camera-track offset (the seat's track,
+// evaluated at the aim's pitch by the spline helpers 0x214A54 / 0x2146C0, turned to the aim's heading) and the SAME
+// direction, the occupant's aiming vector +0x1AC (0x2145B2). C20 clears bit 4 in this machine's loaded tag while it
+// owns the seat's view; a host that runs no mod keeps it, and so does a modded host whose own player is not in that
+// seat. So for a stock third-person seat the host's crosshair line is ours shifted by the chase offset. The chase path
+// picks its camera track by the LIVE flags (`test byte [seat], 0x15`: bits 0, 2, 4), so asking it here reproduces the
+// stock answer only when bit 0 or 2 still selects the seat's track with bit 4 cleared.
+enum class StockCamera : uint8_t
+{
+    SameAsHere = 0,     // stock bit 4 clear: an unmodded host queries from the same first-person camera
+    Chase,              // stock third person, and the chase path reproduces it here
+    NotReproducible,    // stock third person, but only bit 4 selected the seat's track: asking here would answer the
+                        // unit's own track instead
+    Count
+};
+inline constexpr uint32_t kSeatThirdPersonBit = 1u << 4;
+inline constexpr uint32_t kSeatTrackBitsBesidesThirdPerson = (1u << 0) | (1u << 2);
+inline StockCamera StockCameraFor(uint32_t originalSeatFlags)
+{
+    if (!(originalSeatFlags & kSeatThirdPersonBit))
+        return StockCamera::SameAsHere;
+    return (originalSeatFlags & kSeatTrackBitsBesidesThirdPerson) ? StockCamera::Chase : StockCamera::NotReproducible;
+}
+
 // ---- 4. the seated record, recomposed so the stock query passes through P --------------------------------------
 enum class SeatRecompose : uint8_t
 {
@@ -377,6 +403,20 @@ struct StockLineWindow
     float missSum = 0.0f, missMax = 0.0f, angleSum = 0.0f, angleMax = 0.0f, rangeSum = 0.0f;
     float alongSum = 0.0f, acrossSum = 0.0f;
     uint32_t reaimed = 0, through = 0;   // what the fire-site re-aim then did with these queries
+    // A stock third-person seat: the chase line an unmodded host would trace instead (StockCamera::Chase), and the
+    // queries whose chase camera could not be reproduced here.
+    uint32_t hostN = 0, hostUnreproducible = 0;
+    float hostMissSum = 0.0f, hostMissMax = 0.0f, hostAngleSum = 0.0f, hostAngleMax = 0.0f;
+    void AddHost(const StockLineSample& s)
+    {
+        if (!s.valid)
+            return;
+        ++hostN;
+        hostMissSum += s.missMm;
+        hostMissMax = s.missMm > hostMissMax ? s.missMm : hostMissMax;
+        hostAngleSum += s.angleDeg;
+        hostAngleMax = s.angleDeg > hostAngleMax ? s.angleDeg : hostAngleMax;
+    }
     void Add(const StockLineSample& s)
     {
         if (!s.valid)
@@ -398,16 +438,37 @@ struct StockLineWindow
     {
         if (!out || !size || !n)
             return 0;
-        const int w = std::snprintf(
+        int w = std::snprintf(
             out, size,
-            "SHOT UPSTREAM %s seat %s (dev): %u stock crosshair queries before any fire-site re-aim (what an unmodded "
-            "host fires): P off the stock line mean %.0f mm (max %.0f), mean %.3f deg (max %.3f) at %.1f m; along the "
-            "camera's travel %+.0f mm, across %.0f mm (%u moving); the fire-site re-aim then acted %u, already "
-            "through %u",
+            "SHOT UPSTREAM %s seat %s (dev): %u stock crosshair queries before any fire-site re-aim (what a host "
+            "firing from our record traces from this camera): P off the stock line mean %.0f mm (max %.0f), mean "
+            "%.3f deg (max %.3f) at %.1f m; along the camera's travel %+.0f mm, across %.0f mm (%u moving); the "
+            "fire-site re-aim then acted %u, already through %u",
             title, seatName, n, double(missSum / float(n)), double(missMax), double(angleSum / float(n)),
             double(angleMax), double(rangeSum / float(n)), travel ? double(alongSum / float(travel)) : 0.0,
             travel ? double(acrossSum / float(travel)) : 0.0, travel, reaimed, through);
-        return w > 0 ? (static_cast<size_t>(w) < size ? static_cast<size_t>(w) : size - 1) : 0;
+        if (w <= 0)
+            return 0;
+        size_t used = static_cast<size_t>(w) < size ? static_cast<size_t>(w) : size - 1;
+        if (hostN && used + 1 < size)
+        {
+            w = std::snprintf(out + used, size - used,
+                              "; an UNMODDED host's chase line (stock third-person seat): P off it mean %.0f mm (max "
+                              "%.0f), mean %.3f deg (max %.3f) over %u",
+                              double(hostMissSum / float(hostN)), double(hostMissMax),
+                              double(hostAngleSum / float(hostN)), double(hostAngleMax), hostN);
+            if (w > 0)
+                used += static_cast<size_t>(w) < size - used ? static_cast<size_t>(w) : size - used - 1;
+        }
+        if (hostUnreproducible && used + 1 < size)
+        {
+            w = std::snprintf(out + used, size - used,
+                              "; %u queries of a stock third-person seat whose chase camera cannot be reproduced here",
+                              hostUnreproducible);
+            if (w > 0)
+                used += static_cast<size_t>(w) < size - used ? static_cast<size_t>(w) : size - used - 1;
+        }
+        return used;
     }
 };
 

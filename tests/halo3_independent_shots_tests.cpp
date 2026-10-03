@@ -64,8 +64,11 @@ using Fire=uint64_t(__fastcall*)(uint32_t,int16_t,void*,int32_t,uint8_t);
 using Aim=void(__fastcall*)(uint32_t,float*,float*,uint64_t,float*,uint8_t,uint8_t);
 using Query=void(__fastcall*)(int32_t,uint8_t,float*,int16_t,float*,void*);
 using Camera=int32_t(__fastcall*)(uint32_t,float*,float*);
+// The evaluator's chase path (seat_upstream_logic.h StockCamera): bound only from a matching evaluator branch.
+using Halo3ChaseCameraFn=void(__fastcall*)(uint32_t,float*,float*);
 static struct
 {
+    std::atomic<Halo3ChaseCameraFn> chaseCamera{nullptr};
     uintptr_t base=imageBase;uint32_t generation=7;uint64_t installedAtMs=1;
     Fire fireOriginal{};Aim aimOriginal{};Query queryOriginal{};Camera cameraOriginal{};
     void* fireTarget{},*aimTarget{},*queryTarget{},*cameraTarget{};

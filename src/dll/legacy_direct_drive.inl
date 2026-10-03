@@ -1561,6 +1561,7 @@ std::atomic<uint32_t> g_legacySeatRecomposeMilliDeg{0}, g_legacySeatRecomposeMax
 // The gain learner's samples since the last report, and its state (sim thread writes; the report reads).
 std::atomic<uint32_t> g_legacySeatGainUsed{0}, g_legacySeatGainSlow{0}, g_legacySeatGainUnpaired{0};
 std::atomic<uint32_t> g_legacySeatCameraPath[3]{};   // this pass's camera: first person, chase, other/none
+std::atomic<uint32_t> g_legacySeatStockCamera[2]{};  // seat_upstream_aim 2: the stock chase camera used / not available
 std::atomic<float> g_legacySeatGain{0.0f};
 std::atomic<bool> g_legacySeatGainLearned{false};
 struct LegacySeatUpstream
@@ -1646,6 +1647,23 @@ LegacySeatRecomposeWhy LegacyDriveRecomposeSeated(int slot, const LegacyDrivePub
     const bool learned = s.fit.Learned(seat_upstream::kGainMinWeight);
     g_legacySeatGain.store(s.fit.Gain(), std::memory_order_relaxed);
     g_legacySeatGainLearned.store(learned, std::memory_order_relaxed);
+    // seat_upstream_aim 2 (dev): solve for the camera an UNMODDED host queries this seat from -- in a stock
+    // third-person seat its chase camera, asked of the evaluator's own chase path now (StockCamera::Chase); the line
+    // has the same direction, so only the camera moves. Not reproducible here, or not answered: this pass's camera,
+    // counted.
+    if (ours && g_config.seat_upstream_aim == 2)
+    {
+        const auto stock = seat_upstream::StockCameraFor(Halo3OccupiedSeatFlags());
+        float chasePosition[3]{}, chaseDirection[3]{};
+        if (stock == seat_upstream::StockCamera::Chase &&
+            Halo3AskChaseCamera(localUnit, chasePosition, chaseDirection))
+        {
+            memcpy(camera, chasePosition, sizeof(camera));
+            g_legacySeatStockCamera[0].fetch_add(1, std::memory_order_relaxed);
+        }
+        else if (stock != seat_upstream::StockCamera::SameAsHere)
+            g_legacySeatStockCamera[1].fetch_add(1, std::memory_order_relaxed);
+    }
     // THE RECORD.
     seat_upstream::SeatRecomposeInput in{};
     in.enabled = g_config.seat_upstream_aim != 0 && Sight_AimEnabled();
@@ -2365,11 +2383,15 @@ void LegacyDriveReport()
                 LOG("SHOT RECORD Halo 3 seated: %u stick writes recomposed so the stock crosshair line at the fire "
                     "tick passes through the point (what a multiplayer host fires; mean %.2f deg from the solve, max "
                     "%.2f), %u kept as solved%s%s%s; this pass's camera first person %u, chase %u, none %u; velocity "
-                    "gain %s (1/g %.0f m/s; samples used %u, too slow %u, unpaired %u)",
+                    "gain %s (1/g %.0f m/s; samples used %u, too slow %u, unpaired %u); solved for %s camera (stock "
+                    "chase camera used %u, not available %u)",
                     recomposed, recomposed ? double(seatSum) / 1000.0 / double(recomposed) : 0.0,
                     double(seatMax) / 1000.0, seatTotal - recomposed, length ? " (" : "", length ? kept : "",
                     length ? ")" : "", paths[0], paths[1], paths[2], learned ? "learned" : "not yet learned (g = 0 used)",
-                    std::fabs(gain) > 1.0e-9f ? double(shot_lag::kMetresPerWu / gain) : 0.0, used, slow, unpaired);
+                    std::fabs(gain) > 1.0e-9f ? double(shot_lag::kMetresPerWu / gain) : 0.0, used, slow, unpaired,
+                    g_config.seat_upstream_aim == 2 ? "an unmodded host's" : "this machine's",
+                    g_legacySeatStockCamera[0].exchange(0, std::memory_order_relaxed),
+                    g_legacySeatStockCamera[1].exchange(0, std::memory_order_relaxed));
             }
         }
         {
