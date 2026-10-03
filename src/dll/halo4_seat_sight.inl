@@ -795,6 +795,47 @@ void Halo4SightTraceSeated(uint32_t unit, void* instance)
         Sight_PublishTrace(kTitle, generation, result.hit, result.hit ? result.rangeWu : 0.0f, cost);
         f.published.fetch_add(1, std::memory_order_relaxed);
     }
+    // DEV ASSESSMENT (honest_reticle_assess): the game's own aim from the seat's eye (the ray the native seated
+    // assist's crosshair trace runs along), looking past our own vehicle exactly as the intent trace does. Only
+    // while the key published one; nothing the aim reads moves.
+    SightAssessRay assess{};
+    if (Sight_ReadAssessRay(kTitle, generation, kSightRayFreshMs, assess))
+    {
+        const auto assessTrace = [&](float alongWu, float remainingWu) {
+            halo4_seat_aim::TracePass pass{};
+            Halo4PhysicsRayCastInput input{};
+            Halo4PhysicsRayCastResult output{};
+            input.profile = 0x1A;
+            memcpy(&input.collisionFlags, &collisionFlags, sizeof(collisionFlags));
+            for (int axis = 0; axis < 3; ++axis)
+            {
+                input.start[axis] = assess.origin[axis] + assess.dir[axis] * alongWu;
+                input.end[axis] = input.start[axis] + assess.dir[axis] * remainingWu;
+            }
+            for (int i = 0; i < chainCount; ++i)
+                input.ignoredObjects[i] = chain[i];
+            input.ignoredObjectCount = static_cast<uint8_t>(chainCount);
+            input.resultOptions[0] = 1;
+            bool returned = false;
+            pass.completed = Halo4SeatGuardedRayCast(&input, &output, returned);
+            pass.hit = returned;
+            pass.fraction = output.fraction;
+            pass.object = output.type == 4 ? output.objectIndex : -1;
+            return pass;
+        };
+        const auto assessResult = halo4_seat_aim::TraceLookingPast(kSightTraceLengthWu, kSightTraceSkipWu,
+            kLegacySightSelfStepWu, kLegacySightSelfPasses, root, chain, chainCount, assessTrace, Halo4SightRootOf);
+        if (!assessResult.completed)
+        {
+            Sight_NoteTraceFault(kTitle);
+            f.faults.fetch_add(1, std::memory_order_relaxed);
+            LOG("SIGHT Halo 4 seated assessment trace: the native ray raised a fault; the trace stays off until the "
+                "title reinstalls");
+            return;
+        }
+        Sight_PublishAssessTrace(kTitle, generation, assessResult.hit,
+                                 assessResult.hit ? assessResult.rangeWu : 0.0f);
+    }
 }
 
 // ---- the shot witness (0x1DCB8C's exit, the fire routine's call only) --------------------------------------
@@ -1409,8 +1450,12 @@ void Halo4SeatSightClaimWitness(const Halo4SeatSightPoll& seat, const float poin
 // parallax between H, E and the barrel). honestDir: from the rendered head H to where that shot is at the range.
 // False -- the caller keeps the game's aim -- for a turret (the game's aim is its barrel), or with the shot
 // line, the assist or the eye unknown.
+// `aimRangeWu` > 0: the native trace's range IS known -- the dev assessment's own trace along the game's aim from
+// the seat's eye (Sight_ReadAssessTrace) -- and is used instead of the converged point's. `shotPoint`, when given,
+// receives the point the shot reaches, Q = B + shot * |T - B| (world units), so the assessment can draw it at its
+// own depth.
 bool Halo4SeatSightHonestAlongAim(const Halo4SeatSightPoll& seat, const float point[3], const float aimForward[3],
-                                  float honestDir[3])
+                                  float honestDir[3], float aimRangeWu = 0.0f, float* shotPoint = nullptr)
 {
     using halo4_seat_aim::Vec3;
     if (seat.turret || !seat.shotKnown || !seat.assistKnown || !seat.eyeKnown || !point || !aimForward)
@@ -1420,7 +1465,8 @@ bool Halo4SeatSightHonestAlongAim(const Halo4SeatSightPoll& seat, const float po
     if (!halo4_seat_aim::Normalize({aimForward[0], aimForward[1], aimForward[2]}, aim))
         return false;
     const Vec3 toPoint = halo4_seat_aim::Sub({point[0], point[1], point[2]}, eye);
-    const float range = std::sqrt(halo4_seat_aim::Dot(toPoint, toPoint));
+    const float range = std::isfinite(aimRangeWu) && aimRangeWu > 0.0f ? aimRangeWu
+                                                                        : std::sqrt(halo4_seat_aim::Dot(toPoint, toPoint));
     if (!std::isfinite(range) || !(range > 1.0e-3f))
         return false;
     const Vec3 target = halo4_seat_aim::Add(eye, halo4_seat_aim::Scale(aim, range));
@@ -1432,6 +1478,18 @@ bool Halo4SeatSightHonestAlongAim(const Halo4SeatSightPoll& seat, const float po
         !halo4_seat_aim::ShotReticleDirection({seat.head[0], seat.head[1], seat.head[2]}, barrelOrigin,
                                               verdict.shot, target, dir))
         return false;
+    if (shotPoint)
+    {
+        Vec3 shot{};
+        const Vec3 toTarget = halo4_seat_aim::Sub(target, barrelOrigin);
+        const float reach = std::sqrt(halo4_seat_aim::Dot(toTarget, toTarget));
+        if (!halo4_seat_aim::Normalize(verdict.shot, shot) || !std::isfinite(reach))
+            return false;
+        const Vec3 q = halo4_seat_aim::Add(barrelOrigin, halo4_seat_aim::Scale(shot, reach));
+        shotPoint[0] = q.x;
+        shotPoint[1] = q.y;
+        shotPoint[2] = q.z;
+    }
     honestDir[0] = dir.x;
     honestDir[1] = dir.y;
     honestDir[2] = dir.z;

@@ -137,6 +137,53 @@ bool ReachSightGuardedTrace(LegacyCollisionTestVectorFn original, uint64_t flags
     g_legacyCollisionOwnedQuery = previousOwned;
     return true;
 }
+
+#if HALOMCCVR_DEV_DIAGNOSTICS
+// DEV ASSESSMENT (honest_reticle_assess; sight_layer.h SightAssessRay): trace the game's OWN aim ray -- from its
+// shot origin along its aim -- with the same native query, flags and ignores the caller's intent trace just used,
+// looking past any other part of our own vehicle (`isOurs`) as that trace does, so the assessment reticle sits on
+// the surface the shot meets. An owned query like the intent trace (the engine-trace witnesses never see it). For
+// collision_test_vector titles: Reach, Halo 3, ODST. False on a native fault (the caller latches its trace off).
+template <class IsOurs>
+bool SightAssessTraceVector(LegacyCollisionTestVectorFn original, uint64_t flags, int32_t mode,
+                            const SightAssessRay& ray, float traceLengthWu, float skipWu, float selfStepWu, int passes,
+                            int32_t ignoreA, int32_t ignoreB, int32_t ignoreC, IsOurs isOurs, bool& hit,
+                            float& rangeWu)
+{
+    alignas(16) uint8_t result[0x400]{};
+    hit = false;
+    rangeWu = 0.0f;
+    float alongWu = skipWu;   // where this pass starts, measured from the shot origin
+    for (int pass = 0; pass < passes; ++pass)
+    {
+        const float remainingWu = traceLengthWu - (alongWu - skipWu);
+        if (!(remainingWu > 0.0f))
+            break;
+        const float start[3]{ray.origin[0] + ray.dir[0] * alongWu, ray.origin[1] + ray.dir[1] * alongWu,
+                             ray.origin[2] + ray.dir[2] * alongWu};
+        const float vector[3]{ray.dir[0] * remainingWu, ray.dir[1] * remainingWu, ray.dir[2] * remainingWu};
+        memset(result, 0, sizeof(result));
+        uint8_t returned = 0;
+        if (!ReachSightGuardedTrace(original, flags, mode, start, vector, ignoreA, ignoreB, ignoreC, result,
+                                    returned, false))
+            return false;
+        float fraction = 0.0f;
+        memcpy(&fraction, result + 4, sizeof(fraction));
+        hit = returned && std::isfinite(fraction) && fraction >= 0.0f && fraction <= 1.0f;
+        if (!hit)
+            break;
+        rangeWu = alongWu + fraction * remainingWu;
+        int32_t object = -1;
+        memcpy(&object, result + 0x40, sizeof(object));
+        if (!isOurs(object))
+            break;
+        hit = false;
+        rangeWu = 0.0f;
+        alongWu += fraction * remainingWu + selfStepWu;
+    }
+    return true;
+}
+#endif
 // The range is smoothed over 120 ms in the provider, so ~30 Hz measures it fully.
 inline constexpr uint64_t kReachSightTraceIntervalMs = 30;
 
@@ -628,6 +675,29 @@ void ReachSightTraceTick(uint32_t unit)
     trace.hitType.store(type, std::memory_order_relaxed);
     trace.rangeWu.store(rangeWu, std::memory_order_relaxed);
     trace.sequence.fetch_add(1, std::memory_order_release);
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    // DEV ASSESSMENT (honest_reticle_assess): the game's own aim ray from Reach's engine eye, in this same tick and
+    // with these same ignores. Only while the key published one; nothing the aim reads moves.
+    {
+        const uint32_t assessGeneration = TitleAdapter_GetGeneration(GameTitle::HaloReach);
+        SightAssessRay assess{};
+        if (Sight_ReadAssessRay(GameTitle::HaloReach, assessGeneration, kSightRayFreshMs, assess))
+        {
+            bool assessHit = false;
+            float assessRangeWu = 0.0f;
+            const auto isOurs = [&](int32_t object) { return object != -1 && ReachSightRootOf(object) == root; };
+            if (!SightAssessTraceVector(original, flags, mode, assess, traceLengthWu, kReachSightTraceSkipWu,
+                                        kReachSightSelfStepWu, seated ? kReachSightSelfPasses : 1, ignoreA, ignoreB,
+                                        ignoreC, isOurs, assessHit, assessRangeWu))
+            {
+                trace.faulted.store(true, std::memory_order_release);   // fail closed, as the intent trace does
+                return;
+            }
+            Sight_PublishAssessTrace(GameTitle::HaloReach, assessGeneration, assessHit,
+                                     assessHit ? assessRangeWu : 0.0f);
+        }
+    }
+#endif
 }
 
 // ---- shot check (dev): does the native shot actually pass through the traced point? ---------------

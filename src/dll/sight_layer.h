@@ -168,6 +168,27 @@ void Sight_NoteMuzzleShotHeld(GameTitle title);
 // Cold worker: one status line per title that is tracing, every 2 s.
 void Sight_Report();
 
+#if HALOMCCVR_DEV_DIAGNOSTICS
+// DEV ASSESSMENT RAY (honest_reticle_assess; dev builds only, src/common/assess_reticle_logic.h). The reticle the
+// assessment draws is the point the game's shot really reaches: from the game's own shot origin along the game's
+// own aim, to the first surface. The aim path publishes that ray here (only while the key draws this title); the
+// title's simulation-thread trace, in the same tick and with the same ignores as the intent ray, traces it too
+// and publishes the result in a slot of its own. Nothing else reads either: the intent ray, its trace, the
+// smoothed range the aim converges on, the scope, the shots and the writes are untouched.
+struct SightAssessRay
+{
+    uint32_t generation = 0;
+    uint64_t sampleMs = 0;
+    float origin[3]{};   // the game's shot origin (the engine eye on foot; the seat's eye in a seat)
+    float dir[3]{};      // unit, the game's own aim
+};
+void Sight_PublishAssessRay(GameTitle title, const SightAssessRay& ray);
+bool Sight_ReadAssessRay(GameTitle title, uint32_t generation, uint64_t maxAgeMs, SightAssessRay& out);
+// rangeWu: from the ray's origin; on a miss the caller passes 0 and a read reports the trace's far end.
+void Sight_PublishAssessTrace(GameTitle title, uint32_t generation, bool hit, float rangeWu);
+bool Sight_ReadAssessTrace(GameTitle title, uint32_t generation, uint64_t maxAgeMs, bool& hit, float& rangeWu);
+#endif
+
 // CONVERGE-OFF WITNESS (dev; empty stubs in player builds, converge_policy.h). Natural in-game limits never
 // switch the converged aim off any more (2026-10-01); these lines are how a headset session proves it.
 // Sight_NoteConvergeState: each aim poll in gameplay (Halo 3, ODST and Halo 4 from Game_ComputeAimStick,
