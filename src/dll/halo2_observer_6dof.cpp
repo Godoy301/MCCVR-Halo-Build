@@ -3792,7 +3792,7 @@ namespace
         const uint64_t now = GetTickCount64();
         if (Sight_TraceFaulted(kTitle) ||
             !g_halo2WorldCollision.installed.load(std::memory_order_acquire) ||
-            !Sight_TraceDue(kTitle, now))
+            !Sight_TraceDue(kTitle, Sight_NowMs()))
             return;
         const uint32_t generation = g_generation.load(std::memory_order_acquire);
         Halo2ObserverPosePublication publication{};
@@ -3817,7 +3817,7 @@ namespace
         {
             SightRay ray{};
             ray.generation = generation;
-            ray.sampleMs = now;
+            ray.sampleMs = Sight_NowMs();
             ray.unit = static_cast<int32_t>(unit);
             for (int axis = 0; axis < 3; ++axis)
             {
@@ -4562,8 +4562,12 @@ namespace
         }
         // The firing assist aims at the point `distance` along the shot: the converged point itself, from the
         // same trace sample the direction was built from.
-        return Sight_AimMuzzleShotFromRay(GameTitle::Halo2, TitleAdapter_GetGeneration(GameTitle::Halo2), head,
-                                          dir, eye, before, position, direction, up, &distance);
+        const bool aimed = Sight_AimMuzzleShotFromRay(GameTitle::Halo2, TitleAdapter_GetGeneration(GameTitle::Halo2),
+                                                      head, dir, eye, before, position, direction, up, &distance);
+        if (aimed)   // dev SHOT LAG: the muzzle shot against the point it was aimed through
+            Sight_NoteShotLagFromRay(GameTitle::Halo2, SightShotPath::Muzzle, position, direction, head, dir, eye,
+                                     false);
+        return aimed;
     }
 
     #include "halo2_dual_wield_runtime.inl"

@@ -77,6 +77,8 @@ bool ApplyMuzzleMarker(uint32_t object,int16_t count,void* markers,int16_t capac
             if(!Sight_AimMuzzleShotFromRay(GameTitle::HaloCE,TitleAdapter_GetGeneration(GameTitle::HaloCE),h,d,e,
                 receipt.ray.position,&shot.position.x,through,receipt.ray.up))return false;
             shot.direction={through[0],through[1],through[2]};
+            // Dev SHOT LAG: the muzzle shot against the point it was aimed through.
+            Sight_NoteShotLagFromRay(GameTitle::HaloCE,SightShotPath::Muzzle,&shot.position.x,through,h,d,e,false);
         }
     }
     alignas(8) unsigned char target[0x10]{};Vec3 control{};shot.query=true;

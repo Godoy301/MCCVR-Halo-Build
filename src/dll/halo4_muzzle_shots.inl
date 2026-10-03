@@ -253,7 +253,12 @@ __declspec(noinline) void __fastcall Halo4MuzzleAimDetour(uint32_t unit,float* o
         {
             Halo4VehicleInputState seat{};
             if(Halo4ReadVehicleInput(seat)&&seat.unit==unit&&!seat.seated)
+            {
                 Sight_NoteShot(GameTitle::Halo4,TitleAdapter_GetGeneration(GameTitle::Halo4),origin,direction);
+                // SHOT LAG: from the muzzle when this shot was taken over, else the game's own aim.
+                Sight_NoteShotLagFromIntent(GameTitle::Halo4,owned?SightShotPath::Muzzle:SightShotPath::Native,
+                    origin,direction,-1,false,-1);
+            }
             // Seated (halo4_seat_sight.inl): the local occupant aims this shot (the assist exit measures it), or
             // our own vehicle does (no assist at all); either way the shot form records the unit-aim flag this
             // call was handed (after an owned substitution cleared it), which picks the line the assist turns.
