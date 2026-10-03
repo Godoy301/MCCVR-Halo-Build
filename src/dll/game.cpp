@@ -1796,6 +1796,11 @@ namespace
     // A look-steered driver's gun band (halo3_vehicle_gun_band.inl): anchors only, no hook.
     bool InstallHalo3GunBand(uintptr_t base, size_t size, uint32_t generation);
     void RemoveHalo3GunBand();
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    // The firing assist witness (dev; halo3_assist_witness.inl): a hook on 0x13BAD0, witness only.
+    void InstallHalo3AssistWitness(uintptr_t base, size_t size);
+    bool RemoveHalo3AssistWitness();
+#endif
     bool DisableAndRemoveHalo3ContactMelee();
     void ReportHalo3ContactMelee();
     void Halo3PublishContactHand(int hand,const FpInterpolationContext& context,
@@ -15697,6 +15702,9 @@ namespace
         // before any new module can overwrite its target/original pair.
         if (!RemoveHalo3Avatar()) return false;
         if (!RemoveHalo3WeaponHaptics()) return false;
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        if (!RemoveHalo3AssistWitness()) return false;
+#endif
         if (!RemoveHalo3DualAim()) return false;
         RemoveHalo3GunBand();
         if (!LegacyDriveRemove(GameTitle::Halo3)) return false;
@@ -16620,6 +16628,9 @@ namespace
         (void)InstallHalo3DualAim(base,size,runtimeGeneration);
         // A look-steered driver's gun band (halo3_vehicle_gun_band.inl): anchors only, no hook; fails closed alone.
         (void)InstallHalo3GunBand(base,size,runtimeGeneration);
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        InstallHalo3AssistWitness(base,size);   // SHOT Halo 3 assist (dev): the turn, cap hits, residual
+#endif
 
         uintptr_t renderHit = sig::Find(base, size, kRenderViewSig);
         uintptr_t prepareHit = sig::Find(base, size, kPrepareViewSig);
@@ -26673,6 +26684,7 @@ namespace
     #include "halo3_vehicle_gun_band.inl"
     #include "halo3_physical_crouch.inl"
     #include "halo3_dual_wield_runtime.inl"
+    #include "halo3_assist_witness.inl"
     #include "halo3_weapon_haptics.inl"
     #include "halo3_avatar.inl"
     #include "odst_contact_melee_runtime.inl"
@@ -51927,6 +51939,9 @@ void GunAimReport()
         return;
     s_last = now;
     Halo3GunBandReport();   // SEAT LIMIT Halo 3 gun band: the driver's guns learned / animated / no weapon angle
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    Halo3AssistWitnessReport();   // SHOT Halo 3 assist (dev)
+#endif
     auto& n = g_gunOffsetNotes;
     static uint32_t s_seenSeq = 0;
     const uint32_t seq = n.seq.load(std::memory_order_acquire);
