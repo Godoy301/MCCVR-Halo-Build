@@ -314,7 +314,98 @@ struct LegacyEngineTraceWindow
     std::atomic<float> startAlongMm{0.0f}, startRightMm{0.0f}, startUpMm{0.0f};
 };
 LegacyEngineTraceWindow g_legacyEngineTrace[2];   // [0] Halo 3, [1] ODST
+
+// ---- the turret's own shots (dev, Halo 3): does the GUN's shot line pass through the traced point? ----------------
+// In a gun-slaved seat (flag bit 7) the camera is the gun's marker, so the solve's eye is that marker -- but the shot
+// leaves the BARREL, along the gun's own aim. The firing call's final (origin, direction) is compared with the point
+// the intent ray hit: the miss off the shot's line, the range, the shot's start relative to the solve's eye (a large
+// offset means a parallel miss no aim angle can fix -- the case for a muzzle-origin solve), and the shot's angle off
+// the eye -> point direction. Shots while the gun is still slewing onto the writes are counted apart: those miss by
+// design. The input thread publishes the seat (the turret vehicle that fires) every gun-slaved poll.
+struct LegacyTurretShotWindow
+{
+    std::atomic<uint32_t> shots{0}, settled{0}, noPoint{0};
+    std::atomic<uint32_t> maxMissSettledBits{0}, maxMissSlewingBits{0};
+    std::atomic<float> missMm{0.0f}, rangeM{0.0f}, angleDeg{0.0f};
+    std::atomic<float> startAlongMm{0.0f}, startRightMm{0.0f}, startUpMm{0.0f};
+};
+LegacyTurretShotWindow g_legacyTurretShots;
+std::atomic<int32_t> g_legacyTurretShotParent{-1};
+std::atomic<uint64_t> g_legacyTurretShotSeatMs{0};
+std::atomic<bool> g_legacyTurretShotGunSettled{false};
 #endif
+
+// Input thread, every poll of a Halo 3 gun-slaved seat: the turret vehicle (it fires the gun) and whether the gun has
+// settled on the writes.
+void LegacySightPublishTurretSeat(int32_t parentHandle, bool gunSettled)
+{
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    g_legacyTurretShotParent.store(parentHandle, std::memory_order_relaxed);
+    g_legacyTurretShotGunSettled.store(gunSettled, std::memory_order_relaxed);
+    g_legacyTurretShotSeatMs.store(GetTickCount64(), std::memory_order_release);
+#else
+    (void)parentHandle; (void)gunSettled;
+#endif
+}
+
+// The firing call (Halo 3's native weapon fire, after its final ray): one shot of `unit`.
+void LegacySightNoteTurretShot(GameTitle title, uint32_t unit, const float* origin, const float* direction)
+{
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    if (title != GameTitle::Halo3 || !origin || !direction)
+        return;
+    const uint64_t at = g_legacyTurretShotSeatMs.load(std::memory_order_acquire);
+    const uint64_t now = GetTickCount64();
+    const int32_t parent = g_legacyTurretShotParent.load(std::memory_order_relaxed);
+    if (!at || now < at || now - at > 250 || parent == -1 || static_cast<int32_t>(unit) != parent)
+        return;
+    auto& w = g_legacyTurretShots;
+    w.shots.fetch_add(1, std::memory_order_relaxed);
+    const uint32_t generation = TitleAdapter_GetGeneration(title);
+    SightRay ray{};
+    SightTrace trace{};
+    if (!Sight_ReadRay(title, generation, kSightRayFreshMs, ray) ||
+        !Sight_ReadTrace(title, generation, kSightFreshMs, trace))
+    {
+        w.noPoint.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    const float dl = std::sqrt(direction[0] * direction[0] + direction[1] * direction[1] + direction[2] * direction[2]);
+    if (!std::isfinite(dl) || dl < 1.0e-6f)
+        return;
+    const float d[3]{direction[0] / dl, direction[1] / dl, direction[2] / dl};
+    const float range = trace.AimRangeWu();
+    const float p[3]{ray.head[0] + ray.dir[0] * range, ray.head[1] + ray.dir[1] * range,
+                     ray.head[2] + ray.dir[2] * range};
+    const float v[3]{p[0] - origin[0], p[1] - origin[1], p[2] - origin[2]};
+    const float c[3]{v[1] * d[2] - v[2] * d[1], v[2] * d[0] - v[0] * d[2], v[0] * d[1] - v[1] * d[0]};
+    const float toMm = 3048.0f;   // 1 world unit = 3.048 m
+    const float miss = std::sqrt(c[0] * c[0] + c[1] * c[1] + c[2] * c[2]) * toMm;
+    const bool settled = g_legacyTurretShotGunSettled.load(std::memory_order_relaxed);
+    if (settled)
+        w.settled.fetch_add(1, std::memory_order_relaxed);
+    aim_caller::AtomicMaxFloat(settled ? w.maxMissSettledBits : w.maxMissSlewingBits, miss);
+    w.missMm.store(miss, std::memory_order_relaxed);
+    w.rangeM.store(std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]) * 3.048f, std::memory_order_relaxed);
+    const float a[3]{p[0] - ray.eye[0], p[1] - ray.eye[1], p[2] - ray.eye[2]};
+    const float al = std::sqrt(a[0] * a[0] + a[1] * a[1] + a[2] * a[2]);
+    float dot = al > 1.0e-6f ? (a[0] * d[0] + a[1] * d[1] + a[2] * d[2]) / al : 1.0f;
+    dot = dot > 1.0f ? 1.0f : (dot < -1.0f ? -1.0f : dot);
+    w.angleDeg.store(std::acos(dot) * 57.29578f, std::memory_order_relaxed);
+    float right[3]{d[1], -d[0], 0.0f};
+    float rl = std::sqrt(right[0] * right[0] + right[1] * right[1]);
+    if (!(rl > 1.0e-4f)) { right[0] = 1.0f; right[1] = 0.0f; rl = 1.0f; }
+    right[0] /= rl; right[1] /= rl;
+    const float up[3]{right[1] * d[2] - right[2] * d[1], right[2] * d[0] - right[0] * d[2],
+                      right[0] * d[1] - right[1] * d[0]};
+    const float se[3]{origin[0] - ray.eye[0], origin[1] - ray.eye[1], origin[2] - ray.eye[2]};
+    w.startAlongMm.store((se[0] * d[0] + se[1] * d[1] + se[2] * d[2]) * toMm, std::memory_order_relaxed);
+    w.startRightMm.store((se[0] * right[0] + se[1] * right[1] + se[2] * right[2]) * toMm, std::memory_order_relaxed);
+    w.startUpMm.store((se[0] * up[0] + se[1] * up[1] + se[2] * up[2]) * toMm, std::memory_order_relaxed);
+#else
+    (void)title; (void)unit; (void)origin; (void)direction;
+#endif
+}
 
 void LegacySightNoteEngineTrace(GameTitle title, uint64_t flags, const float* start, const float* vector,
                                 uintptr_t caller)
@@ -438,6 +529,21 @@ void LegacySightReport()
             double(window.missMm.load()), double(window.maxMissMm.exchange(0.0f)), double(window.rangeM.load()),
             double(window.angleDeg.load()), double(window.startAlongMm.load()),
             double(window.startRightMm.load()), double(window.startUpMm.load()));
+    }
+    {
+        auto& w = g_legacyTurretShots;
+        const uint32_t shots = w.shots.exchange(0, std::memory_order_relaxed);
+        if (shots)
+            LOG("SIGHT Halo 3 turret shots (dev): %u shots of the gun-slaved seat's gun (%u with the gun settled on "
+                "the writes, %u with no fresh traced point); the point is %.0f mm off the shot's line (max settled "
+                "%.0f, max while slewing %.0f) at %.2f m; the shot's line vs eye->point %.2f deg; its start minus "
+                "the solve's eye (the gun's camera marker) [along,right,up] %.0f,%.0f,%.0f mm",
+                shots, w.settled.exchange(0, std::memory_order_relaxed),
+                w.noPoint.exchange(0, std::memory_order_relaxed), double(w.missMm.load()),
+                double(aim_caller::BitsToFloat(w.maxMissSettledBits.exchange(0, std::memory_order_relaxed))),
+                double(aim_caller::BitsToFloat(w.maxMissSlewingBits.exchange(0, std::memory_order_relaxed))),
+                double(w.rangeM.load()), double(w.angleDeg.load()), double(w.startAlongMm.load()),
+                double(w.startRightMm.load()), double(w.startUpMm.load()));
     }
 #endif
 }

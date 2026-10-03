@@ -52206,7 +52206,6 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
             // and the mark no longer follow it, nor the game's aim trailing the writes downstream of the record (a
             // gun's rate cap, an aiming clip), nor a turret. Counted for the dev line, decided on by nothing.
             natural.latchHeld = seatWritten.any() && LegacyDriveSeatLimited(driveTitle);
-            natural.turretSlew = seatWritten.any() && !halo4Aim && OccupiedTurretSeat();
             {
                 // The game's aim against the nearer of the hook's last two writes, never this poll's target (the
                 // aim trails the newest write by up to a tick): a miss held there is downstream of the record.
@@ -52214,6 +52213,33 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
                 bool writtenValid[2]{};
                 const bool haveWrites = seatWritten.any() &&
                     LegacyDriveSeatWrites(driveTitle, writtenYaw, writtenPitch, writtenValid);
+                // A TURRET's gun slews onto the writes at its own rate, so its line is off the point while it
+                // travels -- by design, not a miss of the solve. Until 2026-10-02 every turret poll was skipped, so
+                // a turret's shot line was never measured; now the gun counts as slewing only until it has SETTLED
+                // (within 1 deg of the nearer of the last two writes for 120 ms), and the engine-crosshair witness
+                // scores it from then on.
+                static gun_slaved::GunSettle s_turretSettle;
+                const bool turretNow = seatWritten.any() && !halo4Aim && (OccupiedTurretSeat() || gunSlavedSeat);
+                bool gunSettled = false;
+                if (turretNow && haveWrites && seatWritten.yaw && seatWritten.pitch)
+                {
+                    float gunMiss = gun_slaved::AngleBetweenDeg(aimYaw, aimPitch, writtenYaw[0], writtenPitch[0]);
+                    if (writtenValid[1])
+                        gunMiss = std::fmin(gunMiss, gun_slaved::AngleBetweenDeg(aimYaw, aimPitch, writtenYaw[1],
+                                                                                writtenPitch[1]));
+                    gunSettled = s_turretSettle.step(gunMiss / 57.2957795f, GetTickCount64());
+                }
+                else
+                {
+                    s_turretSettle.reset();
+                }
+                natural.turretSlew = turretNow && !gunSettled;
+                if (gunSlavedSeat && !halo4Aim)
+                {
+                    LegacyDriveTurretWitness(driveTitle, aimYaw, aimPitch, desiredPitch, s_turretSettle);
+                    if (driveTitle == GameTitle::Halo3)
+                        LegacySightPublishTurretSeat(gunSlavedParent, gunSettled);
+                }
                 static seat_drive::OutcomeGate s_seatYawWitness, s_seatOutcomeWitness;
                 if (seatWritten.yaw && !seatWritten.pitch && haveWrites)
                 {

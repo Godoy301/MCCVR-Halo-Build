@@ -323,8 +323,12 @@ __declspec(noinline) void __fastcall Halo3IndependentAimDetour(uint32_t unit,
         // Publish once per actual shot invocation, after the final ray is
         // decided, whether or not the mod substituted it.
         if(firingCall)
+        {
             PublishHalo3ShotDiagnostic(unit,origin,direction,substituted,
                 project!=0,unitAim!=0);
+            // Dev: a gun-slaved turret's own shot against the traced point (legacy_sight_trace.inl).
+            LegacySightNoteTurretShot(GameTitle::Halo3,unit,origin,direction);
+        }
     }
     __finally {feature.callbacks.fetch_sub(1,std::memory_order_acq_rel);}
 }
