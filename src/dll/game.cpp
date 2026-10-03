@@ -1876,6 +1876,11 @@ namespace
         const float* vector, int32_t ignoredA);
     void ReachSightNoteEngineTrace(uint64_t flags, const float* start, const float* vector,
         int32_t ignoredA, int32_t ignoredB, int32_t ignoredC);
+    // ...the shot re-aimed through the intent point (every build), the intent's reader, and the dev witness.
+    bool ReachSightReaimCrosshairQuery(uint64_t flags, const float* start, const float* vector, int32_t ignoredA,
+        uintptr_t caller, float out[3]);
+    bool ReachSightReadIntent(uint64_t maxAgeUs, float point[3], float eye[3], float vel[3], bool& velValid,
+        uint64_t& atUs);
     // Halo 3 / ODST trace-and-reaim, the engine-crosshair check (dev; legacy_sight_trace.inl).
     void LegacySightNoteEngineTrace(GameTitle title, uint64_t flags, const float* start, const float* vector,
         uintptr_t caller);
@@ -5486,16 +5491,23 @@ namespace
         uint8_t nativeResult=0;
         const uintptr_t caller=reinterpret_cast<uintptr_t>(_ReturnAddress());
         __try {
+            // Reach's crosshair query, re-aimed through the intent point from its own start
+            // (ReachSightReaimCrosshairQuery: every build, fail closed). The census and the engine-trace witness
+            // see the query as the game built it; the shot-lag witness sees what was traced.
+            float reaimed[3]{};
+            const float* query=vector;
             if (!g_legacyCollisionOwnedQuery)
             {
                 ReachNoteCollisionCensus(caller,flags,mode,vector,ignoredObjectA);
                 ReachSightNoteEngineTrace(flags,start,vector,ignoredObjectA,ignoredObjectB,
                     ignoredObjectC);
+                if (ReachSightReaimCrosshairQuery(flags,start,vector,ignoredObjectA,caller,reaimed))
+                    query=reaimed;
             }
             if (!ReachRedirectContactVector(caller,flags,mode,ignoredObjectA,
                     ignoredObjectB,ignoredObjectC,result,nativeResult))
                 nativeResult=LegacyCollisionSchedulerDetourBody(
-                    g_reachWorldCollision,flags,mode,start,vector,ignoredObjectA,
+                    g_reachWorldCollision,flags,mode,start,query,ignoredObjectA,
                     ignoredObjectB,ignoredObjectC,result);
         }
         __finally { g_reachWorldCollision.callbacks.fetch_sub(
@@ -20267,6 +20279,21 @@ namespace
             if(onFootNow && nativeOnFoot && currentUnit!=-1 && unitIndex==currentUnit &&
                 ReachConvergedShotLive(GetTickCount64()))
             {
+                // THE SHOT THROUGH THE INTENT POINT (2026-10-02): the direct drive's angles were solved from the
+                // previous render's eye; this shot leaves from this tick's. Aim it from its own origin through the
+                // point the provider actuated (shot_lag_logic.h; within 10 mm it is left as Reach built it). Reach's
+                // aim_assist, which may still turn it at its crosshair hit, traces that query through the same
+                // point (ReachSightReaimCrosshairQuery).
+                float point[3]{}, eye[3]{}, vel[3]{};
+                bool velValid=false;
+                uint64_t atUs=0;
+                if(ReachSightReadIntent(kSightIntentShotMaxAgeMs*1000ull,point,eye,vel,velValid,atUs))
+                {
+                    if(Sight_ReaimThroughPoint(GameTitle::HaloReach,SightShotSite::UnitAdjust,origin,direction,point))
+                        substituted=true;   // T-2 evidence: the re-aimed ray is final here
+                }
+                else
+                    Sight_NoteReaimSkipped(GameTitle::HaloReach,SightShotSite::UnitAdjust,shot_lag::IntentUse::Stale);
                 ReachSightMeasureShot(unitIndex,origin,direction,optionalCameraPoint,firesFromCamera,useUnitAim);
                 return;
             }
@@ -50860,6 +50887,16 @@ void Game_ReachNoteConvergedSample(const ReachSightSample& sample, float smoothe
     a.hz.store(sample.head[2], std::memory_order_relaxed);
     a.rangeWu.store(smoothedRangeWu, std::memory_order_relaxed);
     a.atMs.store(GetTickCount64(), std::memory_order_relaxed);
+    // The shot-lag fix: the sight clock, and the engine eye's velocity from the eyes this thread actuated.
+    static shot_lag::EyeTrack s_track;
+    s_track.Push(Sight_NowUs(), sample.eye);
+    float vel[3]{};
+    const bool velValid = s_track.Velocity(120000, 30000, vel);
+    a.vx.store(velValid ? vel[0] : 0.0f, std::memory_order_relaxed);
+    a.vy.store(velValid ? vel[1] : 0.0f, std::memory_order_relaxed);
+    a.vz.store(velValid ? vel[2] : 0.0f, std::memory_order_relaxed);
+    a.velValid.store(velValid, std::memory_order_relaxed);
+    a.atUs.store(Sight_NowUs(), std::memory_order_relaxed);
     a.sequence.fetch_add(1, std::memory_order_release);
 }
 

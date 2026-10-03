@@ -213,6 +213,11 @@ struct ReachSightActuatedPublication
     std::atomic<uint32_t> sequence{0};
     std::atomic<uint64_t> atMs{0};
     std::atomic<float> ox{0}, oy{0}, oz{0}, dx{0}, dy{0}, dz{0}, ex{0}, ey{0}, ez{0}, hx{0}, hy{0}, hz{0}, rangeWu{0};
+    // The shot-lag fix (shot_lag_logic.h): when it was actuated on the sight clock (Sight_NowUs), and the engine
+    // eye's velocity (wu/s) over ~100 ms on the provider's thread.
+    std::atomic<uint64_t> atUs{0};
+    std::atomic<float> vx{0}, vy{0}, vz{0};
+    std::atomic<bool> velValid{false};
 } g_reachSightActuated;
 
 #if HALOMCCVR_DEV_DIAGNOSTICS
@@ -308,6 +313,9 @@ struct ReachSightFlagsState
 {
     std::atomic<uint64_t> flags{0};                        // 0 = unresolved: the trace stays off
     std::atomic<uintptr_t> global{0};                      // the value-checked global (re-read each report)
+    // The return address of the anchor function's call to collision_test_vector: the crosshair query's own
+    // queries, which the shot re-aim (ReachSightReaimCrosshairQuery) re-aims. 0 = unresolved: no re-aim there.
+    std::atomic<uintptr_t> siteReturn{0};
     std::atomic<const char*> why{"Reach is not installed"};   // why it is unresolved (static strings)
     std::atomic<uint32_t> anchorRva{0}, globalRva{0};
 } g_reachSightFlags;
@@ -404,6 +412,7 @@ const char* ReachInspectAimTraceSite(uintptr_t anchor, uintptr_t textBegin, uint
 
 void ReachClearSightFlags(const char* why)
 {
+    g_reachSightFlags.siteReturn.store(0, std::memory_order_release);
     g_reachSightFlags.flags.store(0, std::memory_order_release);
     g_reachSightFlags.global.store(0, std::memory_order_release);
     g_reachSightFlags.anchorRva.store(0, std::memory_order_relaxed);
@@ -456,6 +465,22 @@ void ReachResolveSightFlags(uintptr_t base, size_t size)
         return;
     }
     const uint64_t flags = value | kReachAimTraceFlagsOr;
+    // The crosshair query's call: the first `call rel32` within 0x100 bytes after the anchor that reaches the hooked
+    // collision_test_vector (rung 3 proved one exists). Its return address names the site's queries.
+    uintptr_t siteReturn = 0;
+    {
+        const auto* code = reinterpret_cast<const uint8_t*>(anchor);
+        for (uintptr_t fwd = 6; fwd <= 0x100 && anchor + fwd + 5 <= textEnd && !siteReturn; ++fwd)
+        {
+            if (code[fwd] != 0xE8)
+                continue;
+            int32_t rel = 0;
+            memcpy(&rel, code + fwd + 1, sizeof(rel));
+            if (anchor + fwd + 5 + static_cast<intptr_t>(rel) == collisionTest)
+                siteReturn = anchor + fwd + 5;
+        }
+    }
+    g_reachSightFlags.siteReturn.store(siteReturn, std::memory_order_release);
     g_reachSightFlags.anchorRva.store(static_cast<uint32_t>(anchor - base), std::memory_order_relaxed);
     g_reachSightFlags.globalRva.store(static_cast<uint32_t>(global - base), std::memory_order_relaxed);
     g_reachSightFlags.global.store(global, std::memory_order_release);
@@ -732,6 +757,86 @@ bool ReachSightReadActuated(uint64_t now, float o[3], float u[3], float e[3], fl
         coherent = a.sequence.load(std::memory_order_acquire) == before;
     }
     return coherent && atMs && now >= atMs && now - atMs <= 150 && std::isfinite(rangeWu) && rangeWu > 0.0f;
+}
+
+// THE INTENT POINT, Reach (shot_lag_logic.h): the point the provider last actuated (its own ray is one render's eye
+// and hand: a coherent pair), on the sight clock. False unless one coherent record younger than maxAgeUs exists.
+bool ReachSightReadIntent(uint64_t maxAgeUs, float point[3], float eye[3], float vel[3], bool& velValid,
+                          uint64_t& atUs)
+{
+    auto& a = g_reachSightActuated;
+    for (int attempt = 0; attempt < 2; ++attempt)
+    {
+        const uint32_t before = a.sequence.load(std::memory_order_acquire);
+        if (!before || (before & 1u))
+            continue;
+        const float o[3]{a.ox.load(std::memory_order_relaxed), a.oy.load(std::memory_order_relaxed),
+                         a.oz.load(std::memory_order_relaxed)};
+        const float u[3]{a.dx.load(std::memory_order_relaxed), a.dy.load(std::memory_order_relaxed),
+                         a.dz.load(std::memory_order_relaxed)};
+        eye[0] = a.ex.load(std::memory_order_relaxed);
+        eye[1] = a.ey.load(std::memory_order_relaxed);
+        eye[2] = a.ez.load(std::memory_order_relaxed);
+        vel[0] = a.vx.load(std::memory_order_relaxed);
+        vel[1] = a.vy.load(std::memory_order_relaxed);
+        vel[2] = a.vz.load(std::memory_order_relaxed);
+        velValid = a.velValid.load(std::memory_order_relaxed);
+        const float range = a.rangeWu.load(std::memory_order_relaxed);
+        atUs = a.atUs.load(std::memory_order_relaxed);
+        if (a.sequence.load(std::memory_order_acquire) != before)
+            continue;
+        const uint64_t now = Sight_NowUs();
+        if (!atUs || now < atUs || now - atUs > maxAgeUs || !std::isfinite(range) || !(range > 0.0f))
+            return false;
+        for (int axis = 0; axis < 3; ++axis)
+            point[axis] = o[axis] + u[axis] * range;
+        return shot_lag::Finite3(point) && shot_lag::Finite3(eye);
+    }
+    return false;
+}
+
+// THE SHOT, RE-AIMED THROUGH THE INTENT POINT, Reach (every build). Reach decides a shot's line at the fire tick:
+// its aim_assist (HREK 0x4E32A0, after the unit-adjust hook) traces the crosshair from its own camera along the
+// record's aim and turns the shot at what that trace hits. The record was solved from the previous render's eye, so
+// from the tick's camera that line is the one meant moved by the eye's travel (measured: mean 93 mm, p90 187, max
+// 307 over 236 shots). This query -- the anchor's own call, siteReturn -- traces through the intent point from its
+// own start instead (shot_lag::ReaimThroughPoint; within 10 mm it is left exactly as built). Fail closed: no
+// converged write live (ReachConvergedShotLive), a seat held at its stop (ReachHeldAtLimit), a point older than
+// 150 ms, another unit's query, or a rail.
+bool ReachSightReaimCrosshairQuery(uint64_t flags, const float* start, const float* vector, int32_t ignoredA,
+                                   uintptr_t caller, float out[3])
+{
+    const uintptr_t site = g_reachSightFlags.siteReturn.load(std::memory_order_acquire);
+    const uint64_t resolved = g_reachSightFlags.flags.load(std::memory_order_acquire);
+    if (!site || caller != site || !resolved || flags != resolved || !start || !vector || ignoredA == -1)
+        return false;
+    // The local player's query: on foot it ignores the unit; seated the unit's root (the vehicle).
+    const int32_t local = LegacyCollisionIgnoredObject(GameTitle::HaloReach);
+    if (local == -1 || (ignoredA != local && ignoredA != ReachSightRootOf(local)))
+        return false;
+    const uint64_t nowMs = GetTickCount64();
+    if (!ReachConvergedShotLive(nowMs))
+    {
+        Sight_NoteReaimSkipped(GameTitle::HaloReach, SightShotSite::CrosshairAssist,
+                               shot_lag::IntentUse::NotConverged);
+        return false;
+    }
+    if (ReachHeldAtLimit(nowMs))
+    {
+        Sight_NoteReaimSkipped(GameTitle::HaloReach, SightShotSite::CrosshairAssist,
+                               shot_lag::IntentUse::NaturalHeld);
+        return false;
+    }
+    float point[3]{}, eye[3]{}, vel[3]{};
+    bool velValid = false;
+    uint64_t atUs = 0;
+    if (!ReachSightReadIntent(kSightIntentShotMaxAgeMs * 1000ull, point, eye, vel, velValid, atUs))
+    {
+        Sight_NoteReaimSkipped(GameTitle::HaloReach, SightShotSite::CrosshairAssist, shot_lag::IntentUse::Stale);
+        return false;
+    }
+    memcpy(out, vector, sizeof(float) * 3);
+    return Sight_ReaimThroughPoint(GameTitle::HaloReach, SightShotSite::CrosshairAssist, start, out, point);
 }
 
 // SHOTS FROM THE MUZZLE (sight_layer.h), Reach: the converged point is the one the direct drive last wrote
