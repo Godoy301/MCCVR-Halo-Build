@@ -2055,15 +2055,22 @@ void LegacyDriveReport()
         const uint32_t proof = g_halo3TickEyeProof.load(std::memory_order_relaxed);
         if (proof != s_proofLogged)
         {
+            const uint32_t was = s_proofLogged;
             s_proofLogged = proof;
-            if (proof == static_cast<uint32_t>(TickEyeProof::Proven))
+            if (proof == static_cast<uint32_t>(TickEyeProof::Unproven) &&
+                was == static_cast<uint32_t>(TickEyeProof::Disproven))
+                LOG("SHOT RECORD Halo 3: a new unit or on-foot stint re-opens the game-eye proof (the record keeps its "
+                    "solved angles until it is proven)");
+            else if (proof == static_cast<uint32_t>(TickEyeProof::Proven))
                 LOG("SHOT RECORD Halo 3: the acquisition's camera evaluator agrees with the engine camera at rest "
                     "(%.0f mm, 30 samples): the record is recomposed from the game's own eye",
                     double(g_halo3TickEyeRestOffsetMm.load(std::memory_order_relaxed)));
             else if (proof == static_cast<uint32_t>(TickEyeProof::Disproven))
                 LOG("SHOT RECORD Halo 3: the acquisition's camera evaluator sits %.0f mm from the engine camera at "
-                    "rest; it is not the eye, so the record keeps its solved angles this title session (the shot "
-                    "re-aim is unaffected)", double(g_halo3TickEyeRestOffsetMm.load(std::memory_order_relaxed)));
+                    "rest, on foot in first person, for %u samples in a row; it is not the eye, so the record keeps "
+                    "its solved angles for this on-foot stint (the shot re-aim is unaffected)",
+                    double(g_halo3TickEyeRestOffsetMm.load(std::memory_order_relaxed)),
+                    shot_lag::EyeProof::kDisagreeToDisprove);
         }
     }
     for (int slot = 0; slot < 3; ++slot)

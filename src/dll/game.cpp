@@ -730,12 +730,25 @@ namespace
     // its answer IS the engine eye is a claim this lane makes, so it is proven before anything decides on it: with
     // the eye at rest (under 5 cm/s) it must sit within 5 cm of the engine camera's own position (g_baseCam, the
     // camera before head look) for 30 samples in a row. At rest a rendered camera that leads or trails the
-    // simulation (multiplayer) sits on the same point, so the check holds in every mode. Over 25 cm at rest disproves
-    // it until the next title generation; until proven the record keeps its solved angles (fail closed), and
-    // LegacyDriveReport says which, once per state.
+    // simulation (multiplayer) sits on the same point, so the check holds in every mode. The comparison is only
+    // evidence ON FOOT IN FIRST PERSON: in a seat, a third-person or scripted camera, a carried turret or the death
+    // camera the engine camera is not the eye by design, and a single such sample used to latch a disproof for the
+    // whole generation. So it samples only on foot with the first-person view model drawn (Halo3TickEyeProofEligible),
+    // and disproof takes 15 consecutive at-rest samples over 25 cm; it holds for that unit's on-foot stint (a respawn
+    // or the next stint asks again). Until proven the record keeps its solved angles (fail closed), and
+    // LegacyDriveReport says which, once per state. shot_lag::EyeProof is the state machine (unit-tested).
     enum class TickEyeProof : uint32_t { Unproven = 0, Proven, Disproven };
+    static_assert(static_cast<uint32_t>(shot_lag::EyeProof::State::Proven) ==
+                      static_cast<uint32_t>(TickEyeProof::Proven) &&
+                  static_cast<uint32_t>(shot_lag::EyeProof::State::Disproven) ==
+                      static_cast<uint32_t>(TickEyeProof::Disproven),
+                  "the published proof state is the state machine's");
     std::atomic<uint32_t> g_halo3TickEyeProof{0};
     std::atomic<float> g_halo3TickEyeRestOffsetMm{0.0f};
+    shot_lag::EyeProof g_halo3TickEyeProofState;   // the sim thread's own
+    // On foot, in first person, the player in control: the only state in which the evaluator's eye and the engine
+    // camera are the same point. Defined below with the first-person witness.
+    bool Halo3TickEyeProofEligible() noexcept;
 
     void PublishHalo3TickEye(uint32_t generation, int32_t unit, const float eye[3]) noexcept
     {
@@ -743,12 +756,6 @@ namespace
             return;
         static uint32_t s_generation = 0;
         static int32_t s_unit = -1;
-        static uint32_t s_agree = 0;
-        if (s_generation != generation)
-        {
-            s_agree = 0;
-            g_halo3TickEyeProof.store(static_cast<uint32_t>(TickEyeProof::Unproven), std::memory_order_relaxed);
-        }
         if (s_generation != generation || s_unit != unit)
         {
             g_halo3TickEyeTrack.Reset();
@@ -759,28 +766,18 @@ namespace
         g_halo3TickEyeTrack.Push(now, eye);
         float vel[3]{};
         const bool velValid = g_halo3TickEyeTrack.Velocity(120000, 30000, vel);
-        // The proof (above), on the eye at rest only.
-        if (velValid && g_baseCamValid.load(std::memory_order_acquire) &&
-            g_halo3TickEyeProof.load(std::memory_order_relaxed) !=
-                static_cast<uint32_t>(TickEyeProof::Disproven) &&
-            shot_lag::Length(vel) * shot_lag::kMetresPerWu < 0.05f)
+        // The proof (above): eligible samples only, judged at rest only.
+        const bool eligible = g_baseCamValid.load(std::memory_order_acquire) && Halo3TickEyeProofEligible();
+        const bool atRest = velValid && shot_lag::Length(vel) * shot_lag::kMetresPerWu < 0.05f;
+        float offsetMm = 0.0f;
+        if (eligible && atRest)
         {
             const float d[3]{eye[0] - g_baseCamX.load(), eye[1] - g_baseCamY.load(), eye[2] - g_baseCamZ.load()};
-            const float offsetMm = shot_lag::Length(d) * shot_lag::kMmPerWu;
+            offsetMm = shot_lag::Length(d) * shot_lag::kMmPerWu;
             g_halo3TickEyeRestOffsetMm.store(offsetMm, std::memory_order_relaxed);
-            if (offsetMm < 50.0f)
-            {
-                if (++s_agree >= 30)
-                    g_halo3TickEyeProof.store(static_cast<uint32_t>(TickEyeProof::Proven), std::memory_order_relaxed);
-            }
-            else
-            {
-                s_agree = 0;
-                if (offsetMm > 250.0f)
-                    g_halo3TickEyeProof.store(static_cast<uint32_t>(TickEyeProof::Disproven),
-                                              std::memory_order_relaxed);
-            }
         }
+        g_halo3TickEyeProofState.Note(generation, unit, eligible, atRest, offsetMm);
+        g_halo3TickEyeProof.store(static_cast<uint32_t>(g_halo3TickEyeProofState.state), std::memory_order_relaxed);
         auto& p = g_halo3TickEye;
         p.sequence.fetch_add(1, std::memory_order_acq_rel);
         std::atomic_thread_fence(std::memory_order_release);
@@ -846,6 +843,16 @@ namespace
     {
         return WitnessFresh(g_reachFirstPersonMs, now, kReachFirstPersonWitnessMs) &&
             WitnessFresh(g_reachFirstPersonPrevMs, now, kReachFirstPersonWitnessMs);
+    }
+    // Declared with PublishHalo3TickEye (sim thread). On foot (the vehicle sampler's state) with the first-person view
+    // model drawn within the witness window: a seat, a third-person or scripted camera, a carried turret and the death
+    // camera all stop the view model, so none of them is ever evidence. No witness hook: never eligible (fail closed:
+    // the record keeps its solved angles).
+    bool Halo3TickEyeProofEligible() noexcept
+    {
+        return g_fpInterpolatorHooked.load(std::memory_order_acquire) &&
+            WitnessFresh(g_halo3FirstPersonMs, GetTickCount64(), kFirstPersonWitnessMs) &&
+            Game_Halo3VehicleState().state == Halo3VehicleState::OnFoot;
     }
     std::atomic<float> g_camFwd[3] = {{1},{0},{0}};
     std::atomic<float> g_camUp[3] = {{0},{0},{1}};

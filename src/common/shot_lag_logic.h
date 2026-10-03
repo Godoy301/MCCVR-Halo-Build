@@ -296,6 +296,74 @@ struct EyeTrack
     }
 };
 
+// ---- 3b. the game-eye proof -----------------------------------------------------------------------------------
+// A ValueAgreement over a claim: "this evaluator's answer IS the engine eye". Compared against the engine camera's own
+// position at rest (moving, a rendered camera may lead or trail the simulation). The comparison means something only
+// where the two are the SAME point by construction -- on foot, in first person -- so a sample from a seat, a third-
+// person or scripted camera, a carried turret or a death camera is no evidence either way (`eligible` false). One
+// disagreeing sample proves nothing (a respawn, a teleport, a frame of transition), so disproof takes a STREAK of
+// kDisagreeToDisprove consecutive disagreeing at-rest samples, as proof takes kAgreeToProve agreeing ones. A
+// disproof holds for the unit's on-foot stint; a new unit (respawn) or a new stint re-opens the question. A new
+// title generation starts over.
+struct EyeProof
+{
+    enum class State : uint8_t { Unproven = 0, Proven, Disproven };
+    static constexpr uint32_t kAgreeToProve = 30;
+    static constexpr uint32_t kDisagreeToDisprove = 15;
+    static constexpr float kAgreeMm = 50.0f;
+    static constexpr float kDisagreeMm = 250.0f;
+
+    State state = State::Unproven;
+    uint32_t agree = 0, disagree = 0;
+    uint32_t generation = 0;
+    int32_t unit = -1;
+    bool inStint = false;
+
+    // One sample from the publisher. `offsetMm` is read only when eligible and at rest.
+    void Note(uint32_t gen, int32_t unitNow, bool eligible, bool atRest, float offsetMm)
+    {
+        if (gen != generation)
+        {
+            *this = EyeProof{};
+            generation = gen;
+            unit = unitNow;
+        }
+        else if (unitNow != unit)
+        {
+            unit = unitNow;
+            inStint = false;   // a new unit's stint starts below
+        }
+        if (!eligible)
+        {
+            inStint = false;
+            return;
+        }
+        if (!inStint)
+        {
+            inStint = true;
+            agree = disagree = 0;
+            if (state == State::Disproven)
+                state = State::Unproven;
+        }
+        if (!atRest || !std::isfinite(offsetMm))
+            return;
+        if (offsetMm < kAgreeMm)
+        {
+            disagree = 0;
+            if (++agree >= kAgreeToProve && state != State::Disproven)
+                state = State::Proven;
+        }
+        else if (offsetMm > kDisagreeMm)
+        {
+            agree = 0;
+            if (++disagree >= kDisagreeToDisprove)
+                state = State::Disproven;
+        }
+        else
+            agree = disagree = 0;   // neither: no streak survives it
+    }
+};
+
 // ---- 4. the eye now, and the angles toward the point --------------------------------------------------------
 // The interim estimate of an eye at a later tick: E + v * dt, dt clamped to [0, maxDtS]. False (out untouched)
 // without a finite eye and velocity.

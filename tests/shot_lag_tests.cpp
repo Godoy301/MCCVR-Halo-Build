@@ -197,6 +197,57 @@ int main()
         Check(track.count == 1, "a non-finite eye is never a sample");
     }
 
+    // ---- the game-eye proof ----
+    {
+        using S = EyeProof::State;
+        const auto feed = [](EyeProof& p, int n, uint32_t gen, int32_t unit, bool eligible, bool rest, float mm) {
+            for (int i = 0; i < n; ++i)
+                p.Note(gen, unit, eligible, rest, mm);
+        };
+        EyeProof p;
+        feed(p, int(EyeProof::kAgreeToProve) - 1, 1, 7, true, true, 10.0f);
+        Check(p.state == S::Unproven, "29 agreeing samples do not prove it");
+        p.Note(1, 7, true, true, 10.0f);
+        Check(p.state == S::Proven, "30 agreeing at-rest samples on foot prove it");
+
+        // THE FINDING: seated / third person / turret / death camera samples are no evidence at all.
+        EyeProof seated;
+        feed(seated, 200, 1, 7, false, true, 2000.0f);
+        Check(seated.state == S::Unproven && seated.disagree == 0, "ineligible samples never disprove");
+        feed(p, 200, 1, 7, false, true, 2000.0f);
+        Check(p.state == S::Proven, "nor do they unprove a proven eye");
+
+        // A single at-rest outlier (a respawn frame, a teleport) does not latch a disproof.
+        EyeProof q;
+        q.Note(1, 7, true, true, 900.0f);
+        Check(q.state == S::Unproven, "one disagreeing sample proves nothing");
+        feed(q, int(EyeProof::kDisagreeToDisprove) - 2, 1, 7, true, true, 900.0f);
+        q.Note(1, 7, true, true, 100.0f);   // a sample between the bands breaks the streak
+        feed(q, int(EyeProof::kDisagreeToDisprove) - 1, 1, 7, true, true, 900.0f);
+        Check(q.state == S::Unproven, "a broken streak does not disprove");
+        q.Note(1, 7, true, false, 900.0f);  // moving: not judged, the streak stands
+        q.Note(1, 7, true, true, 900.0f);
+        Check(q.state == S::Disproven, "15 consecutive at-rest disagreeing samples disprove it");
+        feed(q, 40, 1, 7, true, true, 10.0f);
+        Check(q.state == S::Disproven, "a disproof holds for the stint");
+
+        // ...and only for the stint: a seat in between, or a new unit, re-opens it.
+        q.Note(1, 7, false, true, 0.0f);
+        q.Note(1, 7, true, true, 10.0f);
+        Check(q.state == S::Unproven, "the next on-foot stint re-opens the proof");
+        feed(q, int(EyeProof::kAgreeToProve), 1, 7, true, true, 10.0f);
+        Check(q.state == S::Proven, "and it can be proven again");
+        feed(q, int(EyeProof::kDisagreeToDisprove), 1, 7, true, true, 900.0f);
+        Check(q.state == S::Disproven, "a proven eye can still be disproven by a streak");
+        q.Note(1, 8, true, true, 10.0f);
+        Check(q.state == S::Unproven && q.agree == 1, "a new unit (respawn) re-opens the proof");
+        q.Note(2, 8, true, true, 10.0f);
+        Check(q.state == S::Unproven && q.agree == 1 && q.generation == 2, "a new generation starts over");
+        EyeProof nanProof;
+        feed(nanProof, 40, 1, 7, true, true, std::nanf(""));
+        Check(nanProof.state == S::Unproven, "a non-finite offset is no evidence");
+    }
+
     // ---- extrapolation, angles, identity ----
     {
         const float e[3]{1, 2, 3}, v[3]{10, 0, -5};
