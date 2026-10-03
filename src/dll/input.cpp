@@ -134,6 +134,8 @@ namespace
     {
         auto& w = g_witness;
         w.fed = WitnessTransport(state.Gamepad);
+        // Dev SHOT RETICLE: the RT the game reads this poll (its rising edge opens a trigger-to-fire latency).
+        Game_DevNoteFireTrigger(state.Gamepad.bRightTrigger > XINPUT_GAMEPAD_TRIGGER_THRESHOLD);
         w.thread = static_cast<uint16_t>(GetCurrentThreadId());
         vr_mapping::Transports native{};
         if (Game_ReadVrActionBindings(native, GetTickCount64()))

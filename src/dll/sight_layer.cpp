@@ -357,6 +357,11 @@ void Sight_MarkConverged(GameTitle title, float unitsPerVrMetre)
     g_stats[Slot(title)].converged.fetch_add(1, std::memory_order_relaxed);
 }
 
+float Sight_UnitsPerVrMetre(GameTitle title)
+{
+    return g_converged[Slot(title)].unitsPerVrMetre.load(std::memory_order_relaxed);
+}
+
 bool Sight_ConvergedLive(GameTitle title)
 {
     const auto& c = g_converged[Slot(title)];

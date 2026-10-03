@@ -224,6 +224,10 @@ void LegacySightTraceTick(GameTitle title, uint32_t unit, int32_t localUnit, boo
         if (!s_lastUs[t] || nowUs > s_lastUs[t] + 2000 || nowUs < s_lastUs[t])
             s_lastUs[t] = nowUs;
         Sight_NoteSimTick(title);
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        if (title == GameTitle::Halo3)
+            Halo3ImpactWitnessTick();   // dev SHOT IMPACT: re-read the tracked rounds once a tick
+#endif
     }
     if (Sight_TraceFaulted(title) || !Sight_TraceDue(title, Sight_NowMs()))
         return;

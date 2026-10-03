@@ -910,6 +910,12 @@ if(BUILD_TESTING)
     add_executable(halomccvr_shot_lag_tests tests/shot_lag_tests.cpp)
     target_include_directories(halomccvr_shot_lag_tests PRIVATE src/common)
     add_test(NAME halomccvr_shot_lag_tests COMMAND halomccvr_shot_lag_tests)
+    # The shot impact witness (src/common/shot_impact_logic.h, dev, 2026-10-03): where a round actually goes -- the
+    # spawned object's proof, the native's turn, inherited velocity, the round's line and impact against P, the
+    # reticle's map to the world, the trigger latch and the report lines.
+    add_executable(halomccvr_shot_impact_tests tests/shot_impact_tests.cpp)
+    target_include_directories(halomccvr_shot_impact_tests PRIVATE src/common)
+    add_test(NAME halomccvr_shot_impact_tests COMMAND halomccvr_shot_impact_tests)
     # Source-consistency guard for the seated converged claim (2026-10-01): game.cpp assigns the claim from
     # converge::SeatedClaimDecide and nothing else, never clears sightSeatedConverged, and reads no natural-cause
     # symbol into the claim's facts. No behavioural test compiles game.cpp, so a natural-cause switch-off added

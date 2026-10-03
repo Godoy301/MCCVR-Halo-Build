@@ -53,6 +53,11 @@
                 nativeResult=LegacyCollisionSchedulerDetourBody(
                     g_halo3WorldCollision,flags,mode,start,query,ignoredObjectA,
                     ignoredObjectB,ignoredObjectC,result);
+#if HALOMCCVR_DEV_DIAGNOSTICS
+            // Dev SHOT IMPACT (halo3_impact_witness.inl): a tracked projectile's own query records where it hit.
+            if(!g_legacyCollisionOwnedQuery)
+                Halo3ImpactWitnessNoteQuery(caller,start,query,result,nativeResult);
+#endif
         }
         __finally
         {

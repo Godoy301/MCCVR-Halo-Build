@@ -35,6 +35,7 @@
 #include "../common/halo3_melee_selection_logic.h"
 #include "../common/halo4_contact_melee_logic.h"
 #include "../common/seat_aim_frame_logic.h"
+#include "../common/shot_impact_logic.h"
 #include <windows.h>
 #include <tlhelp32.h>
 #include <array>
@@ -2003,6 +2004,18 @@ namespace
     // The firing assist witness (dev; halo3_assist_witness.inl): a hook on 0x13BAD0, witness only.
     void InstallHalo3AssistWitness(uintptr_t base, size_t size);
     bool RemoveHalo3AssistWitness();
+    // The shot impact witness (dev; halo3_impact_witness.inl): a hook on object_new, witness only.
+    void InstallHalo3ImpactWitness(uintptr_t base, size_t size);
+    bool RemoveHalo3ImpactWitness();
+    void Halo3ImpactWitnessTick();
+    void Halo3ImpactWitnessNoteQuery(uintptr_t caller, const float* start, const float* vector, const void* result,
+                                     uint8_t hit);
+    void Halo3ImpactFireBegin(uint8_t predicted);
+    void Halo3ImpactFireEnd();
+    void Halo3ImpactNoteShotLine(uint32_t unit, const float origin[3], const float direction[3], bool muzzle);
+    void Halo3ImpactNoteReticle(uint64_t serial, const float center[3], const float dir[3], float rangeM, bool hit);
+    void Halo3ImpactNoteTrigger(bool pressed);
+    void Halo3ImpactWitnessReport();
 #endif
     bool DisableAndRemoveHalo3ContactMelee();
     void ReportHalo3ContactMelee();
@@ -16018,6 +16031,7 @@ namespace
         if (!RemoveHalo3WeaponHaptics()) return false;
 #if HALOMCCVR_DEV_DIAGNOSTICS
         if (!RemoveHalo3AssistWitness()) return false;
+        if (!RemoveHalo3ImpactWitness()) return false;
 #endif
         if (!RemoveHalo3DualAim()) return false;
         RemoveHalo3GunBand();
@@ -16944,6 +16958,7 @@ namespace
         (void)InstallHalo3GunBand(base,size,runtimeGeneration);
 #if HALOMCCVR_DEV_DIAGNOSTICS
         InstallHalo3AssistWitness(base,size);   // SHOT Halo 3 assist (dev): the turn, cap hits, residual
+        InstallHalo3ImpactWitness(base,size);   // SHOT IMPACT / SHOT RETICLE Halo 3 (dev): where rounds really go
 #endif
 
         uintptr_t renderHit = sig::Find(base, size, kRenderViewSig);
@@ -27024,6 +27039,7 @@ namespace
     #include "halo3_physical_crouch.inl"
     #include "halo3_dual_wield_runtime.inl"
     #include "halo3_assist_witness.inl"
+    #include "halo3_impact_witness.inl"
     #include "halo3_weapon_haptics.inl"
     #include "halo3_avatar.inl"
     #include "odst_contact_melee_runtime.inl"
@@ -52435,6 +52451,7 @@ void GunAimReport()
     Halo3GunBandReport();   // SEAT LIMIT Halo 3 gun band: the driver's guns learned / animated / no weapon angle
 #if HALOMCCVR_DEV_DIAGNOSTICS
     Halo3AssistWitnessReport();   // SHOT Halo 3 assist (dev)
+    Halo3ImpactWitnessReport();   // SHOT IMPACT / SHOT RETICLE Halo 3 (dev)
 #endif
     auto& n = g_gunOffsetNotes;
     static uint32_t s_seenSeq = 0;
@@ -52478,6 +52495,20 @@ void GunAimReport()
     }
 #endif
 }
+
+#if HALOMCCVR_DEV_DIAGNOSTICS
+// The shot impact witness's outside feeds (game.h; halo3_impact_witness.inl). Halo 3 only.
+void Game_DevNoteTracedReticle(uint64_t serial, const float center[3], const float dir[3], float rangeM, bool hit)
+{
+    if (TitleAdapter_GetActiveTitle() == GameTitle::Halo3)
+        Halo3ImpactNoteReticle(serial, center, dir, rangeM, hit);
+}
+void Game_DevNoteFireTrigger(bool pressed)
+{
+    if (TitleAdapter_GetActiveTitle() == GameTitle::Halo3)
+        Halo3ImpactNoteTrigger(pressed);
+}
+#endif
 
 // THE FREE CAMERA WITH NO PLAYER UNIT (src/common/aim_no_unit_logic.h): the input thread's half. The decision
 // (Game_AimFreeCamera) is published for the Reach aim provider, which reads it after the servo stepped it.

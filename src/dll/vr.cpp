@@ -18259,6 +18259,16 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                                     reachCenter.position[1],
                                     reachCenter.position[2]};
                             }
+#if HALOMCCVR_DEV_DIAGNOSTICS && HALOMCCVR_EXPERIMENTAL_REACH_RENDER_CANDIDATE
+                            // Dev SHOT RETICLE (game.cpp halo3_impact_witness.inl): the traced reticle as drawn --
+                            // this frame, this eye, this direction, the range it was drawn for -- against each shot's P.
+                            if (tracedReticle && !reachTitle && !limitFromEye)
+                            {
+                                const float drawnFrom[3]{reticleOrigin.x, reticleOrigin.y, reticleOrigin.z};
+                                Game_DevNoteTracedReticle(g_preparedFrame.serial, drawnFrom, aimDir, tracedRangeM,
+                                                          tracedHit);
+                            }
+#endif
                             reticleQuad.pose.position = {
                                 reticleOrigin.x + aimDir[0] * dist,
                                 reticleOrigin.y + aimDir[1] * dist,
