@@ -889,6 +889,11 @@ if(BUILD_TESTING)
     add_executable(halomccvr_converge_policy_tests tests/converge_policy_tests.cpp)
     target_include_directories(halomccvr_converge_policy_tests PRIVATE src/common)
     add_test(NAME halomccvr_converge_policy_tests COMMAND halomccvr_converge_policy_tests)
+    # The seat limit reticle (src/common/seat_limit_reticle_logic.h): a seat's angular stops in the record's frame,
+    # the clamp of the hand's aim through that frame and back, and the edge hysteresis.
+    add_executable(halomccvr_seat_limit_reticle_tests tests/seat_limit_reticle_tests.cpp)
+    target_include_directories(halomccvr_seat_limit_reticle_tests PRIVATE src/common)
+    add_test(NAME halomccvr_seat_limit_reticle_tests COMMAND halomccvr_seat_limit_reticle_tests)
     add_executable(halomccvr_assess_reticle_tests tests/assess_reticle_tests.cpp)
     target_include_directories(halomccvr_assess_reticle_tests PRIVATE src/common)
     add_test(NAME halomccvr_assess_reticle_tests COMMAND halomccvr_assess_reticle_tests)
