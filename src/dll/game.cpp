@@ -76,6 +76,7 @@
 #include "../common/physical_crouch_cached_witnesses.h"
 #include "d3d11_hook.h"
 #include "sigscan.h"
+#include "mcc_frame_clock.h"
 #include "seat_frame_reader.h"
 #include "vr.h"
 #include "native_subtitles.h"
@@ -2367,6 +2368,14 @@ namespace
     void ReachNoteFireEyeProof(int32_t localUnit, bool onFoot, uint32_t generation);
     void ReachNoteFireEyeNativeLine(int32_t unit, const float* origin, const float* direction);
     void ReportReachFireEye();
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    // AS SEEN, Reach in VR (dev; reach_impact_witness.inl): the round's query, the completed frame, the drawn reticle.
+    void ReachImpactNoteQuery(const float* start, const float* vector, const void* result, uint8_t hit);
+    struct ReachOwnerScope;
+    void ReachAsSeenNoteFrame(uint32_t generation, uint64_t serial, const ReachOwnerScope& owner);
+    void ReachAsSeenNoteReticle(uint64_t serial, const float dir[3]);
+    void ReportReachAsSeen();
+#endif
     void ReachSightNoteShotLag(SightShotPath path, const float* origin, const float* direction, bool seated,
         int32_t seat);
     void ReachSightNoteCrosshairQuery(uint64_t flags, const float* start, const float* vector, int32_t ignoredA,
@@ -6009,6 +6018,11 @@ namespace
                 nativeResult=LegacyCollisionSchedulerDetourBody(
                     g_reachWorldCollision,flags,mode,start,query,ignoredObjectA,
                     ignoredObjectB,ignoredObjectC,result);
+#if HALOMCCVR_DEV_DIAGNOSTICS
+            // Dev AS SEEN (reach_impact_witness.inl): a tracked round's own query and where it hit.
+            if (!g_legacyCollisionOwnedQuery)
+                ReachImpactNoteQuery(start,query,result,nativeResult);
+#endif
         }
         __finally { g_reachWorldCollision.callbacks.fetch_sub(
             1,std::memory_order_acq_rel); }
@@ -19853,6 +19867,10 @@ namespace
         // The stock camera's forward (compact camera +0x0C). In a third-person seat Reach traces its
         // crosshair from that camera along this forward, so trace-and-reaim needs the line, not a point.
         float presentedCameraForward[3]{};
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        // Dev AS SEEN (reach_impact_witness.inl): the head orientation this frame's views were built from.
+        float asSeenHeadQuat[4]{0.0f, 0.0f, 0.0f, 1.0f};
+#endif
         // World-unit lift our corrections gave the view over the character's eye this frame (on
         // foot): the crouch correction's given-back native drop plus the leash's lift. Added to the
         // hands' and the reticle ray's base so they rise with the view; the stock
@@ -25183,6 +25201,11 @@ namespace
                 ReachPublishCompletedFrameFeedback(
                     completedGeneration, access.preparedSerial,
                     g_reachOwnerScope);
+#if HALOMCCVR_DEV_DIAGNOSTICS
+                ReachAsSeenNoteFrame(
+                    completedGeneration, access.preparedSerial,
+                    g_reachOwnerScope);
+#endif
             }
         }
         __finally
@@ -27427,6 +27450,8 @@ namespace
     #include "reach_muzzle_publication.inl"
     #include "reach_muzzle_shots.inl"
     #include "reach_muzzle_lifecycle.inl"
+    // Dev builds only: AS SEEN for Reach in VR (the file compiles to nothing otherwise).
+    #include "reach_impact_witness.inl"
     #include "reach_visual_hand_offset.inl"
 
     // TWO-HANDED AIM'S VIEW SAMPLE, Halo 3 (declared with TwoHandViewPublication; CamCopyHook, the engine camera
@@ -31630,6 +31655,10 @@ namespace
                sizeof(candidate.presentedCameraBasePosition));
         memcpy(candidate.presentedCameraForward,primaryCompact+0x0C,
                sizeof(candidate.presentedCameraForward));
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        memcpy(candidate.asSeenHeadQuat,tracking.headOrientation,
+               sizeof(candidate.asSeenHeadQuat));
+#endif
         candidate.vehicle = vehicleFrame;
         const float* authoredProjection = reinterpret_cast<const float*>(
             primaryDerived + kReachDerivedProjectionOffset);
@@ -32826,6 +32855,9 @@ namespace
 
     bool RemoveReachCameraCore()
     {
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        if (!RemoveReachImpactWitness()) return false;
+#endif
         if (!RemoveReachMuzzle()) return false;
         TitleAdapter_ClearCinematicControl(
             GameTitle::HaloReach,
@@ -35519,6 +35551,9 @@ namespace
         ReachResolveSightFlags(base, size);
         InstallReachContactMelee(base,size,generation);
         (void)InstallReachMuzzle(base,size,generation);
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        (void)InstallReachImpactWitness(base,size);   // AS SEEN (dev): where rounds land against the drawn reticle
+#endif
         LOG("Reach camera core installed: outer/inner stereo + FP "
             "interpolation/palette + per-eye world-projection camera "
             "transactions hooked; waiting one-second fresh-camera interval "
@@ -53188,6 +53223,8 @@ void Game_DevNoteTracedReticle(uint64_t serial, const float center[3], const flo
         Halo3ImpactNoteReticle(serial, center, dir, rangeM, hit);
     else if (title == GameTitle::Halo2)
         Halo2Observer6Dof_DevNoteAsSeenReticle(serial, center, dir);
+    else if (title == GameTitle::HaloReach)
+        ReachAsSeenNoteReticle(serial, dir);
 }
 void Game_DevNoteFireTrigger(bool pressed)
 {

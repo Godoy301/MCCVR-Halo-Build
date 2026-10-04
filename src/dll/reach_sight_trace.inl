@@ -1254,6 +1254,9 @@ void ReportReachSightTrace()
             crouchFrames, crouchMax);
     ReportReachCachedCrouch();
     ReportReachFireEye();   // flat parity's fire eye: its proof, and (dev) its witness
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    ReportReachAsSeen();    // AS SEEN (dev): impacts against the reticle of the first frame showing them
+#endif
 
     // VALUE AGREEMENT, continued: the engine reads this global on every crosshair trace, so if anything
     // ever re-wrote it our trace would measure a different ray than the engine's. Withdraw at once.

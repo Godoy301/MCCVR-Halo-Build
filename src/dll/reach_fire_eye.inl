@@ -28,6 +28,30 @@
 // its proof latches this single path; identity (our unit, on foot, alive in gameplay, no cinematic) is the guard.
 inline constexpr int32_t kReachFireEyePath = 0;
 
+#if HALOMCCVR_DEV_DIAGNOSTICS
+// Why a proof sample did or did not count, and the fire measured both ways (dev, per report window; under the lock).
+// THE INTERPOLATED CAMERA (static analysis of the pinned haloreach.dll, 2026-10-04; as_seen_logic.h section 8): the
+// unit camera position 0x48A1C0 -> 0x4A2D50 reads the unit's origin back as lerp(previous tick, newest tick, factor)
+// outside a tick (0x4719C8; factor = clamp(game_time + 0x14, 0, 1), written at 0x344A5 after the frame's ticks, right
+// before the director update 0xC4458 that builds the first-person camera 0x1DCADC -> 0x48A4B4 -> 0x48A1C0) and its
+// camera height the same way (0xCF408); inside a tick it answers that tick's raw eye. So E_P (the stock camera the
+// render showed) is (1 - factor) of a tick behind the newest tick's eye, and a fire after its tick's move leaves from
+// (2 - factor) ticks of travel past E_P. The evaluator asked inside the fire answers exactly that eye, so the measured
+// shift is right whatever the factor; the line below compares it with a one-tick carry and with the prediction.
+struct ReachFireEyeDiag
+{
+    uint32_t samples = 0, seated = 0, cinematic = 0, noIntent = 0, noStamp = 0, stale = 0, velocityUnknown = 0,
+             moving = 0, evaluatorFailed = 0;
+    uint32_t restN = 0, restAgree = 0, restNeither = 0, restDisagree = 0;
+    double restSumMm = 0.0, restMinMm = 0.0, restMaxMm = 0.0;
+    uint32_t bestStreak = 0;
+    uint32_t lineN = 0;
+    double lineSumMm = 0.0, lineMaxMm = 0.0;
+    as_seen::FireEyeBothWays fires{};
+    uint32_t fireNoSample = 0;
+};
+#endif
+
 struct ReachFireEyeState
 {
     SRWLOCK lock = SRWLOCK_INIT;
@@ -35,12 +59,13 @@ struct ReachFireEyeState
     // Every build, per report window: asks inside a fire, and asks that could not reach the evaluator.
     std::atomic<uint32_t> asks{0}, unanswered{0};
 #if HALOMCCVR_DEV_DIAGNOSTICS
-    // The fire eye against the unit-adjust's native shot line (mm): ~0 says it is the camera that line was built on.
-    std::atomic<uint32_t> lineSamples{0}, lineSumMm{0}, lineMaxMm{0};
-    // Proof samples at rest, and their offset from E_P (mm).
-    std::atomic<uint32_t> restSamples{0}, restSumMm{0}, restMaxMm{0};
+    ReachFireEyeDiag diag{};
 #endif
 } g_reachFireEye;
+
+#if HALOMCCVR_DEV_DIAGNOSTICS
+void ReachClockRead(int64_t& tick, float& factor, float* tickMs);   // reach_impact_witness.inl
+#endif
 
 // The stock evaluator for `unit` (the trampoline), guarded. Callers hold a lane's callback count that keeps the core
 // trampolines alive: g_reachCamera.activeCallbacks (the unit-adjust hook, the per-unit update) or the muzzle lane's
@@ -78,6 +103,42 @@ void ReachMeasureFireEye(int32_t unit, bool fresh)
     g_reachFireEye.asks.fetch_add(1, std::memory_order_relaxed);
     if (!called)
         g_reachFireEye.unanswered.fetch_add(1, std::memory_order_relaxed);
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    // Both ways (dev), once per fire: this answer and E_P carried one tick against E_P, with the (2 - factor)
+    // prediction. The factor read inside the tick is still the one the newest render's camera was built at (it is
+    // rewritten only after the frame's ticks).
+    if (called)
+    {
+        SightPointSample sample{};
+        uint64_t atUs = 0;
+        const bool read = ReachSightReadIntentSample(kSightIntentShotMaxAgeMs * 1000ull, sample, atUs) &&
+                          sample.camera.valid;
+        int64_t tick = -1;
+        float factor = NAN, tickMs = NAN;
+        ReachClockRead(tick, factor, &tickMs);
+        float carried[3]{};
+        bool carriedValid = false;
+        if (read)
+        {
+            const float tickS = std::isfinite(tickMs) ? tickMs * 1.0e-3f
+                                                      : float(Sight_TickPeriodUs(GameTitle::HaloReach, 16667)) * 1.0e-6f;
+            carriedValid = shot_lag::ChooseSampleFireEye(
+                               shot_lag::FireEye::Count, nullptr, true, sample.camera.eye,
+                               sample.camera.velValid ? sample.camera.vel : nullptr,
+                               shot_lag::SampleCarrySeconds(sample.camera.stampUs, Sight_NowUs(), tickS,
+                                                            kSightTransportMaxAgeUs),
+                               carried) == shot_lag::FireEye::CarriedTick;
+        }
+        auto& state = g_reachFireEye;
+        AcquireSRWLockExclusive(&state.lock);
+        if (!read)
+            ++state.diag.fireNoSample;
+        else
+            state.diag.fires.Add(sample.camera.eye, sample.camera.velValid ? sample.camera.vel : nullptr, eye,
+                                 carriedValid ? carried : nullptr, factor, tickMs);
+        ReleaseSRWLockExclusive(&state.lock);
+    }
+#endif
 }
 
 // One proof sample from the trace tick (sim thread, inside the per-unit update, our unit only, ~30 ms): E_P from the
@@ -89,8 +150,9 @@ void ReachNoteFireEyeProof(int32_t localUnit, bool onFoot, uint32_t generation)
     SightPointSample sample{};
     uint64_t atUs = 0;
     const uint64_t nowUs = Sight_NowUs();
-    const bool read = onFoot && !g_reachCinematicLocked.load(std::memory_order_relaxed) &&
-        ReachSightReadIntentSample(100000ull, sample, atUs) && sample.camera.valid &&
+    const bool readIntent = onFoot && !g_reachCinematicLocked.load(std::memory_order_relaxed) &&
+        ReachSightReadIntentSample(100000ull, sample, atUs);
+    const bool read = readIntent && sample.camera.valid &&
         nowUs >= sample.camera.stampUs && nowUs - sample.camera.stampUs <= 100000ull;
     const bool atRest = read && shot_lag::EyeAtRest(sample.camera.velValid, sample.camera.vel);
     float offsetMm = std::numeric_limits<float>::quiet_NaN();
@@ -109,17 +171,40 @@ void ReachNoteFireEyeProof(int32_t localUnit, bool onFoot, uint32_t generation)
     auto& state = g_reachFireEye;
     AcquireSRWLockExclusive(&state.lock);
     state.proof.Note(generation, localUnit, eligible, atRest, offsetMm, kReachFireEyePath);
-    ReleaseSRWLockExclusive(&state.lock);
 #if HALOMCCVR_DEV_DIAGNOSTICS
-    if (eligible && atRest && std::isfinite(offsetMm))
     {
-        const uint32_t mm = static_cast<uint32_t>(std::min(offsetMm, 4.0e6f));
-        state.restSamples.fetch_add(1, std::memory_order_relaxed);
-        state.restSumMm.fetch_add(mm, std::memory_order_relaxed);
-        uint32_t prior = state.restMaxMm.load(std::memory_order_relaxed);
-        while (mm > prior && !state.restMaxMm.compare_exchange_weak(prior, mm, std::memory_order_relaxed)) {}
+        // Every sample, and the one reason it did or did not count (in the order the gates run).
+        auto& d = state.diag;
+        ++d.samples;
+        if (!onFoot)
+            ++d.seated;
+        else if (g_reachCinematicLocked.load(std::memory_order_relaxed))
+            ++d.cinematic;
+        else if (!readIntent)
+            ++d.noIntent;
+        else if (!sample.camera.valid)
+            ++d.noStamp;
+        else if (!read)
+            ++d.stale;
+        else if (!sample.camera.velValid)
+            ++d.velocityUnknown;
+        else if (!atRest)
+            ++d.moving;
+        else if (!eligible || !std::isfinite(offsetMm))
+            ++d.evaluatorFailed;
+        else
+        {
+            d.restMinMm = d.restN ? std::min(d.restMinMm, double(offsetMm)) : double(offsetMm);
+            d.restMaxMm = d.restN ? std::max(d.restMaxMm, double(offsetMm)) : double(offsetMm);
+            ++d.restN;
+            d.restSumMm += offsetMm;
+            ++(offsetMm < shot_lag::EyeProof::kAgreeMm ? d.restAgree
+               : offsetMm > shot_lag::EyeProof::kDisagreeMm ? d.restDisagree : d.restNeither);
+        }
+        d.bestStreak = std::max(d.bestStreak, state.proof.proof.agree);
     }
 #endif
+    ReleaseSRWLockExclusive(&state.lock);
 }
 
 // Dev witness (the unit-adjust, after the native call built origin + direction): how far this fire's eye lies off the
@@ -135,11 +220,12 @@ void ReachNoteFireEyeNativeLine(int32_t unit, const float* origin, const float* 
     if (!std::isfinite(offWu))
         return;
     auto& state = g_reachFireEye;
-    const uint32_t mm = static_cast<uint32_t>(std::min(offWu * shot_lag::kMmPerWu, 4.0e6f));
-    state.lineSamples.fetch_add(1, std::memory_order_relaxed);
-    state.lineSumMm.fetch_add(mm, std::memory_order_relaxed);
-    uint32_t prior = state.lineMaxMm.load(std::memory_order_relaxed);
-    while (mm > prior && !state.lineMaxMm.compare_exchange_weak(prior, mm, std::memory_order_relaxed)) {}
+    const double mm = double(offWu) * shot_lag::kMmPerWu;
+    AcquireSRWLockExclusive(&state.lock);
+    ++state.diag.lineN;
+    state.diag.lineSumMm += mm;
+    state.diag.lineMaxMm = std::max(state.diag.lineMaxMm, mm);
+    ReleaseSRWLockExclusive(&state.lock);
 #else
     (void)unit; (void)origin; (void)direction;
 #endif
@@ -212,20 +298,28 @@ void ReportReachFireEye()
     const uint32_t asks = state.asks.exchange(0, std::memory_order_relaxed);
     const uint32_t unanswered = state.unanswered.exchange(0, std::memory_order_relaxed);
 #if HALOMCCVR_DEV_DIAGNOSTICS
-    const uint32_t lines = state.lineSamples.exchange(0, std::memory_order_relaxed);
-    const uint32_t lineSum = state.lineSumMm.exchange(0, std::memory_order_relaxed);
-    const uint32_t lineMax = state.lineMaxMm.exchange(0, std::memory_order_relaxed);
-    const uint32_t rests = state.restSamples.exchange(0, std::memory_order_relaxed);
-    const uint32_t restSum = state.restSumMm.exchange(0, std::memory_order_relaxed);
-    const uint32_t restMax = state.restMaxMm.exchange(0, std::memory_order_relaxed);
-    if (asks || rests)
-        LOG("REACH FIRE EYE (dev): proof %s; %u asked in a fire (%u unanswered); off the native shot line avg %u / max "
-            "%u mm (%u unit-adjust shots: ~0 = the camera the native origin is built on); at rest vs the solve's eye "
-            "avg %u / max %u mm (%u proof samples)",
-            proofState == shot_lag::EyeProof::State::Proven ? "PROVEN"
-            : proofState == shot_lag::EyeProof::State::Disproven ? "DISPROVEN" : "unproven",
-            asks, unanswered, lines ? lineSum / lines : 0u, lineMax, lines, rests ? restSum / rests : 0u, restMax,
-            rests);
+    AcquireSRWLockExclusive(&state.lock);
+    const ReachFireEyeDiag d = state.diag;
+    state.diag = ReachFireEyeDiag{};
+    const uint32_t streak = state.proof.proof.agree;
+    ReleaseSRWLockExclusive(&state.lock);
+    if (!asks && !d.samples && !d.fires.fires)
+        return;
+    char both[640]{};
+    if (!d.fires.Format(both, sizeof(both)))
+        std::snprintf(both, sizeof(both), "FIRES 0");
+    LOG("REACH FIRE EYE (dev): proof %s, streak now %u (best %u) of %u at rest within %.0f mm; %u asked in a fire (%u "
+        "unanswered); off the native shot line avg %.0f / max %.0f mm (%u unit-adjust shots: ~0 = the camera the native "
+        "origin is built on); proof samples %u -- not counted: seated %u, cinematic %u, no intent %u, no camera stamp "
+        "%u, stale %u, eye velocity unknown %u, moving %u, evaluator failed %u; AT REST %u: off E_P avg %.0f mm (min "
+        "%.0f, max %.0f), agree %u, between %u, disagree %u. %s (%u fires without an intent sample)",
+        proofState == shot_lag::EyeProof::State::Proven ? "PROVEN"
+        : proofState == shot_lag::EyeProof::State::Disproven ? "DISPROVEN" : "unproven",
+        streak, d.bestStreak, shot_lag::EyeProof::kAgreeToProve, static_cast<double>(shot_lag::EyeProof::kAgreeMm),
+        asks, unanswered, d.lineN ? d.lineSumMm / d.lineN : 0.0, d.lineMaxMm, d.lineN, d.samples, d.seated,
+        d.cinematic, d.noIntent, d.noStamp, d.stale, d.velocityUnknown, d.moving, d.evaluatorFailed, d.restN,
+        d.restN ? d.restSumMm / d.restN : 0.0, d.restMinMm, d.restMaxMm, d.restAgree, d.restNeither, d.restDisagree,
+        both, d.fireNoSample);
 #else
     (void)asks; (void)unanswered;
 #endif

@@ -18332,7 +18332,8 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
 #if HALOMCCVR_DEV_DIAGNOSTICS && HALOMCCVR_EXPERIMENTAL_REACH_RENDER_CANDIDATE
                             // Dev SHOT RETICLE (game.cpp halo3_impact_witness.inl): the traced reticle as drawn --
                             // this frame, this eye, this direction, the range it was drawn for -- against each shot's P.
-                            if (tracedReticle && !reachTitle && !limitFromEye)
+                            // Reach and Halo 4 too (2026-10-04): their AS SEEN witnesses judge impacts against it.
+                            if (tracedReticle && !limitFromEye)
                             {
                                 const float drawnFrom[3]{reticleOrigin.x, reticleOrigin.y, reticleOrigin.z};
                                 Game_DevNoteTracedReticle(g_preparedFrame.serial, drawnFrom, aimDir, tracedRangeM,
