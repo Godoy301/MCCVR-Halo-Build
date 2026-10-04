@@ -645,6 +645,7 @@ const char* TransportSiteName(SightTransportSite site)
     case SightTransportSite::CrosshairAssist: return "crosshair-assist";
     case SightTransportSite::Muzzle: return "muzzle";
     case SightTransportSite::Record: return "record";
+    case SightTransportSite::UnitAdjust: return "unit-adjust";
     default: return "?";
     }
 }
@@ -660,9 +661,11 @@ bool Sight_TransportWanted(GameTitle title, bool seated)
 {
     // Every build (flat parity, 2026-10-03): the keys are dev-only, so a player build keeps their defaults -- on foot
     // transported (shot_point_transport 1), seats not (shot_point_transport_seated 0). Every title whose local shots
-    // aim through a world point except Reach (sight_layer.h).
+    // aim through a world point; Reach on foot only (its seats are not covered by either key: sight_layer.h).
     if (title != GameTitle::Halo3 && title != GameTitle::Halo3ODST && title != GameTitle::Halo2 &&
-        title != GameTitle::HaloCE && title != GameTitle::Halo4)
+        title != GameTitle::HaloCE && title != GameTitle::Halo4 && title != GameTitle::HaloReach)
+        return false;
+    if (title == GameTitle::HaloReach && seated)
         return false;
     return g_config.shot_point_transport != 0 && (!seated || g_config.shot_point_transport_seated != 0);
 }
@@ -731,7 +734,8 @@ shot_lag::Transport Sight_TransportSample(GameTitle title, const SightPointSampl
     in.pointEyeValid = sample.camera.valid;
     memcpy(in.pointEye, sample.camera.eye, sizeof(in.pointEye));
     in.pointEyeStampUs = sample.camera.stampUs;
-    in.velValid = sample.camera.velValid;
+    // A measured-only sample (Reach) never extrapolates: without a usable fire eye, P stays (Transport::NoFireEye).
+    in.velValid = sample.camera.velValid && !sample.measuredOnly;
     memcpy(in.vel, sample.camera.vel, sizeof(in.vel));
     in.nowUs = Sight_NowUs();
     in.maxAgeUs = kSightTransportMaxAgeUs;

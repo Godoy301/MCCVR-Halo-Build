@@ -205,7 +205,8 @@ void Sight_NoteMuzzleShotHeld(GameTitle title);
 // its own origin aims through P from there (Sight_ReaimThroughPoint). `point` comes from ONE frame-coherent
 // hand/camera pair where the title has one (Halo 3, ODST: the render that used the hand's head sample); `solvePoint`
 // is the point the published angles were bent through (the same unless the pair was older). Halo 3, ODST and Halo 4
-// publish from Game_ComputeAimStick; Reach keeps its own lane (ReachSightReadActuated). Any thread reads.
+// publish from Game_ComputeAimStick; Reach keeps its own lane (ReachSightReadActuated / ReachSightReadIntentSample,
+// whose camera sample is stamped at the local shot ray's publish). Any thread reads.
 struct SightIntent
 {
     shot_lag::IntentPoint p{};
@@ -233,17 +234,22 @@ inline constexpr uint64_t kSightIntentShotMaxAgeMs = 150;
 // the fire once proven, shot_lag::EvaluatorEyeProof, else E_P carried a tick: Sight_ShotPointSample), CE's player
 // assist ray, and Halo 4's muzzle shot (extrapolated). A consumer that applies a DIRECTION solved from E_P at the
 // fire's own eye (the unit aim Halo 2, CE and Halo 4 write, and every record) already IS flat parity: its line from
-// E_fire passes through P + (E_fire - E_P). Not Reach: its intent lane (ReachSightReadIntent) carries no camera-sample
-// stamp and publishes no fire-tick eye. By the same rule its on-foot shots DO aim through a world point since the
-// 2026-10-02 shot-lag fix (the unit-adjust and crosshair-query re-aims, the muzzle shot: the provider's actuated
-// point), so they should trail a strafe by a tick as Halo 3 did -- yet the player reported no lag there (2026-10-03).
-// Left unchanged until a headset run says which: its dev SHOT LAG line's "stale eye along travel" is E_fire - E_P.
-// The reticle is never moved: it stays on P.
+// E_fire passes through P + (E_fire - E_P). REACH (fix/flat-parity-reach, 2026-10-03): its on-foot shots aim through
+// a world point since the 2026-10-02 shot-lag fix -- the unit-adjust and crosshair-query re-aims and the muzzle shot,
+// all through the provider's actuated point -- so by the rule they trail a strafe by E_fire - E_P unless Reach fires
+// from the render's eye (the player reported no lag there; the old shot witness measured its native line 93 mm off the
+// solve's eye while moving). Covered now, MEASURED OR NOTHING (shot_lag_logic.h 4f): its intent carries the camera
+// sample's stamp (the local shot ray's publish), and E_fire is Reach's own unit camera-position evaluator asked inside
+// the fire for our unit (reach_fire_eye.inl), used only once proven equal to E_P at rest; never carried or
+// extrapolated (SightPointSample::measuredOnly), so an unproven or absent evaluator leaves the shot on P, counted.
+// Reach's record (the direct drive's angles, solved from E_P) is a direction and is not shifted; its seats are not
+// covered at all. The reticle is never moved: it stays on P.
 enum class SightTransportSite : uint8_t
 {
-    CrosshairAssist = 0,   // the crosshair-assist query re-aim (Halo 3, ODST); CE's player assist ray
-    Muzzle,                // the muzzle shot (Halo 3, ODST, Halo 2, CE, Halo 4)
+    CrosshairAssist = 0,   // the crosshair-assist query re-aim (Halo 3, ODST, Reach); CE's player assist ray
+    Muzzle,                // the muzzle shot (Halo 3, ODST, Halo 2, CE, Halo 4, Reach)
     Record,                // Halo 3's on-foot record recomposition
+    UnitAdjust,            // Reach's unit-adjust re-aim (the shot's own origin and direction)
     Count
 };
 // A point a shot site aims through, with the camera sample it was built from (Sight_ShotPointSample).
@@ -252,6 +258,9 @@ struct SightPointSample
     float point[3]{};          // P
     float dir[3]{};            // the intent ray's direction (only splits the witness's shift along travel)
     SightCameraSample camera;  // E_P, its stamp and velocity
+    // Reach: P moves only with a MEASURED fire eye. Without one the shot keeps P (Transport::NoFireEye) -- E_P's
+    // velocity is never used to extrapolate one; it still splits the witness's shift along travel.
+    bool measuredOnly = false;
 };
 // A title's eye at the fire tick (Halo 3 on foot: game.cpp Halo3FireEyeForShot; Halo 2 and CE: their camera evaluator
 // asked at the fire, else `sample`'s eye carried a tick), on the fire thread. `siteEye`: the eye the shot site itself
@@ -261,9 +270,9 @@ struct SightPointSample
 using SightFireEyeFn = shot_lag::FireEye (*)(const float* siteEye, bool askEvaluator, const SightPointSample& sample,
                                              float eye[3], float& ageMs);
 void Sight_SetFireEyeSource(GameTitle title, SightFireEyeFn source);
-// The keys' verdict for a shot of this kind: a covered title (Halo 3, ODST, Halo 2, CE, Halo 4 -- not Reach),
-// shot_point_transport on, and seated shots only with shot_point_transport_seated as well. A player build: on foot
-// yes, seated no.
+// The keys' verdict for a shot of this kind: a covered title (Halo 3, ODST, Halo 2, CE, Halo 4, Reach on foot),
+// shot_point_transport on, and seated shots only with shot_point_transport_seated as well (never Reach's seats). A
+// player build: on foot yes, seated no.
 bool Sight_TransportWanted(GameTitle title, bool seated);
 // A title's simulation tick, from a per-tick hook (every build; several units per tick are one tick), and its
 // measured period (us), else `fallbackUs` while unmeasured. Also feeds the dev SHOT LAG line's tick.
