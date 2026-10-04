@@ -2264,6 +2264,9 @@ namespace
     thread_local int8_t t_halo3Fire = shot_lag::kFireNone;
     thread_local int8_t t_odstFire = shot_lag::kFireNone;
     thread_local int8_t t_reachFire = shot_lag::kFireNone;
+    // Flat parity, Reach (reach_fire_eye.inl; shot_lag_logic.h 4f): the unit camera evaluator's answer asked once inside
+    // this fire for our unit -- E_fire for every consumer of the fire. Opened empty and restored by ReachMuzzleFireDetour.
+    thread_local shot_lag::FireEyeScope t_reachFireEye{};
 
     LegacyWorldCollisionFeature* LegacyCollisionForTitle(GameTitle title);
     void LegacyPublishReloadTarget(GameTitle title,uint16_t tag,uint32_t generation,
@@ -2357,6 +2360,13 @@ namespace
         uintptr_t caller, float out[3]);
     bool ReachSightReadIntent(uint64_t maxAgeUs, float point[3], float eye[3], float vel[3], bool& velValid,
         uint64_t& atUs);
+    bool ReachSightReadIntentSample(uint64_t maxAgeUs, SightPointSample& out, uint64_t& atUs);
+    // Flat parity's fire eye (reach_fire_eye.inl): asked inside a fire for our unit; the proof's per-tick sample; the
+    // dev witness of that eye against the native shot line.
+    void ReachMeasureFireEye(int32_t unit, bool fresh = false);
+    void ReachNoteFireEyeProof(int32_t localUnit, bool onFoot, uint32_t generation);
+    void ReachNoteFireEyeNativeLine(int32_t unit, const float* origin, const float* direction);
+    void ReportReachFireEye();
     void ReachSightNoteShotLag(SightShotPath path, const float* origin, const float* direction, bool seated,
         int32_t seat);
     void ReachSightNoteCrosshairQuery(uint64_t flags, const float* start, const float* vector, int32_t ignoredA,
@@ -20101,6 +20111,9 @@ namespace
         std::atomic<uint32_t> sequence{0};
         std::atomic<uint32_t> generation{0};
         std::atomic<uint64_t> sampleMs{0};
+        // Local shot ray only (flat parity, 2026-10-03): when this frame's engine eye `base` was published, on the
+        // sight clock (Sight_NowUs) -- the camera sample stamp of the intent point built from it (shot_lag 4f).
+        std::atomic<uint64_t> sampleUs{0};
         std::atomic<int32_t> unitHandle{-1};
         std::atomic<int32_t> directParent{-1};
         std::atomic<uint32_t> definitionDatum{0xFFFFFFFFu};
@@ -20481,6 +20494,7 @@ namespace
         uint32_t sequence = 0;
         uint32_t generation = 0;
         uint64_t sampleMs = 0;
+        uint64_t sampleUs = 0;   // local shot ray only: the sight-clock stamp of `base` (0: unknown)
         ReachSeatLeaseKey key{};
         float target[3]{};
         float origin[3]{};
@@ -20589,6 +20603,8 @@ namespace
                 published.generation.load(std::memory_order_relaxed);
             sample.sampleMs =
                 published.sampleMs.load(std::memory_order_relaxed);
+            sample.sampleUs =
+                published.sampleUs.load(std::memory_order_relaxed);
             sample.key = {
                 sample.generation,
                 published.unitHandle.load(std::memory_order_relaxed),
@@ -20955,11 +20971,17 @@ namespace
                 // point the provider actuated (shot_lag_logic.h; within 10 mm it is left as Reach built it). Reach's
                 // aim_assist, which may still turn it at its crosshair hit, traces that query through the same
                 // point (ReachSightReaimCrosshairQuery).
-                float point[3]{}, eye[3]{}, vel[3]{};
-                bool velValid=false;
+                // FLAT PARITY (2026-10-03, shot_lag_logic.h 4f): through P moved with the eye from P's camera sample
+                // to this fire's -- Reach's own unit camera evaluator asked in this fire (the camera the native
+                // origin was just built on), once proven equal to E_P at rest; unproven or absent, P as published.
+                SightPointSample sample{};
                 uint64_t atUs=0;
-                if(ReachSightReadIntent(kSightIntentShotMaxAgeMs*1000ull,point,eye,vel,velValid,atUs))
+                if(ReachSightReadIntentSample(kSightIntentShotMaxAgeMs*1000ull,sample,atUs))
                 {
+                    ReachNoteFireEyeNativeLine(unitIndex,origin,direction);   // dev: is that eye on this line?
+                    float moved[3]{};
+                    const float* point=Sight_ShotPointSample(GameTitle::HaloReach,SightTransportSite::UnitAdjust,
+                        sample,false,sample.point,moved);
                     if(Sight_ReaimThroughPoint(GameTitle::HaloReach,SightShotSite::UnitAdjust,origin,direction,point))
                         substituted=true;   // T-2 evidence: the re-aimed ray is final here
                 }
@@ -21169,8 +21191,16 @@ namespace
             // local player's fire only from here (shot_lag::FireMark; ReachMuzzleFireDetour opens the fire). Seated,
             // unitIndex is the occupant (the seated redirect below matches it to the occupation's unit).
             if (reinterpret_cast<uintptr_t>(_ReturnAddress())==g_reachCamera.base+0x4C303F)
-                t_reachFire=shot_lag::FireMark(t_reachFire,
-                    unitIndex!=-1 && unitIndex==LegacyCollisionIgnoredObject(GameTitle::HaloReach));
+            {
+                const bool local=
+                    unitIndex!=-1 && unitIndex==LegacyCollisionIgnoredObject(GameTitle::HaloReach);
+                // FLAT PARITY (reach_fire_eye.inl): our shooter's eye at this fire, after the tick's move -- the
+                // camera this very unit-adjust builds the native origin on -- for every consumer of this fire. With
+                // no enclosing fire detour (t_reachFire none) there is no fire scope to reuse: asked afresh.
+                if (local)
+                    ReachMeasureFireEye(unitIndex,t_reachFire==shot_lag::kFireNone);
+                t_reachFire=shot_lag::FireMark(t_reachFire,local);
+            }
             if (reinterpret_cast<uintptr_t>(_ReturnAddress())==g_reachCamera.base+0x4C303F &&
                 ReachApplyBarrelAim(unitIndex,origin,direction,basisForward,collision,simulation))
             {
@@ -24705,6 +24735,8 @@ namespace
             published.sequence.fetch_add(1,std::memory_order_acq_rel);
             published.generation.store(rayValid?generation:0,std::memory_order_relaxed);
             published.sampleMs.store(rayValid?presentedTargetMs:0,std::memory_order_relaxed);
+            // The camera sample's stamp on the sight clock (flat parity): this frame's engine eye, published now.
+            published.sampleUs.store(rayValid?Sight_NowUs():0,std::memory_order_relaxed);
             published.unitHandle.store(rayValid?unit:-1,std::memory_order_relaxed);
             published.directParent.store(seatedRay?owner.vehicle.directParent:-1,std::memory_order_relaxed);
             published.definitionDatum.store(seatedRay?owner.vehicle.definitionDatum:0xFFFFFFFFu,
@@ -27371,6 +27403,7 @@ namespace
     }
 
     #include "reach_sight_trace.inl"
+    #include "reach_fire_eye.inl"
     #include "legacy_sight_trace.inl"
     #include "reach_contact_melee_runtime.inl"
     #include "halo3_contact_melee_runtime.inl"
@@ -51666,6 +51699,7 @@ bool Game_ReachSightSample(ReachSightSample& out)
             return false;
     }
     out.raySampleMs = ray.sampleMs;
+    out.eyeStampUs = ray.sampleUs;   // the camera sample's stamp (flat parity: the intent's E_P)
     // The trace result: a torn read retries once, then reports "no range" (the provider holds).
     auto& trace = g_reachSightTrace;
     for (int attempt = 0; attempt < 2; ++attempt)
@@ -51719,16 +51753,22 @@ void Game_ReachNoteConvergedSample(const ReachSightSample& sample, float smoothe
     a.hz.store(sample.head[2], std::memory_order_relaxed);
     a.rangeWu.store(smoothedRangeWu, std::memory_order_relaxed);
     a.atMs.store(GetTickCount64(), std::memory_order_relaxed);
-    // The shot-lag fix: the sight clock, and the engine eye's velocity from the eyes this thread actuated.
+    // The shot-lag fix: the sight clock, and the engine eye's velocity from the eyes this thread actuated -- each on
+    // its CAMERA SAMPLE's stamp (flat parity, 2026-10-03: the local shot ray's publish), so a poll that re-reads one
+    // render's eye is no new sample and the velocity is measured on the render's clock, not the input poll's.
+    const uint64_t nowUs = Sight_NowUs();
+    const uint64_t eyeStampUs = sample.eyeStampUs && sample.eyeStampUs <= nowUs ? sample.eyeStampUs : nowUs;
     static shot_lag::EyeTrack s_track;
-    s_track.Push(Sight_NowUs(), sample.eye);
+    s_track.Push(eyeStampUs, sample.eye);
     float vel[3]{};
     const bool velValid = s_track.Velocity(120000, 30000, vel);
     a.vx.store(velValid ? vel[0] : 0.0f, std::memory_order_relaxed);
     a.vy.store(velValid ? vel[1] : 0.0f, std::memory_order_relaxed);
     a.vz.store(velValid ? vel[2] : 0.0f, std::memory_order_relaxed);
     a.velValid.store(velValid, std::memory_order_relaxed);
-    a.atUs.store(Sight_NowUs(), std::memory_order_relaxed);
+    a.atUs.store(nowUs, std::memory_order_relaxed);
+    a.eyeStampUs.store(sample.eyeStampUs && sample.eyeStampUs <= nowUs ? sample.eyeStampUs : 0,
+                       std::memory_order_relaxed);
     a.sequence.fetch_add(1, std::memory_order_release);
 }
 

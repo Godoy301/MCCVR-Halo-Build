@@ -149,7 +149,7 @@ bool ApplyReachMuzzleMarker(uint32_t object,uint64_t count,void* markers,int16_t
     // SHOTS FROM THE MUZZLE (sight_layer.h): keep the origin the obstruction check left, but fly through the
     // converged point instead of along the barrel. A refusal refuses the barrel shot: it leaves the eye.
     // Reach's converged point is the one its direct drive last wrote (ReachAimMuzzleShot).
-    if(!g_config.gun_barrel_aim&&!ReachAimMuzzleShot(before,muzzle.ray.position,muzzle.ray.direction,muzzle.ray.up))
+    if(!g_config.gun_barrel_aim&&!ReachAimMuzzleShot(context.unit,before,muzzle.ray.position,muzzle.ray.direction,muzzle.ray.up))
         return false;
     if(!AcquireReachMuzzleTarget(muzzle,*request.lease))return false;
     const auto& ray=muzzle.ray;auto* bytes=static_cast<uint8_t*>(markers);
@@ -197,12 +197,14 @@ __declspec(noinline) void __fastcall ReachMuzzleFireDetour(uint32_t weapon,int16
     const auto previousShot=g_reachBarrelShot;const auto previousRequest=g_reachBarrelRequest;
     // The shooter is unknown until the unit-adjust (ReachUnitAdjustHook, from 0x4C303A) names it: shot_lag::FireMark.
     const int8_t previousFire=t_reachFire;t_reachFire=shot_lag::kFireOther;
+    // Flat parity: this fire's eye is asked afresh inside it (reach_fire_eye.inl); a nested fire keeps its own.
+    const shot_lag::FireEyeScope previousEye=t_reachFireEye;t_reachFireEye=shot_lag::FireEyeScope{};
     NativeShotTargetLease<0x28> lease{};g_reachBarrelShot={};g_reachBarrelRequest={weapon,barrel,simulation,&lease};
     __try {if(feature.fireOriginal)feature.fireOriginal(weapon,barrel,data,simulation);}
     __finally
     {
         RestoreReachMuzzleTarget(lease);g_reachBarrelShot=previousShot;g_reachBarrelRequest=previousRequest;
-        t_reachFire=previousFire;
+        t_reachFire=previousFire;t_reachFireEye=previousEye;
         feature.callbacks.fetch_sub(1,std::memory_order_acq_rel);
     }
 }

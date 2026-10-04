@@ -770,11 +770,12 @@ struct Config
     // DEV BUILD ONLY (parsed, saved and in the menu only in dev builds; a player build always uses 1): FLAT PARITY --
     // THE SHOT POINT MOVED WITH THE EYE (shot_lag_logic.h 4a; sight_layer.h Sight_ShotPoint). 1 = an on-foot local
     // shot that aims through a world point -- Halo 3 / ODST: the crosshair-assist re-aim, the muzzle shot and Halo 3's
-    // on-foot record; Halo 2, CE and Halo 4: the muzzle shot; CE: the player assist ray -- aims through
+    // on-foot record; Halo 2, CE and Halo 4: the muzzle shot; CE: the player assist ray; Reach: the unit-adjust and
+    // crosshair-query re-aims and the muzzle shot, ONLY with its measured fire eye (shot_lag_logic.h 4f) -- aims through
     // P' = P + (the eye at the fire - the eye of P's camera sample) instead of the world point P: what stock flat Halo
     // fires, one tick of strafe ahead of the crosshair the player aimed with (flat probe, 2026-10-03: impacts land ON
     // the crosshair of the frame that shows them). 0 = through P as published (the A/B: rounds trail a strafe by one
-    // tick). Not Reach. The reticle stays on P either way. Live (read per shot). (default 1)
+    // tick). The reticle stays on P either way. Live (read per shot). (default 1)
     int shot_point_transport = 1;
     // DEV BUILD ONLY: with shot_point_transport on, 1 = seated shots too (extrapolated from the eye's velocity; a seat
     // has no fire-tick eye). 0 = seats keep P (the Halo 3 Hornet was confirmed right that way, 2026-10-03, and a
