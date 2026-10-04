@@ -6139,6 +6139,7 @@ namespace
         ReportHalo2ContactMelee();
         ReportHalo2Drive();
         ReportHalo2WeaponHaptics();
+        ReportHalo2FireEye();
         static uint64_t s_reportedReseats = 0;
         const uint64_t reseats = g_roomscaleReseats.load(std::memory_order_relaxed);
         if (reseats != s_reportedReseats)
