@@ -1192,6 +1192,89 @@ int main()
         Check(SmoothTickPeriod(period, 1500) == period && SmoothTickPeriod(period, 300000) == period,
               "another unit in the same tick, and a stall, are not periods");
     }
+    {
+        // 4f, Reach: MEASURED OR NOTHING. ChooseMeasuredFireEye never carries or extrapolates.
+        const float asked[3]{1.5f, 2.0f, 3.0f};
+        const float bad[3]{1.0f, NAN, 3.0f};
+        float out[3]{9.0f, 9.0f, 9.0f};
+        Check(ChooseMeasuredFireEye(FireEye::Measured, asked, out) == FireEye::Measured && out[0] == 1.5f,
+              "a proven answer asked in this fire is E_fire");
+        out[0] = 9.0f;
+        Check(ChooseMeasuredFireEye(FireEye::Unproven, asked, out) == FireEye::Unproven && out[0] == 9.0f,
+              "unproven: no eye at all (nothing carried), out untouched");
+        Check(ChooseMeasuredFireEye(FireEye::Measured, bad, out) == FireEye::Faulted && out[0] == 9.0f,
+              "a non-finite answer is a fault");
+        Check(ChooseMeasuredFireEye(FireEye::Count, nullptr, out) == FireEye::NotRead, "not asked: not read");
+        Check(ChooseMeasuredFireEye(FireEye::OtherUnit, asked, out) == FireEye::OtherUnit &&
+                  !FireEyeUsable(ChooseMeasuredFireEye(FireEye::ChasePath, asked, out)),
+              "every other verdict passes through, unusable");
+    }
+    {
+        // FireEyeScope: asked once per fire, for one unit.
+        FireEyeScope scope;
+        float out[3]{};
+        Check(scope.For(7, out) == FireEye::NotRead, "a fresh fire has asked nothing");
+        const float eye[3]{4.0f, 5.0f, 6.0f};
+        scope.Store(7, true, eye);
+        Check(scope.For(7, out) == FireEye::Measured && out[0] == 4.0f && out[2] == 6.0f,
+              "the fire's answer for its unit");
+        Check(scope.For(8, out) == FireEye::OtherUnit && scope.For(-1, out) == FireEye::OtherUnit,
+              "never another unit's");
+        scope.Store(7, false, nullptr);
+        Check(scope.For(7, out) == FireEye::Faulted, "an evaluator that could not be asked is a fault");
+        const float nonFinite[3]{INFINITY, 0.0f, 0.0f};
+        scope.Store(7, true, nonFinite);
+        Check(scope.For(7, out) == FireEye::Faulted, "a non-finite answer is a fault");
+        scope = FireEyeScope{};
+        Check(scope.For(7, out) == FireEye::NotRead, "the next fire opens empty");
+    }
+    {
+        // EyeAtRest and PointLineDistance (the proof's rest bar; the dev native-line witness).
+        const float slow[3]{0.2f * kWuPerM, 0.0f, 0.0f}, fast[3]{0.3f * kWuPerM, 0.0f, 0.0f};
+        Check(EyeAtRest(true, slow) && !EyeAtRest(true, fast) && !EyeAtRest(false, slow),
+              "at rest: a known velocity under 0.25 m/s");
+        const float o[3]{0.0f, 0.0f, 0.0f}, d[3]{10.0f, 0.0f, 0.0f}, q[3]{3.0f, 0.04f, 0.03f};
+        Check(Near(PointLineDistance(q, o, d), 0.05f, 1.0e-6f), "a point's distance from a line of any length");
+        const float zero[3]{};
+        Check(std::isnan(PointLineDistance(q, o, zero)), "no line, no distance");
+    }
+    {
+        // The Reach transport end to end, with a measured-only sample (velocity never used to extrapolate).
+        // Strafing 6 m/s along +Y, aiming down +X at a wall 7 m away; the fire is one 60 Hz tick after P's render.
+        const float eP[3]{0.0f, 0.0f, 0.0f};
+        const float p[3]{7.0f * kWuPerM, 0.0f, 0.0f};
+        const float eFire[3]{0.0f, 0.1f * kWuPerM, 0.0f};   // 100 mm along travel
+        TransportInput in{};
+        std::memcpy(in.point, p, sizeof(p));
+        in.pointEyeValid = true;
+        std::memcpy(in.pointEye, eP, sizeof(eP));
+        in.pointEyeStampUs = 1000000;
+        in.nowUs = 1016667;
+        in.maxAgeUs = 250000;
+        in.velValid = false;   // measuredOnly: the velocity is not given to TransportPoint
+        float pMoved[3]{}, shift[3]{};
+        Check(TransportPoint(in, pMoved, shift) == Transport::NoFireEye,
+              "Reach without a measured fire eye: P as published (no extrapolation, no carry)");
+        in.fireEyeValid = true;
+        std::memcpy(in.fireEye, eFire, sizeof(eFire));
+        Check(TransportPoint(in, pMoved, shift) == Transport::Measured && Near(shift[1] * kMmPerWu, 100.0f, 0.01f),
+              "with it, P moves by exactly E_fire - E_P");
+        // The native shot leaves from E_fire's line along the record's DIRECTION, solved from E_P toward P: re-aimed
+        // through P' it is already through (left as built); re-aimed through P it would bend back by the travel.
+        const float solved[3]{p[0] - eP[0], p[1] - eP[1], p[2] - eP[2]};
+        const float native[3]{eFire[0] + 0.88f * kWuPerM, eFire[1], eFire[2]};   // the muzzle projected on that line
+        float reaimed[3]{};
+        Check(ReaimThroughPoint(native, solved, pMoved, ReaimRails{}, reaimed) == Reaim::AlreadyThrough,
+              "through P' the native line is left exactly as Reach built it (flat parity)");
+        Check(ReaimThroughPoint(native, solved, p, ReaimRails{}, reaimed) == Reaim::Applied &&
+                  Near(LineMiss(native, solved, p) * kMmPerWu, 100.0f, 0.5f),
+              "through P it is bent back onto a point 100 mm behind along travel (the trail)");
+        // If Reach fires from the eye the render showed, the measured shift is zero: a no-op, not an over-correction.
+        std::memcpy(in.fireEye, eP, sizeof(eP));
+        Check(TransportPoint(in, pMoved, shift) == Transport::Measured && Near(Length(shift), 0.0f, 1.0e-9f) &&
+                  pMoved[0] == p[0] && pMoved[1] == p[1],
+              "E_fire == E_P: P' == P");
+    }
 
     std::printf("shot_lag_tests: %u checks, %u failures\n", checks, failures);
     return failures ? 1 : 0;

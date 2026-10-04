@@ -697,6 +697,87 @@ inline uint32_t SmoothTickPeriod(uint32_t prior, uint64_t gapUs)
                  : static_cast<uint32_t>(period);
 }
 
+// ---- 4f. MEASURED OR NOTHING (Halo Reach on foot, 2026-10-03) ---------------------------------------------------
+// Reach's on-foot shot sites -- the unit-adjust re-aim, the crosshair-query re-aim and the muzzle shot -- aim through
+// the provider's WORLD point P, so by the rule above they trail a strafe by E_fire - E_P unless Reach fires from the
+// eye the render showed. Whether it does was never settled in the headset (the player reported no lag; the old dev
+// shot witness measured the native shot line 93 mm mean off the solve's eye while moving), so E_fire is MEASURED here
+// or the shot keeps P: never carried a tick, never extrapolated. Its source is the stock unit camera-position evaluator
+// (HREK 0xD76E60, retail 0x48A1C0) -- the camera the unit-adjust itself builds the native origin on (R-V12: origin :=
+// camera + forward * dot(origin - camera, forward)) -- asked once per native fire, inside it, for our unit, after the
+// tick's move. Its answer is E_fire only once EvaluatorEyeProof has proven it equal to E_P at rest. If Reach does fire
+// from the render's eye, the measured shift is ~0 and the transport a no-op, not an over-correction.
+//
+// The verdict for an evaluator answer asked at this fire: Measured (out = the eye) only when `asked` is Measured and the
+// eye finite; anything else is returned as it is (Count: not asked -> NotRead) and `out` is untouched.
+inline FireEye ChooseMeasuredFireEye(FireEye asked, const float* askedEye, float out[3])
+{
+    if (asked == FireEye::Measured)
+    {
+        if (!askedEye || !Finite3(askedEye) || !out)
+            return FireEye::Faulted;
+        std::memcpy(out, askedEye, sizeof(float) * 3);
+        return FireEye::Measured;
+    }
+    return asked == FireEye::Count ? FireEye::NotRead : asked;
+}
+
+// One native fire's evaluator answer, asked once and reused by every consumer inside that fire (a fire's sites run in
+// a fixed order on one thread: the muzzle shot, the unit-adjust, then the firing assist's crosshair query). Opened
+// empty at the fire's entry; `For` hands the eye only to the unit it was asked for.
+struct FireEyeScope
+{
+    bool asked = false;
+    bool answered = false;   // the evaluator returned a finite eye (false: not callable, faulted or non-finite)
+    int32_t unit = -1;
+    float eye[3]{};
+
+    void Store(int32_t forUnit, bool called, const float* answer)
+    {
+        asked = true;
+        unit = forUnit;
+        answered = called && answer && Finite3(answer);
+        if (answered)
+            std::memcpy(eye, answer, sizeof(eye));
+    }
+    // NotRead: nothing asked in this fire; OtherUnit: asked for another unit; Faulted: no finite answer; else
+    // Measured with `out` the eye (the caller's proof turns that into its own verdict).
+    FireEye For(int32_t forUnit, float out[3]) const
+    {
+        if (!asked)
+            return FireEye::NotRead;
+        if (forUnit == -1 || forUnit != unit)
+            return FireEye::OtherUnit;
+        if (!answered || !out)
+            return FireEye::Faulted;
+        std::memcpy(out, eye, sizeof(eye));
+        return FireEye::Measured;
+    }
+};
+
+// E_P "at rest" for a proof sample: its velocity known and under 0.25 m/s (the same bar the transport witness uses).
+inline bool EyeAtRest(bool velValid, const float vel[3])
+{
+    return velValid && Finite3(vel) && Length(vel) * kMetresPerWu < 0.25f;
+}
+
+// How far a point lies from a line (origin, direction of any length), in wu; NaN when undefined. The dev witness
+// measures the fire eye against the native shot line with it: the unit-adjust builds its origin on the evaluator's
+// camera line, so an answer that is the fire's camera sits ~0 off that line.
+inline float PointLineDistance(const float point[3], const float origin[3], const float dir[3])
+{
+    if (!Finite3(point) || !Finite3(origin) || !Finite3(dir))
+        return std::nanf("");
+    const float length = Length(dir);
+    if (!std::isfinite(length) || !(length > 1.0e-6f))
+        return std::nanf("");
+    const float d[3]{dir[0] / length, dir[1] / length, dir[2] / length};
+    const float v[3]{point[0] - origin[0], point[1] - origin[1], point[2] - origin[2]};
+    const float along = Dot(v, d);
+    const float p[3]{v[0] - d[0] * along, v[1] - d[1] * along, v[2] - d[2] * along};
+    return Length(p);
+}
+
 // A report window of transports (one per title and consumer; dev): what was used, by kind, and the shift P' - P --
 // along the player's travel (the engine eye's velocity with its component along the view removed; + = ahead of where
 // he is going), its magnitude, and its magnitude AT REST (eye under 0.25 m/s: it should be ~0; anything else is an
