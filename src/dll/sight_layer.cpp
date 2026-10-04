@@ -662,7 +662,7 @@ bool Sight_TransportWanted(GameTitle title, bool seated)
     // transported (shot_point_transport 1), seats not (shot_point_transport_seated 0). Every title whose local shots
     // aim through a world point except Reach (sight_layer.h).
     if (title != GameTitle::Halo3 && title != GameTitle::Halo3ODST && title != GameTitle::Halo2 &&
-        title != GameTitle::HaloCE)
+        title != GameTitle::HaloCE && title != GameTitle::Halo4)
         return false;
     return g_config.shot_point_transport != 0 && (!seated || g_config.shot_point_transport_seated != 0);
 }

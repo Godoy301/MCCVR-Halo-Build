@@ -37792,6 +37792,9 @@ namespace
     // The body/aim frame before Halo 4's HMD pose is composed onto the camera.
     // Controller ownership uses this frame, never the post-HMD camera frame.
     Halo4CenterRoot g_halo4ControllerRoot;
+    // When the controller root was published (the sight clock, us; inside its sequence): the camera sample the on-foot
+    // intent point is built from, which a flat-parity muzzle shot moves with the eye from (PublishAimIntent).
+    std::atomic<uint64_t> g_halo4ControllerRootUs{0};
     // What the stereo transaction lifted the VIEW by on top of that frame, straight up (world units), that
     // is not the head: the physical crouch give-back plus the leash below the character's eye. The hands
     // are placed from the controller root, so they rise by it too, or they sink away from the eyes by that
@@ -37842,6 +37845,7 @@ namespace
         for (int i=0;i<12;++i)
             g_halo4ControllerRoot.value[i].store(
                 packed[i],std::memory_order_relaxed);
+        g_halo4ControllerRootUs.store(Sight_NowUs(),std::memory_order_relaxed);
         g_halo4ControllerRoot.sequence.fetch_add(1,std::memory_order_release);
     }
 
@@ -37894,7 +37898,7 @@ namespace
         return false;
     }
 
-    bool Halo4LoadControllerRoot(float scale, BoneMatrix& root)
+    bool Halo4LoadControllerRoot(float scale, BoneMatrix& root, uint64_t* stampUs=nullptr)
     {
         for (int attempt=0;attempt<4;++attempt)
         {
@@ -37905,9 +37909,11 @@ namespace
             for (int i=0;i<12;++i)
                 packed[i]=g_halo4ControllerRoot.value[i].load(
                     std::memory_order_relaxed);
+            const uint64_t publishedUs=g_halo4ControllerRootUs.load(std::memory_order_relaxed);
             const uint32_t after=g_halo4ControllerRoot.sequence.load(
                 std::memory_order_acquire);
             if (before!=after || (after&1)) continue;
+            if (stampUs) *stampUs=publishedUs;
             root=BoneMatrix{};
             root.scale=isfinite(scale)&&fabsf(scale)>0.001f ? scale : 1.0f;
             for (int i=0;i<3;++i)
@@ -52275,6 +52281,33 @@ static shot_lag::FireEye Halo3FireEyeForShot(const float* siteEye, bool askEvalu
 static const bool g_halo3FireEyeRegistered =
     (Sight_SetFireEyeSource(GameTitle::Halo3, &Halo3FireEyeForShot), true);
 
+// THE FIRE EYE, Halo 4 on foot (flat parity, 2026-10-03; shot_lag_logic.h 4e): Halo 4's muzzle shot aims through the
+// intent point P (Sight_AimMuzzleShot), a world point fixed at the controller root the solve read -- the render's
+// pre-HMD body frame, a few ms old at the fire. No camera evaluator of Halo 4's is resolved for a fire-time ask (its
+// aim-camera view 0x1DC9E4 runs only after the shot's direction is decided), so E_fire is that sample's engine eye
+// carried one measured tick (or its own age when older): the flat probe's model. Its direction-based consumers (the
+// direct drive's written angles, the native shot) need nothing: a direction from E_P applied at the fire's eye is
+// flat parity already.
+static shot_lag::FireEye Halo4FireEyeForShot(const float* siteEye, bool askEvaluator, const SightPointSample& sample,
+                                             float eye[3], float& ageMs)
+{
+    (void)siteEye; (void)askEvaluator;
+    ageMs = -1.0f;
+    if (TitleAdapter_GetActiveTitle() != GameTitle::Halo4)
+        return shot_lag::FireEye::NoSource;
+    const float tickS = float(Sight_TickPeriodUs(GameTitle::Halo4, 16667)) * 1.0e-6f;
+    const uint64_t nowUs = Sight_NowUs();
+    const shot_lag::FireEye verdict = shot_lag::ChooseSampleFireEye(
+        shot_lag::FireEye::Count, nullptr, sample.camera.valid, sample.camera.eye,
+        sample.camera.velValid ? sample.camera.vel : nullptr,
+        shot_lag::SampleCarrySeconds(sample.camera.stampUs, nowUs, tickS, kSightTransportMaxAgeUs), eye);
+    if (verdict == shot_lag::FireEye::CarriedTick)
+        ageMs = float(nowUs - sample.camera.stampUs) / 1000.0f;
+    return verdict;
+}
+static const bool g_halo4FireEyeRegistered =
+    (Sight_SetFireEyeSource(GameTitle::Halo4, &Halo4FireEyeForShot), true);
+
 // THE INTENT POINT (sight_layer.h SightIntent; shot_lag_logic.h). Input thread, every poll whose converged solve
 // resolved: P = H + u * r from ONE frame-coherent pair where the title publishes camera frames (Halo 3, ODST:
 // PublishCamFrame), else from the solve's own ray (Halo 4). The hands are kept here, keyed by the head sample of
@@ -52382,6 +52415,25 @@ static void PublishAimIntent(GameTitle title, const SightRay& ray, const float h
     {
         memcpy(p.eyeVel, ray.eyeVel, sizeof(p.eyeVel));
         p.eyeVelValid = true;
+    }
+    // A title without camera frames (Halo 4): P's camera sample is the solve's own ray -- its engine eye, sampled when
+    // the ray's eye was (the controller root's publish; else this poll) -- and its velocity is the one the ray's
+    // publish measured on that clock (Sight_PublishRay), read back. Flat parity extrapolates the muzzle shot's point
+    // from it (no fire-tick eye source there: Sight_TransportIntent, Transport::Extrapolated).
+    if (!cameraFrames && !seated)
+    {
+        p.pointEyeValid = shot_lag::Finite3(ray.eye);
+        memcpy(p.pointEye, ray.eye, sizeof(p.pointEye));
+        p.pointEyeStampUs = ray.eyeStampUs && ray.eyeStampUs <= now ? ray.eyeStampUs : now;
+        if (!p.eyeStampUs)
+            p.eyeStampUs = p.pointEyeStampUs;
+        SightRay published{};
+        if (!p.eyeVelValid && Sight_ReadRay(title, ray.generation, kSightRayFreshMs, published) &&
+            published.eyeVelValid)
+        {
+            memcpy(p.eyeVel, published.eyeVel, sizeof(p.eyeVel));
+            p.eyeVelValid = true;
+        }
     }
     Sight_PublishIntent(title, intent);
 }
@@ -53313,6 +53365,7 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
     {
         const GameTitle sightTitle = TitleAdapter_GetActiveTitle();
         float sightHead[3]{}, sightEye[3]{};
+        uint64_t sightEyeStampUs = 0;   // when sightEye was sampled (0: the publish), the ray's eyeStampUs
         bool sightEyes = false;
         bool sightSeated = false;
         // False: publish the intent ray (the trace and the witnesses run) but bend nothing (a Halo 4 seat whose
@@ -53328,7 +53381,7 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
             BoneMatrix center{}, body{};
             sightEyes = sightTitle == GameTitle::Halo4 &&
                 LegacySight(sightTitle).flags.load(std::memory_order_acquire) &&
-                Halo4LoadCenterRoot(1.0f, center) && Halo4LoadControllerRoot(1.0f, body);
+                Halo4LoadCenterRoot(1.0f, center) && Halo4LoadControllerRoot(1.0f, body, &sightEyeStampUs);
             if (sightEyes)
             {
                 memcpy(sightHead, center.translation, sizeof(sightHead));
@@ -53355,6 +53408,7 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
                 sightUnit = static_cast<int32_t>(halo4SeatSight.unit);
                 memcpy(sightHead, halo4SeatSight.head, sizeof(sightHead));
                 memcpy(sightEye, halo4SeatSight.eye, sizeof(sightEye));
+                sightEyeStampUs = 0;   // the seat's eye, not the controller root's
             }
 #endif
 #endif
@@ -53449,6 +53503,7 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
             ray.dir[1] = cosControllerPitch * sinf(controllerYaw);
             ray.dir[2] = sinf(controllerPitch);
             memcpy(ray.eye, sightEye, sizeof(ray.eye));
+            ray.eyeStampUs = sightEyeStampUs;   // Halo 4 on foot: the controller root's publish (its velocity's clock)
             ray.unit = sightUnit;
             ray.ignoreB = sightVehicle;
             ray.ignoreC = sightCarrier;
