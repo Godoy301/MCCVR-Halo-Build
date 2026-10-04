@@ -3939,6 +3939,9 @@ namespace
             engineEye, rightCarrier, range, direction);
     }
 
+    // FLAT PARITY's proof feed (halo2_fire_eye.inl, included below): our on-foot unit's own tick while it stands still.
+    void Halo2NoteFireEyeTick(uint32_t unit) noexcept;
+
     __declspec(noinline) uint64_t __fastcall Halo2NativeAimUpdateDetour(
         uint32_t objectIndex)
     {
@@ -4037,6 +4040,9 @@ namespace
             }
         }
         if(ownedForContact) Halo2ContactTick(objectIndex);
+        // The aim was ours to write (our unit, on foot, the controller owns it): the fire eye's proof samples it at rest.
+        if (applied)
+            Halo2NoteFireEyeTick(objectIndex);
         g_nativeAimActiveCallbacks.fetch_sub(1, std::memory_order_acq_rel);
         return result;
     }
@@ -6139,6 +6145,7 @@ namespace
         ReportHalo2ContactMelee();
         ReportHalo2Drive();
         ReportHalo2WeaponHaptics();
+        ReportHalo2FireEye();
         ReportHalo2FireEye();
         static uint64_t s_reportedReseats = 0;
         const uint64_t reseats = g_roomscaleReseats.load(std::memory_order_relaxed);

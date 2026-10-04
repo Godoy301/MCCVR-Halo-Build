@@ -781,6 +781,13 @@ struct Config
     // has no fire-tick eye). 0 = seats keep P (the Halo 3 Hornet was confirmed right that way, 2026-10-03, and a
     // seated round also inherits its vehicle's velocity: seated_inherit_compensation). (default 0)
     int shot_point_transport_seated = 0;
+    // DEV BUILD ONLY (a player build always uses 1), Halo 2 on foot, with shot_point_transport on: 1 = once the
+    // firing assist's camera evaluator is PROVEN to be the engine eye (halo2_fire_eye.inl; its proof is now fed at rest
+    // from the unit's own tick, 2026-10-04), a muzzle shot's eye at the fire is that evaluator asked inside the fire --
+    // the raw post-move eye, (2 - interpolation factor) ticks past the publication P was built from. 0 = always the
+    // publication's eye carried one measured tick (the A/B: short by the observer's interpolation lag). The dev
+    // HALO 2 FIRE EYE line measures both on every shot either way. Live. (default 1)
+    int halo2_measured_fire_eye = 1;
     // DEV BUILD ONLY (parsed and saved only in dev builds; a player build always uses 1), Halo 3 SEATS: 1 = the seat's
     // record (the angles a multiplayer host fires from) is chosen at the stick call so the game's OWN crosshair query
     // at the fire tick -- from this pass's camera, along the occupant's aim with the seat's learned velocity term --
