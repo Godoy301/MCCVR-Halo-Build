@@ -167,6 +167,12 @@ bool LocalOnFootShooter(uint32_t shooter,HaloCELocalPlayerState* outState=nullpt
 // engine eye is CE's own director eye when the caller has it (`engineEye`), else the stock centre camera.
 // Only when there is no fresh trace does it fall back to the controller's own direction, which runs
 // parallel to the hand ray from the engine eye (the aim before this).
+// FLAT PARITY (2026-10-03; sight_layer.h): P is a world point fixed at the gameplay context's camera, and the player
+// aim-assist ray's own eye (`engineEye`) is CE's eye AT THE FIRE, a tick of travel or more past it. Bent from that eye
+// through P, the assist's line trailed a strafe; flat traces along its crosshair DIRECTION from that eye. So with the
+// transport wanted the bend is solved from the context's camera eye E_P -- the eye P was built from -- and applied at
+// the assist's eye: the line through P' = P + (E_fire - E_P), what flat traces. Counted as a measured transport (E_fire
+// is the ray's own eye). The native shot's direction (no `engineEye`) is solved from E_P already: flat parity as is.
 bool ControllerShotDirection(uint32_t shooter,Vec3& direction,const Vec3* engineEye=nullptr) noexcept
 {
     RenderContext context{};Vec3 head{},dir{},eye{};
@@ -197,13 +203,25 @@ bool ControllerShotDirection(uint32_t shooter,Vec3& direction,const Vec3* engine
     if (!BuildSightGeometry(context.camera,context.tracking,context.reference,
         carrier,context.unitsPerMeter,context.positional,head,dir,eye)||
         !HaloCE_RenderContextCurrent(context)||!AimCurrent()) return false;
-    if (engineEye&&Finite(*engineEye)) eye=*engineEye;
+    const bool fireEye=engineEye&&Finite(*engineEye);
+    const bool parity=fireEye&&Sight_TransportWanted(GameTitle::HaloCE,false);
+    const Vec3 pointEye=eye;   // E_P: the context's camera, the eye P is built from
+    if (fireEye&&!parity) eye=*engineEye;
     const float h[3]{head.x,head.y,head.z},d[3]{dir.x,dir.y,dir.z},e[3]{eye.x,eye.y,eye.z};
     float bent[3]{};
     if (Sight_ConvergedDirection(GameTitle::HaloCE,TitleAdapter_GetGeneration(GameTitle::HaloCE),h,d,e,bent))
     {
         direction={bent[0],bent[1],bent[2]};
         convergedAims.fetch_add(1,std::memory_order_relaxed);
+        if (parity)
+        {
+            const float shift[3]{engineEye->x-pointEye.x,engineEye->y-pointEye.y,engineEye->z-pointEye.z};
+            const float vel[3]{context.cameraVel.x,context.cameraVel.y,context.cameraVel.z};
+            const uint64_t nowUs=Sight_NowUs();
+            Sight_NoteTransport(GameTitle::HaloCE,SightTransportSite::CrosshairAssist,shot_lag::Transport::Measured,
+                shot_lag::FireEye::Measured,shift,d,context.cameraVelValid?vel:nullptr,0.0f,
+                context.cameraStampUs&&nowUs>=context.cameraStampUs?float(nowUs-context.cameraStampUs)/1000.0f:-1.0f);
+        }
         return true;
     }
     direction=dir;
@@ -216,6 +234,111 @@ bool WriteDirection(Vec3* destination,const Vec3& value) noexcept
     __try { std::memcpy(destination,&value,sizeof(value));return true; }
     __except(EXCEPTION_EXECUTE_HANDLER)
     { exceptions.fetch_add(1,std::memory_order_relaxed);return false; }
+}
+// FLAT PARITY, CE on foot (sight_layer.h SightFireEyeFn; shot_lag_logic.h 4e; 2026-10-03). A muzzle shot flies through
+// P' = P + (E_fire - E_P): E_P the gameplay context's camera eye P was built from, E_fire the eye after the fire tick's
+// move. Its source is CE's player aim-assist ray -- the director ray (assistRayHook; the assist's call returns to
+// 0xB67BE4, AssistRayBody) -- asked for our unit inside the fire. Its answer counts only once PROVEN (shot_lag::EvaluatorEyeProof:
+// at rest within 5 cm of E_P for a streak, on the perspective latched while agreeing); samples come from every
+// assist call for our unit (the game's own) and from the muzzle shot's own ask. Until then E_fire is E_P carried one
+// measured tick (CE simulates at 30 Hz). Fire thread only.
+struct CeFireEyeState
+{
+    SRWLOCK lock=SRWLOCK_INIT;
+    shot_lag::EvaluatorEyeProof proof{};
+    shot_lag::EyeProof::State reportedState=shot_lag::EyeProof::State::Unproven;
+    bool reportedPath=false;
+} ceFireEye;
+
+void CeNoteFireEyeProof(uint32_t unit,const Vec3* position,int32_t path)
+{
+    RenderContext context{};
+    const uint32_t current=TitleAdapter_GetGeneration(GameTitle::HaloCE);
+    const uint64_t nowUs=Sight_NowUs();
+    const bool read=current&&HaloCE_GetGameplayContext(context)&&context.cameraStampUs&&nowUs>=context.cameraStampUs&&
+        nowUs-context.cameraStampUs<=100000;
+    const bool atRest=read&&context.cameraVelValid&&
+        std::sqrt(Dot(context.cameraVel,context.cameraVel))*shot_lag::kMetresPerWu<0.25f;
+    float offsetMm=std::numeric_limits<float>::quiet_NaN();
+    if (position&&Finite(*position)&&Finite(context.camera.position))
+    {
+        const Vec3 d=*position-context.camera.position;
+        offsetMm=std::sqrt(Dot(d,d))*shot_lag::kMmPerWu;
+    }
+    const bool eligible=read&&AimCurrent()&&LocalOnFootShooter(unit)&&
+        !context.tracking.controllers.controlsPresentationBlocked;
+    auto& state=ceFireEye;
+    AcquireSRWLockExclusive(&state.lock);
+    state.proof.Note(current,static_cast<int32_t>(unit),eligible,atRest,offsetMm,path);
+    const auto now=state.proof.proof.state;
+    const bool pathKnown=state.proof.pathKnown;
+    const int32_t latched=state.proof.path;
+    const bool changed=now!=state.reportedState||pathKnown!=state.reportedPath;
+    state.reportedState=now;state.reportedPath=pathKnown;
+    ReleaseSRWLockExclusive(&state.lock);
+    if (changed)
+        LOG("CE fire eye (flat parity): the player aim-assist ray's eye is %s%s (perspective %s%d); a muzzle shot's eye "
+            "at the fire is %s",now==shot_lag::EyeProof::State::Proven?"PROVEN":
+            now==shot_lag::EyeProof::State::Disproven?"DISPROVEN":"unproven",
+            now==shot_lag::EyeProof::State::Proven?" to be the camera eye at rest":"",
+            pathKnown?"":"not yet latched, last ",pathKnown?latched:path,
+            now==shot_lag::EyeProof::State::Proven?"measured (that ray asked at the fire)":
+            "the context camera's eye carried one tick");
+}
+bool CeCallFireEyeEvaluator(uint32_t unit,Vec3& position,int32_t& path) noexcept
+{
+    const auto evaluator=reinterpret_cast<PlayerRayFn>(assistRayHook.original);
+    if (!evaluator||!AimCurrent()) return false;
+    __try { Vec3 direction{};path=evaluator(unit,&position,&direction);return true; }
+    __except(EXCEPTION_EXECUTE_HANDLER) { exceptions.fetch_add(1,std::memory_order_relaxed);return false; }
+}
+shot_lag::FireEye CeFireEyeForShot(const float* siteEye,bool askEvaluator,const SightPointSample& sample,
+    float eye[3],float& ageMs)
+{
+    (void)siteEye;
+    ageMs=-1.0f;
+    if (TitleAdapter_GetActiveTitle()!=GameTitle::HaloCE) return shot_lag::FireEye::NoSource;
+    float measured[3]{};
+    shot_lag::FireEye asked=shot_lag::FireEye::Count;
+    HaloCELocalPlayerState state{};
+    if (askEvaluator)
+    {
+        // Inside the muzzle shot's fire (MuzzleFireHook holds this module's callback count): our unit only.
+        Vec3 position{};int32_t path=0;
+        if (!HaloCEControls_GetLocalPlayerState(state)||!LocalOnFootShooter(state.unit)) asked=shot_lag::FireEye::OtherUnit;
+        else if (!CeCallFireEyeEvaluator(state.unit,position,path)) asked=shot_lag::FireEye::Faulted;
+        else
+        {
+            const bool finite=Finite(position);
+            CeNoteFireEyeProof(state.unit,finite?&position:nullptr,path);   // our own ask is a sample too
+            AcquireSRWLockShared(&ceFireEye.lock);
+            asked=ceFireEye.proof.Verdict(path,finite);
+            ReleaseSRWLockShared(&ceFireEye.lock);
+            measured[0]=position.x;measured[1]=position.y;measured[2]=position.z;
+        }
+    }
+    // 30 Hz while unmeasured: CE's simulation tick.
+    const float tickS=float(Sight_TickPeriodUs(GameTitle::HaloCE,33333))*1.0e-6f;
+    const uint64_t nowUs=Sight_NowUs();
+    const shot_lag::FireEye verdict=shot_lag::ChooseSampleFireEye(asked,measured,sample.camera.valid,sample.camera.eye,
+        sample.camera.velValid?sample.camera.vel:nullptr,
+        shot_lag::SampleCarrySeconds(sample.camera.stampUs,nowUs,tickS,kSightTransportMaxAgeUs),eye);
+    if (verdict==shot_lag::FireEye::Measured) ageMs=0.0f;
+    else if (verdict==shot_lag::FireEye::CarriedTick&&sample.camera.stampUs&&nowUs>=sample.camera.stampUs)
+        ageMs=float(nowUs-sample.camera.stampUs)/1000.0f;
+    return verdict;
+}
+const bool ceFireEyeRegistered=(Sight_SetFireEyeSource(GameTitle::HaloCE,&CeFireEyeForShot),true);
+// The gameplay context as the camera sample a shot site built its point from.
+SightCameraSample CeContextCameraSample(const RenderContext& context) noexcept
+{
+    SightCameraSample camera{};
+    camera.eye[0]=context.camera.position.x;camera.eye[1]=context.camera.position.y;camera.eye[2]=context.camera.position.z;
+    camera.stampUs=context.cameraStampUs;
+    camera.valid=context.cameraStampUs!=0&&Finite(context.camera.position);
+    camera.velValid=context.cameraVelValid;
+    camera.vel[0]=context.cameraVel.x;camera.vel[1]=context.cameraVel.y;camera.vel[2]=context.cameraVel.z;
+    return camera;
 }
 #include "haloce_muzzle_state.inl"
 #include "haloce_muzzle_shots.inl"
@@ -286,6 +409,10 @@ int16_t AssistRayBody(uint32_t unit,Vec3* position,Vec3* direction,uintptr_t cal
     const auto original=reinterpret_cast<PlayerRayFn>(assistRayHook.original);
     if (!original) return -1;
     const int16_t perspective=original(unit,position,direction);
+    // Flat parity (CeFireEyeForShot): the player assist's own call for our unit, before anything below replaces its
+    // outputs, is a free sample of the director ray against the context camera.
+    if(caller==moduleBase+0xb67be4&&position&&LocalOnFootShooter(unit))
+        CeNoteFireEyeProof(unit,Finite(*position)?position:nullptr,perspective);
     if(caller==moduleBase+0xb67be4&&
         MuzzleShotMatches(unit)&&position&&direction)
     {

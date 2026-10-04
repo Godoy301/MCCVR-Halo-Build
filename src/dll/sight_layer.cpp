@@ -661,7 +661,8 @@ bool Sight_TransportWanted(GameTitle title, bool seated)
     // Every build (flat parity, 2026-10-03): the keys are dev-only, so a player build keeps their defaults -- on foot
     // transported (shot_point_transport 1), seats not (shot_point_transport_seated 0). Every title whose local shots
     // aim through a world point except Reach (sight_layer.h).
-    if (title != GameTitle::Halo3 && title != GameTitle::Halo3ODST && title != GameTitle::Halo2)
+    if (title != GameTitle::Halo3 && title != GameTitle::Halo3ODST && title != GameTitle::Halo2 &&
+        title != GameTitle::HaloCE)
         return false;
     return g_config.shot_point_transport != 0 && (!seated || g_config.shot_point_transport_seated != 0);
 }

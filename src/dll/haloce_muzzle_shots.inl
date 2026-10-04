@@ -74,8 +74,11 @@ bool ApplyMuzzleMarker(uint32_t object,int16_t count,void* markers,int16_t capac
             {Sight_NoteMuzzleShotUnconverged(GameTitle::HaloCE);return false;}
             const float h[3]{head.x,head.y,head.z},d[3]{dir.x,dir.y,dir.z},e[3]{eye.x,eye.y,eye.z};
             float through[3]{shot.direction.x,shot.direction.y,shot.direction.z};
+            // FLAT PARITY: the point is a world point fixed at this context's camera; the round leaves after the fire
+            // tick's move, so it flies through P moved with the eye to the fire (CeFireEyeForShot).
+            const SightCameraSample camera=CeContextCameraSample(context);
             if(!Sight_AimMuzzleShotFromRay(GameTitle::HaloCE,TitleAdapter_GetGeneration(GameTitle::HaloCE),h,d,e,
-                receipt.ray.position,&shot.position.x,through,receipt.ray.up))return false;
+                receipt.ray.position,&shot.position.x,through,receipt.ray.up,nullptr,&camera))return false;
             shot.direction={through[0],through[1],through[2]};
             // Dev SHOT LAG: the muzzle shot against the point it was aimed through.
             Sight_NoteShotLagFromRay(GameTitle::HaloCE,SightShotPath::Muzzle,&shot.position.x,through,h,d,e,false);

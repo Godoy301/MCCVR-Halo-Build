@@ -3,6 +3,7 @@
 #include "physical_crouch_camera.h"
 uint64_t VR_PhysicalCrouchEpoch() noexcept;
 float VR_RecenterStandingLiftM(GameTitle title) noexcept;   // vr.h
+uint64_t Sight_NowUs();   // sight_layer.h: the one sight clock the gameplay context's camera is stamped on
 #include "haloce_native_bindings.h"
 #include "haloce_hud_layout.h"
 #include "haloce_hud_target.h"
@@ -14,6 +15,7 @@ float VR_RecenterStandingLiftM(GameTitle title) noexcept;   // vr.h
 #include "../common/haloce_dlss_logic.h"
 #include "../common/haloce_dlss_contract.h"
 #include "../common/log.h"
+#include "../common/shot_lag_logic.h"
 #include "game.h"
 #include "title_adapter.h"
 #include "hook_quiescence.h"
@@ -242,10 +244,26 @@ struct GameplayCameraSample
     uint64_t capturedAtMs{};
 };
 Snapshot<GameplayCameraSample> gameplayCamera;
+// Flat parity: the published camera's track (shot_lag::EyeTrack), on the sight clock. Both renderers publish through
+// here; the lock keeps the track whole whichever thread does.
+shot_lag::EyeTrack gameplayCameraTrack;
+uint32_t gameplayCameraTrackGeneration{};
+SRWLOCK gameplayCameraTrackLock=SRWLOCK_INIT;
 void PublishGameplayContext(const RenderContext& context) noexcept
 {
-    if (Valid(context.camera)&&HaloCE_RenderContextCurrent(context))
-        gameplayCamera.Publish({context,GetTickCount64()});
+    if (!Valid(context.camera)||!HaloCE_RenderContextCurrent(context)) return;
+    RenderContext stamped=context;
+    const float eye[3]{context.camera.position.x,context.camera.position.y,context.camera.position.z};
+    float velocity[3]{};
+    AcquireSRWLockExclusive(&gameplayCameraTrackLock);
+    if(gameplayCameraTrackGeneration!=context.tracking.generation)
+    {gameplayCameraTrack.Reset();gameplayCameraTrackGeneration=context.tracking.generation;}
+    stamped.cameraStampUs=Sight_NowUs();
+    gameplayCameraTrack.Push(stamped.cameraStampUs,eye);
+    stamped.cameraVelValid=gameplayCameraTrack.Velocity(120000,30000,velocity);
+    ReleaseSRWLockExclusive(&gameplayCameraTrackLock);
+    stamped.cameraVel=stamped.cameraVelValid?Vec3{velocity[0],velocity[1],velocity[2]}:Vec3{};
+    gameplayCamera.Publish({stamped,GetTickCount64()});
 }
 void FollowRoomscale(const Camera& source,const Tracking& tracking,Reference& frozen,
     float scale,bool positional,uint64_t revision) noexcept
