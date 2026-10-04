@@ -2785,7 +2785,8 @@ void ConfigSave()
     fprintf(f,"\n");
     fprintf(f, "# Two-handed aiming: support hand on the gun front acquires in the barrel grab zone;\n");
     fprintf(f, "# aim follows the two-hand line. 1 = on. Engage style is Toggle (grip click) or Hold (held grip).\n");
-    fprintf(f, "# On foot only: in any vehicle seat or turret your main (aim) hand aims alone, in every game.\n");
+    fprintf(f, "# First person only: whenever the game leaves first person (any vehicle seat or turret, a third-person,\n");
+    fprintf(f, "# death or Monitor camera, a cutscene) your main (aim) hand aims alone, in every game.\n");
     fprintf(f, "# (default %d)\n", d.two_handed_aim ? 1 : 0);
     fprintf(f, "two_handed_aim = %d\n\n", g_config.two_handed_aim ? 1 : 0);
     fprintf(f, "# Experimental: consume the latest committed coherent Aim/Grip/head sample in XInput aim.\n");

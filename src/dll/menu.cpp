@@ -1409,8 +1409,9 @@ namespace
             ImGui::Indent();
             ImGui::TextDisabled("Put your support hand on the front of the gun, click/hold its GRIP.\n"
                                 "Engages only when your hand is on the barrel line.\n"
-                                "Off in vehicle seats and turrets: your main hand aims the seat alone.\n"
-                                "A grip held as you board or leave needs a fresh grip on foot.");
+                                "Off whenever the game leaves first person (vehicle seats, turrets,\n"
+                                "third-person, death and Monitor cameras, cutscenes): your main hand\n"
+                                "aims alone. A grip held through it needs a fresh grip in first person.");
             ImGui::Text("Grip mode");
             if (ImGui::RadioButton("Toggle (click grip)", g_config.two_hand_toggle))
             { g_config.two_hand_toggle = true; changed = true; }
