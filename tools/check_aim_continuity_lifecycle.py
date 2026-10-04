@@ -15,8 +15,9 @@ The check is deliberately narrow. It asserts only:
       reference-space change, session EXITING/LOSS_PENDING, instance loss, the
       seam title/generation/epoch change, the seam !applicable branch, the
       handedness change, the persistent-support-grip owner break /
-      generation replacement, and the vehicle-seat two-hand drop, which must
-      land on the primary controller with no release blend). That owner
+      generation replacement, and the not-first-person two-hand drop - a seat,
+      a turret, a third-person camera, death or a cinematic - which must land
+      on the primary controller with no release blend). That owner
       break normally invalidates prior
       geometry. The narrowly qualified VS-OFF product-release bridge instead
       preserves an already-presented latch release to raw one-hand aim, but

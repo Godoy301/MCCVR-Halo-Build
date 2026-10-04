@@ -49,9 +49,12 @@ struct SupportGripAdmission
     void Arm() noexcept { requiresRelease = true; }
 };
 
-// Two-handed aim is an on-foot feature. In a vehicle seat or walk-up turret
+// Two-handed aim is a first-person feature. In a vehicle seat or walk-up turret
 // (every title) the aim belongs to the primary controller - the configured aim
-// hand - alone: players board expecting that hand to steer the seat.
+// hand - alone: players board expecting that hand to steer the seat. Since
+// 2026-10-03 vr.cpp feeds this gate fp_view::Gate's verdict (any view that is
+// not the player's own first person: first_person_view_logic.h), so "seated"
+// below reads "out of first person"; the release policy is unchanged.
 //
 // The seat is one more admission blocker beside dual wield and a role change,
 // so it shares SupportGripAdmission's release-before-reacquire: an engaged
