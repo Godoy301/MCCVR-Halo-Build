@@ -3,6 +3,7 @@
 #include <cstdint>
 
 #include "../common/converge_policy.h"
+#include "../common/first_person_view_logic.h"
 #include "../common/halo3_vehicle_logic.h"
 #include "../common/runtime_types.h"
 #include "../common/support_grip_logic.h"
@@ -21,9 +22,18 @@ bool Game_RoomscaleCameraAllowed(GameTitle title);
 bool Game_TitleOnFootPlayerControlled(GameTitle title);
 // The local player is in a vehicle seat, as last known (a pause, which stops the samples, keeps the answer).
 bool Game_TitleSeated(GameTitle title);
-// The same last-known seat state failing OPEN: true only on the title's own positive answer that the local
-// player is in a vehicle seat or walk-up turret (no sampler / no answer yet reads "not seated"). Any thread.
-bool Game_TitleKnownSeated(GameTitle title);
+// Two-handed aim's exit condition: whether the game is showing the local player's own first-person view, as the
+// title's strongest available evidence says (first_person_view_logic.h; the per-title table is at the definition).
+// Any thread (VR's frame thread reads it): atomics and the camera threads' publications only. `why` is FirstPerson
+// only on positive evidence; anything unreadable is Unread. `hold`: the shell, a load or a pause (the published
+// runtime mode or the title's own flag), or not the active title: the caller should neither leave nor re-enter on
+// this sample.
+struct TitleFirstPersonView
+{
+    fp_view::Why why = fp_view::Why::Unread;
+    bool hold = false;
+};
+TitleFirstPersonView Game_TitleFirstPersonView(GameTitle title);
 
 // Monotonic counters written by render/palette hooks and sampled at OpenXR
 // frame boundaries. Hooks only touch relaxed atomics; formatting and file I/O

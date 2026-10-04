@@ -37,6 +37,7 @@
 #include "../common/seat_aim_frame_logic.h"
 #include "../common/shot_impact_logic.h"
 #include "../common/as_seen_logic.h"
+#include "../common/first_person_view_logic.h"
 #include <windows.h>
 #include <tlhelp32.h>
 #include <array>
@@ -1017,6 +1018,115 @@ namespace
         perspective = p;
         return true;
     }
+
+    // THE DIRECTOR'S CAMERA FOR OUTPUT USER 0, ODST (first_person_view_logic.h; two-handed aim's camera rung). The
+    // same record as Halo 3's, decoded from set_camera_mode's store (the Halo 3 pattern, unique in halo3odst.dll) and
+    // the per-user first-person gate (fp_view::kDirectorFirstPersonGateSitePattern), which must agree; the gate's TLS
+    // index must also be the engine TLS index ODST's vehicle binding decoded from unit_in_vehicle.
+    // ADDR-HYGIENE: resolved (the TLS index, the block and both field offsets are read from the game's own
+    // instructions; tools/verify-odst-director-camera.py proves both sites and the per-mode camera types offline).
+    Halo3DirectorCameraBinding g_odstDirectorCamera;
+
+    void RetireOdstDirectorCamera() noexcept
+    {
+        g_odstDirectorCamera.bound.store(false, std::memory_order_release);
+        g_odstDirectorCamera.generation.store(0, std::memory_order_release);
+    }
+
+    // Cold (ODST camera install, after the vehicle binding). Fails closed and says which link failed: without it
+    // ODST's two-handed aim falls back to the first-person view-model witness.
+    bool BindOdstDirectorCamera(uintptr_t base, size_t size, uint32_t generation, const uint32_t* engineTlsIndex)
+    {
+        RetireOdstDirectorCamera();
+        auto& b = g_odstDirectorCamera;
+        const auto unique = [&](const char* pattern) -> uintptr_t {
+            const uintptr_t hit = sig::Find(base, size, pattern);
+            return hit && !sig::Find(hit + 1, base + size - hit - 1, pattern) ? hit : 0;
+        };
+        const uintptr_t gate = unique(fp_view::kDirectorFirstPersonGateSitePattern);
+        const uintptr_t setMode = unique(shot_lag::kHalo3DirectorSetModeSitePattern);
+        shot_lag::DirectorCameraSites sites{};
+        if (!generation || !gate || !setMode ||
+            !fp_view::DecodeDirectorGateSites(reinterpret_cast<const uint8_t*>(gate),
+                                              reinterpret_cast<const uint8_t*>(setMode), sites))
+        {
+            LOG("TWO-HAND VIEW ODST: the director's camera record did not bind (first-person gate site %s, "
+                "set_camera_mode site %s, %s); two-handed aim reads the first-person view-model witness instead",
+                gate ? "unique" : "missing/ambiguous", setMode ? "unique" : "missing/ambiguous",
+                gate && setMode ? "the two sites disagree" : "not decoded");
+            return false;
+        }
+        const auto* tlsIndex = reinterpret_cast<const uint32_t*>(
+            gate + fp_view::kDirectorGateTlsNext + static_cast<intptr_t>(sites.tlsIndexDisp));
+        if (reinterpret_cast<uintptr_t>(tlsIndex) < base || reinterpret_cast<uintptr_t>(tlsIndex) + 4 > base + size ||
+            (engineTlsIndex && engineTlsIndex != tlsIndex))
+        {
+            LOG("TWO-HAND VIEW ODST: the first-person gate's TLS index (+0x%llX) is outside the module or disagrees "
+                "with the engine TLS index the vehicle binding decoded (+0x%llX); two-handed aim reads the "
+                "first-person view-model witness instead",
+                (unsigned long long)(reinterpret_cast<uintptr_t>(tlsIndex) - base),
+                (unsigned long long)(engineTlsIndex ? reinterpret_cast<uintptr_t>(engineTlsIndex) - base : 0));
+            return false;
+        }
+        b.tlsIndex = tlsIndex;
+        b.blockOffset = sites.blockOffset;
+        b.perspectiveOffset = sites.perspectiveOffset;
+        b.modeOffset = sites.modeOffset;
+        b.generation.store(generation, std::memory_order_release);
+        b.bound.store(true, std::memory_order_release);
+        LOG("TWO-HAND VIEW ODST: director camera record bound: output user 0 at engine TLS +0x%X (index at "
+            "+0x%llX), perspective +0x%X, mode +0x%X (set_camera_mode +0x%llX and the first-person gate +0x%llX "
+            "agree)", sites.blockOffset, (unsigned long long)(reinterpret_cast<uintptr_t>(tlsIndex) - base),
+            sites.perspectiveOffset, sites.modeOffset, (unsigned long long)(setMode - base),
+            (unsigned long long)(gate - base));
+        return true;
+    }
+
+    // Either title's director record, RAW (no plausibility test: two-handed aim treats any value but the
+    // first-person camera from perspective 0 as "not first person", fp_view::DirectorCameraSignal). Any thread with
+    // the engine's TLS; false = not bound for this generation, no record on this thread, or a fault.
+    bool ReadDirectorCameraRaw(const Halo3DirectorCameraBinding& b, uint32_t generation, int32_t& mode,
+                               int32_t& perspective) noexcept
+    {
+        if (!generation || !b.bound.load(std::memory_order_acquire) ||
+            b.generation.load(std::memory_order_acquire) != generation || !b.tlsIndex)
+            return false;
+        __try
+        {
+            auto** slots = reinterpret_cast<void**>(__readgsqword(0x58));
+            const uint32_t index = *b.tlsIndex;
+            const auto* tls = slots && index < 0x200 ? static_cast<const uint8_t*>(slots[index]) : nullptr;
+            const auto* block = tls ? *reinterpret_cast<const uint8_t* const*>(tls + b.blockOffset) : nullptr;
+            if (!block)
+                return false;
+            perspective = *reinterpret_cast<const int32_t*>(block + b.perspectiveOffset);   // output user 0
+            mode = *reinterpret_cast<const int32_t*>(block + b.modeOffset);
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            return false;
+        }
+        return true;
+    }
+
+    // TWO-HANDED AIM'S VIEW SAMPLE (Halo 3 / ODST; Game_TitleFirstPersonView). The director record and the unit live
+    // behind the engine TLS, which only the game's own threads have, so each title's camera copy (its engine camera
+    // thread) publishes them here and the VR frame thread reads the result. One packed word; a stamp older than
+    // kTwoHandViewFreshMs is no answer (Unread).
+    inline constexpr uint64_t kTwoHandViewFreshMs = 150;
+    inline constexpr uint32_t kTwoHandViewUnitRead = 1u << 0, kTwoHandViewUnitPresent = 1u << 1,
+                              kTwoHandViewSeatRead = 1u << 2, kTwoHandViewSeated = 1u << 3,
+                              kTwoHandViewDirectorBound = 1u << 4, kTwoHandViewDirectorRead = 1u << 5;
+    struct TwoHandViewPublication
+    {
+        std::atomic<uint64_t> stampMs{0};
+        std::atomic<uint32_t> generation{0};
+        std::atomic<uint32_t> bits{0};
+        std::atomic<int32_t> mode{-1}, perspective{-1};
+    };
+    TwoHandViewPublication g_halo3TwoHandView, g_odstTwoHandView;
+    void Halo3PublishTwoHandView(uint64_t nowMs, uint32_t generation) noexcept;
+    void OdstPublishTwoHandView(uint64_t nowMs, uint32_t generation) noexcept;
 
     // FIRST-PERSON WITNESSES (roomscale and the head leash; Halo 4's is g_halo4FirstPersonMs). Each title's
     // on-foot proof passes in third person too -- a death camera, a carried turret, Reach's Armor Lock,
@@ -3405,6 +3515,7 @@ namespace
         TitleAdapter_ClearHeartbeat(GameTitle::Halo3ODST, generation);
         TitleAdapter_ClearCinematicControl(GameTitle::Halo3ODST, generation);
         g_odstLastCamCopyMs.store(0, std::memory_order_release);
+        RetireOdstDirectorCamera();
         g_odstRuntimeGeneration.store(0, std::memory_order_release);
     }
 #endif
@@ -11107,6 +11218,8 @@ namespace
             TitleAdapter_PublishHeartbeat(
                 GameTitle::Halo3, runtimeGeneration, cameraNowMs);
             Halo3SampleVehicleState(cameraNowMs);
+            // Two-handed aim's view sample (director camera, unit, seat), for the VR frame thread.
+            Halo3PublishTwoHandView(cameraNowMs, runtimeGeneration);
         }
         // Low-frequency timing proof paired with vr.cpp's HMD sample-rate log.
         // The hook normally runs multiple times per presented frame, and every
@@ -14034,6 +14147,9 @@ namespace
             // where Halo 3 samples in its own camera copy. OdstApplyHeadLook
             // below consumes the anchor it publishes.
             OdstSampleVehicleState(GetTickCount64());
+            // Two-handed aim's view sample (director camera, unit), for the VR frame thread.
+            OdstPublishTwoHandView(GetTickCount64(),
+                g_odstRuntimeGeneration.load(std::memory_order_acquire));
             // O3: integrate the hull heading and publish its roll-free pitch
             // before the head look and the VR turn read either.
             OdstApplySeatYawFollow();
@@ -19100,6 +19216,8 @@ namespace
         // O1: the ODST vehicle evidence binding. Optional and read-only â€”
         // failure logs loudly and leaves every camera behavior untouched.
         ResolveOdstVehicleBinding(base, size);
+        // Two-handed aim's camera rung (first_person_view_logic.h): two sites, no hook; fails closed alone.
+        (void)BindOdstDirectorCamera(base, size, runtimeGeneration, g_odstEngineTlsIndex);
 
         struct HookSpec
         {
@@ -27277,6 +27395,95 @@ namespace
     #include "reach_muzzle_shots.inl"
     #include "reach_muzzle_lifecycle.inl"
     #include "reach_visual_hand_offset.inl"
+
+    // TWO-HANDED AIM'S VIEW SAMPLE, Halo 3 (declared with TwoHandViewPublication; CamCopyHook, the engine camera
+    // thread, whose TLS the vehicle sampler already reads). The unit's own seat word (a seat or a turret, stationary
+    // ones included: unit_in_vehicle answers false there, the seat word does not) and the director's camera for
+    // output user 0, raw. Allocation-, log- and lock-free; at most every 8 ms; every engine read under SEH.
+    void Halo3PublishTwoHandView(uint64_t nowMs, uint32_t generation) noexcept
+    {
+        auto& p = g_halo3TwoHandView;
+        const uint64_t last = p.stampMs.load(std::memory_order_relaxed);
+        if (!generation ||
+            (p.generation.load(std::memory_order_relaxed) == generation && last && nowMs >= last && nowMs - last < 8))
+            return;
+        uint32_t bits = 0;
+        __try
+        {
+            if (g_halo3PlayerUnitGetter && g_engineTlsIndex)
+            {
+                const int32_t unit = g_halo3PlayerUnitGetter(0);
+                bits |= kTwoHandViewUnitRead;
+                if (unit != -1)
+                {
+                    bits |= kTwoHandViewUnitPresent;
+                    if (const uint8_t* data = Halo3MeleeSelectionObject(static_cast<uint32_t>(unit), 0))
+                    {
+                        bits |= kTwoHandViewSeatRead;
+                        if (*reinterpret_cast<const int16_t*>(data + kHalo3UnitSeatWordOffset) != -1)
+                            bits |= kTwoHandViewSeated;
+                    }
+                }
+            }
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            bits = 0;
+        }
+        int32_t mode = -1, perspective = -1;
+        if (g_halo3DirectorCamera.bound.load(std::memory_order_acquire) &&
+            g_halo3DirectorCamera.generation.load(std::memory_order_acquire) == generation)
+        {
+            bits |= kTwoHandViewDirectorBound;
+            if (ReadDirectorCameraRaw(g_halo3DirectorCamera, generation, mode, perspective))
+                bits |= kTwoHandViewDirectorRead;
+        }
+        p.bits.store(bits, std::memory_order_relaxed);
+        p.mode.store(mode, std::memory_order_relaxed);
+        p.perspective.store(perspective, std::memory_order_relaxed);
+        p.generation.store(generation, std::memory_order_relaxed);
+        p.stampMs.store(nowMs, std::memory_order_release);
+    }
+
+    // ODST's (OdstCamCopyBody, right after its seat sampler on the same thread). The seat comes from that sampler
+    // (g_odstSeatedLastKnown, the raw seat word); this adds the unit and the director's camera.
+    void OdstPublishTwoHandView(uint64_t nowMs, uint32_t generation) noexcept
+    {
+        auto& p = g_odstTwoHandView;
+        const uint64_t last = p.stampMs.load(std::memory_order_relaxed);
+        if (!generation ||
+            (p.generation.load(std::memory_order_relaxed) == generation && last && nowMs >= last && nowMs - last < 8))
+            return;
+        uint32_t bits = 0;
+        __try
+        {
+            if (g_odstPlayerUnitGetter &&
+                g_odstVehicleBinding.load(std::memory_order_acquire) ==
+                    static_cast<uint8_t>(OdstVehicleBindingState::Installed))
+            {
+                bits |= kTwoHandViewUnitRead;
+                if (g_odstPlayerUnitGetter(0) != -1)
+                    bits |= kTwoHandViewUnitPresent;
+            }
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            bits = 0;
+        }
+        int32_t mode = -1, perspective = -1;
+        if (g_odstDirectorCamera.bound.load(std::memory_order_acquire) &&
+            g_odstDirectorCamera.generation.load(std::memory_order_acquire) == generation)
+        {
+            bits |= kTwoHandViewDirectorBound;
+            if (ReadDirectorCameraRaw(g_odstDirectorCamera, generation, mode, perspective))
+                bits |= kTwoHandViewDirectorRead;
+        }
+        p.bits.store(bits, std::memory_order_relaxed);
+        p.mode.store(mode, std::memory_order_relaxed);
+        p.perspective.store(perspective, std::memory_order_relaxed);
+        p.generation.store(generation, std::memory_order_relaxed);
+        p.stampMs.store(nowMs, std::memory_order_release);
+    }
 
     // Declared with the crosshair re-aims above: the fire thread's own-shot-line scopes, read where they live.
     bool LegacyOwnShotLineActive(GameTitle title)
@@ -56437,11 +56644,194 @@ bool Game_TitleSeated(GameTitle title)
     __except(EXCEPTION_EXECUTE_HANDLER) { return false; }
 }
 
-// Whether the local player is in a vehicle seat or turret, failing OPEN: only the title's own positive seat
-// answer counts, so an on-foot-only feature stays exactly as it is while a sampler is down. Two-handed aim
-// reads it on VR's frame thread (support-grip admission): a seat is the primary controller's alone.
-bool Game_TitleKnownSeated(GameTitle title)
+// TWO-HANDED AIM'S EXIT CONDITION (first_person_view_logic.h): is the game showing the player's own first-person
+// view? Each title's evidence, strongest rung first, read on VR's frame thread from atomics and the camera
+// threads' publications only (CE's player state is the SEH-guarded global read Game_TitleSeated already makes here).
+//
+//   title   camera rung (game's own)          seat rung (parent link)             view-model rung (mod's witness)
+//   CE      native user perspective == 0      unit +0xD8 parent                   -
+//   Halo 2  -                                 unit seat word (observer sample)    on-foot unit sample, 100 ms
+//   Halo 3  director mode 3 / perspective 0   unit seat word (+ sampler's seat)   FP view model, 100 ms
+//   ODST    director mode 3 / perspective 0   unit seat word (sampler)            FP view model, 100 ms
+//   Reach   -                                 unit_get_camera_info seat           FP view model, two hits, 150 ms
+//   Halo 4  -                                 the camera hook's seat stamp        FP view-model skinning, 100 ms
+//
+// plus the vetoes: a cinematic (the title's cinematic publication, CE's native flag, the cutscene theater) and no
+// controlled unit (CE, Halo 3, ODST). `hold` is the title's own pause flag (CE); VR's pause/menu gates are added by
+// the caller.
+namespace
 {
-    __try { return ReadTitleSeatState(title)==TitleSeatState::Seated; }
-    __except(EXCEPTION_EXECUTE_HANDLER) { return false; }
+    fp_view::Signal SignalIf(bool yes) { return yes ? fp_view::Signal::Yes : fp_view::Signal::No; }
+
+    // A cinematic only ever vetoes: anything but a fresh "authored camera" says nothing.
+    fp_view::Signal CinematicVeto(GameTitle title, uint64_t now)
+    {
+        if (VR_IsCutsceneTheaterActive())
+            return fp_view::Signal::Yes;
+        const auto cine = TitleAdapter_GetCinematicControlPublication(title);
+        return cine.state == CinematicControlState::AuthoredLocked && cine.heartbeatMs && now >= cine.heartbeatMs &&
+                       now - cine.heartbeatMs <= kTwoHandViewFreshMs
+                   ? fp_view::Signal::Yes
+                   : fp_view::Signal::Unavailable;
+    }
+
+    // Halo 3 / ODST: the camera thread's sample. Stale = the director (when bound) and the seat are Unread.
+    struct TwoHandViewSample
+    {
+        bool fresh = false;
+        uint32_t bits = 0;
+        int32_t mode = -1, perspective = -1;
+    };
+    TwoHandViewSample ReadTwoHandView(const TwoHandViewPublication& p, uint32_t generation, uint64_t now)
+    {
+        TwoHandViewSample s{};
+        const uint64_t at = p.stampMs.load(std::memory_order_acquire);
+        s.fresh = generation && at && now >= at && now - at <= kTwoHandViewFreshMs &&
+            p.generation.load(std::memory_order_relaxed) == generation;
+        if (!s.fresh)
+            return s;
+        s.bits = p.bits.load(std::memory_order_relaxed);
+        s.mode = p.mode.load(std::memory_order_relaxed);
+        s.perspective = p.perspective.load(std::memory_order_relaxed);
+        return s;
+    }
+    fp_view::Signal DirectorSignal(const TwoHandViewSample& s, const Halo3DirectorCameraBinding& binding,
+                                   uint32_t generation)
+    {
+        if (!s.fresh)
+            return binding.bound.load(std::memory_order_acquire) &&
+                    binding.generation.load(std::memory_order_acquire) == generation
+                ? fp_view::Signal::Unread : fp_view::Signal::Unavailable;
+        return fp_view::DirectorCameraSignal((s.bits & kTwoHandViewDirectorBound) != 0,
+            (s.bits & kTwoHandViewDirectorRead) != 0, s.mode, s.perspective);
+    }
+    fp_view::Signal UnitSignal(const TwoHandViewSample& s)
+    {
+        return s.fresh && (s.bits & kTwoHandViewUnitRead)
+            ? SignalIf((s.bits & kTwoHandViewUnitPresent) != 0) : fp_view::Signal::Unavailable;
+    }
+
+    TitleFirstPersonView ReadTitleFirstPersonView(GameTitle title, uint64_t now)
+    {
+        TitleFirstPersonView view{};
+        // The published runtime mode: the shell, a load or a pause hold; a mode the title has already classified
+        // as a seat, a cutscene or death is one more veto (CE, Halo 3 and ODST publish Vehicle / Turret; CE
+        // Cutscene and Dead).
+        const RuntimeMode mode = TitleAdapter_GetRuntimeMode();
+        if (title == GameTitle::None || title != TitleAdapter_GetActiveTitle() || mode == RuntimeMode::Shell ||
+            mode == RuntimeMode::Loading || mode == RuntimeMode::Paused)
+        {
+            view.hold = true;
+            return view;
+        }
+        fp_view::Evidence e{};
+        e.cinematic = CinematicVeto(title, now);
+        const auto modeVetoes = [mode](fp_view::Evidence& evidence) {
+            if (mode == RuntimeMode::Cutscene)
+                evidence.cinematic = fp_view::Signal::Yes;
+            else if (mode == RuntimeMode::Vehicle || mode == RuntimeMode::Turret)
+                evidence.seated = fp_view::Signal::Yes;
+            else if (mode == RuntimeMode::Dead)
+                evidence.unit = fp_view::Signal::No;
+        };
+        switch (title)
+        {
+        case GameTitle::HaloCE:
+        {
+            HaloCELocalPlayerState player{};
+            if (!HaloCEControls_GetLocalPlayerState(player))
+                return view;   // Unread
+            view.hold = player.nativePaused;
+            if (player.nativeCinematicFlag)
+                e.cinematic = fp_view::Signal::Yes;
+            e.unit = SignalIf(player.hasControlledUnit);
+            e.seated = player.hasControlledUnit ? SignalIf(!player.onFoot) : fp_view::Signal::Unavailable;
+            e.camera = SignalIf(player.nativePreparesFirstPerson);
+            break;
+        }
+        case GameTitle::Halo3:
+        {
+            const uint32_t generation = g_halo3RuntimeGeneration.load(std::memory_order_acquire);
+            const TwoHandViewSample s = ReadTwoHandView(g_halo3TwoHandView, generation, now);
+            e.unit = UnitSignal(s);
+            e.camera = DirectorSignal(s, g_halo3DirectorCamera, generation);
+            if (s.fresh && (s.bits & kTwoHandViewSeatRead))
+                e.seated = SignalIf((s.bits & kTwoHandViewSeated) != 0);
+            else if (g_halo3PlayerUnitGetter && e.unit != fp_view::Signal::No)
+                e.seated = fp_view::Signal::Unread;
+            // The vehicle sampler's debounced seat, as Game_TitleSeated reads it: a seat it has settled on stands.
+            if (g_halo3VehicleBinding.load(std::memory_order_acquire) ==
+                    static_cast<uint8_t>(Halo3VehicleBindingState::Installed) &&
+                g_halo3VehicleFpStable.load(std::memory_order_relaxed) ==
+                    static_cast<uint32_t>(Halo3VehicleState::Vehicle))
+                e.seated = fp_view::Signal::Yes;
+            e.viewModel = g_fpInterpolatorHooked.load(std::memory_order_acquire)
+                ? SignalIf(WitnessFresh(g_halo3FirstPersonMs, now, kFirstPersonWitnessMs))
+                : fp_view::Signal::Unavailable;
+            break;
+        }
+        case GameTitle::Halo3ODST:
+        {
+            const uint32_t generation = g_odstRuntimeGeneration.load(std::memory_order_acquire);
+            const TwoHandViewSample s = ReadTwoHandView(g_odstTwoHandView, generation, now);
+            e.unit = UnitSignal(s);
+            e.camera = DirectorSignal(s, g_odstDirectorCamera, generation);
+            if (g_odstVehicleBinding.load(std::memory_order_acquire) ==
+                static_cast<uint8_t>(OdstVehicleBindingState::Installed))
+                e.seated = s.fresh ? SignalIf(g_odstSeatedLastKnown.load(std::memory_order_relaxed))
+                                   : fp_view::Signal::Unread;
+            e.viewModel = g_odstCamera.installed.load(std::memory_order_acquire)
+                ? SignalIf(WitnessFresh(g_odstFirstPersonMs, now, kFirstPersonWitnessMs))
+                : fp_view::Signal::Unavailable;
+            break;
+        }
+        case GameTitle::HaloReach:
+        {
+            // Only the camera-info sampler sees a mounted turret; the unit_in_vehicle fallback's "on foot" is no
+            // answer there (ReadTitleSeatState), and the view-model witness then decides.
+            const TitleSeatState seat = ReadTitleSeatState(title);
+            e.seated = seat == TitleSeatState::Seated ? fp_view::Signal::Yes
+                : seat == TitleSeatState::OnFoot      ? fp_view::Signal::No
+                                                      : fp_view::Signal::Unavailable;
+            e.viewModel = SignalIf(ReachFirstPersonFresh(now));
+            break;
+        }
+#if HALOMCCVR_HALO2_STEREO6DOF
+        case GameTitle::Halo2:
+            if (Halo2Observer6Dof_LastKnownSeatValid())
+            {
+                e.seated = SignalIf(Halo2Observer6Dof_LastKnownSeated());
+                // Halo 2's on-foot proof: the owned unit's own aim update ran within 100 ms with no seat. It stops
+                // when the unit dies.
+                e.viewModel = SignalIf(Halo2Observer6Dof_OnFootFresh());
+            }
+            break;
+#endif
+#if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA
+        case GameTitle::Halo4:
+        {
+            Halo4VehicleInputState seat{};
+            if (Halo4ReadSeatStamp(seat))
+                e.seated = SignalIf(seat.seated);
+            else if (g_halo4SeatStamp.lastKnownValid.load(std::memory_order_relaxed))
+                e.seated = SignalIf(g_halo4SeatStamp.lastKnownSeated.load(std::memory_order_relaxed));
+            e.viewModel = g_halo4FirstPersonWitnessHooked.load(std::memory_order_acquire)
+                ? SignalIf(WitnessFresh(g_halo4FirstPersonMs, now, kHalo4FirstPersonFreshMs))
+                : fp_view::Signal::Unavailable;
+            break;
+        }
+#endif
+        default:
+            return view;   // Unread: no title we know how to read
+        }
+        modeVetoes(e);
+        view.why = fp_view::Classify(e);
+        return view;
+    }
+}
+
+TitleFirstPersonView Game_TitleFirstPersonView(GameTitle title)
+{
+    __try { return ReadTitleFirstPersonView(title, GetTickCount64()); }
+    __except(EXCEPTION_EXECUTE_HANDLER) { return TitleFirstPersonView{}; }
 }
