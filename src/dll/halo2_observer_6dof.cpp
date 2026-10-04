@@ -41,6 +41,7 @@
 
 #include "../common/halo2_render_logic.h"
 #include "../common/halo2_world_collision_logic.h"
+#include "../common/as_seen_logic.h"
 #include "../common/config.h"
 #include "../common/log.h"
 #include "game.h"
@@ -670,6 +671,34 @@ namespace
 
     void Halo2ApplyPhysicalCrouchCamera(float* position,float physicalDown,bool allowed) noexcept;
 
+    // The simulation's clock as the camera was built (2026-10-04): the game tick (game_time_globals +0x08; the slot
+    // C-H2-1 proved from two independent anchors before this core could arm) and MCC's frame-interpolator factor
+    // (0x164B300, E-H2-30: written once a frame, after the ticks, just before the observer update). Read guarded; -1 /
+    // NaN when unreadable. ADDR-HYGIENE: guarded (the C-H2-1 slot proof; the factor is range-checked to [0, 1] and only
+    // reported, never acted on).
+    void Halo2ReadGameClock(int64_t& tick, float& factor) noexcept
+    {
+        tick = -1;
+        factor = NAN;
+        const uintptr_t base = g_moduleBase.load(std::memory_order_acquire);
+        if (!base)
+            return;
+        __try
+        {
+            const uint8_t* time = *reinterpret_cast<const uint8_t* const*>(base + kHalo2GameTimeSlotRva);
+            if (time && time[kHalo2GameTimeInitializedOffset] == 1)
+                tick = *reinterpret_cast<const uint32_t*>(time + kHalo2GameTimeCurrentTickOffset);
+            const float f = *reinterpret_cast<const float*>(base + kHalo2FrameInterpolatorFactorRva);
+            if (std::isfinite(f) && f >= 0.0f && f <= 1.0f)
+                factor = f;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            tick = -1;
+            factor = NAN;
+        }
+    }
+
     void PublishPose(
         uint32_t generation, uint64_t serial, const Halo2CameraBasis& stock,
         const Halo2CameraBasis& tracked, const HeadReference& reference,
@@ -708,6 +737,7 @@ namespace
                 s_engineEyeTrack.Velocity(120000, 30000, g_publication.engineEyeVel);
             if (!g_publication.engineEyeVelValid)
                 std::memset(g_publication.engineEyeVel, 0, sizeof(g_publication.engineEyeVel));
+            Halo2ReadGameClock(g_publication.gameTick, g_publication.interpFactor);
         }
         g_publication.vehicleUnit=vehicleKey?vehicleKey->unit:UINT32_MAX;
         g_publication.vehicleParent=vehicleKey?vehicleKey->parent:UINT32_MAX;
@@ -2397,6 +2427,11 @@ namespace
         }
     }
 
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    // Dev AS SEEN (halo2_impact_witness.inl, included below): a tracked round's own query, after the native.
+    void Halo2ImpactNoteQuery(const float* start, const float* vector, const Halo2CollisionResult* result, uint8_t hit);
+#endif
+
     __declspec(noinline) uint8_t __fastcall Halo2CollisionVectorDetour(
         uint32_t flags, const float* start, const float* delta,
         int32_t ignoredObject1, int32_t ignoredObject2,
@@ -2429,6 +2464,10 @@ namespace
             {
                 hit = original(flags, start, delta, ignoredObject1,
                     ignoredObject2, result);
+#if HALOMCCVR_DEV_DIAGNOSTICS
+                if (!g_halo2CollisionOwnQuery)
+                    Halo2ImpactNoteQuery(start, delta, result, hit);
+#endif
                 if (!g_halo2CollisionOwnQuery)
                 {
                     __try { Halo2WorldCollisionEngineContextTick(); }
@@ -4618,6 +4657,7 @@ namespace
     }
 
     #include "halo2_dual_wield_runtime.inl"
+    #include "halo2_impact_witness.inl"
     #include "halo2_weapon_haptics.inl"
     #include "halo2_haptic_lifecycle.inl"
 
@@ -6146,7 +6186,9 @@ namespace
         ReportHalo2Drive();
         ReportHalo2WeaponHaptics();
         ReportHalo2FireEye();
-        ReportHalo2FireEye();
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        ReportHalo2AsSeen();
+#endif
         static uint64_t s_reportedReseats = 0;
         const uint64_t reseats = g_roomscaleReseats.load(std::memory_order_relaxed);
         if (reseats != s_reportedReseats)
@@ -6740,6 +6782,27 @@ bool Halo2Observer6Dof_WorldCollisionActive() noexcept
         g_halo2WorldCollision.active.load(std::memory_order_acquire);
 }
 
+void Halo2Observer6Dof_DevNoteAsSeenFrame(int renderer, uint64_t serial, const Halo2CameraBasis& center,
+    const float headQuat[4], const Halo2ObserverPosePublication* publication) noexcept
+{
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    __try { Halo2AsSeenNoteFrameImpl(renderer, serial, center, headQuat, publication); }
+    __except (EXCEPTION_EXECUTE_HANDLER) {}
+#else
+    (void)renderer; (void)serial; (void)center; (void)headQuat; (void)publication;
+#endif
+}
+
+void Halo2Observer6Dof_DevNoteAsSeenReticle(uint64_t serial, const float center[3], const float dir[3]) noexcept
+{
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    __try { Halo2AsSeenNoteReticleImpl(serial, center, dir); }
+    __except (EXCEPTION_EXECUTE_HANDLER) {}
+#else
+    (void)serial; (void)center; (void)dir;
+#endif
+}
+
 bool Halo2Observer6Dof_ReadPublishedPose(
     Halo2ObserverPosePublication& out) noexcept
 {
@@ -7192,6 +7255,9 @@ void* Halo2Observer6Dof_ReloadWeapon(uint32_t) noexcept { return nullptr; }
 bool Halo2Observer6Dof_WorldCollisionActive() noexcept { return false; }
 bool Halo2Observer6Dof_ReadPublishedPose(
     Halo2ObserverPosePublication&) noexcept { return false; }
+void Halo2Observer6Dof_DevNoteAsSeenFrame(int, uint64_t, const Halo2CameraBasis&, const float*,
+    const Halo2ObserverPosePublication*) noexcept {}
+void Halo2Observer6Dof_DevNoteAsSeenReticle(uint64_t, const float*, const float*) noexcept {}
 int Halo2Observer6Dof_ReadPublishedPoses(
     Halo2ObserverPosePublication*, int) noexcept { return 0; }
 bool Halo2Observer6Dof_WeaponTickPublication(

@@ -79,6 +79,15 @@ int Halo2Observer6Dof_ReadPublishedPoses(
 // not be witnessed (the previous witness never stands for a later tick).
 // `previousIndex` is the tick before it (0 when there is none), so a renderer
 // can follow the frame interpolator's blend between the two.
+// Dev AS SEEN (halo2_impact_witness.inl; a no-op outside dev builds): the prepared frame a stereo core completed
+// (renderer 0 Classic, 1 Anniversary) -- the centre camera its eyes were built from, the head orientation its views
+// were submitted with, and the observer publication behind it (null when the core tracked a camera of its own) -- and
+// the reticle the compositor drew for a serial (tracking space).
+struct Halo2CameraBasis;
+void Halo2Observer6Dof_DevNoteAsSeenFrame(int renderer, uint64_t serial, const Halo2CameraBasis& center,
+    const float headQuat[4], const Halo2ObserverPosePublication* publication) noexcept;
+void Halo2Observer6Dof_DevNoteAsSeenReticle(uint64_t serial, const float center[3], const float dir[3]) noexcept;
+
 bool Halo2Observer6Dof_WeaponTickPublication(
     uint32_t generation, uint64_t& index, uint64_t& previousIndex) noexcept;
 

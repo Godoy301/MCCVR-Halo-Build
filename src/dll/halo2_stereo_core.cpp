@@ -190,6 +190,11 @@ namespace
         // so the eye camera is published with the engine's own depth terms.
         float engineProjection[kHalo2EyeCount][16]{};
         bool engineProjectionValid[kHalo2EyeCount]{};
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        // Dev AS SEEN (halo2_impact_witness.inl): the observer publication this frame's window camera was built from.
+        bool asSeenPublished = false;
+        Halo2ObserverPosePublication asSeenPublication{};
+#endif
         bool dirty[kOwnedCameraSpanCount]{};
         // E-H2-29: the engine's once-per-frame scene-target latch as it stood
         // when this pair began, and whether it was readable.
@@ -2482,6 +2487,11 @@ namespace
         candidate.halfFovs = rasterHalfFovs;
         for (int eye = 0; eye < kHalo2EyeCount; ++eye)
             candidate.eyes[eye] = eyes[eye];
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        candidate.asSeenPublished = published && publication.generation == generation;
+        if (candidate.asSeenPublished)
+            candidate.asSeenPublication = publication;
+#endif
         scope = candidate;
         return true;
     }
@@ -2700,6 +2710,12 @@ namespace
                 snapshot.preparedSerial, std::memory_order_release);
             g_telemetry.completedPairs.fetch_add(
                 1, std::memory_order_relaxed);
+#if HALOMCCVR_DEV_DIAGNOSTICS
+            // Dev AS SEEN (halo2_impact_witness.inl): the classic pair is submitted with this snapshot's views.
+            Halo2Observer6Dof_DevNoteAsSeenFrame(0, snapshot.preparedSerial, scope.renderCenter,
+                snapshot.headOrientation,
+                scope.asSeenPublished ? &scope.asSeenPublication : nullptr);
+#endif
             return;
         }
 

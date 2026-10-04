@@ -53179,11 +53179,15 @@ void GunAimReport()
 }
 
 #if HALOMCCVR_DEV_DIAGNOSTICS
-// The shot impact witness's outside feeds (game.h; halo3_impact_witness.inl). Halo 3 only.
+// The shot impact witness's outside feeds (game.h; halo3_impact_witness.inl, and for the reticle Halo 2's AS SEEN
+// witness, halo2_impact_witness.inl).
 void Game_DevNoteTracedReticle(uint64_t serial, const float center[3], const float dir[3], float rangeM, bool hit)
 {
-    if (TitleAdapter_GetActiveTitle() == GameTitle::Halo3)
+    const GameTitle title = TitleAdapter_GetActiveTitle();
+    if (title == GameTitle::Halo3)
         Halo3ImpactNoteReticle(serial, center, dir, rangeM, hit);
+    else if (title == GameTitle::Halo2)
+        Halo2Observer6Dof_DevNoteAsSeenReticle(serial, center, dir);
 }
 void Game_DevNoteFireTrigger(bool pressed)
 {

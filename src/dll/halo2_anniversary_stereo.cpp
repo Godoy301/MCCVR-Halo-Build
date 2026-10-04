@@ -1062,6 +1062,13 @@ namespace
             {
                 g_lastCompletedSerial.store(serial, std::memory_order_release);
                 g_pairs.fetch_add(1, std::memory_order_relaxed);
+#if HALOMCCVR_DEV_DIAGNOSTICS
+                // Dev AS SEEN (halo2_impact_witness.inl): this serial's centre camera, the head its views were
+                // submitted with, and the publication the frame's camera matched.
+                Halo2Observer6Dof_DevNoteAsSeenFrame(1, serial, tracked,
+                    usePublishedSample ? publication.snapshot.headOrientation : snapshot.headOrientation,
+                    published && publication.generation == generation ? &publication : nullptr);
+#endif
                 return;
             }
             CountBail(Bail::PairCompleteRefused);

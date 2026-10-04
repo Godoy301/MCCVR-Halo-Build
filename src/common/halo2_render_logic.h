@@ -1758,6 +1758,12 @@ struct Halo2ObserverPosePublication
     uint64_t publishedUs=0;
     bool engineEyeVelValid=false;
     float engineEyeVel[3]{};
+    // The simulation tick (game_time +0x08) and MCC's frame-interpolator factor (0x164B300) when this publication was
+    // written (2026-10-04). The observer's camera is lerp(previous tick, newest tick, factor) -- the unit camera reads
+    // back the interpolator outside a tick (0x927170 -> 0x7227A0) -- so its engine eye is (1 - factor) of a tick behind
+    // the newest tick's. -1 / NaN when unreadable.
+    int64_t gameTick=-1;
+    float interpFactor=NAN;
     float referenceOrientation[4]{0.0f, 0.0f, 0.0f, 1.0f};
     float referencePosition[3]{};
     Halo2ObserverPoseSnapshot snapshot{};
