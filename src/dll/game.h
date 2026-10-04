@@ -219,6 +219,7 @@ struct ReachSightSample
     float rangeWu = 0.0f;
     bool hit = false;
     uint64_t raySampleMs = 0, traceSampleMs = 0;
+    uint64_t eyeStampUs = 0;   // when `eye` was published, on the sight clock (Sight_NowUs); 0 unknown
 };
 bool Game_ReachSightSample(ReachSightSample& out);
 // For the dev converge-off witness only: whether the crosshair trace's flags resolved on this build, and

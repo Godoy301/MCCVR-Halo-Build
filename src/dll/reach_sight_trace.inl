@@ -217,6 +217,9 @@ struct ReachSightActuatedPublication
     std::atomic<uint64_t> atUs{0};
     std::atomic<float> vx{0}, vy{0}, vz{0};
     std::atomic<bool> velValid{false};
+    // Flat parity (2026-10-03): the camera sample's stamp -- when the engine eye e was published (the local shot ray's
+    // publish, on the sight clock); 0 unknown. The intent point's E_P is e at this stamp (shot_lag_logic.h 4f).
+    std::atomic<uint64_t> eyeStampUs{0};
 } g_reachSightActuated;
 
 #if HALOMCCVR_DEV_DIAGNOSTICS
@@ -792,8 +795,9 @@ bool ReachSightReadActuated(uint64_t now, float o[3], float u[3], float e[3], fl
 
 // THE INTENT POINT, Reach (shot_lag_logic.h): the point the provider last actuated (its own ray is one render's eye
 // and hand: a coherent pair), on the sight clock. False unless one coherent record younger than maxAgeUs exists.
-bool ReachSightReadIntent(uint64_t maxAgeUs, float point[3], float eye[3], float vel[3], bool& velValid,
-                          uint64_t& atUs)
+// `dir` (optional) receives the intent ray's direction, `eyeStampUs` (optional) the camera sample's stamp (0 unknown).
+bool ReachSightReadIntentCore(uint64_t maxAgeUs, float point[3], float eye[3], float vel[3], bool& velValid,
+                              uint64_t& atUs, float* dir, uint64_t* eyeStampUs)
 {
     auto& a = g_reachSightActuated;
     for (int attempt = 0; attempt < 2; ++attempt)
@@ -814,6 +818,7 @@ bool ReachSightReadIntent(uint64_t maxAgeUs, float point[3], float eye[3], float
         velValid = a.velValid.load(std::memory_order_relaxed);
         const float range = a.rangeWu.load(std::memory_order_relaxed);
         atUs = a.atUs.load(std::memory_order_relaxed);
+        const uint64_t stampUs = a.eyeStampUs.load(std::memory_order_relaxed);
         if (a.sequence.load(std::memory_order_acquire) != before)
             continue;
         const uint64_t now = Sight_NowUs();
@@ -821,9 +826,37 @@ bool ReachSightReadIntent(uint64_t maxAgeUs, float point[3], float eye[3], float
             return false;
         for (int axis = 0; axis < 3; ++axis)
             point[axis] = o[axis] + u[axis] * range;
+        if (dir)
+            memcpy(dir, u, sizeof(u));
+        if (eyeStampUs)
+            *eyeStampUs = stampUs;
         return shot_lag::Finite3(point) && shot_lag::Finite3(eye);
     }
     return false;
+}
+
+bool ReachSightReadIntent(uint64_t maxAgeUs, float point[3], float eye[3], float vel[3], bool& velValid,
+                          uint64_t& atUs)
+{
+    return ReachSightReadIntentCore(maxAgeUs, point, eye, vel, velValid, atUs, nullptr, nullptr);
+}
+
+// The same record as a shot site's point sample (flat parity, sight_layer.h SightPointSample): P, the intent ray's
+// direction, and its camera sample -- E_P the engine eye the provider solved from, stamped at the local shot ray's
+// publish, with its velocity. MEASURED ONLY (shot_lag_logic.h 4f): Reach's P moves only with a measured fire eye.
+bool ReachSightReadIntentSample(uint64_t maxAgeUs, SightPointSample& out, uint64_t& atUs)
+{
+    out = SightPointSample{};
+    out.measuredOnly = true;
+    bool velValid = false;
+    uint64_t stampUs = 0;
+    if (!ReachSightReadIntentCore(maxAgeUs, out.point, out.camera.eye, out.camera.vel, velValid, atUs, out.dir,
+                                  &stampUs))
+        return false;
+    out.camera.velValid = velValid;
+    out.camera.stampUs = stampUs;
+    out.camera.valid = stampUs != 0;   // without its stamp the camera sample is unknown: P stays (NoPointEye)
+    return true;
 }
 
 // THE SHOT, RE-AIMED THROUGH THE INTENT POINT, Reach (every build). Reach decides a shot's line at the fire tick:

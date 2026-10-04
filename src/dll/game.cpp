@@ -19983,6 +19983,9 @@ namespace
         std::atomic<uint32_t> sequence{0};
         std::atomic<uint32_t> generation{0};
         std::atomic<uint64_t> sampleMs{0};
+        // Local shot ray only (flat parity, 2026-10-03): when this frame's engine eye `base` was published, on the
+        // sight clock (Sight_NowUs) -- the camera sample stamp of the intent point built from it (shot_lag 4f).
+        std::atomic<uint64_t> sampleUs{0};
         std::atomic<int32_t> unitHandle{-1};
         std::atomic<int32_t> directParent{-1};
         std::atomic<uint32_t> definitionDatum{0xFFFFFFFFu};
@@ -20363,6 +20366,7 @@ namespace
         uint32_t sequence = 0;
         uint32_t generation = 0;
         uint64_t sampleMs = 0;
+        uint64_t sampleUs = 0;   // local shot ray only: the sight-clock stamp of `base` (0: unknown)
         ReachSeatLeaseKey key{};
         float target[3]{};
         float origin[3]{};
@@ -20471,6 +20475,8 @@ namespace
                 published.generation.load(std::memory_order_relaxed);
             sample.sampleMs =
                 published.sampleMs.load(std::memory_order_relaxed);
+            sample.sampleUs =
+                published.sampleUs.load(std::memory_order_relaxed);
             sample.key = {
                 sample.generation,
                 published.unitHandle.load(std::memory_order_relaxed),
@@ -24587,6 +24593,8 @@ namespace
             published.sequence.fetch_add(1,std::memory_order_acq_rel);
             published.generation.store(rayValid?generation:0,std::memory_order_relaxed);
             published.sampleMs.store(rayValid?presentedTargetMs:0,std::memory_order_relaxed);
+            // The camera sample's stamp on the sight clock (flat parity): this frame's engine eye, published now.
+            published.sampleUs.store(rayValid?Sight_NowUs():0,std::memory_order_relaxed);
             published.unitHandle.store(rayValid?unit:-1,std::memory_order_relaxed);
             published.directParent.store(seatedRay?owner.vehicle.directParent:-1,std::memory_order_relaxed);
             published.definitionDatum.store(seatedRay?owner.vehicle.definitionDatum:0xFFFFFFFFu,
@@ -51459,6 +51467,7 @@ bool Game_ReachSightSample(ReachSightSample& out)
             return false;
     }
     out.raySampleMs = ray.sampleMs;
+    out.eyeStampUs = ray.sampleUs;   // the camera sample's stamp (flat parity: the intent's E_P)
     // The trace result: a torn read retries once, then reports "no range" (the provider holds).
     auto& trace = g_reachSightTrace;
     for (int attempt = 0; attempt < 2; ++attempt)
@@ -51512,16 +51521,22 @@ void Game_ReachNoteConvergedSample(const ReachSightSample& sample, float smoothe
     a.hz.store(sample.head[2], std::memory_order_relaxed);
     a.rangeWu.store(smoothedRangeWu, std::memory_order_relaxed);
     a.atMs.store(GetTickCount64(), std::memory_order_relaxed);
-    // The shot-lag fix: the sight clock, and the engine eye's velocity from the eyes this thread actuated.
+    // The shot-lag fix: the sight clock, and the engine eye's velocity from the eyes this thread actuated -- each on
+    // its CAMERA SAMPLE's stamp (flat parity, 2026-10-03: the local shot ray's publish), so a poll that re-reads one
+    // render's eye is no new sample and the velocity is measured on the render's clock, not the input poll's.
+    const uint64_t nowUs = Sight_NowUs();
+    const uint64_t eyeStampUs = sample.eyeStampUs && sample.eyeStampUs <= nowUs ? sample.eyeStampUs : nowUs;
     static shot_lag::EyeTrack s_track;
-    s_track.Push(Sight_NowUs(), sample.eye);
+    s_track.Push(eyeStampUs, sample.eye);
     float vel[3]{};
     const bool velValid = s_track.Velocity(120000, 30000, vel);
     a.vx.store(velValid ? vel[0] : 0.0f, std::memory_order_relaxed);
     a.vy.store(velValid ? vel[1] : 0.0f, std::memory_order_relaxed);
     a.vz.store(velValid ? vel[2] : 0.0f, std::memory_order_relaxed);
     a.velValid.store(velValid, std::memory_order_relaxed);
-    a.atUs.store(Sight_NowUs(), std::memory_order_relaxed);
+    a.atUs.store(nowUs, std::memory_order_relaxed);
+    a.eyeStampUs.store(sample.eyeStampUs && sample.eyeStampUs <= nowUs ? sample.eyeStampUs : 0,
+                       std::memory_order_relaxed);
     a.sequence.fetch_add(1, std::memory_order_release);
 }
 
