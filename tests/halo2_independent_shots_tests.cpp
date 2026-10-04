@@ -9,6 +9,7 @@
 #include <cstring>
 #include <thread>
 #include "../src/common/halo2_render_logic.h"
+#include "../src/common/shot_lag_logic.h"
 #include "../src/common/weapon_hand_logic.h"
 #include "../src/common/native_shot_target_lease.h"
 #include "../src/common/exclusive_input.h"
@@ -107,6 +108,14 @@ void Game_PublishShotDiagnostic(GameTitle title,uint32_t titleGeneration,
     lastShot.firesFromCamera=firesFromCamera;lastShot.unitAim=unitAim;
     if(origin)std::memcpy(lastShot.origin,origin,sizeof(lastShot.origin));
     if(direction)std::memcpy(lastShot.direction,direction,sizeof(lastShot.direction));
+}
+// Flat parity (halo2_fire_eye.inl): the firing assist's own camera call for OUR unit is a proof sample; another
+// unit's would end our stint, so it must never arrive here.
+static unsigned fireEyeProofSamples{};
+static void Halo2NoteFireEyeProof(uint32_t unit,const float* position,int32_t path)
+{
+    ++fireEyeProofSamples;
+    Check(unit==localUnit&&position&&path==0x12345678,"only our unit's assist camera answer feeds the fire-eye proof");
 }
 #include "../src/dll/halo2_independent_shots.inl"
 #undef _ReturnAddress
@@ -222,6 +231,7 @@ int main()
     Check(lastShot.origin[0]==0&&lastShot.origin[1]==0&&lastShot.origin[2]==1&&
         lastShot.direction[0]==0&&lastShot.direction[1]>0.99f,
         "the published shot carries the final ray the engine consumed");
+    Check(fireEyeProofSamples==2,"each owned firing-assist camera call is one flat-parity proof sample");
     Reset();telemetryAccepting=false;Shoot();
     Check(shotEvents==0&&fireCalls==1&&queryCalls==1,
         "recording-off gate publishes nothing and changes no firing work");

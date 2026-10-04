@@ -1752,6 +1752,12 @@ struct Halo2ObserverPosePublication
     // (Halo2EngineEyePosition). Before 2026-09-30 the give-back sat in stock with nothing to take it back
     // out, so a physical crouch aimed every converged shot from up to half a metre above the real eye.
     float viewLiftZ=0.0f;
+    // FLAT PARITY (sight_layer.h SightCameraSample): when this publication was written (the sight clock, us; 0 =
+    // unknown) and the engine eye's velocity (world units/s) over ~100 ms of publications, measured on the publishing
+    // (observer) thread. A muzzle shot moves the point it built from this publication with the eye to the fire.
+    uint64_t publishedUs=0;
+    bool engineEyeVelValid=false;
+    float engineEyeVel[3]{};
     float referenceOrientation[4]{0.0f, 0.0f, 0.0f, 1.0f};
     float referencePosition[3]{};
     Halo2ObserverPoseSnapshot snapshot{};

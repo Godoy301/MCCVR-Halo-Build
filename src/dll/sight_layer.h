@@ -172,12 +172,25 @@ bool Sight_ScopeConvergedDirection(GameTitle title, float outDir[3]);
 // ...FromRay's pointDistance, when given, receives how far that point lies from the muzzle (world units) on
 // success: a title whose firing assist aims at a point along the shot (Halo 2) aims at that one, from the
 // same trace sample the direction was built from.
+// THE CAMERA SAMPLE a shot site built its point from (flat parity, below): that sample's ENGINE eye E_P, when it was
+// sampled (Sight_NowUs), and E_P's velocity (wu/s). Halo 2: the observer publication; CE: the gameplay context.
+struct SightCameraSample
+{
+    bool valid = false;
+    float eye[3]{};
+    uint64_t stampUs = 0;
+    bool velValid = false;
+    float vel[3]{};
+};
 bool Sight_MuzzleShotsConverge();
 bool Sight_AimMuzzleShot(GameTitle title, uint32_t generation, const float before[3], const float position[3],
                          float direction[3], float up[3]);
+// `camera` (Halo 2, CE: the sample head/dir/eye came from): the point is moved with the eye to the fire (flat parity,
+// Sight_ShotPointSample) when the keys want it; null keeps the world point. `pointDistance` is from the point used.
 bool Sight_AimMuzzleShotFromRay(GameTitle title, uint32_t generation, const float head[3], const float dir[3],
                                 const float eye[3], const float before[3], const float position[3],
-                                float direction[3], float up[3], float* pointDistance = nullptr);
+                                float direction[3], float up[3], float* pointDistance = nullptr,
+                                const SightCameraSample* camera = nullptr);
 bool Sight_AimMuzzleShotThrough(GameTitle title, const float point[3], const float rayDir[3],
                                 const float before[3], const float position[3], float direction[3], float up[3]);
 // A title that could not even ask (no converged point of its own): counted with the rest.
@@ -212,27 +225,50 @@ inline constexpr uint64_t kSightIntentShotMaxAgeMs = 150;
 // world point fixed at a camera sample a tick or so older. So a local shot aims through P' = P + (E_fire - E_P): E_P
 // the engine eye of P's camera sample, E_fire the game's eye at the fire -- MEASURED where the title has one (Halo 3
 // on foot, Sight_SetFireEyeSource: the query's own start, or the evaluator asked at a muzzle shot, else this tick's
-// eye carried a tick), else EXTRAPOLATED as E_P + v * age (ODST). Covered: Halo 3 and ODST -- the crosshair-assist
-// query re-aim (LegacySightReaimCrosshairQuery) and the muzzle shot (Sight_AimMuzzleShot), on foot; seats only under
-// the second dev key shot_point_transport_seated (default 0); and Halo 3's on-foot record recomposition
-// (shot_lag::RecomposeRecord). Not Reach: its intent lane (ReachSightReadIntent) carries no camera-sample stamp and
-// publishes no fire-tick eye. The reticle is never moved: it stays on P.
+// eye carried a tick), else EXTRAPOLATED as E_P + v * age (ODST, Halo 4). Covered: Halo 3 and ODST -- the
+// crosshair-assist query re-aim (LegacySightReaimCrosshairQuery) and the muzzle shot (Sight_AimMuzzleShot), on foot;
+// seats only under the second dev key shot_point_transport_seated (default 0); and Halo 3's on-foot record
+// recomposition (shot_lag::RecomposeRecord). Since 2026-10-03 (fix/flat-parity-other-titles) also the other titles'
+// on-foot shots that aim through a WORLD point: Halo 2's and CE's muzzle shots (E_fire their camera evaluator asked at
+// the fire once proven, shot_lag::EvaluatorEyeProof, else E_P carried a tick: Sight_ShotPointSample), CE's player
+// assist ray, and Halo 4's muzzle shot (extrapolated). A consumer that applies a DIRECTION solved from E_P at the
+// fire's own eye (the unit aim Halo 2, CE and Halo 4 write, and every record) already IS flat parity: its line from
+// E_fire passes through P + (E_fire - E_P). Not Reach: its intent lane (ReachSightReadIntent) carries no camera-sample
+// stamp and publishes no fire-tick eye. By the same rule its on-foot shots DO aim through a world point since the
+// 2026-10-02 shot-lag fix (the unit-adjust and crosshair-query re-aims, the muzzle shot: the provider's actuated
+// point), so they should trail a strafe by a tick as Halo 3 did -- yet the player reported no lag there (2026-10-03).
+// Left unchanged until a headset run says which: its dev SHOT LAG line's "stale eye along travel" is E_fire - E_P.
+// The reticle is never moved: it stays on P.
 enum class SightTransportSite : uint8_t
 {
-    CrosshairAssist = 0,   // the crosshair-assist query re-aim (Halo 3, ODST)
-    Muzzle,                // the muzzle shot (Halo 3, ODST)
+    CrosshairAssist = 0,   // the crosshair-assist query re-aim (Halo 3, ODST); CE's player assist ray
+    Muzzle,                // the muzzle shot (Halo 3, ODST, Halo 2, CE, Halo 4)
     Record,                // Halo 3's on-foot record recomposition
     Count
 };
-// A title's eye at the fire tick (Halo 3 on foot: game.cpp Halo3FireEyeForShot), on the fire thread. `siteEye`: the
-// eye the shot site itself already holds (the crosshair query's own start), else null; `askEvaluator`: when the title
-// published no eye this tick, the site (a muzzle shot) may have it evaluated now. Returns its verdict; on Measured
-// `eye` is the eye and `ageMs` its age now.
-using SightFireEyeFn = shot_lag::FireEye (*)(const float* siteEye, bool askEvaluator, float eye[3], float& ageMs);
+// A point a shot site aims through, with the camera sample it was built from (Sight_ShotPointSample).
+struct SightPointSample
+{
+    float point[3]{};          // P
+    float dir[3]{};            // the intent ray's direction (only splits the witness's shift along travel)
+    SightCameraSample camera;  // E_P, its stamp and velocity
+};
+// A title's eye at the fire tick (Halo 3 on foot: game.cpp Halo3FireEyeForShot; Halo 2 and CE: their camera evaluator
+// asked at the fire, else `sample`'s eye carried a tick), on the fire thread. `siteEye`: the eye the shot site itself
+// already holds (the crosshair query's own start), else null; `askEvaluator`: the site (a muzzle shot) may have the
+// title's evaluator asked now. `sample`: the camera sample P was built from. Returns its verdict; when usable
+// (shot_lag::FireEyeUsable) `eye` is E_fire and `ageMs` its age now.
+using SightFireEyeFn = shot_lag::FireEye (*)(const float* siteEye, bool askEvaluator, const SightPointSample& sample,
+                                             float eye[3], float& ageMs);
 void Sight_SetFireEyeSource(GameTitle title, SightFireEyeFn source);
-// The keys' verdict for a shot of this kind: a covered title (Halo 3, ODST), shot_point_transport on, and seated
-// shots only with shot_point_transport_seated as well. A player build: on foot yes, seated no.
+// The keys' verdict for a shot of this kind: a covered title (Halo 3, ODST, Halo 2, CE, Halo 4 -- not Reach),
+// shot_point_transport on, and seated shots only with shot_point_transport_seated as well. A player build: on foot
+// yes, seated no.
 bool Sight_TransportWanted(GameTitle title, bool seated);
+// A title's simulation tick, from a per-tick hook (every build; several units per tick are one tick), and its
+// measured period (us), else `fallbackUs` while unmeasured. Also feeds the dev SHOT LAG line's tick.
+void Sight_NoteTitleTick(GameTitle title);
+uint32_t Sight_TickPeriodUs(GameTitle title, uint32_t fallbackUs);
 // P' for this intent's point -- seated the solve's point (solvePoint) from the solve's eye, on foot P from its camera
 // sample -- WITHOUT consulting the keys (the impact witness asks it for every fire). `siteEye` / `askEvaluator`: as
 // SightFireEyeFn (on foot only). `out`/`shift` written only when applied; `fire` (optional) receives the fire-eye
@@ -247,6 +283,14 @@ shot_lag::Transport Sight_TransportIntent(GameTitle title, const SightIntent& in
 // shot has none and asks for the title's eye. Every outcome under the keys is counted (the dev SHOT LAG transport line).
 const float* Sight_ShotPoint(GameTitle title, SightTransportSite site, const SightIntent& intent, bool seated,
                              const float* reference, float storage[3], const float* siteEye = nullptr);
+// The same for a site that built its point itself (Halo 2, CE: no published intent): `sample` is P and its camera.
+shot_lag::Transport Sight_TransportSample(GameTitle title, const SightPointSample& sample, bool seated,
+                                          const float* siteEye, bool askEvaluator, float out[3], float shift[3],
+                                          shot_lag::FireEye* fire = nullptr, float* fireAgeMs = nullptr,
+                                          float* pointAgeMs = nullptr);
+const float* Sight_ShotPointSample(GameTitle title, SightTransportSite site, const SightPointSample& sample,
+                                   bool seated, const float* reference, float storage[3],
+                                   const float* siteEye = nullptr);
 // The calling thread's last Sight_ShotPoint decision under the keys (valid = transported): P' and P' - P, which site,
 // how, the fire eye's verdict and when (Sight_NowUs). The dev impact witness reads it on the fire thread.
 struct SightLastShotPoint

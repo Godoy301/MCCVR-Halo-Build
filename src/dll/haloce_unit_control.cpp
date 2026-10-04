@@ -243,6 +243,8 @@ __declspec(noinline) void __fastcall UnitControlHook(uint32_t unit,const UnitCon
 {
     const auto caller=reinterpret_cast<uintptr_t>(_ReturnAddress());
     callbacks.fetch_add(1,std::memory_order_acq_rel);
+    // A unit's control runs once per simulation tick: the measured tick a flat-parity muzzle shot carries the eye by.
+    Sight_NoteTitleTick(GameTitle::HaloCE);
     __try { UnitControlBody(unit,packet,clientUpdate,caller); }
     __finally
     {

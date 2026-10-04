@@ -476,7 +476,8 @@ bool Sight_AimMuzzleShotThrough(GameTitle title, const float point[3], const flo
 
 bool Sight_AimMuzzleShotFromRay(GameTitle title, uint32_t generation, const float head[3], const float dir[3],
                                 const float eye[3], const float before[3], const float position[3],
-                                float direction[3], float up[3], float* pointDistance)
+                                float direction[3], float up[3], float* pointDistance,
+                                const SightCameraSample* camera)
 {
     // The point the converged aim in effect is bent through: the intent ray at the smoothed range the aim
     // path converged on (SightTrace::AimRangeWu), so the shot from the muzzle lands where the shot from the
@@ -502,13 +503,24 @@ bool Sight_AimMuzzleShotFromRay(GameTitle title, uint32_t generation, const floa
         point[axis] = head[axis] + u[axis] * range;
     }
     (void)eye;   // no distance-from-the-eye limit on the muzzle (aim_solve::muzzle_shot_direction)
-    if (!Sight_AimMuzzleShotThrough(title, point, u, before, position, direction, up))
+    // FLAT PARITY (Halo 2, CE): the point moved with the eye from the camera sample it was built from to the fire.
+    const float* through = point;
+    float moved[3]{};
+    if (camera)
+    {
+        SightPointSample sample{};
+        memcpy(sample.point, point, sizeof(sample.point));
+        memcpy(sample.dir, u, sizeof(sample.dir));
+        sample.camera = *camera;
+        through = Sight_ShotPointSample(title, SightTransportSite::Muzzle, sample, false, point, moved);
+    }
+    if (!Sight_AimMuzzleShotThrough(title, through, u, before, position, direction, up))
         return false;
     if (pointDistance)
     {
         float d2 = 0.0f;
         for (int axis = 0; axis < 3; ++axis)
-            d2 += (point[axis] - position[axis]) * (point[axis] - position[axis]);
+            d2 += (through[axis] - position[axis]) * (through[axis] - position[axis]);
         *pointDistance = std::isfinite(d2) ? std::sqrt(d2) : 0.0f;
     }
     return true;
@@ -647,34 +659,80 @@ void Sight_SetFireEyeSource(GameTitle title, SightFireEyeFn source)
 bool Sight_TransportWanted(GameTitle title, bool seated)
 {
     // Every build (flat parity, 2026-10-03): the keys are dev-only, so a player build keeps their defaults -- on foot
-    // transported (shot_point_transport 1), seats not (shot_point_transport_seated 0).
-    if (title != GameTitle::Halo3 && title != GameTitle::Halo3ODST)
+    // transported (shot_point_transport 1), seats not (shot_point_transport_seated 0). Every title whose local shots
+    // aim through a world point except Reach (sight_layer.h).
+    if (title != GameTitle::Halo3 && title != GameTitle::Halo3ODST && title != GameTitle::Halo2 &&
+        title != GameTitle::HaloCE && title != GameTitle::Halo4)
         return false;
     return g_config.shot_point_transport != 0 && (!seated || g_config.shot_point_transport_seated != 0);
+}
+
+namespace
+{
+// Per title, every build: the start of the simulation tick in progress and the smoothed period (shot_lag).
+struct TitleTickClock
+{
+    std::atomic<uint64_t> startUs{0};
+    std::atomic<uint32_t> periodUs{0};
+};
+TitleTickClock g_titleTicks[kTitleSlots];
+
+// A published intent's point and camera sample: on foot P from its camera sample, seated the solve's point from the
+// solve's eye (stamped with the newest render at the solve).
+SightPointSample SampleFromIntent(const SightIntent& intent, bool seated)
+{
+    const shot_lag::IntentPoint& p = intent.p;
+    SightPointSample sample{};
+    memcpy(sample.point, seated ? intent.solvePoint : p.point, sizeof(sample.point));
+    memcpy(sample.dir, p.dir, sizeof(sample.dir));
+    sample.camera.valid = seated ? p.solveEyeStampUs != 0 : p.pointEyeValid;
+    memcpy(sample.camera.eye, seated ? p.eye : p.pointEye, sizeof(sample.camera.eye));
+    sample.camera.stampUs = seated ? p.solveEyeStampUs : p.pointEyeStampUs;
+    sample.camera.velValid = p.eyeVelValid;
+    memcpy(sample.camera.vel, p.eyeVel, sizeof(sample.camera.vel));
+    return sample;
+}
+} // namespace
+
+void Sight_NoteTitleTick(GameTitle title)
+{
+    auto& c = g_titleTicks[Slot(title)];
+    const uint64_t now = Sight_NowUs();
+    const uint64_t start = c.startUs.load(std::memory_order_relaxed);
+    if (start && now > start && now - start <= 2000)
+        return;   // another unit of the same tick
+    c.startUs.store(now, std::memory_order_relaxed);
+    if (start && now > start)
+        c.periodUs.store(shot_lag::SmoothTickPeriod(c.periodUs.load(std::memory_order_relaxed), now - start),
+                         std::memory_order_relaxed);
+    Sight_NoteSimTick(title);   // dev: the SHOT LAG line's measured tick
+}
+
+uint32_t Sight_TickPeriodUs(GameTitle title, uint32_t fallbackUs)
+{
+    const uint32_t period = g_titleTicks[Slot(title)].periodUs.load(std::memory_order_relaxed);
+    return period ? period : fallbackUs;
 }
 
 shot_lag::Transport Sight_TransportIntent(GameTitle title, const SightIntent& intent, bool seated,
                                           const float* siteEye, bool askEvaluator, float out[3], float shift[3],
                                           shot_lag::FireEye* fire, float* fireAgeMs, float* pointAgeMs)
 {
-    const shot_lag::IntentPoint& p = intent.p;
+    return Sight_TransportSample(title, SampleFromIntent(intent, seated), seated, siteEye, askEvaluator, out, shift,
+                                 fire, fireAgeMs, pointAgeMs);
+}
+
+shot_lag::Transport Sight_TransportSample(GameTitle title, const SightPointSample& sample, bool seated,
+                                          const float* siteEye, bool askEvaluator, float out[3], float shift[3],
+                                          shot_lag::FireEye* fire, float* fireAgeMs, float* pointAgeMs)
+{
     shot_lag::TransportInput in{};
-    memcpy(in.point, seated ? intent.solvePoint : p.point, sizeof(in.point));
-    if (seated)
-    {
-        // The seated point was bent from the solve's eye, stamped with the newest render at the solve.
-        in.pointEyeValid = p.solveEyeStampUs != 0;
-        memcpy(in.pointEye, p.eye, sizeof(in.pointEye));
-        in.pointEyeStampUs = p.solveEyeStampUs;
-    }
-    else
-    {
-        in.pointEyeValid = p.pointEyeValid;
-        memcpy(in.pointEye, p.pointEye, sizeof(in.pointEye));
-        in.pointEyeStampUs = p.pointEyeStampUs;
-    }
-    in.velValid = p.eyeVelValid;
-    memcpy(in.vel, p.eyeVel, sizeof(in.vel));
+    memcpy(in.point, sample.point, sizeof(in.point));
+    in.pointEyeValid = sample.camera.valid;
+    memcpy(in.pointEye, sample.camera.eye, sizeof(in.pointEye));
+    in.pointEyeStampUs = sample.camera.stampUs;
+    in.velValid = sample.camera.velValid;
+    memcpy(in.vel, sample.camera.vel, sizeof(in.vel));
     in.nowUs = Sight_NowUs();
     in.maxAgeUs = kSightTransportMaxAgeUs;
     // E_fire: measured only on foot, and only from a title that publishes its fire-tick eye.
@@ -682,7 +740,7 @@ shot_lag::Transport Sight_TransportIntent(GameTitle title, const SightIntent& in
     float ageMs = -1.0f;
     if (!seated)
         if (const SightFireEyeFn source = g_fireEyeSources[Slot(title)].load(std::memory_order_acquire))
-            verdict = source(siteEye, askEvaluator, in.fireEye, ageMs);
+            verdict = source(siteEye, askEvaluator, sample, in.fireEye, ageMs);
     in.fireEyeValid = shot_lag::FireEyeUsable(verdict);
     if (fire)
         *fire = verdict;
@@ -731,13 +789,21 @@ const float* Sight_ShotPoint(GameTitle title, SightTransportSite site, const Sig
     // Every build (flat parity, 2026-10-03; the dev key shot_point_transport, default 1, is the A/B).
     if (!reference || !storage || !Sight_TransportWanted(title, seated))
         return reference;
+    return Sight_ShotPointSample(title, site, SampleFromIntent(intent, seated), seated, reference, storage, siteEye);
+}
+
+const float* Sight_ShotPointSample(GameTitle title, SightTransportSite site, const SightPointSample& sample,
+                                   bool seated, const float* reference, float storage[3], const float* siteEye)
+{
+    if (!reference || !storage || !Sight_TransportWanted(title, seated))
+        return reference;
     float shift[3]{};
     shot_lag::FireEye fire = shot_lag::FireEye::Count;
     float fireAgeMs = -1.0f, pointAgeMs = -1.0f;
     const shot_lag::Transport how =
-        Sight_TransportIntent(title, intent, seated, siteEye, site == SightTransportSite::Muzzle, storage, shift,
+        Sight_TransportSample(title, sample, seated, siteEye, site == SightTransportSite::Muzzle, storage, shift,
                               &fire, &fireAgeMs, &pointAgeMs);
-    Sight_NoteTransport(title, site, how, fire, shift, intent.p.dir, intent.p.eyeVelValid ? intent.p.eyeVel : nullptr,
+    Sight_NoteTransport(title, site, how, fire, shift, sample.dir, sample.camera.velValid ? sample.camera.vel : nullptr,
                         fireAgeMs, pointAgeMs);
     const bool applied = shot_lag::TransportApplied(how);
     SightLastShotPoint& last = t_lastShotPoint;
@@ -1350,9 +1416,9 @@ void Sight_ReportShots()
         s_key = g_config.shot_point_transport;
         s_seatedKey = g_config.shot_point_transport_seated;
         LOG("SHOT LAG transport (dev): shot_point_transport=%d shot_point_transport_seated=%d -- %s", s_key,
-            s_seatedKey, s_key ? (s_seatedKey ? "Halo 3 / ODST shots aim through P moved with the eye, on foot and "
-                                                "seated" : "Halo 3 / ODST on-foot shots aim through P moved with the "
-                                                "eye; seats through P")
+            s_seatedKey, s_key ? (s_seatedKey ? "shots of every title but Reach aim through P moved with the eye, on "
+                                                "foot and seated" : "on-foot shots of every title but Reach aim through "
+                                                "P moved with the eye; seats through P")
                                : "every shot through P as published (the SHOT IMPACT vs P' columns say where a moved "
                                  "point would have been)");
     }
