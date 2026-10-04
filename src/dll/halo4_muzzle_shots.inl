@@ -254,6 +254,7 @@ __declspec(noinline) void __fastcall Halo4MuzzleAimDetour(uint32_t unit,float* o
             Halo4VehicleInputState seat{};
             if(Halo4ReadVehicleInput(seat)&&seat.unit==unit&&!seat.seated)
             {
+                Halo4AsSeenNoteFireUnit(unit);   // AS SEEN: this fire's round is ours
                 Sight_NoteShot(GameTitle::Halo4,TitleAdapter_GetGeneration(GameTitle::Halo4),origin,direction);
                 // SHOT LAG: from the muzzle when this shot was taken over, else the game's own aim.
                 Sight_NoteShotLagFromIntent(GameTitle::Halo4,owned?SightShotPath::Muzzle:SightShotPath::Native,
@@ -274,11 +275,16 @@ __declspec(noinline) void __fastcall Halo4MuzzleFireDetour(uint32_t weapon,int16
     auto& feature=g_halo4Barrel;feature.callbacks.fetch_add(1,std::memory_order_acq_rel);
     const auto previousShot=g_halo4BarrelShot;const auto previousRequest=g_halo4BarrelRequest;
     NativeShotTargetLease<0x28> lease{};g_halo4BarrelShot={};g_halo4BarrelRequest={weapon,barrel,simulation,&lease};
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    // AS SEEN (dev): this fire's shooter is unknown until its aim call names it (Halo4MuzzleAimDetour).
+    const uint32_t previousAsSeenUnit=t_halo4AsSeenFireUnit;t_halo4AsSeenFireUnit=UINT32_MAX;
+#endif
     __try {if(feature.fireOriginal)feature.fireOriginal(weapon,barrel,data,simulation);}
     __finally
     {
 #if HALOMCCVR_DEV_DIAGNOSTICS
         Halo4SeatSightClearShot();   // a seated shot's tag never outlives its fire
+        t_halo4AsSeenFireUnit=previousAsSeenUnit;
 #endif
         RestoreHalo4MuzzleTarget(lease);g_halo4BarrelShot=previousShot;g_halo4BarrelRequest=previousRequest;
         feature.callbacks.fetch_sub(1,std::memory_order_acq_rel);

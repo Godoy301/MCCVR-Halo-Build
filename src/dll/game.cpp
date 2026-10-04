@@ -38581,6 +38581,14 @@ namespace
     std::atomic<uint64_t> g_halo4SightUnitAtMs{0};
     // Flat parity's fire eye, Halo 4 (halo4_fire_eye.inl, every build): the proof's per-tick sample at rest.
     void Halo4NoteFireEyeTick(uint32_t unit, bool onFoot);
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    // AS SEEN, Halo 4 in VR (dev; halo4_impact_witness.inl): the fire's shooter, named by the fire's own aim call
+    // (Halo4MuzzleAimDetour) for this fire on this thread; and a tracked round's ray.
+    thread_local uint32_t t_halo4AsSeenFireUnit = UINT32_MAX;
+    void Halo4AsSeenNoteFireUnit(uint32_t unit);
+    void Halo4ImpactNoteRay(const Halo4PhysicsRayCastInput* input, const Halo4PhysicsRayCastResult* output,
+                            bool returned);
+#endif
     #include "halo4_contact_melee_runtime.inl"
     #include "halo4_vehicle_input.inl"
     #include "cached_physical_crouch.inl"
@@ -39260,6 +39268,11 @@ namespace
 #endif
             if(g_halo4MuzzleOwnedQuery||!Halo4RedirectContactRay(reinterpret_cast<uintptr_t>(_ReturnAddress()),input,output,result))
                 result = Halo4PhysicsRayCastDetourBody(input, output);
+#if HALOMCCVR_DEV_DIAGNOSTICS
+            // Dev AS SEEN (halo4_impact_witness.inl): a tracked round's own ray and where it hit.
+            if (!g_halo4MuzzleOwnedQuery)
+                Halo4ImpactNoteRay(input, output, result);
+#endif
         }
         __finally
         {
@@ -41078,6 +41091,8 @@ namespace
     #include "halo4_seat_sight.inl"
     // Flat parity's fire eye, Halo 4 on foot: measured, proven at rest (every build).
     #include "halo4_fire_eye.inl"
+    // Dev builds only: AS SEEN for Halo 4 in VR (the file compiles to nothing otherwise).
+    #include "halo4_impact_witness.inl"
     #include "halo4_weapon_haptics.inl"
 
     void Halo4BeginFloatingPair()
@@ -44918,6 +44933,12 @@ namespace
                 halfFovY[1], std::memory_order_relaxed);
             g_halo4Camera.stereoFrames.fetch_add(
                 1, std::memory_order_relaxed);
+#if HALOMCCVR_DEV_DIAGNOSTICS
+            // Dev AS SEEN (halo4_impact_witness.inl): this completed frame's centre camera, the head orientation its
+            // views were built from, and the stock observer eye and aim (the controller root).
+            Halo4AsSeenNoteFrame(snapshot.preparedSerial, stock,
+                                 snapshot.headOrientation, controllerRoot);
+#endif
             return Halo4StereoResult::Complete;
         }
 
@@ -46013,6 +46034,10 @@ namespace
         if(!RemoveHalo4SeatSight())
         { LOG("Halo 4 teardown: the dev seat witnesses need cleanup retry; retaining native dependencies");return false; }
 #endif
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        if(!RemoveHalo4ImpactWitness())
+        { LOG("Halo 4 teardown: the dev AS SEEN witness needs cleanup retry; retaining native dependencies");return false; }
+#endif
         RemoveHalo4FireEye();   // asked only from inside the contact and muzzle detours, drained below
         if(!RemoveHalo4Muzzle())
         { LOG("Halo 4 teardown: optional muzzle hooks need cleanup retry; retaining native dependencies");return false; }
@@ -46444,6 +46469,7 @@ namespace
         InstallHalo4FireEye(base,size,generation);   // flat parity's measured fire eye (halo4_fire_eye.inl)
 #if HALOMCCVR_DEV_DIAGNOSTICS
         InstallHalo4SeatSight(base,size,generation);   // after the muzzle lane: its bindings and view detour
+        (void)InstallHalo4ImpactWitness(base,size);    // AS SEEN (dev): after the muzzle lane, whose aim names the shooter
 #endif
         (void)InstallHalo4WeaponHaptics(base,size,generation);
         // C-H4-46: Halo 4 supplies authored pixels to the same shared VR
@@ -46829,6 +46855,9 @@ namespace
         ReportHalo4ContactMelee();
         ReportHalo4Muzzle();
         ReportHalo4FireEye();
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        ReportHalo4AsSeen();
+#endif
         ReportHalo4WeaponHaptics();
         if (g_halo4VehicleInput.ready.load(std::memory_order_acquire))
             LOG("Halo 4 vehicle input in 2s: seated=%llu unknown/stock=%llu guardedFaults=%llu",
@@ -53208,6 +53237,8 @@ void Game_DevNoteTracedReticle(uint64_t serial, const float center[3], const flo
         Halo2Observer6Dof_DevNoteAsSeenReticle(serial, center, dir);
     else if (title == GameTitle::HaloReach)
         ReachAsSeenNoteReticle(serial, dir);
+    else if (title == GameTitle::Halo4)
+        Halo4AsSeenNoteReticle(serial, dir);
 }
 void Game_DevNoteFireTrigger(bool pressed)
 {
