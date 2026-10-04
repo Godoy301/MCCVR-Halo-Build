@@ -608,6 +608,9 @@ void ReachSightTraceTick(uint32_t unit)
     // it; so ours ignores the root, the occupant and the seat's own parent (a Warthog's turret is a
     // vehicle of its own), and looks past any other part of the same vehicle it still meets.
     const bool seated = ray.key.directParent != -1;
+    // FLAT PARITY's proof (reach_fire_eye.inl): in this same per-unit context, after our unit's update, is Reach's unit
+    // camera evaluator the engine eye the render showed? Sampled only at rest, on foot; no shot needed to prove it.
+    ReachNoteFireEyeProof(localUnit, !seated, generation);
     int32_t ignoreA = localUnit, ignoreB = -1, ignoreC = -1, root = -1;
     if (seated)
     {
@@ -908,14 +911,19 @@ bool ReachSightReaimCrosshairQuery(uint64_t flags, const float* start, const flo
                                shot_lag::IntentUse::NaturalHeld);
         return false;
     }
-    float point[3]{}, eye[3]{}, vel[3]{};
-    bool velValid = false;
+    SightPointSample sample{};
     uint64_t atUs = 0;
-    if (!ReachSightReadIntent(kSightIntentShotMaxAgeMs * 1000ull, point, eye, vel, velValid, atUs))
+    if (!ReachSightReadIntentSample(kSightIntentShotMaxAgeMs * 1000ull, sample, atUs))
     {
         Sight_NoteReaimSkipped(GameTitle::HaloReach, SightShotSite::CrosshairAssist, shot_lag::IntentUse::Stale);
         return false;
     }
+    // FLAT PARITY (shot_lag_logic.h 4f), on foot only: through P moved with the eye from P's camera sample to this
+    // fire's -- the unit camera evaluator this fire's unit-adjust asked (reach_fire_eye.inl), once proven; else P.
+    const bool seated = ignoredA != local;
+    float moved[3]{};
+    const float* point = Sight_ShotPointSample(GameTitle::HaloReach, SightTransportSite::CrosshairAssist, sample,
+                                               seated, sample.point, moved);
     memcpy(out, vector, sizeof(float) * 3);
     return Sight_ReaimThroughPoint(GameTitle::HaloReach, SightShotSite::CrosshairAssist, start, out, point);
 }
@@ -963,12 +971,16 @@ void ReachSightNoteCrosshairQuery(uint64_t flags, const float* start, const floa
 }
 
 // SHOTS FROM THE MUZZLE (sight_layer.h), Reach: the converged point is the one the direct drive last wrote
-// (ReachConvergedShotLive), the intent ray at the range the provider actuated. Firing-site thread.
-bool ReachAimMuzzleShot(const float before[3], const float position[3], float direction[3], float up[3])
+// (ReachConvergedShotLive), the intent ray at the range the provider actuated -- moved with the eye from its camera
+// sample to this fire's (flat parity, shot_lag_logic.h 4f; measured or not at all). `unit`: the firing unit the
+// muzzle query named. Firing-site thread, inside the fire (before its unit-adjust names the shooter).
+bool ReachAimMuzzleShot(uint32_t unit, const float before[3], const float position[3], float direction[3],
+                        float up[3])
 {
     const uint64_t now = GetTickCount64();
-    float o[3]{}, u[3]{}, e[3]{}, h[3]{}, rangeWu = 0.0f;
-    if (!ReachConvergedShotLive(now) || !ReachSightReadActuated(now, o, u, e, h, rangeWu))
+    SightPointSample sample{};
+    uint64_t atUs = 0;
+    if (!ReachConvergedShotLive(now) || !ReachSightReadIntentSample(kSightIntentShotMaxAgeMs * 1000ull, sample, atUs))
     {
         Sight_NoteMuzzleShotUnconverged(GameTitle::HaloReach);
         return false;
@@ -981,8 +993,13 @@ bool ReachAimMuzzleShot(const float before[3], const float position[3], float di
         Sight_NoteMuzzleShotHeld(GameTitle::HaloReach);
         return false;
     }
-    const float point[3]{o[0] + u[0] * rangeWu, o[1] + u[1] * rangeWu, o[2] + u[2] * rangeWu};
-    return Sight_AimMuzzleShotThrough(GameTitle::HaloReach, point, u, before, position, direction, up);
+    // This fire's eye, asked for the firing unit when it is ours (the muzzle path is on foot only: Reach publishes no
+    // muzzle palette in a seat); the later unit-adjust and crosshair query of the same fire reuse it.
+    ReachMeasureFireEye(static_cast<int32_t>(unit));
+    float moved[3]{};
+    const float* point = Sight_ShotPointSample(GameTitle::HaloReach, SightTransportSite::Muzzle, sample, false,
+                                               sample.point, moved);
+    return Sight_AimMuzzleShotThrough(GameTitle::HaloReach, point, sample.dir, before, position, direction, up);
 }
 
 void ReachSightMeasureShot(int32_t unitIndex, const float* origin, const float* direction,
@@ -1236,6 +1253,7 @@ void ReportReachSightTrace()
             "reticle ray rose with it", leashFrames, leashMax, double(g_config.head_leash_below_eye_m),
             crouchFrames, crouchMax);
     ReportReachCachedCrouch();
+    ReportReachFireEye();   // flat parity's fire eye: its proof, and (dev) its witness
 
     // VALUE AGREEMENT, continued: the engine reads this global on every crosshair trace, so if anything
     // ever re-wrote it our trace would measure a different ray than the engine's. Withdraw at once.

@@ -43,7 +43,9 @@ static GameTitle TitleAdapter_GetActiveTitle(){return title;}
 // sight_layer's (aim_solve_tests), so here it keeps the barrel's direction and counts the asks.
 static unsigned muzzleAimCalls=0;static bool muzzleAimRefuses=false;
 static bool Sight_MuzzleShotsConverge(){return g_config.shots_from_muzzle&&!g_config.gun_barrel_aim;}
-static bool ReachAimMuzzleShot(const float*,const float*,float*,float*){++muzzleAimCalls;return !muzzleAimRefuses;}
+static uint32_t muzzleAimUnit=UINT32_MAX;
+static bool ReachAimMuzzleShot(uint32_t unit,const float*,const float*,float*,float*)
+{++muzzleAimCalls;muzzleAimUnit=unit;return !muzzleAimRefuses;}
 static void ReachSightMeasureShot(int32_t,const float*,const float*,const float*,uint8_t,uint8_t){}
 static bool VR_IsStereoEnabled(){return stereo;}
 struct VrContactTrackingSnapshot
@@ -69,6 +71,8 @@ static thread_local uintptr_t caller=0;
 // THE LOCAL PLAYER'S FIRE (shot_lag_logic.h FireMark; game.cpp t_reachFire): opened and restored by the fire.
 #include "../src/common/shot_lag_logic.h"
 static thread_local int8_t t_reachFire=shot_lag::kFireNone;
+// Flat parity's per-fire eye (game.cpp t_reachFireEye): opened empty by each fire, restored at its exit.
+static thread_local shot_lag::FireEyeScope t_reachFireEye{};
 #define _ReturnAddress() reinterpret_cast<void*>(::caller)
 #define __readgsqword(offset) reinterpret_cast<uint64_t>(::slots)
 #include "../src/dll/reach_muzzle_ownership.inl"
@@ -134,11 +138,21 @@ static void __fastcall NativeFire(uint32_t weapon,int16_t barrel,void* data,uint
     if(expectMuzzle)Check(point[0]==2&&point[1]==2.5f&&cameraDirection[1]==1&&camera[0]==2,"later native assist shares barrel ray");
     // The crosshair re-aim at this assist: inside an open fire (never kFireNone), and a barrel shot's own line.
     Check(t_reachFire!=shot_lag::kFireNone,"the fire is open while its assist runs");
+    {
+        float eye[3]{};
+        if(!nested||weapon==primary)
+            Check(t_reachFireEye.For(int32_t(owner),eye)==shot_lag::FireEye::NotRead,
+                "each fire opens its fire-eye scope empty: no earlier fire's eye is reused");
+        const float mine[3]{1,2,3};t_reachFireEye.Store(int32_t(owner),true,mine);
+    }
     Check(g_reachBarrelShot.active==expectMuzzle,"the barrel's own line owns exactly the barrel shot's assist");
     if(nested&&weapon==primary)
     {
         const auto request=g_reachBarrelRequest;ReachMuzzleFireDetour(secondary,0,data,simulation);
         Check(g_reachBarrelRequest.weapon==primary&&g_reachBarrelRequest.lease==request.lease&&g_reachBarrelShot.active,"nested fire restores outer scope");
+        float eye[3]{};
+        Check(t_reachFireEye.For(int32_t(owner),eye)==shot_lag::FireEye::Measured&&eye[2]==3,
+            "a nested fire restores the outer fire's eye");
     }
     if(nativeChangesTarget)*reinterpret_cast<uint32_t*>(unitBytes+0x2C0)=0xABCD0006;
     caller=previous;if(fireFault)RaiseException(0xE0424444,0,0,nullptr);
@@ -171,6 +185,10 @@ static void ShotTests()
 {
     Reset();Shoot();Check(fireCalls==1&&queryCalls==1&&markerCalls==1&&aimCalls==2&&*reinterpret_cast<uint32_t*>(unitBytes+0x2C0)==0x44440007,"single native fire and exact target restoration");
     Check(t_reachFire==shot_lag::kFireNone,"the fire's exit restores the local-fire tag");
+    {
+        float eye[3]{};
+        Check(t_reachFireEye.For(int32_t(owner),eye)==shot_lag::FireEye::NotRead,"the fire's exit restores its eye scope");
+    }
     Reset(true);nested=true;g_reachBarrelQueryContext.flags=2;Shoot();Check(fireCalls==2&&queryCalls==2&&!g_reachBarrelShot.active&&*reinterpret_cast<uint32_t*>(unitBytes+0x2C0)==0x44440007,"nested native target leases restore LIFO");
     for(int reason=0;reason<26;++reason)
     {
