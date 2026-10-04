@@ -148,6 +148,7 @@ __declspec(noinline) void __fastcall Halo2DualAimDetour(uint32_t unit,
     __finally { g_halo2Dual.callbacks.fetch_sub(1, std::memory_order_acq_rel); }
 }
 
+#include "halo2_fire_eye.inl"
 #include "halo2_independent_shots.inl"
 
 bool RemoveHalo2DualAim();

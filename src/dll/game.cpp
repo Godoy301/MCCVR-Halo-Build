@@ -52230,8 +52230,10 @@ static shot_lag::FireEye Halo3AskEvaluatorEye(uint32_t generation, int32_t unit,
     feature.callbacks.fetch_sub(1, std::memory_order_acq_rel);
     return why;
 }
-static shot_lag::FireEye Halo3FireEyeForShot(const float* siteEye, bool askEvaluator, float eye[3], float& ageMs)
+static shot_lag::FireEye Halo3FireEyeForShot(const float* siteEye, bool askEvaluator, const SightPointSample& sample,
+                                             float eye[3], float& ageMs)
 {
+    (void)sample;   // Halo 3 carries its own tick eye (the acquisition's), not the camera sample's
     ageMs = -1.0f;
     const uint32_t generation = TitleAdapter_GetGeneration(GameTitle::Halo3);
     if (!generation || TitleAdapter_GetActiveTitle() != GameTitle::Halo3)

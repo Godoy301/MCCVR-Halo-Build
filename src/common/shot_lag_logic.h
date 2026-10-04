@@ -603,6 +603,100 @@ inline FireEye FireEyeGate(bool read, bool proven, int32_t eyeUnit, int32_t loca
     return FireEye::Measured;
 }
 
+// ---- 4e. a camera evaluator asked AT the fire, for a title that builds P at its shot site (Halo 2, Halo CE) -------
+// Halo 2 and CE publish no intent: their muzzle shot builds P itself from the newest camera sample (Halo 2's observer
+// publication, CE's gameplay context) -- E_P is that sample's engine eye. Their fire routines each ask a camera
+// evaluator for the firing assist's eye -- (unit, position, direction) -> perspective: Halo 2 0x6D4730 (H2EK 489E10,
+// called at 0x7597B8), CE's director ray (called at 0xB67BDF) -- the homolog of Halo 3's 0x212198. Asked inside the
+// fire, after the tick's move, its position is E_fire, the eye the round leaves from in flat.
+//
+// Neither its return value's meaning nor its agreement with E_P is proven for those titles, so it is PROVEN here, as
+// Halo 3's tick eye is (EyeProof): at rest -- where the two are the same point by construction -- it must agree with
+// E_P within 5 cm for a streak, and the perspective it answered on those agreeing samples is LATCHED as its
+// first-person path. Only then, and only on that path, is its answer E_fire (Measured). A sample on another path is
+// no evidence about the latched one (a death or third-person camera). Identity and agreement only: no size limit on
+// the eye's motion, which is the very thing measured.
+struct EvaluatorEyeProof
+{
+    EyeProof proof{};
+    int32_t path = 0;
+    bool pathKnown = false;
+
+    // One sample: `eligible` (our unit, on foot, in gameplay -- the caller's identity facts), `atRest` (E_P's
+    // velocity known and under 0.25 m/s), the evaluator's answer's distance from E_P, and the path it answered on.
+    void Note(uint32_t gen, int32_t unit, bool eligible, bool atRest, float offsetMm, int32_t evaluatorPath)
+    {
+        if (gen != proof.generation)
+            pathKnown = false;
+        if (pathKnown && evaluatorPath != path)
+            eligible = false;   // another camera path ends the stint; it says nothing about the latched one
+        proof.Note(gen, unit, eligible, atRest, offsetMm);
+        if (!pathKnown && eligible && atRest && std::isfinite(offsetMm) && offsetMm < EyeProof::kAgreeMm)
+        {
+            path = evaluatorPath;
+            pathKnown = true;
+        }
+    }
+    // The verdict on one answer: Measured only when proven and on the latched path.
+    FireEye Verdict(int32_t evaluatorPath, bool finite) const
+    {
+        if (!finite)
+            return FireEye::Faulted;
+        if (!pathKnown || evaluatorPath != path)
+            return pathKnown ? FireEye::ChasePath : FireEye::Unproven;
+        return proof.state == EyeProof::State::Proven ? FireEye::Measured : FireEye::Unproven;
+    }
+};
+
+// How far to carry E_P when no fire eye is measured (seconds): the flat probe's model (Halo 3, 2026-10-03) -- the
+// shot leaves from the eye ONE TICK of travel past the eye the render showed (the firing tick is the first to run
+// after that render) -- or the sample's own age when that is longer (renders stalled; the eye moved on regardless).
+// NOT the age alone: a sample from the newest render (Halo 2's observer publication, CE's gameplay context, Halo 4's
+// controller root) is a few ms old at the fire, and carrying it by that would move the shot by almost nothing -- an
+// A/B arm with no effect (shot-placement.md 2). -1: the sample is unusable -- no stamp, from the future, or older than
+// `maxAgeUs` (freshness, not a size limit).
+inline float SampleCarrySeconds(uint64_t stampUs, uint64_t nowUs, float tickS, uint64_t maxAgeUs)
+{
+    if (!stampUs || nowUs < stampUs || nowUs - stampUs > maxAgeUs || !std::isfinite(tickS) || !(tickS > 0.0f))
+        return -1.0f;
+    const float ageS = float(nowUs - stampUs) * 1.0e-6f;
+    return ageS > tickS ? ageS : tickS;
+}
+
+// E_fire for such a title: the evaluator's answer when its verdict is Measured; otherwise E_P carried `carryS`
+// (SampleCarrySeconds) by its velocity: CarriedTick. `asked` is the evaluator's verdict (Count: not asked). Without a
+// usable E_P (or carryS < 0: stale) the evaluator's own verdict, else NotRead / NotThisTick.
+inline FireEye ChooseSampleFireEye(FireEye asked, const float askedEye[3], bool sampleValid, const float sampleEye[3],
+                                   const float* velocity, float carryS, float out[3])
+{
+    if (asked == FireEye::Measured && askedEye && Finite3(askedEye) && out)
+    {
+        std::memcpy(out, askedEye, sizeof(float) * 3);
+        return FireEye::Measured;
+    }
+    if (!sampleValid || !sampleEye || !Finite3(sampleEye) || !out)
+        return asked == FireEye::Count ? FireEye::NotRead : asked;
+    if (!std::isfinite(carryS) || carryS < 0.0f)
+        return FireEye::NotThisTick;
+    if (!velocity || !Finite3(velocity))
+        std::memcpy(out, sampleEye, sizeof(float) * 3);   // at rest, or no velocity yet: the eye itself
+    else
+        (void)ExtrapolateEye(sampleEye, velocity, carryS, carryS, out);
+    return FireEye::CarriedTick;
+}
+
+// A title's simulation tick period, measured by a per-tick hook (one call per unit per tick; several units come
+// through one tick): a gap of over 2 ms is a new tick, one of 250 ms or more a stall (forget it). Smoothed 1/8.
+// Returns the new period (us), or `prior` unchanged.
+inline uint32_t SmoothTickPeriod(uint32_t prior, uint64_t gapUs)
+{
+    if (gapUs <= 2000 || gapUs >= 250000)
+        return prior;
+    const int64_t period = static_cast<int64_t>(gapUs);
+    return prior ? static_cast<uint32_t>(static_cast<int64_t>(prior) + (period - static_cast<int64_t>(prior)) / 8)
+                 : static_cast<uint32_t>(period);
+}
+
 // A report window of transports (one per title and consumer; dev): what was used, by kind, and the shift P' - P --
 // along the player's travel (the engine eye's velocity with its component along the view removed; + = ahead of where
 // he is going), its magnitude, and its magnitude AT REST (eye under 0.25 m/s: it should be ~0; anything else is an

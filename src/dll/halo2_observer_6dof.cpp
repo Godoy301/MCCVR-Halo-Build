@@ -36,6 +36,7 @@
 #include <atomic>
 #include <cmath>
 #include <cstring>
+#include <limits>
 #include <intrin.h>
 
 #include "../common/halo2_render_logic.h"
@@ -690,6 +691,24 @@ namespace
         g_publication.footReferenceValid=footReference!=nullptr;
         g_publication.footReference=footReference?*footReference:Halo2CameraBasis{};
         g_publication.viewLiftZ=std::isfinite(viewLiftZ)?viewLiftZ:0.0f;
+        {
+            // Flat parity: the engine eye's track on this (the observer) thread, on the sight clock.
+            static shot_lag::EyeTrack s_engineEyeTrack;
+            static uint32_t s_engineEyeGeneration = 0;
+            if (s_engineEyeGeneration != generation)
+            {
+                s_engineEyeTrack.Reset();
+                s_engineEyeGeneration = generation;
+            }
+            float engineEye[3]{};
+            Halo2EngineEyePosition(g_publication, engineEye);
+            g_publication.publishedUs = Sight_NowUs();
+            s_engineEyeTrack.Push(g_publication.publishedUs, engineEye);
+            g_publication.engineEyeVelValid =
+                s_engineEyeTrack.Velocity(120000, 30000, g_publication.engineEyeVel);
+            if (!g_publication.engineEyeVelValid)
+                std::memset(g_publication.engineEyeVel, 0, sizeof(g_publication.engineEyeVel));
+        }
         g_publication.vehicleUnit=vehicleKey?vehicleKey->unit:UINT32_MAX;
         g_publication.vehicleParent=vehicleKey?vehicleKey->parent:UINT32_MAX;
         g_publication.vehicleSeat=vehicleKey?vehicleKey->seat:-1;
@@ -3925,6 +3944,8 @@ namespace
     {
         g_nativeAimActiveCallbacks.fetch_add(1, std::memory_order_acq_rel);
         g_nativeAimCalls.fetch_add(1, std::memory_order_relaxed);
+        // Every unit's aim updates once per tick: the measured tick a flat-parity muzzle shot carries the eye by.
+        Sight_NoteTitleTick(GameTitle::Halo2);
         const auto original = reinterpret_cast<Halo2NativeAimUpdateFn>(
             g_nativeAimOriginal.load(std::memory_order_acquire));
         uint64_t result = 0;
@@ -4540,9 +4561,27 @@ namespace
     }
 
     #include "halo2_contact_melee_runtime.inl"
+    // A publication as the camera sample a shot site built its point from (flat parity): its engine eye, when it was
+    // published and that eye's velocity.
+    SightCameraSample Halo2PublicationCameraSample(const Halo2ObserverPosePublication& publication) noexcept
+    {
+        SightCameraSample camera{};
+        Halo2EngineEyePosition(publication, camera.eye);
+        camera.stampUs = publication.publishedUs;
+        camera.valid = publication.publishedUs != 0 && shot_lag::Finite3(camera.eye);
+        camera.velValid = publication.engineEyeVelValid;
+        std::memcpy(camera.vel, publication.engineEyeVel, sizeof(camera.vel));
+        return camera;
+    }
     // SHOTS FROM THE MUZZLE (sight_layer.h), for halo2_muzzle_shots.inl: the newest publication's intent ray
     // (rendered eye along the aiming hand's carrier) and engine eye, through Sight_AimMuzzleShotFromRay.
     // `distance` is how far along the new direction the converged point lies.
+    // FLAT PARITY (2026-10-03): the converged point P is a WORLD point fixed at this publication's camera; the round
+    // leaves at the fire, one tick of travel (or more) later, so a strafing muzzle shot through P trailed flat by
+    // that travel -- "I experienced the shot lag in Halo 2 Anniversary" with shots_from_muzzle on (the user,
+    // 2026-10-03). It flies through P' = P + (E_fire - E_P) instead (halo2_fire_eye.inl: E_fire the firing assist's
+    // own camera evaluator asked now, once proven, else E_P carried a tick). The unit aim this builder writes is a
+    // DIRECTION from E_P, which the game applies at its own fire eye: flat parity already, untouched.
     bool Halo2AimMuzzleShot(const float before[3], const float position[3], float direction[3], float up[3],
                             float& distance) noexcept
     {
@@ -4560,10 +4599,12 @@ namespace
             Sight_NoteMuzzleShotUnconverged(GameTitle::Halo2);
             return false;
         }
-        // The firing assist aims at the point `distance` along the shot: the converged point itself, from the
-        // same trace sample the direction was built from.
+        // The firing assist aims at the point `distance` along the shot: the point the shot flies through (P', or P
+        // with the transport off), from the same trace sample the direction was built from.
+        const SightCameraSample camera = Halo2PublicationCameraSample(publication);
         const bool aimed = Sight_AimMuzzleShotFromRay(GameTitle::Halo2, TitleAdapter_GetGeneration(GameTitle::Halo2),
-                                                      head, dir, eye, before, position, direction, up, &distance);
+                                                      head, dir, eye, before, position, direction, up, &distance,
+                                                      &camera);
         if (aimed)   // dev SHOT LAG: the muzzle shot against the point it was aimed through
             Sight_NoteShotLagFromRay(GameTitle::Halo2, SightShotPath::Muzzle, position, direction, head, dir, eye,
                                      false);

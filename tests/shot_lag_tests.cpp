@@ -1093,6 +1093,106 @@ int main()
               "a short buffer truncates safely");
     }
 
+    // ---- flat parity in the other titles (2026-10-03, fix/flat-parity-other-titles) --------------------------------
+    {
+        // THE RULE THAT MAKES A CONSUMER IMMUNE: a DIRECTION solved from E_P, applied at the fire's own eye, already is
+        // flat parity -- its line passes through P' = P + (E_fire - E_P), the transported point. A WORLD point aimed
+        // through from the fire (the muzzle, a re-aimed query) is not: it misses P' by the eye's travel.
+        const float eP[3]{0.0f, 0.0f, 0.0f};
+        const float p[3]{7.0f * kWuPerM, 0.5f * kWuPerM, 0.2f * kWuPerM};
+        const float eFire[3]{0.0f, 0.1f * kWuPerM, 0.0f};   // one 60 Hz tick of a 6 m/s strafe
+        TransportInput in{};
+        std::memcpy(in.point, p, sizeof(p));
+        in.pointEyeValid = true;
+        std::memcpy(in.pointEye, eP, sizeof(eP));
+        in.pointEyeStampUs = 1000;
+        in.fireEyeValid = true;
+        std::memcpy(in.fireEye, eFire, sizeof(eFire));
+        in.nowUs = 5000;
+        in.maxAgeUs = 250000;
+        float pMoved[3]{}, shift[3]{};
+        Check(TransportPoint(in, pMoved, shift) == Transport::Measured, "a measured fire eye transports P");
+        const float solved[3]{p[0] - eP[0], p[1] - eP[1], p[2] - eP[2]};
+        Check(LineMiss(eFire, solved, pMoved) * kMmPerWu < 0.01f,
+              "the solved DIRECTION applied at the fire eye passes through P': direction consumers are immune");
+        const float throughP[3]{p[0] - eFire[0], p[1] - eFire[1], p[2] - eFire[2]};
+        Check(Near(LineMiss(eFire, throughP, pMoved) * kMmPerWu, 100.0f, 2.0f),
+              "a line from the fire eye through the world point P misses P' by the tick's travel: point consumers trail");
+    }
+    {
+        // EvaluatorEyeProof: a camera evaluator asked at the fire (Halo 2, CE) is E_fire only once proven at rest,
+        // and only on the perspective it answered while agreeing.
+        EvaluatorEyeProof proof;
+        Check(proof.Verdict(0, true) == FireEye::Unproven, "an unproven evaluator is no fire eye");
+        proof.Note(5, 9, true, true, 400.0f, 0);
+        Check(!proof.pathKnown, "a disagreeing sample latches no perspective");
+        for (int i = 0; i < 29; ++i)
+            proof.Note(5, 9, true, true, 10.0f, 0);
+        Check(proof.pathKnown && proof.path == 0 && proof.Verdict(0, true) == FireEye::Unproven,
+              "the perspective latches on the first agreeing sample; 29 agreeing samples are not yet a proof");
+        proof.Note(5, 9, true, true, 10.0f, 2);   // another camera path: ends the stint, says nothing about path 0
+        proof.Note(5, 9, true, true, 10.0f, 0);
+        Check(proof.Verdict(0, true) == FireEye::Unproven, "another perspective breaks the streak");
+        for (int i = 0; i < 60; ++i)
+            proof.Note(5, 9, true, i % 2 == 0, i % 2 == 0 ? 10.0f : 900.0f, 0);   // moving samples are no evidence
+        Check(proof.Verdict(0, true) == FireEye::Measured, "30 agreeing at-rest samples prove it (moving ones ignored)");
+        Check(proof.Verdict(1, true) == FireEye::ChasePath, "a proven evaluator on another perspective is not the eye");
+        Check(proof.Verdict(0, false) == FireEye::Faulted, "a non-finite answer is a fault");
+        proof.Note(5, 9, true, false, 5000.0f, 0);
+        Check(proof.Verdict(0, true) == FireEye::Measured, "no size limit: a moving eye far from E_P stays proven");
+        for (int i = 0; i < 15; ++i)
+            proof.Note(5, 9, true, true, 400.0f, 0);
+        Check(proof.Verdict(0, true) == FireEye::Unproven, "a streak of disagreeing at-rest samples disproves it");
+        proof.Note(6, 9, true, true, 10.0f, 3);
+        Check(proof.path == 3 && proof.Verdict(3, true) == FireEye::Unproven,
+              "a new title generation starts over, perspective included");
+    }
+    {
+        // ChooseSampleFireEye: the evaluator's eye when measured; else E_P carried ONE TICK (SampleCarrySeconds) --
+        // never by the newest render's few ms of age alone, which would make the A/B arm move nothing
+        // (shot-placement.md 2).
+        const float eP[3]{1.0f, 2.0f, 3.0f};
+        const float asked[3]{1.5f, 2.0f, 3.0f};
+        const float vel[3]{0.0f, 6.0f * kWuPerM, 0.0f};
+        float out[3]{};
+        Check(ChooseSampleFireEye(FireEye::Measured, asked, true, eP, vel, 1.0f / 60.0f, out) == FireEye::Measured &&
+                  out[0] == 1.5f,
+              "a measured evaluator answer is E_fire");
+        Check(ChooseSampleFireEye(FireEye::Unproven, asked, true, eP, vel, 1.0f / 60.0f, out) == FireEye::CarriedTick &&
+                  Near((out[1] - eP[1]) * kMmPerWu, 100.0f, 0.5f) && out[0] == 1.0f,
+              "unproven: E_P carried one 60 Hz tick of a 6 m/s strafe = 100 mm, non-zero by construction");
+        Check(ChooseSampleFireEye(FireEye::Count, nullptr, true, eP, vel, 1.0f / 30.0f, out) == FireEye::CarriedTick &&
+                  Near((out[1] - eP[1]) * kMmPerWu, 200.0f, 0.5f),
+              "not asked (CE at 30 Hz): 200 mm");
+        Check(ChooseSampleFireEye(FireEye::Unproven, asked, true, eP, nullptr, 1.0f / 60.0f, out) ==
+                      FireEye::CarriedTick &&
+                  out[0] == 1.0f && out[1] == 2.0f && out[2] == 3.0f,
+              "no velocity: the eye itself (a 0 mm transport at rest)");
+        Check(ChooseSampleFireEye(FireEye::ChasePath, asked, false, eP, vel, 1.0f / 60.0f, out) == FireEye::ChasePath,
+              "no camera sample: the evaluator's own refusal");
+        Check(ChooseSampleFireEye(FireEye::Count, nullptr, false, eP, vel, 1.0f / 60.0f, out) == FireEye::NotRead,
+              "nothing at all: not read");
+        Check(ChooseSampleFireEye(FireEye::Unproven, asked, true, eP, vel, -1.0f, out) == FireEye::NotThisTick,
+              "a stale camera sample is no fire eye (freshness)");
+        // How far: one tick past the render the player aimed with, or the sample's own age when that is longer.
+        Check(Near(SampleCarrySeconds(1000000, 1004000, 1.0f / 60.0f, 250000), 1.0f / 60.0f),
+              "a 4 ms old sample from the newest render is carried one tick, not 4 ms");
+        Check(Near(SampleCarrySeconds(1000000, 1040000, 1.0f / 60.0f, 250000), 0.040f),
+              "a 40 ms old sample (renders stalled) is carried its age");
+        Check(SampleCarrySeconds(0, 1040000, 1.0f / 60.0f, 250000) < 0.0f &&
+                  SampleCarrySeconds(2000000, 1040000, 1.0f / 60.0f, 250000) < 0.0f &&
+                  SampleCarrySeconds(1000000, 1300000, 1.0f / 60.0f, 250000) < 0.0f,
+              "no stamp, a future stamp or an older-than-250 ms sample is refused");
+        // The tick period it carries by.
+        uint32_t period = 0;
+        period = SmoothTickPeriod(period, 16667);
+        Check(period == 16667, "the first gap is the period");
+        period = SmoothTickPeriod(period, 33333);
+        Check(period == 16667 + (33333 - 16667) / 8, "then smoothed by 1/8");
+        Check(SmoothTickPeriod(period, 1500) == period && SmoothTickPeriod(period, 300000) == period,
+              "another unit in the same tick, and a stall, are not periods");
+    }
+
     std::printf("shot_lag_tests: %u checks, %u failures\n", checks, failures);
     return failures ? 1 : 0;
 }
