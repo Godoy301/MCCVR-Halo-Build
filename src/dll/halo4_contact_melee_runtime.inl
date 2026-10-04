@@ -295,6 +295,21 @@ void Halo4SightTraceTick(uint32_t unit,void* instance)
 void Halo4SightTraceSeated(uint32_t unit,void* instance);
 #endif
 
+// Flat parity's fire-eye proof (halo4_fire_eye.inl), fed from our unit's own update: only for the render's
+// first-person unit (a cheap atomic test first: every unit comes through), on foot by the same biped test the trace uses.
+void Halo4FireEyeTickFromUpdate(uint32_t unit,void* instance)
+{
+    if(unit!=static_cast<uint32_t>(g_halo4SightUnit.load(std::memory_order_relaxed))) return;
+    bool onFoot=false;
+    __try
+    {
+        const auto* biped=Halo4ContactBiped(unit);
+        onFoot=biped && biped==instance && *reinterpret_cast<const int32_t*>(biped+0x24)==-1;
+    }
+    __except(EXCEPTION_EXECUTE_HANDLER) { onFoot=false; }
+    Halo4NoteFireEyeTick(unit,onFoot);
+}
+
 __declspec(noinline) uint8_t __fastcall Halo4ContactUpdateDetour(void* instance)
 {
     g_halo4Contact.callbacks.fetch_add(1,std::memory_order_acq_rel);
@@ -318,6 +333,7 @@ __declspec(noinline) uint8_t __fastcall Halo4ContactUpdateDetour(void* instance)
         if(unit!=UINT32_MAX) Halo4SightTraceSeated(unit,instance);
 #endif
         if(unit!=UINT32_MAX) Halo4SightTraceTick(unit,instance);
+        if(unit!=UINT32_MAX) Halo4FireEyeTickFromUpdate(unit,instance);
     }
     __finally { g_halo4Contact.callbacks.fetch_sub(1,std::memory_order_acq_rel); }
     return result;

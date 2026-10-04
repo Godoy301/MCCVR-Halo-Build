@@ -76,6 +76,7 @@
 #include "../common/physical_crouch_cached_witnesses.h"
 #include "d3d11_hook.h"
 #include "sigscan.h"
+#include "mcc_frame_clock.h"
 #include "seat_frame_reader.h"
 #include "vr.h"
 #include "native_subtitles.h"
@@ -2367,6 +2368,14 @@ namespace
     void ReachNoteFireEyeProof(int32_t localUnit, bool onFoot, uint32_t generation);
     void ReachNoteFireEyeNativeLine(int32_t unit, const float* origin, const float* direction);
     void ReportReachFireEye();
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    // AS SEEN, Reach in VR (dev; reach_impact_witness.inl): the round's query, the completed frame, the drawn reticle.
+    void ReachImpactNoteQuery(const float* start, const float* vector, const void* result, uint8_t hit);
+    struct ReachOwnerScope;
+    void ReachAsSeenNoteFrame(uint32_t generation, uint64_t serial, const ReachOwnerScope& owner);
+    void ReachAsSeenNoteReticle(uint64_t serial, const float dir[3]);
+    void ReportReachAsSeen();
+#endif
     void ReachSightNoteShotLag(SightShotPath path, const float* origin, const float* direction, bool seated,
         int32_t seat);
     void ReachSightNoteCrosshairQuery(uint64_t flags, const float* start, const float* vector, int32_t ignoredA,
@@ -6009,6 +6018,11 @@ namespace
                 nativeResult=LegacyCollisionSchedulerDetourBody(
                     g_reachWorldCollision,flags,mode,start,query,ignoredObjectA,
                     ignoredObjectB,ignoredObjectC,result);
+#if HALOMCCVR_DEV_DIAGNOSTICS
+            // Dev AS SEEN (reach_impact_witness.inl): a tracked round's own query and where it hit.
+            if (!g_legacyCollisionOwnedQuery)
+                ReachImpactNoteQuery(start,query,result,nativeResult);
+#endif
         }
         __finally { g_reachWorldCollision.callbacks.fetch_sub(
             1,std::memory_order_acq_rel); }
@@ -19853,6 +19867,10 @@ namespace
         // The stock camera's forward (compact camera +0x0C). In a third-person seat Reach traces its
         // crosshair from that camera along this forward, so trace-and-reaim needs the line, not a point.
         float presentedCameraForward[3]{};
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        // Dev AS SEEN (reach_impact_witness.inl): the head orientation this frame's views were built from.
+        float asSeenHeadQuat[4]{0.0f, 0.0f, 0.0f, 1.0f};
+#endif
         // World-unit lift our corrections gave the view over the character's eye this frame (on
         // foot): the crouch correction's given-back native drop plus the leash's lift. Added to the
         // hands' and the reticle ray's base so they rise with the view; the stock
@@ -25183,6 +25201,11 @@ namespace
                 ReachPublishCompletedFrameFeedback(
                     completedGeneration, access.preparedSerial,
                     g_reachOwnerScope);
+#if HALOMCCVR_DEV_DIAGNOSTICS
+                ReachAsSeenNoteFrame(
+                    completedGeneration, access.preparedSerial,
+                    g_reachOwnerScope);
+#endif
             }
         }
         __finally
@@ -27427,6 +27450,8 @@ namespace
     #include "reach_muzzle_publication.inl"
     #include "reach_muzzle_shots.inl"
     #include "reach_muzzle_lifecycle.inl"
+    // Dev builds only: AS SEEN for Reach in VR (the file compiles to nothing otherwise).
+    #include "reach_impact_witness.inl"
     #include "reach_visual_hand_offset.inl"
 
     // TWO-HANDED AIM'S VIEW SAMPLE, Halo 3 (declared with TwoHandViewPublication; CamCopyHook, the engine camera
@@ -31630,6 +31655,10 @@ namespace
                sizeof(candidate.presentedCameraBasePosition));
         memcpy(candidate.presentedCameraForward,primaryCompact+0x0C,
                sizeof(candidate.presentedCameraForward));
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        memcpy(candidate.asSeenHeadQuat,tracking.headOrientation,
+               sizeof(candidate.asSeenHeadQuat));
+#endif
         candidate.vehicle = vehicleFrame;
         const float* authoredProjection = reinterpret_cast<const float*>(
             primaryDerived + kReachDerivedProjectionOffset);
@@ -32826,6 +32855,9 @@ namespace
 
     bool RemoveReachCameraCore()
     {
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        if (!RemoveReachImpactWitness()) return false;
+#endif
         if (!RemoveReachMuzzle()) return false;
         TitleAdapter_ClearCinematicControl(
             GameTitle::HaloReach,
@@ -35519,6 +35551,9 @@ namespace
         ReachResolveSightFlags(base, size);
         InstallReachContactMelee(base,size,generation);
         (void)InstallReachMuzzle(base,size,generation);
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        (void)InstallReachImpactWitness(base,size);   // AS SEEN (dev): where rounds land against the drawn reticle
+#endif
         LOG("Reach camera core installed: outer/inner stereo + FP "
             "interpolation/palette + per-eye world-projection camera "
             "transactions hooked; waiting one-second fresh-camera interval "
@@ -38544,6 +38579,16 @@ namespace
     // melee lane, which otherwise publishes it.
     std::atomic<int32_t> g_halo4SightUnit{-1};
     std::atomic<uint64_t> g_halo4SightUnitAtMs{0};
+    // Flat parity's fire eye, Halo 4 (halo4_fire_eye.inl, every build): the proof's per-tick sample at rest.
+    void Halo4NoteFireEyeTick(uint32_t unit, bool onFoot);
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    // AS SEEN, Halo 4 in VR (dev; halo4_impact_witness.inl): the fire's shooter, named by the fire's own aim call
+    // (Halo4MuzzleAimDetour) for this fire on this thread; and a tracked round's ray.
+    thread_local uint32_t t_halo4AsSeenFireUnit = UINT32_MAX;
+    void Halo4AsSeenNoteFireUnit(uint32_t unit);
+    void Halo4ImpactNoteRay(const Halo4PhysicsRayCastInput* input, const Halo4PhysicsRayCastResult* output,
+                            bool returned);
+#endif
     #include "halo4_contact_melee_runtime.inl"
     #include "halo4_vehicle_input.inl"
     #include "cached_physical_crouch.inl"
@@ -39223,6 +39268,11 @@ namespace
 #endif
             if(g_halo4MuzzleOwnedQuery||!Halo4RedirectContactRay(reinterpret_cast<uintptr_t>(_ReturnAddress()),input,output,result))
                 result = Halo4PhysicsRayCastDetourBody(input, output);
+#if HALOMCCVR_DEV_DIAGNOSTICS
+            // Dev AS SEEN (halo4_impact_witness.inl): a tracked round's own ray and where it hit.
+            if (!g_halo4MuzzleOwnedQuery)
+                Halo4ImpactNoteRay(input, output, result);
+#endif
         }
         __finally
         {
@@ -41039,6 +41089,10 @@ namespace
     #include "halo4_muzzle_lifecycle.inl"
     // Dev builds only: Halo 4 seated convergence, stages 0-1 (the file compiles to nothing otherwise).
     #include "halo4_seat_sight.inl"
+    // Flat parity's fire eye, Halo 4 on foot: measured, proven at rest (every build).
+    #include "halo4_fire_eye.inl"
+    // Dev builds only: AS SEEN for Halo 4 in VR (the file compiles to nothing otherwise).
+    #include "halo4_impact_witness.inl"
     #include "halo4_weapon_haptics.inl"
 
     void Halo4BeginFloatingPair()
@@ -44879,6 +44933,12 @@ namespace
                 halfFovY[1], std::memory_order_relaxed);
             g_halo4Camera.stereoFrames.fetch_add(
                 1, std::memory_order_relaxed);
+#if HALOMCCVR_DEV_DIAGNOSTICS
+            // Dev AS SEEN (halo4_impact_witness.inl): this completed frame's centre camera, the head orientation its
+            // views were built from, and the stock observer eye and aim (the controller root).
+            Halo4AsSeenNoteFrame(snapshot.preparedSerial, stock,
+                                 snapshot.headOrientation, controllerRoot);
+#endif
             return Halo4StereoResult::Complete;
         }
 
@@ -45974,6 +46034,11 @@ namespace
         if(!RemoveHalo4SeatSight())
         { LOG("Halo 4 teardown: the dev seat witnesses need cleanup retry; retaining native dependencies");return false; }
 #endif
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        if(!RemoveHalo4ImpactWitness())
+        { LOG("Halo 4 teardown: the dev AS SEEN witness needs cleanup retry; retaining native dependencies");return false; }
+#endif
+        RemoveHalo4FireEye();   // asked only from inside the contact and muzzle detours, drained below
         if(!RemoveHalo4Muzzle())
         { LOG("Halo 4 teardown: optional muzzle hooks need cleanup retry; retaining native dependencies");return false; }
         const uint32_t generation =
@@ -46401,8 +46466,10 @@ namespace
         (void)Halo4Type13LogInstall(base,size,generation);
 #endif
         (void)InstallHalo4Muzzle(base,size,generation);
+        InstallHalo4FireEye(base,size,generation);   // flat parity's measured fire eye (halo4_fire_eye.inl)
 #if HALOMCCVR_DEV_DIAGNOSTICS
         InstallHalo4SeatSight(base,size,generation);   // after the muzzle lane: its bindings and view detour
+        (void)InstallHalo4ImpactWitness(base,size);    // AS SEEN (dev): after the muzzle lane, whose aim names the shooter
 #endif
         (void)InstallHalo4WeaponHaptics(base,size,generation);
         // C-H4-46: Halo 4 supplies authored pixels to the same shared VR
@@ -46787,6 +46854,10 @@ namespace
             g_halo4WorldCollision.failures.load(std::memory_order_relaxed);
         ReportHalo4ContactMelee();
         ReportHalo4Muzzle();
+        ReportHalo4FireEye();
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        ReportHalo4AsSeen();
+#endif
         ReportHalo4WeaponHaptics();
         if (g_halo4VehicleInput.ready.load(std::memory_order_acquire))
             LOG("Halo 4 vehicle input in 2s: seated=%llu unknown/stock=%llu guardedFaults=%llu",
@@ -52528,32 +52599,8 @@ static shot_lag::FireEye Halo3FireEyeForShot(const float* siteEye, bool askEvalu
 static const bool g_halo3FireEyeRegistered =
     (Sight_SetFireEyeSource(GameTitle::Halo3, &Halo3FireEyeForShot), true);
 
-// THE FIRE EYE, Halo 4 on foot (flat parity, 2026-10-03; shot_lag_logic.h 4e): Halo 4's muzzle shot aims through the
-// intent point P (Sight_AimMuzzleShot), a world point fixed at the controller root the solve read -- the render's
-// pre-HMD body frame, a few ms old at the fire. No camera evaluator of Halo 4's is resolved for a fire-time ask (its
-// aim-camera view 0x1DC9E4 runs only after the shot's direction is decided), so E_fire is that sample's engine eye
-// carried one measured tick (or its own age when older): the flat probe's model. Its direction-based consumers (the
-// direct drive's written angles, the native shot) need nothing: a direction from E_P applied at the fire's eye is
-// flat parity already.
-static shot_lag::FireEye Halo4FireEyeForShot(const float* siteEye, bool askEvaluator, const SightPointSample& sample,
-                                             float eye[3], float& ageMs)
-{
-    (void)siteEye; (void)askEvaluator;
-    ageMs = -1.0f;
-    if (TitleAdapter_GetActiveTitle() != GameTitle::Halo4)
-        return shot_lag::FireEye::NoSource;
-    const float tickS = float(Sight_TickPeriodUs(GameTitle::Halo4, 16667)) * 1.0e-6f;
-    const uint64_t nowUs = Sight_NowUs();
-    const shot_lag::FireEye verdict = shot_lag::ChooseSampleFireEye(
-        shot_lag::FireEye::Count, nullptr, sample.camera.valid, sample.camera.eye,
-        sample.camera.velValid ? sample.camera.vel : nullptr,
-        shot_lag::SampleCarrySeconds(sample.camera.stampUs, nowUs, tickS, kSightTransportMaxAgeUs), eye);
-    if (verdict == shot_lag::FireEye::CarriedTick)
-        ageMs = float(nowUs - sample.camera.stampUs) / 1000.0f;
-    return verdict;
-}
-static const bool g_halo4FireEyeRegistered =
-    (Sight_SetFireEyeSource(GameTitle::Halo4, &Halo4FireEyeForShot), true);
+// THE FIRE EYE, Halo 4 on foot: halo4_fire_eye.inl (measured since 2026-10-04: the unit camera position the fire
+// itself asks, proven at rest; until proven, E_P carried one measured tick as before).
 
 // THE INTENT POINT (sight_layer.h SightIntent; shot_lag_logic.h). Input thread, every poll whose converged solve
 // resolved: P = H + u * r from ONE frame-coherent pair where the title publishes camera frames (Halo 3, ODST:
@@ -53188,6 +53235,10 @@ void Game_DevNoteTracedReticle(uint64_t serial, const float center[3], const flo
         Halo3ImpactNoteReticle(serial, center, dir, rangeM, hit);
     else if (title == GameTitle::Halo2)
         Halo2Observer6Dof_DevNoteAsSeenReticle(serial, center, dir);
+    else if (title == GameTitle::HaloReach)
+        ReachAsSeenNoteReticle(serial, dir);
+    else if (title == GameTitle::Halo4)
+        Halo4AsSeenNoteReticle(serial, dir);
 }
 void Game_DevNoteFireTrigger(bool pressed)
 {

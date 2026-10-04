@@ -283,6 +283,193 @@ int main()
               "flat art: refuses nonsense");
     }
 
+    // ---- 8. MCC's frame clock, decoded from the pinned retail bytes ------------------------------------------------
+    {
+        // haloreach.dll: the fraction leaf 0x5C430, the factor writer 0x344A5, the tick increment 0x57A5A.
+        const uint8_t reachLeaf[]{0x8b, 0x0d, 0xe2, 0xb6, 0xbb, 0x00, 0x0f, 0x57, 0xe4, 0x65, 0x48, 0x8b,
+                                  0x04, 0x25, 0x58, 0x00, 0x00, 0x00, 0xba, 0xa0, 0x00, 0x00, 0x00, 0x48,
+                                  0x8b, 0x04, 0xc8, 0x48, 0x8b, 0x0c, 0x10, 0xf3, 0x0f, 0x10, 0x59, 0x14};
+        const uint8_t reachWriter[]{0xe8, 0x86, 0x7f, 0x02, 0x00, 0xb8, 0x70, 0x00, 0x00, 0x00,
+                                    0x4a, 0x8b, 0x04, 0x20, 0xf3, 0x0f, 0x11, 0x40, 0x04};
+        const uint8_t reachInc[]{0xb8, 0xa0, 0x00, 0x00, 0x00, 0x48, 0x8b, 0x04, 0x18, 0xff, 0x40, 0x0c};
+        FrameClockLayout reach{};
+        Check(DecodeFrameClock(reachLeaf, sizeof(reachLeaf), 0x5C430, reachWriter, sizeof(reachWriter), 0x344A5,
+                               reachInc, sizeof(reachInc), reach),
+              "clock: Reach decodes");
+        Check(reach.tlsIndexRva == 0xC17B18 && reach.gameTimeSlot == 0xA0 && reach.fractionOffset == 0x14 &&
+                  reach.tickOffset == 0x0C && reach.interpSlot == 0x70 && reach.factorOffset == 0x04,
+              "clock: Reach -- TLS index +0xC17B18 (the one the contact lane reads), game_time TLS+0xA0 (+0x14 "
+              "fraction, +0x0C tick), interpolator TLS+0x70 (+4 factor)");
+        // halo4.dll: 0xA0458, 0x61172, 0x9ADBF.
+        const uint8_t h4Leaf[]{0x8b, 0x0d, 0xba, 0x6d, 0xfb, 0x00, 0x0f, 0x57, 0xe4, 0x65, 0x48, 0x8b,
+                               0x04, 0x25, 0x58, 0x00, 0x00, 0x00, 0xba, 0x90, 0x00, 0x00, 0x00, 0x48,
+                               0x8b, 0x04, 0xc8, 0x48, 0x8b, 0x0c, 0x10, 0xf3, 0x0f, 0x10, 0x59, 0x14};
+        const uint8_t h4Writer[]{0xe8, 0xe1, 0xf2, 0x03, 0x00, 0xb8, 0x78, 0x00, 0x00, 0x00,
+                                 0x4a, 0x8b, 0x04, 0x30, 0xf3, 0x0f, 0x11, 0x40, 0x04};
+        const uint8_t h4Inc[]{0xb8, 0x90, 0x00, 0x00, 0x00, 0x48, 0x8b, 0x0c, 0x38, 0x44, 0x01, 0x79, 0x0c};
+        FrameClockLayout h4{};
+        Check(DecodeFrameClock(h4Leaf, sizeof(h4Leaf), 0xA0458, h4Writer, sizeof(h4Writer), 0x61172, h4Inc,
+                               sizeof(h4Inc), h4),
+              "clock: Halo 4 decodes");
+        Check(h4.tlsIndexRva == 0x1057218 && h4.gameTimeSlot == 0x90 && h4.fractionOffset == 0x14 &&
+                  h4.tickOffset == 0x0C && h4.interpSlot == 0x78 && h4.factorOffset == 0x04,
+              "clock: Halo 4 -- game_time TLS+0x90, interpolator TLS+0x78");
+        // A writer whose call lands anywhere but the leaf, a changed byte, a tick slot of another object: refused.
+        FrameClockLayout bad{};
+        Check(!DecodeFrameClock(reachLeaf, sizeof(reachLeaf), 0x5C430, reachWriter, sizeof(reachWriter), 0x344A6,
+                                reachInc, sizeof(reachInc), bad) &&
+                  !bad.valid,
+              "clock: the factor writer must call the fraction leaf");
+        uint8_t changed[sizeof(reachLeaf)];
+        std::memcpy(changed, reachLeaf, sizeof(changed));
+        changed[31] = 0xF2;
+        Check(!DecodeFrameClock(changed, sizeof(changed), 0x5C430, reachWriter, sizeof(reachWriter), 0x344A5,
+                                reachInc, sizeof(reachInc), bad),
+              "clock: a changed fixed byte refuses");
+        Check(!DecodeFrameClock(reachLeaf, sizeof(reachLeaf), 0x5C430, reachWriter, sizeof(reachWriter), 0x344A5,
+                                h4Inc, sizeof(h4Inc), bad),
+              "clock: a tick increment on another slot refuses");
+        Check(!DecodeFrameClock(reachLeaf, 20, 0x5C430, reachWriter, sizeof(reachWriter), 0x344A5, reachInc,
+                                sizeof(reachInc), bad),
+              "clock: short code refuses");
+        // The tick loop's left-over time: seconds per tick at game_time +8 (Reach 0x57568, Halo 4 0x9A4DD).
+        const uint8_t reachLeft[]{0xb8, 0xa0, 0x00, 0x00, 0x00, 0x66, 0x0f, 0x6e, 0xc7, 0x48, 0x8b,
+                                  0x04, 0x30, 0x0f, 0x5b, 0xc0, 0xf3, 0x0f, 0x59, 0x40, 0x08};
+        const uint8_t h4Left[]{0xb8, 0x90, 0x00, 0x00, 0x00, 0x66, 0x0f, 0x6e, 0xc3, 0x48, 0x8b,
+                               0x04, 0x30, 0x0f, 0x5b, 0xc0, 0xf3, 0x0f, 0x59, 0x40, 0x08};
+        Check(DecodeSecondsPerTick(reachLeft, sizeof(reachLeft), reach) && reach.secondsPerTickOffset == 8 &&
+                  DecodeSecondsPerTick(h4Left, sizeof(h4Left), h4) && h4.secondsPerTickOffset == 8,
+              "clock: seconds per tick at game_time +8 in both");
+        FrameClockLayout other = reach;
+        other.secondsPerTickOffset = 0;
+        Check(!DecodeSecondsPerTick(h4Left, sizeof(h4Left), other) && other.secondsPerTickOffset == 0,
+              "clock: seconds per tick on another slot refuses");
+        Check(Near(PredictedFireLeadTicks(0.0f), 2.0f, 1e-6f) && Near(PredictedFireLeadTicks(0.75f), 1.25f, 1e-6f) &&
+                  std::isnan(PredictedFireLeadTicks(1.5f)) && std::isnan(PredictedFireLeadTicks(NAN)),
+              "clock: the (2 - factor) prediction");
+    }
+
+    // ---- 9. the fire eye both ways ------------------------------------------------------------------------------
+    {
+        FireEyeBothWays b{};
+        const float eye[3]{0, 0, 0}, vel[3]{0, 6 * kWuPerM, 0};   // 6 m/s along +Y
+        // The fire leaves from (2 - 0.5) ticks of 16.67 ms ahead (150 mm); the carry moves one tick (100 mm).
+        const float measured[3]{0, 0.150f * kWuPerM, 0}, carried[3]{0, 0.100f * kWuPerM, 0};
+        b.Add(eye, vel, measured, carried, 0.5f, 16.667f);
+        const float still[3]{0, 0, 0};
+        b.Add(eye, still, measured, carried, 0.5f, 16.667f);   // at rest: counted, not measured along travel
+        Check(b.fires == 2 && b.moving == 1 && b.measuredN == 1 && b.carriedN == 1 && b.predictedN == 1,
+              "both ways: a still fire counts but measures nothing along travel");
+        Check(Near(static_cast<float>(b.measuredMm), 150.0f, 0.5f) && Near(static_cast<float>(b.measuredMs), 25.0f, 0.1f) &&
+                  Near(static_cast<float>(b.carriedMs), 16.667f, 0.1f) &&
+                  Near(static_cast<float>(b.predictedMs), 25.0f, 0.01f),
+              "both ways: mm and ms along travel, the (2 - factor) prediction");
+        char clause[512]{};
+        Check(b.Format(clause, sizeof(clause)) && std::strstr(clause, "FIRES 2 (1 moving") != nullptr &&
+                  std::strstr(clause, "+150 mm") != nullptr,
+              "both ways: formats");
+    }
+
+    // ---- 10. the VR witness core ---------------------------------------------------------------------------------
+    {
+        // The player strafes +Y at 6 m/s looking +X; the world is Blam's (Z up). The headset looks straight ahead in
+        // tracking space (identity head orientation), so the reticle drawn straight ahead (-Z) maps onto the centre
+        // camera's forward.
+        Witness w{};
+        w.radiusDeg = 1.0f;
+        const uint64_t t0 = 1000000;
+        WitnessAim aim{};
+        aim.valid = true;
+        const float head[3]{0, 0, 0}, dirX[3]{1, 0, 0};
+        std::memcpy(aim.head, head, sizeof(aim.head));
+        std::memcpy(aim.dir, dirX, sizeof(aim.dir));
+        std::memcpy(aim.eye, head, sizeof(aim.eye));
+        aim.camUs = t0;
+        aim.camTick = 100;
+        aim.velValid = true;
+        aim.vel[1] = 6 * kWuPerM;
+        const float spawn[3]{0.1f, 0.03f * kWuPerM, -0.05f}, fwd[3]{1, 0, 0}, speed[3]{300, 0, 0};
+        w.Spawn(true, aim, spawn, fwd, speed, t0 + 20000, 101);
+        w.Spawn(false, aim, spawn, fwd, speed, t0 + 20000, 101);
+        WitnessAim none{};
+        w.Spawn(true, none, spawn, fwd, speed, t0 + 20000, 101);
+        Check(w.spawns == 3 && w.ours == 1 && w.notOurs == 1 && w.noAim == 1 && w.live == 1,
+              "witness: ours, another's and one without an aim line");
+        // Its query: from the spawn along the forward, hitting a wall 10 m out.
+        const float qStart[3]{0.1f, 0.03f * kWuPerM, -0.05f}, qVec[3]{20 * kWuPerM, 0, 0};
+        const float hit[3]{10 * kWuPerM, 0.03f * kWuPerM, -0.05f};
+        const float other[3]{0.1f, 5, 0};
+        Check(!w.Query(other, qVec, true, hit, t0 + 21000, 101), "witness: a query off every round is not ours");
+        Check(w.Query(qStart, qVec, true, hit, t0 + 21000, 101) && w.matched == 1 && w.live == 1,
+              "witness: the round's query lands -> pending");
+        // A frame of the world BEFORE the hit (tick 101) does not show it; the next (tick 102) does.
+        WitnessFrame f{};
+        f.valid = true;
+        f.serial = 7;
+        f.tick = 101;
+        f.factor = 0.5f;
+        f.cameraUs = t0 + 22000;
+        f.eyeValid = true;
+        f.eye[1] = 0.12f * kWuPerM;
+        std::memcpy(f.head, f.eye, sizeof(f.head));
+        std::memcpy(f.fwd, dirX, sizeof(f.fwd));
+        f.up[2] = 1;
+        f.quat[3] = 1;
+        std::memcpy(f.aimFwd, dirX, sizeof(f.aimFwd));
+        w.Frame(f);
+        Check(!w.pending[0].framed && !w.pending[1].framed && w.impacts == 0, "witness: a frame of the hit's tick does not show it");
+        WitnessFrame g = f;
+        g.serial = 8;
+        g.tick = 102;
+        g.cameraUs = t0 + 33000;
+        g.eye[1] = 0.20f * kWuPerM;
+        std::memcpy(g.head, g.eye, sizeof(g.head));
+        w.Frame(g);
+        // The reticle of serial 8 straight ahead.
+        const float ahead[3]{0, 0, -1};
+        w.Reticle(8, t0 + 34000, ahead);
+        Check(w.impacts == 1 && w.live == 0 && w.window.impacts == 1, "witness: framed + its reticle -> one sample");
+        // The impact sits 3 cm toward +Y; the frame's eye 20 cm +Y: SEEN along travel = 3 - 20 = -170 mm.
+        const Bin& b = w.window.bin[SpeedBin(6.0f)][RangeBin(10.0f)];
+        Check(b.n == 1 && Near(static_cast<float>(b.seenAlongMm), -170.0f, 2.0f) &&
+                  Near(static_cast<float>(b.atFireAlongMm), 30.0f, 2.0f) && b.nTicksImpact == 1 &&
+                  Near(static_cast<float>(b.ticksImpactToFrame), 1.0f, 1e-6f),
+              "witness: SEEN against the frame's reticle, AT FIRE against the aim line, ticks impact->frame");
+        // A reticle that never comes for a framed impact: dropped as no line after three serials.
+        w.Spawn(true, aim, spawn, fwd, speed, t0 + 40000, 103);
+        (void)w.Query(qStart, qVec, true, hit, t0 + 41000, 103);
+        WitnessFrame h = g;
+        h.serial = 20;
+        h.tick = 104;
+        h.cameraUs = t0 + 50000;
+        w.Frame(h);
+        w.Reticle(24, t0 + 60000, ahead);
+        Check(w.noReticle == 1 && w.live == 0, "witness: a frame that drew no reticle drops its impact, counted");
+        // An impact no frame shows within half a second expires.
+        w.Spawn(true, aim, spawn, fwd, speed, t0 + 70000, 200);
+        (void)w.Query(qStart, qVec, true, hit, t0 + 71000, 200);
+        w.Expire(t0 + 700000);
+        Check(w.live == 0 && w.window.unframed >= 1, "witness: an unframed impact expires, counted");
+        char counts[512]{};
+        Check(w.FormatCounts(counts, sizeof(counts)) && std::strstr(counts, "impacts judged 1") != nullptr,
+              "witness: the counters clause");
+        w.ResetCounts();
+        Check(w.spawns == 0 && !w.window.Any(), "witness: counters reset");
+        // A turned head: the reticle straight ahead in tracking space with the head yawed 90 deg left maps onto the
+        // centre camera's forward all the same (the camera carries the head).
+        WitnessFrame turned = f;
+        const float s = std::sqrt(0.5f);
+        turned.quat[0] = 0;
+        turned.quat[1] = s;   // +90 deg about +Y (OpenXR up): forward -Z turns to -X
+        turned.quat[2] = 0;
+        turned.quat[3] = s;
+        const float trackingAhead[3]{-1, 0, 0};
+        float world[3]{};
+        Check(WitnessReticleWorld(turned, trackingAhead, world) && Near(world[0], 1.0f, 1e-5f) &&
+                  Near(world[1], 0.0f, 1e-5f),
+              "witness: the reticle maps through the head orientation onto the centre camera");
+    }
+
     std::printf("%u checks, %u failures\n", checks, failures);
     return failures ? 1 : 0;
 }
