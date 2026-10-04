@@ -1389,6 +1389,11 @@ namespace
                 { g_config.halo2_measured_fire_eye = measured ? 1 : 0; changed = true; }
                 ImGui::TextDisabled("ON: a Halo 2 muzzle shot moves with the eye the game fires from (measured, once\n"
                                     "proven while you stand still). OFF: the view's eye carried one tick (A/B).");
+                bool measured4 = g_config.halo4_measured_fire_eye != 0;
+                if (ImGui::Checkbox("Halo 4: the game's own eye at the fire, once proven (dev)", &measured4))
+                { g_config.halo4_measured_fire_eye = measured4 ? 1 : 0; changed = true; }
+                ImGui::TextDisabled("ON: a Halo 4 muzzle shot moves with the eye the game fires from (measured, once\n"
+                                    "proven while you stand still). OFF: the view's eye carried one tick (A/B).");
                 ImGui::Unindent();
             }
 #endif

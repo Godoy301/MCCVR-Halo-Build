@@ -226,24 +226,25 @@ inline constexpr uint64_t kSightIntentShotMaxAgeMs = 150;
 // world point fixed at a camera sample a tick or so older. So a local shot aims through P' = P + (E_fire - E_P): E_P
 // the engine eye of P's camera sample, E_fire the game's eye at the fire -- MEASURED where the title has one (Halo 3
 // on foot, Sight_SetFireEyeSource: the query's own start, or the evaluator asked at a muzzle shot, else this tick's
-// eye carried a tick), else EXTRAPOLATED as E_P + v * age (ODST, Halo 4). Covered: Halo 3 and ODST -- the
+// eye carried a tick), else EXTRAPOLATED as E_P + v * age (ODST). Covered: Halo 3 and ODST -- the
 // crosshair-assist query re-aim (LegacySightReaimCrosshairQuery) and the muzzle shot (Sight_AimMuzzleShot), on foot;
 // seats only under the second dev key shot_point_transport_seated (default 0); and Halo 3's on-foot record
 // recomposition (shot_lag::RecomposeRecord). Since 2026-10-03 (fix/flat-parity-other-titles) also the other titles'
 // on-foot shots that aim through a WORLD point: Halo 2's and CE's muzzle shots (E_fire their camera evaluator asked at
 // the fire once proven, shot_lag::EvaluatorEyeProof, else E_P carried a tick: Sight_ShotPointSample), CE's player
-// assist ray, and Halo 4's muzzle shot (extrapolated). A consumer that applies a DIRECTION solved from E_P at the
-// fire's own eye (the unit aim Halo 2, CE and Halo 4 write, and every record) already IS flat parity: its line from
-// E_fire passes through P + (E_fire - E_P). REACH (fix/flat-parity-reach, 2026-10-03): its on-foot shots aim through
-// a world point since the 2026-10-02 shot-lag fix -- the unit-adjust and crosshair-query re-aims and the muzzle shot,
-// all through the provider's actuated point -- so by the rule they trail a strafe by E_fire - E_P unless Reach fires
-// from the render's eye (the player reported no lag there; the old shot witness measured its native line 93 mm off the
-// solve's eye while moving). Covered now, MEASURED OR NOTHING (shot_lag_logic.h 4f): its intent carries the camera
-// sample's stamp (the local shot ray's publish), and E_fire is Reach's own unit camera-position evaluator asked inside
-// the fire for our unit (reach_fire_eye.inl), used only once proven equal to E_P at rest; never carried or
-// extrapolated (SightPointSample::measuredOnly), so an unproven or absent evaluator leaves the shot on P, counted.
-// Reach's record (the direct drive's angles, solved from E_P) is a direction and is not shifted; its seats are not
-// covered at all. The reticle is never moved: it stays on P.
+// assist ray, and Halo 4's muzzle shot (since 2026-10-04 its unit camera position asked in the fire once proven, else
+// E_P carried a tick: halo4_fire_eye.inl -- Halo 4 interpolates its camera, so one tick was short). A consumer that
+// applies a DIRECTION solved from E_P at the fire's own eye (the unit aim Halo 2, CE and Halo 4 write, and every
+// record) already IS flat parity: its line from E_fire passes through P + (E_fire - E_P). REACH (fix/flat-parity-reach,
+// 2026-10-03): its on-foot shots aim through a world point since the 2026-10-02 shot-lag fix -- the unit-adjust and
+// crosshair-query re-aims and the muzzle shot, all through the provider's actuated point -- so by the rule they trail a
+// strafe by E_fire - E_P unless Reach fires from the render's eye (the player reported no lag there; the old shot
+// witness measured its native line 93 mm off the solve's eye while moving). Covered now, MEASURED OR NOTHING
+// (shot_lag_logic.h 4f): its intent carries the camera sample's stamp (the local shot ray's publish), and E_fire is
+// Reach's own unit camera-position evaluator asked inside the fire for our unit (reach_fire_eye.inl), used only once
+// proven equal to E_P at rest; never carried or extrapolated (SightPointSample::measuredOnly), so an unproven or absent
+// evaluator leaves the shot on P, counted. Reach's record (the direct drive's angles, solved from E_P) is a direction
+// and is not shifted; its seats are not covered at all. The reticle is never moved: it stays on P.
 enum class SightTransportSite : uint8_t
 {
     CrosshairAssist = 0,   // the crosshair-assist query re-aim (Halo 3, ODST, Reach); CE's player assist ray

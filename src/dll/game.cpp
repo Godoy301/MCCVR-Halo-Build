@@ -38579,6 +38579,8 @@ namespace
     // melee lane, which otherwise publishes it.
     std::atomic<int32_t> g_halo4SightUnit{-1};
     std::atomic<uint64_t> g_halo4SightUnitAtMs{0};
+    // Flat parity's fire eye, Halo 4 (halo4_fire_eye.inl, every build): the proof's per-tick sample at rest.
+    void Halo4NoteFireEyeTick(uint32_t unit, bool onFoot);
     #include "halo4_contact_melee_runtime.inl"
     #include "halo4_vehicle_input.inl"
     #include "cached_physical_crouch.inl"
@@ -41074,6 +41076,8 @@ namespace
     #include "halo4_muzzle_lifecycle.inl"
     // Dev builds only: Halo 4 seated convergence, stages 0-1 (the file compiles to nothing otherwise).
     #include "halo4_seat_sight.inl"
+    // Flat parity's fire eye, Halo 4 on foot: measured, proven at rest (every build).
+    #include "halo4_fire_eye.inl"
     #include "halo4_weapon_haptics.inl"
 
     void Halo4BeginFloatingPair()
@@ -46009,6 +46013,7 @@ namespace
         if(!RemoveHalo4SeatSight())
         { LOG("Halo 4 teardown: the dev seat witnesses need cleanup retry; retaining native dependencies");return false; }
 #endif
+        RemoveHalo4FireEye();   // asked only from inside the contact and muzzle detours, drained below
         if(!RemoveHalo4Muzzle())
         { LOG("Halo 4 teardown: optional muzzle hooks need cleanup retry; retaining native dependencies");return false; }
         const uint32_t generation =
@@ -46436,6 +46441,7 @@ namespace
         (void)Halo4Type13LogInstall(base,size,generation);
 #endif
         (void)InstallHalo4Muzzle(base,size,generation);
+        InstallHalo4FireEye(base,size,generation);   // flat parity's measured fire eye (halo4_fire_eye.inl)
 #if HALOMCCVR_DEV_DIAGNOSTICS
         InstallHalo4SeatSight(base,size,generation);   // after the muzzle lane: its bindings and view detour
 #endif
@@ -46822,6 +46828,7 @@ namespace
             g_halo4WorldCollision.failures.load(std::memory_order_relaxed);
         ReportHalo4ContactMelee();
         ReportHalo4Muzzle();
+        ReportHalo4FireEye();
         ReportHalo4WeaponHaptics();
         if (g_halo4VehicleInput.ready.load(std::memory_order_acquire))
             LOG("Halo 4 vehicle input in 2s: seated=%llu unknown/stock=%llu guardedFaults=%llu",
@@ -52563,32 +52570,8 @@ static shot_lag::FireEye Halo3FireEyeForShot(const float* siteEye, bool askEvalu
 static const bool g_halo3FireEyeRegistered =
     (Sight_SetFireEyeSource(GameTitle::Halo3, &Halo3FireEyeForShot), true);
 
-// THE FIRE EYE, Halo 4 on foot (flat parity, 2026-10-03; shot_lag_logic.h 4e): Halo 4's muzzle shot aims through the
-// intent point P (Sight_AimMuzzleShot), a world point fixed at the controller root the solve read -- the render's
-// pre-HMD body frame, a few ms old at the fire. No camera evaluator of Halo 4's is resolved for a fire-time ask (its
-// aim-camera view 0x1DC9E4 runs only after the shot's direction is decided), so E_fire is that sample's engine eye
-// carried one measured tick (or its own age when older): the flat probe's model. Its direction-based consumers (the
-// direct drive's written angles, the native shot) need nothing: a direction from E_P applied at the fire's eye is
-// flat parity already.
-static shot_lag::FireEye Halo4FireEyeForShot(const float* siteEye, bool askEvaluator, const SightPointSample& sample,
-                                             float eye[3], float& ageMs)
-{
-    (void)siteEye; (void)askEvaluator;
-    ageMs = -1.0f;
-    if (TitleAdapter_GetActiveTitle() != GameTitle::Halo4)
-        return shot_lag::FireEye::NoSource;
-    const float tickS = float(Sight_TickPeriodUs(GameTitle::Halo4, 16667)) * 1.0e-6f;
-    const uint64_t nowUs = Sight_NowUs();
-    const shot_lag::FireEye verdict = shot_lag::ChooseSampleFireEye(
-        shot_lag::FireEye::Count, nullptr, sample.camera.valid, sample.camera.eye,
-        sample.camera.velValid ? sample.camera.vel : nullptr,
-        shot_lag::SampleCarrySeconds(sample.camera.stampUs, nowUs, tickS, kSightTransportMaxAgeUs), eye);
-    if (verdict == shot_lag::FireEye::CarriedTick)
-        ageMs = float(nowUs - sample.camera.stampUs) / 1000.0f;
-    return verdict;
-}
-static const bool g_halo4FireEyeRegistered =
-    (Sight_SetFireEyeSource(GameTitle::Halo4, &Halo4FireEyeForShot), true);
+// THE FIRE EYE, Halo 4 on foot: halo4_fire_eye.inl (measured since 2026-10-04: the unit camera position the fire
+// itself asks, proven at rest; until proven, E_P carried one measured tick as before).
 
 // THE INTENT POINT (sight_layer.h SightIntent; shot_lag_logic.h). Input thread, every poll whose converged solve
 // resolved: P = H + u * r from ONE frame-coherent pair where the title publishes camera frames (Halo 3, ODST:

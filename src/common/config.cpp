@@ -1293,6 +1293,7 @@ void ConfigLoad(const wchar_t* path)
         if (!strcmp(key, "shot_point_transport")) { g_config.shot_point_transport=atoi(val)!=0?1:0; continue; }
         if (!strcmp(key, "shot_point_transport_seated")) { g_config.shot_point_transport_seated=atoi(val)!=0?1:0; continue; }
         if (!strcmp(key, "halo2_measured_fire_eye")) { g_config.halo2_measured_fire_eye=atoi(val)!=0?1:0; continue; }
+        if (!strcmp(key, "halo4_measured_fire_eye")) { g_config.halo4_measured_fire_eye=atoi(val)!=0?1:0; continue; }
         if (!strcmp(key, "seat_upstream_aim"))
         {
             const int v = atoi(val);
@@ -2223,6 +2224,11 @@ void ConfigSave()
     fprintf(f, "# that tick's move). 0 = the newest view's eye carried one tick (the A/B; short by Halo 2's camera\n");
     fprintf(f, "# interpolation). Live. (default %d)\n", d.halo2_measured_fire_eye);
     fprintf(f, "halo2_measured_fire_eye = %d\n\n", g_config.halo2_measured_fire_eye);
+    fprintf(f, "# DEV BUILD ONLY (players always get 1). Halo 4 on foot, with shot_point_transport = 1: 1 = once proven,\n");
+    fprintf(f, "# a muzzle shot's eye at the fire is the game's own unit camera position asked in the fire (the eye after\n");
+    fprintf(f, "# that tick's move). 0 = the view's eye carried one tick (the A/B; short by Halo 4's camera\n");
+    fprintf(f, "# interpolation). Live. (default %d)\n", d.halo4_measured_fire_eye);
+    fprintf(f, "halo4_measured_fire_eye = %d\n\n", g_config.halo4_measured_fire_eye);
     fprintf(f, "# DEV BUILD ONLY. Halo 3 seats: 1 = aim the seat's record so the game's own crosshair line at the\n");
     fprintf(f, "# fire passes through the reticle's point (what a multiplayer host fires). 2 = the same for the camera an\n");
     fprintf(f, "# unmodded host uses (a third-person seat's chase camera). 0 = as before (A/B). (default 1)\n");
