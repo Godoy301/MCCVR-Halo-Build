@@ -1292,6 +1292,7 @@ void ConfigLoad(const wchar_t* path)
         if (!strcmp(key, "seated_inherit_compensation")) { g_config.seated_inherit_compensation=atoi(val)!=0?1:0; continue; }
         if (!strcmp(key, "shot_point_transport")) { g_config.shot_point_transport=atoi(val)!=0?1:0; continue; }
         if (!strcmp(key, "shot_point_transport_seated")) { g_config.shot_point_transport_seated=atoi(val)!=0?1:0; continue; }
+        if (!strcmp(key, "halo2_measured_fire_eye")) { g_config.halo2_measured_fire_eye=atoi(val)!=0?1:0; continue; }
         if (!strcmp(key, "seat_upstream_aim"))
         {
             const int v = atoi(val);
@@ -2216,7 +2217,12 @@ void ConfigSave()
     fprintf(f, "# (default %d)\n", d.shot_point_transport);
     fprintf(f, "shot_point_transport = %d\n", g_config.shot_point_transport);
     fprintf(f, "# DEV BUILD ONLY. With shot_point_transport = 1: 1 = seated shots too. 0 = seats as before.\n");
-    fprintf(f, "shot_point_transport_seated = %d\n\n", g_config.shot_point_transport_seated);
+    fprintf(f, "shot_point_transport_seated = %d\n", g_config.shot_point_transport_seated);
+    fprintf(f, "# DEV BUILD ONLY (players always get 1). Halo 2 on foot, with shot_point_transport = 1: 1 = once proven,\n");
+    fprintf(f, "# a muzzle shot's eye at the fire is the game's own camera evaluator asked in the fire (the eye after\n");
+    fprintf(f, "# that tick's move). 0 = the newest view's eye carried one tick (the A/B; short by Halo 2's camera\n");
+    fprintf(f, "# interpolation). Live. (default %d)\n", d.halo2_measured_fire_eye);
+    fprintf(f, "halo2_measured_fire_eye = %d\n\n", g_config.halo2_measured_fire_eye);
     fprintf(f, "# DEV BUILD ONLY. Halo 3 seats: 1 = aim the seat's record so the game's own crosshair line at the\n");
     fprintf(f, "# fire passes through the reticle's point (what a multiplayer host fires). 2 = the same for the camera an\n");
     fprintf(f, "# unmodded host uses (a third-person seat's chase camera). 0 = as before (A/B). (default 1)\n");

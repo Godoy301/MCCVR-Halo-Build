@@ -8497,6 +8497,44 @@ int main()
             "The Saber translation adds the engine-owned offsets and pushes "
             "the camera along saber(forward) by the engine's forward scale");
 
+        // The flat probe's inverse: a tilted, yawed camera survives the round trip.
+        {
+            Halo2CameraBasis tilted{};
+            tilted.position[0] = -12.5f;
+            tilted.position[1] = 40.25f;
+            tilted.position[2] = 3.75f;
+            const float yaw = 0.7f, pitch = -0.3f;
+            tilted.forward[0] = std::cos(pitch) * std::cos(yaw);
+            tilted.forward[1] = std::cos(pitch) * std::sin(yaw);
+            tilted.forward[2] = std::sin(pitch);
+            tilted.up[0] = -std::sin(pitch) * std::cos(yaw);
+            tilted.up[1] = -std::sin(pitch) * std::sin(yaw);
+            tilted.up[2] = std::cos(pitch);
+            Halo2SaberViewMatrix tiltedMatrix{};
+            Halo2CameraBasis back{};
+            const bool round =
+                Halo2BuildSaberViewMatrix(tilted, offsetConstants, tiltedMatrix) &&
+                Halo2SaberViewMatrixToCamera(tiltedMatrix.m, offsetConstants, back);
+            float worst = 0.0f;
+            for (int axis = 0; axis < 3; ++axis)
+            {
+                worst = std::max(worst, std::fabs(back.position[axis] - tilted.position[axis]));
+                worst = std::max(worst, std::fabs(back.forward[axis] - tilted.forward[axis]));
+                worst = std::max(worst, std::fabs(back.up[axis] - tilted.up[axis]));
+            }
+            Check(round && worst < 1.0e-3f,
+                "The Saber view matrix inverts back to the Blam camera it was "
+                "built from (position, forward and up), offsets and forward "
+                "push included");
+            float nan16[16]{};
+            nan16[13] = std::numeric_limits<float>::quiet_NaN();
+            Halo2CameraBasis kept = tilted;
+            Check(!Halo2SaberViewMatrixToCamera(nan16, offsetConstants, kept) &&
+                      kept.position[0] == tilted.position[0],
+                "A non-finite Saber matrix is refused and leaves the output "
+                "untouched");
+        }
+
         Halo2CameraBasis degenerateBasis{};
         Halo2SaberViewMatrix untouched{};
         untouched.m[0] = 42.0f;

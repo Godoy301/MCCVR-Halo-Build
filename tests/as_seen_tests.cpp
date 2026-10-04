@@ -191,6 +191,87 @@ int main()
         Check(rest.frames == 30 && rest.moving == 0, "census: at rest nothing moves");
     }
 
+    // ---- the census with the tick counter (Halo 2) ---------------------------------------------------------------
+    {
+        // A camera drawn at lerp(previous tick, newest tick, alpha) at 90 Hz over a 60 Hz simulation: a third of the
+        // frames run no tick, and the eye still moves on every one of them.
+        CameraCensus lerp{};
+        float p[3]{0, 0, 0};
+        for (int i = 0; i < 180; ++i)
+        {
+            const int64_t tick = (i * 2) / 3;   // 60 Hz ticks under 90 Hz frames
+            const float alpha = static_cast<float>((i * 2) % 3) / 3.0f;
+            p[1] = (static_cast<float>(tick) - 1.0f + alpha) / 60.0f * 6.0f * kWuPerM;
+            lerp.Add(p, 1000000 + static_cast<uint64_t>(i) * 11111, tick, alpha);
+        }
+        Check(lerp.ticked > 170 && lerp.ticks0 > 50 && lerp.ticks2 == 0,
+              "census ticks: at 90 Hz over 60 Hz a third of the frames run no tick");
+        Check(lerp.movingNoTick > 40 && lerp.movedNoTick == lerp.movingNoTick && lerp.repeatedWithTick == 0,
+              "census ticks: an interpolated eye moves on every tick-less frame");
+        Check(lerp.alphaN == 180 && Near(static_cast<float>(lerp.alphaSum / lerp.alphaN), 0.33f, 0.05f),
+              "census ticks: the alpha mean");
+        char clause[1024]{};
+        Check(lerp.Format(clause, sizeof(clause)) && std::strstr(clause, "sim ticks per frame 0/1/2+") != nullptr &&
+                  std::strstr(clause, "interpolation alpha mean") != nullptr,
+              "census ticks: formats the tick and alpha clauses");
+        // A tick-stepped eye repeats on exactly the tick-less frames.
+        CameraCensus step{};
+        float q[3]{0, 0, 0};
+        for (int i = 0; i < 180; ++i)
+        {
+            const int64_t tick = (i * 2) / 3;
+            q[1] = static_cast<float>(tick) / 60.0f * 6.0f * kWuPerM;
+            step.Add(q, 1000000 + static_cast<uint64_t>(i) * 11111, tick);
+        }
+        Check(step.movingNoTick > 40 && step.movedNoTick == 0 && step.alphaN == 0,
+              "census ticks: a tick-stepped eye repeats on every tick-less frame");
+        // An unknown tick breaks the chain instead of counting a jump.
+        CameraCensus gap{};
+        const float r[3]{0, 0, 0};
+        gap.Add(r, 1000000, 10);
+        gap.Add(r, 1011000, -1);
+        gap.Add(r, 1022000, 12);
+        Check(gap.ticked == 0, "census ticks: an unknown tick between two frames counts nothing");
+    }
+
+    // ---- which collision query is a round's -----------------------------------------------------------------------
+    {
+        const float spawn[3]{10, 20, 1}, fwd[3]{0, 2, 0};
+        const float start[3]{10.02f, 25, 1}, along[3]{0, 30, 0.5f};
+        float miss = -1.0f;
+        Check(QueryOnRound(spawn, fwd, start, along, &miss) && Near(miss, 0.02f * shot_lag::kMetresPerWu, 1e-4f),
+              "query: on the spawn line, along the forward");
+        const float off[3]{10.1f, 25, 1};   // 0.1 wu = 30 cm off the line
+        Check(!QueryOnRound(spawn, fwd, off, along), "query: 30 cm off the line is another object's");
+        const float sideways[3]{3, 30, 0};   // ~5.7 deg off the forward
+        Check(!QueryOnRound(spawn, fwd, start, sideways), "query: over 5 deg off the forward is not the round's");
+        const float behind[3]{10, 19.9f, 1};   // 30 cm behind the spawn
+        Check(!QueryOnRound(spawn, fwd, behind, along), "query: starting behind the spawn is not the round's");
+        const float zero[3]{0, 0, 0};
+        Check(!QueryOnRound(spawn, zero, start, along) && !QueryOnRound(spawn, fwd, start, zero),
+              "query: a zero forward or vector is refused");
+    }
+
+    // ---- the window's tick and alpha columns ------------------------------------------------------------------------
+    {
+        Window w{};
+        const float origin[3]{0, 0, 0}, dir[3]{1, 0, 0}, vel[3]{0, 6 * kWuPerM, 0};
+        const float impact[3]{12 * kWuPerM, 0.05f * kWuPerM, 0};
+        Sample s{};
+        s.seen = Measure(impact, origin, dir, vel);
+        s.ticksImpactToFrame = 1;
+        s.frameAlpha = 0.25f;
+        w.Add(s, 0.0f);
+        s.ticksImpactToFrame = 2;
+        s.frameAlpha = 0.75f;
+        w.Add(s, 0.0f);
+        char line[4096]{};
+        Check(w.Format("Halo 2 FLAT", line, sizeof(line)) &&
+                  std::strstr(line, "ticks impact->frame 1.5") != nullptr &&
+                  std::strstr(line, "frame camera alpha 0.50") != nullptr && std::strstr(line, "radii") == nullptr,
+              "window: the impact->frame ticks and the frame camera's alpha; no radii column without a radius");
+    }
+
     // ---- the flat art size ----------------------------------------------------------------------------------------
     {
         // A 5242-wide VR HUD and a flat 78 deg horizontal FOV (tan 39 deg).

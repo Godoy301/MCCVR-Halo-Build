@@ -1758,6 +1758,12 @@ struct Halo2ObserverPosePublication
     uint64_t publishedUs=0;
     bool engineEyeVelValid=false;
     float engineEyeVel[3]{};
+    // The simulation tick (game_time +0x08) and MCC's frame-interpolator factor (0x164B300) when this publication was
+    // written (2026-10-04). The observer's camera is lerp(previous tick, newest tick, factor) -- the unit camera reads
+    // back the interpolator outside a tick (0x927170 -> 0x7227A0) -- so its engine eye is (1 - factor) of a tick behind
+    // the newest tick's. -1 / NaN when unreadable.
+    int64_t gameTick=-1;
+    float interpFactor=NAN;
     float referenceOrientation[4]{0.0f, 0.0f, 0.0f, 1.0f};
     float referencePosition[3]{};
     Halo2ObserverPoseSnapshot snapshot{};
@@ -2633,6 +2639,39 @@ inline bool Halo2BuildSaberViewMatrix(
     for (int index = 0; index < 16; ++index)
         if (!std::isfinite(candidate.m[index]))
             return false;
+    out = candidate;
+    return true;
+}
+
+// The inverse of Halo2BuildSaberViewMatrix (dev flat probe, 2026-10-04): the Blam camera a Saber view matrix was built
+// from, so a probe reading the view record the Anniversary scene render latched (record+0x20) can measure in Blam
+// world units. blam(s) = (s.x, -s.z, s.y) undoes saber(v) = (v.x, v.z, -v.y); the position takes the engine's offsets
+// and its forward push back out of row 3 and converts metres to world units.
+inline bool Halo2SaberViewMatrixToCamera(
+    const float m[16], const Halo2SaberCameraConstants& constants,
+    Halo2CameraBasis& out) noexcept
+{
+    if (!m || !Halo2SaberCameraConstantsFinite(constants))
+        return false;
+    for (int index = 0; index < 16; ++index)
+        if (!std::isfinite(m[index]))
+            return false;
+    Halo2CameraBasis candidate{};
+    candidate.forward[0] = m[8];
+    candidate.forward[1] = -m[10];
+    candidate.forward[2] = m[9];
+    candidate.up[0] = m[4];
+    candidate.up[1] = -m[6];
+    candidate.up[2] = m[5];
+    const float scale = constants.forwardScale;
+    candidate.position[0] =
+        (m[12] - constants.offsetX - scale * m[8]) / kHalo2MetersPerWorldUnit;
+    candidate.position[2] =
+        (m[13] - constants.offsetZ - scale * m[9]) / kHalo2MetersPerWorldUnit;
+    candidate.position[1] =
+        (constants.offsetY + scale * m[10] - m[14]) / kHalo2MetersPerWorldUnit;
+    if (!Halo2ValidateCameraBasis(candidate))
+        return false;
     out = candidate;
     return true;
 }
