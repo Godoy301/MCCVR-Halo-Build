@@ -1370,7 +1370,9 @@ namespace
             bool transport = g_config.shot_point_transport != 0;
             if (ImGui::Checkbox("Flat parity: move the shot point with your eye (A/B, dev)", &transport))
             { g_config.shot_point_transport = transport ? 1 : 0; changed = true; }
-            ImGui::TextDisabled("DEV BUILD ONLY (players always have it ON). Halo 3 and ODST on foot. ON: a shot\n"
+            ImGui::TextDisabled("DEV BUILD ONLY (players always have it ON). On foot in Halo 3, ODST, Halo 2, CE\n"
+                                "and Halo 4 (Halo 2, Halo 4: shots from the muzzle; CE: those and its aim assist;\n"
+                                "not Reach). ON: a shot\n"
                                 "aims through the reticle's point moved with your eye since it was sampled -- what\n"
                                 "flat Halo fires with the crosshair held still on your body. OFF: through the point\n"
                                 "fixed in the world (rounds trail a strafe by one game tick). The reticle never\n"
