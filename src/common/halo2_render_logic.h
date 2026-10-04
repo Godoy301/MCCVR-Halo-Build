@@ -2637,6 +2637,39 @@ inline bool Halo2BuildSaberViewMatrix(
     return true;
 }
 
+// The inverse of Halo2BuildSaberViewMatrix (dev flat probe, 2026-10-04): the Blam camera a Saber view matrix was built
+// from, so a probe reading the view record the Anniversary scene render latched (record+0x20) can measure in Blam
+// world units. blam(s) = (s.x, -s.z, s.y) undoes saber(v) = (v.x, v.z, -v.y); the position takes the engine's offsets
+// and its forward push back out of row 3 and converts metres to world units.
+inline bool Halo2SaberViewMatrixToCamera(
+    const float m[16], const Halo2SaberCameraConstants& constants,
+    Halo2CameraBasis& out) noexcept
+{
+    if (!m || !Halo2SaberCameraConstantsFinite(constants))
+        return false;
+    for (int index = 0; index < 16; ++index)
+        if (!std::isfinite(m[index]))
+            return false;
+    Halo2CameraBasis candidate{};
+    candidate.forward[0] = m[8];
+    candidate.forward[1] = -m[10];
+    candidate.forward[2] = m[9];
+    candidate.up[0] = m[4];
+    candidate.up[1] = -m[6];
+    candidate.up[2] = m[5];
+    const float scale = constants.forwardScale;
+    candidate.position[0] =
+        (m[12] - constants.offsetX - scale * m[8]) / kHalo2MetersPerWorldUnit;
+    candidate.position[2] =
+        (m[13] - constants.offsetZ - scale * m[9]) / kHalo2MetersPerWorldUnit;
+    candidate.position[1] =
+        (constants.offsetY + scale * m[10] - m[14]) / kHalo2MetersPerWorldUnit;
+    if (!Halo2ValidateCameraBasis(candidate))
+        return false;
+    out = candidate;
+    return true;
+}
+
 // 0xBC560(cam, V) stores the VERTICAL field of view and derives the
 // HORIZONTAL one as 2*atan(tan(V/2) / aspect), where the Saber aspect is
 // HEIGHT / WIDTH (0.75 for 640x480). This mirrors that derivation exactly;

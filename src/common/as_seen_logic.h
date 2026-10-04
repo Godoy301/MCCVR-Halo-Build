@@ -215,6 +215,10 @@ struct Sample
     uint64_t aimCamUs = 0, fireUs = 0, impactUs = 0, frameCamUs = 0, presentUs = 0;
     int32_t ticksFireToImpact = -1;   // sim ticks from the fire to the impact
     int32_t ticksAimToFrame = -1;     // sim ticks from the aim's camera sample to the frame's camera
+    int32_t ticksImpactToFrame = -1;  // sim ticks from the impact to the frame's camera (a tick counter; -1 unknown)
+    // The frame camera's interpolation fraction (Halo 2: MCC renders the camera at lerp(previous tick, newest tick,
+    // alpha), alpha the part of a tick accumulated past the newest one); NaN = unknown or not interpolated.
+    float frameAlpha = NAN;
     bool eyeMovedKnown = false;
     float eyeMovedAlongMm = 0.0f;     // the camera eye, aim sample -> frame, along `seen`'s travel axis
 };
@@ -244,8 +248,10 @@ struct Bin
     double eyeMovedMm = 0, eyeMovedMs = 0;
     uint32_t nAimFire = 0, nFireImpact = 0, nImpactFrame = 0, nFramePresent = 0;
     double aimToFireMs = 0, fireToImpactMs = 0, impactToFrameMs = 0, frameToPresentMs = 0;
-    uint32_t nTicksFire = 0, nTicksAim = 0;
-    double ticksFireToImpact = 0, ticksAimToFrame = 0;
+    uint32_t nTicksFire = 0, nTicksAim = 0, nTicksImpact = 0;
+    double ticksFireToImpact = 0, ticksAimToFrame = 0, ticksImpactToFrame = 0;
+    uint32_t nAlpha = 0;
+    double frameAlpha = 0;
 };
 
 struct Window
@@ -326,6 +332,16 @@ struct Window
             ++b.nTicksAim;
             b.ticksAimToFrame += s.ticksAimToFrame;
         }
+        if (s.ticksImpactToFrame >= 0)
+        {
+            ++b.nTicksImpact;
+            b.ticksImpactToFrame += s.ticksImpactToFrame;
+        }
+        if (std::isfinite(s.frameAlpha))
+        {
+            ++b.nAlpha;
+            b.frameAlpha += s.frameAlpha;
+        }
     }
 
     bool Any() const { return impacts || unframed || noLine || refused; }
@@ -387,6 +403,11 @@ struct Window
                 put(" ms");
                 if (b.nTicksAim)
                     put("; ticks aim cam->frame %.1f", mean(b.ticksAimToFrame, b.nTicksAim));
+                if (b.nTicksImpact)
+                    put("; ticks impact->frame %.1f", mean(b.ticksImpactToFrame, b.nTicksImpact));
+                if (b.nAlpha)
+                    put("; frame camera alpha %.2f (drawn that far from the previous tick to the newest)",
+                        mean(b.frameAlpha, b.nAlpha));
             }
         return true;
     }
@@ -397,21 +418,57 @@ struct Window
 // straight from the 60 Hz simulation repeats its position on every frame drawn between two ticks (at 90 Hz about one
 // frame in three) and steps by whole ticks; an interpolated camera moves on every frame by about speed x frame time.
 // `stepRatio` = |step| / (speed x frame time): ~1 every frame when interpolated, 0 and ~1.5 alternating when not.
+//
+// With the simulation's TICK COUNTER at each frame (Halo 2, 2026-10-04) the question is answered directly instead of
+// from the step pattern: per frame, how many ticks ran since the previous frame (0 / 1 / 2+), and on the frames where
+// NO tick ran while the player moved, did the eye still move (interpolated between ticks) or repeat? A frame rate
+// below the tick rate never has a tick-less frame, so the step ratio is the evidence there. `alpha`: the frame
+// camera's interpolation fraction where the host can read it (mean reported).
 struct CameraCensus
 {
     static constexpr int kHistory = 16;
     float pos[kHistory][3]{};
     uint64_t us[kHistory]{};
     int count = 0, head = 0;   // ring: head = the next write
+    int64_t lastTick = -1;     // the previous frame's tick (-1 unknown)
     // Counts (reset by TakeCounts / a window swap).
     uint32_t frames = 0, moving = 0, repeated = 0, uneven = 0, stepN = 0;
     double stepRatioSum = 0, speedSum = 0, frameMsSum = 0;
+    // With ticks: frames that ran 0 / 1 / 2+ ticks since the previous frame; of the moving frames that ran none, how
+    // many still moved the eye (and how many repeated it); and the moving frames that DID run a tick but repeated.
+    uint32_t ticked = 0, ticks0 = 0, ticks1 = 0, ticks2 = 0;
+    uint32_t movingNoTick = 0, movedNoTick = 0, repeatedWithTick = 0;
+    uint32_t alphaN = 0;
+    double alphaSum = 0;
 
-    void Add(const float p[3], uint64_t nowUs)
+    void Add(const float p[3], uint64_t nowUs, int64_t tick = -1, float alpha = NAN)
     {
         if (!Finite3(p) || !nowUs)
             return;
         ++frames;
+        int ran = -1;   // ticks since the previous frame (-1 unknown)
+        if (tick >= 0)
+        {
+            if (lastTick >= 0 && tick >= lastTick)
+            {
+                ran = static_cast<int>(tick - lastTick > 1000 ? 1000 : tick - lastTick);
+                ++ticked;
+                if (ran == 0)
+                    ++ticks0;
+                else if (ran == 1)
+                    ++ticks1;
+                else
+                    ++ticks2;
+            }
+            lastTick = tick;
+        }
+        else
+            lastTick = -1;
+        if (std::isfinite(alpha))
+        {
+            ++alphaN;
+            alphaSum += alpha;
+        }
         if (count)
         {
             const int prev = (head + kHistory - 1) % kHistory;
@@ -436,8 +493,17 @@ struct CameraCensus
                     {
                         ++moving;
                         const float step[3]{p[0] - pos[prev][0], p[1] - pos[prev][1], p[2] - pos[prev][2]};
-                        if (step[0] == 0.0f && step[1] == 0.0f && step[2] == 0.0f)
+                        const bool same = step[0] == 0.0f && step[1] == 0.0f && step[2] == 0.0f;
+                        if (same)
                             ++repeated;
+                        if (ran == 0)
+                        {
+                            ++movingNoTick;
+                            if (!same)
+                                ++movedNoTick;
+                        }
+                        else if (ran > 0 && same)
+                            ++repeatedWithTick;
                         const float dt = float(nowUs - us[prev]) * 1.0e-6f;
                         const float ratio = Length(step) * kMetresPerWu / (speedMps * dt);
                         if (std::isfinite(ratio))
@@ -464,6 +530,8 @@ struct CameraCensus
     {
         frames = moving = repeated = uneven = stepN = 0;
         stepRatioSum = speedSum = frameMsSum = 0;
+        ticked = ticks0 = ticks1 = ticks2 = movingNoTick = movedNoTick = repeatedWithTick = alphaN = 0;
+        alphaSum = 0;
     }
 
     // One clause, or false while nothing moved.
@@ -474,14 +542,53 @@ struct CameraCensus
         out[0] = '\0';
         if (!moving || !stepN)
             return false;
-        std::snprintf(out, size,
-                      "%u frames, %u while moving (mean %.1f m/s, frame %.1f ms): the camera eye REPEATED on %u "
-                      "(%.0f%%), step / (speed x frame time) mean %.2f, outside 0.75-1.25 on %u (%.0f%%)",
-                      frames, moving, speedSum / stepN, frameMsSum / stepN, repeated, 100.0 * repeated / moving,
-                      stepRatioSum / stepN, uneven, 100.0 * uneven / stepN);
+        int used = std::snprintf(out, size,
+                                 "%u frames, %u while moving (mean %.1f m/s, frame %.1f ms): the camera eye REPEATED on "
+                                 "%u (%.0f%%), step / (speed x frame time) mean %.2f, outside 0.75-1.25 on %u (%.0f%%)",
+                                 frames, moving, speedSum / stepN, frameMsSum / stepN, repeated,
+                                 100.0 * repeated / moving, stepRatioSum / stepN, uneven, 100.0 * uneven / stepN);
+        if (ticked && used > 0 && static_cast<size_t>(used) < size)
+            used += std::snprintf(out + used, size - static_cast<size_t>(used),
+                                  "; sim ticks per frame 0/1/2+: %u/%u/%u; moving frames with NO new tick: %u, the "
+                                  "eye moved on %u (= interpolated between ticks) and repeated on %u; moving frames "
+                                  "with a tick that repeated: %u",
+                                  ticks0, ticks1, ticks2, movingNoTick, movedNoTick, movingNoTick - movedNoTick,
+                                  repeatedWithTick);
+        if (alphaN && used > 0 && static_cast<size_t>(used) < size)
+            std::snprintf(out + used, size - static_cast<size_t>(used),
+                          "; interpolation alpha mean %.2f (%u frames)", alphaSum / alphaN, alphaN);
         return true;
     }
 };
+
+// ---- 6b. which collision query is a tracked round's ---------------------------------------------------------------
+// A projectile's own collision query starts ON its spawn line (within 15 cm of it, not more than 2 cm behind its spawn)
+// and runs ALONG its forward (within 5 deg). True with `missM` (its start's distance off the line, game metres) when it
+// does; no object table is read, so the flat probe and the VR witness match by the same geometry.
+inline bool QueryOnRound(const float spawn[3], const float forward[3], const float start[3], const float vector[3],
+                         float* missM = nullptr)
+{
+    if (!Finite3(spawn) || !Finite3(forward) || !Finite3(start) || !Finite3(vector))
+        return false;
+    const float fl = Length(forward), vl = Length(vector);
+    if (!(fl > 1.0e-6f) || !(vl > 1.0e-6f))
+        return false;
+    const float f[3]{forward[0] / fl, forward[1] / fl, forward[2] / fl};
+    const float cosine = Dot(vector, f) / vl;
+    if (!(cosine >= std::cos(5.0f / kRadToDeg)))
+        return false;
+    const float w[3]{start[0] - spawn[0], start[1] - spawn[1], start[2] - spawn[2]};
+    const float along = Dot(w, f);
+    if (along < -0.02f * kWuPerMetre)
+        return false;
+    const float m[3]{w[0] - f[0] * along, w[1] - f[1] * along, w[2] - f[2] * along};
+    const float miss = Length(m) * kMetresPerWu;
+    if (!(miss <= 0.15f))
+        return false;
+    if (missM)
+        *missM = miss;
+    return true;
+}
 
 // ---- 7. the flat reticle's size, art for art ---------------------------------------------------------------------
 // The VR reticle shows the game's own crosshair art captured from the central +-(128 / hudWidth) of the HUD's NDC
