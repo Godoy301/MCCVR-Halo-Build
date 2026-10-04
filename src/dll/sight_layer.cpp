@@ -1420,9 +1420,10 @@ void Sight_ReportShots()
         s_key = g_config.shot_point_transport;
         s_seatedKey = g_config.shot_point_transport_seated;
         LOG("SHOT LAG transport (dev): shot_point_transport=%d shot_point_transport_seated=%d -- %s", s_key,
-            s_seatedKey, s_key ? (s_seatedKey ? "shots of every title but Reach aim through P moved with the eye, on "
-                                                "foot and seated" : "on-foot shots of every title but Reach aim through "
-                                                "P moved with the eye; seats through P")
+            s_seatedKey, s_key ? (s_seatedKey ? "shots aim through P moved with the eye, on foot and seated (Reach: on "
+                                                "foot only, and only with a measured fire eye)"
+                                              : "on-foot shots aim through P moved with the eye (Reach: only with a "
+                                                "measured fire eye); seats through P")
                                : "every shot through P as published (the SHOT IMPACT vs P' columns say where a moved "
                                  "point would have been)");
     }
