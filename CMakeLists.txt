@@ -528,6 +528,7 @@ if(BUILD_TESTING)
         tests/core_tests.cpp
         tests/roomscale_input_tests.cpp
         tests/roomscale_recenter_tests.cpp
+        tests/roomscale_admission_tests.cpp
         src/common/input_logic.cpp
         src/common/scope_logic.cpp
         src/common/title_registry.cpp

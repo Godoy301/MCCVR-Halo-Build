@@ -1,6 +1,7 @@
 #include "../src/common/reach_wind_replay.h"
 int RunRoomscaleInputTests();
 int RunRoomscaleRecenterTests();
+int RunRoomscaleAdmissionTests();
 #include "../src/common/roomscale_logic.h"
 #include "../src/common/controller_finger_input.h"
 #include "../src/common/vr_interaction_refinement_logic.h"
@@ -20121,6 +20122,7 @@ int main()
     }
     g_failures += RunRoomscaleInputTests();
     g_failures += RunRoomscaleRecenterTests();
+    g_failures += RunRoomscaleAdmissionTests();
     if (g_failures == 0)
         std::cout << "HaloMCCVR core tests passed\n";
     return g_failures == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
