@@ -3,6 +3,7 @@
 #include "haloce_controls.h"
 #include "haloce_stereo_core.h"
 #include "haloce_native_bindings.h"
+#include "haloce_unit_control.h"
 #include "contact_melee_queue.h"
 #include "hook_quiescence.h"
 #include "sight_layer.h"
@@ -395,8 +396,8 @@ void ContactTick(uint32_t unit)
 // front faces, ignore invisible, structure, media, OBJECTS, try-to-keep-location-valid. The objects bit with no
 // type bit is widened to all 12 object types by the collision function itself (0xB91854), so bipeds, vehicles,
 // scenery and machines all stop the ray; the ignored unit is skipped WITH its children (its held weapon). Seven
-// retail call sites pass this same immediate to the collision function. On foot only: a seated unit is not
-// traced (Admitted wants onFoot), and CE's vehicle packet takes the raw controller forward.
+// retail call sites pass this same immediate to the collision function -- one of them the seated crosshair test
+// itself (0xB67DA2). On foot and, since 2026-10-06, in a seat (SightTick below).
 // ADDR-HYGIENE: structural (an engine enum value, HCEEK-named, not an address; decoded and unit-tested in
 // sight_hit_class_logic.h, and the install line states what it hits).
 constexpr uint32_t kSightProjectileFlags=0x1000e9;
@@ -427,7 +428,13 @@ int SightObjectType(uint32_t handle) noexcept
     return -1;
 }
 #endif
-void SightTick(uint32_t unit) noexcept
+// IN A SEAT (seat_converge_logic.h; 2026-10-06) the same trace runs for the seat's intent ray -- the seat view's
+// rendered eye along the aiming hand, as the seated packet path admits it (HaloCEUnitControl_SeatSight) -- with the
+// vehicle hierarchy's ULTIMATE PARENT in the ignore slot: what CE's own crosshair test passes there (0xB38BA8 at
+// 0xB67D92), and CE skips an ignored object with everything attached to it (the occupants, their weapons, a
+// turret), so the ray starts inside our vehicle and still stops on another vehicle or a biped. `updated`: the
+// biped update's own result; the on-foot ray keeps requiring it, the seat is admitted by its own ownership reads.
+void SightTick(uint32_t unit,bool updated) noexcept
 {
     constexpr GameTitle kTitle=GameTitle::HaloCE;
     if (!Current()||Sight_TraceFaulted(kTitle)) return;
@@ -442,24 +449,37 @@ void SightTick(uint32_t unit) noexcept
     }
     if (unit==UINT32_MAX||unit!=s_local||!Sight_TraceDue(kTitle,Sight_NowMs())) return;
     HaloCELocalPlayerState state{};RenderContext context{};
-    if (!Admitted(unit,state,context)) return;
     Vec3 head{},dir{},eye{};
-    // The carrier the aim itself uses (ControllerShotDirection): with the persistent support grip detached, the
-    // independent one-hand pose, or the trace measures a ray nothing aims along.
-    const CeSupportInvocation support=CeEvaluateSupportInvocation(
-        VR_SupportGripWiredForTitle(GameTitle::HaloCE),state,
-        context.tracking.controllers.primaryAimSupportDerived);
-    if (support.detach&&!context.tracking.controllers.independentPrimaryAim.valid) return;
-    const ControllerPose& carrier=support.detach?context.tracking.controllers.independentPrimaryAim:
-        context.tracking.controllers.primaryAim;
-    if (!BuildSightGeometry(context.camera,context.tracking,context.reference,
-        carrier,context.unitsPerMeter,context.positional,head,dir,eye)) return;
+    uint32_t ignored=unit,stance=0;
+    bool seated=false;
+    if (updated&&Admitted(unit,state,context))
+    {
+        // The carrier the aim itself uses (ControllerShotDirection): with the persistent support grip detached, the
+        // independent one-hand pose, or the trace measures a ray nothing aims along.
+        const CeSupportInvocation support=CeEvaluateSupportInvocation(
+            VR_SupportGripWiredForTitle(GameTitle::HaloCE),state,
+            context.tracking.controllers.primaryAimSupportDerived);
+        if (support.detach&&!context.tracking.controllers.independentPrimaryAim.valid) return;
+        const ControllerPose& carrier=support.detach?context.tracking.controllers.independentPrimaryAim:
+            context.tracking.controllers.primaryAim;
+        if (!BuildSightGeometry(context.camera,context.tracking,context.reference,
+            carrier,context.unitsPerMeter,context.positional,head,dir,eye)) return;
+    }
+    else
+    {
+        HaloCESeatSight seat{};
+        if (!HaloCEUnitControl_SeatSight(unit,seat)||seat.root==UINT32_MAX||!Current()) return;
+        head={seat.head[0],seat.head[1],seat.head[2]};dir={seat.dir[0],seat.dir[1],seat.dir[2]};
+        ignored=seat.root;stance=seat.key;seated=true;
+    }
+    // A range measured on foot never bends a seat's aim, nor a seat's the walk after it (Sight_SetStance).
+    Sight_SetStance(kTitle,stance);
     const float length=kSightTraceLengthWu;
     const float start[3]{head.x+dir.x*kSightTraceSkipWu,head.y+dir.y*kSightTraceSkipWu,head.z+dir.z*kSightTraceSkipWu};
     const float displacement[3]{dir.x*length,dir.y*length,dir.z*length};
     CollisionResult result{};bool faulted=false;
     LARGE_INTEGER q0{},q1{};QueryPerformanceCounter(&q0);
-    const uint8_t returned=GuardedSightTrace(start,displacement,unit,result,faulted);
+    const uint8_t returned=GuardedSightTrace(start,displacement,ignored,result,faulted);
     QueryPerformanceCounter(&q1);
     if (faulted) { Sight_NoteTraceFault(kTitle);exceptions.fetch_add(1,std::memory_order_relaxed);return; }
     const bool hit=returned&&std::isfinite(result.fraction)&&result.fraction>=0&&result.fraction<=1;
@@ -472,8 +492,10 @@ void SightTick(uint32_t unit) noexcept
         const bool objectHit=hit&&result.type==3&&result.object!=UINT32_MAX;
         const int type=objectHit?SightObjectType(result.object):-1;
         Sight_NoteTraceHit(kTitle,sight_hit::ClassifyHit(hit,objectHit,type),type,
-            hit?kSightTraceSkipWu+result.fraction*length:0.0f,false);
+            hit?kSightTraceSkipWu+result.fraction*length:0.0f,seated);
     }
+#else
+    (void)seated;
 #endif
 }
 __declspec(noinline) uint8_t __fastcall TickHook(uint32_t unit)
@@ -483,7 +505,8 @@ __declspec(noinline) uint8_t __fastcall TickHook(uint32_t unit)
     {
         const auto original=reinterpret_cast<TickFn>(tickHook.original);
         if (original) result=original(unit);
-        if (result) { ContactTick(unit);SightTick(unit); }
+        if (result) ContactTick(unit);
+        SightTick(unit,result!=0);
     }
     __finally { callbacks.fetch_sub(1,std::memory_order_release); }
     return result;
@@ -602,7 +625,8 @@ bool Install(uintptr_t base,size_t size,uint32_t gen) noexcept
     Sight_AnnounceTraceQuery(GameTitle::HaloCE,sight_hit::Engine::HaloCE,kSightProjectileFlags,
         "the collision test the biped tick hook already calls",
         "the engine's own projectile flags (HCEEK _collision_test_for_projectiles_flags)",
-        "on foot it ignores the unit (the engine skips the held weapon with it); a seated unit is not traced");
+        "on foot it ignores the unit (the engine skips the held weapon with it); in a seat the vehicle's ultimate "
+        "parent, as the engine's own crosshair test does (everything attached to it is skipped with it)");
     LOG("CE contact installed: native biped update, world clamp=%d physical melee=%d; 12 stock CE authored weapon envelopes in both renderers, exact custom/Anniversary replacement surfaces unproven",worldReady.load(),meleeReady.load());
     LOG("CE physical melee reach: %.0f cm along speed-qualified physical swing; native first obstruction, exact target/material requery and per-hand retraction retained",kPhysicalMeleeReachMetres*100);
     LOG("CE environment melee: native surface/material path %s; exact BSP/feature revalidation, native authored breakable damage",worldMeleeReady.load()?"installed":"unavailable");
