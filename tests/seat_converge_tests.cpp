@@ -149,6 +149,48 @@ void TestBounds()
     const float longDir[3]{2.0f, 0.0f, 0.0f};
     Check(!ClampToBounds(cone, fwd, up, longDir, out, over), "a direction that is not unit is no stop");
 }
+
+void TestAimReference()
+{
+    // The measured Halo 2 seat (2026-10-06): the record and the unit's aiming vector at yaw -88.65, pitch -4.97 deg;
+    // the observer camera 5.1 deg of pitch above it. The reference is the unit's aim, and the camera's offset is said.
+    const float d2r = 0.0174532925f;
+    const float yaw = -88.65f * d2r, pitch = -4.97f * d2r;
+    const float aim[3]{std::cos(yaw) * std::cos(pitch), std::sin(yaw) * std::cos(pitch), std::sin(pitch)};
+    AimReference r = SeatAimReference(true, aim, true, yaw, pitch + 5.1f * d2r);
+    Check(r.valid && r.fromUnit && Near(r.yaw, yaw, 1.0e-5f) && Near(r.pitch, pitch, 1.0e-5f),
+          "a seat's reference is the unit's own aiming vector");
+    Check(Near(r.cameraOffDeg, 5.1f, 0.01f), "...and the observer camera's offset from it is reported");
+    // The record the game shows equals that reference, so the per-axis proof agrees where the camera's never did.
+    Check(std::fabs(r.pitch - pitch) < 0.03f && std::fabs((pitch + 5.1f * d2r) - pitch) > 0.03f,
+          "the camera's 5.1 deg sits outside the proof's 1.7 deg; the unit's aim inside it");
+    // No camera: still the unit's aim, with no offset to report.
+    r = SeatAimReference(true, aim, false, 0.0f, 0.0f);
+    Check(r.valid && r.fromUnit && std::isnan(r.cameraOffDeg), "the unit's aim needs no camera");
+    // A vector that is not the aiming vector (not unit length, non-finite, not read): the camera, as before.
+    const float longAim[3]{aim[0] * 1.5f, aim[1] * 1.5f, aim[2] * 1.5f};
+    r = SeatAimReference(true, longAim, true, 0.4f, -0.2f);
+    Check(r.valid && !r.fromUnit && Near(r.yaw, 0.4f) && Near(r.pitch, -0.2f) && std::isnan(r.cameraOffDeg),
+          "a vector that is not normalised is not the aiming vector: the camera is the reference");
+    const float nanAim[3]{aim[0], std::nanf(""), aim[2]};
+    r = SeatAimReference(true, nanAim, true, 0.4f, -0.2f);
+    Check(r.valid && !r.fromUnit, "a non-finite vector: the camera");
+    r = SeatAimReference(false, aim, true, 0.4f, -0.2f);
+    Check(r.valid && !r.fromUnit && Near(r.yaw, 0.4f), "a vector that did not read: the camera");
+    r = SeatAimReference(false, aim, false, 0.4f, -0.2f);
+    Check(!r.valid && !r.fromUnit, "neither: no reference (the stint judges nothing)");
+    r = SeatAimReference(true, nanAim, true, std::nanf(""), -0.2f);
+    Check(!r.valid, "a non-finite camera is no reference either");
+    // Within the 2 % the game's own normalisation leaves: still the aiming vector, its angles those of the direction.
+    const float nearAim[3]{aim[0] * 1.015f, aim[1] * 1.015f, aim[2] * 1.015f};
+    r = SeatAimReference(true, nearAim, true, yaw, pitch);
+    Check(r.fromUnit && Near(r.pitch, pitch, 1.0e-4f) && Near(r.cameraOffDeg, 0.0f, 0.01f),
+          "a vector within 2 % of unit length is taken, and a camera on it reads no offset");
+    // Straight up stays finite.
+    const float upAim[3]{0.0f, 0.0f, 1.0f};
+    r = SeatAimReference(true, upAim, false, 0.0f, 0.0f);
+    Check(r.fromUnit && Near(r.pitch, 1.5707963f, 1.0e-4f) && std::isfinite(r.yaw), "the pole is finite");
+}
 } // namespace
 
 int main()
@@ -158,6 +200,7 @@ int main()
     TestStanceKey();
     TestMeasureLine();
     TestBounds();
+    TestAimReference();
     std::printf("seat converge tests: %u checks, %u failures\n", checks, failures);
     return failures ? 1 : 0;
 }
