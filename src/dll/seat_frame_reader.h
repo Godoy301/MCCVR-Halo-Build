@@ -202,6 +202,10 @@ struct Live
     seat_frame::Frame frame{};       // R (identity unless kase == Rebased)
     float tiltDeg = std::nanf("");   // the parent's tilt when its up read (any case), else NaN
     bool seated = false;             // the rebase's own early exits pass: the unit has a parent and a seat
+    // The occupied seat's LIVE flags word, as the rebase itself addresses it (its bit 4 is what the rebase tests;
+    // the same word carries the seat's role: seat_converge_logic.h, RoleFromSeatFlags).
+    bool flagsKnown = false;
+    uint32_t flags = 0;
 };
 
 inline bool ReadGuarded(const Binding& b, const RawMem& mem, uint32_t unit, seat_frame::ReadResult& out)
@@ -239,6 +243,8 @@ inline Live Read(const Binding& b, void* (*halo2Object)(uint32_t), uint32_t unit
     }
     live.kase = seat_frame::Decide(read, skip, &live.frame);
     live.seated = read.gateSeated;
+    live.flagsKnown = read.flagsKnown;
+    live.flags = read.flags;
     if (read.upKnown)
         live.tiltDeg = seat_frame::TiltDeg(read.up);
     return live;

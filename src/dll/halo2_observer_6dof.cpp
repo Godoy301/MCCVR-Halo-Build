@@ -904,6 +904,8 @@ namespace
         std::atomic<uint64_t> seatYawMs{0}, seatPitchMs{0};
         std::atomic<uint32_t> seatWrites{0}, seatHeld{0}, seatWaits{0}, seatStints{0}, seatYawChecks{0},
             seatPitchChecks{0}, seatPitchFails{0};
+        // Seat writes whose BOTH axes carried the converged aim (seat_converge_logic.h).
+        std::atomic<uint32_t> seatConvergedWrites{0};
         // THE SEAT'S STOPS for the reticle (seat_limit_publication.h): after each seat write, the yaw latch's stop and
         // the record's own eased pitch limits, in the record's frame, with the hand's world aim the write was for.
         // Not for an air vehicle (stintAircraft, read once per stint): no rotational limit there (the user).
@@ -3868,9 +3870,9 @@ namespace
     // faces only, invisible surfaces ignored (bits decoded from 0x75B850 itself: bit 0 structure, bit 3
     // objects, bits 4-16 the object types, none set meaning all; bit 23 front faces; bit 26 ignore
     // invisible; the projectile adds bit 20, its own biped exception). It ignores the unit and its held
-    // weapon (the engine skips an ignored object with its children). On foot only: the caller leaves a seated
-    // unit to the stock updater before it gets here. The call joins the collision feature's own callback
-    // count, so the collision teardown cannot free the trampoline under it.
+    // weapon (the engine skips an ignored object with its children). A seated unit keeps the stock updater, but
+    // its seat's ray is traced from the same hook (the note on Halo2SightTrace below). The call joins the
+    // collision feature's own callback count, so the collision teardown cannot free the trampoline under it.
     uint32_t Halo2SightTraceFlags() noexcept
     {
         const uint32_t projectile = g_halo2SightProjectileFlags.load(std::memory_order_acquire);
@@ -3895,12 +3897,19 @@ namespace
     }
 #endif
 
-    void Halo2SightTrace(uint32_t unit) noexcept
+    // IN A SEAT (seat_converge_logic.h; 2026-10-06) the caller hands the vehicle hierarchy's ULTIMATE PARENT
+    // (`seatedRoot`) and the seat's stance key: the same ray, from the seat view's rendered eye, with that root in
+    // the first ignore slot -- what Halo 2's own crosshair test passes (0x8D6A50 at 0x75998F, the second slot -1) --
+    // and Halo 2 skips an ignored object with everything attached to it (0x75C59E): the occupants, their weapons,
+    // a turret. So the ray starts inside our vehicle and still stops on another vehicle or a biped.
+    void Halo2SightTrace(uint32_t unit, uint32_t seatedRoot = UINT32_MAX, uint32_t stance = 0) noexcept
     {
         constexpr GameTitle kTitle = GameTitle::Halo2;
         const uint64_t now = GetTickCount64();
+        const bool seated = stance != 0;
         if (Sight_TraceFaulted(kTitle) ||
             !g_halo2WorldCollision.installed.load(std::memory_order_acquire) ||
+            (seated && seatedRoot == UINT32_MAX) ||
             !Sight_TraceDue(kTitle, Sight_NowMs()))
             return;
         const uint32_t generation = g_generation.load(std::memory_order_acquire);
@@ -3910,16 +3919,20 @@ namespace
         // The carrier the aim itself uses (BuildPublishedControllerAimDirection): with the persistent support
         // grip detached, the independent one-hand pose, or the trace measures a ray nothing aims along.
         if (!generation || !Halo2Observer6Dof_ReadPublishedPose(publication) ||
+            (seated && !Halo2ObserverControllerSnapshotUsable(publication, generation)) ||
             !BuildStableFirstPersonCarriers(
                 publication, generation, rightCarrier, leftCarrier,
                 Halo2SupportCarrierMustDetach(publication)) ||
             !Halo2SightGeometry(publication, rightCarrier, head, dir, eye))
             return;
+        // A range measured on foot never bends a seat's aim, nor a seat's the walk after it (Sight_SetStance).
+        Sight_SetStance(kTitle, stance);
         int32_t weapon = -1;
         const uint64_t weaponAtMs = g_sightWeaponAtMs.load(std::memory_order_acquire);
-        if (weaponAtMs && now >= weaponAtMs && now - weaponAtMs <= 250)
+        if (!seated && weaponAtMs && now >= weaponAtMs && now - weaponAtMs <= 250)
             weapon = static_cast<int32_t>(
                 g_sightWeaponObject.load(std::memory_order_relaxed));
+        const int32_t ignored = seated ? static_cast<int32_t>(seatedRoot) : static_cast<int32_t>(unit);
 #if HALOMCCVR_DEV_DIAGNOSTICS
         // The ray this trace measures, for the engine-ray census (the aim path does not publish one).
         if (g_config.sight_ray_census)
@@ -3954,8 +3967,7 @@ namespace
                 g_halo2WorldCollision.active.load(std::memory_order_acquire))
             {
                 QueryPerformanceCounter(&before);
-                hit = original(flags, start, delta,
-                    static_cast<int32_t>(unit), weapon, &result) != 0;
+                hit = original(flags, start, delta, ignored, weapon, &result) != 0;
                 QueryPerformanceCounter(&after);
                 called = true;
             }
@@ -3980,16 +3992,39 @@ namespace
             const bool objectHit = hit && result.objectIndex != -1;
             const int type = objectHit ? Halo2SightObjectType(result.objectIndex) : -1;
             Sight_NoteTraceHit(kTitle, sight_hit::ClassifyHit(hit, objectHit, type), type,
-                hit ? kSightTraceSkipWu + result.fraction * length : 0.0f, false);
+                hit ? kSightTraceSkipWu + result.fraction * length : 0.0f, seated);
         }
 #endif
     }
+
+    // The ultimate parent of `object` (Halo 2's own walk, 0x8D6A50: the parent handle at +0x14, up to the root),
+    // through the salt-checked accessor. UINT32_MAX when a link does not resolve or the chain does not end.
+    uint32_t Halo2UltimateParent(uint32_t object) noexcept
+    {
+        for (int depth = 0; depth < 8; ++depth)
+        {
+            const auto* data = static_cast<const uint8_t*>(Halo2ObjectFromIndex(object));
+            if (!data)
+                return UINT32_MAX;
+            const uint32_t parent = *reinterpret_cast<const uint32_t*>(data + 0x14);
+            if (parent == UINT32_MAX)
+                return object;
+            object = parent;
+        }
+        return UINT32_MAX;
+    }
+
+    // Seat convergence (halo2_direct_drive.inl, included below): the seat's converged aim and its occupancy read.
+    seat_converge::Why Halo2BuildSeatConvergedAim(uint32_t unit, uint32_t stance, float direction[3],
+                                                  float* point) noexcept;
+    int Halo2DriveOccupancy(uint32_t& parent, int16_t& seat) noexcept;
 
     // The direction the owned on-foot unit aims along. Trace-and-reaim whenever it can resolve: the line
     // from the stock camera through the point the eye-anchored intent ray hits (`converged`). Without a
     // fresh trace, the older fixed-range steer: the stock camera's line through the hand ray at the
     // reticle distance, which is right at that one distance only. `allowConverged` false always takes the
-    // steer: a seat has no seated trace yet, and a range measured on foot 150 ms ago must not bend it.
+    // steer: a SEAT's converged aim is built by Halo2BuildSeatConvergedAim instead (from the seat's own engine
+    // eye and the seat's own trace: halo2_direct_drive.inl), and this is its fallback.
     bool BuildPublishedControllerAimDirection(float direction[3],
         bool* converged = nullptr, bool allowConverged = true) noexcept
     {
@@ -4091,7 +4126,22 @@ namespace
                         std::memory_order_release);
                     // Vehicle/turret input owns native aiming in the seated
                     // path. Keep the complete stock updater for those units.
-                    if (seated) __leave;
+                    if (seated)
+                    {
+                        // ...but the seat's intent ray is traced here, on the simulation thread, like the
+                        // on-foot one (seat_converge_logic.h): the seat drive bends its write through the point.
+                        // Only while the hand aims the seat; the trace itself changes nothing in the unit.
+                        if (Sight_AimEnabled() && Game_Halo2SeatAimActive())
+                        {
+                            const uint32_t parent = *reinterpret_cast<const uint32_t*>(unit + 0x14);
+                            const int16_t seatIndex = *reinterpret_cast<const int16_t*>(
+                                unit + kHalo2UnitParentSeatOffset);
+                            if (parent != UINT32_MAX && seatIndex >= 0)
+                                Halo2SightTrace(objectIndex, Halo2UltimateParent(parent),
+                                    seat_converge::StanceKey(parent, seatIndex));
+                        }
+                        __leave;
+                    }
                 }
                 if (!directVrAim) __leave;
                 Halo2SightTrace(objectIndex);
@@ -4853,7 +4903,8 @@ namespace
                 why ? "the world-collision / melee query's flags, a proxy: the projectile's own did not resolve"
                     : "the engine's own projectile flight query, resolved and value-checked",
                 "on foot it ignores the unit and its held weapon (the engine skips an ignored object with its "
-                "children); a seated unit is not traced");
+                "children); in a seat the vehicle's ultimate parent, as the engine's own crosshair test does "
+                "(everything attached to it is skipped with it)");
         }
         return true;
     }
@@ -6331,6 +6382,14 @@ namespace
         LOG("Halo 2 dual native targeting: queries=%llu restoreRefused=%llu option=%d",
             g_halo2Dual.nativeQueries.exchange(0),g_halo2Dual.targetRestoresRefused.exchange(0),
             g_config.independent_dual_aim?1:0);
+        {
+            const uint64_t seatApplied=g_halo2SeatFireApplied.exchange(0),seatThrough=g_halo2SeatFireThrough.exchange(0),
+                seatSkipped=g_halo2SeatFireSkipped.exchange(0);
+            if(seatApplied||seatThrough||seatSkipped)
+                LOG("Halo 2 seat fire: the engine's crosshair line at a seated fire re-aimed through the traced point "
+                    "%llu, already through it or geometrically refused (SHOT REAIM names which) %llu, left as the game "
+                    "built it (the seat's aim was not converged) %llu",seatApplied,seatThrough,seatSkipped);
+        }
         LOG("Halo 2 barrel trajectory: enabled=%d fault=%d applied=%llu refused=%llu option=%d",
             g_halo2Muzzle.enabled.load()?1:0,g_halo2Muzzle.faulted.load()?1:0,
             g_halo2Muzzle.applied.exchange(0),g_halo2Muzzle.refused.exchange(0),g_config.gun_barrel_aim?1:0);
