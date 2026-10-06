@@ -137,6 +137,20 @@ struct RoomscaleFollow
         commanded=settling=following=false; velocity[0]=velocity[1]=0; runProgress=windowProgress=0;
     }
 
+    // THE VIEW RECENTER MOVED THE REFERENCE (roomscale_recenter_logic.h): the play area slid toward the
+    // head, on purpose, leaving `keep` of the head-to-reference offset. That is not a recenter the follow
+    // should notice (it would end the follow in progress), and not travel (the body did not move): it is
+    // simply the new truth. Everything measured against the old offset shrinks with it -- the error, the
+    // neutral lean, and the error a stand-down is waiting to see grow from -- so what is left is still
+    // owed, in the same direction, and nothing is walked back or counted twice. Call it after Update,
+    // with the reference as it now stands.
+    void AcceptViewShift(const float reference[3],float keep) noexcept
+    {
+        expectedReference[0]=reference[0]; expectedReference[1]=reference[2];
+        initialLean[0]*=keep; initialLean[1]*=keep;
+        error[0]*=keep; error[1]*=keep; stalledAt*=keep;
+    }
+
     bool Update(uint32_t epoch,uint64_t now,bool enabled,bool manualMove,
         const float position[3],const float head[3],float reference[3],
         float hx,float hz,float wx,float wy,float scale,float& moveX,float& moveY) noexcept
@@ -400,6 +414,17 @@ struct RoomscaleFollowOriginal
         // packet. Retain the tracked goal, but retire that movement receipt.
         commanded=settling=false;velocity[0]=velocity[1]=0;
         manualPaused=true;manualQuietSince=now;
+    }
+
+    // Not part of the law as it shipped: only the view recenter calls this, and it is off by default.
+    // This law re-captures its neutral lean whenever it sees the reference change, which would turn
+    // whatever the recenter had not closed yet into "under me" for good. So the recenter hands it the
+    // moved reference and shrinks the lean by the same share as the offset (RoomscaleFollow's twin).
+    void AcceptViewShift(const float reference[3],float keep) noexcept
+    {
+        expectedReference[0]=reference[0]; expectedReference[1]=reference[2];
+        initialLean[0]*=keep; initialLean[1]*=keep;
+        error[0]*=keep; error[1]*=keep;
     }
 
     bool Update(uint32_t epoch,uint64_t now,bool enabled,bool manualMove,
