@@ -1322,7 +1322,7 @@ namespace
         LOG("First-person camera %s: director camera record bound: output user 0 at engine TLS +0x%X (index at "
             "+0x%llX), perspective +0x%X, mode +0x%X (set_camera_mode's store +0x%llX calls the first-person weapon "
             "gate +0x%llX and both agree); mode 3 from perspective 0 is first person, with or without a weapon",
-            record.blockOffset, static_cast<unsigned long long>(tlsRva), record.perspectiveOffset,
+            title, record.blockOffset, static_cast<unsigned long long>(tlsRva), record.perspectiveOffset,
             record.modeOffset, static_cast<unsigned long long>(store - base),
             static_cast<unsigned long long>(gate - base));
 
