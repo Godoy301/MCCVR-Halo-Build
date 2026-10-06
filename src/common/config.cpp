@@ -15,6 +15,7 @@
 #include "weapon_interaction_logic.h"
 #include "flashlight_input.h"
 #include "dlss_logic.h"
+#include "roomscale_recenter_logic.h"
 #include "log.h"
 
 Config g_config;
@@ -1350,6 +1351,27 @@ void ConfigLoad(const wchar_t* path)
             g_config.roomscale_follow_law = atoi(val) != 0 ? 1 : 0;
             continue;
         }
+        if (!strcmp(key, "roomscale_recenter_jump")) { g_config.roomscale_recenter_jump = atoi(val) != 0; continue; }
+        if (!strcmp(key, "roomscale_recenter_jump_s"))
+        {
+            g_config.roomscale_recenter_jump_s = roomscale_recenter::ClampSeconds(
+                static_cast<float>(atof(val)), Config{}.roomscale_recenter_jump_s);
+            continue;
+        }
+        if (!strcmp(key, "roomscale_recenter_move_start")) { g_config.roomscale_recenter_move_start = atoi(val) != 0; continue; }
+        if (!strcmp(key, "roomscale_recenter_move_start_s"))
+        {
+            g_config.roomscale_recenter_move_start_s = roomscale_recenter::ClampSeconds(
+                static_cast<float>(atof(val)), Config{}.roomscale_recenter_move_start_s);
+            continue;
+        }
+        if (!strcmp(key, "roomscale_recenter_moving")) { g_config.roomscale_recenter_moving = atoi(val) != 0; continue; }
+        if (!strcmp(key, "roomscale_recenter_moving_speed"))
+        {
+            g_config.roomscale_recenter_moving_speed = roomscale_recenter::ClampSpeed(
+                static_cast<float>(atof(val)), Config{}.roomscale_recenter_moving_speed);
+            continue;
+        }
         if (!strcmp(key, "experimental_hand_alignment"))
         {
             g_config.experimental_hand_alignment = atoi(val) != 0;
@@ -2040,6 +2062,29 @@ void ConfigSave()
     fprintf(f, "# 0 = threshold (walks from 1.5 cm, brakes by reversing), exactly as it shipped in\n");
     fprintf(f, "# Alpha 0.6.0. (default %d)\n", d.roomscale_follow_law);
     fprintf(f, "roomscale_follow_law = %d\n\n", g_config.roomscale_follow_law);
+    fprintf(f, "# Roomscale view recenter. While you are in the air or moving with the stick, your\n");
+    fprintf(f, "# character cannot step under your head, so your view sits away from where the game\n");
+    fprintf(f, "# aims and shoots from. These slide the view back over the character while that motion\n");
+    fprintf(f, "# hides it: position only, never a turn, never your height. Whatever is left when you\n");
+    fprintf(f, "# stop, your legs walk to you as before. They need roomscale_movement = 1.\n");
+    fprintf(f, "# On a jump: a quick slide when the jump leaves the ground. (default %d)\n",
+        d.roomscale_recenter_jump ? 1 : 0);
+    fprintf(f, "roomscale_recenter_jump = %d\n", g_config.roomscale_recenter_jump ? 1 : 0);
+    fprintf(f, "# How long that slide takes, in seconds. (default %.2f, range 0.05 to 1.00)\n",
+        d.roomscale_recenter_jump_s);
+    fprintf(f, "roomscale_recenter_jump_s = %.2f\n", g_config.roomscale_recenter_jump_s);
+    fprintf(f, "# When you start moving: the same quick slide as the stick is first pushed.\n");
+    fprintf(f, "# (default %d)\n", d.roomscale_recenter_move_start ? 1 : 0);
+    fprintf(f, "roomscale_recenter_move_start = %d\n", g_config.roomscale_recenter_move_start ? 1 : 0);
+    fprintf(f, "# How long that slide takes, in seconds. (default %.2f, range 0.05 to 1.00)\n",
+        d.roomscale_recenter_move_start_s);
+    fprintf(f, "roomscale_recenter_move_start_s = %.2f\n", g_config.roomscale_recenter_move_start_s);
+    fprintf(f, "# While moving: a steady slide for as long as the stick is held. It need not finish.\n");
+    fprintf(f, "# (default %d)\n", d.roomscale_recenter_moving ? 1 : 0);
+    fprintf(f, "roomscale_recenter_moving = %d\n", g_config.roomscale_recenter_moving ? 1 : 0);
+    fprintf(f, "# Its speed, in metres of offset closed per second. (default %.2f, range 0.10 to 3.00)\n",
+        d.roomscale_recenter_moving_speed);
+    fprintf(f, "roomscale_recenter_moving_speed = %.2f\n\n", g_config.roomscale_recenter_moving_speed);
     fprintf(f, "# Degrees per snap turn.\n");
     fprintf(f, "# (default %.0f, range 5 to 90)\n", d.turn_snap_deg);
     fprintf(f, "turn_snap_deg = %.0f\n\n", g_config.turn_snap_deg);

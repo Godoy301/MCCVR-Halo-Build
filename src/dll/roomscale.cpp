@@ -1,6 +1,7 @@
 #include "roomscale.h"
 #include "vr.h"
 #include "../common/roomscale_logic.h"
+#include "../common/roomscale_recenter_logic.h"
 #include "../common/physical_running_logic.h"
 #include "../common/config.h"
 #include "../common/log.h"
@@ -40,6 +41,38 @@ FollowSample followTrace[kFollowTrace]{};
 std::atomic<unsigned> followHead{0};
 uint64_t followSampledAt = 0;
 #endif
+// THE VIEW RECENTER (roomscale_recenter_logic.h). The XInput hook says when the jump action is down; the
+// camera hook owns everything else. Counters are for the report: micrometres closed per mode (jump,
+// start of movement, while moving), quick blends begun, takeoffs the jump witness saw, the head-to-camera
+// offset now, and wanted recenters refused, by reason.
+std::atomic<uint64_t> jumpHeldAt{0};
+std::atomic<uint64_t> recenterClosedUm[3]{}, recenterBlends[2]{}, recenterTakeoffs{0}, recenterOffsetMm{0};
+std::atomic<uint64_t> recenterRefused[size_t(roomscale_recenter::Refusal::Count)]{};
+// The blend is integrated at frame rate, and GetTickCount64 ticks in 15.6 ms steps: at 90 Hz that is
+// one or two frames with no time and then a frame with two frames' worth, which would show as the
+// world stepping during the slide. A test build supplies its own clock.
+#ifndef ROOMSCALE_NOW_US
+uint64_t RoomscaleNowUs() noexcept
+{
+    static const int64_t frequency=[]{ LARGE_INTEGER f{}; QueryPerformanceFrequency(&f); return f.QuadPart>0 ? f.QuadPart : 1; }();
+    LARGE_INTEGER now{};
+    QueryPerformanceCounter(&now);
+    return uint64_t(now.QuadPart/frequency)*1'000'000ull+uint64_t(now.QuadPart%frequency)*1'000'000ull/uint64_t(frequency);
+}
+#define ROOMSCALE_NOW_US RoomscaleNowUs
+#endif
+roomscale_recenter::Settings RecenterSettings() noexcept
+{
+    roomscale_recenter::Settings settings{};
+    if (!kEnableRoomscaleBodyFollow || !g_config.roomscale_movement) return settings;
+    settings.jump=g_config.roomscale_recenter_jump;
+    settings.jumpSeconds=g_config.roomscale_recenter_jump_s;
+    settings.moveStart=g_config.roomscale_recenter_move_start;
+    settings.moveStartSeconds=g_config.roomscale_recenter_move_start_s;
+    settings.moving=g_config.roomscale_recenter_moving;
+    settings.movingSpeed=g_config.roomscale_recenter_moving_speed;
+    return settings;
+}
 std::atomic<uint32_t> runVersion{0},runGeneration{0},runValue{0};
 std::atomic<int> runTitle{0};
 std::atomic<uint64_t> runAt{0};
@@ -83,6 +116,13 @@ void Roomscale_Input(bool allowed,float x,float y) noexcept
     inputAt.store(now,std::memory_order_release);
 }
 
+// The jump action as the game is being fed it on this poll. Only a held state is stamped: a poll path
+// that never reports (a menu, the exclusive route) simply lets the stamp go stale.
+void Roomscale_JumpInput(bool held) noexcept
+{
+    if (held) jumpHeldAt.store(GetTickCount64(),std::memory_order_release);
+}
+
 bool Roomscale_Move(float& x,float& y) noexcept
 {
     if (!g_config.roomscale_movement || !VR_RoomscaleTrackingFresh() || !std::isfinite(x) || !std::isfinite(y) ||
@@ -124,6 +164,7 @@ void Roomscale_Camera(GameTitle title,bool allowed,const float body[3],
     // so each begins from where the player stands.
     static RoomscaleFollow state;
     static RoomscaleFollowOriginal original;
+    static roomscale_recenter::ViewRecenter recenter;
     static int priorLaw=-1;
     const int law=g_config.roomscale_follow_law ? 1 : 0;
     static GameTitle prior=GameTitle::None;
@@ -132,12 +173,12 @@ void Roomscale_Camera(GameTitle title,bool allowed,const float body[3],
     const auto history=historyEpoch.load(std::memory_order_acquire);
     const auto now=GetTickCount64(),at=inputAt.load(std::memory_order_acquire);
     if (law!=priorLaw)
-    { state={}; original={}; priorLaw=law; lawInEffect.store(law,std::memory_order_relaxed); }
+    { state={}; original={}; recenter.Reset(); priorLaw=law; lawInEffect.store(law,std::memory_order_relaxed); }
     // A different title starts over. An admission change (priorHistoryEpoch) only ends the follow in
     // progress: the distance the player is owed survives it (RoomscaleFollow::Rebase). The original
     // law started over there too, as it shipped.
     if (prior!=title)
-    { state={}; original={}; prior=title; priorHistoryEpoch=history; }
+    { state={}; original={}; recenter.Reset(); prior=title; priorHistoryEpoch=history; }
     else if (priorHistoryEpoch!=history)
     {
         if (law) state.Rebase(); else original={};
@@ -246,6 +287,43 @@ void Roomscale_Camera(GameTitle title,bool allowed,const float body[3],
 #endif
         }
     }
+    // THE VIEW RECENTER, after the follow has had this frame: its own handling of the reference (a new
+    // level's re-seat, a tracking jump, observed travel) is done, so the offset left is the real one. A
+    // shift moves the title's reference (the caller composes this frame's view, hands and reticle from
+    // it) on its two horizontal axes only, and the follow is handed the result as the new truth. Refused
+    // whenever the follow's own admission fails: a seat, a cinematic, third person, death, a menu, an
+    // untracked head.
+    {
+        using roomscale_recenter::Refusal;
+        const auto settings=RecenterSettings();
+        const Refusal blocked=!allowed ? Refusal::NotOnFoot : !tracking ? Refusal::Untracked :
+            !input ? Refusal::NoInput : !valid ? Refusal::NoFollow : Refusal::None;
+        const auto jumpAt=jumpHeldAt.load(std::memory_order_acquire);
+        const bool jumpHeld=jumpAt && now>=jumpAt && now-jumpAt<=100;
+        const auto shift=recenter.Update(ROOMSCALE_NOW_US(),settings,blocked,manual,jumpHeld,
+            scale>0 ? body[2]/scale : 0.0f,head[0]-reference[0],head[2]-reference[2]);
+        if (shift.refused!=Refusal::None)
+            recenterRefused[size_t(shift.refused)].fetch_add(1,std::memory_order_relaxed);
+        if (shift.takeoff) recenterTakeoffs.fetch_add(1,std::memory_order_relaxed);
+        if (shift.started==roomscale_recenter::Mode::Jump) recenterBlends[0].fetch_add(1,std::memory_order_relaxed);
+        else if (shift.started==roomscale_recenter::Mode::MoveStart) recenterBlends[1].fetch_add(1,std::memory_order_relaxed);
+        if (shift.dx!=0 || shift.dz!=0)
+        {
+            reference[0]+=shift.dx; reference[2]+=shift.dz;
+            if (law) state.AcceptViewShift(reference,shift.keep);
+            else original.AcceptViewShift(reference,shift.keep);
+            const size_t slot=shift.mode==roomscale_recenter::Mode::Jump ? 0 :
+                shift.mode==roomscale_recenter::Mode::MoveStart ? 1 : 2;
+            recenterClosedUm[slot].fetch_add(uint64_t(std::hypot(shift.dx,shift.dz)*1'000'000.0f+0.5f),
+                std::memory_order_relaxed);
+        }
+        if (settings.Any() && blocked==Refusal::None)
+        {
+            const float offset=std::hypot(head[0]-reference[0],head[2]-reference[2]);
+            if (std::isfinite(offset))
+                recenterOffsetMm.store(uint64_t(offset*1000.0f+0.5f),std::memory_order_relaxed);
+        }
+    }
     version.fetch_add(1,std::memory_order_acq_rel);
     command.store(uint64_t(std::bit_cast<uint32_t>(x))|
         (uint64_t(std::bit_cast<uint32_t>(y))<<32),std::memory_order_relaxed);
@@ -285,6 +363,27 @@ void Roomscale_Report() noexcept
                 : "B, threshold (1.5 cm, reverse brake; as it shipped in Alpha 0.6.0)", law);
         previousLaw=law;
     }
+    // One line whenever the recenter options that are ON change (release-safe; nothing while all are off
+    // from the start). The values are logged as they stood at that moment; a slider moved later is in
+    // the cfg.
+    static unsigned previousRecenter=0;
+    const auto recenterSettings=RecenterSettings();
+    const unsigned recenterNow=(recenterSettings.jump ? 1u : 0u)|(recenterSettings.moveStart ? 2u : 0u)|
+        (recenterSettings.moving ? 4u : 0u);
+    if (recenterNow!=previousRecenter)
+    {
+        if (!recenterNow) LOG("Roomscale view recenter OFF: the view stays on your head; the body follow alone closes the offset");
+        else LOG("Roomscale view recenter ON: on a jump %s (%.2f s), when you start moving %s (%.2f s), "
+            "while moving %s (%.2f m/s). The play area slides so the view returns over the character: "
+            "position only, horizontal, never a turn or your height; the body follow walks whatever is left",
+            recenterSettings.jump ? "on" : "off",
+            double(roomscale_recenter::ClampSeconds(recenterSettings.jumpSeconds,0.2f)),
+            recenterSettings.moveStart ? "on" : "off",
+            double(roomscale_recenter::ClampSeconds(recenterSettings.moveStartSeconds,0.2f)),
+            recenterSettings.moving ? "on" : "off",
+            double(roomscale_recenter::ClampSpeed(recenterSettings.movingSpeed,0.5f)));
+        previousRecenter=recenterNow;
+    }
     if (now-last<2000) return;
     last=now;
     const auto good=admitted.exchange(0),bad=refused.exchange(0),moves=consumed.exchange(0);
@@ -310,6 +409,36 @@ void Roomscale_Report() noexcept
             "%llu move(s) while probing it again were the game moving him, not counted as walking",
             (unsigned long long)stoodDown,(unsigned long long)RoomscaleFollow::kNoResponseMs,
             (unsigned long long)notOurs);
+    // The view recenter's two seconds. Counted in every build; printed in dev builds, and only when
+    // something happened.
+    {
+        using roomscale_recenter::Refusal;
+        const auto closedJump=recenterClosedUm[0].exchange(0), closedStart=recenterClosedUm[1].exchange(0),
+            closedMoving=recenterClosedUm[2].exchange(0);
+        const auto blendsJump=recenterBlends[0].exchange(0), blendsStart=recenterBlends[1].exchange(0);
+        const auto takeoffs=recenterTakeoffs.exchange(0);
+        const auto notOnFoot=recenterRefused[size_t(Refusal::NotOnFoot)].exchange(0),
+            untracked=recenterRefused[size_t(Refusal::Untracked)].exchange(0),
+            noInput=recenterRefused[size_t(Refusal::NoInput)].exchange(0),
+            noFollow=recenterRefused[size_t(Refusal::NoFollow)].exchange(0);
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        if (enabled && recenterNow && (closedJump || closedStart || closedMoving || blendsJump || blendsStart ||
+            takeoffs || notOnFoot || untracked || noInput || noFollow))
+            LOG("Roomscale recenter: closed jump=%llu mm (%llu blend(s), %llu takeoff(s) seen) "
+                "move-start=%llu mm (%llu blend(s)) moving=%llu mm; head-to-camera offset now=%llu mm; "
+                "refused: not on foot/first person=%llu untracked=%llu no gameplay input=%llu follow=%llu",
+                (unsigned long long)((closedJump+500)/1000),(unsigned long long)blendsJump,
+                (unsigned long long)takeoffs,
+                (unsigned long long)((closedStart+500)/1000),(unsigned long long)blendsStart,
+                (unsigned long long)((closedMoving+500)/1000),
+                (unsigned long long)recenterOffsetMm.load(std::memory_order_relaxed),
+                (unsigned long long)notOnFoot,(unsigned long long)untracked,
+                (unsigned long long)noInput,(unsigned long long)noFollow);
+#else
+        (void)closedJump; (void)closedStart; (void)closedMoving; (void)blendsJump; (void)blendsStart;
+        (void)takeoffs; (void)notOnFoot; (void)untracked; (void)noInput; (void)noFollow;
+#endif
+    }
 #if HALOMCCVR_DEV_DIAGNOSTICS
     static unsigned printed=0;
     const unsigned head=followHead.load(std::memory_order_acquire);

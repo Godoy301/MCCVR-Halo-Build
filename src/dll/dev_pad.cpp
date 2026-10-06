@@ -12,6 +12,7 @@
 #if HALOMCCVR_DEV_DIAGNOSTICS
 #include "../common/dev_pad_script.h"
 #include "../common/config.h"
+#include "../common/roomscale_recenter_logic.h"
 #include "../common/log.h"
 
 #include <algorithm>
@@ -89,6 +90,16 @@ bool SetLive(const std::string& name, int value)
     else if (name == "aim_direct_drive") { g_config.aim_direct_drive = value ? 1 : 0; Config_ApplyAimModes(); }
     else if (name == "roomscale_follow_law") g_config.roomscale_follow_law = value ? 1 : 0;
     else if (name == "roomscale_movement") g_config.roomscale_movement = value != 0;
+    // The view recenter: the three switches, and its tunables as whole numbers (ms, cm/s).
+    else if (name == "roomscale_recenter_jump") g_config.roomscale_recenter_jump = value != 0;
+    else if (name == "roomscale_recenter_move_start") g_config.roomscale_recenter_move_start = value != 0;
+    else if (name == "roomscale_recenter_moving") g_config.roomscale_recenter_moving = value != 0;
+    else if (name == "roomscale_recenter_jump_ms")
+        g_config.roomscale_recenter_jump_s = roomscale_recenter::ClampSeconds(float(value) * 0.001f, 0.2f);
+    else if (name == "roomscale_recenter_move_start_ms")
+        g_config.roomscale_recenter_move_start_s = roomscale_recenter::ClampSeconds(float(value) * 0.001f, 0.2f);
+    else if (name == "roomscale_recenter_moving_speed_cm_s")
+        g_config.roomscale_recenter_moving_speed = roomscale_recenter::ClampSpeed(float(value) * 0.01f, 0.5f);
     else if (name == "physical_crouch") g_config.physical_crouch = value != 0;
     else if (name == "scope_converge") g_config.scope_converge = value ? 1 : 0;
     else if (name == "seat_direct_drive") g_config.seat_direct_drive = value ? 1 : 0;

@@ -527,6 +527,7 @@ if(BUILD_TESTING)
     add_executable(halomccvr_core_tests
         tests/core_tests.cpp
         tests/roomscale_input_tests.cpp
+        tests/roomscale_recenter_tests.cpp
         src/common/input_logic.cpp
         src/common/scope_logic.cpp
         src/common/title_registry.cpp

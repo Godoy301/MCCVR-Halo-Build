@@ -18,6 +18,8 @@ uint32_t testGeneration=1;
 bool testTracking=true;
 VrContactTrackingSnapshot testRunTracking{};
 uint64_t RoomscaleTestNow() noexcept { return testNow; }
+// The view recenter's frame clock (microseconds), on the same fake time.
+uint64_t RoomscaleTestNowUs() noexcept { return testNow*1000; }
 }
 GameTitle TitleAdapter_GetActiveTitle() { return testTitle; }
 RuntimeMode TitleAdapter_GetRuntimeMode() {return testMode;}
@@ -29,6 +31,7 @@ bool VR_GetContactTrackingSnapshot(VrContactTrackingSnapshot& snapshot)
 
 // Windows headers were already included: replace call sites, not WinAPI declarations.
 #define GetTickCount64 RoomscaleTestNow
+#define ROOMSCALE_NOW_US RoomscaleTestNowUs
 #include "../src/dll/roomscale.cpp"
 #undef GetTickCount64
 
@@ -110,6 +113,88 @@ int RunRoomscaleInputTests()
              RuntimeMode::Cutscene,RuntimeMode::Vehicle,RuntimeMode::Turret,RuntimeMode::Dead,
              RuntimeMode::Unsupported})
             check(!RoomscaleGameplayEligible(title,mode),"roomscale never admits non-gameplay modes");
+    }
+    // THE VIEW RECENTER, through the real camera hook: the title's reference slides toward the head on
+    // its two horizontal axes only, in every title, and only when an option is on and roomscale admits.
+    for (GameTitle title : {GameTitle::HaloCE,GameTitle::Halo2,GameTitle::Halo3,GameTitle::Halo3ODST,
+                           GameTitle::HaloReach,GameTitle::Halo4})
+    for (int law : {1,0})
+    {
+        const int savedLaw=g_config.roomscale_follow_law;
+        g_config.roomscale_follow_law=law;
+        testTitle=title; ++testGeneration; testNow+=1000; testTracking=true;
+        const float q[4]{0,0,0,1}, forward[3]{1,0,0};
+        const float scale=0.328084f;
+        float body[3]{0,0,0.6f},head[3]{0,1.7f,0},ref[3]{0,1.62f,0};
+        float stickY=0;
+        const auto frame=[&](bool native=true) {
+            testNow+=11; Roomscale_Input(true,0,stickY);
+            Roomscale_Camera(title,native,body,head,q,forward,ref,scale);
+        };
+        const auto offset=[&]{ return std::hypot(head[0]-ref[0],head[2]-ref[2]); };
+        Roomscale_Input(false,0,0);
+        frame(); frame();
+        // Stick travel with the head 0.3 m off to the side and every option off: the reference stays.
+        head[0]=0.3f; head[2]=0; stickY=0.75f;
+        for (int i=0;i<30;++i) { body[0]+=0.02f*scale; frame(); }
+        check(std::fabs(offset()-0.3f)<1e-5f && ref[1]==1.62f,
+            "recenter off (the default): stick travel leaves the head-to-camera offset alone");
+        // While moving, 0.5 m/s: about 0.1 m in 0.2 s.
+        g_config.roomscale_recenter_moving=true; g_config.roomscale_recenter_moving_speed=0.5f;
+        const float before=offset();
+        for (int i=0;i<18;++i) { body[0]+=0.02f*scale; frame(); }
+        check(std::fabs((before-offset())-0.5f*0.198f)<0.012f,
+            "while moving: the camera hook slides the reference toward the head at the set speed");
+        check(ref[1]==1.62f && std::fabs(ref[2])<1e-6f,
+            "the slide moves the reference along the offset only: not its height, not the other axis");
+        // Standing still afterwards, what the slide left is still owed: the follow asks the body to walk it
+        // (under the threshold law too, which would otherwise take the moved reference for a recenter).
+        stickY=0; for (int i=0;i<20;++i) frame();
+        { float owedX=0,owedY=0;
+          check(Roomscale_Move(owedX,owedY) && std::hypot(owedX,owedY)>0.05f && std::fabs(offset()-(before-0.5f*0.198f))<0.012f,
+              "after the slide, standing still, the legs are still asked to walk what is left (both follow laws)"); }
+        stickY=0.75f; frame();
+        // Not admitted (a seat, a cinematic, third person): nothing moves, and it is counted.
+        const float held=offset();
+        const auto refusedBefore=recenterRefused[size_t(roomscale_recenter::Refusal::NotOnFoot)].load();
+        stickY=0; frame(false); stickY=0.75f;
+        for (int i=0;i<18;++i) frame(false);
+        check(offset()==held && recenterRefused[size_t(roomscale_recenter::Refusal::NotOnFoot)].load()==refusedBefore+1,
+            "not on foot in first person: the recenter refuses, once per stick hold, and the reference stays");
+        // An untracked head refuses too.
+        testTracking=false; stickY=0; frame(); stickY=0.75f;
+        const auto untrackedBefore=recenterRefused[size_t(roomscale_recenter::Refusal::Untracked)].load();
+        for (int i=0;i<10;++i) frame();
+        check(offset()==held && recenterRefused[size_t(roomscale_recenter::Refusal::Untracked)].load()==untrackedBefore+1,
+            "an untracked head: the recenter refuses and the reference stays");
+        testTracking=true;
+        // The start-of-movement blend: 0.2 s to zero from the push.
+        g_config.roomscale_recenter_moving=false;
+        g_config.roomscale_recenter_move_start=true; g_config.roomscale_recenter_move_start_s=0.2f;
+        stickY=0; for (int i=0;i<40;++i) frame();
+        const float left=offset();
+        // Standing still for 0.44 s the follow has been asking the body to come; this fixture's body
+        // does not move, so the offset is what it was.
+        check(std::fabs(left-held)<1e-5f, "fixture: the offset waits while the body does not move");
+        stickY=0.75f;
+        for (int i=0;i<21;++i) { body[0]+=0.02f*scale; frame(); }
+        check(offset()<1e-4f && ref[1]==1.62f,
+            "start of movement: one quick blend brings the reference under the head, height untouched");
+        // The jump blend: the jump action, then the character's eye rising.
+        g_config.roomscale_recenter_move_start=false;
+        g_config.roomscale_recenter_jump=true; g_config.roomscale_recenter_jump_s=0.15f;
+        stickY=0; for (int i=0;i<40;++i) frame();
+        head[0]+=0.02f; head[2]-=0.25f;      // a step forward inside the follow's reach
+        for (int i=0;i<3;++i) frame();
+        const float grounded=offset();
+        check(grounded>0.2f, "fixture: displaced from the character before the jump");
+        for (int i=0;i<10;++i) { body[2]+=0.05f*scale; frame(); }
+        check(offset()==grounded, "rising without the jump action is not a jump: no recenter");
+        const auto takeoffsBefore=recenterTakeoffs.load();
+        for (int i=0;i<24;++i) { Roomscale_JumpInput(i<6); body[2]+=0.05f*scale; frame(); }
+        check(recenterTakeoffs.load()==takeoffsBefore+1 && offset()<1e-4f && ref[1]==1.62f,
+            "a jump: the action and the rising eye start the blend, which lands the reference under the head");
+        g_config.roomscale_recenter_jump=false; g_config.roomscale_follow_law=savedLaw;
     }
     // A stick pulse can begin and end between two native camera callbacks.
     // Its cancellation must retire the old packet even though the camera never

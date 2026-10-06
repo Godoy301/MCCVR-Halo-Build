@@ -25,6 +25,7 @@
 #include "menu_style.h"
 #include "../common/log.h"
 #include "../common/config.h"
+#include "../common/roomscale_recenter_logic.h"
 #include "../common/weapon_interaction_logic.h"
 #include "../common/vr_action_passthrough.h"
 #include "../common/halo2_vehicle_identity.h"
@@ -770,6 +771,29 @@ namespace
                   "and a distance you walked away during a tracking gap is still caught up."
                 : "Threshold: walks from 1.5 cm and brakes by reversing. Kept as it shipped in Alpha 0.6.0, "
                   "for comparison.");
+            // The view recenter (roomscale_recenter_logic.h): three independent options, all off by default.
+            ImGui::Spacing();
+            ImGui::Text("Bring the view back over your character (steadier aim):");
+            changed |= ImGui::Checkbox("On a jump", &g_config.roomscale_recenter_jump);
+            if (g_config.roomscale_recenter_jump)
+                changed |= vr_menu::SliderFloat("Jump slide time", &g_config.roomscale_recenter_jump_s,
+                    roomscale_recenter::kMinSeconds, roomscale_recenter::kMaxSeconds, "%.2f s");
+            changed |= ImGui::Checkbox("When you start moving with the stick", &g_config.roomscale_recenter_move_start);
+            if (g_config.roomscale_recenter_move_start)
+                changed |= vr_menu::SliderFloat("Start-moving slide time", &g_config.roomscale_recenter_move_start_s,
+                    roomscale_recenter::kMinSeconds, roomscale_recenter::kMaxSeconds, "%.2f s");
+            changed |= ImGui::Checkbox("Gradually while moving with the stick", &g_config.roomscale_recenter_moving);
+            if (g_config.roomscale_recenter_moving)
+                changed |= vr_menu::SliderFloat("Slide speed while moving", &g_config.roomscale_recenter_moving_speed,
+                    roomscale_recenter::kMinSpeed, roomscale_recenter::kMaxSpeed, "%.2f m/s");
+            ImGui::TextDisabled(
+                "In the air, and while the stick moves you, your character cannot step under your head,\n"
+                "so your view sits away from where the game aims and shoots from. These slide the view back\n"
+                "over the character while that motion hides it. They never turn the view or change your\n"
+                "height, and your hands and reticle move with it.\n"
+                "On a jump / when you start moving: one quick slide, over the time you set.\n"
+                "Gradually while moving: a steady slide at the speed you set, for as long as the stick is\n"
+                "held. It need not finish: once you stand still, your legs walk to you as before.");
         }
         // Neither the checkbox nor the depth re-samples the standing height: it is learned all the time,
         // and only the Calibrate button takes the player's current height as their own word.
