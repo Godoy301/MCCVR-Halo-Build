@@ -106,6 +106,11 @@ bool SetLive(const std::string& name, int value)
     else if (name == "reach_vehicle_aim") g_config.reach_vehicle_aim = value < 0 ? 0 : (value > 2 ? 2 : value);
     else if (name == "shots_from_muzzle") g_config.shots_from_muzzle = value != 0;
     else if (name == "gun_barrel_aim") g_config.gun_barrel_aim = value != 0;
+    // The first-person ladder's fault bits (config.h): the ladders read the value at every evaluation, so
+    // bits 0-2 take effect on the next camera frame and one launch can walk 0 -> 1 -> 3 -> 5 -> 0. Bit 3
+    // needs a level the camera rung has not been proven in (the value agreement never withdraws a proven
+    // rung), so it still wants the key set before the level loads.
+    else if (name == "first_person_rung_fault") g_config.first_person_rung_fault = value & 0xF;
     else return false;
     return true;
 }
