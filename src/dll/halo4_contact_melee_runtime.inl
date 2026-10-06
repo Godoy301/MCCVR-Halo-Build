@@ -59,6 +59,26 @@ const uint8_t* Halo4ContactObject(uint32_t handle,bool requireBiped=false)
 
 const uint8_t* Halo4ContactBiped(uint32_t handle) { return Halo4ContactObject(handle,true); }
 
+// A live object's type: the header's kind byte at entry +4, the byte PhysicsRayCast's own object predicate tests
+// (halo4 0x1BFDB2: 0 biped, 1 vehicle), read only after the native accessor's full salt check passed. For the
+// sight trace's hit class. -1: a stale handle. Callers guard it (the simulation thread's __try).
+int Halo4SightObjectType(uint32_t handle)
+{
+    if(!Halo4ContactObject(handle)) return -1;
+    auto** slots=reinterpret_cast<const uint8_t**>(__readgsqword(0x58));
+    const auto* table=*reinterpret_cast<const uint8_t* const*>(slots[*g_halo4EngineTlsIndex]+0x18);
+    const auto* entries=*reinterpret_cast<const uint8_t* const*>(table+0x50);
+    return entries[(handle&0xFFFF)*0x18+4];
+}
+
+// The same, behind its own guard (kept free of C++ objects so __try is legal).
+int Halo4SightObjectTypeGuarded(int32_t object)
+{
+    if(object==-1) return -1;
+    __try { return Halo4SightObjectType(static_cast<uint32_t>(object)); }
+    __except(EXCEPTION_EXECUTE_HANDLER) { return -1; }
+}
+
 // Halo4RedirectContactRay, Halo4ContactDamageDetour (its damage forward goes through
 // CallNativeWithSpareSlots, see Halo4ContactDamageFn) and Halo4ContactBackend, shared with the native fixture.
 #include "halo4_contact_melee_backend.inl"
@@ -274,6 +294,16 @@ void Halo4SightTraceTick(uint32_t unit,void* instance)
     const bool hit=returned && std::isfinite(output.fraction) && output.fraction>=0.0f && output.fraction<=1.0f;
     Sight_PublishTrace(kTitle,generation,hit,hit ? kSightTraceSkipWu+output.fraction*length : 0.0f,
         static_cast<uint64_t>(after.QuadPart-before.QuadPart));
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    // SIGHT HITS (dev): what the ray stopped on, by class (an object hit is result type 4, its handle at +0x28, as
+    // the contact backend reads it) -- after the cost was taken, so the trace's time is its own.
+    {
+        const bool objectHit=hit && output.type==4 && output.objectIndex!=-1;
+        const int type=objectHit ? Halo4SightObjectTypeGuarded(output.objectIndex) : -1;
+        Sight_NoteTraceHit(kTitle,sight_hit::ClassifyHit(hit,objectHit,type),type,
+            hit ? kSightTraceSkipWu+output.fraction*length : 0.0f,false);
+    }
+#endif
 #if HALOMCCVR_DEV_DIAGNOSTICS
     // [assess-only begin]
     if(assessFaulted)
@@ -516,6 +546,15 @@ bool InstallHalo4ContactMelee(uintptr_t base,size_t size,uint32_t generation)
                 "0x%llX (global +0x2FFB098, pinned from its own call site; the shot's own flags did not resolve: "
                 "%s); on foot, the unit ignored", meleeFlags ? "armed" : "NOT armed",
                 static_cast<unsigned long long>(meleeFlags),shotWhy);
+        // What those flags let the ray stop on, decoded with Halo 4's own layout (sight_hit_class_logic.h).
+        if(meleeFlags)
+            Sight_AnnounceTraceQuery(GameTitle::Halo4,sight_hit::Engine::Halo4,shotWhy ? meleeFlags : shotFlags,
+                "PhysicsRayCast, profile 0x1A",
+                shotWhy ? "the melee query's flags, a proxy: the shot's own did not resolve"
+                        : "the engine's own shot aim-assist query, resolved and value-checked",
+                "on foot it ignores the unit (the engine skips the held weapon with it); a seated unit is not "
+                "traced in a player build (dev halo4_seat_converge: the vehicle's root, the occupant, the seat's "
+                "parent and the controlled unit, and the engine skips the rest of that vehicle but a boarder)");
     }
     return true;
 }

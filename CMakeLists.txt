@@ -985,6 +985,12 @@ if(BUILD_TESTING)
     add_executable(halomccvr_sight_range_tests tests/sight_range_tests.cpp)
     target_include_directories(halomccvr_sight_range_tests PRIVATE src/common)
     add_test(NAME halomccvr_sight_range_tests COMMAND halomccvr_sight_range_tests)
+    # What the intent ray can hit (2026-10-05): each title's trace flags decoded with that title's own bit layout
+    # must include bipeds and vehicles (and each engine's line-of-sight flags must be seen to leave bipeds out);
+    # the class of a trace result; the seated look-past keeps a boarder; Halo 2's projectile-flags agreement.
+    add_executable(halomccvr_sight_hit_class_tests tests/sight_hit_class_tests.cpp)
+    target_include_directories(halomccvr_sight_hit_class_tests PRIVATE src/common)
+    add_test(NAME halomccvr_sight_hit_class_tests COMMAND halomccvr_sight_hit_class_tests)
     add_executable(halomccvr_native_forward_tests tests/native_forward_tests.cpp)
     add_test(NAME halomccvr_native_forward_tests COMMAND halomccvr_native_forward_tests)
     add_executable(halomccvr_sight_scope_tests tests/sight_scope_tests.cpp src/dll/sight_layer.cpp)

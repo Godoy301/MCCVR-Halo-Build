@@ -555,6 +555,30 @@ namespace
     constexpr uint32_t kHalo2CollisionVectorRva = 0x0075B850;
     constexpr uint32_t kHalo2ObjectSetLocalVelocityRva = 0x0090A000;
     constexpr uint32_t kHalo2CollisionFlags = 0x2480000Fu;
+    // THE SIGHT TRACE'S FLAGS: the PROJECTILE's own (2026-10-05). The intent ray was traced with the
+    // world-collision / melee flags above, which stop on every biped; Halo 2's own rounds do not: their flight
+    // query adds bit 20, which skips a biped whose data +0x10A has bit 2 (collision_test_vector's per-object
+    // test, 0x75C616; by position and by CE's source the damage flags' DEAD bit -- read from code, the name
+    // inferred). A body in front of a far target therefore pulled the convergence onto itself where the round
+    // flew on. Whatever that bit excludes, the game's own rounds exclude: the intent ray now measures the range
+    // a shot really reaches. The projectile's flags are RESOLVED from the code that issues them, never baked:
+    //   1. ANCHOR  the projectile flight wrapper's call (retail 0x75A164..0x75A185: `mov [rsp+28h],rax;
+    //              mov ecx,imm32; mov eax,[rsp+D0h]; movss [rsp+34h],xmm1; mov [rsp+20h],eax;
+    //              movss [rsp+38h],xmm0; call`) matches exactly once in the image, immediate wildcarded;
+    //   2. CALLEE  its call reaches the collision_test_vector this install signature-matched and hooked;
+    //   3. VALUE   the immediate is this lane's own pinned flags plus bit 20 alone, and decodes to structure +
+    //              bipeds + vehicles (sight_hit::Halo2ProjectileFlagsAgree). The engine-ray census measured the
+    //              same value on every shot (caller +0x75A18A, 0x2490000F; ALL-TITLES-AIM-2026-09-29.md).
+    // Any rung failing keeps kHalo2CollisionFlags, the flags the trace has shipped with (they hit every object
+    // type too; only the projectile's biped exception is lost), and the install line says which.
+    // ADDR-HYGIENE: resolved + guarded (unique signature, call edge to the hooked function, value agreement
+    // with an independently pinned value; 0 = unresolved, the older flags).
+    std::atomic<uint32_t> g_halo2SightProjectileFlags{0};
+    // Both values the trace can run with stop on the level, on characters and on vehicles.
+    static_assert(sight_hit::HitsUnitsAndVehicles(sight_hit::DecodeTraceFlags(
+        sight_hit::Engine::Halo2, kHalo2CollisionFlags)));
+    static_assert(sight_hit::Halo2ProjectileFlagsAgree(
+        kHalo2CollisionFlags | sight_hit::kHalo2DeadBipedCullBit, kHalo2CollisionFlags));
     constexpr uint64_t kHalo2CollisionPublicationMaxAgeMs = 150;
     constexpr uint64_t kHalo2CollisionQueryIntervalMs = 33;
     constexpr float kHalo2CollisionHapticAmplitude = 0.18f;
@@ -3838,12 +3862,39 @@ namespace
     }
 
     // Simulation thread, inside the native aim update for the owned on-foot unit: trace the intent ray
-    // (at most every 30 ms) with the same central collision_test_vector and flags the physical-melee and
-    // world-collision queries already run from this hook -- structure, and objects of every type, front
+    // (at most every 30 ms) with the same central collision_test_vector the physical-melee and
+    // world-collision queries already run from this hook, and the PROJECTILE's own flags when they resolve
+    // (g_halo2SightProjectileFlags), else those queries' flags -- structure, and objects of every type, front
     // faces only, invisible surfaces ignored (bits decoded from 0x75B850 itself: bit 0 structure, bit 3
     // objects, bits 4-16 the object types, none set meaning all; bit 23 front faces; bit 26 ignore
-    // invisible). It ignores the unit and its held weapon. The call joins the collision feature's own
-    // callback count, so the collision teardown cannot free the trampoline under it.
+    // invisible; the projectile adds bit 20, its own biped exception). It ignores the unit and its held
+    // weapon (the engine skips an ignored object with its children). On foot only: the caller leaves a seated
+    // unit to the stock updater before it gets here. The call joins the collision feature's own callback
+    // count, so the collision teardown cannot free the trampoline under it.
+    uint32_t Halo2SightTraceFlags() noexcept
+    {
+        const uint32_t projectile = g_halo2SightProjectileFlags.load(std::memory_order_acquire);
+        return projectile ? projectile : kHalo2CollisionFlags;
+    }
+
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    // The type of an object a trace hit (dev: the SIGHT HITS line): the datum's type byte, which the
+    // salt-checked accessor already matched against the object's own +0xAA. -1: a stale handle. Guarded.
+    int Halo2SightObjectType(int32_t object) noexcept
+    {
+        __try
+        {
+            const auto* data = static_cast<const uint8_t*>(
+                Halo2ObjectFromIndex(static_cast<uint32_t>(object)));
+            return data ? data[0xAA] : -1;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            return -1;
+        }
+    }
+#endif
+
     void Halo2SightTrace(uint32_t unit) noexcept
     {
         constexpr GameTitle kTitle = GameTitle::Halo2;
@@ -3892,6 +3943,7 @@ namespace
         const float delta[3]{dir[0] * length, dir[1] * length, dir[2] * length};
         alignas(16) Halo2CollisionResult result{};
         bool hit = false, called = false;
+        const uint32_t flags = Halo2SightTraceFlags();
         LARGE_INTEGER before{}, after{};
         g_halo2WorldCollision.callbacks.fetch_add(1, std::memory_order_acq_rel);
         __try
@@ -3902,7 +3954,7 @@ namespace
                 g_halo2WorldCollision.active.load(std::memory_order_acquire))
             {
                 QueryPerformanceCounter(&before);
-                hit = original(kHalo2CollisionFlags, start, delta,
+                hit = original(flags, start, delta,
                     static_cast<int32_t>(unit), weapon, &result) != 0;
                 QueryPerformanceCounter(&after);
                 called = true;
@@ -3921,6 +3973,16 @@ namespace
         Sight_PublishTrace(kTitle, generation, hit,
             hit ? kSightTraceSkipWu + result.fraction * length : 0.0f,
             static_cast<uint64_t>(after.QuadPart - before.QuadPart));
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        // SIGHT HITS (dev): what the ray stopped on, by class (collision_test_vector leaves the result's
+        // object index at -1 unless an object was hit) -- after the cost was taken, so the trace's time is its own.
+        {
+            const bool objectHit = hit && result.objectIndex != -1;
+            const int type = objectHit ? Halo2SightObjectType(result.objectIndex) : -1;
+            Sight_NoteTraceHit(kTitle, sight_hit::ClassifyHit(hit, objectHit, type), type,
+                hit ? kSightTraceSkipWu + result.fraction * length : 0.0f, false);
+        }
+#endif
     }
 
     // The direction the owned on-foot unit aims along. Trace-and-reaim whenever it can resolve: the line
@@ -4661,6 +4723,45 @@ namespace
     #include "halo2_weapon_haptics.inl"
     #include "halo2_haptic_lifecycle.inl"
 
+    // The projectile's own collision flags (g_halo2SightProjectileFlags, above), read from the flight wrapper's
+    // call. Cold path, once per install. nullptr = resolved (`flags` set); otherwise why not, and `flags` is
+    // whatever immediate was read (0 when none), for the log. Kept free of C++ objects so __try is legal.
+    const char* Halo2ResolveProjectileFlags(uintptr_t base, size_t size, uintptr_t collisionTest,
+        uint32_t& flags, uint32_t& matches) noexcept
+    {
+        constexpr char kProjectileQueryPattern[] =
+            "48 89 44 24 28 B9 ?? ?? ?? ?? 8B 84 24 D0 00 00 00 "
+            "F3 0F 11 4C 24 34 89 44 24 20 F3 0F 11 44 24 38 E8";
+        constexpr size_t kImmediateOffset = 6, kCallOffset = 33;
+        flags = 0;
+        matches = 0;
+        uintptr_t match = 0;
+        if (!collisionTest)
+            return "collision_test_vector is not pinned on this build";
+        if (!CountPatternMatches(base, size, kProjectileQueryPattern, match, matches) || !matches)
+            return "the projectile flight query's signature is missing";
+        if (matches != 1)
+            return "the projectile flight query's signature is ambiguous";
+        if (match < base || match - base > size || size - (match - base) < kCallOffset + 5)
+            return "the projectile flight query's match runs off the image";
+        __try
+        {
+            const auto* code = reinterpret_cast<const uint8_t*>(match);
+            int32_t relative = 0;
+            std::memcpy(&relative, code + kCallOffset + 1, sizeof(relative));
+            std::memcpy(&flags, code + kImmediateOffset, sizeof(flags));
+            if (match + kCallOffset + 5 + static_cast<intptr_t>(relative) != collisionTest)
+                return "the matched call does not reach the hooked collision_test_vector";
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            return "a fault while reading the projectile flight query";
+        }
+        if (!sight_hit::Halo2ProjectileFlagsAgree(flags, kHalo2CollisionFlags))
+            return "its flags are not the world-collision flags plus the dead-biped bit alone";
+        return nullptr;
+    }
+
     bool InstallHalo2WorldCollision(
         uintptr_t base, size_t size, uint32_t generation) noexcept
     {
@@ -4735,6 +4836,25 @@ namespace
             kHalo2CollisionVectorRva, kHalo2CollisionFlags,
             velocityPinned ? "armed" : "StockFallback",
             kHalo2ObjectSetLocalVelocityRva);
+        // The sight trace's flags: the projectile's own when they resolve, else the flags above.
+        {
+            uint32_t projectileFlags = 0, projectileMatches = 0;
+            const char* const why = Halo2ResolveProjectileFlags(
+                base, size, collisionMatch, projectileFlags, projectileMatches);
+            g_halo2SightProjectileFlags.store(why ? 0u : projectileFlags, std::memory_order_release);
+            if (why)
+                LOG("SIGHT Halo 2 projectile flags NOT resolved: %s (%u signature match(es), immediate "
+                    "0x%08X, expected 0x%08X); the intent ray keeps the world-collision flags 0x%08X, which "
+                    "also stop on the bipeds a round flies through",
+                    why, projectileMatches, projectileFlags,
+                    kHalo2CollisionFlags | sight_hit::kHalo2DeadBipedCullBit, kHalo2CollisionFlags);
+            Sight_AnnounceTraceQuery(GameTitle::Halo2, sight_hit::Engine::Halo2, Halo2SightTraceFlags(),
+                "collision_test_vector",
+                why ? "the world-collision / melee query's flags, a proxy: the projectile's own did not resolve"
+                    : "the engine's own projectile flight query, resolved and value-checked",
+                "on foot it ignores the unit and its held weapon (the engine skips an ignored object with its "
+                "children); a seated unit is not traced");
+        }
         return true;
     }
 
@@ -4742,6 +4862,7 @@ namespace
     {
         g_halo2WorldCollision.active.store(false, std::memory_order_release);
         g_halo2WorldCollision.installed.store(false, std::memory_order_release);
+        g_halo2SightProjectileFlags.store(0, std::memory_order_release);   // a new install resolves again
         void* const target = g_halo2WorldCollision.target;
         if (!target)
         {

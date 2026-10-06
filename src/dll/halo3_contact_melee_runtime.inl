@@ -82,6 +82,16 @@ const uint8_t* Halo3SightObjectData(uint32_t handle)
     return *reinterpret_cast<const uint8_t* const*>(entries+(handle&0xFFFF)*0x18+0x10);
 }
 
+// A live object's type: the header byte at entry +3 that collision_test_vector's own predicate tests (halo3
+// 0x1FC512: 0 biped, 1 vehicle), for the sight trace's hit class and its boarder rule. -1: a stale handle.
+int Halo3SightObjectType(uint32_t handle)
+{
+    if(!Halo3ContactObject(handle)) return -1;
+    const auto* table=*reinterpret_cast<const uint8_t* const*>(Halo3ContactTls()+0x38);
+    const auto* entries=*reinterpret_cast<const uint8_t* const*>(table+0x48);
+    return entries[(handle&0xFFFF)*0x18+3];
+}
+
 bool Halo3ContactWorldHit(const uint8_t* bytes,contact_melee::Hit& hit)
 {
     if(!bytes) return false;
@@ -305,7 +315,7 @@ __declspec(noinline) uint8_t __fastcall Halo3ContactUpdateDetour(uint32_t unit)
             if(local!=-1 && unit==static_cast<uint32_t>(local))
                 LegacySightTraceTick(GameTitle::Halo3,unit,local,
                     g_halo3UnitInVehicle && !g_halo3UnitInVehicle(local),g_halo3WorldCollision,
-                    Halo3SightObjectData);
+                    Halo3SightObjectData,Halo3SightObjectType);
         }
     }
     __finally { g_halo3Contact.callbacks.fetch_sub(1,std::memory_order_acq_rel); }

@@ -1469,6 +1469,131 @@ void Sight_ReportEngineRays()
 #endif
 }
 
+// ---- what the intent ray can hit (sight_hit_class_logic.h) ---------------------------------------------------
+namespace
+{
+#if HALOMCCVR_DEV_DIAGNOSTICS
+constexpr size_t kHitClasses = static_cast<size_t>(sight_hit::HitClass::Count);
+// One writer per title (its trace thread); the cold worker drains it. A torn near/far only blurs one dev line.
+struct HitClassWindow
+{
+    std::atomic<uint32_t> count[kHitClasses]{}, lookPast[kHitClasses]{}, seated{0};
+    std::atomic<float> nearWu[kHitClasses]{}, farWu[kHitClasses]{};
+    std::atomic<int32_t> lastType[kHitClasses]{};
+};
+HitClassWindow g_hitClasses[kTitleSlots];
+
+void ReportHitClasses(size_t slot)
+{
+    auto& w = g_hitClasses[slot];
+    uint32_t count[kHitClasses]{}, past[kHitClasses]{}, traces = 0, looked = 0;
+    for (size_t c = 0; c < kHitClasses; ++c)
+    {
+        count[c] = w.count[c].exchange(0, std::memory_order_relaxed);
+        past[c] = w.lookPast[c].exchange(0, std::memory_order_relaxed);
+        traces += count[c];
+        looked += past[c];
+    }
+    const uint32_t seated = w.seated.exchange(0, std::memory_order_relaxed);
+    if (!traces && !looked)
+        return;
+    const double mPerWu = double(kSightCmPerWorldUnit) * 0.01;
+    char text[4][72]{};
+    static constexpr sight_hit::HitClass kRanged[4]{sight_hit::HitClass::Structure, sight_hit::HitClass::Biped,
+                                                    sight_hit::HitClass::Vehicle, sight_hit::HitClass::OtherObject};
+    for (size_t i = 0; i < 4; ++i)
+    {
+        const size_t c = static_cast<size_t>(kRanged[i]);
+        if (!count[c])
+            std::snprintf(text[i], sizeof(text[i]), "%s 0", sight_hit::HitClassName(kRanged[i]));
+        else if (kRanged[i] == sight_hit::HitClass::OtherObject)
+            std::snprintf(text[i], sizeof(text[i]), "%s %u [%.2f-%.2f m, last type %d]",
+                          sight_hit::HitClassName(kRanged[i]), count[c],
+                          double(w.nearWu[c].load(std::memory_order_relaxed)) * mPerWu,
+                          double(w.farWu[c].load(std::memory_order_relaxed)) * mPerWu,
+                          static_cast<int>(w.lastType[c].load(std::memory_order_relaxed)));
+        else
+            std::snprintf(text[i], sizeof(text[i]), "%s %u [%.2f-%.2f m]", sight_hit::HitClassName(kRanged[i]),
+                          count[c], double(w.nearWu[c].load(std::memory_order_relaxed)) * mPerWu,
+                          double(w.farWu[c].load(std::memory_order_relaxed)) * mPerWu);
+    }
+    LOG("SIGHT HITS %s (dev): %u traces (%u seated): %s, %s, %s, %s, unknown-type object %u, miss %u [= the far "
+        "end]; looked past our own vehicle: %u (biped %u, vehicle %u, other %u, unknown %u)",
+        TitleName(static_cast<GameTitle>(slot)), traces, seated, text[0], text[1], text[2], text[3],
+        count[static_cast<size_t>(sight_hit::HitClass::UnknownObject)],
+        count[static_cast<size_t>(sight_hit::HitClass::Miss)], looked,
+        past[static_cast<size_t>(sight_hit::HitClass::Biped)], past[static_cast<size_t>(sight_hit::HitClass::Vehicle)],
+        past[static_cast<size_t>(sight_hit::HitClass::OtherObject)],
+        past[static_cast<size_t>(sight_hit::HitClass::UnknownObject)]);
+}
+#endif
+} // namespace
+
+void Sight_AnnounceTraceQuery(GameTitle title, sight_hit::Engine engine, uint64_t flags, const char* query,
+                              const char* source, const char* seatedNote)
+{
+    const sight_hit::FlagClasses c = sight_hit::DecodeTraceFlags(engine, flags);
+    const sight_hit::FlagLayout layout = sight_hit::Layout(engine);
+    char types[96]{};
+    if (!c.objects)
+        std::snprintf(types, sizeof(types), "no objects at all");
+    else if (c.allTypes)
+        std::snprintf(types, sizeof(types), "every one of %u object types", static_cast<unsigned>(layout.typeCount));
+    else
+        std::snprintf(types, sizeof(types), "object type mask 0x%X of %u types", c.typeMask,
+                      static_cast<unsigned>(layout.typeCount));
+    char culls[176]{};
+    if (!c.cullsDecoded)
+        std::snprintf(culls, sizeof(culls), "; the engine's per-object culls were not decoded for this title");
+    else if (c.objectCulls || c.bipedCulls || c.vehicleCulls)
+        std::snprintf(culls, sizeof(culls), "; the engine's own culls in these flags: objects 0x%llX, bipeds 0x%llX, "
+                      "vehicles 0x%llX (flag bits)", static_cast<unsigned long long>(c.objectCulls),
+                      static_cast<unsigned long long>(c.bipedCulls), static_cast<unsigned long long>(c.vehicleCulls));
+    LOG("SIGHT %s intent ray: %s, flags 0x%llX (%s): stops on structure %s, bipeds %s, vehicles %s, other objects %s "
+        "(%s)%s; %s",
+        TitleName(title), query ? query : "?", static_cast<unsigned long long>(flags), source ? source : "?",
+        c.structure ? "yes" : "NO", c.bipeds ? "yes" : "NO", c.vehicles ? "yes" : "NO",
+        c.otherObjects ? "yes" : "NO", types, culls, seatedNote ? seatedNote : "");
+    if (!sight_hit::HitsUnitsAndVehicles(c))
+        LOG("SIGHT %s WARNING: the intent ray cannot stop on %s%s%s-- the converged aim will read the surface BEHIND "
+            "such a target and converge too far",
+            TitleName(title), c.structure ? "" : "structure ", c.bipeds ? "" : "bipeds ",
+            c.vehicles ? "" : "vehicles ");
+}
+
+void Sight_NoteTraceHit(GameTitle title, sight_hit::HitClass hit, int objectType, float rangeWu, bool seated)
+{
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    const size_t c = static_cast<size_t>(hit);
+    if (c >= kHitClasses)
+        return;
+    auto& w = g_hitClasses[Slot(title)];
+    const uint32_t prior = w.count[c].fetch_add(1, std::memory_order_relaxed);
+    if (seated)
+        w.seated.fetch_add(1, std::memory_order_relaxed);
+    if (hit == sight_hit::HitClass::Miss)
+        return;
+    if (!prior || rangeWu < w.nearWu[c].load(std::memory_order_relaxed))
+        w.nearWu[c].store(rangeWu, std::memory_order_relaxed);
+    if (!prior || rangeWu > w.farWu[c].load(std::memory_order_relaxed))
+        w.farWu[c].store(rangeWu, std::memory_order_relaxed);
+    w.lastType[c].store(objectType, std::memory_order_relaxed);
+#else
+    (void)title; (void)hit; (void)objectType; (void)rangeWu; (void)seated;
+#endif
+}
+
+void Sight_NoteLookPast(GameTitle title, sight_hit::HitClass part)
+{
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    const size_t c = static_cast<size_t>(part);
+    if (c < kHitClasses)
+        g_hitClasses[Slot(title)].lookPast[c].fetch_add(1, std::memory_order_relaxed);
+#else
+    (void)title; (void)part;
+#endif
+}
+
 void Sight_Report()
 {
     static uint64_t s_last = 0;
@@ -1508,6 +1633,9 @@ void Sight_Report()
         const uint64_t muzzleUnconverged = s.muzzleUnconverged.exchange(0, std::memory_order_relaxed);
         const uint64_t muzzleHeld = s.muzzleHeld.exchange(0, std::memory_order_relaxed);
         ReportReaims(i);
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        ReportHitClasses(i);
+#endif
         if (muzzleAimed || muzzleRefused || muzzleUnconverged || muzzleHeld)
             LOG("SHOTS FROM THE MUZZLE %s: %llu aimed through the converged point, %llu refused%s%s%s, "
                 "%llu without a converged point, %llu held off (a seat held at its stop, or a turret: the gun "
