@@ -287,8 +287,10 @@ void FollowRoomscale(const Camera& source,const Tracking& tracking,Reference& fr
         tracking.headOrientation.z,tracking.headOrientation.w};
     const float forward[]{heading.x,heading.y,heading.z};
     float position[]{frozen.position.x,frozen.position.y,frozen.position.z};
-    Roomscale_Camera(GameTitle::HaloCE,positional&&!tracking.controllers.controlsPresentationBlocked&&
-        Game_RoomscaleCameraAllowed(GameTitle::HaloCE),body,head,orientation,forward,position,scale);
+    Roomscale_Camera(GameTitle::HaloCE,
+        !positional ? Roomscale_Refuse(roomscale_admission::Refusal::Disabled)
+        : tracking.controllers.controlsPresentationBlocked ? Roomscale_Refuse(roomscale_admission::Refusal::Menu)
+        : Game_RoomscaleCameraVerdict(GameTitle::HaloCE),body,head,orientation,forward,position,scale);
     const Vec3 next{position[0],position[1],position[2]};
     if (!Finite(next)||!Current()||revision!=referenceRevision.load()||recenter.load()) return;
     frozen.position=next;

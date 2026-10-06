@@ -21,7 +21,8 @@ float VR_RecenterStandingLiftM(GameTitle) noexcept { return 0.0f; }
 uint64_t Sight_NowUs() { static uint64_t now=1000000; return now+=1000; }
 float HaloCEControls_PhysicalCrouchCorrection(uint32_t,uint64_t,float,bool) noexcept { return 0; }
 bool HaloCEHud_HasCrosshairScope() noexcept { return false; }
-void Roomscale_Camera(GameTitle,bool,const float*,const float*,const float*,const float*,float*,float) noexcept {}
+roomscale_admission::Verdict Game_RoomscaleCameraVerdict(GameTitle) { return roomscale_admission::Verdict{}; }
+void Roomscale_Camera(GameTitle,const roomscale_admission::Verdict&,const float*,const float*,const float*,const float*,float*,float) noexcept {}
 void Logf(const char*,...) { }
 bool WaitForNativeDetourQuiescence(const void* const*,const void* const*,size_t,
     const std::atomic<uint32_t>& count) { return !count.load(); }

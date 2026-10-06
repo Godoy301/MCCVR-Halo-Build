@@ -5,6 +5,7 @@
 #include "../common/converge_policy.h"
 #include "../common/first_person_view_logic.h"
 #include "../common/halo3_vehicle_logic.h"
+#include "../common/roomscale_admission_logic.h"
 #include "../common/runtime_types.h"
 #include "../common/support_grip_logic.h"
 #include "../common/vr_action_mapping.h"
@@ -15,10 +16,14 @@ bool Game_ReadVrActionBindings(vr_mapping::Transports& out, uint64_t nowMs,
     unsigned controller = 0);
 uint32_t Game_VrActionTransport(vr_mapping::Action action, uint64_t nowMs);
 
-// Camera-thread admission, using each title's existing native on-foot evidence.
+// Camera-thread admission (roomscale_admission_logic.h): on foot, in control, first person -- by the game's own
+// camera where the title has it bound (Halo 3, ODST, CE), else by the first-person view-model witness -- behind
+// the roomscale setting and the presentation gates. The verdict names the reading that refused.
+roomscale_admission::Verdict Game_RoomscaleCameraVerdict(GameTitle title);
 bool Game_RoomscaleCameraAllowed(GameTitle title);
-// That on-foot, player-controlled evidence alone (no roomscale setting or presentation gates): the
+// That on-foot, player-controlled, first-person evidence alone (no roomscale setting or presentation gates): the
 // head leash below the character's eye holds the view only while this is true.
+roomscale_admission::Verdict Game_TitleOnFootVerdict(GameTitle title);
 bool Game_TitleOnFootPlayerControlled(GameTitle title);
 // The local player is in a vehicle seat, as last known (a pause, which stops the samples, keeps the answer).
 bool Game_TitleSeated(GameTitle title);

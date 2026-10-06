@@ -1020,6 +1020,116 @@ namespace
         return true;
     }
 
+    // FORGE'S MONITOR, Halo 3 (roomscale_admission_logic.h). The director's camera is the first-person camera for
+    // the Monitor too, so "first-person camera" alone would walk the Monitor as a body. The game answers "is this
+    // player a sandbox editor" itself (0x111E44, asked by c_game_director::update for its output user's player);
+    // roomscale asks the same question the same way: the player getter and the predicate are called on the engine
+    // camera thread (CamCopyHook, Halo3PublishTwoHandView), whose engine TLS they read, under SEH, at most every
+    // 8 ms. Both are readers (no store but two optional out-pointers, passed null). A fault disables the check for
+    // the generation: the answer is then "unknown" and an unarmed player needs a view model again.
+    // ADDR-HYGIENE: resolved (roomscale_admission::DecodeSandboxEditorSites: the predicate's body and the
+    // director's call site each matched uniquely; the call site must call that body, the unit getter the vehicle
+    // sampler bound and a player getter with the getter's body; both TLS operands must be the engine TLS index).
+    using Halo3OutputUserPlayerFn = int(__fastcall*)(int outputUser);
+    using Halo3SandboxEditorFn = uint8_t(__fastcall*)(int player, int32_t* heldObject, int32_t* editorState);
+    struct Halo3SandboxEditorBinding
+    {
+        std::atomic<bool> bound{false}, faulted{false};
+        std::atomic<uint32_t> generation{0};
+        Halo3OutputUserPlayerFn playerGetter = nullptr;
+        Halo3SandboxEditorFn predicate = nullptr;
+    };
+    Halo3SandboxEditorBinding g_halo3SandboxEditor;
+
+    void RetireHalo3SandboxEditor() noexcept
+    {
+        g_halo3SandboxEditor.bound.store(false, std::memory_order_release);
+        g_halo3SandboxEditor.generation.store(0, std::memory_order_release);
+    }
+
+    // Cold (title install, after the vehicle evidence bound the unit getter). Fails closed and says which link
+    // failed.
+    bool BindHalo3SandboxEditor(uintptr_t base, size_t size, uint32_t generation, const uint32_t* engineTlsIndex,
+                                uintptr_t unitGetter)
+    {
+        using namespace roomscale_admission;
+        RetireHalo3SandboxEditor();
+        auto& b = g_halo3SandboxEditor;
+        b.faulted.store(false, std::memory_order_relaxed);
+        const auto unique = [&](const char* pattern) -> uintptr_t {
+            const uintptr_t hit = sig::Find(base, size, pattern);
+            return hit && !sig::Find(hit + 1, base + size - hit - 1, pattern) ? hit : 0;
+        };
+        const auto inside = [&](uintptr_t at, size_t bytes) { return at >= base && at + bytes <= base + size; };
+        const uintptr_t predicate = unique(kHalo3SandboxEditorPredicatePattern);
+        const uintptr_t callSite = unique(kHalo3DirectorEditorCallSitePattern);
+        uintptr_t playerGetter = 0;
+        bool playerBody = false;
+        if (callSite)
+        {
+            playerGetter = base + static_cast<uintptr_t>(CallTargetRva(
+                reinterpret_cast<const uint8_t*>(callSite), kDirectorEditorCallPlayer,
+                static_cast<int64_t>(callSite - base)));
+            if (!inside(playerGetter, kOutputUserPlayerGetterBytes))
+                playerGetter = 0;
+            else
+                playerBody = sig::Find(playerGetter, kOutputUserPlayerGetterBytes,
+                                       kHalo3OutputUserPlayerGetterPattern) == playerGetter;
+        }
+        SandboxEditorSites sites{};
+        const SandboxEditorBind result = !generation || !engineTlsIndex
+            ? SandboxEditorBind::TlsMismatch
+            : DecodeSandboxEditorSites(
+                reinterpret_cast<const uint8_t*>(predicate), static_cast<int64_t>(predicate - base),
+                reinterpret_cast<const uint8_t*>(callSite), static_cast<int64_t>(callSite - base),
+                reinterpret_cast<const uint8_t*>(playerGetter), playerBody,
+                unitGetter && inside(unitGetter, kOutputUserPlayerGetterBytes)
+                    ? reinterpret_cast<const uint8_t*>(unitGetter) : nullptr,
+                static_cast<int64_t>(unitGetter - base),
+                static_cast<int64_t>(reinterpret_cast<uintptr_t>(engineTlsIndex) - base), sites);
+        if (result != SandboxEditorBind::Bound)
+        {
+            LOG("Roomscale admission Halo 3: StockFallback: the Forge Monitor check did not bind (%s); an unarmed "
+                "player is admitted only while a first-person view model is drawn, as before",
+                SandboxEditorBindName(result));
+            return false;
+        }
+        b.playerGetter = reinterpret_cast<Halo3OutputUserPlayerFn>(base + static_cast<uintptr_t>(sites.playerGetterRva));
+        b.predicate = reinterpret_cast<Halo3SandboxEditorFn>(base + static_cast<uintptr_t>(sites.predicateRva));
+        b.generation.store(generation, std::memory_order_release);
+        b.bound.store(true, std::memory_order_release);
+        LOG("Roomscale admission Halo 3: Forge Monitor check bound: the game's own sandbox-editor predicate +0x%llX "
+            "(the director's call +0x%llX) for the player from +0x%llX; an on-foot player whose camera is the "
+            "first-person camera is admitted without a weapon unless the game says he is the Monitor",
+            (unsigned long long)sites.predicateRva,
+            (unsigned long long)(callSite - base + kDirectorEditorCallPredicate),
+            (unsigned long long)sites.playerGetterRva);
+        return true;
+    }
+
+    // The engine camera thread only. Unavailable: not bound for this generation, or faulted. Yes / No: the game's
+    // answer for output user 0's player.
+    fp_view::Signal ReadHalo3SandboxEditor(uint32_t generation) noexcept
+    {
+        auto& b = g_halo3SandboxEditor;
+        if (!generation || !b.bound.load(std::memory_order_acquire) ||
+            b.generation.load(std::memory_order_acquire) != generation ||
+            b.faulted.load(std::memory_order_relaxed) || !b.playerGetter || !b.predicate)
+            return fp_view::Signal::Unavailable;
+        __try
+        {
+            const int player = b.playerGetter(0);
+            // No player: nothing edits (the predicate answers the same for -1).
+            return player != -1 && b.predicate(player, nullptr, nullptr) ? fp_view::Signal::Yes
+                                                                         : fp_view::Signal::No;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
+            b.faulted.store(true, std::memory_order_relaxed);
+            return fp_view::Signal::Unavailable;
+        }
+    }
+
     // THE DIRECTOR'S CAMERA FOR OUTPUT USER 0, ODST (first_person_view_logic.h; two-handed aim's camera rung). The
     // same record as Halo 3's, decoded from set_camera_mode's store (the Halo 3 pattern, unique in halo3odst.dll) and
     // the per-user first-person gate (fp_view::kDirectorFirstPersonGateSitePattern), which must agree; the gate's TLS
@@ -1117,7 +1227,11 @@ namespace
     inline constexpr uint64_t kTwoHandViewFreshMs = 150;
     inline constexpr uint32_t kTwoHandViewUnitRead = 1u << 0, kTwoHandViewUnitPresent = 1u << 1,
                               kTwoHandViewSeatRead = 1u << 2, kTwoHandViewSeated = 1u << 3,
-                              kTwoHandViewDirectorBound = 1u << 4, kTwoHandViewDirectorRead = 1u << 5;
+                              kTwoHandViewDirectorBound = 1u << 4, kTwoHandViewDirectorRead = 1u << 5,
+                              // Roomscale's Monitor check (Halo 3; ReadHalo3SandboxEditor): bound for this
+                              // generation and not faulted / the game's answer.
+                              kTwoHandViewEditorRead = 1u << 6, kTwoHandViewEditor = 1u << 7,
+                              kTwoHandViewEditorFaulted = 1u << 8;
     struct TwoHandViewPublication
     {
         std::atomic<uint64_t> stampMs{0};
@@ -8376,7 +8490,9 @@ namespace
         float viewLiftZ = pos[2] - characterEyeZ;
         if (!std::isfinite(viewLiftZ) || viewLiftZ < 0.0f || viewLiftZ > 1.5f)
             viewLiftZ = 0.0f;
-        Roomscale_Camera(GameTitle::Halo3, !cinematic && Game_RoomscaleCameraAllowed(GameTitle::Halo3),
+        Roomscale_Camera(GameTitle::Halo3,
+            cinematic ? Roomscale_Refuse(roomscale_admission::Refusal::Cinematic)
+                      : Game_RoomscaleCameraVerdict(GameTitle::Halo3),
             pos, hpos, q, fwd, g_headPosRef, g_worldScale.load());
 
         // Position (leaning): shift the camera by the headset's room-space move,
@@ -13629,7 +13745,9 @@ namespace
         float viewLiftZ = position[2] - characterEyeZ;
         if (!std::isfinite(viewLiftZ) || viewLiftZ < 0.0f || viewLiftZ > 1.5f)
             viewLiftZ = 0.0f;
-        Roomscale_Camera(GameTitle::Halo3ODST, !cinematic && Game_RoomscaleCameraAllowed(GameTitle::Halo3ODST),
+        Roomscale_Camera(GameTitle::Halo3ODST,
+            cinematic ? Roomscale_Refuse(roomscale_admission::Refusal::Cinematic)
+                      : Game_RoomscaleCameraVerdict(GameTitle::Halo3ODST),
             position, headPosition, quaternion, forward, g_headPosRef, kOdstWorldUnitsPerMeter);
         if (g_positional.load(std::memory_order_relaxed))
         {
@@ -16392,6 +16510,7 @@ namespace
         if (!RemoveHalo3ImpactWitness()) return false;
 #endif
         RetireHalo3DirectorCamera();
+        RetireHalo3SandboxEditor();
         if (!RemoveHalo3DualAim()) return false;
         RemoveHalo3GunBand();
         if (!LegacyDriveRemove(GameTitle::Halo3)) return false;
@@ -17315,6 +17434,9 @@ namespace
         (void)InstallHalo3DualAim(base,size,runtimeGeneration);
         // The record recomposition's first-person eye identity (shot_lag_logic.h 4d): two sites, no hook.
         (void)BindHalo3DirectorCamera(base,size,runtimeGeneration,g_engineTlsIndex);
+        // Roomscale's Forge Monitor check (roomscale_admission_logic.h): two sites, two reader calls, no hook.
+        (void)BindHalo3SandboxEditor(base,size,runtimeGeneration,g_engineTlsIndex,
+            reinterpret_cast<uintptr_t>(g_halo3PlayerUnitGetter));
         // A look-steered driver's gun band (halo3_vehicle_gun_band.inl): anchors only, no hook; fails closed alone.
         (void)InstallHalo3GunBand(base,size,runtimeGeneration);
 #if HALOMCCVR_DEV_DIAGNOSTICS
@@ -23604,8 +23726,9 @@ namespace
         const float crouchLiftWu = pos[2] - characterEyeZ;
         if (std::isfinite(crouchLiftWu) && crouchLiftWu > 0.0f && crouchLiftWu < 1.5f)
             g_reachHeadLookCrouchLiftWu = crouchLiftWu;
-        Roomscale_Camera(GameTitle::HaloReach, !vehicleEntryRecenter &&
-            Game_RoomscaleCameraAllowed(GameTitle::HaloReach), pos, hpos, q, fwd,
+        Roomscale_Camera(GameTitle::HaloReach,
+            vehicleEntryRecenter ? Roomscale_Refuse(roomscale_admission::Refusal::Seated)
+                                 : Game_RoomscaleCameraVerdict(GameTitle::HaloReach), pos, hpos, q, fwd,
             effectiveHeadPosRef, kReachWorldUnitsPerMeter);
         if (!vehicleEntryRecenter)
             memcpy(g_headPosRef, effectiveHeadPosRef, sizeof(g_headPosRef));
@@ -27496,6 +27619,15 @@ namespace
             if (ReadDirectorCameraRaw(g_halo3DirectorCamera, generation, mode, perspective))
                 bits |= kTwoHandViewDirectorRead;
         }
+        // Roomscale's Monitor check: the game's own sandbox-editor answer for this user's player.
+        switch (ReadHalo3SandboxEditor(generation))
+        {
+        case fp_view::Signal::Yes: bits |= kTwoHandViewEditorRead | kTwoHandViewEditor; break;
+        case fp_view::Signal::No: bits |= kTwoHandViewEditorRead; break;
+        default: break;
+        }
+        if (g_halo3SandboxEditor.faulted.load(std::memory_order_relaxed))
+            bits |= kTwoHandViewEditorFaulted;
         p.bits.store(bits, std::memory_order_relaxed);
         p.mode.store(mode, std::memory_order_relaxed);
         p.perspective.store(perspective, std::memory_order_relaxed);
@@ -44472,7 +44604,7 @@ namespace
                 if ((g_config.roomscale_movement || g_config.physical_running) &&
                     Halo4ApplyHeadPose(roomscaleBasis, headInput))
                 {
-                    Roomscale_Camera(GameTitle::Halo4, Game_RoomscaleCameraAllowed(GameTitle::Halo4),
+                    Roomscale_Camera(GameTitle::Halo4, Game_RoomscaleCameraVerdict(GameTitle::Halo4),
                         stock.position, snapshot.headPosition, snapshot.headOrientation,
                         roomscaleBasis.forward, headInput.headPositionReference, worldScale);
                     for (int axis = 0; axis < 3; ++axis)
@@ -56580,96 +56712,8 @@ SupportInvocationResolution Game_ResolveSupportInvocation(GameTitle title,
     return resolution;
 }
 
-bool Game_RoomscaleCameraAllowed(GameTitle title)
-{
-    if (title!=TitleAdapter_GetActiveTitle()) return false;
-    if (!(g_config.roomscale_movement || g_config.physical_running) ||
-        !g_enabled.load() || !g_positional.load() || !g_vrAim.load() ||
-        !VR_IsStereoEnabled() || Menu_IsOpen() || VR_IsPausePresentation() ||
-        VR_IsPausePresentationTarget() || VR_IsCutsceneTheaterActive() ||
-        TitleAdapter_GetRuntimeMode()!=RuntimeMode::Gameplay) return false;
-    return Game_TitleOnFootPlayerControlled(title);
-}
-
-// Each title's own proof that the local player is on foot and player-controlled (no seat, no cinematic).
-// Roomscale adds its setting and presentation gates on top; the head leash uses it as it is.
-bool Game_TitleOnFootPlayerControlled(GameTitle title)
-{
-    if (title!=TitleAdapter_GetActiveTitle()) return false;
-    const auto now=GetTickCount64();
-    __try
-    {
-        switch(title)
-        {
-        case GameTitle::HaloCE:
-        {
-            HaloCELocalPlayerState player{};
-            return HaloCEControls_GetLocalPlayerState(player)&&player.hasControlledUnit&&
-                player.onFoot&&player.nativePreparesFirstPerson&&!player.nativeInputBlocked&&
-                !player.nativeLookBlocked&&!player.nativePaused&&!player.nativeCinematicFlag;
-        }
-        case GameTitle::Halo3:
-        {
-            int32_t scene=-1,shot=-1;
-            // The witness hook installs apart from the camera (M3); without it, admit as before.
-            if ((g_fpInterpolatorHooked.load(std::memory_order_acquire) &&
-                 !WitnessFresh(g_halo3FirstPersonMs, now, kFirstPersonWitnessMs)) ||
-                ReadCinematicControl(scene,shot)!=CinematicControlState::PlayerControlled ||
-                Game_Halo3VehicleState().state!=Halo3VehicleState::OnFoot ||
-                !g_halo3PlayerUnitGetter) return false;
-            const auto* unit=Halo3MeleeSelectionObject(
-                static_cast<uint32_t>(g_halo3PlayerUnitGetter(0)),0);
-            return unit && *reinterpret_cast<const int16_t*>(unit+kHalo3UnitSeatWordOffset)==-1;
-        }
-        case GameTitle::Halo3ODST:
-        {
-            int32_t scene=-1,shot=-1;
-            const auto at=g_odstRoomscaleOnFootMs.load();
-            return at && now>=at && now-at<=100 &&
-                WitnessFresh(g_odstFirstPersonMs, now, kFirstPersonWitnessMs) &&
-                g_odstVehicleBinding.load()==static_cast<uint8_t>(OdstVehicleBindingState::Installed) &&
-                g_odstVehicleFpStable.load()==static_cast<uint32_t>(Halo3VehicleState::OnFoot) &&
-                ReadOdstCinematicControl(scene,shot)==CinematicControlState::PlayerControlled;
-        }
-        case GameTitle::HaloReach:
-        {
-            const auto at=g_reachVehicleSampleMs.load();
-            const auto cine=TitleAdapter_GetCinematicControlPublication(title);
-            return at && now>=at && now-at<=100 && ReachFirstPersonFresh(now) &&
-                g_reachVehicleInputSnapshot.load()==ReachVehicleInputSnapshot(
-                    TitleAdapter_GetGeneration(title),ReachVehicleInputState::OnFoot) &&
-                cine.generation==TitleAdapter_GetGeneration(title) &&
-                cine.heartbeatMs && now>=cine.heartbeatMs && now-cine.heartbeatMs<=100 &&
-                cine.state==CinematicControlState::PlayerControlled;
-        }
-#if HALOMCCVR_HALO2_STEREO6DOF
-        case GameTitle::Halo2:
-            return Halo2Observer6Dof_OnFootFresh() &&
-                Halo2Observer6Dof_FinalPaletteArmed();
-#endif
-#if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA
-        case GameTitle::Halo4:
-        {
-            if (!Halo4ContactMeleeReady() ||
-                g_halo4Contact.generation!=g_halo4Camera.generation.load() ||
-                ReadHalo4CinematicControl()!=CinematicControlState::PlayerControlled) return false;
-            Halo4FirstPersonAccess fp{};
-            // record is validated even for an unarmed player with zero weapon nodes.
-            (void)Halo4ResolveFirstPerson(0,fp);
-            if (!fp.record) return false;
-            const auto unit=*reinterpret_cast<const uint32_t*>(
-                fp.record+kHalo4FirstPersonRecordUnitOffset);
-            const auto* biped=Halo4ContactBiped(unit);
-            // Existing H4EK-proven contact admission: unparented local biped -- and the camera at his eye
-            // (the first-person witness): third person is on foot and player-controlled too.
-            return biped && *reinterpret_cast<const int32_t*>(biped+0x24)==-1 && Halo4FirstPersonWitnessed(now);
-        }
-#endif
-        default: return false;
-        }
-    }
-    __except(EXCEPTION_EXECUTE_HANDLER) { return false; }
-}
+// Game_RoomscaleCameraVerdict / Game_TitleOnFootVerdict (roomscale's admission, and the head leash's) are defined
+// after Game_TitleFirstPersonView below: they read the same camera-thread publications.
 
 // Each title's LAST KNOWN seat state (a pause stops the samples, and whatever follows it must still see the
 // seat), as a three-way answer so each consumer chooses how to treat "no answer":
@@ -56929,4 +56973,259 @@ TitleFirstPersonView Game_TitleFirstPersonView(GameTitle title)
 {
     __try { return ReadTitleFirstPersonView(title, GetTickCount64()); }
     __except(EXCEPTION_EXECUTE_HANDLER) { return TitleFirstPersonView{}; }
+}
+
+// ROOMSCALE'S ADMISSION (roomscale_admission_logic.h): each title's proof that the local player is on foot,
+// player-controlled and looking through his own eyes -- no seat, no cinematic, no third-person camera, not Forge's
+// Monitor. Roomscale adds its setting and presentation gates on top; the head leash uses it as it is.
+//
+//   title   on foot (unit / seat)                    first person: camera rung            Monitor            view model
+//   CE      controlled unit, no parent               native user perspective == 0         no Forge           -
+//   Halo 2  observer's on-foot unit sample, 100 ms   -                                    (no camera rung)   FP palette packet, 250 ms
+//   Halo 3  unit seat word + the vehicle sampler     director mode 3 / perspective 0      the game's own     FP interpolation, 100 ms
+//                                                                                         editor predicate
+//   ODST    seat sampler, 100 ms                     director mode 3 / perspective 0      no Forge           FP interpolation, 100 ms
+//   Reach   camera-info seat sampler, 100 ms         -                                    (no camera rung)   FP interpolation x2, 150 ms
+//   Halo 4  FP record's unit, no parent              -                                    (no camera rung)   FP skinning, 100 ms
+//
+// The camera rung admits a first-person player with no weapon in his hands (the view model is not asked); the
+// titles without one still need the view model, so an unarmed player there stands down as before (the reason is
+// named: "no first-person view model"). Runs on the title's camera thread, under the callers' SEH.
+namespace
+{
+    fp_view::Signal CinematicSignal(CinematicControlState state)
+    {
+        return state == CinematicControlState::PlayerControlled ? fp_view::Signal::No
+            : state == CinematicControlState::AuthoredLocked    ? fp_view::Signal::Yes
+                                                                : fp_view::Signal::Unread;
+    }
+    // The title's unit sampler said "no unit" within its window (the death / spectator camera).
+    bool AimUnitFreshlyAbsent(GameTitle title, uint64_t now)
+    {
+        const size_t slot = TitleRuntimeSlotIndex(title);
+        if (slot >= kTitleRuntimeSlotCount)
+            return false;
+        const uint64_t word = g_aimUnitPresence[slot].load(std::memory_order_relaxed);
+        const uint64_t at = aim_no_unit::UnpackMs(word);
+        return aim_no_unit::UnpackPresence(word) == aim_no_unit::Presence::Absent && at && now >= at &&
+            now - at <= aim_no_unit::kStaleMs;
+    }
+
+    // `hold`: the title's own pause flag (CE). `monitorFaulted`: the Monitor predicate faulted this generation.
+    roomscale_admission::TitleEvidence ReadRoomscaleTitleEvidence(GameTitle title, uint64_t now, bool& hold,
+                                                                  bool& monitorFaulted)
+    {
+        using fp_view::Signal;
+        roomscale_admission::TitleEvidence e{};
+        switch (title)
+        {
+        case GameTitle::HaloCE:
+        {
+            HaloCELocalPlayerState player{};
+            if (!HaloCEControls_GetLocalPlayerState(player))
+            {
+                e.unit = Signal::Unread;
+                break;
+            }
+            hold = player.nativePaused;
+            e.cinematic = SignalIf(player.nativeCinematicFlag);
+            e.controlBlocked = SignalIf(player.nativeInputBlocked || player.nativeLookBlocked);
+            e.unit = SignalIf(player.hasControlledUnit);
+            e.seated = player.hasControlledUnit ? SignalIf(!player.onFoot) : Signal::Unavailable;
+            e.camera = SignalIf(player.nativePreparesFirstPerson);
+            e.monitor = Signal::No;   // CE has no Forge
+            break;
+        }
+        case GameTitle::Halo3:
+        {
+            int32_t scene = -1, shot = -1;
+            e.cinematic = CinematicSignal(ReadCinematicControl(scene, shot));
+            switch (Game_Halo3VehicleState().state)
+            {
+            case Halo3VehicleState::OnFoot: e.seated = Signal::No; break;
+            case Halo3VehicleState::Vehicle: e.seated = Signal::Yes; break;
+            default: e.seated = Signal::Unread; break;
+            }
+            if (!g_halo3PlayerUnitGetter)
+                e.unit = Signal::Unread;
+            else
+            {
+                // The unit's own seat word: a stationary turret is a seat unit_in_vehicle does not report.
+                const auto* unit = Halo3MeleeSelectionObject(static_cast<uint32_t>(g_halo3PlayerUnitGetter(0)), 0);
+                e.unit = SignalIf(unit != nullptr);
+                if (unit && *reinterpret_cast<const int16_t*>(unit + kHalo3UnitSeatWordOffset) != -1)
+                    e.seated = Signal::Yes;
+            }
+            const uint32_t generation = g_halo3RuntimeGeneration.load(std::memory_order_acquire);
+            const TwoHandViewSample s = ReadTwoHandView(g_halo3TwoHandView, generation, now);
+            e.camera = DirectorSignal(s, g_halo3DirectorCamera, generation);
+            const bool editorBound = g_halo3SandboxEditor.bound.load(std::memory_order_acquire) &&
+                g_halo3SandboxEditor.generation.load(std::memory_order_acquire) == generation;
+            monitorFaulted = editorBound && g_halo3SandboxEditor.faulted.load(std::memory_order_relaxed);
+            e.monitor = !editorBound || monitorFaulted ? Signal::Unavailable
+                : !s.fresh || !(s.bits & kTwoHandViewEditorRead) ? Signal::Unread
+                : SignalIf((s.bits & kTwoHandViewEditor) != 0);
+            // The witness hook installs apart from the camera (M3); without it there is none.
+            e.viewModel = g_fpInterpolatorHooked.load(std::memory_order_acquire)
+                ? SignalIf(WitnessFresh(g_halo3FirstPersonMs, now, kFirstPersonWitnessMs))
+                : Signal::Unavailable;
+            break;
+        }
+        case GameTitle::Halo3ODST:
+        {
+            int32_t scene = -1, shot = -1;
+            e.cinematic = CinematicSignal(ReadOdstCinematicControl(scene, shot));
+            const uint32_t generation = g_odstRuntimeGeneration.load(std::memory_order_acquire);
+            const TwoHandViewSample s = ReadTwoHandView(g_odstTwoHandView, generation, now);
+            const uint64_t at = g_odstRoomscaleOnFootMs.load();
+            const bool onFootFresh = at && now >= at && now - at <= 100;
+            const uint32_t stable = g_odstVehicleFpStable.load();
+            if (g_odstVehicleBinding.load() != static_cast<uint8_t>(OdstVehicleBindingState::Installed))
+                e.seated = Signal::Unread;
+            else if (onFootFresh && stable == static_cast<uint32_t>(Halo3VehicleState::OnFoot))
+            {
+                e.unit = Signal::Yes;
+                e.seated = Signal::No;
+            }
+            else
+            {
+                // Not freshly on foot: name why where the samplers say (no unit, a seat), else it is stale.
+                e.unit = UnitSignal(s);
+                e.seated = g_odstSeatedLastKnown.load(std::memory_order_relaxed) ||
+                        stable == static_cast<uint32_t>(Halo3VehicleState::Vehicle)
+                    ? Signal::Yes : Signal::Unread;
+            }
+            e.camera = DirectorSignal(s, g_odstDirectorCamera, generation);
+            e.monitor = Signal::No;   // ODST has no Forge
+            e.viewModel = g_odstCamera.installed.load(std::memory_order_acquire)
+                ? SignalIf(WitnessFresh(g_odstFirstPersonMs, now, kFirstPersonWitnessMs))
+                : Signal::Unavailable;
+            break;
+        }
+        case GameTitle::HaloReach:
+        {
+            const uint32_t generation = TitleAdapter_GetGeneration(title);
+            const auto cine = TitleAdapter_GetCinematicControlPublication(title);
+            e.cinematic = cine.generation == generation && cine.heartbeatMs && now >= cine.heartbeatMs &&
+                    now - cine.heartbeatMs <= 100
+                ? CinematicSignal(cine.state) : Signal::Unread;
+            const uint64_t at = g_reachVehicleSampleMs.load();
+            const auto snapshot = g_reachVehicleInputSnapshot.load();
+            if (AimUnitFreshlyAbsent(title, now))
+                e.unit = Signal::No;
+            if (!(at && now >= at && now - at <= 100))
+                e.seated = Signal::Unread;
+            else if (snapshot == ReachVehicleInputSnapshot(generation, ReachVehicleInputState::OnFoot))
+                e.seated = Signal::No;
+            else if (snapshot == ReachVehicleInputSnapshot(generation, ReachVehicleInputState::Vehicle))
+                e.seated = Signal::Yes;
+            else
+                e.seated = Signal::Unread;
+            // No camera rung is bound for Reach: the view model is its only first-person proof (it also covers
+            // Armor Lock and the death camera), so an unarmed unit -- Forge's Monitor -- stands down.
+            e.viewModel = SignalIf(ReachFirstPersonFresh(now));
+            break;
+        }
+#if HALOMCCVR_HALO2_STEREO6DOF
+        case GameTitle::Halo2:
+            if (Halo2Observer6Dof_OnFootFresh())
+            {
+                e.unit = Signal::Yes;
+                e.seated = Signal::No;
+            }
+            else
+                e.seated = Halo2Observer6Dof_LastKnownSeatValid() && Halo2Observer6Dof_LastKnownSeated()
+                    ? Signal::Yes : Signal::Unread;
+            // Halo 2's first-person proof is its first-person palette packet (no camera rung is bound).
+            e.viewModel = SignalIf(Halo2Observer6Dof_FinalPaletteArmed());
+            break;
+#endif
+#if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA
+        case GameTitle::Halo4:
+        {
+            if (!Halo4ContactMeleeReady() || g_halo4Contact.generation != g_halo4Camera.generation.load())
+            {
+                e.seated = Signal::Unread;
+                break;
+            }
+            e.cinematic = CinematicSignal(ReadHalo4CinematicControl());
+            if (AimUnitFreshlyAbsent(title, now))
+                e.unit = Signal::No;
+            Halo4FirstPersonAccess fp{};
+            // record is validated even for an unarmed player with zero weapon nodes.
+            (void)Halo4ResolveFirstPerson(0, fp);
+            if (!fp.record)
+            {
+                if (e.unit != Signal::No)
+                    e.unit = Signal::Unread;
+                break;
+            }
+            const auto unit = *reinterpret_cast<const uint32_t*>(fp.record + kHalo4FirstPersonRecordUnitOffset);
+            const auto* biped = Halo4ContactBiped(unit);
+            // Existing H4EK-proven contact admission: unparented local biped.
+            e.unit = SignalIf(biped != nullptr);
+            if (biped)
+                e.seated = SignalIf(*reinterpret_cast<const int32_t*>(biped + 0x24) != -1);
+            // The camera at his eye (the first-person witness): third person is on foot and player-controlled
+            // too. The skinning hook belongs to the optional floating hands; without it there is no witness.
+            e.viewModel = g_halo4FirstPersonWitnessHooked.load(std::memory_order_acquire)
+                ? SignalIf(WitnessFresh(g_halo4FirstPersonMs, now, kHalo4FirstPersonFreshMs))
+                : Signal::Unavailable;
+            break;
+        }
+#endif
+        default:
+            e.seated = Signal::Unread;   // no title we know how to read
+            break;
+        }
+        return e;
+    }
+}
+
+roomscale_admission::Verdict Game_TitleOnFootVerdict(GameTitle title)
+{
+    roomscale_admission::Verdict verdict{};
+    verdict.refusal = roomscale_admission::Refusal::WrongTitle;
+    if (title != TitleAdapter_GetActiveTitle())
+        return verdict;
+    __try
+    {
+        bool hold = false, monitorFaulted = false;
+        const roomscale_admission::TitleEvidence e =
+            ReadRoomscaleTitleEvidence(title, GetTickCount64(), hold, monitorFaulted);
+        verdict.rungs = roomscale_admission::PackRungs(e.camera, e.monitor, e.viewModel);
+        verdict.monitorCheckFaulted = monitorFaulted;
+        verdict.refusal = hold ? roomscale_admission::Refusal::Menu : roomscale_admission::ClassifyTitle(e);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        verdict.refusal = roomscale_admission::Refusal::StaleSample;
+    }
+    return verdict;
+}
+
+bool Game_TitleOnFootPlayerControlled(GameTitle title)
+{
+    return Game_TitleOnFootVerdict(title).Admitted();
+}
+
+roomscale_admission::Verdict Game_RoomscaleCameraVerdict(GameTitle title)
+{
+    roomscale_admission::Presentation p{};
+    p.titleActive = title == TitleAdapter_GetActiveTitle();
+    p.enabled = (g_config.roomscale_movement || g_config.physical_running) && g_enabled.load() &&
+        g_positional.load() && g_vrAim.load() && VR_IsStereoEnabled();
+    p.menu = Menu_IsOpen() || VR_IsPausePresentation() || VR_IsPausePresentationTarget();
+    p.theatre = VR_IsCutsceneTheaterActive();
+    p.mode = TitleAdapter_GetRuntimeMode();
+    roomscale_admission::Verdict verdict{};
+    verdict.refusal = roomscale_admission::ClassifyPresentation(p);
+    if (verdict.refusal == roomscale_admission::Refusal::None)
+        verdict = Game_TitleOnFootVerdict(title);
+    return verdict;
+}
+
+bool Game_RoomscaleCameraAllowed(GameTitle title)
+{
+    return Game_RoomscaleCameraVerdict(title).Admitted();
 }

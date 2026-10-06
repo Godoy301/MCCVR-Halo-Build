@@ -555,5 +555,56 @@ int RunRoomscaleInputTests()
     Roomscale_Camera(testTitle,true,ceBody,ceHead,ceOrientation,ceForward,ceReference,.328084f);
     check(!PhysicalRunning_Move(rx,ry),"reload/holster grip ownership suppresses arm-swing locomotion");
     g_config.physical_running=savedRun;g_config.physical_running_speed=savedSpeed;
+
+    // THE ADMISSION VERDICT (roomscale_admission_logic.h). A refusal stops the follow whatever its reason and is
+    // counted under that reason; the first admitted frame of the next title re-arms it with nothing carried over
+    // (several titles in one MCC session: ODST -> Halo 3 in the user's log).
+    {
+        using roomscale_admission::Refusal;
+        const bool savedRoomscale=g_config.roomscale_movement;
+        g_config.roomscale_movement=true;
+        const float q[4]{0,0,0,1}, forward[3]{1,0,0};
+        const auto walk=[&](GameTitle title,const roomscale_admission::Verdict& verdict,float step,float& x,float& y) {
+            testTitle=title; ++testGeneration; testNow+=1000; testTracking=true; testMode=RuntimeMode::Gameplay;
+            float body[3]{},head[3]{0,1.7f,0},ref[3]{0,1.7f,0};
+            Roomscale_Input(true,0,0);
+            Roomscale_Camera(title,verdict,body,head,q,forward,ref,0.328084f);
+            testNow+=16; head[2]=-step; Roomscale_Input(true,0,0);
+            Roomscale_Camera(title,verdict,body,head,q,forward,ref,0.328084f);
+            x=y=0;
+            return Roomscale_Move(x,y);
+        };
+        for (auto& counter:admissionRefused) counter.store(0);
+        float x=0,y=0;
+        check(walk(GameTitle::Halo3ODST,Roomscale_Refuse(Refusal::None),0.2f,x,y) && y>0,
+            "an admitted verdict walks the body (ODST)");
+        // The unarmed Halo 3 player before the fix: the title refused for want of a view model.
+        check(!walk(GameTitle::Halo3,Roomscale_Refuse(Refusal::NoFirstPersonModel),0.2f,x,y),
+            "a refused verdict issues no follow command");
+        check(admissionRefused[size_t(Refusal::NoFirstPersonModel)].load()==2 &&
+              admissionRefused[size_t(Refusal::Seated)].load()==0,
+            "the refusal is counted under the reading that refused, once per camera frame");
+        check((admissionLastRungs.load()>>16)==unsigned(GameTitle::Halo3) &&
+              ((admissionLastRungs.load()>>8)&0xFFu)==unsigned(Refusal::NoFirstPersonModel),
+            "the last refusal remembers its title and reason for the report");
+        // ... and after it: the same title, admitted, walks at once.
+        check(walk(GameTitle::Halo3,Roomscale_Refuse(Refusal::None),0.2f,x,y) && y>0,
+            "the title that refused walks again on its first admitted frames");
+        // Back and forth between titles: each switch starts over and re-arms.
+        check(walk(GameTitle::HaloReach,Roomscale_Refuse(Refusal::None),0.2f,x,y) && y>0 &&
+              walk(GameTitle::Halo3,Roomscale_Refuse(Refusal::None),0.2f,x,y) && y>0,
+            "switching titles in one session re-arms the follow each time");
+        check(errorLastMm.load()<1000 && recenterOffsetMm.load()<1000,
+            "the report's 'now' numbers are the active title's");
+        // The bare yes / no overload is the same call.
+        float body[3]{},head[3]{0,1.7f,0},ref[3]{0,1.7f,0};
+        for (auto& counter:admissionRefused) counter.store(0);
+        Roomscale_Camera(testTitle,false,body,head,q,forward,ref,0.328084f);
+        check(admissionRefused[size_t(Refusal::Unspecified)].load()==1, "a bare 'not allowed' is counted as the caller's");
+        // The status tick drains the window's counters (the line itself is roomscale_admission::FormatRefusals).
+        testNow+=5000; Roomscale_Report();
+        check(admissionRefused[size_t(Refusal::Unspecified)].load()==0, "the report starts a new window");
+        g_config.roomscale_movement=savedRoomscale;
+    }
     return failures;
 }

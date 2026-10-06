@@ -1439,7 +1439,7 @@ namespace
             const HeadReference beforeRoomscale = g_reference;
             // The camera's own admission, which also admits physical running (0.7.0) with roomscale off; the
             // first-admission re-seat above stays roomscale's alone.
-            Roomscale_Camera(GameTitle::Halo2, Game_RoomscaleCameraAllowed(GameTitle::Halo2),
+            Roomscale_Camera(GameTitle::Halo2, Game_RoomscaleCameraVerdict(GameTitle::Halo2),
                 stock.position, snapshot.headPosition, snapshot.headOrientation, tracked.forward,
                 g_reference.position, head.worldScale);
             memcpy(head.referencePosition, g_reference.position, sizeof(head.referencePosition));

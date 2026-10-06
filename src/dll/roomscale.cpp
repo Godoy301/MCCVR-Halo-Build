@@ -48,6 +48,14 @@ uint64_t followSampledAt = 0;
 std::atomic<uint64_t> jumpHeldAt{0};
 std::atomic<uint64_t> recenterClosedUm[3]{}, recenterBlends[2]{}, recenterTakeoffs{0}, recenterOffsetMm{0};
 std::atomic<uint64_t> recenterRefused[size_t(roomscale_recenter::Refusal::Count)]{};
+// THE ADMISSION, BY REASON (roomscale_admission_logic.h). `blocked native` above is one number for a seat, a
+// cinematic, a death camera, a menu and an unarmed player alike; the camera hook counts which reading refused,
+// and keeps the first-person rungs as they stood at the last refusal (camera / Monitor / view model) and the
+// title they belong to. The Monitor predicate faulting is reported once per title generation.
+std::atomic<uint64_t> admissionRefused[size_t(roomscale_admission::Refusal::Count)]{};
+std::atomic<uint32_t> admissionLastRungs{0};   // rungs | refusal << 8 | title << 16
+std::atomic<uint32_t> admissionFaultGeneration{0};
+std::atomic<int> admissionFaultTitle{0};
 // The blend is integrated at frame rate, and GetTickCount64 ticks in 15.6 ms steps: at 90 Hz that is
 // one or two frames with no time and then a frame with two frames' worth, which would show as the
 // world stepping during the slide. A test build supplies its own clock.
@@ -153,6 +161,15 @@ void Roomscale_Camera(GameTitle title,bool allowed,const float body[3],
     const float head[3],const float q[4],const float forward[3],
     float reference[3],float scale) noexcept
 {
+    Roomscale_Camera(title,Roomscale_Refuse(allowed ? roomscale_admission::Refusal::None
+        : roomscale_admission::Refusal::Unspecified),body,head,q,forward,reference,scale);
+}
+
+void Roomscale_Camera(GameTitle title,const roomscale_admission::Verdict& admission,const float body[3],
+    const float head[3],const float q[4],const float forward[3],
+    float reference[3],float scale) noexcept
+{
+    const bool allowed=admission.Admitted();
     if (title!=TitleAdapter_GetActiveTitle()) return;
     // Fail immediately on overlapping title callbacks; no locks or waits in a hook.
     if (publishing.test_and_set(std::memory_order_acquire)) return;
@@ -178,7 +195,11 @@ void Roomscale_Camera(GameTitle title,bool allowed,const float body[3],
     // progress: the distance the player is owed survives it (RoomscaleFollow::Rebase). The original
     // law started over there too, as it shipped.
     if (prior!=title)
-    { state={}; original={}; recenter.Reset(); prior=title; priorHistoryEpoch=history; }
+    {
+        state={}; original={}; recenter.Reset(); prior=title; priorHistoryEpoch=history;
+        // The report's "now" numbers belong to the title that measured them.
+        errorLastMm.store(0,std::memory_order_relaxed); recenterOffsetMm.store(0,std::memory_order_relaxed);
+    }
     else if (priorHistoryEpoch!=history)
     {
         if (law) state.Rebase(); else original={};
@@ -191,6 +212,14 @@ void Roomscale_Camera(GameTitle title,bool allowed,const float body[3],
     }
     priorInputEpoch=epoch;
     const auto generation=TitleAdapter_GetGeneration(title);
+    // A new level of the same title starts the recenter over as well (the follow re-seeds itself on the
+    // generation: RoomscaleFollow::Update): a jump witness or a blend must not straddle a load.
+    static uint32_t priorGeneration=0;
+    if (priorGeneration!=generation)
+    {
+        recenter.Reset(); priorGeneration=generation;
+        errorLastMm.store(0,std::memory_order_relaxed); recenterOffsetMm.store(0,std::memory_order_relaxed);
+    }
     const bool tracking = VR_RoomscaleTrackingFresh();
     // Native on-foot admission belongs to the camera owner, never an arbitrary
     // XInput/OpenXR thread calling engine TLS accessors.
@@ -227,7 +256,20 @@ void Roomscale_Camera(GameTitle title,bool allowed,const float body[3],
         tracking && input && title==TitleAdapter_GetActiveTitle();
     if (g_config.roomscale_movement)
     {
-        if (!allowed) nativeBlocked.fetch_add(1, std::memory_order_relaxed);
+        if (!allowed)
+        {
+            nativeBlocked.fetch_add(1, std::memory_order_relaxed);
+            const auto why=size_t(admission.refusal)<size_t(roomscale_admission::Refusal::Count)
+                ? admission.refusal : roomscale_admission::Refusal::Unspecified;
+            admissionRefused[size_t(why)].fetch_add(1,std::memory_order_relaxed);
+            admissionLastRungs.store(uint32_t(admission.rungs)|(uint32_t(why)<<8)|(uint32_t(title)<<16),
+                std::memory_order_relaxed);
+        }
+        if (admission.monitorCheckFaulted)
+        {
+            admissionFaultTitle.store(static_cast<int>(title),std::memory_order_relaxed);
+            admissionFaultGeneration.store(generation,std::memory_order_release);
+        }
         if (!tracking) trackingBlocked.fetch_add(1, std::memory_order_relaxed);
         if (!input) inputBlocked.fetch_add(1, std::memory_order_relaxed);
     }
@@ -384,6 +426,19 @@ void Roomscale_Report() noexcept
             double(roomscale_recenter::ClampSpeed(recenterSettings.movingSpeed,0.5f)));
         previousRecenter=recenterNow;
     }
+    // The two "now" numbers are the active title's own: another title's (or level's) last value is not
+    // carried into the lines printed while the new one loads, before its camera hook has run a frame.
+    {
+        static GameTitle reportTitle=GameTitle::None;
+        static uint32_t reportGeneration=0;
+        const GameTitle activeTitle=TitleAdapter_GetActiveTitle();
+        const uint32_t activeGeneration=TitleAdapter_GetGeneration(activeTitle);
+        if (activeTitle!=reportTitle || activeGeneration!=reportGeneration)
+        {
+            reportTitle=activeTitle; reportGeneration=activeGeneration;
+            errorLastMm.store(0,std::memory_order_relaxed); recenterOffsetMm.store(0,std::memory_order_relaxed);
+        }
+    }
     if (now-last<2000) return;
     last=now;
     const auto good=admitted.exchange(0),bad=refused.exchange(0),moves=consumed.exchange(0);
@@ -403,6 +458,41 @@ void Roomscale_Report() noexcept
             lawInEffect.load(std::memory_order_relaxed)==0 ? "threshold" : "hysteresis",
             good ? "native body follow available" :
             "StockFallback: awaiting fresh on-foot camera, tracking and gameplay input; VR stays active");
+    // Why the title refused, by reading (counted in every build; printed in dev builds, and only for a window
+    // that had a refusal). The rungs are the first-person evidence as it stood at the last refusal.
+    {
+        using roomscale_admission::Refusal;
+        uint64_t reasons[size_t(Refusal::Count)]{};
+        uint64_t total=0;
+        for (size_t i=0;i<size_t(Refusal::Count);++i) { reasons[i]=admissionRefused[i].exchange(0); total+=reasons[i]; }
+        const uint32_t last=admissionLastRungs.load(std::memory_order_relaxed);
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        if (enabled && total)
+        {
+            char line[1024];
+            const int head=snprintf(line,sizeof line,
+                "Roomscale admission: title=%u refused %llu of %llu camera frames:",
+                unsigned(last>>16),(unsigned long long)total,(unsigned long long)(good+bad));
+            if (head>0 && size_t(head)<sizeof line)
+                roomscale_admission::FormatRefusals(line+head,sizeof line-size_t(head),reasons,
+                    Refusal((last>>8)&0xFFu),uint8_t(last));
+            LOG("%s",line);
+        }
+#else
+        (void)reasons; (void)total; (void)last;
+#endif
+        // The Monitor predicate faulting is a degraded feature: said once per title generation, in every build.
+        static uint32_t faultSaid=0;
+        const uint32_t faultGeneration=admissionFaultGeneration.load(std::memory_order_acquire);
+        if (faultGeneration && faultGeneration!=faultSaid)
+        {
+            faultSaid=faultGeneration;
+            LOG("Roomscale admission: title=%d StockFallback: the Forge Monitor check FAULTED and is off until "
+                "the next level; an unarmed player is admitted only while a first-person view model is drawn. "
+                "VR and the body follow are otherwise unaffected",
+                admissionFaultTitle.load(std::memory_order_relaxed));
+        }
+    }
     const auto stoodDown=guardStoodDown.exchange(0), notOurs=guardNotOurs.exchange(0);
     if (enabled && (stoodDown || notOurs))
         LOG("Roomscale guard: stood down %llu time(s) (the character ignored the follow's stick for %llu ms); "
