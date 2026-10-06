@@ -152,6 +152,12 @@ void LegacyResolveSightFlags(GameTitle title, uintptr_t base, size_t size,
         "kit's value, and the global the contact install pinned); tracing with 0x%llX, mode %d",
         LegacySightTitleName(title), anchors, static_cast<unsigned long long>(global - base),
         static_cast<unsigned long long>(value), static_cast<unsigned long long>(flags), kReachAimTraceMode);
+    // What those flags let the ray stop on, decoded with this title's own layout (sight_hit_class_logic.h).
+    Sight_AnnounceTraceQuery(title, title == GameTitle::Halo3ODST ? sight_hit::Engine::ODST : sight_hit::Engine::Halo3,
+        flags, "collision_test_vector, mode 0", "the engine's own crosshair trace, resolved and value-checked",
+        "on foot it ignores the unit (the engine skips the held weapon with it); seated it ignores the vehicle's "
+        "root, the occupant and the seat's parent, the engine skips the rest of that vehicle, and a boarder on it "
+        "stays a target");
 }
 
 // Seated, a pass that meets our own vehicle continues 5 cm past the contact, at most this many passes
@@ -310,6 +316,8 @@ void LegacySightTraceTick(GameTitle title, uint32_t unit, int32_t localUnit, boo
             return false;
         const int type = LegacySightObjectType(objectType, object);
         const bool past = sight_hit::LookPastOwnHierarchy(true, object == static_cast<int32_t>(unit), type);
+        if (past)
+            Sight_NoteLookPast(title, Sight_ObjectHitClass(type));   // dev: what was stepped past, by class
         return past;
     };
     // Native collision initializes fields through +63 (type +0, fraction +4, point +8, object +0x40).
@@ -317,6 +325,7 @@ void LegacySightTraceTick(GameTitle title, uint32_t unit, int32_t localUnit, boo
     bool hit = false;
     float rangeWu = 0.0f;
     float alongWu = kSightTraceSkipWu;   // where this pass starts, measured from the eye
+    int32_t hitObject = -1;              // the object the published hit is on, or -1 (structure, or a miss)
     LARGE_INTEGER before{}, after{};
     QueryPerformanceCounter(&before);
     for (int pass = 0; pass < (seated ? kLegacySightSelfPasses : 1); ++pass)
@@ -344,21 +353,33 @@ void LegacySightTraceTick(GameTitle title, uint32_t unit, int32_t localUnit, boo
         if (!hit)
             break;
         rangeWu = alongWu + fraction * remainingWu;
+        // The result's type (+0) is 4 for an object (both modules' per-object test writes it), whose index is at +0x40.
+        int32_t resultType = 0, object = -1;
+        memcpy(&resultType, result, sizeof(resultType));
+        memcpy(&object, result + 0x40, sizeof(object));
+        hitObject = resultType == 4 ? object : -1;
         if (!seated)
             break;
-        int32_t object = -1;
-        memcpy(&object, result + 0x40, sizeof(object));
         if (!isOurs(object))
             break;
         // A part of our own vehicle the ignores did not cover: not a target. Look past it.
         state.selfHits.fetch_add(1, std::memory_order_relaxed);
         hit = false;
         rangeWu = 0.0f;
+        hitObject = -1;
         alongWu += fraction * remainingWu + kLegacySightSelfStepWu;
     }
     QueryPerformanceCounter(&after);
     Sight_PublishTrace(title, generation, hit, hit ? rangeWu : 0.0f,
                        static_cast<uint64_t>(after.QuadPart - before.QuadPart));
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    // SIGHT HITS (dev): what the ray stopped on, by class -- after the cost was taken, so the trace's time is its own.
+    {
+        const int type = hit && hitObject != -1 ? LegacySightObjectType(objectType, hitObject) : -1;
+        Sight_NoteTraceHit(title, sight_hit::ClassifyHit(hit, hitObject != -1, type), type, hit ? rangeWu : 0.0f,
+                           seated);
+    }
+#endif
     // THE SEAT LIMIT RAY (seat_limit_reticle_logic.h): while a seat's reticle is clamped at a natural stop, the ray
     // its gun really aims along -- from the seat's shot origin along the limit-clamped direction -- in this same tick,
     // with these same ignores. Only while the aim path published one; nothing the aim reads moves.

@@ -390,6 +390,17 @@ void ContactTick(uint32_t unit)
 // ray with 0x1000E9 (HCEEK collisions.h: _collision_test_for_projectiles_flags -- structure, media, front
 // faces, ignore invisible, and objects of every type), ignoring the player's unit. It is the query and the
 // thread the physical-melee backend above already uses. The aim path bends its aim through the point.
+//
+// WHAT THE FLAGS HIT (sight_hit_class_logic.h; static read of halo1.dll, 2026-10-05): bits 0, 3, 5, 6, 7, 20 =
+// front faces, ignore invisible, structure, media, OBJECTS, try-to-keep-location-valid. The objects bit with no
+// type bit is widened to all 12 object types by the collision function itself (0xB91854), so bipeds, vehicles,
+// scenery and machines all stop the ray; the ignored unit is skipped WITH its children (its held weapon). Seven
+// retail call sites pass this same immediate to the collision function. On foot only: a seated unit is not
+// traced (Admitted wants onFoot), and CE's vehicle packet takes the raw controller forward.
+// ADDR-HYGIENE: structural (an engine enum value, HCEEK-named, not an address; decoded and unit-tested in
+// sight_hit_class_logic.h, and the install line states what it hits).
+constexpr uint32_t kSightProjectileFlags=0x1000e9;
+static_assert(sight_hit::HitsUnitsAndVehicles(sight_hit::DecodeTraceFlags(sight_hit::Engine::HaloCE,kSightProjectileFlags)));
 uint8_t GuardedSightTrace(const float* start,const float* displacement,uint32_t unit,
     CollisionResult& result,bool& faulted) noexcept
 {
@@ -397,10 +408,25 @@ uint8_t GuardedSightTrace(const float* start,const float* displacement,uint32_t 
     __try
     {
         return reinterpret_cast<CollisionFn>(moduleBase+contract::contact::contact_collision)(
-            0x1000e9,start,displacement,unit,&result);
+            kSightProjectileFlags,start,displacement,unit,&result);
     }
     __except(EXCEPTION_EXECUTE_HANDLER) { faulted=true;return 0; }
 }
+#if HALOMCCVR_DEV_DIAGNOSTICS
+// The type of an object a trace hit (dev: the SIGHT HITS line), through the native accessor's own type mask
+// (bit = type; the lane's Object(handle,1) is "a biped"). -1: the table no longer holds the handle. Guarded.
+int SightObjectType(uint32_t handle) noexcept
+{
+    __try
+    {
+        if (!Object(handle,UINT32_MAX)) return -1;
+        for (int type=0;type<12;++type)
+            if (Object(handle,1u<<type)) return type;
+    }
+    __except(EXCEPTION_EXECUTE_HANDLER) {}
+    return -1;
+}
+#endif
 void SightTick(uint32_t unit) noexcept
 {
     constexpr GameTitle kTitle=GameTitle::HaloCE;
@@ -439,6 +465,16 @@ void SightTick(uint32_t unit) noexcept
     const bool hit=returned&&std::isfinite(result.fraction)&&result.fraction>=0&&result.fraction<=1;
     Sight_PublishTrace(kTitle,generation.load(std::memory_order_acquire),hit,
         hit?kSightTraceSkipWu+result.fraction*length:0.0f,static_cast<uint64_t>(q1.QuadPart-q0.QuadPart));
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    // SIGHT HITS (dev): what the ray stopped on, by class (CE's result type 3 is an object, its handle at +0x38)
+    // -- after the cost was taken, so the trace's time is its own.
+    {
+        const bool objectHit=hit&&result.type==3&&result.object!=UINT32_MAX;
+        const int type=objectHit?SightObjectType(result.object):-1;
+        Sight_NoteTraceHit(kTitle,sight_hit::ClassifyHit(hit,objectHit,type),type,
+            hit?kSightTraceSkipWu+result.fraction*length:0.0f,false);
+    }
+#endif
 }
 __declspec(noinline) uint8_t __fastcall TickHook(uint32_t unit)
 {
@@ -562,6 +598,11 @@ bool Install(uintptr_t base,size_t size,uint32_t gen) noexcept
         } else LOG("CE weapon haptics stock fallback: %s",failure?failure:"native envelope verification");
     }
     installed=true;active=true;
+    // What the sight trace's flags let the intent ray stop on, decoded with CE's own layout.
+    Sight_AnnounceTraceQuery(GameTitle::HaloCE,sight_hit::Engine::HaloCE,kSightProjectileFlags,
+        "the collision test the biped tick hook already calls",
+        "the engine's own projectile flags (HCEEK _collision_test_for_projectiles_flags)",
+        "on foot it ignores the unit (the engine skips the held weapon with it); a seated unit is not traced");
     LOG("CE contact installed: native biped update, world clamp=%d physical melee=%d; 12 stock CE authored weapon envelopes in both renderers, exact custom/Anniversary replacement surfaces unproven",worldReady.load(),meleeReady.load());
     LOG("CE physical melee reach: %.0f cm along speed-qualified physical swing; native first obstruction, exact target/material requery and per-hand retraction retained",kPhysicalMeleeReachMetres*100);
     LOG("CE environment melee: native surface/material path %s; exact BSP/feature revalidation, native authored breakable damage",worldMeleeReady.load()?"installed":"unavailable");

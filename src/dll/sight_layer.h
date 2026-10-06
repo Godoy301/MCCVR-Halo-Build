@@ -377,6 +377,31 @@ void Sight_NoteIntentPairing(GameTitle title, int kind);
 // Cold worker: one status line per title that is tracing, every 2 s.
 void Sight_Report();
 
+// WHAT THE INTENT RAY CAN HIT (sight_hit_class_logic.h, 2026-10-05). A trace whose flags leave out bipeds or
+// vehicles converges the aim on the wall behind the target, and nothing else in the log would say so.
+// Sight_AnnounceTraceQuery (every build; cold path): the title's trace driver says, once per install, when its
+// flags are settled, which query it runs and with which flags; the line decodes them into structure / bipeds / vehicles /
+// other objects with that title's own bit layout, and WARNS when a class is missing:
+//   SIGHT <title> intent ray: <query>, flags 0x.. (<source>): stops on structure yes, bipeds yes, vehicles yes,
+//     other objects yes (every one of N object types)[; the engine's own culls in these flags: ...]
+// `seatedNote`: what the trace does in a seat (its ignore set), or that it does not trace there.
+// Sight_NoteTraceHit / Sight_NoteLookPast (dev; empty in player builds): each trace's result by class, and each
+// part of our own vehicle a seated trace looked past. Logged by Sight_Report every 2 s per title:
+//   SIGHT HITS <title> (dev): N traces (S seated): structure a [x-y m], biped b [x-y m], vehicle c [x-y m],
+//     other object d [x-y m, last type T], unknown-type object u, miss m; looked past our own vehicle: k (...)
+// A headset check is then one look: aim at an enemy or a parked vehicle in front of a far wall and the biped /
+// vehicle count rises with the near range. `objectType`: the title's own object type (0 biped, 1 vehicle), -1
+// unknown. One writer per title (its trace thread).
+void Sight_AnnounceTraceQuery(GameTitle title, sight_hit::Engine engine, uint64_t flags, const char* query,
+                              const char* source, const char* seatedNote);
+void Sight_NoteTraceHit(GameTitle title, sight_hit::HitClass hit, int objectType, float rangeWu, bool seated);
+void Sight_NoteLookPast(GameTitle title, sight_hit::HitClass part);
+// The class of an object hit, from the title's own object type (-1 unknown).
+inline sight_hit::HitClass Sight_ObjectHitClass(int objectType)
+{
+    return sight_hit::ClassifyHit(true, true, objectType);
+}
+
 // AN AUXILIARY RAY: one the title's simulation-thread trace runs beside the intent ray, in the same tick, with the
 // same native query, flags and ignores, into a slot of its own -- from a shot origin along a direction the game
 // really aims, to the first surface. Nothing the aim converges on reads it: the intent ray, its trace, the smoothed

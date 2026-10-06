@@ -295,6 +295,16 @@ void Halo4SightTraceTick(uint32_t unit,void* instance)
     Sight_PublishTrace(kTitle,generation,hit,hit ? kSightTraceSkipWu+output.fraction*length : 0.0f,
         static_cast<uint64_t>(after.QuadPart-before.QuadPart));
 #if HALOMCCVR_DEV_DIAGNOSTICS
+    // SIGHT HITS (dev): what the ray stopped on, by class (an object hit is result type 4, its handle at +0x28, as
+    // the contact backend reads it) -- after the cost was taken, so the trace's time is its own.
+    {
+        const bool objectHit=hit && output.type==4 && output.objectIndex!=-1;
+        const int type=objectHit ? Halo4SightObjectTypeGuarded(output.objectIndex) : -1;
+        Sight_NoteTraceHit(kTitle,sight_hit::ClassifyHit(hit,objectHit,type),type,
+            hit ? kSightTraceSkipWu+output.fraction*length : 0.0f,false);
+    }
+#endif
+#if HALOMCCVR_DEV_DIAGNOSTICS
     // [assess-only begin]
     if(assessFaulted)
         Sight_NoteAssessTraceFault(kTitle);   // the assessment's own latch, not the aim's
@@ -536,6 +546,15 @@ bool InstallHalo4ContactMelee(uintptr_t base,size_t size,uint32_t generation)
                 "0x%llX (global +0x2FFB098, pinned from its own call site; the shot's own flags did not resolve: "
                 "%s); on foot, the unit ignored", meleeFlags ? "armed" : "NOT armed",
                 static_cast<unsigned long long>(meleeFlags),shotWhy);
+        // What those flags let the ray stop on, decoded with Halo 4's own layout (sight_hit_class_logic.h).
+        if(meleeFlags)
+            Sight_AnnounceTraceQuery(GameTitle::Halo4,sight_hit::Engine::Halo4,shotWhy ? meleeFlags : shotFlags,
+                "PhysicsRayCast, profile 0x1A",
+                shotWhy ? "the melee query's flags, a proxy: the shot's own did not resolve"
+                        : "the engine's own shot aim-assist query, resolved and value-checked",
+                "on foot it ignores the unit (the engine skips the held weapon with it); a seated unit is not "
+                "traced in a player build (dev halo4_seat_converge: the vehicle's root, the occupant, the seat's "
+                "parent and the controlled unit, and the engine skips the rest of that vehicle but a boarder)");
     }
     return true;
 }

@@ -310,6 +310,14 @@ bool ReachDevReadVec3(const float* source, float* out)
 inline constexpr uint64_t kReachCollisionTestFlagsInit = 0x0000000100024809ull;
 inline constexpr uint32_t kReachAimTraceFlagsOr = 0x00202000u;
 inline constexpr int32_t kReachAimTraceMode = 0;
+// The value the resolvers accept (Reach, and Halo 3 / ODST in legacy_sight_trace.inl) lets the intent ray stop on
+// the level, on characters and on vehicles, by each title's own flag layout (sight_hit_class_logic.h).
+static_assert(sight_hit::HitsUnitsAndVehicles(sight_hit::DecodeTraceFlags(
+    sight_hit::Engine::Reach, kReachCollisionTestFlagsInit | kReachAimTraceFlagsOr)));
+static_assert(sight_hit::HitsUnitsAndVehicles(sight_hit::DecodeTraceFlags(
+    sight_hit::Engine::Halo3, kReachCollisionTestFlagsInit | kReachAimTraceFlagsOr)));
+static_assert(sight_hit::HitsUnitsAndVehicles(sight_hit::DecodeTraceFlags(
+    sight_hit::Engine::ODST, kReachCollisionTestFlagsInit | kReachAimTraceFlagsOr)));
 
 struct ReachSightFlagsState
 {
@@ -499,6 +507,11 @@ void ReachResolveSightFlags(uintptr_t base, size_t size)
         static_cast<unsigned long long>(anchor - base), static_cast<unsigned long long>(global - base),
         static_cast<unsigned long long>(value), static_cast<unsigned long long>(collisionTest - base),
         static_cast<unsigned long long>(flags), kReachAimTraceMode);
+    // What those flags let the ray stop on, decoded with Reach's own layout (sight_hit_class_logic.h).
+    Sight_AnnounceTraceQuery(GameTitle::HaloReach, sight_hit::Engine::Reach, flags, "collision_test_vector, mode 0",
+        "the engine's own crosshair trace, resolved and value-checked against HREK",
+        "on foot it ignores the unit; seated it ignores the vehicle's root, the occupant and the seat's parent, and "
+        "looks past any other part of that vehicle");
 }
 
 // The flags this tick traces with (0 = off). Resolved flags, or in a dev build an explicit override.
@@ -675,8 +688,13 @@ void ReachSightTraceTick(uint32_t unit)
         if (object == -1 || ReachSightRootOf(object) != root)
             break;
         // A part of our own vehicle the ignores did not cover (another occupant, an attached gun):
-        // not a target. Look past it.
+        // not a target. Look past it. (Halo 3, ODST and Halo 4 keep a BOARDER here -- a biped of our hierarchy
+        // their engines return on purpose, sight_hit::LookPastOwnHierarchy. Reach's object predicate has not
+        // been decoded, so Reach still looks past every part; the dev SIGHT HITS line counts what by class.)
         REACH_SIGHT_DEV_COUNT(trace.selfHits);
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        Sight_NoteLookPast(GameTitle::HaloReach, Sight_ObjectHitClass(ReachSightHitObjectKind(result)));
+#endif
         hit = false;
         rangeWu = 0.0f;
         alongWu += fraction * remainingWu + kReachSightSelfStepWu;
@@ -690,11 +708,18 @@ void ReachSightTraceTick(uint32_t unit)
     uint64_t priorTicks = trace.traceTicksMax.load(std::memory_order_relaxed);
     while (spent > priorTicks && !trace.traceTicksMax.compare_exchange_weak(priorTicks, spent, std::memory_order_relaxed)) {}
     (hit ? trace.hits : trace.misses).fetch_add(1, std::memory_order_relaxed);
-    if (hit && type == 4)
     {
-        trace.objectHits.fetch_add(1, std::memory_order_relaxed);
-        if (ReachSightHitObjectKind(result) == 0)
-            trace.bipedHits.fetch_add(1, std::memory_order_relaxed);
+        // SIGHT HITS (dev): what the ray stopped on, by class (result type 4 = an object; its kind from the table).
+        const bool objectHit = hit && type == 4;
+        const int kind = objectHit ? ReachSightHitObjectKind(result) : -1;
+        if (objectHit)
+        {
+            trace.objectHits.fetch_add(1, std::memory_order_relaxed);
+            if (kind == 0)
+                trace.bipedHits.fetch_add(1, std::memory_order_relaxed);
+        }
+        Sight_NoteTraceHit(GameTitle::HaloReach, sight_hit::ClassifyHit(hit, objectHit, kind), kind,
+                           hit ? rangeWu : 0.0f, seated);
     }
     if (hit)
     {

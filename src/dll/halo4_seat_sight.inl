@@ -739,6 +739,7 @@ void Halo4SightTraceSeated(uint32_t unit, void* instance)
     if (!collisionFlags)
         memcpy(&collisionFlags, g_halo4Contact.flags, sizeof(collisionFlags));
     LARGE_INTEGER before{}, after{};
+    int32_t lastObject = -1;   // the object the last pass stopped on (-1: structure, or nothing)
     QueryPerformanceCounter(&before);
     const auto trace = [&](float alongWu, float remainingWu) {
         halo4_seat_aim::TracePass pass{};
@@ -761,6 +762,7 @@ void Halo4SightTraceSeated(uint32_t unit, void* instance)
         pass.fraction = output.fraction;
         // An object hit (type 4, as the contact backend reads it) names its handle; anything else is structure.
         pass.object = output.type == 4 ? output.objectIndex : -1;
+        lastObject = returned ? pass.object : -1;
         return pass;
     };
     // THE BOARDER RULE (sight_hit::LookPastOwnHierarchy; sight_hit_class_logic.h): PhysicsRayCast's own predicate
@@ -774,6 +776,7 @@ void Halo4SightTraceSeated(uint32_t unit, void* instance)
         const int type = Halo4SightObjectTypeGuarded(object);
         if (!sight_hit::LookPastOwnHierarchy(true, object == static_cast<int32_t>(unit), type))
             return -2;
+        Sight_NoteLookPast(kTitle, Sight_ObjectHitClass(type));   // dev: what was stepped past, by class
         return hitRoot;
     };
     const auto result = halo4_seat_aim::TraceLookingPast(kSightTraceLengthWu, kSightTraceSkipWu,
@@ -799,6 +802,15 @@ void Halo4SightTraceSeated(uint32_t unit, void* instance)
     auto& legacy = LegacySight(kTitle);
     legacy.seatedTraces.fetch_add(1, std::memory_order_relaxed);
     legacy.selfHits.fetch_add(static_cast<uint64_t>(result.selfHits), std::memory_order_relaxed);
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    // SIGHT HITS (dev): what the seated ray stopped on, by class (the last pass's object when it was kept as the hit).
+    {
+        const bool objectHit = result.hit && lastObject != -1;
+        const int type = objectHit ? Halo4SightObjectTypeGuarded(lastObject) : -1;
+        Sight_NoteTraceHit(kTitle, sight_hit::ClassifyHit(result.hit, objectHit, type), type,
+                           result.hit ? result.rangeWu : 0.0f, true);
+    }
+#endif
     // The seat's own record (the shot witness reads it); with the stage-1 key, the sight layer's too: the aim
     // path converges on it only while every proof holds (Halo4SeatSightPrepare), so publishing alone bends
     // nothing.
