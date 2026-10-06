@@ -87,6 +87,16 @@ const uint8_t* OdstSightObjectData(uint32_t handle)
     return *reinterpret_cast<const uint8_t* const*>(entries+(handle&0xFFFF)*0x18+0x10);
 }
 
+// A live object's type: the header byte at entry +3 that collision_test_vector's own predicate tests (odst
+// 0x22E5D6: 0 biped, 1 vehicle), for the sight trace's hit class and its boarder rule. -1: a stale handle.
+int OdstSightObjectType(uint32_t handle)
+{
+    if(!OdstContactObject(handle)) return -1;
+    const auto* table=*reinterpret_cast<const uint8_t* const*>(OdstContactTls()+kOdstTlsObjectTableOffset);
+    const auto* entries=*reinterpret_cast<const uint8_t* const*>(table+0x48);
+    return entries[(handle&0xFFFF)*0x18+3];
+}
+
 bool OdstContactWorldHit(const uint8_t* bytes,contact_melee::Hit& hit)
 {
     if(!bytes) return false;
@@ -307,7 +317,7 @@ __declspec(noinline) uint8_t __fastcall OdstContactUpdateDetour(uint32_t unit)
             if(local!=-1 && unit==static_cast<uint32_t>(local))
                 LegacySightTraceTick(GameTitle::Halo3ODST,unit,local,
                     g_odstUnitInVehicle && !g_odstUnitInVehicle(local),g_odstWorldCollision,
-                    OdstSightObjectData);
+                    OdstSightObjectData,OdstSightObjectType);
         }
     }
     __finally { g_odstContact.callbacks.fetch_sub(1,std::memory_order_acq_rel); }

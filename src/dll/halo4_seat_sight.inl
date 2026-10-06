@@ -763,8 +763,21 @@ void Halo4SightTraceSeated(uint32_t unit, void* instance)
         pass.object = output.type == 4 ? output.objectIndex : -1;
         return pass;
     };
+    // THE BOARDER RULE (sight_hit::LookPastOwnHierarchy; sight_hit_class_logic.h): PhysicsRayCast's own predicate
+    // (0x1BFC24) already skips everything that descends from an ignored object except a boarder, so a biped of our
+    // hierarchy that is not our own unit is a target, not a part of our vehicle: it is handed on with a root that
+    // is not ours (-2), and the look-past keeps it as the hit. Everything else of ours is still looked past.
+    const auto rootOf = [&](int32_t object) {
+        const int32_t hitRoot = Halo4SightRootOf(object);
+        if (hitRoot != root)
+            return hitRoot;
+        const int type = Halo4SightObjectTypeGuarded(object);
+        if (!sight_hit::LookPastOwnHierarchy(true, object == static_cast<int32_t>(unit), type))
+            return -2;
+        return hitRoot;
+    };
     const auto result = halo4_seat_aim::TraceLookingPast(kSightTraceLengthWu, kSightTraceSkipWu,
-        kLegacySightSelfStepWu, kLegacySightSelfPasses, root, chain, chainCount, trace, Halo4SightRootOf);
+        kLegacySightSelfStepWu, kLegacySightSelfPasses, root, chain, chainCount, trace, rootOf);
     QueryPerformanceCounter(&after);
     if (!result.completed)
     {

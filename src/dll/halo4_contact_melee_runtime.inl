@@ -59,6 +59,26 @@ const uint8_t* Halo4ContactObject(uint32_t handle,bool requireBiped=false)
 
 const uint8_t* Halo4ContactBiped(uint32_t handle) { return Halo4ContactObject(handle,true); }
 
+// A live object's type: the header's kind byte at entry +4, the byte PhysicsRayCast's own object predicate tests
+// (halo4 0x1BFDB2: 0 biped, 1 vehicle), read only after the native accessor's full salt check passed. For the
+// sight trace's hit class. -1: a stale handle. Callers guard it (the simulation thread's __try).
+int Halo4SightObjectType(uint32_t handle)
+{
+    if(!Halo4ContactObject(handle)) return -1;
+    auto** slots=reinterpret_cast<const uint8_t**>(__readgsqword(0x58));
+    const auto* table=*reinterpret_cast<const uint8_t* const*>(slots[*g_halo4EngineTlsIndex]+0x18);
+    const auto* entries=*reinterpret_cast<const uint8_t* const*>(table+0x50);
+    return entries[(handle&0xFFFF)*0x18+4];
+}
+
+// The same, behind its own guard (kept free of C++ objects so __try is legal).
+int Halo4SightObjectTypeGuarded(int32_t object)
+{
+    if(object==-1) return -1;
+    __try { return Halo4SightObjectType(static_cast<uint32_t>(object)); }
+    __except(EXCEPTION_EXECUTE_HANDLER) { return -1; }
+}
+
 // Halo4RedirectContactRay, Halo4ContactDamageDetour (its damage forward goes through
 // CallNativeWithSpareSlots, see Halo4ContactDamageFn) and Halo4ContactBackend, shared with the native fixture.
 #include "halo4_contact_melee_backend.inl"

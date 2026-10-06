@@ -162,6 +162,24 @@ inline constexpr float kLegacySightSelfStepWu = 0.05f * kReachWorldUnitsPerMeter
 // kOdstObjectParentOffset; the seat samplers already walk it).
 inline constexpr size_t kLegacyObjectParentOffset = 0x10;
 using LegacyObjectDataFn = const uint8_t* (*)(uint32_t handle);
+// An object's type from the title's object table (the header byte the engine's own collision predicate tests:
+// 0 biped, 1 vehicle), or -1 when the table no longer holds the handle.
+using LegacyObjectTypeFn = int (*)(uint32_t handle);
+
+// The type of an object a trace hit, guarded (kept free of C++ objects so __try is legal). -1: unknown.
+int LegacySightObjectType(LegacyObjectTypeFn objectType, int32_t object)
+{
+    if (object == -1 || !objectType)
+        return -1;
+    __try
+    {
+        return objectType(static_cast<uint32_t>(object));
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return -1;
+    }
+}
 
 // The root of an object's parent chain (the vehicle a seated unit rides; on foot the unit itself), walked
 // through the title's own object table: objectData maps a handle the table still holds to that object's
@@ -203,8 +221,19 @@ int32_t LegacySightRootOf(LegacyObjectDataFn objectData, int32_t object)
 // parent when that is not the root (a Warthog's turret is a vehicle of its own); and any other part of
 // the same vehicle the ray still meets (another occupant, an attached gun) is looked past, as Reach's trace
 // does. Before this the vehicle sat only in the second slot and the hit object was never read.
+//
+// WHAT THE ENGINE ALREADY DOES WITH THOSE IGNORES (static read of both modules, 2026-10-05; sight_hit_class_logic.h):
+// collision_test_vector's per-object predicate (halo3 0x1FC430, odst 0x22E4F4) compares all three slots alike, then
+// walks the hit object's parent chain and skips anything that descends from an ignored object -- EXCEPT a biped,
+// vehicle or giant in a seat whose definition names a boarding seat. So the engine itself passes through our
+// vehicle, its turret, its other occupants and every held weapon, and the one thing of our own hierarchy it still
+// returns is a BOARDER. The look-past therefore keeps a biped that is not our own unit as the hit
+// (sight_hit::LookPastOwnHierarchy): before, it stepped past the hijacker hanging on our hood and converged the
+// aim on the wall behind him. CANDIDATE: read from code, not yet seen in a headset (dev: SIGHT HITS counts what
+// was looked past by class, so one boarding shows it).
 void LegacySightTraceTick(GameTitle title, uint32_t unit, int32_t localUnit, bool onFoot,
-                          const LegacyWorldCollisionFeature& collision, LegacyObjectDataFn objectData)
+                          const LegacyWorldCollisionFeature& collision, LegacyObjectDataFn objectData,
+                          LegacyObjectTypeFn objectType)
 {
     auto& state = LegacySight(title);
     const uint64_t flags = state.flags.load(std::memory_order_acquire);
@@ -271,11 +300,17 @@ void LegacySightTraceTick(GameTitle title, uint32_t unit, int32_t localUnit, boo
     const float length = kSightTraceLengthWu;
     // A hit object that is part of our own vehicle: its root is our root, or -- when that walk fails, as it did for
     // the unit on the fallback path above -- it is one of the seat chain's own handles.
+    // ...and not a boarder: a biped of our hierarchy the engine still returned (the note above) is a target.
     const auto isOurs = [&](int32_t object) {
         const int32_t hitRoot = LegacySightRootOf(objectData, object);
-        return object != -1 && (hitRoot != -1 ? hitRoot == root
+        const bool sameRoot = object != -1 && (hitRoot != -1 ? hitRoot == root
             : object == root || object == ignoreB || object == ignoreC || object == ray.ignoreB ||
               object == ray.ignoreC);
+        if (!sameRoot)
+            return false;
+        const int type = LegacySightObjectType(objectType, object);
+        const bool past = sight_hit::LookPastOwnHierarchy(true, object == static_cast<int32_t>(unit), type);
+        return past;
     };
     // Native collision initializes fields through +63 (type +0, fraction +4, point +8, object +0x40).
     alignas(16) uint8_t result[0x80]{};

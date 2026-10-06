@@ -22,6 +22,7 @@
 #include "../common/aim_solve_logic.h"
 #include "../common/converge_policy.h"
 #include "../common/shot_lag_logic.h"
+#include "../common/sight_hit_class_logic.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
