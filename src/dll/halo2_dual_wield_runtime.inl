@@ -149,6 +149,7 @@ __declspec(noinline) void __fastcall Halo2DualAimDetour(uint32_t unit,
 }
 
 #include "halo2_fire_eye.inl"
+#include "halo2_seat_fire.inl"
 #include "halo2_independent_shots.inl"
 
 bool RemoveHalo2DualAim();

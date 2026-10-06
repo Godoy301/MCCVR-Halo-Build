@@ -2,6 +2,7 @@
 #include "haloce_controls.h"
 #include "haloce_stereo_core.h"
 #include "haloce_native_bindings.h"
+#include "haloce_unit_control.h"
 #include "title_adapter.h"
 #include "hook_quiescence.h"
 #include "../common/haloce_network_input_logic.h"
@@ -24,7 +25,7 @@ void* target{};void* original{};
 bool enabled{},retiring{},cleanupReported{};
 std::atomic<bool> active{},ready{};
 std::atomic<uint32_t> generation{},callbacks{};
-std::atomic<uint64_t> applied{},stock{},faults{},seated{};
+std::atomic<uint64_t> applied{},stock{},faults{},seated{},seatedConverged{};
 uint64_t lastReport{};
 bool Current() noexcept
 {
@@ -78,6 +79,18 @@ bool Adapt(const void* source,PlayerAction* output) noexcept
     if (!BuildControllerMatrix(frame.camera,frame.tracking,frame.reference,
         frame.tracking.controllers.primaryAim,frame.unitsPerMeter,frame.positional,aim)) return false;
     PlayerAction before{},candidate{};Vec3 direction=aim.forward;
+    // SEAT CONVERGENCE, upstream of replication (seat_converge_logic.h): the action's one direction is what the host
+    // receives and what CE's crosshair test then runs along from the seat's own camera, so in a seat it is the aim
+    // bent from that camera through the point the hand's ray hits. CE's network action has ONE direction for facing,
+    // aim and look alike, so a seat that DRIVES keeps the hand's own forward (its heading steers the hull); the
+    // fire's local re-aim still serves it. A refusal keeps the forward too, counted by the seat's own line.
+    HaloCESeatAim seatAim{};
+    bool seatConverged=false;
+    if (!player.onFoot&&HaloCEUnitControl_SeatAim(player.unit,seatAim)&&!seatAim.sight.role.driver&&
+        seatAim.sight.parent==player.parent&&seatAim.sight.seat==seat)
+    { direction={seatAim.aim[0],seatAim.aim[1],seatAim.aim[2]};seatConverged=true; }
+    else if (!player.onFoot&&seatAim.why==seat_converge::Why::Converged)
+        seatAim.why=seat_converge::Why::PolicyOff;   // a driver's one direction steers
     __try
     {
         before=*output;
@@ -101,7 +114,13 @@ bool Adapt(const void* source,PlayerAction* output) noexcept
         !Network()||!HaloCE_RenderContextCurrent(frame)) return false;
     __try { *output=candidate; }
     __except(EXCEPTION_EXECUTE_HANDLER) { faults.fetch_add(1);return false; }
-    if (!player.onFoot) seated.fetch_add(1,std::memory_order_relaxed);
+    if (!player.onFoot)
+    {
+        seated.fetch_add(1,std::memory_order_relaxed);
+        if (seatConverged) seatedConverged.fetch_add(1,std::memory_order_relaxed);
+        // The seat's own account, and (converged) the mark the traced reticle and the fire's re-aim key on.
+        HaloCEUnitControl_SeatAimApplied(seatAim,player.parent,seat,seatConverged);
+    }
     return true;
 }
 void ActionBody(const void* source,PlayerAction* output,uintptr_t caller)
@@ -187,8 +206,8 @@ bool HaloCENetworkInput_Poll(uintptr_t base,size_t size,uint32_t gen,bool isActi
     if (now-lastReport>=2000)
     {
         lastReport=now;
-        LOG("CE network input gen=%u network=%d applied=%llu seated=%llu stock=%llu faults=%llu",
-            gen,HaloCENetworkInput_UsesNativeSimulation(),applied.load(),seated.load(),stock.load(),faults.load());
+        LOG("CE network input gen=%u network=%d applied=%llu seated=%llu (aim converged on the traced point %llu) stock=%llu faults=%llu",
+            gen,HaloCENetworkInput_UsesNativeSimulation(),applied.load(),seated.load(),seatedConverged.load(),stock.load(),faults.load());
     }
     return Current();
 }

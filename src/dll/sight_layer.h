@@ -21,6 +21,7 @@
 #include "../common/runtime_types.h"
 #include "../common/aim_solve_logic.h"
 #include "../common/converge_policy.h"
+#include "../common/seat_converge_logic.h"
 #include "../common/shot_lag_logic.h"
 #include "../common/sight_hit_class_logic.h"
 #include <algorithm>
@@ -109,6 +110,15 @@ bool Sight_ReadTrace(GameTitle title, uint32_t generation, uint64_t maxAgeMs, Si
 void Sight_NoteTraceFault(GameTitle title);
 bool Sight_TraceFaulted(GameTitle title);
 void Sight_ResetTitle(GameTitle title);   // a new title generation: forget faults and stale state
+
+// THE TRACE'S STANCE (Halo CE and Halo 2 seats, 2026-10-06; 0 = on foot, a seat's seat_converge::StanceKey otherwise).
+// A title whose ONE trace serves both the on-foot ray and a seat's says, on its trace thread and before each trace,
+// which it is about to run. A change drops the published result and the smoothed range at once: a range measured on
+// foot must never bend a seat's aim (nor a seat's the walk after it), and the 150 ms freshness window alone would
+// let it for a few polls. A consumer that needs to be sure asks Sight_Stance and compares. Titles that never call
+// this stay at 0.
+void Sight_SetStance(GameTitle title, uint32_t stance);
+uint32_t Sight_Stance(GameTitle title);
 
 // The aim now in effect for `title` is a converged one. `unitsPerVrMetre` is the title's current VR world
 // scale (world units per metre of VR space), which the compositor needs to put the reticle at the depth
@@ -401,6 +411,26 @@ inline sight_hit::HitClass Sight_ObjectHitClass(int objectType)
 {
     return sight_hit::ClassifyHit(true, true, objectType);
 }
+
+// SEAT CONVERGENCE WITNESS, Halo CE and Halo 2 (seat_converge_logic.h; 2026-10-06). Each seated aim update says, for
+// the seat it is in (`seatKey` = seat_converge::StanceKey, `role` its role), whether the aim it handed the game was
+// the converged one, else the first reason it was not -- always ours, never a natural limit. Logged by Sight_Report
+// every 2 s in EVERY build (a refusal nobody can see hides for a whole stint):
+//   SIGHT <title> seat <key> (<role>): N aim updates, M converged; not converged: <reason>=n, ...
+// Sight_NoteSeatShot (dev; empty in player builds): at each local seated fire, how far the traced point sat off a
+// line the ENGINE built before the mod re-aimed anything -- `Barrel`: the shot as the fire routine took it (the
+// weapon's barrel marker for a vehicle gun, the unit's aim for a passenger's own weapon), which is also the centre of
+// the cone the engine pins a seated shot to; `Crosshair`: the engine's own deterministic camera line (what an
+// unmodded host traces along). Logged with the line above:
+//   SIGHT <title> seat shots (dev): barrel/unit line N: mean X mm / Y deg (max ...) at R m; engine crosshair line
+//     N: mean ... (before the fire's re-aim; the re-aim itself is on the SHOT REAIM line)
+enum class SightSeatLine : uint8_t { Barrel = 0, Crosshair, Count };
+void Sight_NoteSeatPoll(GameTitle title, uint32_t seatKey, const seat_converge::Role& role, seat_converge::Why why);
+void Sight_NoteSeatShot(GameTitle title, SightSeatLine line, const float origin[3], const float direction[3],
+                        const float point[3]);
+// The last seated aim update of `title` handed the game a converged aim for seat `seatKey` within `maxAgeMs` (the
+// fire-time backstop re-aims only then).
+bool Sight_SeatConvergedLive(GameTitle title, uint32_t seatKey, uint64_t maxAgeMs);
 
 // AN AUXILIARY RAY: one the title's simulation-thread trace runs beside the intent ray, in the same tick, with the
 // same native query, flags and ignores, into a slot of its own -- from a shot origin along a direction the game

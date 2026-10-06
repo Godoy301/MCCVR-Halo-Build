@@ -47,6 +47,8 @@ struct TracePublication
     std::atomic<float> invRangePerWu{0.0f};
     std::atomic<uint64_t> smoothMs{0};
     std::atomic<uint32_t> smoothGeneration{0};
+    // Which ray the trace thread is tracing (Sight_SetStance): 0 on foot, a seat's key otherwise.
+    std::atomic<uint32_t> stance{0};
 };
 
 struct ConvergedStamp
@@ -346,8 +348,33 @@ void Sight_ResetTitle(GameTitle title)
     t.lastTraceMs.store(0, std::memory_order_relaxed);
     t.invRangePerWu.store(0.0f, std::memory_order_relaxed);
     t.smoothMs.store(0, std::memory_order_relaxed);
+    t.stance.store(0, std::memory_order_relaxed);
     g_converged[Slot(title)].atMs.store(0, std::memory_order_release);
     g_converged[Slot(title)].writtenMs.store(0, std::memory_order_release);
+}
+
+void Sight_SetStance(GameTitle title, uint32_t stance)
+{
+    auto& t = g_traces[Slot(title)];
+    if (t.stance.load(std::memory_order_relaxed) == stance)
+        return;
+    // Another stance (the trace thread only): the published result and the smoothed range are the old stance's.
+    // The result is withdrawn (a read finds nothing fresh until this stance's first trace, one call away) and the
+    // average starts afresh.
+    t.sequence.fetch_add(1, std::memory_order_acq_rel);
+    t.sampleMs.store(0, std::memory_order_relaxed);
+    t.hit.store(0u, std::memory_order_relaxed);
+    t.rangeWu.store(0.0f, std::memory_order_relaxed);
+    t.convergeRangeWu.store(0.0f, std::memory_order_relaxed);
+    t.sequence.fetch_add(1, std::memory_order_release);
+    t.invRangePerWu.store(0.0f, std::memory_order_relaxed);
+    t.smoothMs.store(0, std::memory_order_relaxed);
+    t.stance.store(stance, std::memory_order_release);
+}
+
+uint32_t Sight_Stance(GameTitle title)
+{
+    return g_traces[Slot(title)].stance.load(std::memory_order_acquire);
 }
 
 void Sight_MarkConverged(GameTitle title, float unitsPerVrMetre)
@@ -1594,6 +1621,144 @@ void Sight_NoteLookPast(GameTitle title, sight_hit::HitClass part)
 #endif
 }
 
+// ---- the seat convergence witness, Halo CE and Halo 2 (seat_converge_logic.h) -----------------------------------
+namespace
+{
+constexpr size_t kSeatWhys = static_cast<size_t>(seat_converge::Why::Count);
+constexpr size_t kSeatLines = static_cast<size_t>(SightSeatLine::Count);
+struct SeatWitness
+{
+    // The seat the counters below belong to (the newest), and how often the seat changed in the window.
+    std::atomic<uint32_t> seatKey{0}, roleBits{0}, seatChanges{0};
+    std::atomic<uint32_t> polls{0};
+    std::atomic<uint32_t> why[kSeatWhys]{};
+    // The last converged update (Sight_SeatConvergedLive).
+    std::atomic<uint64_t> convergedMs{0};
+    std::atomic<uint32_t> convergedKey{0}, convergedGeneration{0};
+};
+SeatWitness g_seats[kTitleSlots];
+#if HALOMCCVR_DEV_DIAGNOSTICS
+struct SeatShotWitness
+{
+    SRWLOCK lock = SRWLOCK_INIT;
+    seat_converge::MissWindow window[kSeatLines]{};
+};
+SeatShotWitness g_seatShots[kTitleSlots];
+#endif
+
+// Cold worker (Sight_Report): the seat line, and in dev builds the seated shot lines.
+void ReportSeats(size_t slot)
+{
+    auto& w = g_seats[slot];
+    const uint32_t polls = w.polls.exchange(0, std::memory_order_relaxed);
+    uint32_t counts[kSeatWhys]{};
+    for (size_t r = 0; r < kSeatWhys; ++r)
+        counts[r] = w.why[r].exchange(0, std::memory_order_relaxed);
+    const uint32_t changes = w.seatChanges.exchange(0, std::memory_order_relaxed);
+    const auto title = static_cast<GameTitle>(slot);
+    if (polls)
+    {
+        char reasons[320]{};
+        size_t length = 0;
+        for (size_t r = 1; r < kSeatWhys; ++r)
+        {
+            if (!counts[r] || length + 1 >= sizeof(reasons))
+                continue;
+            const int n = std::snprintf(reasons + length, sizeof(reasons) - length, "%s%s=%u", length ? ", " : "",
+                                        seat_converge::WhyName(static_cast<seat_converge::Why>(r)), counts[r]);
+            if (n > 0)
+                length += std::min(static_cast<size_t>(n), sizeof(reasons) - length - 1);
+        }
+        const uint32_t bits = w.roleBits.load(std::memory_order_relaxed);
+        seat_converge::Role role{};
+        role.known = (bits & 1u) != 0;
+        role.driver = (bits & 2u) != 0;
+        role.gunner = (bits & 4u) != 0;
+        char changed[64]{};
+        if (changes > 1)
+            std::snprintf(changed, sizeof(changed), " (%u seat changes in this window)", changes - 1);
+        LOG("SIGHT %s seat 0x%08X (%s): %u aim updates, %u converged on the traced point%s%s%s",
+            TitleName(title), w.seatKey.load(std::memory_order_relaxed), seat_converge::RoleName(role), polls,
+            counts[0], length ? "; not converged (the seat kept its earlier aim): " : "; every update converged",
+            length ? reasons : "", changed);
+    }
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    seat_converge::MissWindow lines[kSeatLines]{};
+    auto& shots = g_seatShots[slot];
+    AcquireSRWLockExclusive(&shots.lock);
+    for (size_t l = 0; l < kSeatLines; ++l)
+    {
+        lines[l] = shots.window[l];
+        shots.window[l] = seat_converge::MissWindow{};
+    }
+    ReleaseSRWLockExclusive(&shots.lock);
+    const auto& barrel = lines[static_cast<size_t>(SightSeatLine::Barrel)];
+    const auto& crosshair = lines[static_cast<size_t>(SightSeatLine::Crosshair)];
+    if (barrel.n || crosshair.n)
+    {
+        constexpr double kMmPerWuD = 3048.0, kMPerWu = 3.048;
+        const auto mean = [](double sum, uint32_t n) { return n ? sum / double(n) : 0.0; };
+        LOG("SIGHT %s seat shots (dev): the traced point against the lines the ENGINE built, before the fire's "
+            "re-aim -- barrel/unit line (the shot as the fire took it: the centre of the seat's deviation cone) %u: "
+            "mean %.0f mm / %.2f deg (max %.0f mm / %.2f deg) at %.1f m; engine crosshair line (its own "
+            "deterministic camera along the unit's aim: what an unmodded host traces along) %u: mean %.0f mm / "
+            "%.2f deg (max %.0f mm / %.2f deg) at %.1f m",
+            TitleName(title), barrel.n, mean(barrel.sumWu, barrel.n) * kMmPerWuD, mean(barrel.sumDeg, barrel.n),
+            double(barrel.maxWu) * kMmPerWuD, double(barrel.maxDeg), mean(barrel.sumAlongWu, barrel.n) * kMPerWu,
+            crosshair.n, mean(crosshair.sumWu, crosshair.n) * kMmPerWuD, mean(crosshair.sumDeg, crosshair.n),
+            double(crosshair.maxWu) * kMmPerWuD, double(crosshair.maxDeg),
+            mean(crosshair.sumAlongWu, crosshair.n) * kMPerWu);
+    }
+#endif
+}
+} // namespace
+
+void Sight_NoteSeatPoll(GameTitle title, uint32_t seatKey, const seat_converge::Role& role, seat_converge::Why why)
+{
+    auto& w = g_seats[Slot(title)];
+    if (w.seatKey.exchange(seatKey, std::memory_order_relaxed) != seatKey ||
+        !w.seatChanges.load(std::memory_order_relaxed))
+        w.seatChanges.fetch_add(1, std::memory_order_relaxed);
+    w.roleBits.store((role.known ? 1u : 0u) | (role.driver ? 2u : 0u) | (role.gunner ? 4u : 0u),
+                     std::memory_order_relaxed);
+    w.polls.fetch_add(1, std::memory_order_relaxed);
+    const size_t r = static_cast<size_t>(why);
+    if (r < kSeatWhys)
+        w.why[r].fetch_add(1, std::memory_order_relaxed);
+    if (why == seat_converge::Why::Converged)
+    {
+        w.convergedKey.store(seatKey, std::memory_order_relaxed);
+        w.convergedGeneration.store(TitleAdapter_GetGeneration(title), std::memory_order_relaxed);
+        w.convergedMs.store(Sight_NowMs(), std::memory_order_release);
+    }
+}
+
+bool Sight_SeatConvergedLive(GameTitle title, uint32_t seatKey, uint64_t maxAgeMs)
+{
+    const auto& w = g_seats[Slot(title)];
+    const uint64_t at = w.convergedMs.load(std::memory_order_acquire);
+    return Fresh(at, Sight_NowMs(), maxAgeMs) && w.convergedKey.load(std::memory_order_relaxed) == seatKey &&
+           w.convergedGeneration.load(std::memory_order_relaxed) == TitleAdapter_GetGeneration(title);
+}
+
+void Sight_NoteSeatShot(GameTitle title, SightSeatLine line, const float origin[3], const float direction[3],
+                        const float point[3])
+{
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    const size_t l = static_cast<size_t>(line);
+    seat_converge::LineMiss miss{};
+    if (l >= kSeatLines || !origin || !direction || !point ||
+        !seat_converge::MeasureLine(origin, direction, point, miss))
+        return;
+    auto& shots = g_seatShots[Slot(title)];
+    AcquireSRWLockExclusive(&shots.lock);
+    shots.window[l].add(miss);
+    ReleaseSRWLockExclusive(&shots.lock);
+#else
+    (void)title; (void)line; (void)origin; (void)direction; (void)point;
+#endif
+}
+
 void Sight_Report()
 {
     static uint64_t s_last = 0;
@@ -1633,6 +1798,7 @@ void Sight_Report()
         const uint64_t muzzleUnconverged = s.muzzleUnconverged.exchange(0, std::memory_order_relaxed);
         const uint64_t muzzleHeld = s.muzzleHeld.exchange(0, std::memory_order_relaxed);
         ReportReaims(i);
+        ReportSeats(i);
 #if HALOMCCVR_DEV_DIAGNOSTICS
         ReportHitClasses(i);
 #endif

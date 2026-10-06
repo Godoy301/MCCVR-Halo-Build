@@ -1170,8 +1170,10 @@ namespace
         ImGui::Separator();
         ImGui::Text("Aim in seats");
         ImGui::TextDisabled("Seats follow Converged aim and Direct drive in Weapon & Aim, as on foot.\n"
-                            "Reach fires a seat's weapon at what that seat's own crosshair hits, so the\n"
-                            "aim is bent to put that crosshair on your target. A land vehicle seat's turning\n"
+                            "Reach, Halo CE and Halo 2 fire a seat's weapon at what that seat's own crosshair\n"
+                            "hits, so the aim is bent to put that crosshair on your target (Halo CE and Halo 2:\n"
+                            "in the first-person seat view; the gun then turns its shot onto it as far as its\n"
+                            "own cone allows). A land vehicle seat's turning\n"
                             "limits still hold (a passenger's cone, a turret's or tank gun's up/down stop):\n"
                             "point past one and the crosshair stops at the edge, where the gun is held and\n"
                             "the shots go. A gun still turning toward your hand is not a limit: the\n"
@@ -1201,8 +1203,9 @@ namespace
                 { g_config.reach_vehicle_aim = drivers ? 2 : 1; changed = true; }
                 ImGui::TextDisabled("ON: a driver whose vehicle turns toward the aim (Warthog, Ghost, Banshee) steers\n"
                                     "with the hand. OFF: that driver keeps the stick; gunners and passengers still\n"
-                                    "aim with the hand -- except in Halo 4 and Halo 2, which cannot yet tell a seat's\n"
-                                    "role, so OFF keeps every seat there on the stick.");
+                                    "aim with the hand -- except in Halo 4, which cannot yet tell a seat's role, so\n"
+                                    "OFF keeps every seat there on the stick. Halo 2 reads the role off the seat\n"
+                                    "itself. Halo CE's hand aims every seat either way.");
             }
         }
         ImGui::Spacing();
@@ -1385,8 +1388,9 @@ namespace
                                 "aim. If the muzzle is inside a wall your eye sees past, or the aim is not converged,\n"
                                 "the shot leaves your eye as before. \"Aim from the visible gun barrel\" (Crosshair\n"
                                 "page), when on, wins and keeps the barrel's own direction. Live.");
-            ImGui::TextDisabled("Both cover vehicle seats too. Every seat you aim from converges (Halo 3 and ODST\n"
-                                "in first-person seats; Reach with Direct drive). With Direct drive, seats have\n"
+            ImGui::TextDisabled("Both cover vehicle seats too. Every seat you aim from converges (Halo 3, ODST,\n"
+                                "Halo CE and Halo 2 in first-person seats; Reach and Halo 2 with Direct drive;\n"
+                                "Halo 4 seats not yet). With Direct drive, seats have\n"
                                 "their aim written too (Vehicles > Aim in seats says which); a seat first checks\n"
                                 "its own aim, about a second after you sit down.");
 #if HALOMCCVR_DEV_DIAGNOSTICS

@@ -877,6 +877,12 @@ if(BUILD_TESTING)
     add_executable(halomccvr_seat_drive_policy_tests tests/seat_drive_policy_tests.cpp)
     target_include_directories(halomccvr_seat_drive_policy_tests PRIVATE src/common)
     add_test(NAME halomccvr_seat_drive_policy_tests COMMAND halomccvr_seat_drive_policy_tests)
+    # Seat convergence for Halo CE and Halo 2 (src/common/seat_converge_logic.h): the seat's role from its flags
+    # word or the vehicle's occupant handles, the verdict on the engine's camera answer, the stance key, the
+    # line-versus-point measure and the engine's aiming-bounds clamp.
+    add_executable(halomccvr_seat_converge_tests tests/seat_converge_tests.cpp)
+    target_include_directories(halomccvr_seat_converge_tests PRIVATE src/common)
+    add_test(NAME halomccvr_seat_converge_tests COMMAND halomccvr_seat_converge_tests)
     # Gun-slaved seats (src/common/gun_slaved_seat_logic.h): seat flag bit 7, the occupant-aim binding, the servo's
     # feedback and lag gate, the gun-settle gate of the crosshair witness and the nod witness.
     add_executable(halomccvr_gun_slaved_seat_tests tests/gun_slaved_seat_tests.cpp)

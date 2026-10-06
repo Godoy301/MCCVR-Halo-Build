@@ -154,6 +154,11 @@ void HaloCE_RecordAnniversaryVisibilitySubmission(uintptr_t list,int32_t phase,u
 }
 bool HaloCEControls_GetLocalPlayerState(HaloCELocalPlayerState& state) noexcept
 {state=targetPlayer;return targetPlayerValid;}
+// Seat convergence: the seat's solve belongs to the unit-control lane (its own fixture covers it).
+static HaloCESeatAim seatAimFixture{};
+static bool seatAimSolved{};
+bool HaloCEUnitControl_SeatAim(uint32_t unit,HaloCESeatAim& out) noexcept
+{ if(!seatAimSolved||unit!=seatAimFixture.sight.unit)return false;out=seatAimFixture;return true; }
 uint8_t __fastcall NativeTargetFixture(const void* parameters,const halo_ce::Vec3* origin,
     const halo_ce::Vec3* direction,uint32_t unit,uint16_t team,void* result)
 {
@@ -519,6 +524,47 @@ int main(int argc,char** argv)
             targetPlayer=savedTargetPlayer;targetPlayerValid=savedTargetPlayerValid;
             supportRelationship=savedRelationship;supportRelationshipValid=savedRelationshipValid;
             supportWired=false;
+        }
+        {
+            // SEAT CONVERGENCE, the fire's half (seat_converge_logic.h): at a local seat's fire the engine's own
+            // crosshair line -- the director's deterministic camera -- is re-aimed, from its own position, through
+            // the seat's converged point; only that call, only our seated biped, only while the seat's aim converged.
+            static const auto director=+[](uint32_t,Vec3* position,Vec3* direction)->int16_t
+            { *position={1,2,3};*direction={.6f,.8f,0};return int16_t(0); };
+            const auto savedPlayer=targetPlayer;const bool savedValid=targetPlayerValid;
+            const auto savedAssist=assistRayHook.original;
+            assistRayHook.original=reinterpret_cast<void*>(director);
+            targetPlayer={};targetPlayer.generation=testGeneration;targetPlayer.unit=0x12340002u;
+            targetPlayer.parent=0x34560009u;targetPlayer.hasControlledUnit=true;targetPlayer.onFoot=false;
+            targetPlayer.nativeInputBlocked=targetPlayer.nativeLookBlocked=false;targetPlayerValid=true;
+            seatAimFixture={};seatAimFixture.why=seat_converge::Why::Converged;
+            seatAimFixture.sight.unit=targetPlayer.unit;seatAimFixture.sight.parent=targetPlayer.parent;
+            seatAimFixture.sight.seat=1;seatAimFixture.sight.key=seat_converge::StanceKey(targetPlayer.parent,1);
+            seatAimFixture.sight.role.known=seatAimFixture.sight.role.gunner=true;
+            seatAimFixture.point[0]=1;seatAimFixture.point[1]=12;seatAimFixture.point[2]=3;
+            seatAimSolved=true;
+            Vec3 position{},direction{};
+            // Before the seat's aim converged: the director's answer stays the game's.
+            CHECK(AssistRayBody(targetPlayer.unit,&position,&direction,moduleBase+0xb67be4)==0);
+            CHECK(Dot(direction,Vec3{.6f,.8f,0})>.9999f);
+            Sight_NoteSeatPoll(GameTitle::HaloCE,seatAimFixture.sight.key,seatAimFixture.sight.role,
+                seat_converge::Why::Converged);
+            CHECK(AssistRayBody(targetPlayer.unit,&position,&direction,moduleBase+0xb67be4)==0);
+            CHECK(Dot(position-Vec3{1,2,3},position-Vec3{1,2,3})<1e-9f);
+            CHECK(Dot(direction,Vec3{0,1,0})>.9999f);
+            // Another caller of the director, and another seat than the converged one: untouched.
+            CHECK(AssistRayBody(targetPlayer.unit,&position,&direction,moduleBase+1)==0);
+            CHECK(Dot(direction,Vec3{.6f,.8f,0})>.9999f);
+            seatAimFixture.sight.key^=0x10u;
+            CHECK(AssistRayBody(targetPlayer.unit,&position,&direction,moduleBase+0xb67be4)==0);
+            CHECK(Dot(direction,Vec3{.6f,.8f,0})>.9999f);
+            // The same evaluator is the seat's engine eye for the unit-control lane.
+            int perspective=-1;float eye[3]{};
+            CHECK(HaloCEFirstPerson_SeatEye(targetPlayer.unit,eye,perspective)==1&&perspective==0&&eye[1]==2.0f);
+            assistRayHook.original=nullptr;
+            CHECK(HaloCEFirstPerson_SeatEye(targetPlayer.unit,eye,perspective)==0);
+            seatAimSolved=false;assistRayHook.original=savedAssist;
+            targetPlayer=savedPlayer;targetPlayerValid=savedValid;
         }
         gameplayValid=true;targetPlayer={};targetPlayerValid=false;
         targetFault=true;const auto before=targetNativeCalls;

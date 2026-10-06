@@ -112,6 +112,84 @@ int Halo2DriveOccupancy(uint32_t& parent, int16_t& seat) noexcept
 seat_frame_rt::Binding g_halo2SeatFrame;
 seat_frame_rt::Counters g_halo2SeatFrameCounters;
 
+// SEAT CONVERGENCE (seat_converge_logic.h; docs/H2-CE-SEAT-CONVERGENCE-2026-10-06.md). Halo 2 aims a seated shot as
+// Halo 1 does: the fire (0x8E4940) takes the weapon's barrel marker when the weapon's owner has a gunner, else the
+// unit's aim, and player_aim_projectile (0x7596A0) then traces the crosshair from the DETERMINISTIC camera of the
+// player's biped (0x6D4730: first person 0x77DAA0 -- the unit camera position 0x8F9190 along the unit's aiming vector
+// +0x174 -- when the selector 0x6D4C50 says so, which the mod's first-person seat view makes it say), ignoring the
+// aiming unit's ultimate parent (0x8D6A50), and turns the shot at what that hits -- in a seat pinned inside the
+// weapon's deviation cone about the direction it came in with (0x759A89..0x759ADE; on foot it is not pinned). The
+// biped's aiming vector comes from player control's desired angles, which is what this drive writes and what the
+// simulation networks. So the seat's write is the direction from that camera position through the traced point.
+//
+// The eye is asked from the engine's own evaluator in this same update (Halo2CallFireEyeEvaluator: the very call
+// the fire makes, call edge proven by the dual-aim install) and used only on its first-person path
+// (seat_converge::SeatEye): the following camera orbits the aim it is built from.
+void Halo2NoteSeat(bool identified, uint32_t stance, const seat_converge::Role& role, seat_converge::Why why) noexcept
+{
+    if (identified)
+        Sight_NoteSeatPoll(GameTitle::Halo2, stance, role, why);
+}
+
+// The seat's intent ray from one observer publication (the rendered centre eye along the aiming hand's carrier, the
+// same carrier choice as on foot). False: no usable controller publication.
+bool Halo2SeatIntentRay(float head[3], float dir[3]) noexcept
+{
+    Halo2ObserverPosePublication publication{};
+    Halo2CameraBasis rightCarrier{}, leftCarrier{};
+    const uint32_t generation = g_generation.load(std::memory_order_acquire);
+    float stockEye[3]{};
+    return generation && Halo2Observer6Dof_ReadPublishedPose(publication) &&
+        Halo2ObserverControllerSnapshotUsable(publication, generation) &&
+        BuildStableFirstPersonCarriers(publication, generation, rightCarrier, leftCarrier,
+            Halo2SupportCarrierMustDetach(publication)) &&
+        Halo2SightGeometry(publication, rightCarrier, head, dir, stockEye);
+}
+
+// Sim thread. `direction`: the converged aim (world, unit) when the result is Converged; `point` (optional): the
+// point it is bent through. Any other result names our reason and leaves both untouched.
+seat_converge::Why Halo2BuildSeatConvergedAim(uint32_t unit, uint32_t stance, float direction[3],
+                                              float* point) noexcept
+{
+    using seat_converge::Why;
+    if (!Sight_AimEnabled())
+        return Why::AimOff;
+    float head[3]{}, dir[3]{};
+    if (unit == UINT32_MAX || !Halo2SeatIntentRay(head, dir))
+        return Why::NoHand;
+    seat_converge::EyeAnswer answer{};
+    auto& camera = g_halo2Dual;
+    answer.bound = camera.cameraOriginal != nullptr && camera.enabled.load(std::memory_order_acquire) &&
+        !camera.faulted.load(std::memory_order_acquire) &&
+        camera.generation == g_generation.load(std::memory_order_acquire);
+    int32_t path = -1;
+    if (answer.bound)
+    {
+        answer.called = Halo2CallFireEyeEvaluator(unit, answer.position, path);
+        answer.perspective = path;
+    }
+    float eye[3]{};
+    const Why eyeWhy = seat_converge::SeatEye(answer, eye);
+    if (eyeWhy != Why::Converged)
+        return eyeWhy;
+    if (Sight_Stance(GameTitle::Halo2) != stance)
+        return Why::StanceSettling;
+    float bent[3]{}, range = 0.0f;
+    converge::ConvergeOff off = converge::ConvergeOff::None;
+    if (!Sight_ConvergedDirection(GameTitle::Halo2, g_generation.load(std::memory_order_acquire), head, dir, eye,
+                                  bent, 90.0f, &range, nullptr, &off))
+        return off == converge::ConvergeOff::NoRange ? Why::NoRange : Why::NoTrace;
+    if (!std::isfinite(range) || !(range > 0.0f))
+        return Why::NoRange;
+    for (int axis = 0; axis < 3; ++axis)
+    {
+        direction[axis] = bent[axis];
+        if (point)
+            point[axis] = head[axis] + dir[axis] * range;
+    }
+    return Why::Converged;
+}
+
 // The first writes of a seat's yaw read no limit off the record (the stick servo may still be deflecting the
 // stick until the input thread sees the seat written), as the other titles' seats.
 constexpr uint32_t kHalo2SeatPrimeUpdates = 2;
@@ -222,18 +300,29 @@ void Halo2DriveApply(int user, uint64_t returnAddress) noexcept
                     publication.vehicleSeat == seatIndex && seatViewAt && now >= seatViewAt &&
                     now - seatViewAt <= 100 &&
                     NativeVehicleFirstPerson_SeatViewOwned(GameTitle::Halo2, seatParent, seatIndex);
-                facts.driver = facts.look_steered = true;
+                // THE SEAT'S FRAME AND ROLE, read as the rebase reads them (see the header): the occupied seat's live
+                // flags word carries the role too (seat_converge_logic.h: bit 2 driver, bit 3 gunner -- the engine's
+                // own sibling predicates 0x8FC99C / 0x8FCA5C and its aiming-unit test 0x8F8C00). A seat that does NOT
+                // drive (a gunner, a passenger) is the hand's at "Drivers aim with the hand" OFF as well; a driver, or
+                // a seat whose flags did not read, keeps the earlier rule (a driver whose look steers).
+                seat_frame_rt::Live seatFrame =
+                    seat_frame_rt::Read(g_halo2SeatFrame, &Halo2ObjectFromIndex, Halo2OwnedUnit());
+                const seat_converge::Role seatRole = seat_converge::RoleFromSeatFlags(
+                    occupancy > 0 && seatFrame.flagsKnown, seatFrame.flags);
+                facts.driver = facts.look_steered = !seatRole.known || seatRole.driver;
                 const seat_drive::Axes axes = g_config.vehicle_view_follow ? seat_drive::Axes{}
                     : seat_drive::Decide(facts, g_config.reach_vehicle_aim, g_config.seat_direct_drive != 0);
                 const uint32_t key = seat_drive::SeatKey(static_cast<int>(seatParent), seatIndex, false);
-                // THE SEAT'S FRAME, read only where the hand would write (see the header). In case (b) the game's
-                // aim goes into the record's frame for the stint check and the arm gate, and the hand's below.
-                seat_frame_rt::Live seatFrame{};
+                // The seat's account for the SIGHT ... seat line (every update that does not end in a converged
+                // write says why -- our reasons only).
+                const uint32_t stance = seat_converge::StanceKey(seatParent, seatIndex);
+                const bool seatKnown = occupancy > 0;
+                // In case (b) the game's aim goes into the record's frame for the stint check and the arm gate, and
+                // the hand's below.
                 float recordAimYaw = aimYaw, recordAimPitch = aimPitch;
                 bool frameRead = true;
                 if (axes.any())
                 {
-                    seatFrame = seat_frame_rt::Read(g_halo2SeatFrame, &Halo2ObjectFromIndex, Halo2OwnedUnit());
                     seat_frame_rt::Count(g_halo2SeatFrameCounters, seatFrame.kase);
 #if HALOMCCVR_DEV_DIAGNOSTICS
                     // THE FRAME CHECK: the record through R against the stock camera (the game's world aim).
@@ -251,6 +340,7 @@ void Halo2DriveApply(int user, uint64_t returnAddress) noexcept
                         ++st.stintStaleUpdates <= kHalo2StintStaleUpdates)
                         seatKept = true;
                     st.agree = 0;
+                    Halo2NoteSeat(seatKnown, stance, seatRole, seat_converge::Why::NotWritten);
                     break;
                 }
                 if (!axes.any())
@@ -266,6 +356,11 @@ void Halo2DriveApply(int user, uint64_t returnAddress) noexcept
                         ++st.stintStaleUpdates <= kHalo2StintStaleUpdates)
                         seatKept = true;
                     st.agree = 0;
+                    // The stick keeps this seat: its first-person view is not ours (the engine aims it from the
+                    // chase camera), the view follows the vehicle, or the player's keys leave it to the stick.
+                    Halo2NoteSeat(seatKnown, stance, seatRole,
+                        !facts.identified ? seat_converge::Why::NotIdentified
+                        : onlyTheView ? seat_converge::Why::ChaseCamera : seat_converge::Why::PolicyOff);
                     break;
                 }
                 seatKept = true;
@@ -305,6 +400,7 @@ void Halo2DriveApply(int user, uint64_t returnAddress) noexcept
                         st.armed.store(true, std::memory_order_release);
                         st.arms.fetch_add(1, std::memory_order_relaxed);
                     }
+                    Halo2NoteSeat(seatKnown, stance, seatRole, seat_converge::Why::NotWritten);
                     break;
                 }
                 if (pc != st.expected.load(std::memory_order_acquire))
@@ -313,17 +409,28 @@ void Halo2DriveApply(int user, uint64_t returnAddress) noexcept
                     st.agree = 0;
                     seatKept = false;
                     st.disarms.fetch_add(1, std::memory_order_relaxed);
+                    Halo2NoteSeat(seatKnown, stance, seatRole, seat_converge::Why::NotWritten);
                     break;
                 }
-                // The hand's aim: the steer from the engine eye through the hand ray at the reticle distance.
-                // Never a converged aim here: there is no seated trace yet, and an on-foot one could still be
-                // fresh for 150 ms after sitting down.
+                // The hand's aim. TRACE-AND-REAIM IN THE SEAT (seat_converge_logic.h; 2026-10-06): the direction
+                // from Halo 2's own deterministic camera for this biped -- the origin of its crosshair test at the
+                // fire (0x6D4730 from 0x7597B8) -- through the point the hand's ray hits, as this seat's own trace
+                // found it (the stance check inside: never a range measured on foot, nor in another seat). Any of
+                // our own reasons leaves the earlier steer: the stock camera's line through the hand ray at the
+                // reticle distance.
                 float direction[3]{};
                 float yaw = 0.0f, pitch = 0.0f, handWorldYaw = 0.0f, handWorldPitch = 0.0f;
+                seat_converge::Why seatWhy = seat_converge::Why::NoHand;
+                bool handAim = Game_Halo2SeatAimActive();
+                if (handAim)
+                {
+                    seatWhy = Halo2BuildSeatConvergedAim(Halo2OwnedUnit(), stance, direction, nullptr);
+                    if (seatWhy != seat_converge::Why::Converged)
+                        handAim = BuildPublishedControllerAimDirection(direction, nullptr, false);
+                }
+                const bool seatConverged = handAim && seatWhy == seat_converge::Why::Converged;
                 // ...in the record's frame (case b: R^-1 of it), where the latch and the pitch limits live.
-                bool handAim = Game_Halo2SeatAimActive() &&
-                    BuildPublishedControllerAimDirection(direction, nullptr, false) &&
-                    Halo2DriveYawPitch(direction, yaw, pitch);
+                handAim = handAim && Halo2DriveYawPitch(direction, yaw, pitch);
                 handWorldYaw = yaw;
                 handWorldPitch = pitch;
                 handAim = handAim && seat_frame_rt::ToRecord(seatFrame, yaw, pitch, nativeYaw);
@@ -340,6 +447,9 @@ void Halo2DriveApply(int user, uint64_t returnAddress) noexcept
                 if (!writeYaw && !writePitch)
                 {
                     st.seatWaits.fetch_add(1, std::memory_order_relaxed);
+                    Halo2NoteSeat(seatKnown, stance, seatRole,
+                        seatConverged ? seat_converge::Why::NotWritten
+                        : seatWhy == seat_converge::Why::Converged ? seat_converge::Why::NoHand : seatWhy);
                     break;
                 }
                 // Yaw: the seat-limit latch reads the seat's yaw clamp (a cone about the seat marker) off last
@@ -414,6 +524,21 @@ void Halo2DriveApply(int user, uint64_t returnAddress) noexcept
                 st.wroteYaw.store(worldYaw, std::memory_order_relaxed);
                 st.wrotePitch.store(worldPitch, std::memory_order_relaxed);
                 st.writes.fetch_add(1, std::memory_order_relaxed);
+                // The aim now in the record is the converged one when BOTH axes carry it: the compositor draws the
+                // traced reticle and the fire's backstop re-aims the engine's crosshair line. A stop the record or
+                // the yaw latch held it at is natural (the reticle's own clamp shows it: seat_limit_reticle_logic.h)
+                // and never takes the claim back; one axis still on the stick servo is not converged yet.
+                if (seatConverged && writeYaw && writePitch)
+                {
+                    st.seatConvergedWrites.fetch_add(1, std::memory_order_relaxed);
+                    st.convergedWrites.fetch_add(1, std::memory_order_relaxed);
+                    Sight_MarkConverged(GameTitle::Halo2, Game_GetWorldScale());
+                    Sight_MarkAimWritten(GameTitle::Halo2);
+                    Halo2NoteSeat(seatKnown, stance, seatRole, seat_converge::Why::Converged);
+                }
+                else
+                    Halo2NoteSeat(seatKnown, stance, seatRole,
+                        seatConverged ? seat_converge::Why::NotWritten : seatWhy);
                 break;
             }
             // ON FOOT. The player's control update runs for an on-foot unit: the observer may take the view's
@@ -656,9 +781,10 @@ void ReportHalo2Drive() noexcept
     const bool unread = seat_frame_rt::CaseText(g_halo2SeatFrameCounters, frames, sizeof(frames));
     if (stints || seatWrites || seatWaits || yawChecks || pitchChecks || pitchFails || held || frames[0])
         LOG("Halo 2 DRIVE seats: new stints %u; checks passed yaw %u pitch %u, pitch checks failed %u (retried after 5 s); "
-            "writes %u (yaw held at a seat limit %u), waited for the hand or a check %u; %s",
-            stints, yawChecks, pitchChecks, pitchFails, seatWrites, held, seatWaits,
-            frames[0] ? frames : "frame not read");
+            "writes %u (both axes converged on the traced point %u; yaw held at a seat limit %u), waited for the hand "
+            "or a check %u; %s",
+            stints, yawChecks, pitchChecks, pitchFails, seatWrites, st.seatConvergedWrites.exchange(0), held,
+            seatWaits, frames[0] ? frames : "frame not read");
     if (unread && !g_halo2SeatFrameCounters.unknownLogged.exchange(1, std::memory_order_relaxed))
         LOG("Halo 2 DRIVE seats: the seat's frame did not read (the rebase's links or the vehicle's up failed their "
             "checks); those updates write nothing and the stick servo keeps the seat (logged once)");

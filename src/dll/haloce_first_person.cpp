@@ -9,6 +9,7 @@
 #include "../common/native_shot_target_lease.h"
 #include "haloce_stereo_core.h"
 #include "haloce_native_bindings.h"
+#include "haloce_unit_control.h"
 #include "hook_quiescence.h"
 #include "sight_layer.h"
 #include "title_adapter.h"
@@ -342,6 +343,7 @@ SightCameraSample CeContextCameraSample(const RenderContext& context) noexcept
 }
 #include "haloce_muzzle_state.inl"
 #include "haloce_muzzle_shots.inl"
+void SeatNoteFireLine(uint32_t owner,const Vec3* position,const Vec3* direction) noexcept;   // seat convergence, below
 void ModernRayBody(uint32_t unit,Vec3* position,Vec3* direction,Vec3* inheritedVelocity,const Vec3* offset,bool projectOrigin,bool useUnitAim,uintptr_t caller)
 {
     const auto original=reinterpret_cast<ModernRayFn>(modernRayHook.original);
@@ -360,7 +362,11 @@ void ModernRayBody(uint32_t unit,Vec3* position,Vec3* direction,Vec3* inheritedV
     if (!callsite||!ControllerShotDirection(unit,controller)||!direction)
     {
         if (callsite&&AimCurrent()) aimRefused.fetch_add(1,std::memory_order_relaxed);
-        original(unit,position,direction,inheritedVelocity,offset,projectOrigin,useUnitAim);return;
+        original(unit,position,direction,inheritedVelocity,offset,projectOrigin,useUnitAim);
+        // A local seat's shot stays exactly as the engine built it here (the barrel, or the unit's own aim: its
+        // natural limits live in this direction); the dev witness only measures it against the traced point.
+        if (callsite) SeatNoteFireLine(unit,position,direction);
+        return;
     }
     // The stock native helper still projects/clamps the authored muzzle and
     // computes inherited velocity. Only its optional unit-facing overwrite is
@@ -392,7 +398,9 @@ void LegacyRayBody(uint32_t unit,Vec3* position,Vec3* direction,float* inherited
     if (!callsite||!ControllerShotDirection(unit,controller)||!direction)
     {
         if (callsite&&AimCurrent()) aimRefused.fetch_add(1,std::memory_order_relaxed);
-        original(unit,position,direction,inheritedSpeed,projectOrigin,useUnitAim);return;
+        original(unit,position,direction,inheritedSpeed,projectOrigin,useUnitAim);
+        if (callsite) SeatNoteFireLine(unit,position,direction);   // dev: as in the modern helper
+        return;
     }
     original(unit,position,&controller,inheritedSpeed,projectOrigin,false);
     if (WriteDirection(direction,controller)) aimApplied.fetch_add(1,std::memory_order_relaxed);
@@ -404,11 +412,68 @@ __declspec(noinline) void __fastcall LegacyRayHook(uint32_t unit,Vec3* position,
     __try{LegacyRayBody(unit,position,direction,inheritedSpeed,projectOrigin,useUnitAim,reinterpret_cast<uintptr_t>(_ReturnAddress()));}
     __finally{callbacks.fetch_sub(1,std::memory_order_release);}
 }
+// SEAT CONVERGENCE, the fire's half (seat_converge_logic.h). In a seat the unit-control packet already carries the
+// aim bent from this very camera through the traced point; the biped's aiming vector -- the direction the director
+// answers here -- follows it at the game's own aiming rate. So the answer is re-aimed, from its own position,
+// through the point: CE's crosshair test then runs to the point whatever that rate, and the shot it turns is still
+// pinned by the engine inside the weapon's deviation cone about the barrel (0xB67E34..0xB67E97, seats only). How far
+// the engine's own line was off the point is counted (the SHOT REAIM line's seated part: what an unmodded host,
+// tracing along the packet's aim alone, would miss by). Only the local player's seated biped, only while the seat's
+// last packet converged; anything else leaves the director's answer untouched.
+std::atomic<uint64_t> seatAssistApplied{},seatAssistThrough{},seatAssistSkipped{};
+bool LocalSeatedShooter(uint32_t shooter) noexcept
+{
+    if (shooter==0xffffffffu) return false;
+    HaloCELocalPlayerState state{};
+    return HaloCEControls_GetLocalPlayerState(state)&&state.hasControlledUnit&&state.unit==shooter&&
+        !state.onFoot&&!state.nativeInputBlocked&&!state.nativeLookBlocked&&!state.nativePaused&&
+        !state.nativeCinematicFlag;
+}
+// The local seat's converged point, while its aim is converged. `seat` receives the solve.
+bool SeatShotPoint(uint32_t unit,HaloCESeatAim& seat) noexcept
+{
+    return AimCurrent()&&LocalSeatedShooter(unit)&&HaloCEUnitControl_SeatAim(unit,seat)&&
+        Sight_SeatConvergedLive(GameTitle::HaloCE,seat.sight.key,kSightFreshMs)&&AimCurrent();
+}
+void SeatAssistRay(uint32_t unit,Vec3* position,Vec3* direction) noexcept
+{
+    HaloCESeatAim seat{};
+    if (!SeatShotPoint(unit,seat)||!Finite(*position)||!Finite(*direction))
+    { seatAssistSkipped.fetch_add(1,std::memory_order_relaxed);return; }
+    const float start[3]{position->x,position->y,position->z};
+    float line[3]{direction->x,direction->y,direction->z};
+    // The engine's own crosshair line against the point, before anything moves it (dev).
+    Sight_NoteSeatShot(GameTitle::HaloCE,SightSeatLine::Crosshair,start,line,seat.point);
+    if (!Sight_ReaimThroughPoint(GameTitle::HaloCE,SightShotSite::CrosshairAssist,start,line,seat.point,true))
+    { seatAssistThrough.fetch_add(1,std::memory_order_relaxed);return; }   // already through it, or counted refused
+    if (WriteDirection(direction,{line[0],line[1],line[2]})) seatAssistApplied.fetch_add(1,std::memory_order_relaxed);
+}
+// The shot as the fire routine took it for a local seat -- the barrel marker for a vehicle gun (its owner is the
+// vehicle), the unit's aim for a passenger's own weapon -- against the traced point (dev only; nothing is changed:
+// this line is the centre of the cone the engine pins the seated shot to, the seat's natural limit).
+void SeatNoteFireLine(uint32_t owner,const Vec3* position,const Vec3* direction) noexcept
+{
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    if (!position||!direction||!AimCurrent()) return;
+    HaloCELocalPlayerState state{};
+    if (!HaloCEControls_GetLocalPlayerState(state)||!state.hasControlledUnit||state.onFoot||
+        (owner!=state.unit&&owner!=state.parent)) return;
+    HaloCESeatAim seat{};
+    if (!SeatShotPoint(state.unit,seat)||!Finite(*position)||!Finite(*direction)) return;
+    const float start[3]{position->x,position->y,position->z},line[3]{direction->x,direction->y,direction->z};
+    Sight_NoteSeatShot(GameTitle::HaloCE,SightSeatLine::Barrel,start,line,seat.point);
+#else
+    (void)owner;(void)position;(void)direction;
+#endif
+}
 int16_t AssistRayBody(uint32_t unit,Vec3* position,Vec3* direction,uintptr_t caller)
 {
     const auto original=reinterpret_cast<PlayerRayFn>(assistRayHook.original);
     if (!original) return -1;
     const int16_t perspective=original(unit,position,direction);
+    // A local SEAT's fire: re-aim the engine's own crosshair line through the seat's converged point.
+    if(caller==moduleBase+0xb67be4&&position&&direction&&LocalSeatedShooter(unit))
+    { SeatAssistRay(unit,position,direction);return perspective; }
     // Flat parity (CeFireEyeForShot): the player assist's own call for our unit, before anything below replaces its
     // outputs, is a free sample of the director ray against the context camera.
     if(caller==moduleBase+0xb67be4&&position&&LocalOnFootShooter(unit))
@@ -1393,6 +1458,11 @@ bool HaloCEFirstPerson_Poll(uintptr_t base,size_t size,uint32_t gen,bool isActiv
             "converged on the traced point %llu / parallel to the hand ray (no fresh trace) %llu",
             gen,aimInstalled.load(),aimObserved.load(),aimApplied.load(),aimRefused.load(),assistApplied.load(),
             convergedAims.load(),parallelAims.load());
+        if (seatAssistApplied.load()||seatAssistThrough.load()||seatAssistSkipped.load())
+            LOG("CE seat fire gen=%u: the engine's crosshair line at a seated fire re-aimed through the traced point %llu, "
+                "already through it or geometrically refused (SHOT REAIM names which) %llu, left as the game built it "
+                "(the seat's aim was not converged) %llu",
+                gen,seatAssistApplied.load(),seatAssistThrough.load(),seatAssistSkipped.load());
         LOG("CE continuous targeting gen=%u installed=%d observed=%llu controller=%llu stock=%llu",
             gen,targetInstalled.load(),targetObserved.load(),targetApplied.load(),targetRefused.load());
         LOG("CE Anniversary hand scale gen=%u installed=%d applied=%llu stock=%llu",
@@ -1426,6 +1496,17 @@ bool HaloCEFirstPerson_GetLocalPlayerState(HaloCELocalPlayerState& state) noexce
 {
     Callback callback;
     return HaloCEControls_GetLocalPlayerState(state);
+}
+
+int HaloCEFirstPerson_SeatEye(uint32_t unit,float position[3],int& perspective) noexcept
+{
+    // The callback count keeps the director hook's trampoline alive across the call (Remove's quiescence).
+    Callback callback;
+    if (!position||unit==0xffffffffu||!AimCurrent()||!assistRayHook.original) return 0;
+    Vec3 eye{};int32_t path=-1;
+    if (!CeCallFireEyeEvaluator(unit,eye,path)) return AimCurrent()?-1:0;
+    position[0]=eye.x;position[1]=eye.y;position[2]=eye.z;perspective=path;
+    return 1;
 }
 
 uint64_t HaloCEFirstPerson_WeaponGraph(uint32_t gen,uint64_t space,uint64_t now) noexcept
