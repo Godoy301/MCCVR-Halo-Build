@@ -436,7 +436,9 @@ namespace
             g_physicalCrouchInput.Suspend(g_config.physical_crouch);
         previousDirectActions=directActions;
         const bool physicalCrouchEnabled=g_config.physical_crouch;
-        const bool nativeReady=(semanticMode||physicalCrouchEnabled)&&gameplayMode&&
+        // The roomscale jump recenter also wants the game's own jump binding when the mapper is off (below).
+        const bool jumpWitnessWanted=g_config.roomscale_movement&&g_config.roomscale_recenter_jump;
+        const bool nativeReady=(semanticMode||physicalCrouchEnabled||jumpWitnessWanted)&&gameplayMode&&
             (Game_ReadVrActionBindings(nativeActions,inputNow)||directActions);
         const bool nativeMapping=semanticMode&&nativeReady;
         // The head height and the standing reference come from the OpenXR frame thread, in one frame a
@@ -640,6 +642,22 @@ namespace
             VR_IsStereoEnabled() && !VR_IsPausePresentation() &&
             !VR_IsPausePresentationTarget() && !VR_IsCutsceneTheaterActive(),
             locomotionX, locomotionY);
+        // The jump the game is being fed on this poll, for the roomscale view recenter's takeoff witness
+        // (it still has to see the character's eye rise). The named action while the mapper routes; else
+        // the transport MCC's own bindings give jump when they have been read; else MCC's default, A.
+        {
+            bool jumpHeld;
+            if (nativeMapping) jumpHeld=(semanticActions.actions&(1u<<vr_mapping::Jump))!=0;
+            else
+            {
+                const uint32_t transport=nativeReady ? nativeActions[vr_mapping::Jump] : 0u;
+                const uint32_t fed=uint32_t(btn)|
+                    (state->Gamepad.bLeftTrigger>XINPUT_GAMEPAD_TRIGGER_THRESHOLD ? 1u<<16 : 0u)|
+                    (state->Gamepad.bRightTrigger>XINPUT_GAMEPAD_TRIGGER_THRESHOLD ? 1u<<17 : 0u);
+                jumpHeld=(fed&(transport ? transport : uint32_t(XINPUT_GAMEPAD_A)))!=0;
+            }
+            Roomscale_JumpInput(jumpHeld && !dpadMode);
+        }
 
 #if HALOMCCVR_DEV_DIAGNOSTICS
         const WORD witnessBeforeDpad = btn;

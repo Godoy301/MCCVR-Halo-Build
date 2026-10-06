@@ -438,6 +438,18 @@ struct Config
     // kept through interruptions; headset-confirmed in Reach 2026-09-28), 0 = threshold (walks from 1.5 cm,
     // brakes by reversing), verbatim as it shipped in Alpha 0.6.0. (default 1)
     int roomscale_follow_law = 1;
+    // ROOMSCALE VIEW RECENTER (roomscale_recenter_logic.h). In the air and while the stick moves the
+    // character, the body cannot be walked under the head, so the view sits away from the game's own
+    // camera -- the eye the shot is solved from. Each option slides the play area (position only,
+    // horizontal: never a turn, never the height) so the view comes back over the character while that
+    // motion hides it; what is left afterwards the body follow walks as before. All off by default: the
+    // user A/Bs them in the headset first. They need roomscale_movement.
+    bool roomscale_recenter_jump = false;          // a quick linear blend when a jump leaves the ground
+    float roomscale_recenter_jump_s = 0.20f;       // its duration, seconds (0.05 to 1.0)
+    bool roomscale_recenter_move_start = false;    // the same blend when the movement stick is first pushed
+    float roomscale_recenter_move_start_s = 0.20f; // its duration, seconds (0.05 to 1.0)
+    bool roomscale_recenter_moving = false;        // while the stick is held: close the offset at a constant speed
+    float roomscale_recenter_moving_speed = 0.50f; // metres of offset closed per second (0.1 to 3.0)
     bool physical_running = false;
     float physical_running_speed = 1.0f; // fraction of native maximum locomotion
     float physical_running_sensitivity = 1.0f;

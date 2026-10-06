@@ -15292,6 +15292,8 @@ int main()
               g_config.cutscene_theater_distance_m == 4.0f,
         "legacy configs inherit the enabled cutscene-theatre defaults");
     Check(!g_config.roomscale_movement, "legacy config leaves roomscale off");
+    Check(!g_config.roomscale_recenter_jump && !g_config.roomscale_recenter_move_start &&
+          !g_config.roomscale_recenter_moving, "legacy config leaves every roomscale view recenter option off");
     Check(!g_config.experimental_hand_alignment, "legacy config preserves released hand positioning");
     Check(!g_config.manual_reload&&!g_config.weapon_holsters,"legacy config leaves both weapon gestures off");
     Check(!g_config.game_menu_pointer, "legacy config leaves native menu pointing off");
@@ -15419,6 +15421,9 @@ int main()
         file << "physical_melee = 1\n";
         file << "left_handed = 1\n";
         file << "roomscale_movement = 1\n";
+        file << "roomscale_recenter_jump = 1\nroomscale_recenter_jump_s = 0.35\n";
+        file << "roomscale_recenter_move_start = 1\nroomscale_recenter_move_start_s = 9\n";
+        file << "roomscale_recenter_moving = 1\nroomscale_recenter_moving_speed = 0.01\n";
         file << "physical_running = 1\nphysical_running_speed = 0.6\nphysical_running_sensitivity = 2\n";
         file << "experimental_body_ik = 1\nbody_ik_hide_lower = 1\n";
         file << "physical_melee_swing_speed = 0.10\n";
@@ -15434,6 +15439,10 @@ int main()
     Check(g_config.world_collision,
         "the shared world-collision option survives a save/load round trip");
     Check(g_config.roomscale_movement, "roomscale survives config save/load");
+    Check(g_config.roomscale_recenter_jump && g_config.roomscale_recenter_jump_s==0.35f &&
+          g_config.roomscale_recenter_move_start && g_config.roomscale_recenter_move_start_s==1.0f &&
+          g_config.roomscale_recenter_moving && g_config.roomscale_recenter_moving_speed==0.1f,
+        "the roomscale view recenter options survive config save/load, held to their ranges");
     Check(g_config.physical_running&&g_config.physical_running_speed==.6f&&
         g_config.physical_running_sensitivity==2&&g_config.experimental_body_ik&&g_config.body_ik_hide_lower,
         "physical running controls and separate avatar/lower-body toggles survive config save/load");
@@ -20111,8 +20120,8 @@ int main()
         Check(bounded.valid&&bounded.trigger==0&&bounded.grip==1,"small analog endpoint noise remains bounded");
     }
     g_failures += RunRoomscaleInputTests();
+    g_failures += RunRoomscaleRecenterTests();
     if (g_failures == 0)
         std::cout << "HaloMCCVR core tests passed\n";
     return g_failures == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
 }
-    g_failures += RunRoomscaleRecenterTests();
