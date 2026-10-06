@@ -906,6 +906,11 @@ namespace
             seatPitchChecks{0}, seatPitchFails{0};
         // Seat writes whose BOTH axes carried the converged aim (seat_converge_logic.h).
         std::atomic<uint32_t> seatConvergedWrites{0};
+        // The seat proof's reference (seat_converge::SeatAimReference): seated updates judged against the unit's own
+        // aiming vector, against the observer camera (the vector did not read), and the largest angle the camera sat
+        // off the unit's aim in the window (degrees; the measured ~5.1 in every seat tried).
+        std::atomic<uint32_t> seatUnitAimRefs{0}, seatCameraRefs{0};
+        std::atomic<float> seatCameraOffMaxDeg{0.0f};
         // THE SEAT'S STOPS for the reticle (seat_limit_publication.h): after each seat write, the yaw latch's stop and
         // the record's own eased pitch limits, in the record's frame, with the hand's world aim the write was for.
         // Not for an air vehicle (stintAircraft, read once per stint): no rotational limit there (the user).

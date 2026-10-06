@@ -161,6 +161,73 @@ inline Why SeatEye(const EyeAnswer& a, float eye[3])
     return Why::Converged;
 }
 
+// THE GAME'S AIM IN A HALO 2 SEAT, for the seat drive's per-axis proof (seat_drive::StintCheck) and its arm gate.
+// The record the drive writes is player control's desired angles; the proof compares it with "the aim the game shows"
+// before an axis is written. Until 2026-10-06 that was the OBSERVER camera's forward (the rendered camera), which on
+// foot is the unit's aim. MEASURED in the first headless run of a Halo 2 seat (2026-10-06, Coagulation, retail Steam
+// halo2.dll, read out of process beside the mod's own log): in a seat the observer camera's forward sits a constant
+// 5.1-5.2 deg of pitch ABOVE the unit's aiming vector -- Ghost seat 0 (flags 0x801C) and Warthog passenger seat 1
+// (flags 0x1070), at four headings and at record pitches from -31 to +13 deg -- while the unit's aiming vector
+// (unit+0x174) equals the record to 0.02 deg on both axes. So against the camera the pitch could never prove (it
+// failed and retried every 5 s), the pitch stayed on the stick servo, and no Halo 2 seat ever wrote both axes: none
+// converged. The unit's aiming vector is the line the engine itself fires along (0x77DAA0 copies it into the
+// deterministic first-person camera the crosshair test runs on; the fire routine takes it as the shot's line where no
+// barrel is), so it is the reference: the proof then says what it means -- the record's angles ARE the unit's world
+// aim, with no frame or offset between them.
+//
+// `unitAim` is used when it read and is a unit vector (the game keeps it normalised: within 2 %); otherwise the camera
+// as before (fail closed to the earlier behaviour, never to no reference). `cameraOffDeg` is the angle between the
+// two when both are there (the dev line prints its maximum), NaN otherwise.
+struct AimReference
+{
+    bool valid = false;      // a reference to judge the record against
+    bool fromUnit = false;   // ...and it is the unit's own aiming vector
+    float yaw = 0.0f, pitch = 0.0f;
+    float cameraOffDeg = NAN;
+};
+
+inline AimReference SeatAimReference(bool unitRead, const float unitAim[3], bool cameraValid, float cameraYaw,
+                                     float cameraPitch)
+{
+    AimReference r;
+    float length2 = 0.0f;
+    bool finite = unitRead && unitAim != nullptr;
+    for (int i = 0; finite && i < 3; ++i)
+    {
+        finite = std::isfinite(unitAim[i]);
+        length2 += unitAim[i] * unitAim[i];
+    }
+    const float length = finite ? std::sqrt(length2) : 0.0f;
+    const bool cameraOk = cameraValid && std::isfinite(cameraYaw) && std::isfinite(cameraPitch);
+    if (finite && std::fabs(length - 1.0f) <= 0.02f)
+    {
+        r.valid = r.fromUnit = true;
+        r.yaw = std::atan2(unitAim[1], unitAim[0]);
+        const float s = unitAim[2] / length;
+        r.pitch = std::asin(s < -1.0f ? -1.0f : s > 1.0f ? 1.0f : s);
+        if (cameraOk)
+        {
+            const float c[3]{std::cos(cameraYaw) * std::cos(cameraPitch), std::sin(cameraYaw) * std::cos(cameraPitch),
+                             std::sin(cameraPitch)};
+            float dot = (c[0] * unitAim[0] + c[1] * unitAim[1] + c[2] * unitAim[2]) / length;
+            dot = dot < -1.0f ? -1.0f : dot > 1.0f ? 1.0f : dot;
+            // atan2 of the cross product's length: acos loses the small angles this exists to show.
+            const float x[3]{c[1] * unitAim[2] - c[2] * unitAim[1], c[2] * unitAim[0] - c[0] * unitAim[2],
+                             c[0] * unitAim[1] - c[1] * unitAim[0]};
+            const float cross = std::sqrt(x[0] * x[0] + x[1] * x[1] + x[2] * x[2]) / length;
+            r.cameraOffDeg = std::atan2(cross, dot) * 57.2957795f;
+        }
+        return r;
+    }
+    if (cameraOk)
+    {
+        r.valid = true;
+        r.yaw = cameraYaw;
+        r.pitch = cameraPitch;
+    }
+    return r;
+}
+
 // One seat stint's identity for the trace and its consumers: never 0 (0 is "on foot"), and different for another
 // vehicle or another seat of the same one.
 inline uint32_t StanceKey(uint32_t parentHandle, int seatIndex)

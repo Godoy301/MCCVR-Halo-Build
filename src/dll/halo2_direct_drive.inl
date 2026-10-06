@@ -317,18 +317,47 @@ void Halo2DriveApply(int user, uint64_t returnAddress) noexcept
                 // write says why -- our reasons only).
                 const uint32_t stance = seat_converge::StanceKey(seatParent, seatIndex);
                 const bool seatKnown = occupancy > 0;
+                // THE GAME'S AIM IN A SEAT IS THE UNIT'S OWN AIMING VECTOR (seat_converge::SeatAimReference; found by
+                // the first headless run of a Halo 2 seat, 2026-10-06). The observer camera's forward -- the reference
+                // until then, right on foot -- sits a constant ~5.1 deg of pitch above the unit's aim in a seat (Ghost,
+                // Warthog passenger; every heading and pitch tried), so the pitch proof below never passed, the pitch
+                // stayed on the stick servo and no seat ever wrote both axes. The unit's aiming vector is the line the
+                // engine fires along and equals the record to 0.02 deg; it is read here, on the sim thread, from the
+                // same unit the occupancy read above (one tick behind the record: the proof's motion term covers it).
+                // A vector that does not read as one leaves the camera as before.
+                float unitAim[3]{};
+                bool unitAimRead = false;
+                if (occupancy > 0)
+                {
+                    const auto* owned = static_cast<const uint8_t*>(Halo2ObjectFromIndex(Halo2OwnedUnit()));
+                    if (owned && owned[0xAA] == 0)
+                    {
+                        std::memcpy(unitAim, owned + kHalo2UnitAimingVectorOffset, sizeof(unitAim));
+                        unitAimRead = true;
+                    }
+                }
+                const seat_converge::AimReference seatAim =
+                    seat_converge::SeatAimReference(unitAimRead, unitAim, aimValid, aimYaw, aimPitch);
+                if (seatAim.valid)
+                {
+                    (seatAim.fromUnit ? st.seatUnitAimRefs : st.seatCameraRefs).fetch_add(1, std::memory_order_relaxed);
+                    if (std::isfinite(seatAim.cameraOffDeg) &&
+                        seatAim.cameraOffDeg > st.seatCameraOffMaxDeg.load(std::memory_order_relaxed))
+                        st.seatCameraOffMaxDeg.store(seatAim.cameraOffDeg, std::memory_order_relaxed);
+                }
                 // In case (b) the game's aim goes into the record's frame for the stint check and the arm gate, and
                 // the hand's below.
-                float recordAimYaw = aimYaw, recordAimPitch = aimPitch;
+                float recordAimYaw = seatAim.yaw, recordAimPitch = seatAim.pitch;
                 bool frameRead = true;
                 if (axes.any())
                 {
                     seat_frame_rt::Count(g_halo2SeatFrameCounters, seatFrame.kase);
 #if HALOMCCVR_DEV_DIAGNOSTICS
-                    // THE FRAME CHECK: the record through R against the stock camera (the game's world aim).
-                    if (aimValid)
+                    // THE FRAME CHECK: the record through R against the game's world aim (the unit's aiming vector;
+                    // the observer camera only where that did not read).
+                    if (seatAim.valid)
                         seat_frame_rt::NoteFrameCheck(g_halo2SeatFrameCounters, seatFrame, nativeYaw, nativePitch,
-                                                      aimYaw, aimPitch);
+                                                      seatAim.yaw, seatAim.pitch);
 #endif
                     frameRead = seat_frame_rt::ToRecord(seatFrame, recordAimYaw, recordAimPitch, nativeYaw);
                 }
@@ -374,9 +403,12 @@ void Halo2DriveApply(int user, uint64_t returnAddress) noexcept
                     st.seatStints.fetch_add(1, std::memory_order_relaxed);
                 }
                 const bool yawWas = st.stint.yaw_ok, pitchWas = st.stint.pitch_ok;
-                const bool newSample = !havePublication || publication.index != st.stintSample;
+                // The unit's aiming vector is read fresh in this very update (every one is a sample of its own; a
+                // record that moved since the unit last ticked is motion the proof allows for). The camera is a
+                // publication: a repeated one is no evidence, as before.
+                const bool newSample = seatAim.fromUnit || !havePublication || publication.index != st.stintSample;
                 st.stintSample = havePublication ? publication.index : 0;
-                st.stint.step(aimValid, nativeYaw, nativePitch, recordAimYaw, recordAimPitch, now, newSample);
+                st.stint.step(seatAim.valid, nativeYaw, nativePitch, recordAimYaw, recordAimPitch, now, newSample);
                 if (!yawWas && st.stint.yaw_ok)
                     st.seatYawChecks.fetch_add(1, std::memory_order_relaxed);
                 if (!pitchWas && st.stint.pitch_ok)
@@ -391,7 +423,7 @@ void Halo2DriveApply(int user, uint64_t returnAddress) noexcept
                 if (!st.armed.load(std::memory_order_acquire))
                 {
                     // A seat may arm the drive on yaw agreement alone (a level that starts in a vehicle).
-                    const bool agrees = aimValid && std::isfinite(nativeYaw) &&
+                    const bool agrees = seatAim.valid && std::isfinite(nativeYaw) &&
                         std::fabs(std::remainder(nativeYaw - recordAimYaw, 6.28318531f)) < kHalo2DriveAgreeRad;
                     st.agree = agrees ? st.agree + 1 : 0;
                     if (st.agree >= kHalo2DriveAgreeUpdates)
@@ -785,6 +817,16 @@ void ReportHalo2Drive() noexcept
             "or a check %u; %s",
             stints, yawChecks, pitchChecks, pitchFails, seatWrites, st.seatConvergedWrites.exchange(0), held,
             seatWaits, frames[0] ? frames : "frame not read");
+    // What the seat's proof was judged against (seat_converge::SeatAimReference), in every build: the unit's own
+    // aiming vector, and how far the observer camera's forward sat off it.
+    const uint32_t unitRefs = st.seatUnitAimRefs.exchange(0, std::memory_order_relaxed),
+                   cameraRefs = st.seatCameraRefs.exchange(0, std::memory_order_relaxed);
+    const float cameraOff = st.seatCameraOffMaxDeg.exchange(0.0f, std::memory_order_relaxed);
+    if (unitRefs || cameraRefs)
+        LOG("Halo 2 DRIVE seats: the seat's record was judged against the unit's own aiming vector on %u updates (the "
+            "observer camera's forward sat up to %.2f deg off it: the camera is not a seat's aim) and against the "
+            "observer camera on %u (the vector did not read)",
+            unitRefs, cameraOff, cameraRefs);
     if (unread && !g_halo2SeatFrameCounters.unknownLogged.exchange(1, std::memory_order_relaxed))
         LOG("Halo 2 DRIVE seats: the seat's frame did not read (the rebase's links or the vehicle's up failed their "
             "checks); those updates write nothing and the stick servo keeps the seat (logged once)");
