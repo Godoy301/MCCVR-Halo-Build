@@ -2,6 +2,7 @@
 #include "vr.h"
 #include "../common/roomscale_logic.h"
 #include "../common/roomscale_recenter_logic.h"
+#include "../common/director_camera_logic.h"
 #include "../common/physical_running_logic.h"
 #include "../common/config.h"
 #include "../common/log.h"
@@ -56,6 +57,9 @@ std::atomic<uint64_t> admissionRefused[size_t(roomscale_admission::Refusal::Coun
 std::atomic<uint32_t> admissionLastRungs{0};   // rungs | refusal << 8 | title << 16
 std::atomic<uint32_t> admissionFaultGeneration{0};
 std::atomic<int> admissionFaultTitle{0};
+// The camera rung's value agreement (director_camera::RungTrust; Reach / Halo 4 / Halo 2), as the verdicts carry
+// it: generation << 32 | title << 8 | proven (bit 0) | condemned (bit 1). The report says each change once.
+std::atomic<uint64_t> admissionRungTrust{0};
 // The blend is integrated at frame rate, and GetTickCount64 ticks in 15.6 ms steps: at 90 Hz that is
 // one or two frames with no time and then a frame with two frames' worth, which would show as the
 // world stepping during the slide. A test build supplies its own clock.
@@ -270,6 +274,10 @@ void Roomscale_Camera(GameTitle title,const roomscale_admission::Verdict& admiss
             admissionFaultTitle.store(static_cast<int>(title),std::memory_order_relaxed);
             admissionFaultGeneration.store(generation,std::memory_order_release);
         }
+        if (admission.cameraRungProven || admission.cameraRungCondemned)
+            admissionRungTrust.store((uint64_t(generation)<<32)|(uint64_t(uint8_t(title))<<8)|
+                (admission.cameraRungProven ? 1u : 0u)|(admission.cameraRungCondemned ? 2u : 0u),
+                std::memory_order_release);
         if (!tracking) trackingBlocked.fetch_add(1, std::memory_order_relaxed);
         if (!input) inputBlocked.fetch_add(1, std::memory_order_relaxed);
     }
@@ -473,9 +481,13 @@ void Roomscale_Report() noexcept
             const int head=snprintf(line,sizeof line,
                 "Roomscale admission: title=%u refused %llu of %llu camera frames:",
                 unsigned(last>>16),(unsigned long long)total,(unsigned long long)(good+bad));
+            // Each rung is named for the title it was read in (the game's camera / the Monitor answer / the view
+            // model are different readings per title).
+            const roomscale_admission::RungSources sources=
+                roomscale_admission::TitleRungSources(GameTitle(uint8_t(last>>16)));
             if (head>0 && size_t(head)<sizeof line)
                 roomscale_admission::FormatRefusals(line+head,sizeof line-size_t(head),reasons,
-                    Refusal((last>>8)&0xFFu),uint8_t(last));
+                    Refusal((last>>8)&0xFFu),uint8_t(last),&sources);
             LOG("%s",line);
         }
 #else
@@ -491,6 +503,28 @@ void Roomscale_Report() noexcept
                 "the next level; an unarmed player is admitted only while a first-person view model is drawn. "
                 "VR and the body follow are otherwise unaffected",
                 admissionFaultTitle.load(std::memory_order_relaxed));
+        }
+        // The camera rung's value agreement with the view model (Reach / Halo 4 / Halo 2), said once per change.
+        static uint64_t trustSaid=0;
+        const uint64_t trust=admissionRungTrust.load(std::memory_order_acquire);
+        if (trust && trust!=trustSaid)
+        {
+            trustSaid=trust;
+            const roomscale_admission::RungSources sources=
+                roomscale_admission::TitleRungSources(GameTitle(uint8_t(trust>>8)));
+            if (trust&2u)
+                LOG("Roomscale admission: title=%u StockFallback: the game camera rung [%s] said \"not first "
+                    "person\" for %u on-foot frames in a row while the first-person view model [%s] was drawn, and "
+                    "never once agreed with it: the rung is withdrawn until the next level and the view model "
+                    "decides, as before (an unarmed player is refused). VR and the body follow are otherwise "
+                    "unaffected", unsigned(uint8_t(trust>>8)), sources.camera ? sources.camera : "?",
+                    unsigned(director_camera::RungTrust::kCondemn), sources.viewModel ? sources.viewModel : "?");
+            else
+                LOG("Roomscale admission: title=%u the game camera rung [%s] is proven for this level: it said "
+                    "\"first person\" on %u on-foot frames on which the first-person view model [%s] was drawn; "
+                    "an unarmed first-person player is admitted by it",
+                    unsigned(uint8_t(trust>>8)), sources.camera ? sources.camera : "?",
+                    unsigned(director_camera::RungTrust::kProven), sources.viewModel ? sources.viewModel : "?");
         }
     }
     const auto stoodDown=guardStoodDown.exchange(0), notOurs=guardNotOurs.exchange(0);

@@ -26,7 +26,8 @@ int RunRoomscaleAdmissionTests()
     // ODST and CE: a camera rung, and no Forge (the Monitor is No by construction). CE has no view-model witness.
     const auto odst=[&]{ return halo3(); };
     const auto ce=[&]{ TitleEvidence e=halo3(); e.controlBlocked=Signal::No; e.viewModel=Signal::Unavailable; return e; };
-    // Reach, Halo 4, Halo 2: no camera rung, no Monitor predicate; the view model is the first-person proof.
+    // Reach, Halo 4, Halo 2 where their camera rung did not bind or was condemned (director_camera_logic.h; with
+    // it they read like Halo 3 / ODST, tests/director_camera_tests.cpp): the view model is the first-person proof.
     const auto witnessOnly=[]{
         TitleEvidence e{};
         e.cinematic=Signal::No; e.unit=Signal::Yes; e.seated=Signal::No; e.viewModel=Signal::Yes;
@@ -66,7 +67,7 @@ int RunRoomscaleAdmissionTests()
         Check(ClassifyTitle(e)==Refusal::None, "Halo 3 with no witness hook and no Monitor check: admitted as before");
     }
     {
-        // The titles with no camera rung cannot tell an unarmed player from a third-person camera.
+        // A title with no camera rung on this build cannot tell an unarmed player from a third-person camera.
         TitleEvidence e=witnessOnly(); e.viewModel=Signal::No;
         Check(ClassifyTitle(e)==Refusal::NoFirstPersonModel,
             "Reach / Halo 4 / Halo 2 with no view model: refused, and the reason says which reading");
@@ -89,7 +90,7 @@ int RunRoomscaleAdmissionTests()
         // Back to a Spartan in the same Forge session: the predicate says no again.
         TitleEvidence spartan=halo3();
         Check(ClassifyTitle(spartan)==Refusal::None, "a Forge Spartan (not editing): admitted");
-        // On Reach / Halo 4 the Monitor draws no view model, which is what keeps it out there.
+        // On Reach / Halo 4 without their camera rung the Monitor draws no view model, which keeps it out.
         TitleEvidence reach=witnessOnly(); reach.viewModel=Signal::No;
         Check(ClassifyTitle(reach)==Refusal::NoFirstPersonModel, "Reach's Monitor (no view model): refused");
     }

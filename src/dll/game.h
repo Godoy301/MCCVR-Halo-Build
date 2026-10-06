@@ -17,8 +17,9 @@ bool Game_ReadVrActionBindings(vr_mapping::Transports& out, uint64_t nowMs,
 uint32_t Game_VrActionTransport(vr_mapping::Action action, uint64_t nowMs);
 
 // Camera-thread admission (roomscale_admission_logic.h): on foot, in control, first person -- by the game's own
-// camera where the title has it bound (Halo 3, ODST, CE), else by the first-person view-model witness -- behind
-// the roomscale setting and the presentation gates. The verdict names the reading that refused.
+// camera where the title has it bound (every title; Reach, Halo 4 and Halo 2 since director_camera_logic.h), else
+// by the first-person view-model witness -- behind the roomscale setting and the presentation gates. The verdict
+// names the reading that refused.
 roomscale_admission::Verdict Game_RoomscaleCameraVerdict(GameTitle title);
 bool Game_RoomscaleCameraAllowed(GameTitle title);
 // That on-foot, player-controlled, first-person evidence alone (no roomscale setting or presentation gates): the
@@ -39,6 +40,12 @@ struct TitleFirstPersonView
     bool hold = false;
 };
 TitleFirstPersonView Game_TitleFirstPersonView(GameTitle title);
+// The title's camera rung as last published, raw (the dev line that says what each state's camera reads): the
+// director's camera mode and perspective for output user 0 (Halo 3, ODST, Reach, Halo 4: first person is mode 3 /
+// perspective 0; -1 / -1 for Halo 2, whose rung is the director's first-person camera update) and the Monitor
+// answer. False: the title has no camera rung bound. Any thread: atomics and Halo 2's static read only.
+bool Game_FirstPersonCameraSample(GameTitle title, fp_view::Signal& camera, int32_t& mode, int32_t& perspective,
+                                  fp_view::Signal& monitor);
 
 // Monotonic counters written by render/palette hooks and sampled at OpenXR
 // frame boundaries. Hooks only touch relaxed atomics; formatting and file I/O
