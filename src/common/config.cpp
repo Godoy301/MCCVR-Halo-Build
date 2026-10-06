@@ -2297,14 +2297,17 @@ void ConfigSave()
 #endif
     fprintf(f, "# Vehicle seats: which seats your hand aims. With aim_direct_drive = 1 the seat's aim is written\n");
     fprintf(f, "# as on foot (Reach, Halo 3, ODST, Halo 4, Halo 2); Halo 3 and ODST seats also converge whenever\n");
-    fprintf(f, "# converged_aim is on (0 here keeps their old seat aim). A land vehicle seat's turning limits\n");
+    fprintf(f, "# converged_aim is on (0 here keeps their old seat aim), and Halo 2 seats converge wherever this\n");
+    fprintf(f, "# key lets the hand write them. Halo CE's hand aims every seat whatever this key says (its seat\n");
+    fprintf(f, "# aim converges with converged_aim alone). A land vehicle seat's turning limits\n");
     fprintf(f, "# still hold (a passenger's cone, a turret's or tank gun's pitch stop): past one the crosshair\n");
     fprintf(f, "# stops at the edge, where the gun is held and the shots go; a gun still turning toward your\n");
     fprintf(f, "# hand keeps the crosshair on your aim point; aircraft have no limits. A driver whose stick or\n");
     fprintf(f, "# wheel steers keeps it for steering. 0 = off (vehicles\n");
     fprintf(f, "# keep the old stick aim), 1 = gunners, passengers, and drivers whose gun turns apart from the\n");
-    fprintf(f, "# hull (a driver whose look steers the vehicle keeps the stick; Halo 4 and Halo 2 cannot tell a\n");
-    fprintf(f, "# seat's role yet, so 1 keeps every seat there on the stick), 2 = every seat you aim,\n");
+    fprintf(f, "# hull (a driver whose look steers the vehicle keeps the stick; Halo 4 cannot tell a seat's\n");
+    fprintf(f, "# role yet, so 1 keeps every seat there on the stick; Halo 2 reads the role off the seat\n");
+    fprintf(f, "# itself, and a seat it cannot read counts as a driver), 2 = every seat you aim,\n");
     fprintf(f, "# drivers included. F1 > Vehicles: \"Drivers aim with the hand\" switches 2 / 1. (default %d)\n",
             d.reach_vehicle_aim);
     fprintf(f, "reach_vehicle_aim = %d\n\n", g_config.reach_vehicle_aim);
@@ -2325,10 +2328,14 @@ void ConfigSave()
     fprintf(f, "# Replaces reach_direct_drive = 3 and legacy_direct_drive = 1. 0 = off. (default %d)\n",
             d.aim_direct_drive);
     fprintf(f, "aim_direct_drive = %d\n\n", g_config.aim_direct_drive);
-    fprintf(f, "# Every title (Reach also needs aim_direct_drive = 1), on foot and in Halo 3, ODST and\n");
-    fprintf(f, "# Reach seats. 1 = CONVERGED AIM: the game traces the ray from your eye\n");
+    fprintf(f, "# Every title (Reach also needs aim_direct_drive = 1), on foot and in vehicle seats: Halo 3,\n");
+    fprintf(f, "# ODST and Reach; Halo CE and Halo 2 in their first-person seat view (vehicle_first_person = 1;\n");
+    fprintf(f, "# Halo 2 where direct drive writes the seat, see seat_direct_drive); Halo 4 seats not yet.\n");
+    fprintf(f, "# 1 = CONVERGED AIM: the game traces the ray from your eye\n");
     fprintf(f, "# along the controller and bends the aim so the shot passes through the point it hits, at\n");
-    fprintf(f, "# any distance; the reticle sits on that point. 0 = the earlier aim, which converges on one\n");
+    fprintf(f, "# any distance; the reticle sits on that point. In a Halo CE or Halo 2 seat the game's own\n");
+    fprintf(f, "# crosshair test then finds that point and turns the seat's gun onto it, as far as the gun's\n");
+    fprintf(f, "# own cone and stops allow. 0 = the earlier aim, which converges on one\n");
     fprintf(f, "# fixed distance (crosshair_distance_m) and runs no trace. (default %d)\n", d.converged_aim);
     fprintf(f, "converged_aim = %d\n\n", g_config.converged_aim);
     fprintf(f, "# -------------------------------------------------------------------\n");
