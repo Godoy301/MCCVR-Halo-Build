@@ -46769,6 +46769,9 @@ namespace
         // owns only the live
         // Storm80 -> held -> native-body record sequence; any miss leaves that
         // exact feature stock while the working camera/session stays armed.
+        // The muzzle lane proves its image FIRST: one of its patterns is the head of the first-person packet
+        // producer, which InstallHalo4Vrik is about to hook (halo4_muzzle_lifecycle.inl).
+        Halo4MuzzlePreflight(base,size,generation);
         InstallHalo4Vrik(base,size);
         // Separate optional transaction: a missing/ambiguous H4EK-mapped
         // query leaves the already-installed floating hands entirely intact.
