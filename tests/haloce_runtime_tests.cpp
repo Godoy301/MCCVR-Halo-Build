@@ -31,7 +31,13 @@ float VR_RecenterStandingLiftM(GameTitle) noexcept { return 0.0f; }
 uint64_t Sight_NowUs() { static uint64_t now=1000000; return now+=1000; }
 float HaloCEControls_PhysicalCrouchCorrection(uint32_t,uint64_t,float,bool) noexcept { return 0; }
 bool HaloCEHud_HasCrosshairScope() noexcept { return naturalHudFrame; }
-void Roomscale_Camera(GameTitle title,bool allowed,const float* body,const float*,const float*,const float* forward,float* reference,float) noexcept {
+roomscale_admission::Verdict Game_RoomscaleCameraVerdict(GameTitle) {
+    roomscale_admission::Verdict verdict{};
+    verdict.refusal=roomscaleAllowed?roomscale_admission::Refusal::None:roomscale_admission::Refusal::Seated;
+    return verdict;
+}
+void Roomscale_Camera(GameTitle title,const roomscale_admission::Verdict& admission,const float* body,const float*,const float*,const float* forward,float* reference,float) noexcept {
+    const bool allowed=admission.Admitted();
     if(title==GameTitle::HaloCE&&allowed) {
         ++roomscaleCalls;std::memcpy(roomscaleBody,body,sizeof(roomscaleBody));
         std::memcpy(roomscaleForward,forward,sizeof(roomscaleForward));reference[0]+=.05f;
