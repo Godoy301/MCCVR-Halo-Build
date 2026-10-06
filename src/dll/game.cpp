@@ -38,6 +38,7 @@
 #include "../common/shot_impact_logic.h"
 #include "../common/as_seen_logic.h"
 #include "../common/first_person_view_logic.h"
+#include "../common/director_camera_logic.h"
 #include <windows.h>
 #include <tlhelp32.h>
 #include <array>
@@ -1108,10 +1109,10 @@ namespace
     }
 
     // The engine camera thread only. Unavailable: not bound for this generation, or faulted. Yes / No: the game's
-    // answer for output user 0's player.
-    fp_view::Signal ReadHalo3SandboxEditor(uint32_t generation) noexcept
+    // answer for output user 0's player. Reach's and Halo 4's predicates take (player, out) and never read the
+    // third argument (director_camera_logic.h); it is passed null there too.
+    fp_view::Signal ReadSandboxEditor(Halo3SandboxEditorBinding& b, uint32_t generation) noexcept
     {
-        auto& b = g_halo3SandboxEditor;
         if (!generation || !b.bound.load(std::memory_order_acquire) ||
             b.generation.load(std::memory_order_acquire) != generation ||
             b.faulted.load(std::memory_order_relaxed) || !b.playerGetter || !b.predicate)
@@ -1128,6 +1129,10 @@ namespace
             b.faulted.store(true, std::memory_order_relaxed);
             return fp_view::Signal::Unavailable;
         }
+    }
+    fp_view::Signal ReadHalo3SandboxEditor(uint32_t generation) noexcept
+    {
+        return ReadSandboxEditor(g_halo3SandboxEditor, generation);
     }
 
     // THE DIRECTOR'S CAMERA FOR OUTPUT USER 0, ODST (first_person_view_logic.h; two-handed aim's camera rung). The
@@ -1242,6 +1247,131 @@ namespace
     TwoHandViewPublication g_halo3TwoHandView, g_odstTwoHandView;
     void Halo3PublishTwoHandView(uint64_t nowMs, uint32_t generation) noexcept;
     void OdstPublishTwoHandView(uint64_t nowMs, uint32_t generation) noexcept;
+
+    // THE GAME'S OWN FIRST-PERSON ANSWER, Reach and Halo 4 (director_camera_logic.h): the director's camera record
+    // for output user 0 (mode 3 = c_first_person_camera, perspective 0) and the game's sandbox-editor predicate
+    // (Forge's Monitor has the first-person camera while it holds nothing). The same record and the same question
+    // as Halo 3's, bound from each title's own two code sites.
+    //
+    // WHICH THREAD. Both live behind the engine TLS. Reach reads them in its main-render-view hook, right after the
+    // seat sampler that already calls the game's player / unit / camera-info functions there ("Reach's proven
+    // normal-player outer-render thread, whose engine TLS is valid"); Halo 4 in its camera hook, right after the
+    // seat read that walks the same TLS. The record read is two dword loads under SEH. The predicate and the
+    // player getter are readers (no store but one through an out-pointer that is passed null, no indirect call:
+    // the verifier scripts walk them), called under SEH at most every 8 ms; a fault turns the check off for the
+    // title generation (the Monitor answer is then "unknown" and a first-person camera needs the view model again).
+    // The VR frame thread and the admission read the publication, never the engine: a stamp older than
+    // kTwoHandViewFreshMs is no answer.
+    // ADDR-HYGIENE: resolved (director_camera::DecodeRecordSites / DecodeEditorSites: every site matched uniquely,
+    // cross-checked against each other and against the engine TLS index and unit getter the title already bound).
+    Halo3DirectorCameraBinding g_reachDirectorCamera, g_halo4DirectorCamera;
+    Halo3SandboxEditorBinding g_reachSandboxEditor, g_halo4SandboxEditor;
+    TwoHandViewPublication g_reachTwoHandView, g_halo4TwoHandView;
+
+    void RetireDirectorView(Halo3DirectorCameraBinding& camera, Halo3SandboxEditorBinding& editor,
+                            TwoHandViewPublication& publication) noexcept
+    {
+        camera.bound.store(false, std::memory_order_release);
+        camera.generation.store(0, std::memory_order_release);
+        editor.bound.store(false, std::memory_order_release);
+        editor.generation.store(0, std::memory_order_release);
+        publication.stampMs.store(0, std::memory_order_release);
+        publication.generation.store(0, std::memory_order_release);
+    }
+
+    // Cold (title install). `boundUnitGetter`: the unit-by-output-user getter the title already calls, or 0 where
+    // it has bound none to compare. Fails closed and says which link failed; the Monitor check binds only when
+    // the record did (it is asked for nothing else).
+    bool BindDirectorView(const char* title, Halo3DirectorCameraBinding& camera, Halo3SandboxEditorBinding& editor,
+                          TwoHandViewPublication& publication, const director_camera::EditorCallSite& editorShape,
+                          uintptr_t base, size_t size, uint32_t generation, const uint32_t* engineTlsIndex,
+                          uintptr_t boundUnitGetter)
+    {
+        using namespace director_camera;
+        RetireDirectorView(camera, editor, publication);
+        editor.faulted.store(false, std::memory_order_relaxed);
+        const auto unique = [&](const char* pattern) -> uintptr_t {
+            const uintptr_t hit = sig::Find(base, size, pattern);
+            return hit && !sig::Find(hit + 1, base + size - hit - 1, pattern) ? hit : 0;
+        };
+        const auto inside = [&](uintptr_t at, size_t bytes) { return at >= base && at + bytes <= base + size; };
+        const auto bytesAt = [](uintptr_t at) { return reinterpret_cast<const uint8_t*>(at); };
+        const uintptr_t tlsIndexAddress = reinterpret_cast<uintptr_t>(engineTlsIndex);
+        const bool tlsKnown = generation && engineTlsIndex && inside(tlsIndexAddress, sizeof(uint32_t));
+        const int64_t tlsRva = tlsKnown ? static_cast<int64_t>(tlsIndexAddress - base) : -1;
+
+        const uintptr_t store = unique(kSetModeStoreSitePattern);
+        const uintptr_t gate = unique(kFirstPersonWeaponGatePattern);
+        RecordSites record{};
+        const RecordBind recordResult = !tlsKnown ? RecordBind::TlsMismatch
+            : DecodeRecordSites(bytesAt(store), static_cast<int64_t>(store - base), bytesAt(gate),
+                                static_cast<int64_t>(gate - base), tlsRva, record);
+        if (recordResult != RecordBind::Bound)
+        {
+            LOG("First-person camera %s: StockFallback: the director's camera record did not bind (%s); first "
+                "person is proven by the first-person view model only, as before (an unarmed player is refused "
+                "and a zoom depends on the view model)", title, RecordBindName(recordResult));
+            return false;
+        }
+        camera.tlsIndex = engineTlsIndex;
+        camera.blockOffset = record.blockOffset;
+        camera.perspectiveOffset = record.perspectiveOffset;
+        camera.modeOffset = record.modeOffset;
+        camera.generation.store(generation, std::memory_order_release);
+        camera.bound.store(true, std::memory_order_release);
+        LOG("First-person camera %s: director camera record bound: output user 0 at engine TLS +0x%X (index at "
+            "+0x%llX), perspective +0x%X, mode +0x%X (set_camera_mode's store +0x%llX calls the first-person weapon "
+            "gate +0x%llX and both agree); mode 3 from perspective 0 is first person, with or without a weapon",
+            record.blockOffset, static_cast<unsigned long long>(tlsRva), record.perspectiveOffset,
+            record.modeOffset, static_cast<unsigned long long>(store - base),
+            static_cast<unsigned long long>(gate - base));
+
+        const uintptr_t predicate = unique(kSandboxEditorPredicateHeadPattern);
+        const uintptr_t callSite = unique(editorShape.pattern);
+        uintptr_t playerGetter = 0;
+        bool playerBody = false;
+        if (callSite)
+        {
+            playerGetter = base + static_cast<uintptr_t>(
+                CallRva(bytesAt(callSite), editorShape.callPlayer, static_cast<int64_t>(callSite - base)));
+            if (!inside(playerGetter, kOutputUserPlayerGetterBytes))
+                playerGetter = 0;
+            else
+                playerBody = sig::Find(playerGetter, kOutputUserPlayerGetterBytes,
+                                       kOutputUserPlayerGetterPattern) == playerGetter;
+        }
+        EditorSites sites{};
+        const EditorBind editorResult = DecodeEditorSites(
+            editorShape, bytesAt(predicate), static_cast<int64_t>(predicate - base), bytesAt(callSite),
+            static_cast<int64_t>(callSite - base), bytesAt(playerGetter), playerBody,
+            boundUnitGetter && inside(boundUnitGetter, 1) ? static_cast<int64_t>(boundUnitGetter - base) : -1,
+            tlsRva, sites);
+        if (editorResult != EditorBind::Bound || !inside(base + static_cast<uintptr_t>(sites.predicateRva), 1))
+        {
+            LOG("First-person camera %s: StockFallback: the Forge Monitor check did not bind (%s); with the "
+                "director's first-person camera an unarmed player is admitted only while a first-person view "
+                "model is drawn, as before", title, EditorBindName(editorResult));
+            return true;
+        }
+        editor.playerGetter = reinterpret_cast<Halo3OutputUserPlayerFn>(base + static_cast<uintptr_t>(sites.playerGetterRva));
+        editor.predicate = reinterpret_cast<Halo3SandboxEditorFn>(base + static_cast<uintptr_t>(sites.predicateRva));
+        editor.generation.store(generation, std::memory_order_release);
+        editor.bound.store(true, std::memory_order_release);
+        LOG("First-person camera %s: Forge Monitor check bound: the game's own sandbox-editor predicate +0x%llX "
+            "(the director's call +0x%llX) for the player from +0x%llX%s; an on-foot player whose camera is the "
+            "first-person camera is admitted without a weapon unless the game says he is the Monitor",
+            title, static_cast<unsigned long long>(sites.predicateRva),
+            static_cast<unsigned long long>(callSite - base + editorShape.callPredicate),
+            static_cast<unsigned long long>(sites.playerGetterRva),
+            boundUnitGetter ? ", beside the unit getter the seat sampler calls" : "");
+        return true;
+    }
+
+    // The title's engine camera thread only (see WHICH THREAD above). Allocation-, log- and lock-free; at most
+    // every 8 ms. The Monitor is asked only when the record itself read: no director globals on this thread, or
+    // none yet, is not a moment to call into the game.
+    void PublishDirectorView(TwoHandViewPublication& p, const Halo3DirectorCameraBinding& camera,
+                             Halo3SandboxEditorBinding& editor, uint64_t nowMs, uint32_t generation) noexcept;
 
     // FIRST-PERSON WITNESSES (roomscale and the head leash; Halo 4's is g_halo4FirstPersonMs). Each title's
     // on-foot proof passes in third person too -- a death camera, a carried turret, Reach's Armor Lock,
@@ -27675,6 +27805,39 @@ namespace
         p.stampMs.store(nowMs, std::memory_order_release);
     }
 
+    // Reach's and Halo 4's (declared with their bindings): the director's camera for output user 0, raw, and the
+    // game's Monitor answer. The unit and the seat are not published here: both titles have their own samplers.
+    void PublishDirectorView(TwoHandViewPublication& p, const Halo3DirectorCameraBinding& camera,
+                             Halo3SandboxEditorBinding& editor, uint64_t nowMs, uint32_t generation) noexcept
+    {
+        const uint64_t last = p.stampMs.load(std::memory_order_relaxed);
+        if (!generation ||
+            (p.generation.load(std::memory_order_relaxed) == generation && last && nowMs >= last && nowMs - last < 8))
+            return;
+        if (!camera.bound.load(std::memory_order_acquire) ||
+            camera.generation.load(std::memory_order_acquire) != generation)
+            return;   // no camera rung for this generation: nothing to publish, and the Monitor is not asked
+        uint32_t bits = kTwoHandViewDirectorBound;
+        int32_t mode = -1, perspective = -1;
+        if (ReadDirectorCameraRaw(camera, generation, mode, perspective))
+        {
+            bits |= kTwoHandViewDirectorRead;
+            switch (ReadSandboxEditor(editor, generation))
+            {
+            case fp_view::Signal::Yes: bits |= kTwoHandViewEditorRead | kTwoHandViewEditor; break;
+            case fp_view::Signal::No: bits |= kTwoHandViewEditorRead; break;
+            default: break;
+            }
+        }
+        if (editor.faulted.load(std::memory_order_relaxed))
+            bits |= kTwoHandViewEditorFaulted;
+        p.bits.store(bits, std::memory_order_relaxed);
+        p.mode.store(mode, std::memory_order_relaxed);
+        p.perspective.store(perspective, std::memory_order_relaxed);
+        p.generation.store(generation, std::memory_order_relaxed);
+        p.stampMs.store(nowMs, std::memory_order_release);
+    }
+
     // Declared with the crosshair re-aims above: the fire thread's own-shot-line scopes, read where they live.
     bool LegacyOwnShotLineActive(GameTitle title)
     {
@@ -31759,6 +31922,10 @@ namespace
             ReachVehicleFpActive();
         if (!vehicleFrameReady)
             vehicleFrame = {};
+        // The game's own first-person answer for this frame (director_camera_logic.h): the same thread and the
+        // same engine TLS as the seat sample above.
+        PublishDirectorView(g_reachTwoHandView, g_reachDirectorCamera, g_reachSandboxEditor, GetTickCount64(),
+                            epoch.generation);
         ReachApplySeatYawFollow(vehicleFrame);
         const bool stableVehicle =
             g_reachVehicleFpStable.load(std::memory_order_relaxed)==
@@ -33186,6 +33353,7 @@ namespace
             static_cast<uint8_t>(
                 ReachVehicleCameraBindingState::StockFallback),
             std::memory_order_release);
+        RetireDirectorView(g_reachDirectorCamera, g_reachSandboxEditor, g_reachTwoHandView);
         g_reachVehicleTrimSnapshot.store(0, std::memory_order_release);
         g_reachVehicleSampleMs.store(0, std::memory_order_relaxed);
         g_reachVehicleFpStable.store(
@@ -35016,6 +35184,13 @@ namespace
                 ? ReachVehicleCameraBindingState::Installed
                 : ReachVehicleCameraBindingState::StockFallback),
             std::memory_order_release);
+        // The game's own first-person answer (director_camera_logic.h): optional; failure keeps the view-model
+        // rung. The unit getter is the one the seat samplers call, when either resolved it.
+        (void)BindDirectorView("Reach", g_reachDirectorCamera, g_reachSandboxEditor, g_reachTwoHandView,
+            director_camera::kReachEditorCallSite, base, size, generation,
+            reinterpret_cast<const uint32_t*>(base + kReachEngineTlsIndexRva),
+            reachVehicleCameraResolved ? reinterpret_cast<uintptr_t>(reachVehiclePlayerUnit)
+                : reachVehicleInputResolved ? reinterpret_cast<uintptr_t>(reachPlayerUnitByOutputUser) : 0);
         g_reachVehicleTrimSnapshot.store(0, std::memory_order_release);
         g_reachVehicleSampleMs.store(0, std::memory_order_relaxed);
         g_reachVehicleFpStable.store(
@@ -44506,6 +44681,9 @@ namespace
             Halo4VehicleInputState frameSeat{};
             const bool frameSeatRead = Halo4ReadVehicleInput(frameSeat);
             Halo4PublishSeatStamp(frameSeatRead, frameSeat);
+            // The game's own first-person answer for this frame (director_camera_logic.h), on the same thread.
+            PublishDirectorView(g_halo4TwoHandView, g_halo4DirectorCamera, g_halo4SandboxEditor, GetTickCount64(),
+                                g_halo4Camera.generation.load(std::memory_order_acquire));
 #if HALOMCCVR_DEV_DIAGNOSTICS
             seatEyeSeat = frameSeat;
             seatEyeSeatRead = frameSeatRead;
@@ -46304,6 +46482,7 @@ namespace
         g_halo4VehicleIdentityProven.store(false,std::memory_order_release);
         g_halo4RenderModelTagIndexPointerSlot=0;
         g_halo4RenderModelGroupBaseTable=0;
+        RetireDirectorView(g_halo4DirectorCamera, g_halo4SandboxEditor, g_halo4TwoHandView);
         g_halo4EngineTlsIndex = nullptr;
         g_halo4Camera.base = 0;
         g_halo4Camera.size = 0;
@@ -46541,6 +46720,11 @@ namespace
         }
 
         g_halo4Camera.installed.store(true, std::memory_order_release);
+        // The game's own first-person answer (director_camera_logic.h): optional; failure keeps the view-model
+        // rung. Halo 4's unit getter is bound by the vehicle-input feature, later and apart: it is not compared
+        // here (tools/verify-halo4-director-camera.py checks the call site's unit getter offline).
+        (void)BindDirectorView("Halo 4", g_halo4DirectorCamera, g_halo4SandboxEditor, g_halo4TwoHandView,
+            director_camera::kHalo4EditorCallSite, base, size, generation, g_halo4EngineTlsIndex, 0);
         // C-H4-30: turn off Halo 4's first-person FOV squish.
         //
         // E-H4-22: the first-person camera rebuild 0x34EC44 multiplies the FP
@@ -56789,15 +56973,17 @@ bool Game_TitleSeated(GameTitle title)
 //
 //   title   camera rung (game's own)          seat rung (parent link)             view-model rung (mod's witness)
 //   CE      native user perspective == 0      unit +0xD8 parent                   -
-//   Halo 2  -                                 unit seat word (observer sample)    on-foot unit sample, 100 ms
+//   Halo 2  director's first-person update    unit seat word (observer sample)    on-foot unit sample, 100 ms
 //   Halo 3  director mode 3 / perspective 0   unit seat word (+ sampler's seat)   FP view model, 100 ms
 //   ODST    director mode 3 / perspective 0   unit seat word (sampler)            FP view model, 100 ms
-//   Reach   -                                 unit_get_camera_info seat           FP view model, two hits, 150 ms
-//   Halo 4  -                                 the camera hook's seat stamp        FP view-model skinning, 100 ms
+//   Reach   director mode 3 / perspective 0   unit_get_camera_info seat           FP view model, two hits, 150 ms
+//   Halo 4  director mode 3 / perspective 0   the camera hook's seat stamp        FP view-model skinning, 100 ms
 //
-// plus the vetoes: a cinematic (the title's cinematic publication, CE's native flag, the cutscene theater) and no
-// controlled unit (CE, Halo 3, ODST). `hold` is the title's own pause flag (CE); VR's pause/menu gates are added by
-// the caller.
+// plus the vetoes: a cinematic (the title's cinematic publication, CE's native flag, the cutscene theater), no
+// controlled unit (CE, Halo 3, ODST) and Forge's Monitor (Halo 3, Reach, Halo 4: the game's own sandbox-editor
+// answer, because an idle Monitor has the first-person camera; where that answer is unknown a first-person camera
+// needs the view model to vouch). `hold` is the title's own pause flag (CE); VR's pause/menu gates are added by the
+// caller.
 namespace
 {
     fp_view::Signal SignalIf(bool yes) { return yes ? fp_view::Signal::Yes : fp_view::Signal::No; }
@@ -56849,6 +57035,110 @@ namespace
         return s.fresh && (s.bits & kTwoHandViewUnitRead)
             ? SignalIf((s.bits & kTwoHandViewUnitPresent) != 0) : fp_view::Signal::Unavailable;
     }
+    // The game's own "this player is Forge's Monitor" answer as the camera thread published it (Halo 3, Reach,
+    // Halo 4). Unavailable: not bound for this generation, or faulted (`faulted` says which). Unread: stale.
+    fp_view::Signal EditorSignal(const TwoHandViewSample& s, const Halo3SandboxEditorBinding& editor,
+                                 uint32_t generation, bool& faulted)
+    {
+        const bool bound = generation && editor.bound.load(std::memory_order_acquire) &&
+            editor.generation.load(std::memory_order_acquire) == generation;
+        faulted = bound && editor.faulted.load(std::memory_order_relaxed);
+        return !bound || faulted ? fp_view::Signal::Unavailable
+            : !s.fresh || !(s.bits & kTwoHandViewEditorRead) ? fp_view::Signal::Unread
+            : SignalIf((s.bits & kTwoHandViewEditor) != 0);
+    }
+
+    // DEV FAULT INJECTION (first_person_rung_fault, config.h; nothing in a player build): each rung of the
+    // first-person ladder forced to fail through the real path, so the next one is seen to take over. Bit 3 is
+    // applied before the value agreement observes the camera (which must then withdraw it); bits 0-2 after it.
+    void DevFaultFirstPersonCamera(fp_view::Signal& camera) noexcept
+    {
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        if ((g_config.first_person_rung_fault & 8) && camera == fp_view::Signal::Yes)
+            camera = fp_view::Signal::No;
+#else
+        (void)camera;
+#endif
+    }
+    void DevFaultFirstPersonRungs(fp_view::Signal& camera, fp_view::Signal& monitor,
+                                  fp_view::Signal& viewModel) noexcept
+    {
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        const int fault = g_config.first_person_rung_fault;
+        if ((fault & 1) && viewModel == fp_view::Signal::Yes)
+            viewModel = fp_view::Signal::No;           // an unarmed player: no view model drawn
+        if (fault & 2)
+            camera = monitor = fp_view::Signal::Unavailable;   // no camera rung: the behaviour before it
+        if ((fault & 4) && monitor != fp_view::Signal::Yes)
+            monitor = fp_view::Signal::Unavailable;    // the Monitor check unbound
+#else
+        (void)camera; (void)monitor; (void)viewModel;
+#endif
+    }
+
+    // THE CAMERA RUNG'S VALUE AGREEMENT (director_camera::RungTrust), Reach / Halo 4 / Halo 2: the new rung against
+    // the view-model witness it outranks. Observed on the title's camera thread, on frames the presentation admits
+    // and only while the rest of the evidence says "on foot, in control"; the verdict for the generation is
+    // published for the VR frame thread (two-handed aim) and for roomscale's report, which says each once.
+    struct CameraRungTrustState
+    {
+        director_camera::RungTrust trust;     // camera thread only
+        uint32_t generation = 0;              // camera thread only
+        std::atomic<uint32_t> provenGeneration{0}, condemnedGeneration{0};
+    };
+    CameraRungTrustState g_cameraRungTrust[3];
+    CameraRungTrustState* CameraRungTrustFor(GameTitle title)
+    {
+        switch (title)
+        {
+        case GameTitle::HaloReach: return &g_cameraRungTrust[0];
+        case GameTitle::Halo4: return &g_cameraRungTrust[1];
+        case GameTitle::Halo2: return &g_cameraRungTrust[2];
+        default: return nullptr;
+        }
+    }
+    // Any thread: the rung was condemned for this title generation, so the view model decides, as before.
+    bool CameraRungCondemned(GameTitle title, uint32_t generation)
+    {
+        const CameraRungTrustState* state = CameraRungTrustFor(title);
+        return state && generation && state->condemnedGeneration.load(std::memory_order_acquire) == generation;
+    }
+    void ObserveCameraRung(GameTitle title, uint32_t generation, roomscale_admission::TitleEvidence& e,
+                           roomscale_admission::Verdict& verdict)
+    {
+        using fp_view::Signal;
+        CameraRungTrustState* state = CameraRungTrustFor(title);
+        if (!state || !generation)
+            return;
+        if (state->generation != generation)
+        {
+            state->trust.Reset();
+            state->generation = generation;
+        }
+        const bool onFootInControl = e.cinematic != Signal::Yes && e.cinematic != Signal::Unread &&
+            e.controlBlocked != Signal::Yes && e.unit != Signal::No && e.unit != Signal::Unread &&
+            e.seated == Signal::No;
+        if (onFootInControl)
+        {
+            switch (state->trust.Observe(e.camera, e.viewModel))
+            {
+            case director_camera::RungTrust::Step::Proven:
+                state->provenGeneration.store(generation, std::memory_order_release);
+                break;
+            case director_camera::RungTrust::Step::Condemned:
+                state->condemnedGeneration.store(generation, std::memory_order_release);
+                break;
+            default: break;
+            }
+        }
+        verdict.cameraRungProven = state->trust.Proven();
+        verdict.cameraRungCondemned = state->trust.condemned;
+        if (state->trust.condemned)
+        {
+            e.camera = Signal::Unavailable;    // the view-model rung decides, as before
+            e.monitor = Signal::Unavailable;
+        }
+    }
 
     TitleFirstPersonView ReadTitleFirstPersonView(GameTitle title, uint64_t now)
     {
@@ -56886,6 +57176,7 @@ namespace
             e.unit = SignalIf(player.hasControlledUnit);
             e.seated = player.hasControlledUnit ? SignalIf(!player.onFoot) : fp_view::Signal::Unavailable;
             e.camera = SignalIf(player.nativePreparesFirstPerson);
+            e.monitor = fp_view::Signal::No;   // CE has no Forge
             break;
         }
         case GameTitle::Halo3:
@@ -56894,6 +57185,10 @@ namespace
             const TwoHandViewSample s = ReadTwoHandView(g_halo3TwoHandView, generation, now);
             e.unit = UnitSignal(s);
             e.camera = DirectorSignal(s, g_halo3DirectorCamera, generation);
+            // An idle Forge Monitor has the first-person camera: the game's own editor answer, as roomscale
+            // reads it (the same publication).
+            bool editorFaulted = false;
+            e.monitor = EditorSignal(s, g_halo3SandboxEditor, generation, editorFaulted);
             if (s.fresh && (s.bits & kTwoHandViewSeatRead))
                 e.seated = SignalIf((s.bits & kTwoHandViewSeated) != 0);
             else if (g_halo3PlayerUnitGetter && e.unit != fp_view::Signal::No)
@@ -56915,6 +57210,7 @@ namespace
             const TwoHandViewSample s = ReadTwoHandView(g_odstTwoHandView, generation, now);
             e.unit = UnitSignal(s);
             e.camera = DirectorSignal(s, g_odstDirectorCamera, generation);
+            e.monitor = fp_view::Signal::No;   // ODST has no Forge
             if (g_odstVehicleBinding.load(std::memory_order_acquire) ==
                 static_cast<uint8_t>(OdstVehicleBindingState::Installed))
                 e.seated = s.fresh ? SignalIf(g_odstSeatedLastKnown.load(std::memory_order_relaxed))
@@ -56933,6 +57229,16 @@ namespace
                 : seat == TitleSeatState::OnFoot      ? fp_view::Signal::No
                                                       : fp_view::Signal::Unavailable;
             e.viewModel = SignalIf(ReachFirstPersonFresh(now));
+            // The game's own camera (director mode 3 / perspective 0) and Monitor answer, where bound and not
+            // condemned by the view model this generation: a zoom no longer depends on the view model.
+            const uint32_t cameraGeneration = g_reachDirectorCamera.generation.load(std::memory_order_acquire);
+            if (!CameraRungCondemned(title, TitleAdapter_GetGeneration(title)))
+            {
+                const TwoHandViewSample s = ReadTwoHandView(g_reachTwoHandView, cameraGeneration, now);
+                bool editorFaulted = false;
+                e.camera = DirectorSignal(s, g_reachDirectorCamera, cameraGeneration);
+                e.monitor = EditorSignal(s, g_reachSandboxEditor, cameraGeneration, editorFaulted);
+            }
             break;
         }
 #if HALOMCCVR_HALO2_STEREO6DOF
@@ -56943,6 +57249,11 @@ namespace
                 // Halo 2's on-foot proof: the owned unit's own aim update ran within 100 ms with no seat. It stops
                 // when the unit dies.
                 e.viewModel = SignalIf(Halo2Observer6Dof_OnFootFresh());
+                // The game's own perspective for user 0 (director_get_perspective's inputs), where bound and
+                // not condemned: the dead, following and scripted cameras all leave. Halo 2 has no Forge.
+                if (!CameraRungCondemned(title, TitleAdapter_GetGeneration(title)))
+                    e.camera = static_cast<fp_view::Signal>(Halo2Observer6Dof_FirstPersonCamera());
+                e.monitor = fp_view::Signal::No;
             }
             break;
 #endif
@@ -56957,12 +57268,23 @@ namespace
             e.viewModel = g_halo4FirstPersonWitnessHooked.load(std::memory_order_acquire)
                 ? SignalIf(WitnessFresh(g_halo4FirstPersonMs, now, kHalo4FirstPersonFreshMs))
                 : fp_view::Signal::Unavailable;
+            // The game's own camera and Monitor answer, as Reach's above.
+            const uint32_t cameraGeneration = g_halo4DirectorCamera.generation.load(std::memory_order_acquire);
+            if (!CameraRungCondemned(title, TitleAdapter_GetGeneration(title)))
+            {
+                const TwoHandViewSample s = ReadTwoHandView(g_halo4TwoHandView, cameraGeneration, now);
+                bool editorFaulted = false;
+                e.camera = DirectorSignal(s, g_halo4DirectorCamera, cameraGeneration);
+                e.monitor = EditorSignal(s, g_halo4SandboxEditor, cameraGeneration, editorFaulted);
+            }
             break;
         }
 #endif
         default:
             return view;   // Unread: no title we know how to read
         }
+        DevFaultFirstPersonCamera(e.camera);
+        DevFaultFirstPersonRungs(e.camera, e.monitor, e.viewModel);
         modeVetoes(e);
         view.why = fp_view::Classify(e);
         return view;
@@ -56975,22 +57297,73 @@ TitleFirstPersonView Game_TitleFirstPersonView(GameTitle title)
     __except(EXCEPTION_EXECUTE_HANDLER) { return TitleFirstPersonView{}; }
 }
 
+// The camera rung as last published, raw, for the dev line that says what each state's camera reads. Atomics (and
+// Halo 2's SEH-guarded static read) only: any thread.
+bool Game_FirstPersonCameraSample(GameTitle title, fp_view::Signal& camera, int32_t& mode, int32_t& perspective,
+                                  fp_view::Signal& monitor)
+{
+    camera = monitor = fp_view::Signal::Unavailable;
+    mode = perspective = -1;
+    if (title == GameTitle::None || title != TitleAdapter_GetActiveTitle())
+        return false;
+    const uint64_t now = GetTickCount64();
+    const auto director = [&](const TwoHandViewPublication& publication, const Halo3DirectorCameraBinding& binding,
+                              const Halo3SandboxEditorBinding* editor, uint32_t generation) {
+        const TwoHandViewSample s = ReadTwoHandView(publication, generation, now);
+        camera = DirectorSignal(s, binding, generation);
+        if (!s.fresh || !(s.bits & kTwoHandViewDirectorRead))
+            return camera != fp_view::Signal::Unavailable;
+        mode = s.mode;
+        perspective = s.perspective;
+        bool faulted = false;
+        monitor = editor ? EditorSignal(s, *editor, generation, faulted) : fp_view::Signal::No;
+        return true;
+    };
+    switch (title)
+    {
+    case GameTitle::Halo3:
+        return director(g_halo3TwoHandView, g_halo3DirectorCamera, &g_halo3SandboxEditor,
+            g_halo3RuntimeGeneration.load(std::memory_order_acquire));
+    case GameTitle::Halo3ODST:
+        return director(g_odstTwoHandView, g_odstDirectorCamera, nullptr,
+            g_odstRuntimeGeneration.load(std::memory_order_acquire));
+    case GameTitle::HaloReach:
+        return director(g_reachTwoHandView, g_reachDirectorCamera, &g_reachSandboxEditor,
+            g_reachDirectorCamera.generation.load(std::memory_order_acquire));
+    case GameTitle::Halo4:
+        return director(g_halo4TwoHandView, g_halo4DirectorCamera, &g_halo4SandboxEditor,
+            g_halo4DirectorCamera.generation.load(std::memory_order_acquire));
+#if HALOMCCVR_HALO2_STEREO6DOF
+    case GameTitle::Halo2:
+        camera = static_cast<fp_view::Signal>(Halo2Observer6Dof_FirstPersonCamera());
+        monitor = fp_view::Signal::No;
+        return camera != fp_view::Signal::Unavailable;
+#endif
+    default:
+        return false;
+    }
+}
+
 // ROOMSCALE'S ADMISSION (roomscale_admission_logic.h): each title's proof that the local player is on foot,
 // player-controlled and looking through his own eyes -- no seat, no cinematic, no third-person camera, not Forge's
 // Monitor. Roomscale adds its setting and presentation gates on top; the head leash uses it as it is.
 //
 //   title   on foot (unit / seat)                    first person: camera rung            Monitor            view model
 //   CE      controlled unit, no parent               native user perspective == 0         no Forge           -
-//   Halo 2  observer's on-foot unit sample, 100 ms   -                                    (no camera rung)   FP palette packet, 250 ms
+//   Halo 2  observer's on-foot unit sample, 100 ms   director's first-person camera       no Forge           FP palette packet, 250 ms
+//                                                    update, no transition
 //   Halo 3  unit seat word + the vehicle sampler     director mode 3 / perspective 0      the game's own     FP interpolation, 100 ms
 //                                                                                         editor predicate
 //   ODST    seat sampler, 100 ms                     director mode 3 / perspective 0      no Forge           FP interpolation, 100 ms
-//   Reach   camera-info seat sampler, 100 ms         -                                    (no camera rung)   FP interpolation x2, 150 ms
-//   Halo 4  FP record's unit, no parent              -                                    (no camera rung)   FP skinning, 100 ms
+//   Reach   camera-info seat sampler, 100 ms         director mode 3 / perspective 0      the game's own     FP interpolation x2, 150 ms
+//                                                                                         editor predicate
+//   Halo 4  FP record's unit, no parent              director mode 3 / perspective 0      the game's own     FP skinning, 100 ms
+//                                                                                         editor predicate
 //
-// The camera rung admits a first-person player with no weapon in his hands (the view model is not asked); the
-// titles without one still need the view model, so an unarmed player there stands down as before (the reason is
-// named: "no first-person view model"). Runs on the title's camera thread, under the callers' SEH.
+// The camera rung admits a first-person player with no weapon in his hands (the view model is not asked). Where a
+// title's rung did not bind on this build, or the view model condemned it this generation (director_camera::
+// RungTrust), the view model decides as before and an unarmed player stands down (the reason is named: "no
+// first-person view model"). Runs on the title's camera thread, under the callers' SEH.
 namespace
 {
     fp_view::Signal CinematicSignal(CinematicControlState state)
@@ -57059,12 +57432,7 @@ namespace
             const uint32_t generation = g_halo3RuntimeGeneration.load(std::memory_order_acquire);
             const TwoHandViewSample s = ReadTwoHandView(g_halo3TwoHandView, generation, now);
             e.camera = DirectorSignal(s, g_halo3DirectorCamera, generation);
-            const bool editorBound = g_halo3SandboxEditor.bound.load(std::memory_order_acquire) &&
-                g_halo3SandboxEditor.generation.load(std::memory_order_acquire) == generation;
-            monitorFaulted = editorBound && g_halo3SandboxEditor.faulted.load(std::memory_order_relaxed);
-            e.monitor = !editorBound || monitorFaulted ? Signal::Unavailable
-                : !s.fresh || !(s.bits & kTwoHandViewEditorRead) ? Signal::Unread
-                : SignalIf((s.bits & kTwoHandViewEditor) != 0);
+            e.monitor = EditorSignal(s, g_halo3SandboxEditor, generation, monitorFaulted);
             // The witness hook installs apart from the camera (M3); without it there is none.
             e.viewModel = g_fpInterpolatorHooked.load(std::memory_order_acquire)
                 ? SignalIf(WitnessFresh(g_halo3FirstPersonMs, now, kFirstPersonWitnessMs))
@@ -57121,9 +57489,14 @@ namespace
                 e.seated = Signal::Yes;
             else
                 e.seated = Signal::Unread;
-            // No camera rung is bound for Reach: the view model is its only first-person proof (it also covers
-            // Armor Lock and the death camera), so an unarmed unit -- Forge's Monitor -- stands down.
+            // The view model (it also stops in Armor Lock and for the death camera), and above it the game's own
+            // camera -- the director's record for output user 0: mode 3, perspective 0 -- with the game's own
+            // Monitor answer (director_camera_logic.h). Unbound, the view model alone decides, as before.
             e.viewModel = SignalIf(ReachFirstPersonFresh(now));
+            const uint32_t cameraGeneration = g_reachDirectorCamera.generation.load(std::memory_order_acquire);
+            const TwoHandViewSample s = ReadTwoHandView(g_reachTwoHandView, cameraGeneration, now);
+            e.camera = DirectorSignal(s, g_reachDirectorCamera, cameraGeneration);
+            e.monitor = EditorSignal(s, g_reachSandboxEditor, cameraGeneration, monitorFaulted);
             break;
         }
 #if HALOMCCVR_HALO2_STEREO6DOF
@@ -57136,8 +57509,11 @@ namespace
             else
                 e.seated = Halo2Observer6Dof_LastKnownSeatValid() && Halo2Observer6Dof_LastKnownSeated()
                     ? Signal::Yes : Signal::Unread;
-            // Halo 2's first-person proof is its first-person palette packet (no camera rung is bound).
+            // Halo 2's first-person palette packet, and above it the game's own perspective for user 0
+            // (director_get_perspective's inputs; director_camera_logic.h). Halo 2 has no Forge.
             e.viewModel = SignalIf(Halo2Observer6Dof_FinalPaletteArmed());
+            e.camera = static_cast<Signal>(Halo2Observer6Dof_FirstPersonCamera());
+            e.monitor = Signal::No;
             break;
 #endif
 #if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA
@@ -57171,6 +57547,12 @@ namespace
             e.viewModel = g_halo4FirstPersonWitnessHooked.load(std::memory_order_acquire)
                 ? SignalIf(WitnessFresh(g_halo4FirstPersonMs, now, kHalo4FirstPersonFreshMs))
                 : Signal::Unavailable;
+            // Above it the game's own camera (the director's record: mode 3, perspective 0) and Monitor answer
+            // (director_camera_logic.h). Unbound, the view model alone decides, as before.
+            const uint32_t cameraGeneration = g_halo4DirectorCamera.generation.load(std::memory_order_acquire);
+            const TwoHandViewSample s = ReadTwoHandView(g_halo4TwoHandView, cameraGeneration, now);
+            e.camera = DirectorSignal(s, g_halo4DirectorCamera, cameraGeneration);
+            e.monitor = EditorSignal(s, g_halo4SandboxEditor, cameraGeneration, monitorFaulted);
             break;
         }
 #endif
@@ -57191,8 +57573,13 @@ roomscale_admission::Verdict Game_TitleOnFootVerdict(GameTitle title)
     __try
     {
         bool hold = false, monitorFaulted = false;
-        const roomscale_admission::TitleEvidence e =
+        roomscale_admission::TitleEvidence e =
             ReadRoomscaleTitleEvidence(title, GetTickCount64(), hold, monitorFaulted);
+        // Reach / Halo 4 / Halo 2: the camera rung against the view model (a condemned rung is withdrawn here).
+        DevFaultFirstPersonCamera(e.camera);
+        if (!hold)
+            ObserveCameraRung(title, TitleAdapter_GetGeneration(title), e, verdict);
+        DevFaultFirstPersonRungs(e.camera, e.monitor, e.viewModel);
         verdict.rungs = roomscale_admission::PackRungs(e.camera, e.monitor, e.viewModel);
         verdict.monitorCheckFaulted = monitorFaulted;
         verdict.refusal = hold ? roomscale_admission::Refusal::Menu : roomscale_admission::ClassifyTitle(e);

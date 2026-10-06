@@ -1947,14 +1947,17 @@ void TestFirstPersonViewClassify(TestContext& test)
     constexpr auto R = fp_view::Signal::Unread;
     constexpr auto Y = fp_view::Signal::Yes;
     constexpr auto N = fp_view::Signal::No;
+    // `monitor` defaults to No: the game said "not Forge's Monitor", or the title has no Forge (CE, ODST, Halo 2).
     const auto ev = [](fp_view::Signal cinematic, fp_view::Signal unit, fp_view::Signal seated,
-                       fp_view::Signal camera, fp_view::Signal viewModel) {
+                       fp_view::Signal camera, fp_view::Signal viewModel,
+                       fp_view::Signal monitor = fp_view::Signal::No) {
         Evidence e;
         e.cinematic = cinematic;
         e.unit = unit;
         e.seated = seated;
         e.camera = camera;
         e.viewModel = viewModel;
+        e.monitor = monitor;
         return e;
     };
 
@@ -1991,6 +1994,39 @@ void TestFirstPersonViewClassify(TestContext& test)
     // CE: the native perspective is the camera rung.
     test.Check(Classify(ev(N, Y, N, N, U)) == Why::Camera, "view: CE third-person perspective leaves");
     test.Check(Classify(ev(N, Y, N, Y, U)) == Why::FirstPerson, "view: CE first-person perspective on foot");
+
+    // Forge's Monitor (Halo 3, Reach, Halo 4): an idle Monitor has the game's first-person camera, so the
+    // camera rung alone read it as first person. The game's own editor answer is a veto.
+    test.Check(Classify(ev(U, Y, N, Y, N, Y)) == Why::Monitor, "view: an idle Monitor (first-person camera) leaves");
+    test.Check(Classify(ev(U, Y, N, Y, Y, Y)) == Why::Monitor, "view: the Monitor leaves whatever is drawn");
+    test.Check(Classify(ev(U, Y, N, N, N, Y)) == Why::Monitor, "view: the Monitor holding an object leaves");
+    test.Check(fp_view::HardReason(Why::Monitor), "view: the Monitor is positive evidence: no grace");
+    test.Check(Classify(ev(Y, Y, N, Y, N, Y)) == Why::Cinematic && Classify(ev(U, N, U, Y, U, Y)) == Why::NoUnit &&
+            Classify(ev(U, Y, Y, Y, U, Y)) == Why::Seated,
+        "view: a cinematic, death and a seat are still named first");
+    // Back to a Spartan: the game says no again, and a zoom or an empty hand needs no view model.
+    test.Check(Classify(ev(U, Y, N, Y, N, N)) == Why::FirstPerson, "view: not the Monitor, unarmed or zoomed: first person");
+    // The Monitor answer unknown (not bound, unread, faulted): only the view model can vouch for the camera.
+    test.Check(Classify(ev(U, Y, N, Y, N, U)) == Why::NoFirstPersonView,
+        "view: first-person camera, no view model, Monitor check unbound: leaves (after the grace)");
+    test.Check(Classify(ev(U, Y, N, Y, N, R)) == Why::NoFirstPersonView, "view: ... or unread");
+    test.Check(!fp_view::HardReason(Why::NoFirstPersonView), "view: that is a soft reason (a single long frame)");
+    test.Check(Classify(ev(U, Y, N, Y, Y, U)) == Why::FirstPerson, "view: Monitor check unknown, view model drawn: first person");
+    test.Check(Classify(ev(U, Y, N, Y, U, U)) == Why::FirstPerson,
+        "view: Monitor check unknown and no witness on this build: first person, as before the witnesses");
+    test.Check(Classify(ev(U, Y, N, Y, R, U)) == Why::Unread, "view: Monitor check unknown, witness unreadable: no answer");
+    // Reach / Halo 4 with their camera rung: Armor Lock / Hardlight Shield / an assassination is the following
+    // camera; a zoom is still the first-person camera.
+    test.Check(Classify(ev(U, U, N, N, Y, N)) == Why::Camera, "view: Reach in Armor Lock (following camera) leaves at once");
+    test.Check(Classify(ev(U, U, N, Y, N, N)) == Why::FirstPerson, "view: Reach zoomed or unarmed: first person by the camera");
+    test.Check(Classify(ev(U, U, U, Y, N, N)) == Why::FirstPerson,
+        "view: Reach's fallback seat sampler (no seat answer) with a first-person camera: first person");
+    // Halo 2: the director's first-person update; the witness is its on-foot unit sample.
+    test.Check(Classify(ev(U, U, N, N, Y, N)) == Why::Camera, "view: Halo 2's following / dead / scripted camera leaves");
+    test.Check(Classify(ev(U, U, N, Y, Y, N)) == Why::FirstPerson, "view: Halo 2 first person on foot");
+    // The rung unbound or condemned: the titles' evidence is what it was (the witness decides).
+    test.Check(Classify(ev(U, U, N, U, N, U)) == Why::NoFirstPersonView, "view: no camera rung, witness quiet: leaves");
+    test.Check(Classify(ev(U, U, N, U, Y, U)) == Why::FirstPerson, "view: no camera rung, witness drawn: first person");
 
     // The director record as the gate reads it.
     test.Check(fp_view::DirectorCameraSignal(true, true, 3, 0) == Y, "director: mode 3 perspective 0 is first person");

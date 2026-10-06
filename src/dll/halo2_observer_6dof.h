@@ -58,6 +58,11 @@ bool Halo2Observer6Dof_LastKnownSeatValid() noexcept;
 // C-H2-50: optional final visible-palette transaction. The controller-owned
 // shot path is admitted only while this exact visual boundary is installed.
 bool Halo2Observer6Dof_FinalPaletteArmed() noexcept;
+// The game's own perspective for local user 0, as an fp_view::Signal byte (0 unavailable: not bound on this build;
+// 1 unread; 2 first person: the director's camera update is first_person_camera_update with no transition; 3 not:
+// the following, dead or a scripted camera). Read from the director's static record: any thread, no game call
+// (halo2_director_perspective.inl; src/common/director_camera_logic.h).
+uint8_t Halo2Observer6Dof_FirstPersonCamera() noexcept;
 // Optional H2EK-native hand/weapon contact transaction.  Physical melee may
 // only synthesize input while this title-specific collision path is live.
 bool Halo2Observer6Dof_WorldCollisionActive() noexcept;

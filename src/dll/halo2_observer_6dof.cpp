@@ -11,6 +11,7 @@
 #include "../common/halo2_snap_turn_logic.h"
 #include "../common/halo2_vehicle_view.h"
 #include "../common/halo2_foot_view.h"
+#include "../common/director_camera_logic.h"
 #include "../common/aim_write_logic.h"
 #include "../common/seat_drive_policy.h"
 #include "../common/halo2_vehicle_identity.h"
@@ -5087,6 +5088,7 @@ namespace
     }
 
     #include "halo2_direct_drive.inl"
+    #include "halo2_director_perspective.inl"
 
     bool RemoveCoreLegacy(const char* reason) noexcept
     {
@@ -5313,6 +5315,7 @@ namespace
         // The drive reads the unit through the accessor the unit-aim hook owns: retire it first.
         if (!RemoveHalo2Drive())
             return false;
+        RetireHalo2DirectorPerspective();   // a read-only binding: nothing to drain
         g_footViewEngagedMs.store(0, std::memory_order_release);
         g_seatViewEngagedMs.store(0, std::memory_order_release);
         if (g_nativeAimTarget)
@@ -5443,6 +5446,9 @@ namespace
         if (g_rejectedGeneration == generation)
             return false;
         g_halo2TagDataBaseSlot.store(0, std::memory_order_release);
+        // A binding from an earlier module instance never outlives an install attempt (it is rebound below once
+        // the core is in; its reads are also tied to the installed module's base).
+        RetireHalo2DirectorPerspective();
 
         HMODULE module = nullptr;
         if (!GetModuleHandleExW(
@@ -6134,6 +6140,9 @@ namespace
         else
             LOG("Halo 2 DRIVE: not installed: the unit aim and seat check it reads are not (aim=%d seat=%d)",
                 g_nativeAimOriginal.load(std::memory_order_acquire) ? 1 : 0, seatVerified ? 1 : 0);
+        // The game's own first-person answer (halo2_director_perspective.inl): reads only, and independent of
+        // every hook above; failure keeps the first-person palette packet rung.
+        (void)BindHalo2DirectorPerspective(base, size);
         LOG("Halo 2 vehicle view reference: %s (parent/seat matches=%u); native aim feedback retained separately",
             frameVerified?"verified":"stock fallback",parentMatches);
         LOG("Halo 2 vehicle controller steering: %s (native seat predicate matches=%u); "
@@ -6912,6 +6921,12 @@ bool Halo2Observer6Dof_FinalPaletteArmed() noexcept
         !g_teardownRequested.load(std::memory_order_acquire);
 }
 
+// fp_view::Signal as a byte: the game's own perspective for user 0 (halo2_director_perspective.inl).
+uint8_t Halo2Observer6Dof_FirstPersonCamera() noexcept
+{
+    return static_cast<uint8_t>(ReadHalo2DirectorPerspective());
+}
+
 void* Halo2Observer6Dof_ReloadWeapon(uint32_t weapon) noexcept
 {
     if (!Halo2Observer6Dof_OnFootFresh()) return nullptr;
@@ -7434,6 +7449,7 @@ bool Halo2Observer6Dof_LastKnownSeatValid() noexcept { return true; }
 void Halo2Observer6Dof_SnapTurnSettled(uint32_t, float) noexcept {}
 bool Halo2Observer6Dof_DirectWeaponAimArmed() noexcept { return false; }
 bool Halo2Observer6Dof_FinalPaletteArmed() noexcept { return false; }
+uint8_t Halo2Observer6Dof_FirstPersonCamera() noexcept { return 0; }   // fp_view::Signal::Unavailable
 bool Halo2Observer6Dof_BuildScopeCamera(Halo2CameraBasis&) noexcept { return false; }
 bool Halo2Observer6Dof_OnFootFresh() noexcept { return false; }
 void* Halo2Observer6Dof_ReloadWeapon(uint32_t) noexcept { return nullptr; }

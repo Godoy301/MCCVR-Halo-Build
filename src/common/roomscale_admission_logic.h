@@ -14,13 +14,17 @@
 // the game's own camera director said "first-person camera, first-person perspective" throughout).
 //
 // The ladder, strongest rung first:
-//   1. CAMERA      the game's own camera mode / perspective (Halo 3 and ODST: the director's camera record,
-//                  mode 3 = the first-person camera, perspective 0; CE: the user's native perspective 0). A
+//   1. CAMERA      the game's own camera mode / perspective (Halo 3, ODST, Reach and Halo 4: the director's
+//                  camera record, mode 3 = the first-person camera, perspective 0; Halo 2: the director's
+//                  first-person camera update with no transition; CE: the user's native perspective 0). A
 //                  camera that is NOT first person refuses whatever else is true. A camera that IS first
 //                  person admits without a view model -- provided the unit is not Forge's Monitor (below).
-//   2. VIEW MODEL  the first-person view-model witness, where the title has no camera rung (Reach, Halo 4,
-//                  Halo 2) or it did not bind on this build. Fresh = first person. Not drawn = refused: on
-//                  those titles an unarmed player, a native zoom and a third-person camera all look alike.
+//                  Reach, Halo 4 and Halo 2 got theirs on 2026-10-06 (director_camera_logic.h); until then an
+//                  unarmed player there was refused for want of a view model.
+//   2. VIEW MODEL  the first-person view-model witness, where the title's camera rung did not bind on this
+//                  build or was condemned by the witness itself (director_camera::RungTrust). Fresh = first
+//                  person. Not drawn = refused: there an unarmed player, a native zoom and a third-person
+//                  camera all look alike.
 //   3. NEITHER     a build where the witness hook did not install and no camera rung is bound admits on the
 //                  on-foot proof alone, as it did before the witnesses existed (the optional hook must not
 //                  cost the whole session its roomscale).
@@ -32,7 +36,8 @@
 // a headset). Until now the Monitor was excluded by accident -- it draws no view model. So the camera rung
 // admits an unarmed player only when the game itself says the unit is NOT the Monitor: the engine's own
 // "this player is a sandbox editor" predicate (Halo 3 0x111E44: multiplayer, engine type 5 = sandbox, the
-// player's bit in the editor mask and his unit the editor biped). A title with no Forge (CE, Halo 2, ODST)
+// player's bit in the editor mask and his unit the editor biped; Reach 0x715AC and Halo 4 0xBA400 are the same
+// question, and their game directors give an idle Monitor mode 3 too). A title with no Forge (CE, Halo 2, ODST)
 // answers No by construction. A title whose predicate is not bound or could not be read answers "unknown",
 // and then only the view model can vouch: fail closed, exactly the behaviour before this change.
 //
@@ -193,8 +198,41 @@ struct Verdict
     Refusal refusal = Refusal::Unspecified;
     uint8_t rungs = 0;
     bool monitorCheckFaulted = false;   // the title's Monitor predicate faulted this generation (said once)
+    // Reach / Halo 4 / Halo 2 (director_camera::RungTrust; each said once per title generation): the camera rung
+    // agreed with the drawn view model often enough to be proven / never did and contradicted it for long enough
+    // to be withdrawn (the view model then decides, as before).
+    bool cameraRungProven = false;
+    bool cameraRungCondemned = false;
     bool Admitted() const noexcept { return refusal == Refusal::None; }
 };
+// What each rung IS in a title, for the dev line: the game's camera, the Monitor answer, the view-model witness.
+struct RungSources
+{
+    const char* camera = nullptr;
+    const char* monitor = nullptr;
+    const char* viewModel = nullptr;
+};
+inline RungSources TitleRungSources(GameTitle title)
+{
+    switch (title)
+    {
+    case GameTitle::HaloCE:
+        return {"native user perspective 0", "no Forge", "none"};
+    case GameTitle::Halo2:
+        return {"director first-person update, no transition", "no Forge", "first-person palette packet, 250 ms"};
+    case GameTitle::Halo3:
+        return {"director mode 3 / perspective 0", "sandbox-editor predicate", "first-person interpolation, 100 ms"};
+    case GameTitle::Halo3ODST:
+        return {"director mode 3 / perspective 0", "no Forge", "first-person interpolation, 100 ms"};
+    case GameTitle::HaloReach:
+        return {"director mode 3 / perspective 0", "sandbox-editor predicate",
+                "first-person interpolation twice in 150 ms"};
+    case GameTitle::Halo4:
+        return {"director mode 3 / perspective 0", "sandbox-editor predicate", "first-person skinning, 100 ms"};
+    default:
+        return {};
+    }
+}
 inline constexpr uint8_t PackRungs(Signal camera, Signal monitor, Signal viewModel)
 {
     return static_cast<uint8_t>(static_cast<uint8_t>(camera) | (static_cast<uint8_t>(monitor) << 2) |
@@ -215,9 +253,11 @@ inline const char* SignalName(Signal signal)
     }
 }
 // The report's tail: every reason that refused at least one camera frame with its count, then the last refusal's
-// reason and the three first-person rungs as they stood. Always terminated; returns the characters written.
+// reason and the three first-person rungs as they stood -- with `sources`, each rung named for the title it was
+// read in ("game camera first person [director mode 3 / perspective 0]=yes"). Always terminated; returns the
+// characters written.
 inline int FormatRefusals(char* line, size_t size, const uint64_t counts[static_cast<size_t>(Refusal::Count)],
-                          Refusal last, uint8_t lastRungs)
+                          Refusal last, uint8_t lastRungs, const RungSources* sources = nullptr)
 {
     if (!line || !size)
         return 0;
@@ -235,9 +275,16 @@ inline int FormatRefusals(char* line, size_t size, const uint64_t counts[static_
         if (counts[i])
             append(" %s=%llu;", RefusalName(static_cast<Refusal>(i)), static_cast<unsigned long long>(counts[i]), true);
     append(" at the last one (%s):", RefusalName(last < Refusal::Count ? last : Refusal::Unspecified), 0, false);
-    append(" game camera first person=%s,", SignalName(RungCamera(lastRungs)), 0, false);
-    append(" Forge Monitor=%s,", SignalName(RungMonitor(lastRungs)), 0, false);
-    append(" first-person view model=%s", SignalName(RungViewModel(lastRungs)), 0, false);
+    const auto rung = [&](const char* name, const char* source, Signal value, const char* tail) {
+        append(" %s", name, 0, false);
+        if (source && source[0])
+            append(" [%s]", source, 0, false);
+        append("=%s", SignalName(value), 0, false);
+        append("%s", tail, 0, false);
+    };
+    rung("game camera first person", sources ? sources->camera : nullptr, RungCamera(lastRungs), ",");
+    rung("Forge Monitor", sources ? sources->monitor : nullptr, RungMonitor(lastRungs), ",");
+    rung("first-person view model", sources ? sources->viewModel : nullptr, RungViewModel(lastRungs), "");
     return static_cast<int>(used);
 }
 

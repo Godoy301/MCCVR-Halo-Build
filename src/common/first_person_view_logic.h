@@ -18,6 +18,16 @@
 //                 was drawn within its window (Halo 3 / ODST / Reach / Halo 4), or Halo 2's on-foot unit sample.
 // plus two vetoes that need no ladder: a CINEMATIC owning the view, and NO UNIT (dead, respawning, spectating).
 //
+// Reach, Halo 4 and Halo 2 have a camera rung too (2026-10-06, director_camera_logic.h): Reach's and Halo 4's
+// director record (mode 3 = c_first_person_camera, perspective 0), Halo 2's director_get_perspective inputs.
+//
+// FORGE'S MONITOR shares the first-person camera while it holds nothing (Halo 3, Reach, Halo 4: the game director
+// picks its first-person camera for any unit whose camera path is first person, and the editor's own camera only
+// while the editor holds an object). The camera rung alone therefore reads an idle Monitor as first person, so the
+// title's own "this player is a sandbox editor" answer is a veto here exactly as it is for roomscale
+// (roomscale_admission_logic.h). Where that answer is unknown (not bound, unread, faulted) only the view model can
+// vouch for a first-person camera: the Monitor draws none. A title with no Forge answers No by construction.
+//
 // A signal is Unavailable when the title has no such source on this build (never bound, a hook that never
 // installed): the next rung decides. It is Unread when the source exists but this sample could not be read or is
 // stale: that is never evidence of first person, and the gate below leaves two-hand after a short grace.
@@ -49,6 +59,7 @@ enum class Why : uint8_t
     Cinematic,          // a cinematic / authored camera owns the view
     NoUnit,             // no controlled unit: dead, respawning, spectating
     Unread,             // a signal this title relies on could not be read
+    Monitor,            // Forge's Monitor (the game's own sandbox-editor answer)
     Count
 };
 
@@ -63,6 +74,7 @@ inline const char* WhyName(Why why)
     case Why::Cinematic: return "cinematic";
     case Why::NoUnit: return "no player unit";
     case Why::Unread: return "view unreadable";
+    case Why::Monitor: return "Forge Monitor";
     default: return "?";
     }
 }
@@ -71,7 +83,8 @@ inline const char* WhyName(Why why)
 // quiet, an unreadable signal) are also what a single long frame looks like, so they leave after kSoftGraceMs.
 inline constexpr bool HardReason(Why why)
 {
-    return why == Why::Seated || why == Why::Camera || why == Why::Cinematic || why == Why::NoUnit;
+    return why == Why::Seated || why == Why::Camera || why == Why::Cinematic || why == Why::NoUnit ||
+           why == Why::Monitor;
 }
 
 struct Evidence
@@ -81,12 +94,16 @@ struct Evidence
     Signal seated = Signal::Unavailable;     // Yes = seated or mounted
     Signal camera = Signal::Unavailable;     // Yes = the game's first-person camera from the first-person perspective
     Signal viewModel = Signal::Unavailable;  // Yes = the first-person view was drawn within the witness window
+    // Yes = Forge's Monitor (the game's own answer); No = known not, or the title has no Forge. Unavailable /
+    // Unread = unknown: a first-person camera then needs the view model to vouch (the Monitor draws none).
+    Signal monitor = Signal::Unavailable;
 };
 
 // The verdict. Vetoes first; then the strongest rung the title has. The camera rung outranks the view-model
 // witness (a native zoom or an unarmed player may stop the view model while the camera is still first person),
 // but not a seat: the mod itself tells Halo 3's seats to be first person (C20), so the director can say "first
-// person" from a seat -- which is why an UNREAD seat beside a first-person camera is no answer either.
+// person" from a seat -- which is why an UNREAD seat beside a first-person camera is no answer either. And not
+// the Monitor: an idle Monitor has the first-person camera.
 inline Why Classify(const Evidence& e)
 {
     if (e.cinematic == Signal::Yes)
@@ -95,10 +112,23 @@ inline Why Classify(const Evidence& e)
         return Why::NoUnit;
     if (e.seated == Signal::Yes)
         return Why::Seated;
+    if (e.monitor == Signal::Yes)
+        return Why::Monitor;
     if (e.camera == Signal::No)
         return Why::Camera;
     if (e.camera == Signal::Yes)
-        return e.seated == Signal::Unread ? Why::Unread : Why::FirstPerson;
+    {
+        if (e.seated == Signal::Unread)
+            return Why::Unread;
+        if (e.monitor == Signal::No)
+            return Why::FirstPerson;   // first person, and not the Monitor: no view model needed (unarmed, zoom)
+        // The Monitor check is unknown: only the view model can vouch.
+        if (e.viewModel == Signal::No)
+            return Why::NoFirstPersonView;
+        if (e.viewModel == Signal::Unread)
+            return Why::Unread;
+        return Why::FirstPerson;       // drawn, or no witness on this build
+    }
     if (e.camera == Signal::Unread)
         return Why::Unread;
     // No camera rung: the title's first-person witness.

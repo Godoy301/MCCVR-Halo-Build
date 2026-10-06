@@ -13648,6 +13648,44 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         const TitleDescriptor* descriptor = TitleRegistry_Find(title);
         const char* titleName = descriptor && descriptor->displayName
             ? descriptor->displayName : "no title";
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        if (!hold)
+        {
+            // What the game's own camera reads, said when it changes (at most
+            // twice a second): the log then shows which camera mode each state
+            // is -- a cinematic, a death, Armor Lock, a seat, Forge's Monitor --
+            // whatever roomscale and two-handed aim are set to.
+            static uint64_t cameraSaid = ~0ull, cameraSaidMs = 0;
+            fp_view::Signal camera = fp_view::Signal::Unavailable;
+            fp_view::Signal monitor = fp_view::Signal::Unavailable;
+            int32_t mode = -1, perspective = -1;
+            if (Game_FirstPersonCameraSample(title, camera, mode, perspective, monitor))
+            {
+                const uint64_t key = (uint64_t(uint8_t(title)) << 56) |
+                    (uint64_t(uint8_t(camera)) << 52) | (uint64_t(uint8_t(monitor)) << 48) |
+                    (uint64_t(uint16_t(mode)) << 16) | uint64_t(uint16_t(perspective));
+                const uint64_t nowMs = GetTickCount64();
+                if (key != cameraSaid && nowMs - cameraSaidMs >= 500)
+                {
+                    cameraSaid = key;
+                    cameraSaidMs = nowMs;
+                    const roomscale_admission::RungSources sources =
+                        roomscale_admission::TitleRungSources(title);
+                    // The values are what the game published; a DEV fault
+                    // (first_person_rung_fault) changes what the ladders are
+                    // told afterwards, so it is named beside them.
+                    LOG("FIRST-PERSON CAMERA (%s): game camera first person [%s]=%s "
+                        "(director mode %d, perspective %d; -1 = not a director record), "
+                        "Forge Monitor [%s]=%s; DEV first_person_rung_fault=0x%X",
+                        titleName, sources.camera ? sources.camera : "?",
+                        roomscale_admission::SignalName(camera), mode, perspective,
+                        sources.monitor ? sources.monitor : "?",
+                        roomscale_admission::SignalName(monitor),
+                        unsigned(g_config.first_person_rung_fault));
+                }
+            }
+        }
+#endif
         {
             // The gate's own edges, so a headset log shows each leave and each
             // return even with no hold engaged (and a title whose signal never
