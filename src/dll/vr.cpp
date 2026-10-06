@@ -13671,13 +13671,17 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                     cameraSaidMs = nowMs;
                     const roomscale_admission::RungSources sources =
                         roomscale_admission::TitleRungSources(title);
+                    // The values are what the game published; a DEV fault
+                    // (first_person_rung_fault) changes what the ladders are
+                    // told afterwards, so it is named beside them.
                     LOG("FIRST-PERSON CAMERA (%s): game camera first person [%s]=%s "
                         "(director mode %d, perspective %d; -1 = not a director record), "
-                        "Forge Monitor [%s]=%s",
+                        "Forge Monitor [%s]=%s; DEV first_person_rung_fault=0x%X",
                         titleName, sources.camera ? sources.camera : "?",
                         roomscale_admission::SignalName(camera), mode, perspective,
                         sources.monitor ? sources.monitor : "?",
-                        roomscale_admission::SignalName(monitor));
+                        roomscale_admission::SignalName(monitor),
+                        unsigned(g_config.first_person_rung_fault));
                 }
             }
         }

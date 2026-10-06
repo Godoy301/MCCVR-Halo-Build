@@ -755,6 +755,14 @@ struct Config
     // bit 1 = withhold the resolved flags; bit 2 = the resolver's value check refuses at install;
     // bit 3 = the cold worker's periodic re-check withdraws the flags.
     int reach_sight_fault = 0;
+    // DEV BUILDS ONLY (not parsed and compiled out otherwise): fault injection proving each rung of the
+    // first-person ladder (roomscale's admission, two-handed aim's exit) takes over through the real path,
+    // in every title. Bit 0 = the first-person view model reads "not drawn" (an unarmed player, without
+    // one: Reach has no unarmed state a headless run can reach); bit 1 = the game camera rung reads "not
+    // bound" (the behaviour before it existed); bit 2 = the Forge Monitor answer reads "unknown"; bit 3 =
+    // a first-person game camera reads "not first person" (the value agreement with the view model must
+    // then withdraw the rung). Read at launch; 0 for every other run.
+    int first_person_rung_fault = 0;
     // Diagnostic: log the distinct (caller, flags, mode) of Reach's own collision_test_vector calls,
     // to identify the flags a bullet's flight test uses. Leave at 0 for play.
     int reach_collision_census = 0;

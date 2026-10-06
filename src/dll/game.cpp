@@ -57048,6 +57048,34 @@ namespace
             : SignalIf((s.bits & kTwoHandViewEditor) != 0);
     }
 
+    // DEV FAULT INJECTION (first_person_rung_fault, config.h; nothing in a player build): each rung of the
+    // first-person ladder forced to fail through the real path, so the next one is seen to take over. Bit 3 is
+    // applied before the value agreement observes the camera (which must then withdraw it); bits 0-2 after it.
+    void DevFaultFirstPersonCamera(fp_view::Signal& camera) noexcept
+    {
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        if ((g_config.first_person_rung_fault & 8) && camera == fp_view::Signal::Yes)
+            camera = fp_view::Signal::No;
+#else
+        (void)camera;
+#endif
+    }
+    void DevFaultFirstPersonRungs(fp_view::Signal& camera, fp_view::Signal& monitor,
+                                  fp_view::Signal& viewModel) noexcept
+    {
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        const int fault = g_config.first_person_rung_fault;
+        if ((fault & 1) && viewModel == fp_view::Signal::Yes)
+            viewModel = fp_view::Signal::No;           // an unarmed player: no view model drawn
+        if (fault & 2)
+            camera = monitor = fp_view::Signal::Unavailable;   // no camera rung: the behaviour before it
+        if ((fault & 4) && monitor != fp_view::Signal::Yes)
+            monitor = fp_view::Signal::Unavailable;    // the Monitor check unbound
+#else
+        (void)camera; (void)monitor; (void)viewModel;
+#endif
+    }
+
     // THE CAMERA RUNG'S VALUE AGREEMENT (director_camera::RungTrust), Reach / Halo 4 / Halo 2: the new rung against
     // the view-model witness it outranks. Observed on the title's camera thread, on frames the presentation admits
     // and only while the rest of the evidence says "on foot, in control"; the verdict for the generation is
@@ -57255,6 +57283,8 @@ namespace
         default:
             return view;   // Unread: no title we know how to read
         }
+        DevFaultFirstPersonCamera(e.camera);
+        DevFaultFirstPersonRungs(e.camera, e.monitor, e.viewModel);
         modeVetoes(e);
         view.why = fp_view::Classify(e);
         return view;
@@ -57546,8 +57576,10 @@ roomscale_admission::Verdict Game_TitleOnFootVerdict(GameTitle title)
         roomscale_admission::TitleEvidence e =
             ReadRoomscaleTitleEvidence(title, GetTickCount64(), hold, monitorFaulted);
         // Reach / Halo 4 / Halo 2: the camera rung against the view model (a condemned rung is withdrawn here).
+        DevFaultFirstPersonCamera(e.camera);
         if (!hold)
             ObserveCameraRung(title, TitleAdapter_GetGeneration(title), e, verdict);
+        DevFaultFirstPersonRungs(e.camera, e.monitor, e.viewModel);
         verdict.rungs = roomscale_admission::PackRungs(e.camera, e.monitor, e.viewModel);
         verdict.monitorCheckFaulted = monitorFaulted;
         verdict.refusal = hold ? roomscale_admission::Refusal::Menu : roomscale_admission::ClassifyTitle(e);
