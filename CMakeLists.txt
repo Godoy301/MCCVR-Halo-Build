@@ -979,6 +979,13 @@ if(BUILD_TESTING)
         COMMAND "${Python3_EXECUTABLE}" -O
             "${CMAKE_CURRENT_SOURCE_DIR}/tools/check_assess_isolation.py"
             --self-test)
+    # Every LOG(...) passes as many arguments as its format converts (2026-10-06). Logf is a plain variadic, so
+    # nothing else checks it, and no test runs game.cpp's install path: a LOG one argument short handed "%s" a
+    # TLS offset and killed MCC at every Reach and Halo 4 level load. Counts only (not types). Python stdlib.
+    add_test(NAME halomccvr_log_format_guard
+        COMMAND "${Python3_EXECUTABLE}" -O
+            "${CMAKE_CURRENT_SOURCE_DIR}/tools/check_log_formats.py"
+            --self-test "${CMAKE_CURRENT_SOURCE_DIR}/src")
     add_executable(halomccvr_aim_caller_tests tests/aim_caller_tests.cpp)
     target_include_directories(halomccvr_aim_caller_tests PRIVATE src/common)
     add_test(NAME halomccvr_aim_caller_tests COMMAND halomccvr_aim_caller_tests)

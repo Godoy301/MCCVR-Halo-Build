@@ -417,6 +417,7 @@ void ClassicGameRenderBody(float delta,float interpolation)
         reference={tracking.headPosition,tracking.headOrientation,tracking.spaceEpoch,scope.generation};
         reference.position.y+=VR_RecenterStandingLiftM(GameTitle::HaloCE);   // the standing height, not a caught crouch
     }
+    ApplySeatHeading(reference);   // before this frame's publication and both eyes
     scope.reference=reference;
     if (scope.revision==referenceRevision.load())
         publishedReference.Publish({reference,scope.revision});

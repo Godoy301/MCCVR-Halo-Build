@@ -1322,7 +1322,7 @@ namespace
         LOG("First-person camera %s: director camera record bound: output user 0 at engine TLS +0x%X (index at "
             "+0x%llX), perspective +0x%X, mode +0x%X (set_camera_mode's store +0x%llX calls the first-person weapon "
             "gate +0x%llX and both agree); mode 3 from perspective 0 is first person, with or without a weapon",
-            record.blockOffset, static_cast<unsigned long long>(tlsRva), record.perspectiveOffset,
+            title, record.blockOffset, static_cast<unsigned long long>(tlsRva), record.perspectiveOffset,
             record.modeOffset, static_cast<unsigned long long>(store - base),
             static_cast<unsigned long long>(gate - base));
 
@@ -46769,6 +46769,9 @@ namespace
         // owns only the live
         // Storm80 -> held -> native-body record sequence; any miss leaves that
         // exact feature stock while the working camera/session stays armed.
+        // The muzzle lane proves its image FIRST: one of its patterns is the head of the first-person packet
+        // producer, which InstallHalo4Vrik is about to hook (halo4_muzzle_lifecycle.inl).
+        Halo4MuzzlePreflight(base,size,generation);
         InstallHalo4Vrik(base,size);
         // Separate optional transaction: a missing/ambiguous H4EK-mapped
         // query leaves the already-installed floating hands entirely intact.
@@ -56025,9 +56028,20 @@ void Game_Halo4CameraOwnerReport() noexcept
 bool Game_ReadVehicleCameraOwner(GameTitle title,NativeVehicleCameraOwner& owner) noexcept
 {
     if (title!=TitleAdapter_GetActiveTitle()) return false;
+    // "Gameplay" here means the player is playing: a SEAT is the only place this owner exists, and Halo CE publishes
+    // RuntimeMode::Vehicle for every seated local player (Game_AutoVrTick: `!player.onFoot ? Vehicle`). Requiring
+    // RuntimeMode::Gameplay alone therefore refused EVERY Halo CE seat, since the day the override was added: the
+    // first headless run of a CE seat (2026-10-06, Blood Gulch, Ghost) read `Vehicle first person title=5 ...
+    // selected=1 positioned=1` once at the door and then `native mode 2 x600, read refused 900` every 5 s, so CE's
+    // engine kept aiming the seat from its following camera and no CE seat could converge
+    // (`engine aims from the chase camera` on every update). Halo 2 and Halo 4 publish Gameplay in a seat and are
+    // unchanged; Vehicle and Turret are the seated modes of the titles that publish them.
+    const RuntimeMode runtimeMode=TitleAdapter_GetRuntimeMode();
+    const bool playing=runtimeMode==RuntimeMode::Gameplay||runtimeMode==RuntimeMode::Vehicle||
+        runtimeMode==RuntimeMode::Turret;
     if (!Game_IsHeadTracking()||!VR_IsStereoEnabled()||
         Menu_IsOpen()||VR_IsPausePresentation()||VR_IsPausePresentationTarget()||
-        VR_IsCutsceneTheaterActive()||TitleAdapter_GetRuntimeMode()!=RuntimeMode::Gameplay)
+        VR_IsCutsceneTheaterActive()||!playing)
     {
         if (title==GameTitle::Halo4) MCCVR_H4_OWNER_WHY(1);
         return false;

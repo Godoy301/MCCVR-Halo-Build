@@ -297,6 +297,15 @@ void FollowRoomscale(const Camera& source,const Tracking& tracking,Reference& fr
     reference=frozen;
     publishedReference.Publish({frozen,revision});
 }
+// THE SEAT'S VIEW HEADING (Reference::seatHeading, haloce_render_logic.h): set or cleared on the tracking
+// reference once per frame, before the frame's eyes, controllers, sight ray and publications are built from it, so
+// every consumer of BuildTrackingFrame maps the room through the same heading.
+void ApplySeatHeading(Reference& frozen) noexcept
+{
+    Vec3 heading{};
+    frozen.seatHeadingValid=HaloCEControls_SeatHeading(frozen.generation,heading);
+    frozen.seatHeading=frozen.seatHeadingValid?heading:Vec3{};
+}
 // A per-frame effective reference applies one vertical camera correction to
 // both eyes, controllers and native aim. The user's calibration stays intact.
 void ApplyPhysicalCrouchReference(const Tracking& tracking,Reference& frozen,
@@ -425,6 +434,7 @@ uintptr_t __fastcall BuilderHook(uintptr_t arg,SaberViewPair* list,uint8_t secon
             reference={tracking.headPosition,tracking.headOrientation,tracking.spaceEpoch,gen};
             reference.position.y+=VR_RecenterStandingLiftM(GameTitle::HaloCE);   // the standing height, not a caught crouch
         }
+        ApplySeatHeading(reference);
         // Roomscale (body following) in the Anniversary renderer is NOT done here: the native camera for
         // THIS frame is built inside ConstructViews, after the reference is fixed. It runs at eye zero's
         // append instead (PrepareAnniversaryTrackingReference), from this frame's untracked native centre,
@@ -453,6 +463,7 @@ uintptr_t __fastcall BuilderHook(uintptr_t arg,SaberViewPair* list,uint8_t secon
             reference={tracking.headPosition,tracking.headOrientation,tracking.spaceEpoch,gen};
             reference.position.y+=VR_RecenterStandingLiftM(GameTitle::HaloCE);
         }
+        if (!constructTrackedViews) ApplySeatHeading(reference);
         if (!recenter.load(std::memory_order_acquire)&&
             revisionBeforeBuild==referenceRevision.load(std::memory_order_acquire))
             publishedReference.Publish({constructTrackedViews?construction.views.reference:reference,revisionBeforeBuild});
