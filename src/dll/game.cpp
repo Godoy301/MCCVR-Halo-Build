@@ -668,6 +668,35 @@ namespace
     // engine's own eye -- where shots leave -- does not. Halo 3 and ODST only (both publish g_baseCam);
     // world units; 0 in a seat, a cinematic, or without positional tracking.
     std::atomic<float> g_baseCamViewLiftZ{0};
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    // VIEW ABOVE EYE (dev, read-only): how far the camera a title publishes sits above its character's own eye
+    // this frame, in real millimetres, measured on the finished camera. It is what a player sees of the
+    // view's neutral height: standing at their standing height they read about 0. The worker prints it when
+    // it has moved (the witness for VR_FollowStandingHeight; not that function's own numbers).
+    std::atomic<int32_t> g_devViewAboveEyeMm{INT32_MIN};
+    std::atomic<int32_t> g_devViewAboveEyeTitle{0};
+    inline void DevNoteViewAboveEye(GameTitle title, float aboveWorldUnits, float worldUnitsPerMeter) noexcept
+    {
+        if (!std::isfinite(aboveWorldUnits) || !(worldUnitsPerMeter > 0.0f))
+            return;
+        g_devViewAboveEyeTitle.store(static_cast<int32_t>(title), std::memory_order_relaxed);
+        g_devViewAboveEyeMm.store(static_cast<int32_t>(std::lround(aboveWorldUnits / worldUnitsPerMeter * 1000.0f)),
+            std::memory_order_relaxed);
+    }
+    void DevViewAboveEyeReport()
+    {
+        static int32_t logged = INT32_MIN;
+        static ULONGLONG lastMs = 0;
+        const int32_t now = g_devViewAboveEyeMm.load(std::memory_order_relaxed);
+        const ULONGLONG tick = GetTickCount64();
+        if (now == INT32_MIN || tick - lastMs < 500 || (logged != INT32_MIN && std::abs(now - logged) < 20))
+            return;
+        lastMs = tick;
+        logged = now;
+        LOG("VIEW HEIGHT (dev) title=%d: the published view is %+d mm above the character's own eye",
+            g_devViewAboveEyeTitle.load(std::memory_order_relaxed), now);
+    }
+#endif
     float BaseCamHandsZ() noexcept {return g_baseCamZ.load()+g_baseCamViewLiftZ.load();}
 
     // THE FRAME-COHERENT CAMERA RING (shot_lag_logic.h, 2026-10-02). The intent point P = H + u * r must take its
@@ -8636,6 +8665,12 @@ namespace
             g_headPosRef[0] = hpos[0]; g_headPosRef[1] = hpos[1] + VR_RecenterStandingLiftM(GameTitle::Halo3);
             g_headPosRef[2] = hpos[2];
         }
+        // A recenter that came before the standing height was known took the head as it was: once the height
+        // is confirmed, a neutral height left under it glides up to it (VR_FollowStandingHeight).
+        {
+            static VrStandingFollow standingFollow;
+            VR_FollowStandingHeight(GameTitle::Halo3, hpos[1], g_headPosRef[1], standingFollow);
+        }
 
         // Rotation: yaw relative + recenter, pitch absolute + trim.
         const float gy = g_gameYawRef + g_yawSign.load() * WrapPi(hy - g_headYawRef);
@@ -8759,6 +8794,10 @@ namespace
             }
         }
         g_baseCamViewLiftZ.store(viewLiftZ, std::memory_order_relaxed);
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        if (!cinematic)
+            DevNoteViewAboveEye(GameTitle::Halo3, pos[2] - characterEyeZ, g_worldScale.load());
+#endif
 
         // M2 alternate-eye proof: offset only the render camera by half the
         // measured PSVR2 IPD. Halo right in the horizontal plane is
@@ -13888,6 +13927,11 @@ namespace
         {
             memcpy(g_headPosRef, headPosition, sizeof(g_headPosRef));
             g_headPosRef[1] += VR_RecenterStandingLiftM(GameTitle::Halo3ODST);
+        }
+        // As Halo 3: a neutral height a too-early recenter left low follows the confirmed standing height up.
+        {
+            static VrStandingFollow standingFollow;
+            VR_FollowStandingHeight(GameTitle::Halo3ODST, headPosition[1], g_headPosRef[1], standingFollow);
         }
 
         // Halo 3 parity: recentered yaw plus HMD-relative yaw; absolute HMD
@@ -23924,6 +23968,10 @@ namespace
         }
         if (!vehicleEntryRecenter)
         {
+            // As Halo 3: a neutral height a too-early recenter left low follows the confirmed standing height
+            // up (never in a seat: VR_FollowStandingHeight asks Game_TitleSeated).
+            static VrStandingFollow standingFollow;
+            VR_FollowStandingHeight(GameTitle::HaloReach, hpos[1], g_headPosRef[1], standingFollow);
             effectiveGameYawRef=g_gameYawRef;
             effectiveHeadYawRef=g_headYawRef;
             memcpy(effectiveHeadPosRef,g_headPosRef,
@@ -24036,6 +24084,10 @@ namespace
                 }
             }
         }
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        if (!(vehicle && vehicle->active))
+            DevNoteViewAboveEye(GameTitle::HaloReach, pos[2] - characterEyeZ, kReachWorldUnitsPerMeter);
+#endif
         return true;
     }
 
@@ -44908,6 +44960,12 @@ namespace
             if (decoded &&
                 g_halo4Camera.headReferenceValid.load(std::memory_order_acquire))
             {
+                // As Halo 3: a neutral height a too-early recenter left low follows the confirmed standing
+                // height up.
+                static VrStandingFollow standingFollow;
+                float referenceY = g_halo4Camera.headPositionReference[1].load(std::memory_order_relaxed);
+                if (VR_FollowStandingHeight(GameTitle::Halo4, snapshot.headPosition[1], referenceY, standingFollow))
+                    g_halo4Camera.headPositionReference[1].store(referenceY, std::memory_order_relaxed);
                 headInput.headYawReference =
                     g_halo4Camera.headYawReference.load(
                         std::memory_order_relaxed);
@@ -47979,6 +48037,9 @@ namespace
             Halo3HeadRelativeReport();   // TRACKER HEAD Halo 3: the switch, by the head / the game's own
             Halo3TrackerHudHeightReport();   // TRACKER HUD HEIGHT Halo 3: the blips moved with the HUD height / not
             HostUnloadGate_Report();   // UNLOAD GATE <title>: MCC's reload of a game DLL waited for our teardown / not
+#if HALOMCCVR_DEV_DIAGNOSTICS
+            DevViewAboveEyeReport();   // VIEW HEIGHT (dev): the published view above the character's own eye
+#endif
             SeatAimFrameSync();   // Halo 3 / ODST seat aim: follow the first-person seat settings
 #if HALOMCCVR_DEV_DIAGNOSTICS
             Type13LogReport();   // the type-13 pilot-controller log lines (REACH SF, H4 T13)

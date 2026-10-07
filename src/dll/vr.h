@@ -4,6 +4,7 @@
 #include <openxr/openxr.h>
 #include <cstdint>
 #include "../common/virtual_stock_test_profiles.h"
+#include "../common/standing_height_follow.h"
 // The durable persistent-support-grip relationship publication carries the
 // shared pure owner identity (title + title generation + unit + weapon).
 #include "../common/support_grip_logic.h"
@@ -1178,6 +1179,14 @@ bool VR_GetPhysicalCrouchSample(VrPhysicalCrouchSample& out) noexcept;
 // (a learned one may still fall back, and the lift would outlive it); and in a vehicle seat (Game_TitleSeated):
 // a seat composes its own view, the player may well be sitting in it, and nothing there pairs with the lift.
 float VR_RecenterStandingLiftM(GameTitle title) noexcept;
+// The same rule, late (standing_height_follow.h): VR_RecenterStandingLiftM gives no lift until the standing height
+// is confirmed, so a recenter in a session's first minute (the automatic one at a level's start among them) that
+// caught the player low left the view's neutral height that low. Call once per camera frame, on foot or not,
+// with the head height the reference is compared against and the reference itself: once the standing height is
+// confirmed, a reference more than 5 cm under it glides up to it (30 cm a second; up only; never in a seat;
+// view_follows_standing_height). True when it moved `referenceY`. `state` is the caller's, one per reference.
+using VrStandingFollow = standing_follow::State;
+bool VR_FollowStandingHeight(GameTitle title, float headY, float& referenceY, VrStandingFollow& state) noexcept;
 // Diagnostics (the CROUCH line): the continuous frame's carry (m) and how each discontinuity was met.
 struct VrCrouchContinuityStats
 {

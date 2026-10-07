@@ -1,5 +1,6 @@
 #include "../src/common/physical_crouch_logic.h"
 #include "../src/common/physical_crouch_native_read.h"
+#include "../src/common/standing_height_follow.h"
 #include <cstdio>
 #include <cstdlib>
 #include <limits>
@@ -359,6 +360,55 @@ int main()
         for(int i=0;i<60;++i) {raw-=.015f;if(i==1) raw-=.5f;at(raw);}
         Check(std::fabs(r.Baseline()-.5f)<.01f&&r.Seeds()==1,"a recenter mid-duck keeps the standing reference");
         Check(crouched,"and the duck crouches at the activation depth");
+    }
+    {
+        // THE VIEW'S NEUTRAL HEIGHT FOLLOWS THE CONFIRMED STANDING HEIGHT UP (standing_height_follow.h).
+        using standing_follow::State; using standing_follow::Step;
+        uint64_t now=1000;
+        // A recenter caught the player 30 cm low: reference 1.40, standing 1.70; the head is at 1.55 now, so
+        // the crouch's own frame says it is 15 cm below standing.
+        State s{}; float reference=1.40f; bool started=true;
+        Check(Step(s,false,1.55f,.15f,reference,now,&started)==0&&!s.active&&!started,
+            "no standing height confirmed: the reference stays where the recenter put it");
+        now+=11;
+        Check(Step(s,true,1.55f,.15f,reference,now,&started)>0&&s.active&&started,
+            "confirmed and 30 cm low: the glide starts, and says so once");
+        float raised=0; unsigned starts=0; uint64_t began=now;
+        for(int i=0;i<400&&s.active;++i)
+        {
+            now+=11;
+            // The player bobs and crouches meanwhile: head and deficit move together, the standing height does not.
+            const float dip=.10f*float(i%20)/20.f;
+            const float step=Step(s,true,1.55f-dip,.15f+dip,reference,now,&started);
+            Check(step>=0&&step<=standing_follow::kRateMps*.011f+1e-6f,"a step is never faster than the glide's rate");
+            reference+=step;raised+=step;starts+=started?1u:0u;
+        }
+        Check(!s.active&&std::fabs(reference-1.70f)<=standing_follow::kDoneM+1e-4f&&reference<=1.70f+1e-4f,
+            "the glide ends on the standing height and never above it");
+        Check(starts==0,"one glide says so once");
+        Check(now-began>900&&now-began<1200,"30 cm takes about a second");
+        now+=11;
+        Check(Step(s,true,1.73f,0.f,reference,now,&started)==0&&!s.active,
+            "3 cm under standing is within the tolerance: nothing moves");
+        now+=11;
+        Check(Step(s,true,1.80f,-.10f,reference,now,&started)==0&&!s.active,
+            "a head above the standing height (a jump, tiptoe) does not raise the reference");
+        float high=1.90f; now+=11;
+        Check(Step(s,true,1.70f,0.f,high,now,&started)==0&&!s.active,"a reference above standing is never lowered");
+        // A break in the calls (a cutscene, a seat) is not one long step.
+        State b{}; float low=1.20f; now+=11;
+        (void)Step(b,true,1.70f,0.f,low,now); now+=11;
+        const float first=Step(b,true,1.70f,0.f,low,now); low+=first;
+        Check(first>0&&first<.01f,"a glide moves by the time since the last call");
+        now+=5000;
+        Check(Step(b,true,1.70f,0.f,low,now)==0&&b.active,"five seconds without a call move nothing on the next");
+        now+=11;
+        Check(Step(b,true,1.70f,0.f,low,now)>0,"and the glide goes on from there");
+        now+=11;
+        Check(Step(b,false,1.70f,0.f,low,now)==0&&!b.active,"a seat (or the switch) stops a glide where it is");
+        State c{}; float r=1.20f; now+=11;
+        Check(Step(c,true,1.70f,1.5f,r,now)==0&&!c.active,"a deficit past a metre is not a standing person's sample");
+        Check(Step(c,true,std::numeric_limits<float>::quiet_NaN(),0.f,r,now+11)==0&&!c.active,"a head height that is not a number moves nothing");
     }
     std::printf("Physical crouch: %u checks passed\n",checks);
 }

@@ -466,6 +466,12 @@ struct Config
     // character crouches his eye drops, and the limit drops with him. The hands and the reticle ray are
     // lifted with the view, so holding the view does not make them sink away from your eyes. <0 = off.
     float head_leash_below_eye_m = 0.10f;
+    // THE VIEW'S NEUTRAL HEIGHT FOLLOWS YOUR STANDING HEIGHT UP (standing_height_follow.h). With the physical
+    // crouch on, a recenter that caught the player low before their standing height was known (the automatic
+    // one at a level's start, in a session's first minute) left them standing that much above their character.
+    // 1 = once the standing height is confirmed, the neutral height glides up to it (Halo 3, ODST, Reach and
+    // Halo 4; on foot). 0 = it stays where the recenter put it until the next recenter. Read live.
+    bool view_follows_standing_height = true;
     // HEAD-RELATIVE HUD AND SOUND (head_relative_logic.h). The player aims with the hand and looks with the
     // head, so the game's own camera heading -- the aim -- is the wrong one for anything read against where
     // the player LOOKS. tracker_follows_head: the motion tracker places its contacts by the head's heading
