@@ -40,6 +40,8 @@ inline constexpr float kTwoPi = head_relative::kPi * 2.0f;
 inline constexpr float kWorldUp[3]{0.0f, 0.0f, 1.0f};
 
 // ---- the sites -------------------------------------------------------------------------------------------------
+// ADDR-HYGIENE: resolved (the comment above). The numbers beside each pattern are positions INSIDE that matched
+// pattern, never image addresses.
 // The update's read-add-store and the three calls after it (retail +0x2ED187):
 //   imul rcx, r9, 0xB0 / mov rax, [rdx + rbx] / movss xmm0, [rax + rcx + 0x694]   ; output desired_angles.yaw
 //   mov rcx, rdi / addss xmm0, [rip + HALF PI] / movss [rdi + HEADING], xmm0
@@ -63,6 +65,9 @@ inline constexpr const char* kTrackerFirstReaderHeadPattern =
     "48 8B C4 48 89 58 08 48 89 70 10 48 89 78 18 55 41 54 41 55 41 56 41 57 48 8D 68 A1 48 81 EC C0 00 00 00 "
     "8B 15 ?? ?? ?? ?? 48 8D 99 04 12 00 00 0F 29 70 C8 48 8B F9";
 inline constexpr size_t kFirstReaderHeadBytes = 0x37;
+// ADDR-HYGIENE: guarded (ValueAgreement). Where each reader's load sits inside its function is a measurement of
+// this build. It is used only to PROVE the field: the load's opcode must be there and its displacement must be
+// the one the store instruction carries. A build where either differs binds nothing.
 // Its read of the heading: movss xmm10, [rdi + HEADING] (F3 44 0F 10 97 disp32).
 inline constexpr size_t kFirstReaderRead = 0xD6, kFirstReaderReadDisp = 0xDB, kFirstReaderBytes = 0xDF;
 inline constexpr uint8_t kFirstReaderReadOpcode[5]{0xF3, 0x44, 0x0F, 0x10, 0x97};
@@ -344,6 +349,10 @@ inline constexpr const char* kListenerSignatureWriterPattern =
 inline constexpr size_t kListenerWriterBytes = 32;
 inline constexpr size_t kWriterStride = 3, kWriterHeaderDisp = 13, kWriterFooterDisp = 24;
 inline constexpr uint32_t kListenerHeaderSignature = 0x6C736864, kListenerFooterSignature = 0x6C736674;
+// ADDR-HYGIENE: guarded. The two callees' sizes and where the compared windows sit are a measurement of this
+// build, used only to PROVE the store's callees are these two functions (the bytes must match, and the caller
+// requires each to be a function of its own in the image's function table). A build where they are not binds
+// nothing.
 // The builder the store calls (retail +0xA7BEC, 0xA2 bytes, no relocation in it): matrix(forward, up) --
 // scale = 1 at +0, forward at +4, left = up x forward at +0x10, up at +0x1C, position zeroed at +0x28.
 inline constexpr size_t kMatrixBuilderBytes = 0xA2, kMatrixBuilderTailAt = 0x83;
@@ -362,7 +371,8 @@ inline constexpr uint8_t kVelocityTransformDots[0x74]{
     0x0F, 0x59, 0x49, 0x18, 0xF3, 0x0F, 0x58, 0xD8, 0xF3, 0x0F, 0x58, 0xD9, 0xF3, 0x41, 0x0F, 0x11, 0x58, 0x04, 0xF3, 0x0F,
     0x59, 0x61, 0x20, 0xF3, 0x0F, 0x59, 0x71, 0x24, 0xF3, 0x0F, 0x59, 0x69, 0x1C, 0xF3, 0x0F, 0x58, 0xE5, 0xF3, 0x0F, 0x58,
     0xE6, 0x0F, 0x28, 0x34, 0x24, 0xF3, 0x41, 0x0F, 0x11, 0x60, 0x08, 0x48, 0x83, 0xC4, 0x18, 0xC3};
-// Inside the matrix (structural; see the header comment).
+// ADDR-HYGIENE: structural + guarded. Inside the matrix: the builder's bytes above put the rows at these places,
+// and every use checks the live record (scale 1, unit perpendicular rows, left = up x forward) before writing.
 inline constexpr size_t kMatrixScale = 0x00, kMatrixForward = 0x04, kMatrixLeft = 0x10, kMatrixUp = 0x1C,
                         kMatrixPosition = 0x28, kMatrixBytes = 0x34;
 
