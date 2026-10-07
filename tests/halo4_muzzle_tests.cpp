@@ -368,6 +368,24 @@ static void LifecycleTests()
     {
         reset();image[edge[0]]^=1;Check(!InstallHalo4Muzzle(lifecycleBase,size,7)&&createCalls==0,"changed downstream edge prevents adaptation");image[edge[0]]^=1;
     }
+    // THE ORDER THE GAME INSTALLS IN (fa4f90d, and never pinned by a test until Reach had the same defect). The
+    // proof is taken, THEN the avatar lane hooks the first-person packet producer, whose head (binding 11,
+    // +0x3B1B4C) reads our jump from then on.
+    reset();g_halo4MuzzleImageProof={};Halo4MuzzlePreflight(lifecycleBase,size,7);
+    Check(g_halo4MuzzleImageProof.proven&&bindingScan==28,"preflight proves all fourteen patterns and their uniqueness");
+    bindingScan=0;missingBinding=11;
+    Check(InstallHalo4Muzzle(lifecycleBase,size,7)&&bindingScan==0&&createCalls==5,
+        "the proof taken before the producer hook authorises the lane; nothing is read again through the hook");
+    missingBinding=-1;Check(RemoveHalo4Muzzle(),"preflight install cleanup");
+    reset();g_halo4MuzzleImageProof={};missingBinding=11;
+    Check(!InstallHalo4Muzzle(lifecycleBase,size,7)&&createCalls==0,"control: a proof read after the hook sees the jump and refuses");
+    reset();g_halo4MuzzleImageProof={};Halo4MuzzlePreflight(lifecycleBase,size,6);bindingScan=0;missingBinding=11;
+    Check(!InstallHalo4Muzzle(lifecycleBase,size,7)&&createCalls==0,"another generation's proof is not reused");
+    reset();g_halo4MuzzleImageProof={};missingBinding=12;Halo4MuzzlePreflight(lifecycleBase,size,7);
+    missingBinding=-1;bindingScan=0;
+    Check(!g_halo4MuzzleImageProof.proven&&g_halo4MuzzleImageProof.failedRva==0x3B1F11,"a failed preflight names the binding");
+    Check(!InstallHalo4Muzzle(lifecycleBase,size,7)&&bindingScan==0&&createCalls==0,"a failed preflight is not retried behind the hooks");
+    g_halo4MuzzleImageProof={};
     reset();Check(InstallHalo4Muzzle(lifecycleBase,size,7),"fixture installed");ingress=true;
     Check(!RemoveHalo4Muzzle()&&removeCalls==0,"zero counter with thread in ingress retains code");ingress=false;
     g_halo4Barrel.callbacks=1;Check(!RemoveHalo4Muzzle()&&removeCalls==0,"active callback retains code");

@@ -32,12 +32,29 @@ bool RemoveReachMuzzle()
     }
     return true;
 }
-bool InstallReachMuzzle(uintptr_t base,size_t size,uint32_t generation)
+// THE LANE'S PROOF OF THE IMAGE, taken before the core hooks the unit-adjust (ReachMuzzlePreflight, from the camera
+// install, ahead of the "Reach vehicle shot line" hook).
+//
+// One of the fourteen patterns is the HEAD of the unit-adjust (+0x484F24). This lane runs on that function's
+// trampoline, so it installs only AFTER the core has hooked it -- and by then the head read `E9 <jump>`, the
+// pattern did not match, and the lane logged "StockFallback: missing/ambiguous binding +484F24" at every Reach
+// level: no committed first-person barrel, no "shots leave the visible muzzle", and no fire scope (the fire
+// detour is where a fire's shooter mark and fire eye begin) in Reach, in every build since the lane was written
+// (2026-09-18; every Reach log on record from 09-26 on says StockFallback, none says Installed). The pattern is
+// unique at +0x484F24 on the image as shipped. Same defect, same cure as Halo 4's (halo4_muzzle_lifecycle.inl):
+// a signature is a statement about the GAME's code, so it is read before we rewrite that code. sig::Find also
+// reads our own enabled hooks as the bytes they replaced now (sigscan.h), which is the net under this order.
+struct ReachMuzzleImageProof
 {
-    auto& feature=g_reachBarrel;
-    for(auto* target:feature.targets)if(target)return false;
-    if(!generation||size<=0x4C4924||!g_origReachUnitAdjust||!g_reachUnitAdjustTarget||
-        !g_reachVehicleShotRedirectEnabled.load(std::memory_order_acquire))return false;
+    uintptr_t base=0;
+    uint32_t generation=0,failedRva=0;
+    bool proven=false,failedEdge=false;
+};
+ReachMuzzleImageProof g_reachMuzzleImageProof;
+bool ProveReachMuzzleImage(uintptr_t base,size_t size,uint32_t& failedRva,bool& failedEdge)
+{
+    failedRva=0;failedEdge=false;
+    if(size<=0x4C4924)return false;
     struct Binding {uint32_t rva;const char* pattern;};
     constexpr Binding bindings[]{
         {0x4C2710,"48 89 5C 24 20 55 56 57 41 54 41 55 41 56 41 57 48 8D AC 24 C0 D9 FF FF B8 40 27 00 00 E8 9E 9B 3A 00 48 2B E0 0F 29 B4"},
@@ -59,7 +76,7 @@ bool InstallReachMuzzle(uintptr_t base,size_t size,uint32_t generation)
     {
         const auto match=sig::Find(base,size,binding.pattern);
         if(match!=base+binding.rva||sig::Find(match+1,base+size-match-1,binding.pattern))
-        {LOG("Reach muzzle StockFallback: missing/ambiguous binding +%X",binding.rva);return false;}
+        {failedRva=binding.rva;return false;}
     }
     struct Edge {uint32_t call,target;};
     constexpr Edge edges[]{
@@ -76,7 +93,37 @@ bool InstallReachMuzzle(uintptr_t base,size_t size,uint32_t generation)
     {
         const auto* call=reinterpret_cast<const uint8_t*>(base+edge.call);
         if(call[0]!=0xE8||base+edge.call+5+*reinterpret_cast<const int32_t*>(call+1)!=base+edge.target)
-        {LOG("Reach muzzle StockFallback: changed native edge +%X",edge.call);return false;}
+        {failedRva=edge.call;failedEdge=true;return false;}
+    }
+    return true;
+}
+// Cold, on the title's install thread, before the unit-adjust hook is enabled.
+void ReachMuzzlePreflight(uintptr_t base,size_t size,uint32_t generation)
+{
+    auto& proof=g_reachMuzzleImageProof;
+    proof=ReachMuzzleImageProof{};
+    if(!base||!generation)return;
+    proof.base=base;proof.generation=generation;
+    proof.proven=ProveReachMuzzleImage(base,size,proof.failedRva,proof.failedEdge);
+}
+bool InstallReachMuzzle(uintptr_t base,size_t size,uint32_t generation)
+{
+    auto& feature=g_reachBarrel;
+    for(auto* target:feature.targets)if(target)return false;
+    if(!generation||size<=0x4C4924||!g_origReachUnitAdjust||!g_reachUnitAdjustTarget||
+        !g_reachVehicleShotRedirectEnabled.load(std::memory_order_acquire))return false;
+    // The image as it stood before the core's hooks; a caller that took no preflight for this image proves it now
+    // (sig::Find reads through our own hooks, and says so in the log).
+    uint32_t failedRva=0;bool failedEdge=false,proven=false;
+    const auto& proof=g_reachMuzzleImageProof;
+    if(proof.base==base&&proof.generation==generation)
+    {proven=proof.proven;failedRva=proof.failedRva;failedEdge=proof.failedEdge;}
+    else proven=ProveReachMuzzleImage(base,size,failedRva,failedEdge);
+    if(!proven)
+    {
+        if(failedEdge)LOG("Reach muzzle StockFallback: changed native edge +%X",failedRva);
+        else LOG("Reach muzzle StockFallback: missing/ambiguous binding +%X",failedRva);
+        return false;
     }
     feature.base=base;feature.generation=generation;feature.installedAtMs=GetTickCount64();feature.faulted.store(false);
     struct Hook {uint32_t rva;void* detour;void** original;};

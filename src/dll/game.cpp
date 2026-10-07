@@ -35427,6 +35427,10 @@ namespace
             uintptr_t unitAdjust = 0;
             const bool unitAdjustResolved = reachVehicleCameraResolved &&
                 ResolveReachUnitAdjustBinding(base, size, unitAdjust);
+            // The muzzle lane proves its image FIRST: one of its patterns is the head of the unit-adjust, which
+            // the next lines hook (reach_muzzle_lifecycle.inl). Only when that hook can exist: the lane needs it.
+            if (unitAdjustResolved)
+                ReachMuzzlePreflight(base, size, generation);
             if (unitAdjustResolved)
             {
                 g_reachUnitAdjustTarget =
