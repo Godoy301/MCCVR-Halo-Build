@@ -208,7 +208,10 @@ inline bool ProjectToRaster(const Camera& camera, const float point[3], float wi
 // camera part 1 corrects); the vertical field of view the ring reads must be the camera's +0x28 (the ring's
 // displacement minus the camera buffer's); the ring's fraction must be 0.3 and its two other constants pi and
 // 0.0001 (ValueAgreement); the record's offsets are read from the matched instructions and must follow one
-// another the way the record does. Any link failing binds nothing.
+// another the way the record does. A sixth pattern, matched exactly once as well, is the navpoint list's call of
+// this function (the one caller the stand-in acts for): its call must land on the head matched here, from
+// another function; the address it returns to is what the detour compares its own return address with. Any link
+// failing binds nothing.
 // ====================================================================================================================
 
 // The head (retail +0x2E1430): the frame, the cookie, the HUD's window count and index, the record in rsi, the two
@@ -260,6 +263,25 @@ inline constexpr size_t kOffscreenPiDisp = 4, kOffscreenPiNext = 8, kOffscreenFl
 inline constexpr const char* kProjectionPixelPattern = "4C 8D 76 10 F3 44 0F 10 15 ?? ?? ?? ?? 45 89 2E 44 89 6E 14";
 inline constexpr size_t kProjectionPixelBytes = 20;
 inline constexpr size_t kPixelX = 3, kPixelY = 19;
+// THE NAVPOINT LIST'S CALL (HREK +0x92874F in +0x9285A0, chud_draw.cpp; retail +0x2E3D51 in +0x2E3BAC): the one
+// caller the stand-in acts for. Per navpoint, up to twenty a user: the record in rcx, the user from the HUD's own
+// state, no "behind", pitch in the camera's own frame (the fifth argument is dl, cleared before the loop), and
+// the ring when the navpoint asks for it.
+//   mov [rsp + 0x20], dl / xor r9d, r9d / mov rcx, rsi / mov edx, [rbx + USER] / test dil, dil / jne +3 /
+//   xor r8d, r8d / call PROJECTION
+// WHY ONLY THIS CALLER. The projection has eleven native callers (read statically; the names are HREK's). Besides
+// this one: five per-user AIM POINTS (the anchor producer copies them for anchors 21 weapon target, 22 ghost
+// reticule, 23 hologram target, 24 airstrike target and 15 tracked target; all but the hologram ask for the
+// ring); the DAMAGE FLASHES and the DAMAGE ARROWS (always the ring, with pitch measured against the world, which
+// the stand-in's geometry is not); the anchor producer's object paths (name tags, fireteam and objective
+// objects, by their anchors' names) and the HUD's own state build. An aim point held 24 degrees from the head
+// would be drawn away from where the weapon points, and none of the others has been seen in a game. They keep
+// the game's own ring, counted by reason, until each has been looked at. RUN IN A GAME: the hill marker of King
+// of the Hill comes through this call (five sessions).
+inline constexpr const char* kNavpointCallPattern =
+    "88 54 24 20 45 33 C9 48 8B CE 8B 93 ?? ?? ?? ?? 40 84 FF 75 03 45 33 C0 E8 ?? ?? ?? ??";
+inline constexpr size_t kNavpointCallBytes = 29;
+inline constexpr size_t kNavpointCall = 24, kNavpointReturn = 29;
 
 // The game's own numbers for the ring: 0.3 of the vertical field of view, and the floor of "outside".
 inline constexpr float kRingFraction = 0.3f;
@@ -284,6 +306,7 @@ struct ProjectionSites
     int64_t converterRva = 0;        // what its camera call lands on: render_camera_from_observer_camera
     int64_t converterReturnRva = 0;  // and where that call returns: the observer-camera hook's CHUD site
     int64_t fractionRva = 0, piRva = 0, floorRva = 0;  // the ring's three constants
+    int64_t navpointReturnRva = 0;   // where the navpoint list's call of it returns: the stand-in's one caller
     uint32_t cameraFovOffset = 0;    // the vertical field of view inside the camera it builds
     uint32_t recordPoint = 0;        // the record's world point
     uint32_t recordPixel = 0;        // its pixel, relative to the user's window
@@ -302,6 +325,8 @@ enum class ProjectionBind : uint8_t
     RecordMismatch,    // the record's offsets do not follow one another as the record does
     ConverterMismatch, // the camera call is not the observer-camera hook's function at its CHUD site
     ConstantMismatch,  // the ring's fraction is not 0.3, or its pi / floor are not
+    NavpointCallMissing,   // the navpoint list's call of the projection: no match, or more than one
+    NavpointCallMismatch,  // it is not a call that lands on the matched projection from another function
     Count
 };
 inline const char* ProjectionBindName(ProjectionBind why)
@@ -320,6 +345,9 @@ inline const char* ProjectionBindName(ProjectionBind why)
     case ProjectionBind::ConverterMismatch:
         return "the projection's camera call is not the observer-camera hook's call site";
     case ProjectionBind::ConstantMismatch: return "the ring's constants are not 0.3, pi and 0.0001";
+    case ProjectionBind::NavpointCallMissing: return "the navpoint list's call of the projection is missing or ambiguous";
+    case ProjectionBind::NavpointCallMismatch:
+        return "the navpoint list's call does not land on the matched projection from another function";
     default: return "?";
     }
 }
@@ -399,6 +427,21 @@ inline ProjectionBind CheckProjectionConstants(const uint8_t* fraction, const ui
                    std::fabs(ReadF32(floor) - kOffscreenFloor) <= 1.0e-9f
                ? ProjectionBind::Bound
                : ProjectionBind::ConstantMismatch;
+}
+// The navpoint list's call: the bytes at its pattern's unique match (null = missing or ambiguous), where they are,
+// and the beginning of the function they lie in (-1 = none). Fills sites.navpointReturnRva, and only when the
+// call lands on the projection bound in `sites` from another function. A refusal fills nothing.
+inline ProjectionBind DecodeNavpointCall(const uint8_t* call, int64_t callRva, int64_t callFunctionRva,
+                                         ProjectionSites& sites)
+{
+    if (!call)
+        return ProjectionBind::NavpointCallMissing;
+    const int64_t returnRva = callRva + static_cast<int64_t>(kNavpointReturn);
+    if (call[kNavpointCall] != 0xE8 || sites.headRva <= 0 || callFunctionRva < 0 ||
+        callFunctionRva == sites.headRva || returnRva + ReadI32(call + kNavpointCall + 1) != sites.headRva)
+        return ProjectionBind::NavpointCallMismatch;
+    sites.navpointReturnRva = returnRva;
+    return ProjectionBind::Bound;
 }
 
 // ---- the witness (dev builds): the game's pixel against the eye's own picture ----------------------------------
@@ -525,21 +568,20 @@ inline const char* WitnessName(Witness what)
 // arrow turns on.
 //
 // With the eye's field of view (part 1) that ring is 0.3 of the eye's vertical field high and wider still.
-//   RUN IN A GAME (two frames, read by eye, simulator eye 100 deg, 40 deg nose-side limit): the arrow sat about
-//   32 deg from the eye's axis down and to the left, and about 39 deg to the right: inside the picture, the
-//   second at the edge of what the nose-side eye sees.
-//   COMPUTED, not run: on a headset with a 110 deg eye and the same 40 deg nose-side limit the sideways arrow
-//   would be about 44 deg out, beyond the nose-side eye's field: seen by one eye only.
-//   NOT YET MEASURED when this was written: whether the two eyes draw the arrow in the same direction. The game
-//   lays the ring out about each eye's own axis (read statically); with parallel eyes and a far target that
-//   could well agree, and only canted eyes would then differ. The witness below measures it.
+//   RUN IN A GAME (simulator: eye raster 100 deg and 5242 x 3780, eyes parallel, 40 deg toward the nose; one far
+//   target): the ring is 30.0 deg up and down and 41.6 deg sideways. For a target to the side the two eyes draw
+//   the arrow in the same direction (within 0.2 arc-minutes across, 0.9 up), 41.0 to 41.6 deg from each eye's
+//   own axis. That is past the 40 deg the other eye sees toward the nose: THE ARROW IS IN ONE EYE ONLY.
+//   COMPUTED from the owner's own log (40 deg toward the nose, eye raster 110 deg, the same aspect): 45.8 deg.
+//   NOT RUN: a near target (each eye clamps about its own axis, so the two arrows would diverge); canted eyes.
 //
 // THE SEAM. A detour on the projection. When the caller asked for the ring and the point lies outside a ring laid
 // out about the HEAD's axis, the detour hands the game a stand-in point for that one call: the point's direction
 // brought onto the head's ring, at the point's own distance. Both eyes then project the SAME world point, inside
 // the game's own (larger) ring, so the game draws it on that point and the two eyes agree; when the game returns
 // the record's point is put back and its off-screen value is set by the game's own formula, so the widget still
-// shows its arrow. The game still draws its own art, text and colour. Nothing else is written.
+// shows its arrow. The game still draws its own art, text and colour. Nothing else is written. Only for the
+// navpoint list's call (kNavpointCallPattern), and only when that call measures pitch in the camera's own frame.
 //
 // THE HEAD'S RING is the game's own rule applied to the field BOTH eyes see: the game's ring is six tenths of the
 // half field of view (0.3 of the whole), so the head's is six tenths of the half-angles, about the head's axis,
@@ -673,6 +715,8 @@ enum class Ring : uint8_t
     Moved,         // outside the head's ring: the game was handed the stand-in on it
     OnTarget,      // inside the head's ring: the game draws the marker on the point itself
     Plain,         // the caller did not ask for a ring: the point is projected as it is
+    OtherCaller,   // a ring was asked for, but not by the navpoint list's call: the game's own ring
+    WorldPitch,    // the call measures pitch against the world: the stand-in's geometry is not that
     SwitchOff,     // the player's switch is off
     NoEyeScope,    // not inside an eye's own render
     NotLocalUser,  // not output user 0's HUD
@@ -690,6 +734,8 @@ inline const char* RingName(Ring what)
     case Ring::Moved: return "brought onto the head's ring";
     case Ring::OnTarget: return "on its target";
     case Ring::Plain: return "no ring asked for";
+    case Ring::OtherCaller: return "not the navpoint list's call";
+    case Ring::WorldPitch: return "a world-pitch ring";
     case Ring::SwitchOff: return "switch off";
     case Ring::NoEyeScope: return "not inside an eye's render";
     case Ring::NotLocalUser: return "not the local user";
@@ -720,8 +766,11 @@ inline bool HeadUsable(const Camera& head)
 // The verdict for one projection. `head`: the head's own camera for this frame (position, forward, up), the one
 // both eyes were built from. `ring`: the head's ring. Moved fills `out`; anything else leaves it untouched and
 // the game projects the point as it is. Identity only: no point is declined for being near, far or far off axis.
-inline Ring RingPoint(bool switchOn, bool eyeScope, int user, bool valid, bool wantsRing, const Camera& head,
-                      bool haveField, const RingField& ring, const float point[3], RingMove& out)
+// `fromNavpoints`: the game's call came from the navpoint list (the one caller the stand-in acts for).
+// `worldPitch`: the call's fifth argument (the navpoint list passes 0; the damage indicators pass 1).
+inline Ring RingPoint(bool switchOn, bool eyeScope, int user, bool valid, bool wantsRing, bool fromNavpoints,
+                      bool worldPitch, const Camera& head, bool haveField, const RingField& ring,
+                      const float point[3], RingMove& out)
 {
     if (!switchOn)
         return Ring::SwitchOff;
@@ -733,6 +782,10 @@ inline Ring RingPoint(bool switchOn, bool eyeScope, int user, bool valid, bool w
         return Ring::NotValid;
     if (!wantsRing)
         return Ring::Plain;
+    if (!fromNavpoints)
+        return Ring::OtherCaller;
+    if (worldPitch)
+        return Ring::WorldPitch;
     if (!HeadUsable(head) || !std::isfinite(point[0]) || !std::isfinite(point[1]) || !std::isfinite(point[2]))
         return Ring::NoHead;
     if (!haveField || !(ring.halfYaw > 0.0f) || !(ring.halfPitch > 0.0f) || !std::isfinite(ring.halfYaw) ||

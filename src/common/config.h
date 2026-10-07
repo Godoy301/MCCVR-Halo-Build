@@ -490,11 +490,16 @@ struct Config
     // Run in a game with one marker only (a King of the Hill hill marker); marked players and name tags have
     // not been on screen. A title that has not bound this keeps its own behaviour (log: NAV MARKERS <title>).
     bool nav_markers_on_target = true;
-    // THE OFF-SCREEN ARROW STAYS IN VIEW (reach_nav_projection.inl). 1 = when a marker's target is out of view,
-    // the game's arrow for it is drawn on a ring about the HEAD's axis, at most 30 degrees out, as one point in
-    // the world for both eyes. Needs nav_markers_on_target. 0 = the game's own ring, about each eye's axis.
-    // Read when a level loads. Default 0 until a game run supports it.
-    bool nav_marker_arrow_in_view = false;
+    // THE OFF-SCREEN ARROW STAYS IN VIEW (reach_nav_projection.inl). 1 = when a navpoint's target (an objective
+    // marker, a marked player: by a static read) is out of view, the game's arrow for it is drawn on a ring about
+    // the HEAD's axis, at most 30 degrees out, as one point in the world for both eyes. 0 = the game's own ring,
+    // which with the eye's field of view lies past what the eye on the other side of the nose sees: the arrow is
+    // then in one eye only (measured on the simulator, computed for the owner's headset from its log).
+    // NOT TOUCHED: name tags, fireteam markers, vehicle / lock-on reticles, damage arrows (the projection's
+    // other callers keep the game's own ring). Needs nav_markers_on_target. Read when a level loads.
+    // Default 1 since 2026-10-07: run headless with one marker (the King of the Hill hill), not yet seen in a
+    // headset.
+    bool nav_marker_arrow_in_view = true;
     // DEV BUILDS ONLY (parsed and saved there; a player build always has these defaults).
     // nav_marker_witness: 1 = report the pixel the game puts each marker on against the pixel the eye's own
     // picture shows its target at. nav_marker_ring: the off-screen ring about the head, as a fraction of the

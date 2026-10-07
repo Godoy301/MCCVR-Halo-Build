@@ -3,12 +3,17 @@
 // are in src/common/reach_nav_marker_logic.h; the write-up is docs/REACH-NAV-MARKERS-2026-10-07.md.
 //
 // THE OFF-SCREEN ARROW (the write-up's part 2). A caller that wants an off-screen indicator has the game bring a
-// far-off point onto a ring, laid out about each eye's own axis (read statically). Seen in a game, two frames:
-// about 32 and 39 degrees from the eye's axis with a 100 degree eye. With the arrow switch on, for a point
+// far-off point onto a ring, laid out about each eye's own axis. Measured in a game (simulator): 41.6 degrees
+// out sideways and 30.0 up and down for a 100 degree eye, the two eyes agreeing, which puts a sideways arrow
+// past the 40 degrees the other eye sees toward the nose: in one eye only. With the arrow switch on, for a point
 // outside a ring about the HEAD's axis (at most 30 degrees out), the detour hands the game a stand-in for that
 // one call: the point's direction brought onto the head's ring, at the point's own distance. Both eyes project
 // the same stand-in; the game draws its own arrow on it. When the game returns, the record's point is put back
 // and its off-screen value set by the game's own formula.
+//   * WHOSE CALL: the navpoint list's only (objective markers and marked players, by a static read; the hill
+//     marker, in a game). The call site is proved at install and the detour compares its own return address
+//     with the address decoded then. The projection's other callers (aim points, damage indicators, name tags
+//     and the rest: reach_nav_marker_logic.h) keep the game's own ring and are counted by reason;
 //   * what is written: twelve bytes of the caller's record before the call and the same twelve after it (the
 //     game's own point again, in a __finally), plus the record's off-screen float. Nothing else;
 //   * every projection lands in exactly one counted verdict (reach_nav_markers::Ring); only Moved writes.
@@ -24,6 +29,9 @@
 using ReachNavProjectionFn = void (__fastcall*)(void*, int, uint8_t, uint8_t, uint8_t);
 constexpr size_t kReachNavRingCount = static_cast<size_t>(reach_nav_markers::Ring::Count);
 constexpr size_t kReachNavWitnessCount = static_cast<size_t>(reach_nav_markers::Witness::Count);
+#if HALOMCCVR_DEV_DIAGNOSTICS
+constexpr int kReachNavCallerCapacity = 16;  // the retail image has eleven
+#endif
 struct ReachNavProjectionRuntime
 {
     uintptr_t base = 0;
@@ -31,6 +39,9 @@ struct ReachNavProjectionRuntime
     void* target = nullptr;
     void* original = nullptr;                 // ReachNavProjectionFn
     reach_nav_markers::ProjectionSites sites;  // decoded from the game's own instructions at install
+    // Where the navpoint list's call of the projection returns: decoded at install (never a constant), before
+    // the hook is enabled. The stand-in acts for that caller alone.
+    uintptr_t navpointReturn = 0;
     std::atomic<bool> enabled{false};
     std::atomic<uint32_t> callbacks{0};
     // The window the report drains: every projection lands in exactly one of these. The render thread.
@@ -61,6 +72,11 @@ struct ReachNavProjectionRuntime
     // Off the head's axis, this window: markers drawn on their point, and arrows.
     std::atomic<float> pointMinDeg{1.0e9f}, pointMaxDeg{-1.0f}, arrowMinDeg{1.0e9f}, arrowMaxDeg{-1.0f};
     std::atomic<uint32_t> pointSamples{0}, arrowSamples{0};
+    // WHO CALLS (dev): every projection counted by the call site it returns to, with and without a ring asked
+    // for. Index kReachNavCallerCapacity = a caller that is none of the image's direct call sites.
+    uintptr_t callerReturns[kReachNavCallerCapacity]{};  // written at install, before the hook is enabled
+    int callerCount = 0, callerFound = 0;
+    std::atomic<uint32_t> callerRing[kReachNavCallerCapacity + 1]{}, callerPlain[kReachNavCallerCapacity + 1]{};
 #endif
 } g_reachNavProjection;
 #if HALOMCCVR_DEV_DIAGNOSTICS
@@ -115,8 +131,10 @@ bool ReachNavHeadRing(float fraction, reach_nav_markers::RingField& ring, reach_
 }
 
 // The render thread, before the game projects `record`. No allocation, no logging, no lock. Moved is the only
-// verdict that writes: the record's point, after the game's own was copied into `call`.
+// verdict that writes: the record's point, after the game's own was copied into `call`. `fromNavpoints`: the
+// game's call returns to the navpoint list's call site.
 __declspec(noinline) reach_nav_markers::Ring ReachNavRingBefore(void* record, int user, uint8_t wantsRing,
+                                                                uint8_t worldPitch, bool fromNavpoints,
                                                                 ReachNavRingCall& call) noexcept
 {
     using namespace reach_nav_markers;
@@ -138,14 +156,15 @@ __declspec(noinline) reach_nav_markers::Ring ReachNavRingBefore(void* record, in
         RingField ring, shared;
         bool haveField = false;
         float point[3]{};
-        if (switchOn && eyeScope && user == 0 && valid && wantsRing)
+        if (switchOn && eyeScope && user == 0 && valid && wantsRing && fromNavpoints && !worldPitch)
         {
             memcpy(point, bytes + feature.sites.recordPoint, sizeof(point));
             ReachNavHeadCamera(head);
             haveField = ReachNavHeadRing(fraction, ring, shared);
         }
         RingMove move;
-        what = RingPoint(switchOn, eyeScope, user, valid, wantsRing != 0, head, haveField, ring, point, move);
+        what = RingPoint(switchOn, eyeScope, user, valid, wantsRing != 0, fromNavpoints, worldPitch != 0, head,
+                         haveField, ring, point, move);
         if (what == Ring::Moved)
         {
             memcpy(call.point, point, sizeof(call.point));
@@ -190,6 +209,19 @@ __declspec(noinline) void ReachNavRingAfter(void* record, const ReachNavRingCall
 }
 
 #if HALOMCCVR_DEV_DIAGNOSTICS
+// One projection, by the game's call site. The render thread; counters only.
+inline void ReachNavNoteCaller(uintptr_t caller, bool wantsRing) noexcept
+{
+    auto& feature = g_reachNavProjection;
+    int site = kReachNavCallerCapacity;
+    for (int i = 0; i < feature.callerCount; ++i)
+        if (feature.callerReturns[i] == caller)
+        {
+            site = i;
+            break;
+        }
+    (wantsRing ? feature.callerRing : feature.callerPlain)[site].fetch_add(1, std::memory_order_relaxed);
+}
 // The eye's raster as the stereo transaction committed it for the eye being rendered now.
 bool ReachNavEyeRaster(const ReachFpCameraEyeScope& scope, reach_nav_markers::EyeRaster& eye) noexcept
 {
@@ -367,6 +399,8 @@ __declspec(noinline) void ReachNavWitnessProjection(const void* record, bool sta
 __declspec(noinline) void __fastcall ReachNavProjectionDetour(void* record, int user, uint8_t ring, uint8_t behind,
                                                               uint8_t worldPitch)
 {
+    // The hook enters here by a jump, so this is the game's own return address: which of its callers this is.
+    const uintptr_t caller = reinterpret_cast<uintptr_t>(_ReturnAddress());
     auto& feature = g_reachNavProjection;
     feature.callbacks.fetch_add(1, std::memory_order_acq_rel);
     __try
@@ -377,7 +411,12 @@ __declspec(noinline) void __fastcall ReachNavProjectionDetour(void* record, int 
         ReachNavRingCall call;
         const bool enabled = record && feature.enabled.load(std::memory_order_acquire);
         if (enabled)
-            (void)ReachNavRingBefore(record, user, ring, call);
+        {
+#if HALOMCCVR_DEV_DIAGNOSTICS
+            ReachNavNoteCaller(caller, ring != 0);
+#endif
+            (void)ReachNavRingBefore(record, user, ring, worldPitch, caller == feature.navpointReturn, call);
+        }
         bool completed = false;
         __try
         {
@@ -461,6 +500,7 @@ bool InstallReachNavProjection(uintptr_t base, size_t size, uint32_t generation)
     const uintptr_t ring = ReachHeadRelativeUnique(base, size, kProjectionRingPattern);
     const uintptr_t offscreen = ReachHeadRelativeUnique(base, size, kProjectionOffscreenPattern);
     const uintptr_t pixel = ReachHeadRelativeUnique(base, size, kProjectionPixelPattern);
+    const uintptr_t navpoint = ReachHeadRelativeUnique(base, size, kNavpointCallPattern);
     uint8_t headBytes[kProjectionHeadBytes]{}, cameraBytes[kProjectionCameraBytes]{};
     uint8_t ringBytes[kProjectionRingBytes]{}, offscreenBytes[kProjectionOffscreenBytes]{};
     uint8_t pixelBytes[kProjectionPixelBytes]{};
@@ -497,17 +537,27 @@ bool InstallReachNavProjection(uintptr_t base, size_t size, uint32_t generation)
             ReachHeadRelativeRead(base, size, base + static_cast<uintptr_t>(sites.floorRva), floor, sizeof(floor));
         bind = CheckProjectionConstants(constantsRead ? fraction : nullptr, pi, floor);
     }
+    if (bind == ProjectionBind::Bound)
+    {
+        // The one caller the stand-in acts for: its call must land on the function bound above, from another.
+        uint8_t navpointBytes[kNavpointCallBytes]{};
+        const bool navpointRead = ReachHeadRelativeRead(base, size, navpoint, navpointBytes, kNavpointCallBytes);
+        bind = DecodeNavpointCall(navpointRead ? navpointBytes : nullptr, static_cast<int64_t>(navpoint - base),
+                                  navpointRead ? ReachHeadRelativeFunctionRva(base, navpoint) : -1, sites);
+    }
     if (bind != ProjectionBind::Bound)
     {
         LOG("NAV MARKERS Reach: StockFallback (the off-screen ring): %s (head %s, camera %s, ring %s, off-screen %s, "
-            "pixel %s); off-screen markers keep the game's own ring",
+            "pixel %s, navpoint call %s); off-screen markers keep the game's own ring",
             ProjectionBindName(bind), head ? "matched" : "unmatched", camera ? "matched" : "unmatched",
-            ring ? "matched" : "unmatched", offscreen ? "matched" : "unmatched", pixel ? "matched" : "unmatched");
+            ring ? "matched" : "unmatched", offscreen ? "matched" : "unmatched", pixel ? "matched" : "unmatched",
+            navpoint ? "matched" : "unmatched");
         return false;
     }
     feature.base = base;
     feature.generation = generation;
     feature.sites = sites;
+    feature.navpointReturn = base + static_cast<uintptr_t>(sites.navpointReturnRva);
     feature.reportedFirstMove = false;
     for (auto& count : feature.ring)
         count.store(0, std::memory_order_relaxed);
@@ -530,6 +580,13 @@ bool InstallReachNavProjection(uintptr_t base, size_t size, uint32_t generation)
     feature.pointMaxDeg.store(-1.0f, std::memory_order_relaxed);
     feature.arrowMinDeg.store(1.0e9f, std::memory_order_relaxed);
     feature.arrowMaxDeg.store(-1.0f, std::memory_order_relaxed);
+    feature.callerFound = ReachHeadRelativeCallers(base, size, head, feature.callerReturns, kReachNavCallerCapacity);
+    feature.callerCount = feature.callerFound < kReachNavCallerCapacity ? feature.callerFound : kReachNavCallerCapacity;
+    for (int i = 0; i <= kReachNavCallerCapacity; ++i)
+    {
+        feature.callerRing[i].store(0, std::memory_order_relaxed);
+        feature.callerPlain[i].store(0, std::memory_order_relaxed);
+    }
 #endif
     const auto created = MH_CreateHook(reinterpret_cast<void*>(head),
                                        reinterpret_cast<void*>(&ReachNavProjectionDetour), &feature.original);
@@ -554,12 +611,14 @@ bool InstallReachNavProjection(uintptr_t base, size_t size, uint32_t generation)
         "its camera call returns to +0x%llX, the observer-camera hook's CHUD site, and lands on that hook's function "
         "+0x%llX; its ring reads the camera's vertical field of view at +0x%X; the record's point is at +0x%X, its "
         "pixel at +0x%X, its off-screen value at +0x%X; with the arrow switch on, a point outside %.2f of the field "
-        "both eyes see (30 deg at most) is brought onto that ring about the head for the one call; arrow "
+        "both eyes see (30 deg at most) is brought onto that ring about the head for the one call, for the "
+        "navpoint list's call alone (it returns to +0x%llX; every other caller keeps the game's own ring); arrow "
         "switch=%d, field-of-view switch=%d",
         static_cast<unsigned long long>(sites.headRva), static_cast<unsigned long long>(sites.converterReturnRva),
         static_cast<unsigned long long>(sites.converterRva), sites.cameraFovOffset, sites.recordPoint,
         sites.recordPixel, sites.recordOffscreen, g_config.nav_marker_ring,
-        g_config.nav_marker_arrow_in_view ? 1 : 0, g_config.nav_markers_on_target ? 1 : 0);
+        static_cast<unsigned long long>(sites.navpointReturnRva), g_config.nav_marker_arrow_in_view ? 1 : 0,
+        g_config.nav_markers_on_target ? 1 : 0);
     return true;
 }
 
@@ -619,6 +678,28 @@ void ReportReachNavProjection()
         feature.lastDistance.load(std::memory_order_relaxed), feature.ringYawDeg.load(std::memory_order_relaxed),
         feature.ringPitchDeg.load(std::memory_order_relaxed), length ? reasons : "none", restoreFaults,
         g_config.nav_marker_ring);
+    // Who called this window, by the game's call site: with a ring asked for, and without.
+    char callers[768];
+    int callersLength = 0;
+    callers[0] = 0;
+    for (int i = 0; i <= kReachNavCallerCapacity; ++i)
+    {
+        const uint32_t asked = feature.callerRing[i].exchange(0, std::memory_order_relaxed);
+        const uint32_t plain = feature.callerPlain[i].exchange(0, std::memory_order_relaxed);
+        if (!(asked + plain) || callersLength >= static_cast<int>(sizeof(callers)) - 112)
+            continue;
+        const bool known = i < feature.callerCount;
+        const uintptr_t returns = known ? feature.callerReturns[i] : 0;
+        const int wrote = _snprintf_s(
+            callers + callersLength, sizeof(callers) - callersLength, _TRUNCATE, "%s%s+0x%llX%s: ring %u, no ring %u",
+            callersLength ? "; " : "", known ? "returning to haloreach.dll" : "another caller ",
+            static_cast<unsigned long long>(known ? returns - feature.base : 0),
+            known && returns == feature.navpointReturn ? " (the navpoint list)" : "", asked, plain);
+        if (wrote > 0)
+            callersLength += wrote;
+    }
+    LOG("NAV MARKERS Reach (dev): the projection's callers this window (%d direct call sites in the image): %s",
+        feature.callerFound, callersLength ? callers : "none");
     using reach_nav_markers::Witness;
     uint32_t seen[kReachNavWitnessCount]{}, witnessed = 0;
     for (size_t i = 0; i < kReachNavWitnessCount; ++i)

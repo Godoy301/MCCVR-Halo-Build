@@ -2141,10 +2141,13 @@ void ConfigSave()
     fprintf(f, "# untested (log: NAV MARKERS <game>). Live in F1 > HUD. (default %d)\n",
         d.nav_markers_on_target ? 1 : 0);
     fprintf(f, "nav_markers_on_target = %d\n", g_config.nav_markers_on_target ? 1 : 0);
-    fprintf(f, "# The off-screen arrow stays in view. 1 = when an objective is out of view, its arrow is drawn\n");
-    fprintf(f, "# on a ring around where your head faces, at most 30 degrees out, in one place for both eyes.\n");
-    fprintf(f, "# 0 = the game's own ring. Needs nav_markers_on_target. Halo: Reach only; not tried in a\n");
-    fprintf(f, "# headset. Read when a level loads. (default %d)\n", d.nav_marker_arrow_in_view ? 1 : 0);
+    fprintf(f, "# Off-screen arrows stay in view. 1 = when an objective marker or a marked player is out of\n");
+    fprintf(f, "# view, its arrow is drawn on a ring around where your head faces, at most 30 degrees out, in\n");
+    fprintf(f, "# one place for both eyes. 0 = the game's own ring, which is far enough out that only one eye\n");
+    fprintf(f, "# sees the arrow. Does NOT touch (yet): name tags, fireteam markers, vehicle and lock-on\n");
+    fprintf(f, "# reticles, damage arrows. Needs nav_markers_on_target. Halo: Reach only. Run without a\n");
+    fprintf(f, "# headset with one objective marker; not yet seen in a headset. Takes effect at the next\n");
+    fprintf(f, "# level. (default %d)\n", d.nav_marker_arrow_in_view ? 1 : 0);
     fprintf(f, "nav_marker_arrow_in_view = %d\n\n", g_config.nav_marker_arrow_in_view ? 1 : 0);
     fprintf(f, "# Degrees per snap turn.\n");
     fprintf(f, "# (default %.0f, range 5 to 90)\n", d.turn_snap_deg);
@@ -2364,7 +2367,8 @@ void ConfigSave()
     fprintf(f, "# puts each marker on against the pixel the eye's own picture shows its target at (log: NAV\n");
     fprintf(f, "# MARKERS Reach (dev witness)). nav_marker_ring is the off-screen ring about your head, as a\n");
     fprintf(f, "# fraction of the field both eyes see (default 0.60, range 0 to 1; 0 = the game's own ring).\n");
-    fprintf(f, "# Both live. The ring acts only with nav_marker_arrow_in_view = 1.\n");
+    fprintf(f, "# Both live. The ring acts only with nav_marker_arrow_in_view = 1, and only for the navpoint\n");
+    fprintf(f, "# list's markers (log: NAV MARKERS Reach (dev): the projection's callers this window).\n");
     fprintf(f, "nav_marker_witness = %d\n", g_config.nav_marker_witness);
     fprintf(f, "nav_marker_ring = %.2f\n\n", g_config.nav_marker_ring);
 #endif

@@ -369,7 +369,8 @@ void PutI32(std::vector<uint8_t>& bytes, size_t at, int32_t value) { std::memcpy
 // The function as retail haloreach.dll lays it out (offsets from the module base measured 2026-10-07).
 constexpr int64_t kHeadRva = 0x2E1430, kCameraRva = 0x2E14FC, kPixelRva = 0x2E15BC, kRingRva = 0x2E172B,
                   kOffscreenRva = 0x2E1817, kConverterRva = 0x287DFC, kChudReturnRva = 0x2E1525,
-                  kFractionRva = 0xA8ACB4, kPiRva = 0xA8B22C, kFloorRva = 0xA8A9B8;
+                  kFractionRva = 0xA8ACB4, kPiRva = 0xA8B22C, kFloorRva = 0xA8A9B8,
+                  kNavpointCallRva = 0x2E3D39, kNavpointFunctionRva = 0x2E3BAC, kNavpointReturnRva = 0x2E3D56;
 struct Image
 {
     std::vector<uint8_t> head, camera, ring, offscreen, pixel;
@@ -530,6 +531,49 @@ void Sites()
               CheckProjectionConstants(retail.fraction, nullptr, retail.floor) == ProjectionBind::ConstantMismatch &&
               CheckProjectionConstants(retail.fraction, retail.pi, nullptr) == ProjectionBind::ConstantMismatch,
           "an unreadable constant is refused");
+    // THE NAVPOINT LIST'S CALL: the one caller the stand-in acts for.
+    Check(PatternBytes(kNavpointCallPattern).size() == kNavpointCallBytes && kNavpointReturn == kNavpointCallBytes &&
+              kNavpointCall + 5 == kNavpointReturn,
+          "the navpoint call's length is its pattern's, and the call is its last instruction");
+    std::vector<uint8_t> navpoint = PatternBytes(kNavpointCallPattern);
+    PutI32(navpoint, kNavpointCall + 1,
+           static_cast<int32_t>(kHeadRva - (kNavpointCallRva + static_cast<int64_t>(kNavpointReturn))));
+    ProjectionSites bound = sites;
+    Check(bound.navpointReturnRva == 0, "the projection's own sites say nothing about its callers");
+    Check(DecodeNavpointCall(navpoint.data(), kNavpointCallRva, kNavpointFunctionRva, bound) ==
+                  ProjectionBind::Bound &&
+              bound.navpointReturnRva == kNavpointReturnRva && bound.navpointReturnRva == 0x2E3D56,
+          "retail's navpoint call lands on the projection and returns to +0x2E3D56");
+    ProjectionSites refused = sites;
+    Check(DecodeNavpointCall(nullptr, kNavpointCallRva, kNavpointFunctionRva, refused) ==
+              ProjectionBind::NavpointCallMissing,
+          "a missing or ambiguous navpoint call is refused");
+    std::vector<uint8_t> wrongCall = navpoint;
+    wrongCall[kNavpointCall] = 0xE9;
+    Check(DecodeNavpointCall(wrongCall.data(), kNavpointCallRva, kNavpointFunctionRva, refused) ==
+              ProjectionBind::NavpointCallMismatch,
+          "a navpoint site that jumps instead of calling is refused");
+    for (int32_t off : {-5, -1, 1, 0x10})
+    {
+        wrongCall = navpoint;
+        PutI32(wrongCall, kNavpointCall + 1,
+               static_cast<int32_t>(kHeadRva + off - (kNavpointCallRva + static_cast<int64_t>(kNavpointReturn))));
+        Check(DecodeNavpointCall(wrongCall.data(), kNavpointCallRva, kNavpointFunctionRva, refused) ==
+                  ProjectionBind::NavpointCallMismatch,
+              "a navpoint call that lands anywhere but the projection's head is refused");
+    }
+    Check(DecodeNavpointCall(navpoint.data(), kNavpointCallRva + 1, kNavpointFunctionRva, refused) ==
+              ProjectionBind::NavpointCallMismatch,
+          "the same bytes one byte further on do not land on the projection: refused");
+    Check(DecodeNavpointCall(navpoint.data(), kNavpointCallRva, -1, refused) == ProjectionBind::NavpointCallMismatch &&
+              DecodeNavpointCall(navpoint.data(), kNavpointCallRva, kHeadRva, refused) ==
+                  ProjectionBind::NavpointCallMismatch,
+          "a navpoint call in no function, or inside the projection itself, is refused");
+    ProjectionSites unbound;
+    Check(DecodeNavpointCall(navpoint.data(), kNavpointCallRva, kNavpointFunctionRva, unbound) ==
+              ProjectionBind::NavpointCallMismatch,
+          "without a bound projection there is nothing for the call to land on");
+    Check(refused.navpointReturnRva == 0 && unbound.navpointReturnRva == 0, "a refusal fills nothing");
     for (int why = 0; why < static_cast<int>(ProjectionBind::Count); ++why)
         Check(ProjectionBindName(static_cast<ProjectionBind>(why))[0] != '?', "every refusal has a name for the log");
     Check(kRingFraction == 0.3f && kOffscreenFloor == 0.0001f, "the game's own ring numbers");
@@ -756,35 +800,48 @@ void RingVerdicts()
     RingMove untouched;
     untouched.offscreen = -7.0f;
     // Every reason to leave the game's own projection alone, in the order they are asked.
-    Check(RingPoint(false, true, 0, true, true, head, true, ring, outside, untouched) == Ring::SwitchOff, "switch off");
-    Check(RingPoint(true, false, 0, true, true, head, true, ring, outside, untouched) == Ring::NoEyeScope,
+    Check(RingPoint(false, true, 0, true, true, true, false, head, true, ring, outside, untouched) == Ring::SwitchOff, "switch off");
+    Check(RingPoint(true, false, 0, true, true, true, false, head, true, ring, outside, untouched) == Ring::NoEyeScope,
           "not inside an eye's render");
-    Check(RingPoint(true, true, 1, true, true, head, true, ring, outside, untouched) == Ring::NotLocalUser &&
-              RingPoint(true, true, -1, true, true, head, true, ring, outside, untouched) == Ring::NotLocalUser,
+    Check(RingPoint(true, true, 1, true, true, true, false, head, true, ring, outside, untouched) == Ring::NotLocalUser &&
+              RingPoint(true, true, -1, true, true, true, false, head, true, ring, outside, untouched) == Ring::NotLocalUser,
           "another user's HUD");
-    Check(RingPoint(true, true, 0, false, true, head, true, ring, outside, untouched) == Ring::NotValid,
+    Check(RingPoint(true, true, 0, false, true, true, false, head, true, ring, outside, untouched) == Ring::NotValid,
           "a record the game will not project");
-    Check(RingPoint(true, true, 0, true, false, head, true, ring, outside, untouched) == Ring::Plain,
+    Check(RingPoint(true, true, 0, true, false, true, false, head, true, ring, outside, untouched) == Ring::Plain &&
+              RingPoint(true, true, 0, true, false, false, true, head, true, ring, outside, untouched) == Ring::Plain,
           "a caller that asked for no ring gets its point as it is, however far off");
-    Check(RingPoint(true, true, 0, true, true, head, false, ring, outside, untouched) == Ring::NoField &&
-              RingPoint(true, true, 0, true, true, head, true, RingField{}, outside, untouched) == Ring::NoField,
+    // WHOSE CALL. Only the navpoint list's, and only with pitch in the camera's own frame.
+    Check(RingPoint(true, true, 0, true, true, false, false, head, true, ring, outside, untouched) ==
+              Ring::OtherCaller,
+          "a ring asked for by any other caller (an aim point, a name tag) is the game's own");
+    Check(RingPoint(true, true, 0, true, true, false, true, head, true, ring, outside, untouched) ==
+              Ring::OtherCaller,
+          "the damage indicators (another caller, world pitch) are the game's own, counted as another caller");
+    Check(RingPoint(true, true, 0, true, true, true, true, head, true, ring, outside, untouched) == Ring::WorldPitch,
+          "the navpoint list asking for a world-pitch ring would be the game's own too");
+    Check(RingPoint(true, true, 0, true, true, false, false, head, true, ring, inside, untouched) ==
+              Ring::OtherCaller,
+          "another caller is left alone whether its point is inside the head's ring or not");
+    Check(RingPoint(true, true, 0, true, true, true, false, head, false, ring, outside, untouched) == Ring::NoField &&
+              RingPoint(true, true, 0, true, true, true, false, head, true, RingField{}, outside, untouched) == Ring::NoField,
           "no eye field: the game's own ring");
     Camera broken = head;
     broken.up[0] = broken.forward[0];
     broken.up[1] = broken.forward[1];
     broken.up[2] = broken.forward[2];
-    Check(RingPoint(true, true, 0, true, true, broken, true, ring, outside, untouched) == Ring::NoHead,
+    Check(RingPoint(true, true, 0, true, true, true, false, broken, true, ring, outside, untouched) == Ring::NoHead,
           "a head whose up lies along its forward");
     broken = head;
     broken.position[1] = std::numeric_limits<float>::infinity();
-    Check(RingPoint(true, true, 0, true, true, broken, true, ring, outside, untouched) == Ring::NoHead,
+    Check(RingPoint(true, true, 0, true, true, true, false, broken, true, ring, outside, untouched) == Ring::NoHead,
           "a head that is not finite");
     const float notFinite[3]{outside[0], std::numeric_limits<float>::quiet_NaN(), outside[2]};
-    Check(RingPoint(true, true, 0, true, true, head, true, ring, notFinite, untouched) == Ring::NoHead,
+    Check(RingPoint(true, true, 0, true, true, true, false, head, true, ring, notFinite, untouched) == Ring::NoHead,
           "a point that is not finite");
-    Check(RingPoint(true, true, 0, true, true, head, true, ring, head.position, untouched) == Ring::AtHead,
+    Check(RingPoint(true, true, 0, true, true, true, false, head, true, ring, head.position, untouched) == Ring::AtHead,
           "a point at the head has no direction");
-    Check(RingPoint(true, true, 0, true, true, head, true, ring, inside, untouched) == Ring::OnTarget,
+    Check(RingPoint(true, true, 0, true, true, true, false, head, true, ring, inside, untouched) == Ring::OnTarget,
           "a point inside the ring is drawn on itself");
     Check(untouched.offscreen == -7.0f && untouched.point[0] == 0.0f, "nothing but a move fills the stand-in");
     for (int what = 0; what < static_cast<int>(Ring::Count); ++what)
@@ -792,10 +849,10 @@ void RingVerdicts()
     // On the ring's edge, just inside and just outside.
     float edge[3];
     PointAt(head, 23.9f, 0.0f, 10.0f, edge);
-    Check(RingPoint(true, true, 0, true, true, head, true, ring, edge, untouched) == Ring::OnTarget, "just inside");
+    Check(RingPoint(true, true, 0, true, true, true, false, head, true, ring, edge, untouched) == Ring::OnTarget, "just inside");
     PointAt(head, 24.01f, 0.0f, 10.0f, edge);
     RingMove move;
-    Check(RingPoint(true, true, 0, true, true, head, true, ring, edge, move) == Ring::Moved, "just outside");
+    Check(RingPoint(true, true, 0, true, true, true, false, head, true, ring, edge, move) == Ring::Moved, "just outside");
     Check(move.offscreen == kOffscreenFloor, "just outside: the game's own floor for the off-screen value");
 }
 
@@ -829,7 +886,7 @@ void RingGeometry()
                                                             headLeft[i] * std::cos(p) * std::sin(y) +
                                                             head.up[i] * std::sin(p));
                                 RingMove move;
-                                const Ring what = RingPoint(true, true, 0, true, true, head, true, ring, target, move);
+                                const Ring what = RingPoint(true, true, 0, true, true, true, false, head, true, ring, target, move);
                                 const float ratio = RingRatio(ring, y, p);
                                 if (ratio <= 1.0f)
                                 {
