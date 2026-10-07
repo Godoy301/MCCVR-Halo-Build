@@ -32,6 +32,13 @@ uint64_t Sight_NowUs() { static uint64_t now=1000000; return now+=1000; }
 float HaloCEControls_PhysicalCrouchCorrection(uint32_t,uint64_t,float,bool) noexcept { return 0; }
 // No seat in this fixture: the tracking frame keeps the native camera heading.
 bool HaloCEControls_SeatHeading(uint32_t,halo_ce::Vec3&) noexcept { return false; }
+// The motion tracker's lane (haloce_head_relative.cpp) is not linked here: the gameplay publication hands it
+// the frame's head, recorded so the test can see that it does.
+static unsigned headPublications{};
+static bool headPublicationAnniversary{};
+static halo_ce::RenderContext headPublication{};
+void HaloCEHeadRelative_PublishHead(const halo_ce::RenderContext& context,bool anniversary) noexcept
+{ ++headPublications;headPublication=context;headPublicationAnniversary=anniversary; }
 bool HaloCEHud_HasCrosshairScope() noexcept { return naturalHudFrame; }
 roomscale_admission::Verdict Game_RoomscaleCameraVerdict(GameTitle) {
     roomscale_admission::Verdict verdict{};
@@ -1766,8 +1773,10 @@ int main()
         gameplayCamera.Publish({}); RenderContext received{};
         check(!HaloCE_GetGameplayContext(received),"Anniversary controls require an actual stock-camera publication");
         gameplayBridgeVerified=false;
+        const unsigned headPublicationsBefore=headPublications;
         PublishAnniversaryGameplayContext(saber,tracking,frozen,revision,Game_GetWorldScale(),true);
         check(!HaloCE_GetGameplayContext(received),"unverified native bridge stays stock for controls only");
+        check(headPublications==headPublicationsBefore,"no gameplay publication, no head for the motion tracker");
         gameplayBridgeVerified=true;
         {
             // Exercise the actual reference preparation used before Anniversary
@@ -1803,6 +1812,11 @@ int main()
             std::fabs(received.camera.position.y-20)<.0001f&&std::fabs(received.camera.position.z-30)<.0001f&&
             received.tracking.serial==140&&received.referenceRevision==revision,
             "Anniversary stock-camera receipt reaches nonrender controls without tracked-eye offsets");
+        check(headPublications==headPublicationsBefore+1&&headPublicationAnniversary&&
+            std::fabs(headPublication.camera.position.x-10)<.0001f&&headPublication.tracking.serial==140&&
+            headPublication.referenceRevision==revision&&headPublication.cameraStampUs!=0&&
+            headPublication.cameraStampUs==received.cameraStampUs,
+            "the same publication hands the motion tracker's lane this frame's stock centre, tracking sample and sight stamp, marked Anniversary");
         tracking.serial=141; tracking.headPosition.x=.7f; HaloCE_PublishTracking(tracking,true);
         check(HaloCE_GetGameplayContext(received)&&received.tracking.serial==141&&
             received.tracking.headPosition.x==.7f&&std::fabs(received.camera.position.x-10)<.0001f,

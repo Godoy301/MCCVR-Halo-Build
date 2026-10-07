@@ -317,6 +317,7 @@ add_library(halo3xr SHARED
     src/dll/haloce_controls.cpp
     src/dll/haloce_comfort.cpp
     src/dll/haloce_orientation.cpp
+    src/dll/haloce_head_relative.cpp
     src/dll/haloce_unit_control.cpp
     src/dll/haloce_network_input.cpp
     src/dll/halo2_anniversary_stereo.cpp

@@ -22,6 +22,13 @@ uint64_t Sight_NowUs() { static uint64_t now=1000000; return now+=1000; }
 float HaloCEControls_PhysicalCrouchCorrection(uint32_t,uint64_t,float,bool) noexcept { return 0; }
 // No seat in this fixture: the tracking frame keeps the native camera heading.
 bool HaloCEControls_SeatHeading(uint32_t,halo_ce::Vec3&) noexcept { return false; }
+// The motion tracker's lane (haloce_head_relative.cpp) is not linked here: the gameplay publication hands it
+// the frame's head, counted so the Classic publication is seen to reach it.
+static unsigned headPublications{};
+static bool headPublicationAnniversary{};
+static halo_ce::RenderContext headPublication{};
+void HaloCEHeadRelative_PublishHead(const halo_ce::RenderContext& context,bool anniversary) noexcept
+{ ++headPublications;headPublication=context;headPublicationAnniversary=anniversary; }
 bool HaloCEHud_HasCrosshairScope() noexcept { return false; }
 roomscale_admission::Verdict Game_RoomscaleCameraVerdict(GameTitle) { return roomscale_admission::Verdict{}; }
 void Roomscale_Camera(GameTitle,const roomscale_admission::Verdict&,const float*,const float*,const float*,const float*,float*,float) noexcept {}
@@ -527,6 +534,11 @@ int main()
     check(HaloCE_GetGameplayContext(gameplay)&&
         std::memcmp(&gameplay.camera,&stockWindow.render,sizeof(Camera))==0,
         "gameplay-thread context receives the exact saved stock center after the render scope exits");
+    check(headPublications&&!headPublicationAnniversary&&
+        std::memcmp(&headPublication.camera,&stockWindow.render,sizeof(Camera))==0&&
+        headPublication.cameraStampUs!=0&&headPublication.cameraStampUs==gameplay.cameraStampUs&&
+        headPublication.tracking.generation==gameplay.tracking.generation,
+        "the Classic publication hands the motion tracker's lane the same stock center and sight stamp, marked Classic");
     const auto savedGameplay=gameplay;
     std::memset(mapped.data()+0x29af2c4,0x7f,sizeof(Camera));
     check(HaloCE_GetGameplayContext(gameplay)&&
