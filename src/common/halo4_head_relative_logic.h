@@ -85,9 +85,13 @@ inline constexpr const char* kTrackerBuilderHeadPattern =
     "4C 8B 8C 24 D8 00 00 00 F2 0F 11 01 F3 0F 10 84 24 F0 00 00 00 89 41 08 44 89 B1 3C 0A 00 00 "
     "F3 44 0F 11 41 0C";
 inline constexpr size_t kBuilderHeadBytes = 174;
-// In the builder's head: where its frame and its read of the heading are.
+// ADDR-HYGIENE: resolved + structural. In the builder's head: where its frame and its read of the heading are
+// (positions inside the matched pattern). kBuilderPushedBytes is the five pushes the pattern's own bytes fix
+// (push rdi, r12, r13, r14, r15: no wildcard among them), so it cannot differ on an image the pattern matches.
+// kHeadingArgument is a claim, not a measurement: DecodeTrackerSites refuses unless the site's write and the
+// builder's read both land on that argument's slot.
 inline constexpr size_t kBuilderFrameSub = 31, kBuilderHeadingDisp = 90;
-inline constexpr uint32_t kBuilderPushedBytes = 0x28;   // push rdi, r12, r13, r14, r15
+inline constexpr uint32_t kBuilderPushedBytes = 0x28;
 inline constexpr uint32_t kHeadingArgument = 11;        // counted from 1
 
 inline uint32_t ReadU32(const uint8_t* at)
@@ -251,6 +255,7 @@ inline float TrackerPointBearing(const float point[2]) { return std::atan2(-poin
 // the tolerance and the disagreement bound counts for nothing either way. Once proven, kProofWithdrawRun
 // disagreements in a row withdraw it. A pass also settles the SIGN: the argument is then the aim's yaw in the
 // convention the drive writes, and the head's yaw is measured the same way, so the two are like for like.
+// (These five are thresholds of the proof, not addresses or offsets: nothing here locates anything in the game.)
 inline constexpr uint32_t kProofSamples = 30;
 inline constexpr uint32_t kProofWithdrawRun = 60;
 inline constexpr float kProofToleranceRad = 2.0f * head_relative::kDegToRad;
