@@ -2906,8 +2906,9 @@ void ConfigSave()
               "# physical crouch. Leave at 0 in a headset. (default 0)\n");
     fprintf(f,"test_accept_untracked_head = %d\n",g_config.test_accept_untracked_head?1:0);
 #endif
-    fprintf(f,"# Halo Reach on foot: the most the view may drop below the character's own eye (game metres),\n"
-              "# so a deep physical duck cannot put it inside his body. Rides his crouch. -1 = off. (default 0.10)\n");
+    fprintf(f,"# On foot in Reach, Halo 3, ODST, Halo 4 and Halo 2: the most the view may drop below the\n"
+              "# character's own eye (game metres), so a deep physical duck cannot put it inside his body.\n"
+              "# Rides his crouch. -1 = off. (default 0.10)\n");
     fprintf(f,"head_leash_below_eye_m = %.3f\n",g_config.head_leash_below_eye_m);
     fprintf(f,"# With the physical crouch on: if the view was centred while you were crouched or bent over before\n");
     fprintf(f,"# the mod knew your standing height (the first minute of a session), you stood too tall in the game\n");

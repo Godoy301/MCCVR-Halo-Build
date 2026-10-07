@@ -460,7 +460,7 @@ struct Config
     // way, so without this the headless lane cannot exercise either feature. Never enable it in a
     // headset: an untracked (inertial) head is precisely what both features must ignore.
     bool test_accept_untracked_head = false;
-    // THE LEASH BELOW THE CHARACTER'S EYE (Halo: Campaign Evolved's heightleash, Reach on foot): the
+    // THE LEASH BELOW THE CHARACTER'S EYE (Halo: Campaign Evolved's heightleash; on foot in Reach, Halo 3, ODST, Halo 4 and Halo 2): the
     // most the view may drop below the game camera -- the character's own eye -- so a deep physical
     // duck cannot take it inside his chest and legs. Game-space metres. It rides the camera: when the
     // character crouches his eye drops, and the limit drops with him. The hands and the reticle ray are
