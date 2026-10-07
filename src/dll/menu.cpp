@@ -9,6 +9,7 @@
 #include <imgui_impl_win32.h>
 #include <imgui_impl_dx11.h>
 #include "menu.h"
+#include "../common/hotkey_logic.h"
 #include "../common/flashlight_input.h"
 #include "native_menu_pointer.h"
 #include "native_vehicle_first_person.h"
@@ -415,7 +416,24 @@ namespace
         const bool sysKeyDown = msg == WM_SYSKEYDOWN && !(lp & (1 << 30));
         if (sysKeyDown && wp == VK_F4)
             LOG("Alt+F4 received; passing it to the game (close request)");
-        if (keyDown || (sysKeyDown && wp == VK_F10))
+        // A mod hotkey is a BARE key (hotkey_logic.h). One that arrives with Ctrl, Alt or a Windows key held is
+        // another tool's chord and goes on to the game untouched: Ctrl+F9, a replay-capture hotkey, once added two
+        // degrees of pitch trim per saved clip (2026-10-07).
+        hotkey::Modifiers mods;
+        if (msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN)
+        {
+            mods.ctrl = GetKeyState(VK_CONTROL) < 0;
+            mods.alt = GetKeyState(VK_MENU) < 0 || (msg == WM_SYSKEYDOWN && (lp & (1 << 29)) != 0);
+            mods.win = GetKeyState(VK_LWIN) < 0 || GetKeyState(VK_RWIN) < 0;
+            const bool repeat = (lp & (1 << 30)) != 0;
+            if (hotkey::IsForeignChord(msg == WM_KEYDOWN, msg == WM_SYSKEYDOWN, repeat,
+                                       static_cast<unsigned>(wp), mods))
+                LOG("hotkey ignored: key 0x%02X arrived with %s%s%sheld, so it is another tool's chord; passed on "
+                    "to the game", static_cast<unsigned>(wp), mods.ctrl ? "Ctrl " : "", mods.alt ? "Alt " : "",
+                    mods.win ? "Win " : "");
+        }
+        if (hotkey::IsHotkeyPress(msg == WM_KEYDOWN, msg == WM_SYSKEYDOWN, (lp & (1 << 30)) != 0,
+                                  static_cast<unsigned>(wp), mods))
         {
             switch (wp)
             {
