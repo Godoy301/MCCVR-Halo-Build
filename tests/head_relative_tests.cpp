@@ -4,6 +4,7 @@
 #include "head_relative_logic.h"
 #include <cmath>
 #include <cstdio>
+#include <initializer_list>
 #include <limits>
 
 namespace
