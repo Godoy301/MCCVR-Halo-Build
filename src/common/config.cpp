@@ -1014,6 +1014,7 @@ void ConfigLoad(const wchar_t* path)
         if(!strcmp(key,"test_accept_untracked_head")) {g_config.test_accept_untracked_head=atoi(val)!=0;continue;}
 #endif
         if(!strcmp(key,"head_leash_below_eye_m")) {g_config.head_leash_below_eye_m=static_cast<float>(atof(val));continue;}
+        if(!strcmp(key,"view_follows_standing_height")) {g_config.view_follows_standing_height=atoi(val)!=0;continue;}
         if(!strcmp(key,"physical_crouch_depth_m"))
         {
             ParseFloatSetting(key,val,g_config.physical_crouch_depth_m);
@@ -2908,6 +2909,12 @@ void ConfigSave()
     fprintf(f,"# Halo Reach on foot: the most the view may drop below the character's own eye (game metres),\n"
               "# so a deep physical duck cannot put it inside his body. Rides his crouch. -1 = off. (default 0.10)\n");
     fprintf(f,"head_leash_below_eye_m = %.3f\n",g_config.head_leash_below_eye_m);
+    fprintf(f,"# With the physical crouch on: if the view was centred while you were crouched or bent over before\n");
+    fprintf(f,"# the mod knew your standing height (the first minute of a session), you stood too tall in the game\n");
+    fprintf(f,"# until the next recenter. 1 = once your standing height is known the view settles to it by itself\n");
+    fprintf(f,"# (Halo 3, ODST, Reach, Halo 4; on foot). 0 = as before. No menu control (log: VIEW HEIGHT).\n");
+    fprintf(f,"# (default %d)\n",d.view_follows_standing_height?1:0);
+    fprintf(f,"view_follows_standing_height = %d\n",g_config.view_follows_standing_height?1:0);
     fprintf(f,"# Arm-swing locomotion: speed is a fraction of native maximum movement.\n");
     fprintf(f,"physical_running = %d\nphysical_running_speed = %.3f\nphysical_running_sensitivity = %.3f\n",
         g_config.physical_running?1:0,g_config.physical_running_speed,g_config.physical_running_sensitivity);
