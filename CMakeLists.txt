@@ -907,6 +907,11 @@ if(BUILD_TESTING)
     add_executable(halomccvr_head_relative_tests tests/head_relative_tests.cpp)
     target_include_directories(halomccvr_head_relative_tests PRIVATE src/common)
     add_test(NAME halomccvr_head_relative_tests COMMAND halomccvr_head_relative_tests)
+    # The F8/F9 pitch trim (src/common/pitch_trim_logic.h): applied with stereo off, zero in stereo VR, and a key
+    # press in stereo changes nothing (two stray F9 presses once put the reticle 4 degrees above every shot).
+    add_executable(halomccvr_pitch_trim_tests tests/pitch_trim_tests.cpp)
+    target_include_directories(halomccvr_pitch_trim_tests PRIVATE src/common)
+    add_test(NAME halomccvr_pitch_trim_tests COMMAND halomccvr_pitch_trim_tests)
     # Head-relative motion tracker, Halo 3 / ODST (src/common/halo3_head_relative_logic.h): the game's placement
     # arithmetic as read from halo3.dll, the head's heading substituted into it, every refusal, the signatures'
     # decode offsets, and the two headset checks as geometry.
