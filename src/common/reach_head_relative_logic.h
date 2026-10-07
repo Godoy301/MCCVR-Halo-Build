@@ -1,4 +1,5 @@
-// REACH: THE MOTION TRACKER FOLLOWS THE HEAD, the pure half (no game, engine or OpenXR includes).
+// REACH: THE MOTION TRACKER AND THE SOUND LISTENER FOLLOW THE HEAD, the pure half (no game, engine or OpenXR
+// includes). The tracker is first; the listener starts at "THE SOUND LISTENER FOLLOWS THE HEAD" below.
 //
 // WHAT REACH DOES (HREK first, then matched in retail; docs/REACH-HEAD-RELATIVE-2026-10-06.md).
 // HREK reach_tag_test.exe, chud_motion_sensor.cpp: the per-user tracker object's update (+0x954DE0) asks
@@ -261,5 +262,358 @@ inline head_relative::Use TrackerField(const TrackerRequest& request, const head
     if (headYawOut)
         *headYawOut = std::atan2(headHeading[1], headHeading[0]);
     return Use::Ok;
+}
+
+// ====================================================================================================================
+// THE SOUND LISTENER FOLLOWS THE HEAD
+//
+// WHAT REACH DOES. HREK reach_tag_test.exe, sound_manager.cpp: the listener update (+0xC71E0) walks the four output
+// users; for each it takes observer.cpp's camera (`observer_try_and_get_camera` +0x1344B0, then
+// `observer_get_camera` +0x132C30: position +0x00, forward +0x28, up +0x34) and builds the user's listener from
+// it: a matrix from that forward and up with that position, the velocity turned into the matrix's space, the
+// location, and `valid`. (In a seat seen from outside it blends the camera with the occupant's head by the seat's
+// "listener interpolation factor"; with no unit it takes the camera as it is.) The listeners are an array in the
+// sound manager's globals, each delimited by the signatures 'lshd' and 'lsft' the game itself asserts on.
+// Retail haloreach.dll has it at +0x28820 (the listeners at globals + 0xBC, 0x54 apart).
+//
+// The observer camera is the one this mod's aim steering points down the controller ray, while the world renders
+// from a private head copy (src/common/reach_render_logic.h, kReachRenderCameraFromObserverRva). So the stock
+// listener's ears turn with the GUN.
+//
+// THE SEAM: a detour on the listener update that lets the game build every listener and then, for output user 0
+// only, replaces the three rows of its matrix with the head's forward, left and up, and re-expresses its stored
+// velocity in that frame. The position, the location and every other listener are left as the game wrote them.
+// Nothing else is read or written: not the observer camera, not the aim, nothing replicated.
+//
+// WHICH BUILD THE MIX USES. Retail calls the update from four places, and each one rebuilds all four listeners:
+//   +0x25DA7  the sound manager's own update (+0x25C24; HREK +0xCE5BC, the only caller that passes the flag).
+//             The same function then places every playing sound against the listeners it has just built, so
+//             THIS is the build the mix is made from.
+//   +0xBEC42, +0x576FB, +0xBD216: flag clear (HREK reaches the update there through two `xor ecx, ecx / jmp`
+//             wrappers, +0xD00C0 and +0xCD550). By the shape of the code around each call (not proven one by
+//             one): game_sound.cpp's timed update (+0xBEC28; HREK +0x1F4881), game.cpp's tick after the
+//             players' update (+0x575AC; HREK +0x11E8FC, beside the asserts of game.cpp lines 1933-1934) and
+//             a game_sound.cpp music-state function (+0xBD008; HREK +0x1F3642). Game-side sound code that
+//             reads a listener's validity, location and position follows.
+// All four go through the hooked function, so every build is turned before its caller reads a row of it, and
+// which one the mix uses cannot change the result. NOT established statically: the thread each call runs on
+// (the tick's and the sound manager's may differ), their order within a frame, and whether anything reads the
+// ROWS between a flag-clear build and the sound manager's own. Dev builds count the builds by call site and
+// thread, so the first run answers it.
+//
+// ADDR-HYGIENE: resolved + guarded. No address and no offset ships: the update's head (the hook), the store
+// site inside it and the game's own signature writer are each matched uniquely; the globals pointer is read from
+// two instructions that must agree; the stride from two functions that must agree; the matrix, velocity and valid
+// offsets are read from the store instructions and must sit where the signature-delimited record puts them
+// (matrix = header + 8, velocity = matrix + 0x34, footer = velocity + 12, valid = footer + 4). The rows inside
+// the matrix (forward +4, left +0x10, up +0x1C, position +0x28) are structural: the store site's two callees
+// must carry the builder's and the transform's bytes, and at EVERY use the live record must carry both
+// signatures, scale 1, unit perpendicular rows and left = up x forward (ValueAgreement) before a byte is written.
+// ====================================================================================================================
+
+// The update's head (retail +0x28820): prologue / security cookie / mov [rsp+0x24], cl / call / xor r12d, r12d /
+// test al, al / je / call / mov r9d, [rip + TLS index] / or r11, -1 / gs:[0x58] / mov edi, r12d /
+// mov r15, [rip + GLOBALS] / mov r13d, r12d / .. / imul rsi, r13, STRIDE
+inline constexpr const char* kListenerUpdateHeadPattern =
+    "48 8B C4 48 89 58 08 48 89 70 10 48 89 78 18 55 41 54 41 55 41 56 41 57 48 8D A8 98 FE FF FF "
+    "48 81 EC 40 02 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 85 30 01 00 00 88 4C 24 24 E8 ?? ?? ?? ?? "
+    "45 33 E4 84 C0 0F 84 ?? ?? ?? ?? E8 ?? ?? ?? ?? 44 8B 0D ?? ?? ?? ?? 49 83 CB FF "
+    "65 4C 8B 14 25 58 00 00 00 41 8B FC 4C 8B 3D ?? ?? ?? ?? 45 8B EC 89 44 24 2C 44 89 64 24 28 49 6B F5 ??";
+inline constexpr size_t kListenerHeadBytes = 126;
+inline constexpr size_t kListenerHeadGlobalsDisp = 106, kListenerHeadGlobalsNext = 110, kListenerHeadStride = 125;
+// The store (retail +0x28C79): mov byte [rsi + r15 + VALID], 1 / .. / lea rcx, [r15 + MATRIX] /
+// mov [rsi + r15 + VALID + 1], al / add rcx, rsi / lea r8, [up] / lea rdx, [forward] / call BUILDER /
+// movsd xmm0, [position] / lea r8, [r15 + VELOCITY] / .. / lea rdx, [velocity] / movsd [rcx + 0x28], xmm0 /
+// add r8, rsi / mov [rcx + 0x30], eax / call TRANSFORM / gs:[0x58] / or r11, -1 /
+// mov [rsi + r15 + LOCATION], bx / mov r15, [rip + GLOBALS]
+inline constexpr const char* kListenerStoreSitePattern =
+    "42 C6 84 3E ?? ?? ?? ?? 01 7F ?? 45 33 C9 48 8D 54 24 ?? 45 33 C0 48 8D 4D ?? E8 ?? ?? ?? ?? 84 C0 B0 01 "
+    "75 03 41 8A C4 49 8D 8F ?? ?? ?? ?? 42 88 84 3E ?? ?? ?? ?? 48 03 CE 4C 8D 44 24 ?? 48 8D 54 24 ?? "
+    "E8 ?? ?? ?? ?? F2 0F 10 45 ?? 4D 8D 87 ?? ?? ?? ?? 8B 45 ?? 48 8D 54 24 ?? F2 0F 11 41 28 4C 03 C6 "
+    "89 41 30 E8 ?? ?? ?? ?? 65 4C 8B 14 25 58 00 00 00 49 83 CB FF 66 42 89 9C 3E ?? ?? ?? ?? "
+    "4C 8B 3D ?? ?? ?? ??";
+inline constexpr size_t kListenerStoreBytes = 138;
+inline constexpr size_t kStoreValidDisp = 4, kStoreMatrixDisp = 43, kStoreValidNextDisp = 51, kStoreCallBuilder = 68,
+                        kStoreVelocityDisp = 81, kStoreCallTransform = 104, kStoreLocationDisp = 127,
+                        kStoreGlobalsDisp = 134, kStoreGlobalsNext = 138;
+// The game's own writer of the two signatures, in the sound manager's initialisation (retail +0x24E94):
+// imul rax, rcx, STRIDE / inc r8d / mov edx, r15d / mov dword [rax + rbx + HEADER], 'lshd' /
+// mov dword [rax + rbx + FOOTER], 'lsft'
+inline constexpr const char* kListenerSignatureWriterPattern =
+    "48 6B C1 ?? 41 FF C0 41 8B D7 C7 84 18 ?? ?? ?? ?? 64 68 73 6C C7 84 18 ?? ?? ?? ?? 74 66 73 6C";
+inline constexpr size_t kListenerWriterBytes = 32;
+inline constexpr size_t kWriterStride = 3, kWriterHeaderDisp = 13, kWriterFooterDisp = 24;
+inline constexpr uint32_t kListenerHeaderSignature = 0x6C736864, kListenerFooterSignature = 0x6C736674;
+// The builder the store calls (retail +0xA7BEC, 0xA2 bytes, no relocation in it): matrix(forward, up) --
+// scale = 1 at +0, forward at +4, left = up x forward at +0x10, up at +0x1C, position zeroed at +0x28.
+inline constexpr size_t kMatrixBuilderBytes = 0xA2, kMatrixBuilderTailAt = 0x83;
+inline constexpr uint8_t kMatrixBuilderHead[25]{0x48, 0x83, 0xEC, 0x28, 0xC7, 0x01, 0x00, 0x00, 0x80, 0x3F, 0xF2, 0x0F, 0x10,
+                                               0x02, 0xF2, 0x0F, 0x11, 0x41, 0x04, 0x8B, 0x42, 0x08, 0x89, 0x41, 0x0C};
+inline constexpr uint8_t kMatrixBuilderTail[31]{0xF2, 0x41, 0x0F, 0x10, 0x00, 0xF2, 0x0F, 0x11, 0x41, 0x1C, 0x41,
+                                               0x8B, 0x40, 0x08, 0x89, 0x41, 0x24, 0x33, 0xC0, 0x48, 0x89, 0x41,
+                                               0x28, 0x89, 0x41, 0x30, 0x48, 0x83, 0xC4, 0x28, 0xC3};
+// The transform the store calls for the velocity (retail +0xA8F7C, 0xCF bytes): out = (v . forward, v . left,
+// v . up), the three dot products against the rows at +4, +0x10 and +0x1C. Its last 0x74 bytes are those dots.
+inline constexpr size_t kVelocityTransformBytes = 0xCF, kVelocityTransformDotsAt = 0x5B;
+inline constexpr uint8_t kVelocityTransformDots[0x74]{
+    0x0F, 0x28, 0xD4, 0x0F, 0x28, 0xCE, 0xF3, 0x0F, 0x59, 0x49, 0x0C, 0x0F, 0x28, 0xDC, 0x49, 0x8B, 0xC0, 0xF3, 0x0F, 0x59,
+    0x51, 0x08, 0x0F, 0x28, 0xC5, 0xF3, 0x0F, 0x59, 0x41, 0x04, 0xF3, 0x0F, 0x58, 0xD0, 0x0F, 0x28, 0xC5, 0xF3, 0x0F, 0x58,
+    0xD1, 0x0F, 0x28, 0xCE, 0xF3, 0x41, 0x0F, 0x11, 0x10, 0xF3, 0x0F, 0x59, 0x59, 0x14, 0xF3, 0x0F, 0x59, 0x41, 0x10, 0xF3,
+    0x0F, 0x59, 0x49, 0x18, 0xF3, 0x0F, 0x58, 0xD8, 0xF3, 0x0F, 0x58, 0xD9, 0xF3, 0x41, 0x0F, 0x11, 0x58, 0x04, 0xF3, 0x0F,
+    0x59, 0x61, 0x20, 0xF3, 0x0F, 0x59, 0x71, 0x24, 0xF3, 0x0F, 0x59, 0x69, 0x1C, 0xF3, 0x0F, 0x58, 0xE5, 0xF3, 0x0F, 0x58,
+    0xE6, 0x0F, 0x28, 0x34, 0x24, 0xF3, 0x41, 0x0F, 0x11, 0x60, 0x08, 0x48, 0x83, 0xC4, 0x18, 0xC3};
+// Inside the matrix (structural; see the header comment).
+inline constexpr size_t kMatrixScale = 0x00, kMatrixForward = 0x04, kMatrixLeft = 0x10, kMatrixUp = 0x1C,
+                        kMatrixPosition = 0x28, kMatrixBytes = 0x34;
+
+struct ListenerSites
+{
+    uint32_t stride = 0;          // one listener (retail and HREK 0x54)
+    uint32_t headerOffset = 0;    // listener 0's 'lshd' in the sound manager's globals (retail and HREK 0xBC)
+    uint32_t matrixOffset = 0;    // its matrix (0xC4)
+    uint32_t velocityOffset = 0;  // its velocity in the matrix's space (0xF8)
+    uint32_t footerOffset = 0;    // its 'lsft' (0x104)
+    uint32_t validOffset = 0;     // "a listener was built this update" (0x108)
+    int64_t globalsRva = 0;       // where the image keeps the pointer to the sound manager's globals
+    int64_t builderRva = 0;       // matrix(forward, up)
+    int64_t transformRva = 0;     // the velocity into the matrix's space
+};
+enum class ListenerBind : uint8_t
+{
+    Bound = 0,
+    UpdateHeadMissing,   // the listener update's head: no match, or more than one
+    StoreSiteMissing,    // its store of a listener: no match, or more than one
+    StoreOutsideUpdate,  // the store is not inside the function whose head matched
+    WriterMissing,       // the game's writer of the listener signatures: no match, or more than one
+    GlobalsMismatch,     // the head and the store load the globals from different places
+    StrideMismatch,      // the update and the signature writer disagree on a listener's size
+    RecordMismatch,      // the stored fields do not sit where the signature-delimited record puts them
+    Implausible,         // an offset out of range or misaligned
+    HelperMismatch,      // the store's callees are not the matrix builder and the transform
+    Count
+};
+inline const char* ListenerBindName(ListenerBind why)
+{
+    switch (why)
+    {
+    case ListenerBind::Bound: return "bound";
+    case ListenerBind::UpdateHeadMissing: return "the listener update's head is missing or ambiguous";
+    case ListenerBind::StoreSiteMissing: return "the listener store is missing or ambiguous";
+    case ListenerBind::StoreOutsideUpdate: return "the listener store is not inside the matched update";
+    case ListenerBind::WriterMissing: return "the game's listener-signature writer is missing or ambiguous";
+    case ListenerBind::GlobalsMismatch: return "the update loads the sound globals from two different places";
+    case ListenerBind::StrideMismatch: return "the update and the signature writer disagree on a listener's size";
+    case ListenerBind::RecordMismatch: return "the stored fields are not where the listener record puts them";
+    case ListenerBind::Implausible: return "the decoded listener offsets are implausible";
+    case ListenerBind::HelperMismatch: return "the store's callees are not the matrix builder and the transform";
+    default: return "?";
+    }
+}
+// `head`, `store`, `writer`: the unique matches (null = missing or ambiguous); `storeFunctionRva`: the beginning
+// of the function `store` lies in, from the image's own function table.
+inline ListenerBind DecodeListenerSites(const uint8_t* head, int64_t headRva, const uint8_t* store, int64_t storeRva,
+                                        int64_t storeFunctionRva, const uint8_t* writer, ListenerSites& out)
+{
+    if (!head)
+        return ListenerBind::UpdateHeadMissing;
+    if (!store)
+        return ListenerBind::StoreSiteMissing;
+    if (storeFunctionRva != headRva || storeRva <= headRva)
+        return ListenerBind::StoreOutsideUpdate;
+    if (!writer)
+        return ListenerBind::WriterMissing;
+    const int64_t globals = RipRva(head, kListenerHeadGlobalsDisp, kListenerHeadGlobalsNext, headRva);
+    if (globals <= 0 || globals != RipRva(store, kStoreGlobalsDisp, kStoreGlobalsNext, storeRva))
+        return ListenerBind::GlobalsMismatch;
+    const uint32_t stride = head[kListenerHeadStride];
+    if (!stride || stride != writer[kWriterStride])
+        return ListenerBind::StrideMismatch;
+    const uint32_t header = ReadU32(writer + kWriterHeaderDisp), footer = ReadU32(writer + kWriterFooterDisp);
+    const uint32_t valid = ReadU32(store + kStoreValidDisp), matrix = ReadU32(store + kStoreMatrixDisp);
+    const uint32_t velocity = ReadU32(store + kStoreVelocityDisp), location = ReadU32(store + kStoreLocationDisp);
+    if (!header || header >= 0x10000 || (header & 3) || stride < 0x50 || stride > 0x200 || (stride & 3) ||
+        footer <= header || footer >= header + stride)
+        return ListenerBind::Implausible;
+    if (matrix != header + 8 || velocity != matrix + kMatrixBytes || footer != velocity + 12 ||
+        valid != footer + 4 || ReadU32(store + kStoreValidNextDisp) != valid + 1 || location != header + 4 ||
+        valid + 2 > header + stride)
+        return ListenerBind::RecordMismatch;
+    out.stride = stride;
+    out.headerOffset = header;
+    out.matrixOffset = matrix;
+    out.velocityOffset = velocity;
+    out.footerOffset = footer;
+    out.validOffset = valid;
+    out.globalsRva = globals;
+    out.builderRva = CallRva(store, kStoreCallBuilder, storeRva);
+    out.transformRva = CallRva(store, kStoreCallTransform, storeRva);
+    if (out.builderRva <= 0 || out.transformRva <= 0 || out.builderRva == out.transformRva)
+        return ListenerBind::Implausible;
+    return ListenerBind::Bound;
+}
+// `builder`: kMatrixBuilderBytes at sites.builderRva; `transform`: kVelocityTransformBytes at sites.transformRva.
+inline ListenerBind CheckListenerHelpers(const uint8_t* builder, const uint8_t* transform)
+{
+    if (!builder || !transform)
+        return ListenerBind::HelperMismatch;
+    if (std::memcmp(builder, kMatrixBuilderHead, sizeof(kMatrixBuilderHead)) != 0 ||
+        std::memcmp(builder + kMatrixBuilderTailAt, kMatrixBuilderTail, sizeof(kMatrixBuilderTail)) != 0 ||
+        std::memcmp(transform + kVelocityTransformDotsAt, kVelocityTransformDots, sizeof(kVelocityTransformDots)) != 0)
+        return ListenerBind::HelperMismatch;
+    return ListenerBind::Bound;
+}
+
+// ---- the orientation -------------------------------------------------------------------------------------------
+struct ListenerBasis
+{
+    float forward[3]{}, left[3]{}, up[3]{};
+};
+// The game's own third row: left = up x forward (the builder at retail +0xA7BEC).
+inline void LeftOf(const float forward[3], const float up[3], float left[3]) { head_relative::Cross(up, forward, left); }
+// The head as a listener's rows: forward as given (unit length), up made perpendicular to it, left by the
+// game's rule. False when the head's forward and up do not span a plane.
+inline bool HeadBasis(const float headForward[3], const float headUp[3], ListenerBasis& out)
+{
+    using namespace head_relative;
+    if (!Finite3(headForward) || !Finite3(headUp))
+        return false;
+    const float forwardLength = Length(headForward);
+    if (!(forwardLength > 1.0e-6f))
+        return false;
+    float forward[3]{headForward[0] / forwardLength, headForward[1] / forwardLength, headForward[2] / forwardLength};
+    const float along = Dot(headUp, forward);
+    float up[3]{headUp[0] - forward[0] * along, headUp[1] - forward[1] * along, headUp[2] - forward[2] * along};
+    const float upLength = Length(up);
+    if (!(upLength > 1.0e-3f * (Length(headUp) > 1.0f ? Length(headUp) : 1.0f)))
+        return false;
+    for (int i = 0; i < 3; ++i)
+    {
+        up[i] /= upLength;
+        out.forward[i] = forward[i];
+        out.up[i] = up[i];
+    }
+    LeftOf(out.forward, out.up, out.left);
+    return true;
+}
+// Is this what the game's builder writes: scale 1, unit perpendicular forward and up, left = up x forward?
+inline bool BasisAsBuilt(float scale, const ListenerBasis& basis)
+{
+    using namespace head_relative;
+    constexpr float tolerance = 2.0e-3f;
+    if (!(scale == 1.0f) || !Finite3(basis.forward) || !Finite3(basis.left) || !Finite3(basis.up))
+        return false;
+    if (std::fabs(Length(basis.forward) - 1.0f) > tolerance || std::fabs(Length(basis.up) - 1.0f) > tolerance ||
+        std::fabs(Dot(basis.forward, basis.up)) > tolerance)
+        return false;
+    float left[3];
+    LeftOf(basis.forward, basis.up, left);
+    return std::fabs(left[0] - basis.left[0]) <= tolerance && std::fabs(left[1] - basis.left[1]) <= tolerance &&
+           std::fabs(left[2] - basis.left[2]) <= tolerance;
+}
+// A world vector in a listener's space, as the game's transform computes it (retail +0xA8F7C, scale 1).
+inline void ToListenerSpace(const ListenerBasis& basis, const float world[3], float out[3])
+{
+    const float x = head_relative::Dot(world, basis.forward);
+    const float y = head_relative::Dot(world, basis.left);
+    const float z = head_relative::Dot(world, basis.up);
+    out[0] = x;
+    out[1] = y;
+    out[2] = z;
+}
+// And back: the world vector whose listener-space image is `local` (the rows are orthonormal).
+inline void FromListenerSpace(const ListenerBasis& basis, const float local[3], float out[3])
+{
+    for (int i = 0; i < 3; ++i)
+        out[i] = basis.forward[i] * local[0] + basis.left[i] * local[1] + basis.up[i] * local[2];
+}
+
+enum class ListenerUse : uint8_t
+{
+    Used = 0,
+    SwitchOff,        // the player's switch is off
+    NoListener,       // the game built no listener for output user 0 in this update
+    NotAListener,     // the record does not carry the listener signatures
+    UnexpectedBasis,  // its matrix is not what the game's builder writes
+    NoSample,         // no frame has published a head yet, or the head view was not live in it
+    OtherGeneration,  // the sample belongs to another load of the title
+    FromTheFuture,    // the sample's clock is ahead of this one's
+    Stale,            // older than the age limit
+    NotGameplay,      // a cinematic held the camera in that frame
+    NoHeadBasis,      // the head's forward and up do not make a frame
+    Count
+};
+inline const char* ListenerUseName(ListenerUse use)
+{
+    switch (use)
+    {
+    case ListenerUse::Used: return "used";
+    case ListenerUse::SwitchOff: return "switch off";
+    case ListenerUse::NoListener: return "the game built no listener";
+    case ListenerUse::NotAListener: return "not a listener record";
+    case ListenerUse::UnexpectedBasis: return "unexpected listener matrix";
+    case ListenerUse::NoSample: return "no head sample";
+    case ListenerUse::OtherGeneration: return "another generation";
+    case ListenerUse::FromTheFuture: return "sample from the future";
+    case ListenerUse::Stale: return "stale head sample";
+    case ListenerUse::NotGameplay: return "not gameplay";
+    case ListenerUse::NoHeadBasis: return "no head frame";
+    default: return "?";
+    }
+}
+struct ListenerRequest
+{
+    bool switchOn = false;    // g_config.audio_follows_head, read at this use
+    bool gameplay = false;    // the frame the head sample came from was not a cinematic's
+    uint32_t generation = 0;  // the title generation now
+    uint64_t nowUs = 0;       // the sight clock now
+};
+// Output user 0's listener as the game just wrote it.
+struct ListenerRecord
+{
+    uint32_t header = 0, footer = 0;
+    uint8_t valid = 0;
+    float scale = 0.0f;
+    ListenerBasis basis;
+    float velocity[3]{};  // in the listener's space
+};
+// The rows and the velocity output user 0's listener should carry. Used = `basisOut` is the head's frame and
+// `velocityOut` the same world velocity seen from it; anything else names why the game's listener stands, and
+// both outputs are untouched. The position is not an input: it is never changed.
+inline ListenerUse ListenerOrientation(const ListenerRequest& request, const head_relative::HeadSample& sample,
+                                       const ListenerRecord& native, ListenerBasis& basisOut, float velocityOut[3])
+{
+    using head_relative::Use;
+    if (!request.switchOn)
+        return ListenerUse::SwitchOff;
+    if (native.header != kListenerHeaderSignature || native.footer != kListenerFooterSignature)
+        return ListenerUse::NotAListener;
+    if (native.valid != 1)
+        return ListenerUse::NoListener;
+    if (!BasisAsBuilt(native.scale, native.basis) || !head_relative::Finite3(native.velocity))
+        return ListenerUse::UnexpectedBasis;
+    switch (head_relative::SampleUse(sample, request.generation, request.nowUs))
+    {
+    case Use::Ok: break;
+    case Use::OtherGeneration: return ListenerUse::OtherGeneration;
+    case Use::FromTheFuture: return ListenerUse::FromTheFuture;
+    case Use::Stale: return ListenerUse::Stale;
+    case Use::NoHeading: return ListenerUse::NoHeadBasis;
+    default: return ListenerUse::NoSample;
+    }
+    if (!request.gameplay)
+        return ListenerUse::NotGameplay;
+    ListenerBasis head;
+    if (!HeadBasis(sample.forward, sample.up, head))
+        return ListenerUse::NoHeadBasis;
+    float world[3], local[3];
+    FromListenerSpace(native.basis, native.velocity, world);
+    ToListenerSpace(head, world, local);
+    if (!head_relative::Finite3(local))
+        return ListenerUse::NoHeadBasis;
+    basisOut = head;
+    velocityOut[0] = local[0];
+    velocityOut[1] = local[1];
+    velocityOut[2] = local[2];
+    return ListenerUse::Used;
 }
 } // namespace reach_head_relative
