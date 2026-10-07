@@ -226,7 +226,7 @@ __declspec(noinline) float* __fastcall Halo2TrackerAnglesDetour(int32_t user)
         const auto original = reinterpret_cast<Halo2TrackerAnglesFn>(feature.original);
         angles = original ? CallNativeWithSpareSlots(original, user) : Halo2TrackerAnglesFallback(user);
         // Only the sampler's own call is ever changed: the accessor's three other callers (the HUD's sway, the
-        // first-person camera, one more) take the game's own pointer.
+        // following camera's update, one not identified) take the game's own pointer.
         if (caller == feature.trackerReturn)
         {
             if (angles && feature.enabled.load(std::memory_order_acquire))
