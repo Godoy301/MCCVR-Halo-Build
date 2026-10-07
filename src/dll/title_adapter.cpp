@@ -25,6 +25,12 @@ namespace
     std::atomic<uint64_t> g_activeTitleEpochMs{ 0 };
     std::atomic<RuntimeMode> g_runtimeMode{ RuntimeMode::Shell };
 
+    // UNLOADS THE POLL DID NOT SEE (TitleAdapter_NoteImageUnloading). The bases the last poll found, and how
+    // often the loader has unmapped each since the process began.
+    std::array<std::atomic<uintptr_t>, kTitleRuntimeSlotCount> g_polledBases{};
+    std::array<std::atomic<uint32_t>, kTitleRuntimeSlotCount> g_imageUnloads{};
+    std::array<uint32_t, kTitleRuntimeSlotCount> g_imageUnloadsPolled{};   // the polling thread's own
+
     struct CinematicControlSlot
     {
         // High dword = module generation, low byte = CinematicControlState.
@@ -478,6 +484,15 @@ TitleAdapterRuntimeSnapshot TitleAdapter_GetRuntimeSnapshot(
     return result;
 }
 
+void TitleAdapter_NoteImageUnloading(uintptr_t base) noexcept
+{
+    if (!base)
+        return;
+    for (size_t slot = 0; slot < kTitleRuntimeSlotCount; ++slot)
+        if (g_polledBases[slot].load(std::memory_order_acquire) == base)
+            g_imageUnloads[slot].fetch_add(1, std::memory_order_acq_rel);
+}
+
 const TitleDescriptor* TitleAdapter_PollLoaded(uint64_t observedAtMs)
 {
     size_t count = 0;
@@ -499,6 +514,31 @@ const TitleDescriptor* TitleAdapter_PollLoaded(uint64_t observedAtMs)
             detected = &titles[i];
         ++detectedCount;
     }
+
+    // A title DLL that the loader unmapped since the last poll and that is here again at the same base was
+    // unloaded and loaded again in between: publish the set without it first, so it starts a new generation
+    // exactly as it does when a poll catches it gone. (An unload that lands between this poll's module
+    // lookups and the read below publishes the same gap; the next poll then sees what is really there.)
+    TitleRuntimeModuleSet gap = modules;
+    uint32_t reloadedMask = 0;
+    for (size_t slot = 0; slot < kTitleRuntimeSlotCount; ++slot)
+    {
+        const uint32_t unloads = g_imageUnloads[slot].load(std::memory_order_acquire);
+        const bool unloaded = unloads != g_imageUnloadsPolled[slot];
+        g_imageUnloadsPolled[slot] = unloads;
+        if (unloaded && modules.moduleBases[slot] &&
+            modules.moduleBases[slot] == g_polledBases[slot].load(std::memory_order_relaxed))
+        {
+            reloadedMask |= uint32_t{1} << slot;
+            gap.availabilityMask &= ~(uint32_t{1} << slot);
+            gap.moduleBases[slot] = 0;
+        }
+        g_polledBases[slot].store(modules.moduleBases[slot], std::memory_order_release);
+    }
+    if (reloadedMask && g_titleRuntime.PublishModuleSet(gap, observedAtMs))
+        LOG("Title adapter: game DLLs were unloaded and loaded again at the same base between two module polls "
+            "(slot mask 0x%X); published the unload the poll did not see, so each starts a new generation in "
+            "its new image", reloadedMask);
 
     const TitleRuntimeAvailabilitySnapshot previousAvailability =
         g_titleRuntime.LoadAvailability();

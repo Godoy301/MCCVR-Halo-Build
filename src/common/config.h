@@ -482,6 +482,12 @@ struct Config
     // Measured on the Spartan's HUD; the Elite's and the vehicle HUDs have not been on screen. A title that has
     // not bound this keeps its own behaviour (log: TRACKER HUD HEIGHT <title>).
     bool tracker_blips_follow_hud_height = true;
+    // MCC'S RELOAD OF A GAME DLL WAITS FOR OUR TEARDOWN (host_unload_gate.cpp). A game's DLL unloads when the
+    // game ends and MCC loads a fresh one for its menus. A title core that keeps its own reference on that DLL
+    // while its hooks are in it (Halo: Reach) kept it loaded past that reload, and the next game of the title,
+    // started in the old image, bounced back to the lobby once. 1 = the reload waits (6 s at most) for the
+    // core to tear down and let go, so the old image unloads first. 0 = as before. Read live.
+    bool title_unload_wait = true;
     // NAVIGATION MARKERS ARE PROJECTED WITH THE EYE'S FIELD OF VIEW (reach_nav_marker_logic.h). Halo: Reach's
     // HUD projects a world point to the screen with a camera it builds itself; 1 = that camera gets the vertical
     // field of view the eye was rendered with (it already gets the eye's position, forward and up). 0 = the

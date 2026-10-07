@@ -283,6 +283,7 @@ add_library(halo3xr SHARED
     src/dll/vr.cpp
     src/dll/weapon_accessory_renderer.cpp
     src/dll/native_reload_policy.cpp
+    src/dll/host_unload_gate.cpp
     src/dll/native_vehicle_first_person.cpp
     src/dll/menu.cpp
     src/dll/native_menu_pointer.cpp

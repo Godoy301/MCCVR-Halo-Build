@@ -43,6 +43,7 @@
 #include "../common/director_camera_logic.h"
 #include "../common/halo3_head_relative_logic.h"
 #include "../common/halo3_tracker_hud_height_logic.h"
+#include "host_unload_gate.h"
 #include <windows.h>
 #include <tlhelp32.h>
 #include <array>
@@ -33364,6 +33365,9 @@ namespace
                     "the outer hook and title module",
                     ReachNativeSeatLeaseStateName(seatLeaseState));
             }
+            // Only the engine thread can restore that, and after a game it never runs again: a load of the DLL
+            // that waits for this teardown must not wait for the whole time-out.
+            HostUnloadGate_Abandon(g_reachCamera.moduleReference);
             return false;
         }
         if (!DisableAndRemoveReachHooks())
@@ -33581,8 +33585,15 @@ namespace
         g_reachCamera.installed.store(false, std::memory_order_release);
         // The next install must prove the level is running again.
         g_reachLevelLoadGate.Rearm();
+        // The heartbeat is this core's, and a removed core has none. Left standing, the next game's core read
+        // the last game's stamp as a heartbeat lost long ago and tore itself down the moment it armed: a
+        // multiplayer game arms before the player has a unit, when nothing stamps yet (measured 2026-10-07:
+        // "no heartbeat for 72063 ms", then 14 s without VR at the start of a second game).
+        g_reachLastCamCopyMs.store(0, std::memory_order_release);
         if (retiredModuleReference)
             FreeLibrary(retiredModuleReference);
+        // Only now may a load of the DLL that waited for this go on: the old image is gone.
+        HostUnloadGate_Unpin(retiredModuleReference);
         LOG("Reach camera core removed; stock Reach owns the title");
         return true;
     }
@@ -35208,6 +35219,7 @@ namespace
                 g_reachCamera.generation=generation;
                 g_reachCamera.moduleReference=moduleReference;
                 moduleReferenceGuard.transferred = true;
+                HostUnloadGate_Pin(moduleReference, &g_reachCamera.teardownRequested, &g_reachLastCamCopyMs, "Reach");
                 g_reachCamera.innerTarget=innerRetained?inner:nullptr;
                 g_reachCamera.outerTarget=outerRetained?outer:nullptr;
                 g_reachCamera.fpInterpolateTarget=
@@ -35259,6 +35271,10 @@ namespace
         PrepareCachedPhysicalCrouch(GameTitle::HaloReach,base,size,generation);
         g_reachCamera.moduleReference = moduleReference;
         moduleReferenceGuard.transferred = true;
+        // From here MCC's reload of haloreach.dll after a game waits for this core's teardown
+        // (host_unload_gate.cpp): without that the reference kept the old image loaded, the reload took it, and
+        // the next game started in it.
+        HostUnloadGate_Pin(moduleReference, &g_reachCamera.teardownRequested, &g_reachLastCamCopyMs, "Reach");
         g_reachCamera.innerTarget = inner;
         g_reachCamera.outerTarget = outer;
         g_reachCamera.fpInterpolateTarget = fpInterpolate;
@@ -47962,6 +47978,7 @@ namespace
             GunAimReport();   // DRIVE Halo 3 gun-slaved seat (the gun camera's offset), SEAT LIMIT Halo 3 gun band
             Halo3HeadRelativeReport();   // TRACKER HEAD Halo 3: the switch, by the head / the game's own
             Halo3TrackerHudHeightReport();   // TRACKER HUD HEIGHT Halo 3: the blips moved with the HUD height / not
+            HostUnloadGate_Report();   // UNLOAD GATE <title>: MCC's reload of a game DLL waited for our teardown / not
             SeatAimFrameSync();   // Halo 3 / ODST seat aim: follow the first-person seat settings
 #if HALOMCCVR_DEV_DIAGNOSTICS
             Type13LogReport();   // the type-13 pilot-controller log lines (REACH SF, H4 T13)
@@ -49060,6 +49077,7 @@ void Game_ReadFramePerfCounters(GameFramePerfCounters& out)
 // stores only: no logging, no allocation, nothing that can take the loader lock. The worker reports the count.
 static void TitleImageUnloading(uintptr_t base, size_t size)
 {
+    TitleAdapter_NoteImageUnloading(base);   // the module poll may never see this DLL gone
     uint32_t retired = 0;
     if (title_image_guard::Within(g_nativePauseFlag.load(std::memory_order_acquire), base, size))
     {

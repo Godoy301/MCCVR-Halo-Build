@@ -12,6 +12,7 @@
 #include "../common/hotkey_logic.h"
 #include "../common/flashlight_input.h"
 #include "native_menu_pointer.h"
+#include "host_unload_gate.h"
 #include "native_vehicle_first_person.h"
 #include "menu_slider.h"
 #include "vr.h"
@@ -294,6 +295,8 @@ namespace
     {
         if(msg==WM_SIZE&&g_liveResizeBatch.SuppressesSize(hwnd)) return 0;
         if (NativeMenuPointer_Message(msg)) return 0;
+        // MCC is closing: nothing may hold its shutdown back (host_unload_gate.cpp).
+        if (msg == WM_CLOSE || msg == WM_DESTROY) HostUnloadGate_HostClosing();
         if(msg==kLiveResizeMsg)
         {
             unsigned width=0,height=0;
