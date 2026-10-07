@@ -105,25 +105,32 @@ struct Halo4TrackerHeadRuntime
     std::atomic<float> lastNativeDeg{0.0f}, lastHeadDeg{0.0f}, lastReferenceDeg{0.0f};
     std::atomic<uint32_t> lastThread{0};
     std::atomic<uintptr_t> otherReturn{0};  // where the last call that was NOT the player-centred build's returns
-    // The proof, on the tracker build's thread; `proven`, `provenCount` and `withdrawnCount` are for the report.
-    halo4_head_relative::ArgumentProof proof;
+    // The proof and the held heading belong to user 0's player-centred build. The game runs that build on its job
+    // threads (three thread ids in the first run, 2026-10-07) and, as far as that run showed, one at a time.
+    // `inside` makes "one at a time" a fact instead of an observation: a build of user 0 that arrives while
+    // another is inside is forwarded untouched and counted (TrackerUse::Overlapped). `proven`, `provenCount` and
+    // `withdrawnCount` are for the report.
+    std::atomic<bool> inside{false};
+    halo4_head_relative::ArgumentProof proof;  // under `inside`
     std::atomic<bool> proven{false};
     std::atomic<uint32_t> provenCount{0}, withdrawnCount{0};
-    head_relative::HeadingHold hold;  // the tracker build's thread only
+    head_relative::HeadingHold hold;  // under `inside`
     // The report's thread only.
     int reportedSwitch = -1;
     uint32_t reportedProven = 0, reportedWithdrawn = 0;
     bool reportedFirstUse = false, reportedFirstRefusal = false, reportedOtherBuild = false;
 } g_halo4TrackerHead;
 
-// The tracker build's thread, at the builder's entry. Decides the heading this call is handed: the game's own
-// (`heading`) or the head's. No allocation, no logging, no lock, no write to game memory.
+// The tracker build's thread (one of the game's job threads), at the builder's entry. Decides the heading this
+// call is handed: the game's own (`heading`) or the head's. No allocation, no logging, no waiting (one flag that is
+// tried, never waited for), no write to game memory.
 __declspec(noinline) float Halo4TrackerHeadingFor(const void* state, float heading, uintptr_t caller) noexcept
 {
     using namespace halo4_head_relative;
     auto& feature = g_halo4TrackerHead;
     TrackerUse use = TrackerUse::NoSample;
     float handed = heading;
+    volatile bool holding = false;  // this call is user 0's build and holds `inside` (the handler reads it too)
     __try
     {
         TrackerRequest request;
@@ -133,47 +140,58 @@ __declspec(noinline) float Halo4TrackerHeadingFor(const void* state, float headi
             request.user = *reinterpret_cast<const int32_t*>(static_cast<const uint8_t*>(state) + feature.userFromState);
             if (request.user == 0)
             {
-                // The proof runs whatever the switch says: it is about the game, not about the player's choice.
-                float reference = 0.0f;
-                const bool usable = Halo4TrackerAimReference(reference);
-                const ProofStep step = StepProof(feature.proof, YawFromField(heading), usable, reference);
-                feature.steps[static_cast<size_t>(step)].fetch_add(1, std::memory_order_relaxed);
-                if (usable)
-                    feature.lastReferenceDeg.store(WrapPi(reference) * head_relative::kRadToDeg,
-                                                   std::memory_order_relaxed);
-                if (step == ProofStep::Proven)
+                if (feature.inside.exchange(true, std::memory_order_acquire))
+                    use = TrackerUse::Overlapped;
+                else
                 {
-                    feature.proven.store(true, std::memory_order_release);
-                    feature.provenCount.fetch_add(1, std::memory_order_relaxed);
-                }
-                else if (step == ProofStep::Withdrawn)
-                {
-                    feature.proven.store(false, std::memory_order_release);
-                    feature.withdrawnCount.fetch_add(1, std::memory_order_relaxed);
+                    holding = true;
+                    // The proof runs whatever the switch says: it is about the game, not about the player's choice.
+                    float reference = 0.0f;
+                    const bool usable = Halo4TrackerAimReference(reference);
+                    const ProofStep step = StepProof(feature.proof, YawFromField(heading), usable, reference);
+                    feature.steps[static_cast<size_t>(step)].fetch_add(1, std::memory_order_relaxed);
+                    if (usable)
+                        feature.lastReferenceDeg.store(WrapPi(reference) * head_relative::kRadToDeg,
+                                                       std::memory_order_relaxed);
+                    if (step == ProofStep::Proven)
+                    {
+                        feature.proven.store(true, std::memory_order_release);
+                        feature.provenCount.fetch_add(1, std::memory_order_relaxed);
+                    }
+                    else if (step == ProofStep::Withdrawn)
+                    {
+                        feature.proven.store(false, std::memory_order_release);
+                        feature.withdrawnCount.fetch_add(1, std::memory_order_relaxed);
+                    }
                 }
             }
         }
-        request.proven = feature.proof.proven;
-        request.switchOn = g_config.tracker_follows_head;
-        request.sign = g_config.tracker_head_sign;
-        request.offsetDeg = g_config.tracker_head_offset_deg;
-        request.nowUs = Sight_NowUs();
-        const uint32_t generation = g_halo4Camera.generation.load(std::memory_order_acquire);
-        request.generation = generation == feature.generation ? generation : 0;
-        head_relative::HeadSample sample;
-        bool gameplay = false;
-        if (!Halo4ReadHeadSample(sample, gameplay))
+        if (use != TrackerUse::Overlapped)
         {
-            sample = head_relative::HeadSample{};
-            feature.mixedReads.fetch_add(1, std::memory_order_relaxed);
-        }
-        request.gameplay = gameplay;
-        float replaced = heading, headYaw = 0.0f;
-        use = TrackerHeading(request, sample, feature.hold, heading, replaced, &headYaw);
-        if (use == TrackerUse::Used)
-        {
-            handed = replaced;
-            feature.lastHeadDeg.store(headYaw * head_relative::kRadToDeg, std::memory_order_relaxed);
+            // Only user 0's build, holding `inside`, reads the proof or reaches the held heading: TrackerHeading
+            // returns before `hold` for every other call.
+            request.proven = holding && feature.proof.proven;
+            request.switchOn = g_config.tracker_follows_head;
+            request.sign = g_config.tracker_head_sign;
+            request.offsetDeg = g_config.tracker_head_offset_deg;
+            request.nowUs = Sight_NowUs();
+            const uint32_t generation = g_halo4Camera.generation.load(std::memory_order_acquire);
+            request.generation = generation == feature.generation ? generation : 0;
+            head_relative::HeadSample sample;
+            bool gameplay = false;
+            if (!Halo4ReadHeadSample(sample, gameplay))
+            {
+                sample = head_relative::HeadSample{};
+                feature.mixedReads.fetch_add(1, std::memory_order_relaxed);
+            }
+            request.gameplay = gameplay;
+            float replaced = heading, headYaw = 0.0f;
+            use = TrackerHeading(request, sample, feature.hold, heading, replaced, &headYaw);
+            if (use == TrackerUse::Used)
+            {
+                handed = replaced;
+                feature.lastHeadDeg.store(headYaw * head_relative::kRadToDeg, std::memory_order_relaxed);
+            }
         }
         if (request.playerBuild)
             feature.lastNativeDeg.store(WrapPi(YawFromField(heading)) * head_relative::kRadToDeg,
@@ -183,9 +201,13 @@ __declspec(noinline) float Halo4TrackerHeadingFor(const void* state, float headi
     }
     __except (EXCEPTION_EXECUTE_HANDLER)
     {
+        if (holding)
+            feature.inside.store(false, std::memory_order_release);
         feature.faults.fetch_add(1, std::memory_order_relaxed);
         return heading;
     }
+    if (holding)
+        feature.inside.store(false, std::memory_order_release);
     feature.uses[static_cast<size_t>(use)].fetch_add(1, std::memory_order_relaxed);
 #if HALOMCCVR_DEV_DIAGNOSTICS
     feature.lastThread.store(GetCurrentThreadId(), std::memory_order_relaxed);

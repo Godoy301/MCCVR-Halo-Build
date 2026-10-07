@@ -338,6 +338,7 @@ enum class TrackerUse : uint8_t
     Stale,            // older than the age limit
     NotGameplay,      // a cinematic held the camera in that frame
     NoHeading,        // non-finite, or the head never had a heading
+    Overlapped,       // user 0's build arrived while another build of user 0 was inside (the runtime's flag)
     Count
 };
 inline const char* TrackerUseName(TrackerUse use)
@@ -355,6 +356,7 @@ inline const char* TrackerUseName(TrackerUse use)
     case TrackerUse::Stale: return "stale head sample";
     case TrackerUse::NotGameplay: return "not gameplay";
     case TrackerUse::NoHeading: return "no heading";
+    case TrackerUse::Overlapped: return "an overlapping build";
     default: return "?";
     }
 }
