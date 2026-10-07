@@ -2289,6 +2289,11 @@ namespace
         contact_melee::TrackingToWorld contactController[2]{};
         uint64_t contactSerial = 0, contactReference = 0;
         int64_t contactTimeNs = 0;
+        // The tracking-space epoch itself (VrContactTrackingSnapshot::referenceEpoch) of the frame these targets
+        // were prepared from; zero wherever contactReference is. contactReference is Reach's own HASH of that
+        // epoch with the generation, the two-hand state and the hand calibration (a melee velocity must not span
+        // any of them); a consumer that compares against the tracking snapshot's epoch needs this one.
+        uint64_t contactSpaceEpoch = 0;
     };
     // One context per held-weapon slot: slot 0 is the primary (right-hand)
     // weapon, slot 1 is the dual-wield secondary (left-hand) weapon. The
@@ -32216,6 +32221,7 @@ namespace
             for (float value:referenceInputs)
             { uint32_t bits=0; memcpy(&bits,&value,sizeof(bits)); reference=(reference^bits)*1099511628211ull; }
             candidate.fpTargets.contactReference=reference ? reference : 1;
+            candidate.fpTargets.contactSpaceEpoch=tracking.trackingSpaceEpoch;
         }
         // Reach supplies explicit prepared wrist targets to the shared palette
         // solve, so it never passes through DesiredWristWorld (where H3/ODST

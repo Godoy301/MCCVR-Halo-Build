@@ -58,7 +58,8 @@ struct BoneMatrix {float scale=1,rotation[9]{1,0,0,0,1,0,0,0,1},translation[3]{}
 struct ReachFpInterpolationContext {
     bool valid=true;uint32_t generation=7,muzzleUnit=owner,muzzleWeapon=primary;
     int interpolationView=0,interpolationSlot=0;uint64_t preparedSerial=11;
-    struct {uint64_t contactSerial=11,contactReference=3;int64_t contactTimeNs=1000000000;bool rightWristValid=true;} targets;
+    // contactReference is Reach's melee hash of the tracking-space epoch (3 here): never equal to it.
+    struct {uint64_t contactSerial=11,contactReference=0x9E3779B97F4A7C15ull,contactSpaceEpoch=3;int64_t contactTimeNs=1000000000;bool rightWristValid=true;} targets;
 };
 static struct {bool armed=true;uint64_t preparedSerial=11;} g_reachFpPairScope;
 static uint32_t liveChecksum=0;static int liveCount=0;
@@ -224,6 +225,10 @@ static void PublicationTests()
         ReachFpInterpolationContext context;ReachPublishMuzzlePalette(123,context,destination);weapon_muzzle::Receipt sample{};weapon_muzzle::Ray expected{};
         Check(weapon_muzzle::Transform(marker,2,destination[marker.node].rotation,destination[marker.node].translation,expected),"Reach authored marker fixture");
         Check(g_reachBarrelMuzzles.Read(GameTitle::HaloReach,7,owner,primary,3,GetTickCount64(),1000000000,0,marker.barrel,false,sample)&&sample.ray.position[0]==expected.position[0],"actual committed Reach node publishes correct barrel");
+        // The lane reads the receipt back with the tracking snapshot's epoch (3). Published under Reach's melee
+        // hash of that epoch, as it was, no read could ever match: the lane refused every shot it was asked for.
+        Check(!g_reachBarrelMuzzles.Read(GameTitle::HaloReach,7,owner,primary,0x9E3779B97F4A7C15ull,GetTickCount64(),1000000000,0,marker.barrel,false,sample),
+            "the receipt's space is the tracking-space epoch, not the melee hash of it");
         context.muzzleWeapon^=0x10000;ReachPublishMuzzlePalette(123,context,destination);
         Check(!g_reachBarrelMuzzles.Read(GameTitle::HaloReach,7,owner,primary,3,GetTickCount64(),1000000000,0,marker.barrel,false,sample),"replacement weapon invalidates old marker");
     }
