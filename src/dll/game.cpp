@@ -40,6 +40,7 @@
 #include "../common/as_seen_logic.h"
 #include "../common/first_person_view_logic.h"
 #include "../common/director_camera_logic.h"
+#include "../common/halo3_head_relative_logic.h"
 #include <windows.h>
 #include <tlhelp32.h>
 #include <array>
@@ -2564,6 +2565,11 @@ namespace
     // A look-steered driver's gun band (halo3_vehicle_gun_band.inl): anchors only, no hook.
     bool InstallHalo3GunBand(uintptr_t base, size_t size, uint32_t generation);
     void RemoveHalo3GunBand();
+    // The motion tracker by the head's heading (halo3_head_relative.inl): two hooks on the tracker's contact builders.
+    bool InstallHalo3HeadRelative(uintptr_t base, size_t size, uint32_t generation);
+    bool RemoveHalo3HeadRelative();
+    void Halo3HeadRelativePublish(const float* forward, const float* up, bool gameplay);
+    void Halo3HeadRelativeReport();
 #if HALOMCCVR_DEV_DIAGNOSTICS
     // The firing assist witness (dev; halo3_assist_witness.inl): a hook on 0x13BAD0, witness only.
     void InstallHalo3AssistWitness(uintptr_t base, size_t size);
@@ -8531,6 +8537,7 @@ namespace
         if (cinematic && VR_IsCutsceneTheaterActive())
         {
             g_baseCamViewLiftZ.store(0.0f, std::memory_order_relaxed);
+            Halo3HeadRelativePublish(nullptr, nullptr, false); // not the player's frame: the tracker stays the game's
             return false; // authored camera + stereo eye offsets only in theatre
         }
         if (cinematic && (cinematicScene < 0 || cinematicShot < 0))
@@ -8703,6 +8710,9 @@ namespace
         // Per-eye separation is applied later by RenderViewHook to the compact
         // render-only camera. Keeping it out of the authoritative source avoids
         // feeding stereo offsets back into simulation or temporal history.
+        // The head this frame is seen with, for what must turn with the head instead of the aim (the motion
+        // tracker: halo3_head_relative.inl).
+        Halo3HeadRelativePublish(fwd, up, !cinematic);
         return rotationFollows;
     }
 
@@ -16672,6 +16682,7 @@ namespace
         RetireHalo3SandboxEditor();
         if (!RemoveHalo3DualAim()) return false;
         RemoveHalo3GunBand();
+        if (!RemoveHalo3HeadRelative()) return false;
         if (!LegacyDriveRemove(GameTitle::Halo3)) return false;
         if (!DisableAndRemoveHalo3ContactMelee()) return false;
         for (size_t i = g_installedGameHookCount; i > 0; --i)
@@ -17598,6 +17609,8 @@ namespace
             reinterpret_cast<uintptr_t>(g_halo3PlayerUnitGetter));
         // A look-steered driver's gun band (halo3_vehicle_gun_band.inl): anchors only, no hook; fails closed alone.
         (void)InstallHalo3GunBand(base,size,runtimeGeneration);
+        // The motion tracker by the head's heading (halo3_head_relative.inl): its own transaction, fails closed alone.
+        (void)InstallHalo3HeadRelative(base,size,runtimeGeneration);
 #if HALOMCCVR_DEV_DIAGNOSTICS
         InstallHalo3AssistWitness(base,size);   // SHOT Halo 3 assist (dev): the turn, cap hits, residual
         InstallHalo3ImpactWitness(base,size);   // SHOT IMPACT / SHOT RETICLE Halo 3 (dev): where rounds really go
@@ -27719,6 +27732,7 @@ namespace
     #include "halo3_impact_witness.inl"
     #include "halo3_weapon_haptics.inl"
     #include "halo3_avatar.inl"
+    #include "halo3_head_relative.inl"
     #include "odst_contact_melee_runtime.inl"
     #include "odst_physical_crouch.inl"
     #include "odst_muzzle_ownership.inl"
@@ -47843,6 +47857,7 @@ namespace
 #endif
             LegacyDriveReport();
             GunAimReport();   // DRIVE Halo 3 gun-slaved seat (the gun camera's offset), SEAT LIMIT Halo 3 gun band
+            Halo3HeadRelativeReport();   // TRACKER HEAD Halo 3: the switch, by the head / the game's own
             SeatAimFrameSync();   // Halo 3 / ODST seat aim: follow the first-person seat settings
 #if HALOMCCVR_DEV_DIAGNOSTICS
             Type13LogReport();   // the type-13 pilot-controller log lines (REACH SF, H4 T13)
