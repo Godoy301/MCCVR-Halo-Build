@@ -928,10 +928,15 @@ void HeadRelativeTrackerReport(Halo3HeadRelativeLane& lane)
     {
         const float x = lane.ownBlipX.load(std::memory_order_relaxed), y = lane.ownBlipY.load(std::memory_order_relaxed);
         const float rangeM = lane.ownRangeWu.load(std::memory_order_relaxed) * 3.048f;
-        LOG("TRACKER HEAD %s (dev): the player's own blip, %u placements; last at x %+.4f y %+.4f of the radius = "
-            "%+.2f m right, %+.2f m %s the centre (radius %.1f m). (0, 0) = centred; the game's own placement is the "
-            "body measured from the unit's head marker",
-            lane.title, own, x, y, x * rangeM, std::fabs(y) * rangeM, y > 0.0f ? "below" : "above", rangeM);
+        if (x == 0.0f && y == 0.0f)
+            LOG("TRACKER HEAD %s (dev): the player's own blip, %u placements; last AT THE CENTRE (x 0, y 0 of the "
+                "radius; radius %.1f m)",
+                lane.title, own, rangeM);
+        else
+            LOG("TRACKER HEAD %s (dev): the player's own blip, %u placements; last at x %+.4f y %+.4f of the radius = "
+                "%+.2f m right, %.2f m %s the centre (radius %.1f m). (0, 0) = centred; the game's own placement is "
+                "the body measured from the unit's head marker",
+                lane.title, own, x, y, x * rangeM, std::fabs(y) * rangeM, y > 0.0f ? "below" : "above", rangeM);
     }
 #endif
 }
