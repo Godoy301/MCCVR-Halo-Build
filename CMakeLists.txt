@@ -901,6 +901,13 @@ if(BUILD_TESTING)
     add_executable(halomccvr_reach_head_relative_tests tests/reach_head_relative_tests.cpp)
     target_include_directories(halomccvr_reach_head_relative_tests PRIVATE src/common)
     add_test(NAME halomccvr_reach_head_relative_tests COMMAND halomccvr_reach_head_relative_tests)
+    # Halo 4's motion tracker follows the head (src/common/halo4_head_relative_logic.h; a retail-derived lead, not
+    # H4EK-verified): the decode of the three sites and its refusals, the proof the hook takes at run time before
+    # it changes anything (agree, disagree, a reference that did not move, withdrawal), and the two headset checks
+    # on the game's own placement arithmetic.
+    add_executable(halomccvr_halo4_head_relative_tests tests/halo4_head_relative_tests.cpp)
+    target_include_directories(halomccvr_halo4_head_relative_tests PRIVATE src/common)
+    add_test(NAME halomccvr_halo4_head_relative_tests COMMAND halomccvr_halo4_head_relative_tests)
     # Head-relative HUD and sound, the shared pure half (src/common/head_relative_logic.h): the heading of a
     # forward vector, the game's forward with the head's yaw, the head sample's verdict, and the player's two
     # headset checks (gun swept: contacts stay put; head turned: contacts turn) as geometry.
