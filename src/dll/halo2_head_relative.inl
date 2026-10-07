@@ -36,6 +36,7 @@ using Halo2TrackerAnglesFn = float* (__fastcall*)(int32_t user);
 constexpr size_t kHalo2TrackerUseCount = static_cast<size_t>(halo2_head_relative::TrackerUse::Count);
 constexpr size_t kHalo2TrackerStepCount = static_cast<size_t>(halo2_head_relative::ProofStep::Count);
 // The drive's last on-foot write counts as the reference for this long (the write runs every control update).
+// (A threshold of ours: it locates nothing in the game.)
 constexpr uint64_t kHalo2TrackerReferenceMs = 100;
 
 struct Halo2TrackerHeadRuntime

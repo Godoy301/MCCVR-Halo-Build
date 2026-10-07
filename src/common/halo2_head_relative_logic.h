@@ -61,6 +61,9 @@ inline constexpr float kWorldUp[3]{0.0f, 0.0f, 1.0f};
 //
 // The accessor, whole (retail +0x6C3940; the hook): movsxd rax, ecx / imul rcx, rax, STRIDE /
 // mov rax, [rip + PLAYER CONTROL GLOBALS] / add rax, YAW / add rax, rcx / ret.
+// ADDR-HYGIENE: resolved + guarded. The stride (0xB8) and the yaw offset (0x38) are bytes of the pattern itself, so
+// an image it matches has them; the globals slot is read from the match. All three must then EQUAL the record the
+// direct drive bound on its own (DecodeTrackerSites: RecordMismatch), or nothing binds.
 inline constexpr const char* kAnglesAccessorPattern =
     "48 63 C1 48 69 C8 B8 00 00 00 48 8B 05 ?? ?? ?? ?? 48 83 C0 38 48 03 C1 C3";
 inline constexpr size_t kAccessorBytes = 25;
@@ -75,6 +78,12 @@ inline constexpr size_t kAccessorStride = 6, kAccessorSlotDisp = 13, kAccessorSl
 //   call SIN / .. cvtsd2ss xmm10, xmm0 / movaps xmm0, xmm6 / call COS / mov rax, [rip + HUD GLOBALS] / ..
 //   cvtsd2ss xmm11, xmm0 / divss xmm9, [rax + RANGE] / call UNIT CAMERA POSITION
 // So xmm10 = S, xmm11 = C, xmm9 = 1 / range, and the pointer in rax is read exactly once: SIN, an import, follows.
+// ADDR-HYGIENE: resolved + guarded. Positions inside the matched pattern. What they read is held against the other
+// sites before anything binds: the call at kSamplerCallAngles must land on the matched accessor (CallMismatch), the
+// two rip operands must hold pi/2 and the sign mask (ConstantMismatch), the cursor and the "user is playing" call
+// must be the update loop's (LoopMismatch), the range must be the placement's (RangeMismatch), and the two trig
+// calls must be the C runtime's sin then cos (halo2_head_relative.inl). kSamplerReturn is the instruction after
+// that call (the static_assert below): the one return address the detour acts on.
 inline constexpr const char* kTrackerSamplerPattern =
     "48 89 5C 24 18 48 89 6C 24 20 57 41 56 41 57 48 81 EC 90 00 00 00 48 8B 05 ?? ?? ?? ?? 48 63 E9 4C 69 F5 F0 02 "
     "00 00 8B CD 4C 03 F0 48 63 80 C0 0B 00 00 4C 6B F8 44 4D 03 FE E8 ?? ?? ?? ?? 33 DB 84 C0 74 2D 48 8B 05 ?? ?? "
@@ -91,12 +100,18 @@ inline constexpr size_t kSamplerDataDisp = 25, kSamplerDataNext = 29, kSamplerUs
                         kSamplerHalfPiDisp = 184, kSamplerHalfPiNext = 188, kSamplerMaskDisp = 191,
                         kSamplerMaskNext = 195, kSamplerCallSin = 202, kSamplerCallCos = 219, kSamplerHudDisp = 227,
                         kSamplerHudNext = 231, kSamplerRange = 261, kSamplerCallOrigin = 265;
+static_assert(kSamplerReturn == kSamplerCallAngles + 5, "the return address is the instruction after the E8 rel32");
 
 // The placement, inside the sampler (retail +0x83000A): rsi = the object, [rsp + 0x20] = the unit's camera
 // position, xmm10 = S, xmm11 = C, xmm9 = 1 / range, xmm8 = 64, xmm7 = 128, xmm6 = 0, r15 = the history slot:
 //   dx = [rsi + 0x30] - origin.x / dy = [rsi + 0x34] - origin.y / .. range * range <= dx*dx + dy*dy: skip ..
 //   x = (S * dy - C * dx) * (1 / range) * 64 + 64 / y = (C * dy + S * dx) * (1 / range) * 64 + 64 /
 //   each clamped to [0, 128], truncated and stored as a byte at blip + 0 and blip + 1 / call CLASSIFY
+// ADDR-HYGIENE: resolved + guarded. Positions inside the matched pattern; the arithmetic itself is the pattern's
+// own bytes (its only wildcards are the HUD globals' displacement and the last call's target). The match must lie
+// INSIDE the sampler, after its trig and before the exit its own
+// "no unit" jump names (PlacementOutside), and must clip by the range the pair is divided by (RangeMismatch). It is
+// matched to prove that the sampler's pair is what places contacts; the lane does not hook or patch it.
 inline constexpr const char* kTrackerPlacementPattern =
     "F3 0F 10 66 30 F3 0F 10 6E 34 F3 0F 5C 64 24 20 F3 0F 5C 6C 24 24 48 8B 05 ?? ?? ?? ?? 0F 28 C4 F3 0F 10 90 90 "
     "02 00 00 0F 28 CD F3 0F 59 CD F3 0F 59 C4 F3 0F 59 D2 F3 0F 58 C8 F3 0F 58 CE 0F 2F D1 0F 86 8F 00 00 00 49 63 "
@@ -111,6 +126,9 @@ inline constexpr size_t kPlacementHudDisp = 25, kPlacementHudNext = 29, kPlaceme
 // The tracker update's ring step and per-user loop (retail +0x830C61): mov eax, [rcx + CURSOR] / test eax, eax /
 // jne / mov eax, LAST SLOT / jmp / dec eax / mov [rcx + CURSOR], eax / .. / mov ecx, edi / call USER IS PLAYING /
 // test al, al / je / mov ecx, edi / call SAMPLER / inc edi / cmp edi, USERS / jl
+// ADDR-HYGIENE: resolved + guarded. Positions inside the matched pattern. Its call must land on the sampler's entry
+// and its cursor and "user is playing" test must be the sampler's (LoopMismatch). It is matched to prove the
+// sampler is called once per user from the update; the lane does not hook or patch it.
 inline constexpr const char* kTrackerUpdateLoopPattern =
     "8B 81 C0 0B 00 00 85 C0 75 07 B8 09 00 00 00 EB 02 FF C8 89 81 C0 0B 00 00 66 0F 1F 44 00 00 8B CF E8 ?? ?? ?? "
     "?? 84 C0 74 07 8B CF E8 ?? ?? ?? ?? FF C7 83 FF 04 7C E7";
@@ -317,6 +335,10 @@ inline float WrapYaw(float yaw)
     return yaw < kTwoPi ? yaw : 0.0f;
 }
 // The tracker's blip space: 128 units across, its centre at 64; a contact at the edge of the range is 64 from it.
+// ADDR-HYGIENE: not used at run time. These two, NativePair, TrackerPoint and TrackerBlip are the unit tests' MODEL
+// of the game's arithmetic (the two acceptance checks are run on it); the hook replaces a yaw and never places a
+// contact. tools/verify-halo2-head-relative.py reads both numbers from this header and holds them against the two
+// constants the retail sampler loads (xmm8 = 64, xmm7 = 128) and the arithmetic against its bytes.
 inline constexpr float kBlipCentre = 64.0f, kBlipSpan = 128.0f;
 // The pair the sampler builds for a yaw (retail +0x82FF30..+0x82FF7B): through double sine and cosine, as the game.
 inline void NativePair(float yaw, float& sinA, float& cosA)
