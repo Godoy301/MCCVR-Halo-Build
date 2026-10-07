@@ -922,6 +922,23 @@ if(BUILD_TESTING)
     add_executable(halomccvr_ce_head_relative_tests tests/haloce_head_relative_tests.cpp)
     target_include_directories(halomccvr_ce_head_relative_tests PRIVATE src/common)
     add_test(NAME halomccvr_ce_head_relative_tests COMMAND halomccvr_ce_head_relative_tests)
+    # The same lane's PRODUCTION body (src/dll/haloce_head_relative.cpp) over a synthetic image built from the
+    # header's patterns at addresses that are not retail's: the install proof through sig::Find and the function
+    # table, the detour and its one write, every report line as formatted, the retirement and what a reinstall
+    # keeps. Player flavour, then dev flavour (the 2-second line the first run is judged by).
+    add_executable(halomccvr_ce_head_relative_runtime_tests tests/haloce_head_relative_runtime_tests.cpp
+        src/dll/sigscan.cpp src/common/config.cpp)
+    target_include_directories(halomccvr_ce_head_relative_runtime_tests PRIVATE src/common src/dll)
+    target_compile_definitions(halomccvr_ce_head_relative_runtime_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    target_link_libraries(halomccvr_ce_head_relative_runtime_tests PRIVATE minhook psapi)
+    add_test(NAME halomccvr_ce_head_relative_runtime_tests COMMAND halomccvr_ce_head_relative_runtime_tests)
+    add_executable(halomccvr_ce_head_relative_runtime_dev_tests tests/haloce_head_relative_runtime_tests.cpp
+        src/dll/sigscan.cpp src/common/config.cpp)
+    target_include_directories(halomccvr_ce_head_relative_runtime_dev_tests PRIVATE src/common src/dll)
+    target_compile_definitions(halomccvr_ce_head_relative_runtime_dev_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN
+        HALOMCCVR_DEV_DIAGNOSTICS=1)
+    target_link_libraries(halomccvr_ce_head_relative_runtime_dev_tests PRIVATE minhook psapi)
+    add_test(NAME halomccvr_ce_head_relative_runtime_dev_tests COMMAND halomccvr_ce_head_relative_runtime_dev_tests)
     # The F8/F9 pitch trim (src/common/pitch_trim_logic.h): applied with stereo off, zero in stereo VR, and a key
     # press in stereo changes nothing (two stray F9 presses once put the reticle 4 degrees above every shot).
     add_executable(halomccvr_pitch_trim_tests tests/pitch_trim_tests.cpp)
