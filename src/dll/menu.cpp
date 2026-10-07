@@ -1864,6 +1864,12 @@ namespace
                             "Halo 2 does the same, at your first aim movement in a level. Not yet seen in a headset.\n"
                             "Halo: CE follows your head from about a second into a level (CE's own tracker turns\n"
                             "with the turn stick only, never with the gun). Not yet seen in a headset.");
+        changed |= ImGui::Checkbox("Motion tracker dots follow HUD height",
+                                   &g_config.tracker_blips_follow_hud_height);
+        ImGui::TextDisabled("ON: the tracker's dots are drawn on the tracker wherever HUD height puts it.\n"
+                            "OFF: where the game draws them: below the tracker by twice the HUD height\n"
+                            "(half the tracker's radius at the default height), your own dot included.\n"
+                            "Halo 3 only. Live. Not yet seen in a headset.");
         ImGui::Spacing();
         ImGui::Separator();
         ImGui::Text("Waypoints");
