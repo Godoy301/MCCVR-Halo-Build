@@ -113,6 +113,7 @@ static void AimNoUnit_Note(GameTitle title, bool unitPresent) noexcept
 #include "reach_render_candidate.h"
 #include "reach_aim_provider.h"
 #include "../common/reach_observer_logic.h"
+#include "../common/reach_head_relative_logic.h"
 #endif
 #if HALOMCCVR_EXPERIMENTAL_REACH_RENDER_CANDIDATE
 // Reach direct-drive (reach_direct_drive==3): hook the per-user control update haloreach+0x6375C (the
@@ -2330,6 +2331,7 @@ namespace
     bool InstallReachMuzzle(uintptr_t base,size_t size,uint32_t generation);
     bool RemoveReachMuzzle();
     void ReportReachMuzzle();
+    void ReportReachHeadRelative();  // reach_head_relative.inl: the motion tracker follows the head
     // Weapon-order diagnostic tranche: read-only semantic-primary
     // observations reusing the title readers below. Defined after those
     // readers; called from the FP interpolate/palette hooks above them.
@@ -26225,7 +26227,7 @@ namespace
         const uint64_t now=GetTickCount64();
         if(now-lastLogMs<2000) return;
         lastLogMs=now;
-        if(title==GameTitle::HaloReach){ReportReachContactMelee();ReportReachMuzzle();ReportReachSightTrace();}
+        if(title==GameTitle::HaloReach){ReportReachContactMelee();ReportReachMuzzle();ReportReachSightTrace();ReportReachHeadRelative();}
         if(title==GameTitle::Halo3) { ReportHalo3ContactMelee(); ReportHalo3WeaponHaptics(); ReportHalo3Avatar(); }
         if(title==GameTitle::Halo3ODST){ReportOdstContactMelee();ReportOdstMuzzle();ReportOdstWeaponHaptics();ReportOdstControllerFingers();}
         if(auto* melee=SharedMeleeForTitle(title))
@@ -27732,6 +27734,8 @@ namespace
     #include "reach_muzzle_publication.inl"
     #include "reach_muzzle_shots.inl"
     #include "reach_muzzle_lifecycle.inl"
+    // The motion tracker (and the sound listener) follow the head instead of the aim.
+    #include "reach_head_relative.inl"
     // Dev builds only: AS SEEN for Reach in VR (the file compiles to nothing otherwise).
     #include "reach_impact_witness.inl"
     #include "reach_visual_hand_offset.inl"
@@ -32158,6 +32162,10 @@ namespace
         // commit. Rejected candidates never publish a half-rendered follow or
         // turn update.
         ReachPublishYawReferencePair(g_gameYawRef,g_headYawRef);
+        // The head of the camera that just crossed the commit, for what is placed against where the player
+        // looks on another thread (the motion tracker; reach_head_relative.inl).
+        ReachPublishHeadSample(candidate.headCenter, !candidate.cutsceneTheater,
+                               g_reachCamera.generation.load(std::memory_order_acquire));
         // Controller targets consume the committed reference triplet. Building
         // them before the exact-seat commit made the first owned passenger
         // frame use the previous seat's hand origin even though headCenter
@@ -33188,6 +33196,7 @@ namespace
         if (!RemoveReachImpactWitness()) return false;
 #endif
         if (!RemoveReachMuzzle()) return false;
+        if (!RemoveReachHeadRelative()) return false;
         TitleAdapter_ClearCinematicControl(
             GameTitle::HaloReach,
             g_reachCamera.generation.load(std::memory_order_acquire));
@@ -35892,6 +35901,8 @@ namespace
         ReachResolveSightFlags(base, size);
         InstallReachContactMelee(base,size,generation);
         (void)InstallReachMuzzle(base,size,generation);
+        // Optional and feature-local: a refusal leaves the game's own tracker and nothing else changes.
+        (void)InstallReachHeadRelative(base,size,generation);
 #if HALOMCCVR_DEV_DIAGNOSTICS
         (void)InstallReachImpactWitness(base,size);   // AS SEEN (dev): where rounds land against the drawn reticle
 #endif
