@@ -1383,6 +1383,7 @@ void ConfigLoad(const wchar_t* path)
         }
         if (!strcmp(key, "tracker_follows_head")) { g_config.tracker_follows_head = atoi(val) != 0; continue; }
         if (!strcmp(key, "audio_follows_head")) { g_config.audio_follows_head = atoi(val) != 0; continue; }
+        if (!strcmp(key, "nav_markers_on_target")) { g_config.nav_markers_on_target = atoi(val) != 0; continue; }
         if (!strcmp(key, "experimental_hand_alignment"))
         {
             g_config.experimental_hand_alignment = atoi(val) != 0;
@@ -2106,7 +2107,14 @@ void ConfigSave()
     fprintf(f, "# way the gun points, as the game does it. Halo: Reach and Halo 3 for now; a game that has no head-relative\n");
     fprintf(f, "# sound yet keeps its own (log: AUDIO HEAD <game>). Live in F1 > Comfort. (default %d)\n",
         d.audio_follows_head ? 1 : 0);
-    fprintf(f, "audio_follows_head = %d\n\n", g_config.audio_follows_head ? 1 : 0);
+    fprintf(f, "audio_follows_head = %d\n", g_config.audio_follows_head ? 1 : 0);
+    fprintf(f, "# Markers sit on their targets. Objective waypoints, marked players and name tags are drawn\n");
+    fprintf(f, "# where their target really is, for each eye, so they stay on it when you turn your head, and\n");
+    fprintf(f, "# the HUD height setting no longer moves them. 0 = placed with the game's flat-screen field of\n");
+    fprintf(f, "# view, as before: right only where you look straight at them. Halo: Reach for now; Halo 3\n");
+    fprintf(f, "# already does this (log: NAV MARKERS <game>). Live in F1 > HUD. (default %d)\n",
+        d.nav_markers_on_target ? 1 : 0);
+    fprintf(f, "nav_markers_on_target = %d\n\n", g_config.nav_markers_on_target ? 1 : 0);
     fprintf(f, "# Degrees per snap turn.\n");
     fprintf(f, "# (default %.0f, range 5 to 90)\n", d.turn_snap_deg);
     fprintf(f, "turn_snap_deg = %.0f\n\n", g_config.turn_snap_deg);

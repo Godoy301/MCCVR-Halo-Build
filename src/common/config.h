@@ -474,6 +474,13 @@ struct Config
     // has not bound its seam keeps the game's own behaviour (log: TRACKER HEAD / AUDIO HEAD <title>).
     bool tracker_follows_head = true;
     bool audio_follows_head = true;
+    // NAVIGATION MARKERS SIT ON THEIR TARGETS (reach_nav_marker_logic.h). Objective waypoints, marked players,
+    // name tags and every other HUD element the game anchors to a point in the world are projected with the
+    // camera and field of view the eye was rendered with, so each sits on its target in both eyes and stays
+    // there when the head turns; and the HUD height setting no longer moves them. 0 = the game's own
+    // flat-screen field of view and the HUD height, as before. Read live. A title that has not bound this
+    // keeps its own behaviour (log: NAV MARKERS <title>).
+    bool nav_markers_on_target = true;
     // Live safety values for the tracker's yaw correction. Parsed and saved in DEV BUILDS ONLY; every build
     // runs with them, so a player build always has these defaults. sign: 1, or -1 if a title's seam turns
     // out mirrored. offset: degrees added after the sign.

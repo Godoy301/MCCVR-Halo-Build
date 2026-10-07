@@ -901,6 +901,12 @@ if(BUILD_TESTING)
     add_executable(halomccvr_reach_head_relative_tests tests/reach_head_relative_tests.cpp)
     target_include_directories(halomccvr_reach_head_relative_tests PRIVATE src/common)
     add_test(NAME halomccvr_reach_head_relative_tests COMMAND halomccvr_reach_head_relative_tests)
+    # Reach's navigation markers sit on their targets (src/common/reach_nav_marker_logic.h): the marker on its
+    # target's own pixel in both eyes with the eye's field of view, the head turned and the gun swept, how far
+    # off the stock placement was, and the world anchors the HUD height leaves alone.
+    add_executable(halomccvr_reach_nav_marker_tests tests/reach_nav_marker_tests.cpp)
+    target_include_directories(halomccvr_reach_nav_marker_tests PRIVATE src/common)
+    add_test(NAME halomccvr_reach_nav_marker_tests COMMAND halomccvr_reach_nav_marker_tests)
     # Head-relative HUD and sound, the shared pure half (src/common/head_relative_logic.h): the heading of a
     # forward vector, the game's forward with the head's yaw, the head sample's verdict, and the player's two
     # headset checks (gun swept: contacts stay put; head turned: contacts turn) as geometry.
