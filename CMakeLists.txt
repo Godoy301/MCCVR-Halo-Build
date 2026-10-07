@@ -901,6 +901,13 @@ if(BUILD_TESTING)
     add_executable(halomccvr_reach_head_relative_tests tests/reach_head_relative_tests.cpp)
     target_include_directories(halomccvr_reach_head_relative_tests PRIVATE src/common)
     add_test(NAME halomccvr_reach_head_relative_tests COMMAND halomccvr_reach_head_relative_tests)
+    # Halo 4's motion tracker follows the head (src/common/halo4_head_relative_logic.h; a retail-derived lead, not
+    # H4EK-verified): the decode of the three sites and its refusals, the proof the hook takes at run time before
+    # it changes anything (agree, disagree, a reference that did not move, withdrawal), and the two headset checks
+    # on the game's own placement arithmetic.
+    add_executable(halomccvr_halo4_head_relative_tests tests/halo4_head_relative_tests.cpp)
+    target_include_directories(halomccvr_halo4_head_relative_tests PRIVATE src/common)
+    add_test(NAME halomccvr_halo4_head_relative_tests COMMAND halomccvr_halo4_head_relative_tests)
     # Head-relative HUD and sound, the shared pure half (src/common/head_relative_logic.h): the heading of a
     # forward vector, the game's forward with the head's yaw, the head sample's verdict, and the player's two
     # headset checks (gun swept: contacts stay put; head turned: contacts turn) as geometry.
@@ -912,6 +919,11 @@ if(BUILD_TESTING)
     add_executable(halomccvr_pitch_trim_tests tests/pitch_trim_tests.cpp)
     target_include_directories(halomccvr_pitch_trim_tests PRIVATE src/common)
     add_test(NAME halomccvr_pitch_trim_tests COMMAND halomccvr_pitch_trim_tests)
+    # Mod hotkeys are bare keys (src/common/hotkey_logic.h): a key with Ctrl, Alt or a Windows key held is
+    # another tool's chord (a replay-capture Ctrl+F9 once trimmed the view two degrees per clip).
+    add_executable(halomccvr_hotkey_tests tests/hotkey_tests.cpp)
+    target_include_directories(halomccvr_hotkey_tests PRIVATE src/common)
+    add_test(NAME halomccvr_hotkey_tests COMMAND halomccvr_hotkey_tests)
     # Head-relative motion tracker, Halo 3 / ODST (src/common/halo3_head_relative_logic.h): the game's placement
     # arithmetic as read from halo3.dll, the head's heading substituted into it, every refusal, the signatures'
     # decode offsets, and the two headset checks as geometry.

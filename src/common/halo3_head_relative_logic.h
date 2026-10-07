@@ -133,6 +133,25 @@ inline void Place(float dx, float dy, float sinA, float cosA, float invRange, fl
     out[1] = (dx * sinA + dy * cosA) * invRange;
 }
 
+// ---- the player's own blip ----
+// The tracker update measures every contact from the unit's HEAD MARKER (it calls +0x355460, which asks for
+// marker 0x9F), and its first object contact, slot 0 handed over with no point, is the player's own unit,
+// measured from the object's own position (0x32D722: object +0x1C / +0x20 minus the origin). So the dot that
+// stands for the player is drawn where the body is relative to the animated head, not at the centre.
+// MEASURED (2026-10-07, Halo 3 Forge, a 25 m tracker, walking): 0.40 m behind the centre with the gun level,
+// 0.53 m with it pitched 50 degrees down, and the offset turns with whatever heading the tracker is given
+// (0.21 m right / 0.33 m below with the head 60 degrees right). A player saw it as "the green dot that
+// represents me is sitting below center".
+//
+// The builder takes its contact's position from `point` when one is given (0x32D74B), so handing it the
+// ORIGIN as the point makes that one contact's offset exactly zero. Whether the blip is shown at all, and its
+// type, still come from the unit (slot 0 keeps its tracked entry). No other contact is touched.
+// Applies when the head-relative tracker is on for the local player; otherwise the game's own placement.
+inline const float* OwnBlipPoint(bool localSwitchedOn, int slot, const float* point, const float* origin) noexcept
+{
+    return localSwitchedOn && slot == 0 && !point && origin ? origin : point;
+}
+
 // ---- the substitution ----
 // The last heading the head had (looking straight up or down leaves none), per title generation.
 struct Hold
