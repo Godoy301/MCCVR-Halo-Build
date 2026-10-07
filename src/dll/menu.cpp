@@ -1860,12 +1860,12 @@ namespace
                             "Halo: Reach and Halo 3 for now; other games keep their own tracker. Live.");
         ImGui::Spacing();
         ImGui::Separator();
-        ImGui::Text("Waypoints and name tags");
-        changed |= ImGui::Checkbox("Markers sit on their targets", &g_config.nav_markers_on_target);
-        ImGui::TextDisabled("ON: objective markers, marked players and name tags are drawn where their target\n"
-                            "really is, for each eye, and stay on it when you turn your head.\n"
-                            "OFF: placed with the game's flat-screen field of view, as before.\n"
-                            "Halo: Reach for now; Halo 3 already does this. Live.");
+        ImGui::Text("Waypoints");
+        changed |= ImGui::Checkbox("Markers use the headset's field of view", &g_config.nav_markers_on_target);
+        ImGui::TextDisabled("ON: objective markers are projected with the field of view each eye is drawn with,\n"
+                            "so a marker stays on its point when you turn your head.\n"
+                            "OFF: the game's flat-screen field of view, as before (about twice as far off-centre).\n"
+                            "Halo: Reach only. Markers on other players are untested. Live.");
         ImGui::Spacing();
         ImGui::Separator();
         ImGui::Text("HUD layout");

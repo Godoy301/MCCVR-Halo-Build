@@ -11,14 +11,6 @@ std::atomic<uint64_t> g_reachHudHeightApplied{0};
 std::atomic<uint64_t> g_reachHudHeightRefused{0};
 thread_local bool g_reachHudHeightRedirected = false;
 thread_local uint32_t g_reachHudAnchorDepth = 0;
-// NAVIGATION MARKERS (src/common/reach_nav_marker_logic.h, which the including
-// file includes first): a basis the producer put on a point in the WORLD is not
-// HUD furniture, and moving it by the HUD height moves the marker off its
-// target. True from the moment any call of the outermost transaction in flight
-// (itself, or the parent chain it recursed into) produced such a basis. Same
-// thread as the depth counter.
-thread_local bool g_reachHudAnchorWorld = false;
-std::atomic<uint64_t> g_reachHudHeightWorldExempt{0};
 
 constexpr uintptr_t kReachHudAnchorBasisRva = 0x2DB54C;
 constexpr uintptr_t kReachHudAnchorBasisEndRva = 0x2DC1BE;
@@ -88,33 +80,12 @@ static void ReachAdjustHudAnchorHeight(void* basis) noexcept
     }
 }
 
-// The producer's sixth output after it returned. False when the caller gave
-// none or it cannot be read.
-static bool ReachReadNativeAnchorFlag(
-    const bool* nativeAnchorFlag, bool& value) noexcept
-{
-    if (!nativeAnchorFlag)
-        return false;
-    __try
-    {
-        value = *reinterpret_cast<const volatile uint8_t*>(
-            nativeAnchorFlag) != 0;
-        return true;
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER)
-    {
-        return false;
-    }
-}
-
 __declspec(noinline) bool __fastcall ReachHudAnchorBasisDetour(
     int userIndex, int anchorType, void* placementFlags, void* drawWidgetData,
     void* basis, bool* nativeAnchorFlag)
 {
     g_reachCamera.activeCallbacks.fetch_add(1, std::memory_order_acq_rel);
     const bool outermost = g_reachHudAnchorDepth++ == 0;
-    if (outermost)
-        g_reachHudAnchorWorld = false;
     bool result = false;
     __try
     {
@@ -123,44 +94,16 @@ __declspec(noinline) bool __fastcall ReachHudAnchorBasisDetour(
         {
             result = original(userIndex, anchorType, placementFlags,
                 drawWidgetData, basis, nativeAnchorFlag);
-            // A basis on a point in the world, here or in the parent chain
-            // below: the game's own anchor type, and the sixth output it
-            // clears when the point was projected.
-            bool nativeAnchor = true;
-            const bool flagRead =
-                result && reach_nav_markers::AnchorIsWorld(anchorType) &&
-                ReachReadNativeAnchorFlag(nativeAnchorFlag, nativeAnchor);
-            if (reach_nav_markers::WorldAnchorProduced(
-                    anchorType, result, flagRead, nativeAnchor))
-            {
-                g_reachHudAnchorWorld = true;
-            }
             // Anchor 0 (parent) recurses through +0x2DA818 -> +0x2DA8BA.
             // Translate the fully composed outer result once; shifting both
             // parent and child would compound height with authored scale.
             if (result && outermost)
-            {
-                if (g_reachHudAnchorWorld && g_config.nav_markers_on_target)
-                {
-                    // On its target: not moved. Counted only where the
-                    // height would have moved it.
-                    if (basis && !g_reachHudHeightRedirected &&
-                        ReachHudHeightOwnsStereo())
-                    {
-                        g_reachHudHeightWorldExempt.fetch_add(
-                            1, std::memory_order_relaxed);
-                    }
-                }
-                else
-                    ReachAdjustHudAnchorHeight(basis);
-            }
+                ReachAdjustHudAnchorHeight(basis);
         }
     }
     __finally
     {
         --g_reachHudAnchorDepth;
-        if (outermost)
-            g_reachHudAnchorWorld = false;
         g_reachCamera.activeCallbacks.fetch_sub(1, std::memory_order_acq_rel);
     }
     return result;

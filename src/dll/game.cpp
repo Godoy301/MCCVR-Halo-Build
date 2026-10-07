@@ -22017,8 +22017,8 @@ namespace
     }
 
     #include "reach_hud_height.inl"
-    // Navigation markers sit on their targets (reach_nav_markers.inl). Its report formats its refusals
-    // with the head-relative lane's helper, which is defined further down.
+    // Navigation markers are projected with the eye's field of view (reach_nav_markers.inl). Its report
+    // formats its refusals with the head-relative lane's helper, which is defined further down.
     int ReachHeadRelativeReasons(char* text, size_t capacity, const uint32_t* counts, size_t count,
                                  size_t used, const char* (*name)(size_t));
     #include "reach_nav_markers.inl"

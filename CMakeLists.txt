@@ -901,9 +901,10 @@ if(BUILD_TESTING)
     add_executable(halomccvr_reach_head_relative_tests tests/reach_head_relative_tests.cpp)
     target_include_directories(halomccvr_reach_head_relative_tests PRIVATE src/common)
     add_test(NAME halomccvr_reach_head_relative_tests COMMAND halomccvr_reach_head_relative_tests)
-    # Reach's navigation markers sit on their targets (src/common/reach_nav_marker_logic.h): the marker on its
-    # target's own pixel in both eyes with the eye's field of view, the head turned and the gun swept, how far
-    # off the stock placement was, and the world anchors the HUD height leaves alone.
+    # Reach's navigation markers, the pure half (src/common/reach_nav_marker_logic.h). Geometry on the header's
+    # own MODEL of the game's projection, not on the game: with the eye's field of view the model's marker is
+    # on its point's pixel for each eye with the head turned and the gun swept; with the game's it is off by
+    # the magnification; the field-of-view verdicts; the decoding of the projection's sites from byte patterns.
     add_executable(halomccvr_reach_nav_marker_tests tests/reach_nav_marker_tests.cpp)
     target_include_directories(halomccvr_reach_nav_marker_tests PRIVATE src/common)
     add_test(NAME halomccvr_reach_nav_marker_tests COMMAND halomccvr_reach_nav_marker_tests)

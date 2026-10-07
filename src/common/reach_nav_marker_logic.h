@@ -1,12 +1,16 @@
-// REACH: NAVIGATION MARKERS SIT ON THEIR TARGETS, the pure half (no game, engine or OpenXR includes). Objective
-// waypoints, marked players, name tags and every other HUD element anchored to a point in the world.
-// The write-up is docs/REACH-NAV-MARKERS-2026-10-07.md; the runtime half is src/dll/reach_nav_markers.inl.
+// REACH: NAVIGATION MARKERS ARE PROJECTED WITH THE EYE'S FIELD OF VIEW, the pure half (no game, engine or OpenXR
+// includes). The write-up is docs/REACH-NAV-MARKERS-2026-10-07.md; the runtime half is
+// src/dll/reach_nav_markers.inl.
 //
-// WHAT REACH DOES (HREK first, then matched in retail).
+// Two kinds of statement are kept apart below. READ STATICALLY: from HREK and the retail image, never run.
+// RUN IN A GAME: 2026-10-07, three sessions of one binary, ONE marker (the King of the Hill hill marker), on foot,
+// Meta XR Simulator. Objective waypoints of other kinds, marked players and name tags have not been on screen.
+//
+// WHAT REACH DOES (read statically: HREK first, then matched in retail).
 // HREK reach_tag_test.exe, chud_draw.cpp: ONE function turns a world point into a place on the HUD (+0x92D980;
-// retail haloreach.dll +0x2E1430, eleven direct callers). Every world-anchored element reaches it: the targets a
-// user's HUD tracks, the object / player / scripted-object anchors, the flag markers, the navpoint list, the
-// damage arrows. It does not use the view being drawn. It BUILDS a camera of its own:
+// retail haloreach.dll +0x2E1430, eleven direct callers). By its callers, the world-anchored elements reach it:
+// the targets a user's HUD tracks, the object / player / scripted-object anchors, the flag markers, the navpoint
+// list, the damage arrows. It does not use the view being drawn. It BUILDS a camera of its own:
 //     camera     = render_camera_from_observer_camera(observer_get_camera(user))   ; position, forward, up and
 //                                                                                 ; the vertical field of view
 //     projection = render_projection_from_render_camera(camera, the user's window)
@@ -14,28 +18,44 @@
 // and the widget is then drawn at that pixel, in the same pass that draws the rest of the HUD over the eye.
 //
 // In this mod the eye is rasterised from the HEAD with a field of view that covers the headset's (the compact
-// camera's +0x28, written by ReachApplyEyeOffset), while the observer camera is the one aim steering points down
-// the controller ray. The existing observer-camera hook hands the marker projection the eye's position, forward
-// and up at its call site (the "CHUD site"), which took the markers off the hand; but it left the FIELD OF VIEW
-// the game's own, about half the eye's. A marker was therefore right only on the eye's axis and was pushed
-// outward everywhere else by tan(eye half-angle) / tan(game half-angle): turn the head ten degrees away from an
-// objective and its marker moved twenty-odd.
+// camera's +0x28, written by ReachApplyEyeOffset). The existing observer-camera hook hands the marker projection
+// the eye's position, forward and up at its call site (the "CHUD site"); it left the FIELD OF VIEW the game's
+// own, about half the eye's. A marker is then right only on the eye's axis and is pushed outward everywhere
+// else by tan(eye half-angle) / tan(game half-angle).
+//   RUN IN A GAME, switch off: eye 100.00 deg, game 57.89 deg, ratio 2.155. The marker's pixel was 2.155 times
+//   its world point's offset from the raster's centre in x and in y on every sample, both eyes: 311 px off at
+//   9.6 deg, 442-461 px at about 14 deg, 732-745 px at about 22 deg, of a 5242 x 3780 raster; from about 26 deg
+//   the game had it on its own off-screen ring. In the composited left eye (840 x 880) the glyph sat 76 px from
+//   its world point at 9.6 deg and 176 px at 21.8 deg.
+//   The owner's report called the markers "aim-dependent". That was NOT reproduced: with the head still, sweeping
+//   the gun 45 deg either way moved the stock marker by 0.1 px. What was reproduced is the head-angle error above.
 //
-// Halo 3 does not have the fault, and it is the model: its marker projection (halo3.dll +0x2F2424) builds no
-// camera. It reads the CURRENT VIEW's own rasteriser camera and projection, the pair this mod rebuilds per eye.
+// Halo 3 (read statically, retail only): its marker projection (halo3.dll +0x2F2424) builds no camera. It reads
+// the CURRENT VIEW's own rasteriser camera and projection, the pair this mod rebuilds per eye. Not run here.
 //
-// THE SEAM, part 1 (this header's first half): at the CHUD site the camera is also given the eye's vertical field
-// of view. Reach derives its horizontal scale from that one angle and the window's aspect, and rasterises a
-// frustum that is symmetric about the camera's axis in both directions (it has no other kind: a headset's
-// asymmetric or canted eye is covered by a symmetric frustum about the eye's own axis and cropped at submission),
-// so with the same position, forward, up and vertical field of view the game builds, for the marker, the very
-// projection the eye was rasterised with. The marker then lands on its target's own pixel in each eye: on the
-// target in both eyes, at the target's depth, with no lag, and in the image the compositor reprojects.
-// Part 1 also leaves world-anchored elements out of the HUD height shift, which moved them off their targets by
-// the player's HUD height setting.
+// THE SEAM (part 1, all this lane ships): at the CHUD site the camera is also given the eye's vertical field of
+// view. Read statically: Reach derives its horizontal scale from that one angle and the window's aspect, and
+// rasterises a frustum that is symmetric about the camera's axis in both directions (a headset's asymmetric or
+// canted eye is covered by a symmetric frustum about the eye's own axis and cropped at submission), so with the
+// same position, forward, up and vertical field of view the game should build, for the marker, the projection
+// the eye was rasterised with.
+//   RUN IN A GAME, switch on: the projection's pixel equalled this header's model of the eye's raster on every
+//   compared sample (0.00 px, both eyes, 8.3 to 31.1 deg). That check shares its inputs with the thing checked:
+//   it shows the copy took effect, not that the model is the picture. Independently, in the composited LEFT eye
+//   the glyph's tip was within 0.8 px in x and 1.6-2.1 px above its world point's predicted pixel at 0, 10, 20
+//   and 30 deg to either side (about the same 2 px is there with the switch off, against the stock pixel, and
+//   at HUD height 0: it is not the error being fixed, and its cause was not found).
+//   NOT SHOWN: the marker against the hill ITSELF (the hill was never identified in a picture); the right eye's
+//   composited image; depth, lag and reprojection; a real headset; an asymmetric or canted eye; any other marker.
 //
-// Nothing here is read by a shot, an aim or the network: the camera is the marker projection's private copy, and
-// the anchor basis is HUD presentation.
+// TAKEN OUT: a second half that left world-anchored HUD bases out of the HUD height shift. With the height at
+// +16 and at 0 the hill marker stayed within 0.5 px of the same place against its world point while the radar
+// and the score panel moved 8 px, and the branch's counter read 0 in every window of every session. The HUD
+// height does not reach that marker, the branch never ran in a game, and which markers it would act on is not
+// known; see the write-up for the anchor types read from HREK.
+//
+// Nothing here is read by a shot, an aim or the network (by reading the code: the camera written is the marker
+// projection's own stack copy).
 #pragma once
 
 #include <cmath>
@@ -170,41 +190,6 @@ inline bool ProjectToRaster(const Camera& camera, const float point[3], float wi
     out[0] = x;
     out[1] = y;
     return true;
-}
-
-// ---- the anchors -----------------------------------------------------------------------------------------------
-// HREK chud_draw.cpp: the anchor basis producer (reach_tag_test.exe +0x91C490; retail +0x2DB54C, the function the
-// HUD height hook already wraps) switches on a widget's authored anchor type. The official enum table
-// (+0x20875C0) names the types; the producer's own jump table (+0x91D1A4, 51 entries) says what each does.
-// These end at a point in the WORLD: their case reaches the marker projection, directly or through the object
-// path (+0x91DB80 -> +0x925000 -> +0x92D980), or copies a point that projection produced for the user's HUD
-// earlier in the same pass (+0x91D270, from the targets update +0x91EFD0):
-//     15 tracked target      16 <tracking object>     21 weapon target (when the weapon has one)
-//     22 ghost reticule      23 hologram target       24 airstrike target
-//     25 <player>            the name tags and markers over other players
-//     26 <scripted object>   the waypoints game types and scripts put on objects, flags and points
-//     40..49                 fireteam and objective objects (enemy / friendly / neutral objective object)
-// Every one of them, when it succeeds, returns true and clears the producer's sixth output (the "native anchor"
-// byte). Anchor 21 falls back to the crosshair's own place when the weapon has no target, and then leaves that
-// byte set; so the byte tells the two apart. The scoreboard and metagame anchors (27..33) clear it too, which is
-// why it cannot stand in for the type.
-// ADDR-HYGIENE: structural. The numbers are the tag format's enum, the same in the kit and in retail maps, read
-// from HREK's own table and switch (tools/verify-reach-nav-markers.py re-derives the set from both images).
-inline constexpr int kAnchorTrackedTarget = 15, kAnchorTrackingObject = 16, kAnchorWeaponTarget = 21,
-                     kAnchorGhostReticule = 22, kAnchorHologramTarget = 23, kAnchorAirstrikeTarget = 24,
-                     kAnchorPlayer = 25, kAnchorScriptedObject = 26, kAnchorFirstObjectAnchor = 40,
-                     kAnchorLastObjectAnchor = 49;
-inline constexpr bool AnchorIsWorld(int anchorType)
-{
-    return anchorType == kAnchorTrackedTarget || anchorType == kAnchorTrackingObject ||
-           (anchorType >= kAnchorWeaponTarget && anchorType <= kAnchorScriptedObject) ||
-           (anchorType >= kAnchorFirstObjectAnchor && anchorType <= kAnchorLastObjectAnchor);
-}
-// Did this call of the producer put its basis on a point in the world? `produced`: its return value.
-// `flagRead` / `nativeAnchor`: its sixth output, when the caller gave one and it could be read.
-inline constexpr bool WorldAnchorProduced(int anchorType, bool produced, bool flagRead, bool nativeAnchor)
-{
-    return produced && AnchorIsWorld(anchorType) && flagRead && !nativeAnchor;
 }
 
 // ====================================================================================================================

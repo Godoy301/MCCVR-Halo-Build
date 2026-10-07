@@ -1,7 +1,8 @@
-// Reach: navigation markers sit on their targets (src/common/reach_nav_marker_logic.h). The player's headset
-// checks as geometry, on a model of the game's own projection as read from the pinned module: the marker is on
-// its target in BOTH eyes; turning the head leaves it there; sweeping the gun moves nothing; and how far off the
-// stock placement was. Then the anchors the HUD height hook leaves alone.
+// Reach: navigation markers are projected with the eye's field of view (src/common/reach_nav_marker_logic.h).
+// GEOMETRY ON A MODEL, not the game: the header's own model of the projection, as read from the pinned module.
+// These checks say what follows IF the game projects as the model does: with the eye's field of view the marker
+// is on its point's pixel for each eye, turning the head leaves it there, sweeping the gun moves nothing; and
+// how far off the stock placement is. What a game run showed is in docs/REACH-NAV-MARKERS-2026-10-07.md.
 #include "reach_nav_marker_logic.h"
 
 #include <cmath>
@@ -337,27 +338,6 @@ void BothEyes()
     }
 }
 
-void Anchors()
-{
-    for (int anchor = -5; anchor <= 80; ++anchor)
-    {
-        const bool world = anchor == 15 || anchor == 16 || (anchor >= 21 && anchor <= 26) ||
-                           (anchor >= 40 && anchor <= 49);
-        Check(AnchorIsWorld(anchor) == world, "the world anchors are HREK's: 15, 16, 21-26, 40-49");
-        for (int produced = 0; produced < 2; ++produced)
-            for (int flagRead = 0; flagRead < 2; ++flagRead)
-                for (int nativeAnchor = 0; nativeAnchor < 2; ++nativeAnchor)
-                    Check(WorldAnchorProduced(anchor, produced != 0, flagRead != 0, nativeAnchor != 0) ==
-                              (world && produced && flagRead && !nativeAnchor),
-                          "a basis is on the world only when a world anchor succeeded and cleared its sixth output");
-    }
-    Check(AnchorIsWorld(kAnchorPlayer) && AnchorIsWorld(kAnchorScriptedObject),
-          "the players' markers and the scripted waypoints are world anchors");
-    // The screen furniture stays HUD: corners, the motion sensor, the crosshair, the scoreboard.
-    for (int anchor : {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 17, 18, 19, 20, 27, 32, 33, 34, 39, 50})
-        Check(!AnchorIsWorld(anchor), "HUD furniture is not a world anchor");
-}
-
 // ---- the projection's own sites ------------------------------------------------------------------------------------
 // A pattern's bytes, wildcards as zero.
 std::vector<uint8_t> PatternBytes(const char* pattern)
@@ -604,7 +584,6 @@ int main()
     OnTheTarget();
     HeadTurned();
     BothEyes();
-    Anchors();
     std::printf("Reach navigation markers: %u checks, %u failures\n", checks, failures);
     return failures ? EXIT_FAILURE : EXIT_SUCCESS;
 }

@@ -7,8 +7,6 @@
 #include <cstring>
 #include <limits>
 
-#include "../src/common/reach_nav_marker_logic.h"
-
 namespace
 {
 enum class GameTitle { Halo3, HaloReach };
@@ -24,7 +22,7 @@ struct
     std::atomic<uint32_t> generation{3}, activeCallbacks{0};
     std::atomic<bool> installed{true}, armed{true}, teardownRequested{false};
 } g_reachCamera;
-struct { float hud_vertical_offset = 16.0f; bool nav_markers_on_target = true; } g_config;
+struct { float hud_vertical_offset = 16.0f; } g_config;
 constexpr float kHudHeightMin = -300.0f, kHudHeightMax = 300.0f;
 #include "../src/dll/reach_hud_height.inl"
 
@@ -32,8 +30,6 @@ unsigned calls = 0, checks = 0;
 bool nativeResult = true, throwNative = false, revokeDuringNative = false;
 bool nativeFlag = false;
 bool recurseParent = false;
-int recurseParentAnchor = 1;    // the anchor type the parent chain's own producer call is made with
-bool recurseParentFlag = false; // and the sixth output that call leaves
 std::array<float, 13> nativeBasis{};
 int seenUser = 0, seenAnchor = 0;
 void* seenFlags = nullptr;
@@ -53,11 +49,7 @@ bool __fastcall NativeAnchor(int user, int anchor, void* flags, void* data,
         g_reachCamera.teardownRequested.store(true);
     if (recurseParent && anchor == 0)
     {
-        bool parentFlag = !recurseParentFlag;
-        const bool previousFlag = nativeFlag;
-        nativeFlag = recurseParentFlag;
-        const bool result = ReachHudAnchorBasisDetour(user,recurseParentAnchor,flags,data,basis,&parentFlag);
-        nativeFlag = previousFlag;
+        const bool result = ReachHudAnchorBasisDetour(user,1,flags,data,basis,nativeAnchorFlag);
         // Native parent composition may scale the child's basis. Height must
         // be applied after that composition, once, in final virtual pixels.
         static_cast<float*>(basis)[11] *= 2.0f;
@@ -81,15 +73,14 @@ void Reset()
     g_enabled=true; g_reachCamera.generation=3; g_reachCamera.installed=true;
     g_reachCamera.armed=true; g_reachCamera.teardownRequested=false;
     g_reachHudHeightEnabled=true; g_reachHudHeightRedirected=false;
-    g_reachHudHeightApplied=0; g_reachHudHeightRefused=0; g_reachHudHeightWorldExempt=0;
-    g_config.nav_markers_on_target=true; recurseParentAnchor=1; recurseParentFlag=false;
+    g_reachHudHeightApplied=0; g_reachHudHeightRefused=0;
     g_reachOrigHudAnchorBasis=&NativeAnchor; g_config.hud_vertical_offset=16;
     calls=0; nativeResult=true; throwNative=false; revokeDuringNative=false;
     recurseParent=false; nativeFlag=false;
     for (size_t i=0;i<nativeBasis.size();++i) nativeBasis[i]=float(i*17+3);
 }
 
-void Run(bool translated, const char* name, int anchor = 0x1234ABCD)
+void Run(bool translated, const char* name)
 {
     std::array<float,13> output{};
     std::array<uint64_t,8> drawData{};
@@ -97,11 +88,11 @@ void Run(bool translated, const char* name, int anchor = 0x1234ABCD)
     uint32_t placementFlags=0xFEDCBA98;
     bool nativeAnchorFlag=!nativeFlag;
     const auto beforeCalls=calls;
-    const bool returned=ReachHudAnchorBasisDetour(2, anchor,
+    const bool returned=ReachHudAnchorBasisDetour(2, 0x1234ABCD,
         &placementFlags, drawData.data(), output.data(), &nativeAnchorFlag);
     Check(calls==beforeCalls+1,"native called exactly once");
     Check(returned==nativeResult,"native success/failure preserved");
-    Check(seenUser==2 && seenAnchor==anchor &&
+    Check(seenUser==2 && seenAnchor==0x1234ABCD &&
         seenFlags==&placementFlags && seenDrawData==drawData.data() &&
         seenBasis==output.data() && seenNativeFlag==&nativeAnchorFlag,
         "six full arguments forwarded without narrowing");
@@ -111,15 +102,6 @@ void Run(bool translated, const char* name, int anchor = 0x1234ABCD)
     if (translated) expected[11]-=g_config.hud_vertical_offset;
     Check(memcmp(expected.data(),output.data(),sizeof(expected))==0,name);
     Check(g_reachCamera.activeCallbacks==0,"callback accounting drained");
-}
-
-bool CatchWorldAnchorException()
-{
-    bool flag = false;
-    __try { ReachHudAnchorBasisDetour(0,26,nullptr,nullptr,nullptr,&flag); }
-    __except (GetExceptionCode()==0xE017DEAD ?
-        EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH) { return true; }
-    return false;
 }
 
 bool CatchNativeException()
@@ -170,70 +152,6 @@ int main()
     Check(calls==2 && g_reachHudHeightApplied==1 && g_reachHudAnchorDepth==0 &&
         composed[11]==nativeBasis[11]*2.0f-16.0f,
         "parent anchor translates once after complete native composition");
-    // NAVIGATION MARKERS: a basis the producer put on a point in the world is left where the game put it.
-    // HREK's own anchor types, and the sixth output the producer clears when it projected the point.
-    for (int anchor = -2; anchor <= 60; ++anchor)
-    {
-        const bool world = anchor==15 || anchor==16 || (anchor>=21 && anchor<=26) || (anchor>=40 && anchor<=49);
-        Check(reach_nav_markers::AnchorIsWorld(anchor)==world,"the world anchor types are HREK's");
-        Reset(); nativeFlag=false; Run(!world,"a world anchor is not moved by the HUD height; every other is",anchor);
-        Check(g_reachHudHeightWorldExempt==(world?1u:0u) && g_reachHudHeightApplied==(world?0u:1u),
-            "each anchor is counted once, as left alone or as moved");
-        // The same anchor type with the sixth output still set is not a projected point (anchor 21 falls back to
-        // the crosshair's own place when the weapon has no target): it is HUD furniture and moves.
-        Reset(); nativeFlag=true; Run(true,"an anchor the producer did not project still moves",anchor);
-        Check(g_reachHudHeightWorldExempt==0,"nothing is counted as left alone when the point was not projected");
-        // The player's switch off: every anchor moves, as before this feature.
-        Reset(); nativeFlag=false; g_config.nav_markers_on_target=false;
-        Run(true,"switch off: a world anchor moves with the HUD height as before",anchor);
-        Check(g_reachHudHeightWorldExempt==0 && g_reachHudHeightApplied==1,"switch off counts nothing as left alone");
-        Check(!g_reachHudAnchorWorld,"the world mark never outlives its transaction");
-    }
-    // A world anchor that failed (no such object) produces no basis: nothing moves and nothing is counted.
-    Reset(); nativeResult=false; nativeFlag=false; Run(false,"a failed world anchor is untouched",26);
-    Check(g_reachHudHeightWorldExempt==0 && g_reachHudHeightApplied==0,"a failed world anchor counts nothing");
-    // The reticle redirect and a flat frame never counted as moved; a world anchor under them is not counted as
-    // left alone either (the counter says "would have been moved").
-    Reset(); nativeFlag=false; g_reachHudHeightRedirected=true; Run(false,"a redirected world anchor is untouched",25);
-    Check(g_reachHudHeightWorldExempt==0,"a redirected world anchor is not counted");
-    Reset(); nativeFlag=false; stereo=false; Run(false,"a flat world anchor is untouched",25);
-    Check(g_reachHudHeightWorldExempt==0,"a flat world anchor is not counted");
-    // No sixth output to read: the type alone does not make it a projected point.
-    Reset();
-    { std::array<float,13> basis{};
-      Check(ReachHudAnchorBasisDetour(0,26,nullptr,nullptr,basis.data(),nullptr),"no sixth output: native result kept");
-      Check(basis[11]==nativeBasis[11]-16.0f && g_reachHudHeightWorldExempt==0,
-          "no sixth output: the anchor moves as before"); }
-    // A child widget under a world-anchored parent: the outer call is the parent anchor (0), the world anchor
-    // is the nested one. The composed basis rides the marker, so it is not moved either.
-    for (int parent : {15,16,21,22,23,24,25,26,40,45,46,47,49})
-    {
-        Reset(); recurseParent=true; recurseParentAnchor=parent; recurseParentFlag=false;
-        std::array<float,13> child{};
-        bool childFlag=true;
-        Check(ReachHudAnchorBasisDetour(0,0,nullptr,nullptr,child.data(),&childFlag),"a child of a world anchor is produced");
-        Check(calls==2 && child[11]==nativeBasis[11]*2.0f && g_reachHudHeightApplied==0 &&
-            g_reachHudHeightWorldExempt==1 && g_reachHudAnchorDepth==0 && !g_reachHudAnchorWorld,
-            "a child of a world anchor is left on the marker, counted once");
-        // The same chain with the switch off, and with a parent the producer did not project.
-        Reset(); recurseParent=true; recurseParentAnchor=parent; g_config.nav_markers_on_target=false;
-        Check(ReachHudAnchorBasisDetour(0,0,nullptr,nullptr,child.data(),&childFlag) &&
-            child[11]==nativeBasis[11]*2.0f-16.0f && g_reachHudHeightWorldExempt==0,
-            "switch off: a child of a world anchor moves once, as before");
-        Reset(); recurseParent=true; recurseParentAnchor=parent; recurseParentFlag=true;
-        Check(ReachHudAnchorBasisDetour(0,0,nullptr,nullptr,child.data(),&childFlag) &&
-            child[11]==nativeBasis[11]*2.0f-16.0f && g_reachHudHeightWorldExempt==0,
-            "a child of a parent that was not projected moves once");
-    }
-    // The mark is one transaction's: a world anchor, then a screen anchor, on the same thread.
-    Reset(); nativeFlag=false; Run(false,"a world anchor first",26);
-    nativeFlag=false; Run(true,"then a screen anchor moves",3);
-    Check(g_reachHudHeightWorldExempt==1 && g_reachHudHeightApplied==1,"the mark does not leak into the next anchor");
-    // A native exception inside a world anchor drains the mark with the depth.
-    Reset(); throwNative=true;
-    Check(CatchWorldAnchorException() && g_reachHudAnchorDepth==0 && !g_reachHudAnchorWorld &&
-        g_reachCamera.activeCallbacks==0,
-        "a native exception in a world anchor drains the mark, the depth and the callback count");
     Reset(); g_reachOrigHudAnchorBasis=nullptr;
     Check(!ReachHudAnchorBasisDetour(0,1,nullptr,nullptr,nullptr,nullptr) &&
         g_reachCamera.activeCallbacks==0,"absent original safely refuses");

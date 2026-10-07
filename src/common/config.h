@@ -474,12 +474,13 @@ struct Config
     // has not bound its seam keeps the game's own behaviour (log: TRACKER HEAD / AUDIO HEAD <title>).
     bool tracker_follows_head = true;
     bool audio_follows_head = true;
-    // NAVIGATION MARKERS SIT ON THEIR TARGETS (reach_nav_marker_logic.h). Objective waypoints, marked players,
-    // name tags and every other HUD element the game anchors to a point in the world are projected with the
-    // camera and field of view the eye was rendered with, so each sits on its target in both eyes and stays
-    // there when the head turns; and the HUD height setting no longer moves them. 0 = the game's own
-    // flat-screen field of view and the HUD height, as before. Read live. A title that has not bound this
-    // keeps its own behaviour (log: NAV MARKERS <title>).
+    // NAVIGATION MARKERS ARE PROJECTED WITH THE EYE'S FIELD OF VIEW (reach_nav_marker_logic.h). Halo: Reach's
+    // HUD projects a world point to the screen with a camera it builds itself; 1 = that camera gets the vertical
+    // field of view the eye was rendered with (it already gets the eye's position, forward and up). 0 = the
+    // game's own flat-screen field of view, as before: a marker is then drawn too far from the eye's axis by the
+    // ratio of the two (2.155 measured). Read live. Nothing else changes: the HUD height is not involved.
+    // Run in a game with one marker only (a King of the Hill hill marker); marked players and name tags have
+    // not been on screen. A title that has not bound this keeps its own behaviour (log: NAV MARKERS <title>).
     bool nav_markers_on_target = true;
     // DEV BUILDS ONLY (parsed and saved there; a player build always has 0). 1 = hook the game's marker
     // projection read-only at the level's load and report the game's pixel against the eye's own picture.

@@ -2109,11 +2109,12 @@ void ConfigSave()
     fprintf(f, "# sound yet keeps its own (log: AUDIO HEAD <game>). Live in F1 > Comfort. (default %d)\n",
         d.audio_follows_head ? 1 : 0);
     fprintf(f, "audio_follows_head = %d\n", g_config.audio_follows_head ? 1 : 0);
-    fprintf(f, "# Markers sit on their targets. Objective waypoints, marked players and name tags are drawn\n");
-    fprintf(f, "# where their target really is, for each eye, so they stay on it when you turn your head, and\n");
-    fprintf(f, "# the HUD height setting no longer moves them. 0 = placed with the game's flat-screen field of\n");
-    fprintf(f, "# view, as before: right only where you look straight at them. Halo: Reach for now; Halo 3\n");
-    fprintf(f, "# already does this (log: NAV MARKERS <game>). Live in F1 > HUD. (default %d)\n",
+    fprintf(f, "# Markers use your headset's field of view. 1 = Halo: Reach's objective markers are projected\n");
+    fprintf(f, "# with the field of view each eye is drawn with, so a marker stays on its point when you turn\n");
+    fprintf(f, "# your head. 0 = with the game's flat-screen field of view, as before: a marker is then right\n");
+    fprintf(f, "# only where you look straight at it and is drawn about twice as far off-centre everywhere\n");
+    fprintf(f, "# else. Halo: Reach only. Tested with an objective marker; markers on other players are\n");
+    fprintf(f, "# untested (log: NAV MARKERS <game>). Live in F1 > HUD. (default %d)\n",
         d.nav_markers_on_target ? 1 : 0);
     fprintf(f, "nav_markers_on_target = %d\n\n", g_config.nav_markers_on_target ? 1 : 0);
     fprintf(f, "# Degrees per snap turn.\n");

@@ -1,16 +1,22 @@
-// REACH: NAVIGATION MARKERS SIT ON THEIR TARGETS -- the runtime half. The evidence and the pure logic are in
+// REACH: NAVIGATION MARKERS ARE PROJECTED WITH THE EYE'S FIELD OF VIEW -- the runtime half. The pure logic is in
 // src/common/reach_nav_marker_logic.h; the write-up is docs/REACH-NAV-MARKERS-2026-10-07.md.
 //
-// In short. Reach projects every world-anchored HUD element (objective waypoints, marked players, name tags,
-// target indicators, damage arrows) with a camera it BUILDS for the purpose from the observer camera, inside the
-// same pass that draws the HUD over each eye. The observer-camera hook already hands that camera the eye's
-// position, forward and up at its call site. PART 1, here:
-//   * the same call site also hands it the eye's vertical field of view, so the game builds the projection the eye
-//     was rasterised with and the marker lands on its target's own pixel in each eye;
-//   * the HUD height hook leaves a basis that sits on a point in the world where the game put it
-//     (reach_hud_height.inl).
-// Both ride hooks that already exist; no new hook, and nothing but the marker projection's own stack camera and
-// the HUD's anchor basis is written. A refusal is the previous behaviour for that call, counted by reason.
+// In short. Reach's HUD projects a world point to the screen with a camera it BUILDS for the purpose from the
+// observer camera, inside the same pass that draws the HUD over each eye (one function, eleven direct callers in
+// the image: read statically, see the write-up). The observer-camera hook already hands that camera the eye's
+// position, forward and up at its call site. PART 1, here: the same call site also hands it the eye's vertical
+// field of view, so the game builds the projection the eye was rasterised with.
+//
+// What a game run has shown (2026-10-07, one marker: the King of the Hill hill marker, on foot, Meta XR Simulator):
+// with the game's own field of view the marker is drawn 2.155 times too far from the eye's axis (57.89 against
+// 100.00 deg), measured at 9.6 to 22 deg; with the eye's, it is on its world point's pixel out to 31 deg. With
+// the head still, sweeping the gun 45 deg either way did not move the marker in either case. No other marker
+// type has been on screen, and the target itself was never identified in a picture (docs, "Not proven").
+//
+// It rides a hook that already exists; no new hook, and nothing but the marker projection's own stack camera is
+// written. A refusal is the previous behaviour for that call, counted by reason.
+// (A second part, leaving world-anchored HUD bases out of the HUD height shift, was written and taken out again:
+// the height never reached the one marker that could be tested, so the branch never ran in a game.)
 
 constexpr size_t kReachNavFovCount = static_cast<size_t>(reach_nav_markers::Fov::Count);
 struct ReachNavMarkersRuntime
@@ -53,20 +59,19 @@ void InstallReachNavMarkers(bool observerCameraHookActive, uintptr_t chudSiteRet
     auto& feature = g_reachNavMarkers;
     for (auto& count : feature.fov)
         count.store(0, std::memory_order_relaxed);
-    g_reachHudHeightWorldExempt.store(0, std::memory_order_relaxed);
     feature.reportedSwitch = -1;
     feature.reportedFirstUse = feature.reportedFirstRefusal = false;
     feature.installed.store(observerCameraHookActive, std::memory_order_release);
     if (!observerCameraHookActive)
     {
         LOG("NAV MARKERS Reach: StockFallback: the observer-camera hook is not installed, so the game's own marker "
-            "projection stands (markers follow the aim); nothing else is affected");
+            "projection stands (its flat-screen field of view: markers are drawn too far from the eye's axis); "
+            "nothing else is affected");
         return;
     }
     LOG("NAV MARKERS Reach: Installed: the HUD's marker projection (the observer-camera hook's call site returning "
         "to haloreach.dll+0x%llX) is given the eye's vertical field of view (camera +0x%X) as well as its position, "
-        "forward and up, and a HUD anchor on a point in the world (types 15, 16, 21-26, 40-49) is left out of the "
-        "HUD height shift; switch=%d",
+        "forward and up; switch=%d",
         static_cast<unsigned long long>(chudSiteReturnRva), reach_nav_markers::kCameraVerticalFovOffset,
         g_config.nav_markers_on_target ? 1 : 0);
 }
@@ -88,9 +93,8 @@ void ReportReachNavMarkers()
     if (feature.reportedSwitch != switchNow)
     {
         if (feature.reportedSwitch >= 0)
-            LOG("NAV MARKERS Reach: switch %s: markers are now placed with %s", switchNow ? "on" : "off",
-                switchNow ? "the eye's own field of view, on their targets"
-                          : "the game's field of view and the HUD height, as before");
+            LOG("NAV MARKERS Reach: switch %s: markers are now projected with %s", switchNow ? "on" : "off",
+                switchNow ? "the eye's own field of view" : "the game's flat-screen field of view, as before");
         feature.reportedSwitch = switchNow;
     }
     uint32_t uses[kReachNavFovCount]{}, refused = 0;
@@ -101,8 +105,7 @@ void ReportReachNavMarkers()
             refused += uses[i];
     }
     const uint32_t used = uses[static_cast<size_t>(Fov::Used)];
-    const uint64_t exempt = g_reachHudHeightWorldExempt.exchange(0, std::memory_order_relaxed);
-    if (!used && !refused && !exempt)
+    if (!used && !refused)
         return;
     char reasons[256];
     const int length = ReachHeadRelativeReasons(reasons, sizeof(reasons), uses, kReachNavFovCount,
@@ -112,9 +115,8 @@ void ReportReachNavMarkers()
     if (used && !feature.reportedFirstUse)
     {
         feature.reportedFirstUse = true;
-        LOG("NAV MARKERS Reach: on their targets: markers are projected with the eye's vertical field of view "
-            "(%.1f deg; the game's own was %.1f deg, which drew every marker %.2f times too far from the eye's "
-            "axis)",
+        LOG("NAV MARKERS Reach: markers are projected with the eye's vertical field of view (%.1f deg; the game's "
+            "own is %.1f deg, which draws a marker %.2f times too far from the eye's axis)",
             eyeFov * reach_nav_markers::kRadToDeg, gameFov * reach_nav_markers::kRadToDeg,
             reach_nav_markers::Magnification(gameFov, eyeFov));
     }
@@ -124,11 +126,16 @@ void ReportReachNavMarkers()
         LOG("NAV MARKERS Reach: the game's own marker projection for now: %s", length ? reasons : "no reason");
     }
 #if HALOMCCVR_DEV_DIAGNOSTICS
-    LOG("NAV MARKERS Reach (dev): %u marker projections with the eye's field of view (eye %.2f deg, game %.2f deg, "
-        "stock magnification %.3f); refused %u: %s; %llu world anchors left out of the HUD height shift "
-        "(%.1f px); switch=%d",
-        used, eyeFov * reach_nav_markers::kRadToDeg, gameFov * reach_nav_markers::kRadToDeg,
-        reach_nav_markers::Magnification(gameFov, eyeFov), refused, length ? reasons : "none",
-        static_cast<unsigned long long>(exempt), g_config.hud_vertical_offset, switchNow);
+    // The pair of fields of view is the last one USED. With none used since the install there is no pair, and
+    // printing the zeroes read as a measured magnification of 1.000 (the control arm's log, 2026-10-07).
+    if (eyeFov > 0.0f && gameFov > 0.0f)
+        LOG("NAV MARKERS Reach (dev): %u marker projections with the eye's field of view (last used: eye %.2f "
+            "deg, game %.2f deg, stock magnification %.3f); refused %u: %s; switch=%d",
+            used, eyeFov * reach_nav_markers::kRadToDeg, gameFov * reach_nav_markers::kRadToDeg,
+            reach_nav_markers::Magnification(gameFov, eyeFov), refused, length ? reasons : "none", switchNow);
+    else
+        LOG("NAV MARKERS Reach (dev): %u marker projections with the eye's field of view (none used since the "
+            "install: no field-of-view pair to show); refused %u: %s; switch=%d",
+            used, refused, length ? reasons : "none", switchNow);
 #endif
 }
