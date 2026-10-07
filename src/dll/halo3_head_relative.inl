@@ -166,8 +166,9 @@ bool Halo3TrackerUser(const void* self, int32_t offset, int32_t& user)
     }
 }
 
-// One contact placement: the pair to hand the builder (the game's own unless every gate passes).
-void Halo3TrackerPair(Halo3HeadRelativeLane& lane, const void* self, float& sinA, float& cosA)
+// One contact placement: the pair to hand the builder (the game's own unless every gate passes). Returns whether
+// this is the local player's tracker with the player's switch on: all the own-blip rule needs.
+bool Halo3TrackerPair(Halo3HeadRelativeLane& lane, const void* self, float& sinA, float& cosA)
 {
     halo3_head_relative::Request in{};
     in.switchOn = lane.ready.load(std::memory_order_acquire) && g_config.tracker_follows_head;
@@ -196,6 +197,7 @@ void Halo3TrackerPair(Halo3HeadRelativeLane& lane, const void* self, float& sinA
             lane.lastNative[i].store(native[i], std::memory_order_relaxed);
             lane.lastUsed[i].store(used[i], std::memory_order_relaxed);
         }
+    return in.switchOn && in.user == 0;
 }
 } // namespace
 
@@ -252,9 +254,12 @@ __declspec(noinline) bool __fastcall Halo3TrackerObjectDetour(void* self, int sl
     bool placed = false;
     __try
     {
-        Halo3TrackerPair(lane, self, sinA, cosA);
+        const bool own = Halo3TrackerPair(lane, self, sinA, cosA);
+        // The player's own blip goes AT the centre (halo3_head_relative_logic.h, OwnBlipPoint): the game measures it
+        // from the unit's head marker to the body, 0.4 m and more off the centre.
+        const float* placedPoint = halo3_head_relative::OwnBlipPoint(own, slot, point, origin);
         if (lane.objectOriginal)
-            placed = CallNativeWithSpareSlots(lane.objectOriginal, self, slot, blip, origin, point, sinA, cosA);
+            placed = CallNativeWithSpareSlots(lane.objectOriginal, self, slot, blip, origin, placedPoint, sinA, cosA);
 #if HALOMCCVR_DEV_DIAGNOSTICS
         if (placed && slot == 0 && !point)
             Halo3TrackerNoteOwnBlip(lane, self, blip);
@@ -922,7 +927,8 @@ void HeadRelativeTrackerReport(Halo3HeadRelativeLane& lane)
         const float x = lane.ownBlipX.load(std::memory_order_relaxed), y = lane.ownBlipY.load(std::memory_order_relaxed);
         const float rangeM = lane.ownRangeWu.load(std::memory_order_relaxed) * 3.048f;
         LOG("TRACKER HEAD %s (dev): the player's own blip, %u placements; last at x %+.4f y %+.4f of the radius = "
-            "%+.2f m right, %+.2f m %s the centre (radius %.1f m). The centre is the unit's head marker, not the unit",
+            "%+.2f m right, %+.2f m %s the centre (radius %.1f m). (0, 0) = centred; the game's own placement is the "
+            "body measured from the unit's head marker",
             lane.title, own, x, y, x * rangeM, std::fabs(y) * rangeM, y > 0.0f ? "below" : "above", rangeM);
     }
 #endif
