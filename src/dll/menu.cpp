@@ -652,6 +652,13 @@ namespace
         ImGui::TextDisabled("Raw by default. Try 5%% only for micro-jitter; capped at 10%% for comfort.");
         ImGui::Spacing();
         ImGui::Separator();
+        ImGui::Text("Sound");
+        changed |= ImGui::Checkbox("Sound follows your head", &g_config.audio_follows_head);
+        ImGui::TextDisabled("ON: you hear the world from the way your head faces.\n"
+                            "OFF: from the way your gun points, as the game does it.\n"
+                            "Halo: Reach and Halo 3 for now. Live.");
+        ImGui::Spacing();
+        ImGui::Separator();
         ImGui::Text("Startup");
         changed |= ImGui::Checkbox("Auto-enter VR on level load", &g_config.auto_vr);
         ImGui::TextDisabled("Turns head tracking + stereo on when a level starts and off in the menu.");
@@ -1827,6 +1834,14 @@ namespace
 
         if (CategorySection section{Cat_Hud}; section.visible)
         {
+        ImGui::Text("Motion tracker");
+        changed |= ImGui::Checkbox("Motion tracker follows your head", &g_config.tracker_follows_head);
+        ImGui::TextDisabled("ON: contacts are placed by where your head faces, so they match what you see:\n"
+                            "sweeping the gun moves nothing, turning your head turns them.\n"
+                            "OFF: by where your gun points, as the game draws it.\n"
+                            "Halo: Reach and Halo 3 for now; other games keep their own tracker. Live.");
+        ImGui::Spacing();
+        ImGui::Separator();
         ImGui::Text("HUD layout");
         changed |= ImGui::Checkbox("Hide HUD completely", &g_config.hide_hud);
         if(g_config.hide_hud) {

@@ -1313,6 +1313,14 @@ void ConfigLoad(const wchar_t* path)
         if (!strcmp(key, "reach_sight_fault")) { g_config.reach_sight_fault=(int)strtol(val,nullptr,0); continue; }
         if (!strcmp(key, "first_person_rung_fault")) { g_config.first_person_rung_fault=(int)strtol(val,nullptr,0)&0xF; continue; }
         if (!strcmp(key, "reach_sight_trace_length_m")) { g_config.reach_sight_trace_length_m=(float)atof(val); continue; }
+        if (!strcmp(key, "tracker_head_sign")) { g_config.tracker_head_sign = atoi(val) < 0 ? -1 : 1; continue; }
+        if (!strcmp(key, "tracker_head_offset_deg"))
+        {
+            // A NaN fails both comparisons and reads as no offset.
+            const float v = static_cast<float>(atof(val));
+            g_config.tracker_head_offset_deg = (v >= -180.0f && v <= 180.0f) ? v : 0.0f;
+            continue;
+        }
 #endif
         if (!strcmp(key, "reach_vehicle_aim"))
         {
@@ -1373,6 +1381,8 @@ void ConfigLoad(const wchar_t* path)
                 static_cast<float>(atof(val)), Config{}.roomscale_recenter_moving_speed);
             continue;
         }
+        if (!strcmp(key, "tracker_follows_head")) { g_config.tracker_follows_head = atoi(val) != 0; continue; }
+        if (!strcmp(key, "audio_follows_head")) { g_config.audio_follows_head = atoi(val) != 0; continue; }
         if (!strcmp(key, "experimental_hand_alignment"))
         {
             g_config.experimental_hand_alignment = atoi(val) != 0;
@@ -2086,6 +2096,17 @@ void ConfigSave()
     fprintf(f, "# Its speed, in metres of offset closed per second. (default %.2f, range 0.10 to 3.00)\n",
         d.roomscale_recenter_moving_speed);
     fprintf(f, "roomscale_recenter_moving_speed = %.2f\n\n", g_config.roomscale_recenter_moving_speed);
+    fprintf(f, "# Motion tracker follows your head. You aim with your hand and look with your head, and the\n");
+    fprintf(f, "# game turns its motion tracker with the aim. 1 = contacts are placed by where your head faces,\n");
+    fprintf(f, "# so sweeping the gun moves nothing and turning your head turns them. 0 = the game's own\n");
+    fprintf(f, "# tracker, turned by the gun. A game that has no head-relative tracker yet keeps its own\n");
+    fprintf(f, "# (log: TRACKER HEAD <game>). Live in F1 > HUD. (default %d)\n", d.tracker_follows_head ? 1 : 0);
+    fprintf(f, "tracker_follows_head = %d\n", g_config.tracker_follows_head ? 1 : 0);
+    fprintf(f, "# Sound follows your head. 1 = you hear the world from the way your head faces. 0 = from the\n");
+    fprintf(f, "# way the gun points, as the game does it. A game that has no head-relative sound yet keeps\n");
+    fprintf(f, "# its own (log: AUDIO HEAD <game>). Live in F1 > Comfort. (default %d)\n",
+        d.audio_follows_head ? 1 : 0);
+    fprintf(f, "audio_follows_head = %d\n\n", g_config.audio_follows_head ? 1 : 0);
     fprintf(f, "# Degrees per snap turn.\n");
     fprintf(f, "# (default %.0f, range 5 to 90)\n", d.turn_snap_deg);
     fprintf(f, "turn_snap_deg = %.0f\n\n", g_config.turn_snap_deg);
@@ -2295,6 +2316,11 @@ void ConfigSave()
     fprintf(f, "# DEV BUILD ONLY. Headless tests: 1 = a synthetic gamepad driven by halomccvr_pad.txt in the\n");
     fprintf(f, "# mod folder (tools/Send-MccPad.ps1). Read at startup. Leave at 0.\n");
     fprintf(f, "dev_synthetic_pad = %d\n\n", g_config.dev_synthetic_pad);
+    fprintf(f, "# DEV BUILD ONLY (players always get 1 and 0). The motion tracker's head correction, with\n");
+    fprintf(f, "# tracker_follows_head = 1: tracker_head_sign = -1 turns it the other way, if a game's\n");
+    fprintf(f, "# tracker turns AGAINST your head; tracker_head_offset_deg adds a fixed angle. Live.\n");
+    fprintf(f, "tracker_head_sign = %d\n", g_config.tracker_head_sign < 0 ? -1 : 1);
+    fprintf(f, "tracker_head_offset_deg = %.1f\n\n", g_config.tracker_head_offset_deg);
 #endif
     fprintf(f, "# Vehicle seats: which seats your hand aims. With aim_direct_drive = 1 the seat's aim is written\n");
     fprintf(f, "# as on foot (Reach, Halo 3, ODST, Halo 4, Halo 2); Halo 3 and ODST seats also converge whenever\n");

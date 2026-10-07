@@ -896,6 +896,12 @@ if(BUILD_TESTING)
     add_executable(halomccvr_seat_converge_tests tests/seat_converge_tests.cpp)
     target_include_directories(halomccvr_seat_converge_tests PRIVATE src/common)
     add_test(NAME halomccvr_seat_converge_tests COMMAND halomccvr_seat_converge_tests)
+    # Head-relative HUD and sound, the shared pure half (src/common/head_relative_logic.h): the heading of a
+    # forward vector, the game's forward with the head's yaw, the head sample's verdict, and the player's two
+    # headset checks (gun swept: contacts stay put; head turned: contacts turn) as geometry.
+    add_executable(halomccvr_head_relative_tests tests/head_relative_tests.cpp)
+    target_include_directories(halomccvr_head_relative_tests PRIVATE src/common)
+    add_test(NAME halomccvr_head_relative_tests COMMAND halomccvr_head_relative_tests)
     # Gun-slaved seats (src/common/gun_slaved_seat_logic.h): seat flag bit 7, the occupant-aim binding, the servo's
     # feedback and lag gate, the gun-settle gate of the crosshair witness and the nod witness.
     add_executable(halomccvr_gun_slaved_seat_tests tests/gun_slaved_seat_tests.cpp)
