@@ -1878,6 +1878,13 @@ namespace
                             "so a marker stays on its point when you turn your head.\n"
                             "OFF: the game's flat-screen field of view, as before (about twice as far off-centre).\n"
                             "Halo: Reach only. Markers on other players are untested. Live.");
+        changed |= ImGui::Checkbox("Off-screen arrows stay in view", &g_config.nav_marker_arrow_in_view);
+        ImGui::TextDisabled("ON: the arrow for an objective marker or a marked player you are not looking at is\n"
+                            "drawn within 30 degrees of where your head faces, in one place for both eyes.\n"
+                            "OFF: the game's own ring, far enough out that only one eye sees the arrow.\n"
+                            "Does not touch (yet): name tags, fireteam markers, vehicle and lock-on reticles,\n"
+                            "damage arrows. Halo: Reach only. Takes effect at the next level.\n"
+                            "Not yet seen in a headset.");
         ImGui::Spacing();
         ImGui::Separator();
         ImGui::Text("HUD layout");

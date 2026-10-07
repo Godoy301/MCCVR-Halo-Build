@@ -1315,6 +1315,13 @@ void ConfigLoad(const wchar_t* path)
         if (!strcmp(key, "reach_sight_trace_length_m")) { g_config.reach_sight_trace_length_m=(float)atof(val); continue; }
         if (!strcmp(key, "tracker_head_sign")) { g_config.tracker_head_sign = atoi(val) < 0 ? -1 : 1; continue; }
         if (!strcmp(key, "nav_marker_witness")) { g_config.nav_marker_witness = atoi(val) != 0 ? 1 : 0; continue; }
+        if (!strcmp(key, "nav_marker_ring"))
+        {
+            // A NaN fails both comparisons and reads as the default.
+            const float v = static_cast<float>(atof(val));
+            g_config.nav_marker_ring = (v >= 0.0f && v <= 1.0f) ? v : Config{}.nav_marker_ring;
+            continue;
+        }
         if (!strcmp(key, "tracker_head_offset_deg"))
         {
             // A NaN fails both comparisons and reads as no offset.
@@ -1390,6 +1397,7 @@ void ConfigLoad(const wchar_t* path)
             continue;
         }
         if (!strcmp(key, "nav_markers_on_target")) { g_config.nav_markers_on_target = atoi(val) != 0; continue; }
+        if (!strcmp(key, "nav_marker_arrow_in_view")) { g_config.nav_marker_arrow_in_view = atoi(val) != 0; continue; }
         if (!strcmp(key, "experimental_hand_alignment"))
         {
             g_config.experimental_hand_alignment = atoi(val) != 0;
@@ -2132,7 +2140,15 @@ void ConfigSave()
     fprintf(f, "# else. Halo: Reach only. Tested with an objective marker; markers on other players are\n");
     fprintf(f, "# untested (log: NAV MARKERS <game>). Live in F1 > HUD. (default %d)\n",
         d.nav_markers_on_target ? 1 : 0);
-    fprintf(f, "nav_markers_on_target = %d\n\n", g_config.nav_markers_on_target ? 1 : 0);
+    fprintf(f, "nav_markers_on_target = %d\n", g_config.nav_markers_on_target ? 1 : 0);
+    fprintf(f, "# Off-screen arrows stay in view. 1 = when an objective marker or a marked player is out of\n");
+    fprintf(f, "# view, its arrow is drawn on a ring around where your head faces, at most 30 degrees out, in\n");
+    fprintf(f, "# one place for both eyes. 0 = the game's own ring, which is far enough out that only one eye\n");
+    fprintf(f, "# sees the arrow. Does NOT touch (yet): name tags, fireteam markers, vehicle and lock-on\n");
+    fprintf(f, "# reticles, damage arrows. Needs nav_markers_on_target. Halo: Reach only. Run without a\n");
+    fprintf(f, "# headset with one objective marker; not yet seen in a headset. Takes effect at the next\n");
+    fprintf(f, "# level. (default %d)\n", d.nav_marker_arrow_in_view ? 1 : 0);
+    fprintf(f, "nav_marker_arrow_in_view = %d\n\n", g_config.nav_marker_arrow_in_view ? 1 : 0);
     fprintf(f, "# Degrees per snap turn.\n");
     fprintf(f, "# (default %.0f, range 5 to 90)\n", d.turn_snap_deg);
     fprintf(f, "turn_snap_deg = %.0f\n\n", g_config.turn_snap_deg);
@@ -2347,10 +2363,14 @@ void ConfigSave()
     fprintf(f, "# tracker turns AGAINST your head; tracker_head_offset_deg adds a fixed angle. Live.\n");
     fprintf(f, "tracker_head_sign = %d\n", g_config.tracker_head_sign < 0 ? -1 : 1);
     fprintf(f, "tracker_head_offset_deg = %.1f\n\n", g_config.tracker_head_offset_deg);
-    fprintf(f, "# DEV BUILD ONLY. Halo: Reach navigation markers: 1 = hook the game's marker projection read-only\n");
-    fprintf(f, "# and log the pixel the game puts each marker on against the pixel the eye's own picture shows\n");
-    fprintf(f, "# its target at (log: NAV MARKERS Reach (dev witness)). Read when a level loads. Leave at 0.\n");
-    fprintf(f, "nav_marker_witness = %d\n\n", g_config.nav_marker_witness);
+    fprintf(f, "# DEV BUILD ONLY. Halo: Reach navigation markers. nav_marker_witness = 1 logs the pixel the game\n");
+    fprintf(f, "# puts each marker on against the pixel the eye's own picture shows its target at (log: NAV\n");
+    fprintf(f, "# MARKERS Reach (dev witness)). nav_marker_ring is the off-screen ring about your head, as a\n");
+    fprintf(f, "# fraction of the field both eyes see (default 0.60, range 0 to 1; 0 = the game's own ring).\n");
+    fprintf(f, "# Both live. The ring acts only with nav_marker_arrow_in_view = 1, and only for the navpoint\n");
+    fprintf(f, "# list's markers (log: NAV MARKERS Reach (dev): the projection's callers this window).\n");
+    fprintf(f, "nav_marker_witness = %d\n", g_config.nav_marker_witness);
+    fprintf(f, "nav_marker_ring = %.2f\n\n", g_config.nav_marker_ring);
 #endif
     fprintf(f, "# Vehicle seats: which seats your hand aims. With aim_direct_drive = 1 the seat's aim is written\n");
     fprintf(f, "# as on foot (Reach, Halo 3, ODST, Halo 4, Halo 2); Halo 3 and ODST seats also converge whenever\n");
