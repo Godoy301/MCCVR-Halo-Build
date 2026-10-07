@@ -560,6 +560,19 @@ void TestAcceptance()
     Check(Near(WrapPi(Drawn(contact, 0.0f, 20.0f, true, 1, 30.0f) - Drawn(contact, 0.0f, 20.0f)), -30.0f * kDegToRad,
                1.0e-3f),
           "an offset of +30 deg turns the tracker's heading 30 deg further left");
+    // The simulator's untouched controller points exactly half a turn from the head. That is a size, not a fault:
+    // the head's heading is handed whichever way round the half turn is taken, and just either side of it.
+    bool opposite = true;
+    for (float headYaw : {-69.7f, 0.0f, 135.0f})
+        for (float apart : {180.0f, 179.99f, -179.99f})
+        {
+            HeadingHold hold;
+            float yaw = GameYaw(headYaw + apart);
+            opposite = opposite && TrackerYaw(Request(), Head(headYaw), hold, yaw, yaw) == TrackerUse::Used &&
+                       yaw >= 0.0f && yaw < kTwoPi && Near(WrapPi(yaw - headYaw * kDegToRad), 0.0f, 1.0e-3f);
+        }
+    Check(opposite, "the aim exactly half a turn from the head (the simulator before its poses are set): the head's "
+                    "heading is handed, with no refusal");
     // The stored bytes move the same way: a contact 4 units ahead of the head sits above the centre whatever the aim.
     bool bytes = true;
     for (float aimYaw : {0.0f, 90.0f, 200.0f})
