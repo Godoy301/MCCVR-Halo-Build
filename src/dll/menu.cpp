@@ -1839,7 +1839,10 @@ namespace
         ImGui::TextDisabled("ON: contacts are placed by where your head faces, so they match what you see:\n"
                             "sweeping the gun moves nothing, turning your head turns them.\n"
                             "OFF: by where your gun points, as the game draws it.\n"
-                            "Halo: Reach and Halo 3 for now; other games keep their own tracker. Live.");
+                            "Halo: Reach and Halo 3 for now; other games keep their own tracker. Live.\n"
+                            "Halo 2 is new and has not run in a game yet. It keeps the game's own tracker until it has\n"
+                            "checked, as you play, that the heading it replaces follows your aim\n"
+                            "(on foot, with Direct drive on in Weapon & Aim).");
         ImGui::Spacing();
         ImGui::Separator();
         ImGui::Text("HUD layout");
