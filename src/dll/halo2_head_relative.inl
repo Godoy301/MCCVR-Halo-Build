@@ -482,8 +482,9 @@ bool InstallHalo2HeadRelative(uintptr_t base, size_t size, uint32_t generation)
         "and nothing in the game is written. Held statically: four unique signatures, the sampler's call on the "
         "accessor, the loop's on the sampler, pi/2 and the sign mask, %s, and the accessor's record (globals "
         "+0x%llX, stride 0x%X, yaw +0x%X) is the one the direct drive bound. UNPROVEN until the float behind that "
-        "pointer has agreed with the yaw this mod's direct drive writes on %u samples across %.0f degrees: until "
-        "then nothing is changed; switch=%d sign=%d offset=%.1f deg",
+        "pointer has agreed with the yaw this mod's direct drive writes on %u samples, one of them at least %.0f "
+        "degrees from the first and not a half turn from it: until then nothing is changed; switch=%d sign=%d "
+        "offset=%.1f deg",
         static_cast<unsigned long long>(sites.accessorRva), static_cast<unsigned long long>(sites.samplerRva),
         static_cast<unsigned long long>(sites.updateLoopRva), static_cast<unsigned long long>(sites.returnRva),
         static_cast<unsigned long long>(sites.placementRva), trig,
@@ -517,8 +518,8 @@ void ReportHalo2HeadRelative() noexcept
         feature.reportedProven = provenCount;
         LOG("TRACKER HEAD Halo 2: PROVEN at run time: the yaw the motion sensor reads through the accessor agreed "
             "with the yaw this mod's direct drive writes (last: the game's %.1f deg, written %.1f deg) on %u "
-            "samples while that aim moved across at least %.0f degrees; the tracker may now be handed the head's "
-            "heading",
+            "samples, one of them at least %.0f degrees from the first and not a half turn from it; the tracker "
+            "may now be handed the head's heading",
             feature.lastNativeDeg.load(std::memory_order_relaxed),
             feature.lastReferenceDeg.load(std::memory_order_relaxed), kProofSamples,
             kProofSpreadRad * head_relative::kRadToDeg);

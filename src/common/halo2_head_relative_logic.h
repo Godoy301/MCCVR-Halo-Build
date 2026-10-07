@@ -382,8 +382,13 @@ inline float TrackerPointBearing(const float point[2])
 // They cannot say, without the kit, what that float IS. So before the first substitution it must agree with a
 // reference that does not come from the same read: the yaw this mod's own direct drive last WROTE on foot
 // (halo2_head_relative.inl, Halo2TrackerAimReference). kProofSamples agreeing samples, and the reference must have
-// MOVED across them by more than twice the tolerance, so no constant and no unrelated field can pass. A miss
-// between the tolerance and the disagreement bound counts for nothing either way. Once proven, kProofWithdrawRun
+// MOVED among them: one agreeing sample whose reference lies between kProofSpreadRad and half a turn less
+// kProofSpreadRad from the first one's. A constant agrees only within the tolerance of ONE heading, so it has no
+// such sample. A MIRRORED yaw (2c - yaw) agrees within the tolerance of TWO headings, exactly half a turn apart,
+// so it has none either: that is why a half turn does not count as movement. It matters on a first run under the
+// simulator, where the controller starts exactly half a turn from the head and the first pose step is that half
+// turn, made in one jump: no sample lies between the two headings to disagree, as one would in a hand's sweep. A
+// miss between the tolerance and the disagreement bound counts for nothing either way. Once proven, kProofWithdrawRun
 // disagreements in a row withdraw it. A pass also settles the SIGN: the float is then the aim's yaw in the
 // convention the drive writes, and the head's yaw is measured the same way (atan2(y, x) of a world forward).
 // The sampler runs once a game tick: at the 60 ticks a second this repository has measured for Halo 2 (E-H2-28)
@@ -394,13 +399,15 @@ inline constexpr uint32_t kProofWithdrawRun = 60;
 inline constexpr float kProofToleranceRad = 2.0f * head_relative::kDegToRad;
 inline constexpr float kProofSpreadRad = 10.0f * head_relative::kDegToRad;
 inline constexpr float kProofDisagreeRad = 10.0f * head_relative::kDegToRad;
-static_assert(kProofSpreadRad > 2.0f * kProofToleranceRad, "a constant must not be able to agree across the spread");
+static_assert(kProofSpreadRad > 2.0f * kProofToleranceRad,
+              "neither a constant nor a mirrored yaw may have an agreeing sample inside the band");
+static_assert(kProofSpreadRad < head_relative::kPi * 0.25f, "the band of movement must not be empty or narrow");
 
 struct ArgumentProof
 {
     uint32_t agreed = 0;       // agreeing samples since the last disagreement (until proven)
     float anchorYaw = 0.0f;    // the reference of the first of them
-    float low = 0.0f, high = 0.0f;  // the extremes of (reference - anchor) among them
+    bool moved = false;        // one of them had its reference inside the band of movement, measured from the anchor
     uint32_t disagreed = 0;    // disagreements in a row (once proven)
     bool proven = false;
 };
@@ -427,15 +434,14 @@ inline ProofStep StepProof(ArgumentProof& proof, float gameYaw, bool referenceUs
         if (!proof.agreed)
         {
             proof.anchorYaw = referenceYaw;
-            proof.low = proof.high = 0.0f;
+            proof.moved = false;
         }
-        const float moved = WrapPi(referenceYaw - proof.anchorYaw);
-        if (moved < proof.low)
-            proof.low = moved;
-        if (moved > proof.high)
-            proof.high = moved;
+        // Movement: this far from the first agreeing reference, and not within the same margin of half a turn.
+        const float away = std::fabs(WrapPi(referenceYaw - proof.anchorYaw));
+        if (away >= kProofSpreadRad && away <= head_relative::kPi - kProofSpreadRad)
+            proof.moved = true;
         ++proof.agreed;
-        if (proof.agreed >= kProofSamples && proof.high - proof.low >= kProofSpreadRad)
+        if (proof.agreed >= kProofSamples && proof.moved)
         {
             proof.proven = true;
             return ProofStep::Proven;

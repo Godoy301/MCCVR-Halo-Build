@@ -1,6 +1,6 @@
 // Halo 2: the motion tracker follows the head (src/common/halo2_head_relative_logic.h). RETAIL-DERIVED LEAD, NOT
 // H2EK-VERIFIED: these tests cover the decode of the four sites and its refusals, the proof the hook takes at run
-// time before it changes anything (agree, disagree, a reference that did not move, withdrawal), the game's own
+// time before it changes anything (agree, disagree, a reference that did not move, a half turn, withdrawal), the game's own
 // placement arithmetic as read from retail halo2.dll, and the player's two headset checks on it.
 #include "halo2_head_relative_logic.h"
 
@@ -305,6 +305,47 @@ void TestProof()
           "a reference that never moved proves nothing, however long it agrees");
     Check(Feed(proof, 1, 51.0f, 0.0f, 0.5f) == ProofStep::Proven,
           "... and the first agreeing sample 11 deg away completes it");
+
+    // A HALF TURN IS NOT MOVEMENT. The simulator's controller starts exactly half a turn from the head, and the
+    // first pose step is that half turn in one jump: no sample lies in between.
+    proof = ArgumentProof{};
+    Check(Feed(proof, 200, 30.0f, 0.0f, 0.0f) == ProofStep::Agreed && Feed(proof, 200, 210.0f, 0.0f, 0.0f) == ProofStep::Agreed &&
+              !proof.proven && proof.agreed == 400 && !proof.moved,
+          "an exact half turn of the reference proves nothing, however long it agrees on both sides");
+    Check(Feed(proof, 1, 230.0f, 0.0f, 0.0f) == ProofStep::Proven,
+          "... and the next agreeing sample 20 deg on (160 from the first) completes it");
+    // The band's two edges, each from a fresh count: 10 deg from the first reference, and 10 deg short of half a turn.
+    for (const float awayDeg : {9.0f, -9.0f, 171.0f, -171.0f, 180.0f})
+    {
+        proof = ArgumentProof{};
+        Feed(proof, 40, 50.0f, 0.0f, 0.0f);
+        Check(Feed(proof, 1, 50.0f + awayDeg, 0.0f, 0.0f) == ProofStep::Agreed && !proof.proven,
+              "a reference under 10 deg from the first, or within 10 deg of half a turn from it, is not movement");
+    }
+    for (const float awayDeg : {11.0f, -11.0f, 90.0f, -90.0f, 169.0f, -169.0f})
+    {
+        proof = ArgumentProof{};
+        Feed(proof, 40, 50.0f, 0.0f, 0.0f);
+        Check(Feed(proof, 1, 50.0f + awayDeg, 0.0f, 0.0f) == ProofStep::Proven,
+              "a reference between 10 and 170 deg from the first, either way round, is movement");
+    }
+    // A mirrored yaw (2c - yaw, c = 30 deg) agrees at exactly two headings, c and c + 180. Jumping between them,
+    // with no sample in between, would span any spread; it has no sample inside the band.
+    proof = ArgumentProof{};
+    bool mirrorProven = false;
+    for (int round = 0; round < 50; ++round)
+        for (const float referenceDeg : {30.0f, 210.0f})
+            for (int i = 0; i < 40; ++i)
+            {
+                const float reference = WrapYaw(referenceDeg * kDegToRad);
+                mirrorProven = mirrorProven ||
+                    StepProof(proof, WrapYaw(60.0f * kDegToRad - reference), true, reference) == ProofStep::Proven;
+            }
+    Check(!mirrorProven && !proof.proven && proof.agreed == 4000,
+          "a mirrored yaw resting on its two agreeing headings, half a turn apart, never passes");
+    Check(StepProof(proof, WrapYaw((60.0f - 230.0f) * kDegToRad), true, WrapYaw(230.0f * kDegToRad)) == ProofStep::Disagreed &&
+              proof.agreed == 0,
+          "... and the first reference off those two headings is a disagreement that starts the count again");
 
     // A constant in the game against a moving reference: the neighbouring-field case.
     proof = ArgumentProof{};
