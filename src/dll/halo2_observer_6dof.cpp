@@ -11,6 +11,7 @@
 #include "../common/halo2_snap_turn_logic.h"
 #include "../common/halo2_vehicle_view.h"
 #include "../common/halo2_foot_view.h"
+#include "../common/halo2_head_relative_logic.h"
 #include "../common/director_camera_logic.h"
 #include "../common/aim_write_logic.h"
 #include "../common/seat_drive_policy.h"
@@ -886,6 +887,10 @@ namespace
         // stick -- only while this is fresh, so without a hand the stick aims, as with the drive off.
         std::atomic<uint64_t> handAimMs{0};
         std::atomic<uint64_t> liveMs{0};          // the last write
+        // The game last ran the owned user's control update (on foot or seated; with the drive on or off). The
+        // game skips that call while the director holds the player, so a stale stamp is a cinematic. One reader:
+        // the head-relative motion tracker (halo2_head_relative.inl).
+        std::atomic<uint64_t> controlMs{0};
         std::atomic<uint32_t> callbacks{0};
         std::atomic<uint32_t> calls{0}, kicks{0}, writes{0}, convergedWrites{0}, waits{0}, arms{0},
             disarms{0}, seated{0}, faults{0};
@@ -5051,6 +5056,7 @@ namespace
     }
 
     bool RemoveHalo2Drive() noexcept;   // halo2_direct_drive.inl; the live RemoveCore retires it
+    bool RemoveHalo2HeadRelative() noexcept;   // halo2_head_relative.inl; the live RemoveCore retires it
     #include "halo2_observer_cleanup.inl"
 
     // Preserved old counter-only retirement for evidence; no callers.
@@ -5099,6 +5105,8 @@ namespace
 
     #include "halo2_direct_drive.inl"
     #include "halo2_director_perspective.inl"
+    // The motion tracker follows the head instead of the aim (retail-derived lead, proves itself at run time).
+    #include "halo2_head_relative.inl"
 
     bool RemoveCoreLegacy(const char* reason) noexcept
     {
@@ -6153,6 +6161,10 @@ namespace
         // The game's own first-person answer (halo2_director_perspective.inl): reads only, and independent of
         // every hook above; failure keeps the first-person palette packet rung.
         (void)BindHalo2DirectorPerspective(base, size);
+        // The motion tracker by the head's heading (halo2_head_relative.inl). Optional and feature-local: a
+        // refusal leaves the game's own tracker and nothing else changes. After the drive: it holds its record
+        // against the one the drive bound, and the drive's written yaw is its run-time reference.
+        (void)InstallHalo2HeadRelative(base, size, generation);
         LOG("Halo 2 vehicle view reference: %s (parent/seat matches=%u); native aim feedback retained separately",
             frameVerified?"verified":"stock fallback",parentMatches);
         LOG("Halo 2 vehicle controller steering: %s (native seat predicate matches=%u); "
@@ -6860,6 +6872,7 @@ bool Halo2Observer6Dof_Poll(
     if (VR_SupportGripWiredForTitle(GameTitle::Halo2) &&
         TitleAdapter_GetActiveTitle() == GameTitle::Halo2)
         Game_PublishSupportGripOwnerEvidence(GameTitle::Halo2);
+    ReportHalo2HeadRelative();   // its own 2 s clock (the telemetry below runs every 5 s)
     ReportTelemetry();
     return true;
 }

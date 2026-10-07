@@ -955,6 +955,13 @@ if(BUILD_TESTING)
     add_executable(halomccvr_halo3_head_relative_tests tests/halo3_head_relative_tests.cpp)
     target_include_directories(halomccvr_halo3_head_relative_tests PRIVATE src/common)
     add_test(NAME halomccvr_halo3_head_relative_tests COMMAND halomccvr_halo3_head_relative_tests)
+    # Halo 2's motion tracker follows the head (src/common/halo2_head_relative_logic.h; a retail-derived lead, not
+    # H2EK-verified): the decode of the four sites and its refusals, the proof the hook takes at run time before
+    # it changes anything (agree, disagree, a reference that did not move, withdrawal), the game's placement
+    # arithmetic as read from halo2.dll, and the two headset checks on it.
+    add_executable(halomccvr_halo2_head_relative_tests tests/halo2_head_relative_tests.cpp)
+    target_include_directories(halomccvr_halo2_head_relative_tests PRIVATE src/common)
+    add_test(NAME halomccvr_halo2_head_relative_tests COMMAND halomccvr_halo2_head_relative_tests)
     # Gun-slaved seats (src/common/gun_slaved_seat_logic.h): seat flag bit 7, the occupant-aim binding, the servo's
     # feedback and lag gate, the gun-settle gate of the crosshair witness and the nod witness.
     add_executable(halomccvr_gun_slaved_seat_tests tests/gun_slaved_seat_tests.cpp)

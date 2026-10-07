@@ -1861,8 +1861,9 @@ namespace
                             "Halo 4 starts each level on the game's own tracker and changes over once it has\n"
                             "checked that the heading it replaces follows your aim: a few seconds on foot with\n"
                             "Direct drive on (Weapon & Aim). Not yet seen in a headset.\n"
-                            "Halo: CE has it too, but it has not run in a game yet (CE's own tracker turns\n"
-                            "with the turn stick only, never with the gun).");
+                            "Halo 2 does the same, at your first aim movement in a level. Not yet seen in a headset.\n"
+                            "Halo: CE follows your head from about a second into a level (CE's own tracker turns\n"
+                            "with the turn stick only, never with the gun). Not yet seen in a headset.");
         ImGui::Spacing();
         ImGui::Separator();
         ImGui::Text("HUD layout");

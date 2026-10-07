@@ -244,6 +244,9 @@ void Halo2DriveApply(int user, uint64_t returnAddress) noexcept
                 break;
             }
             st.calls.fetch_add(1, std::memory_order_relaxed);
+            // The game ran the owned user's control update (it skips this call while the director holds the
+            // player: a cinematic). One reader: the head-relative motion tracker (halo2_head_relative.inl).
+            st.controlMs.store(GetTickCount64(), std::memory_order_release);
             if (!g_config.aim_direct_drive || !st.installed.load(std::memory_order_acquire) || !st.slot ||
                 !g_armed.load(std::memory_order_acquire) || !g_levelLive.load(std::memory_order_acquire) ||
                 g_teardownRequested.load(std::memory_order_acquire))
@@ -709,6 +712,7 @@ bool InstallHalo2Drive(uintptr_t base, size_t size) noexcept
     st.footControlMs.store(0, std::memory_order_release);
     st.handAimMs.store(0, std::memory_order_release);
     st.liveMs.store(0, std::memory_order_release);
+    st.controlMs.store(0, std::memory_order_release);
     st.slot = slot;
     st.controlReturn = call + 5;
     // The seat's frame: the vehicle-tilt rebase 0x8F0D20's gate and up getter, proven here (seat_frame_reader.h).
