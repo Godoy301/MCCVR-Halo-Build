@@ -3,6 +3,8 @@
 // These checks say what follows IF the game projects as the model does: with the eye's field of view the marker
 // is on its point's pixel for each eye, turning the head leaves it there, sweeping the gun moves nothing; and
 // how far off the stock placement is. What a game run showed is in docs/REACH-NAV-MARKERS-2026-10-07.md.
+// On this branch also the off-screen ring about the head (part 2): its field, its verdicts and the stand-in
+// point, again on the model only. Nothing of the ring has run in a game.
 #include "reach_nav_marker_logic.h"
 
 #include <cmath>
@@ -572,12 +574,368 @@ void WitnessMath()
     for (int what = 0; what < static_cast<int>(Witness::Count); ++what)
         Check(WitnessName(static_cast<Witness>(what))[0] != '?', "every witness verdict has a name for the log");
 }
+
+// Where an eye drew something, as a direction (the arrow's witness): the inverse of the eye's picture, and the
+// two eyes compared in the head's frame.
+void ArrowDirections()
+{
+    const Camera head = Head(20.0f, -5.0f, 0.0f, 4.0f, 5.0f, 6.0f, kEyeFov);
+    const float t = std::tan(kEyeFov * 0.5f), aspect = kWidth / kHeight, separation = 0.064f;
+    EyeRaster eyes[2];
+    for (int side = 0; side < 2; ++side)
+    {
+        eyes[side].camera = Eye(head, side == 0 ? -0.5f * separation : 0.5f * separation, 0.0f);
+        eyes[side].xScale = 1.0f / (aspect * t);
+        eyes[side].yScale = 1.0f / t;
+        eyes[side].width = kWidth;
+        eyes[side].height = kHeight;
+    }
+    for (float rightDeg : {-30.0f, -8.0f, 0.0f, 12.0f, 35.0f})
+        for (float upDeg : {-25.0f, 0.0f, 20.0f})
+            for (float depth : {2.0f, 30.0f})
+            {
+                float point[3], angles[2][2];
+                PointAt(head, rightDeg, upDeg, depth, point);
+                for (int side = 0; side < 2; ++side)
+                {
+                    float pixel[2], across = 0.0f, up = 0.0f, ray[3];
+                    Check(EyeRasterPixel(eyes[side], point, pixel) &&
+                              EyePixelTangents(eyes[side], pixel, across, up),
+                          "a pixel the eye drew has a line of sight");
+                    EyeRay(eyes[side].camera, across, up, ray);
+                    float to[3]{point[0] - eyes[side].camera.position[0], point[1] - eyes[side].camera.position[1],
+                                point[2] - eyes[side].camera.position[2]};
+                    Normalize(to);
+                    Check(Near(ray[0], to[0], 2.0e-4f) && Near(ray[1], to[1], 2.0e-4f) && Near(ray[2], to[2], 2.0e-4f),
+                          "the line of sight through a point's pixel goes to the point");
+                    Check(DirectionAngles(head, ray, angles[side][0], angles[side][1]),
+                          "a line of sight has its two angles in the head's frame");
+                }
+                // A real point: the left eye sees it further to the right than the right eye does, by what the
+                // eye separation subtends at its depth; and at the same height.
+                const float x = depth * std::tan(rightDeg * kDegToRad);
+                const float expect = std::atan((x + 0.5f * separation) / depth) - std::atan((x - 0.5f * separation) / depth);
+                Check(Near(angles[0][0] - angles[1][0], expect, 5.0e-5f) && expect > 0.0f,
+                      "left minus right, across, is the eye separation seen from the point's depth");
+                Check(Near(angles[0][1], angles[1][1], 5.0e-5f), "and nothing up or down");
+            }
+    // The two eyes drawing the SAME direction (an arrow laid out about each eye's own axis, parallel eyes): no
+    // difference at all, which is a point at infinity.
+    {
+        float pixel[2], across = 0.0f, up = 0.0f, ray[3], angles[2][2];
+        for (int side = 0; side < 2; ++side)
+        {
+            float direction[3];
+            PointAt(eyes[side].camera, 25.0f, -10.0f, 1.0f, direction);
+            Check(EyeRasterPixel(eyes[side], direction, pixel) && EyePixelTangents(eyes[side], pixel, across, up),
+                  "the same direction in each eye");
+            EyeRay(eyes[side].camera, across, up, ray);
+            Check(DirectionAngles(head, ray, angles[side][0], angles[side][1]), "in the head's frame");
+        }
+        Check(Near(angles[0][0], angles[1][0], 5.0e-5f) && Near(angles[0][1], angles[1][1], 5.0e-5f),
+              "parallel eyes drawing one direction do not differ");
+    }
+    EyeRaster broken = eyes[0];
+    broken.yScale = 0.0f;
+    float pixel[2]{100.0f, 100.0f}, across = -7.0f, up = -7.0f;
+    Check(!EyePixelTangents(broken, pixel, across, up) && across == -7.0f, "a raster without a scale has no line of sight");
+    float behind[3]{-head.forward[0], -head.forward[1], -head.forward[2]};
+    Check(!DirectionAngles(head, behind, across, up) && across == -7.0f, "a direction behind the head has no angles");
+    Check(Near(kArcMinutesPerRadian, 3437.7468f, 1.0e-2f), "arc-minutes in a radian");
+}
+
+// ---- part 2: the off-screen ring -----------------------------------------------------------------------------------
+// The owner's headset as the session's log gave it: each eye 54 degrees outward, 40 inward, 44 up, 55 down.
+void SessionEyes(EyeField eyes[2], float cantDeg = 0.0f)
+{
+    for (int eye = 0; eye < 2; ++eye)
+    {
+        const bool left = eye == 0;
+        eyes[eye].angleLeft = -(left ? 54.0f : 40.0f) * kDegToRad;
+        eyes[eye].angleRight = (left ? 40.0f : 54.0f) * kDegToRad;
+        eyes[eye].angleUp = 44.0f * kDegToRad;
+        eyes[eye].angleDown = -55.0f * kDegToRad;
+        // Canted outward: the left eye turned to the left. OpenXR: +Y up, a positive angle about it turns -Z
+        // (forward) toward -X (left).
+        const float half = (left ? cantDeg : -cantDeg) * kDegToRad * 0.5f;
+        eyes[eye].orientation[0] = 0.0f;
+        eyes[eye].orientation[1] = std::sin(half);
+        eyes[eye].orientation[2] = 0.0f;
+        eyes[eye].orientation[3] = std::cos(half);
+    }
+}
+// The game's own off-screen placement for one camera, from retail +0x2E160C..+0x2E1831: inside its ring the point
+// itself; outside, the direction with both angles divided by the ratio. Returns the direction it projects and
+// what it stores as the record's off-screen value.
+float GamePlaces(const Camera& camera, const RingField& gameRing, const float point[3], float placed[3])
+{
+    float yaw = 0.0f, pitch = 0.0f, distance = 0.0f;
+    if (!RingAngles(camera, point, yaw, pitch, &distance))
+        return -1.0f;
+    const float ratio = RingRatio(gameRing, yaw, pitch);
+    const float scale = ratio > 1.0f ? ratio : 1.0f;
+    yaw /= scale;
+    pitch /= scale;
+    float left[3];
+    Cross(camera.up, camera.forward, left);
+    for (int i = 0; i < 3; ++i)
+        placed[i] = camera.position[i] + distance * (camera.forward[i] * std::cos(pitch) * std::cos(yaw) +
+                                                     left[i] * std::cos(pitch) * std::sin(yaw) +
+                                                     camera.up[i] * std::sin(pitch));
+    return ratio > 1.0f ? OffscreenValue(gameRing, ratio) : 0.0f;
+}
+float AngleBetween(const Camera& from, const float a[3], const float b[3])
+{
+    float da[3], db[3];
+    for (int i = 0; i < 3; ++i)
+    {
+        da[i] = a[i] - from.position[i];
+        db[i] = b[i] - from.position[i];
+    }
+    float cross[3];
+    Cross(da, db, cross);
+    return std::atan2(std::sqrt(Dot(cross, cross)), Dot(da, db)) * kRadToDeg;
+}
+
+void SharedFields()
+{
+    EyeField eyes[2];
+    SessionEyes(eyes);
+    RingField shared;
+    Check(SharedField(eyes, shared) && Near(shared.halfYaw * kRadToDeg, 40.0f, 0.01f) &&
+              Near(shared.halfPitch * kRadToDeg, 44.0f, 0.01f),
+          "the field both eyes see: the nose-side limit sideways (40), the smaller of up and down (44)");
+    const RingField ring = HeadRing(shared);
+    Check(Near(ring.halfYaw * kRadToDeg, 24.0f, 0.01f) && Near(ring.halfPitch * kRadToDeg, 26.4f, 0.01f),
+          "the head's ring is six tenths of it: the game's own 0.3 of a whole field");
+    Check(kHeadRingFraction == 2.0f * kRingFraction, "the fraction is the game's own, of the half field");
+    // Canted outward by five degrees: each eye's nose-side limit moves five degrees toward the nose's far side,
+    // so the shared field narrows by five; up and down are unchanged to a hair.
+    SessionEyes(eyes, 5.0f);
+    Check(SharedField(eyes, shared) && Near(shared.halfYaw * kRadToDeg, 35.0f, 0.05f) &&
+              Near(shared.halfPitch * kRadToDeg, 44.0f, 0.3f),
+          "canted eyes share a narrower field, measured about the head's axis");
+    // Canted inward (toed in): the outward limits come in instead.
+    SessionEyes(eyes, -20.0f);
+    Check(SharedField(eyes, shared) && Near(shared.halfYaw * kRadToDeg, 34.0f, 0.05f),
+          "toed-in eyes: the outward limit, turned in, is the smaller");
+    // Unusable eyes: nothing is claimed and the output is untouched.
+    RingField untouched;
+    untouched.halfYaw = -1.0f;
+    for (int which = 0; which < 7; ++which)
+    {
+        SessionEyes(eyes);
+        const float nan = std::numeric_limits<float>::quiet_NaN();
+        if (which == 0) eyes[1].angleLeft = nan;
+        if (which == 1) eyes[0].angleRight = -0.1f;      // a right limit to the left of the axis
+        if (which == 2) eyes[0].angleUp = 0.0f;
+        if (which == 3) eyes[1].angleDown = 0.2f;
+        if (which == 4) eyes[0].orientation[3] = nan;
+        if (which == 5) eyes[1].orientation[1] = eyes[1].orientation[3] = 0.0f;  // no rotation at all
+        if (which == 6) eyes[0].angleLeft = -1.6f;       // past a right angle
+        Check(!SharedField(eyes, untouched) && untouched.halfYaw == -1.0f, "an unusable eye field gives no ring");
+    }
+    // The game's own ring for the same eye is never the smaller one: the head's ring fits inside it.
+    const RingField game = GameRing(kEyeFov, 920.0f / 690.0f);
+    Check(Near(game.halfPitch * kRadToDeg, 33.0f, 0.01f) && Near(game.halfYaw * kRadToDeg, 44.0f, 0.01f),
+          "the game's ring with the eye's field of view: 33 degrees up and down, 44 sideways (4:3 canvas)");
+    Check(ring.halfYaw < game.halfYaw && ring.halfPitch < game.halfPitch, "the head's ring is inside the game's");
+}
+
+void RingVerdicts()
+{
+    const Camera head = Head(25.0f, 0.0f, 0.0f, 3.0f, 4.0f, 1.0f, kEyeFov);
+    EyeField eyes[2];
+    SessionEyes(eyes);
+    RingField shared;
+    SharedField(eyes, shared);
+    const RingField ring = HeadRing(shared);
+    float inside[3], outside[3];
+    PointAt(head, 5.0f, 5.0f, 10.0f, inside);
+    PointAt(head, 60.0f, 0.0f, 10.0f, outside);
+    RingMove untouched;
+    untouched.offscreen = -7.0f;
+    // Every reason to leave the game's own projection alone, in the order they are asked.
+    Check(RingPoint(false, true, 0, true, true, head, true, ring, outside, untouched) == Ring::SwitchOff, "switch off");
+    Check(RingPoint(true, false, 0, true, true, head, true, ring, outside, untouched) == Ring::NoEyeScope,
+          "not inside an eye's render");
+    Check(RingPoint(true, true, 1, true, true, head, true, ring, outside, untouched) == Ring::NotLocalUser &&
+              RingPoint(true, true, -1, true, true, head, true, ring, outside, untouched) == Ring::NotLocalUser,
+          "another user's HUD");
+    Check(RingPoint(true, true, 0, false, true, head, true, ring, outside, untouched) == Ring::NotValid,
+          "a record the game will not project");
+    Check(RingPoint(true, true, 0, true, false, head, true, ring, outside, untouched) == Ring::Plain,
+          "a caller that asked for no ring gets its point as it is, however far off");
+    Check(RingPoint(true, true, 0, true, true, head, false, ring, outside, untouched) == Ring::NoField &&
+              RingPoint(true, true, 0, true, true, head, true, RingField{}, outside, untouched) == Ring::NoField,
+          "no eye field: the game's own ring");
+    Camera broken = head;
+    broken.up[0] = broken.forward[0];
+    broken.up[1] = broken.forward[1];
+    broken.up[2] = broken.forward[2];
+    Check(RingPoint(true, true, 0, true, true, broken, true, ring, outside, untouched) == Ring::NoHead,
+          "a head whose up lies along its forward");
+    broken = head;
+    broken.position[1] = std::numeric_limits<float>::infinity();
+    Check(RingPoint(true, true, 0, true, true, broken, true, ring, outside, untouched) == Ring::NoHead,
+          "a head that is not finite");
+    const float notFinite[3]{outside[0], std::numeric_limits<float>::quiet_NaN(), outside[2]};
+    Check(RingPoint(true, true, 0, true, true, head, true, ring, notFinite, untouched) == Ring::NoHead,
+          "a point that is not finite");
+    Check(RingPoint(true, true, 0, true, true, head, true, ring, head.position, untouched) == Ring::AtHead,
+          "a point at the head has no direction");
+    Check(RingPoint(true, true, 0, true, true, head, true, ring, inside, untouched) == Ring::OnTarget,
+          "a point inside the ring is drawn on itself");
+    Check(untouched.offscreen == -7.0f && untouched.point[0] == 0.0f, "nothing but a move fills the stand-in");
+    for (int what = 0; what < static_cast<int>(Ring::Count); ++what)
+        Check(RingName(static_cast<Ring>(what))[0] != '?', "every verdict has a name for the log");
+    // On the ring's edge, just inside and just outside.
+    float edge[3];
+    PointAt(head, 23.9f, 0.0f, 10.0f, edge);
+    Check(RingPoint(true, true, 0, true, true, head, true, ring, edge, untouched) == Ring::OnTarget, "just inside");
+    PointAt(head, 24.01f, 0.0f, 10.0f, edge);
+    RingMove move;
+    Check(RingPoint(true, true, 0, true, true, head, true, ring, edge, move) == Ring::Moved, "just outside");
+    Check(move.offscreen == kOffscreenFloor, "just outside: the game's own floor for the off-screen value");
+}
+
+void RingGeometry()
+{
+    EyeField eyes[2];
+    RingField shared;
+    for (float cant : {0.0f, 5.0f})
+    {
+        SessionEyes(eyes, cant);
+        Check(SharedField(eyes, shared), "the session's eyes share a field");
+        const RingField ring = HeadRing(shared);
+        const RingField gameRing = GameRing(kEyeFov, 920.0f / 690.0f);
+        for (float headYaw : {0.0f, 130.0f})
+            for (float headPitch : {0.0f, -20.0f})
+                for (float headRoll : {0.0f, 30.0f})
+                {
+                    const Camera head = Head(headYaw, headPitch, headRoll, 1.0f, 2.0f, 1.5f, kEyeFov);
+                    float headLeft[3];
+                    Cross(head.up, head.forward, headLeft);
+                    // Targets all the way round the head and above and below it, near and far.
+                    for (float yawDeg = -180.0f; yawDeg < 180.0f; yawDeg += 22.5f)
+                        for (float pitchDeg : {-70.0f, -30.0f, 0.0f, 30.0f, 70.0f})
+                            for (float distance : {0.2f, 3.0f, 60.0f})
+                            {
+                                const float y = yawDeg * kDegToRad, p = pitchDeg * kDegToRad;
+                                float target[3];
+                                for (int i = 0; i < 3; ++i)
+                                    target[i] = head.position[i] +
+                                                distance * (head.forward[i] * std::cos(p) * std::cos(y) +
+                                                            headLeft[i] * std::cos(p) * std::sin(y) +
+                                                            head.up[i] * std::sin(p));
+                                RingMove move;
+                                const Ring what = RingPoint(true, true, 0, true, true, head, true, ring, target, move);
+                                const float ratio = RingRatio(ring, y, p);
+                                if (ratio <= 1.0f)
+                                {
+                                    Check(what == Ring::OnTarget, "a target inside the head's ring is left on itself");
+                                    continue;
+                                }
+                                Check(what == Ring::Moved, "a target outside the head's ring is brought onto it");
+                                // The stand-in: on the ring, in the target's own direction from the centre, at the
+                                // target's distance (or the comfortable minimum).
+                                float standYaw = 0.0f, standPitch = 0.0f, standDistance = 0.0f;
+                                Check(RingAngles(head, move.point, standYaw, standPitch, &standDistance),
+                                      "the stand-in has a direction");
+                                Check(Near(RingRatio(ring, standYaw, standPitch), 1.0f, 2.0e-3f),
+                                      "the stand-in is on the head's ring");
+                                // (A target exactly behind has no side: the float sine of pi is not zero, so
+                                // one side or the other is chosen by the last bit and the check has no meaning.)
+                                Check(std::fabs(std::fabs(y) - kPi) < 1.0e-4f ||
+                                          Near(standYaw * p, standPitch * y, 2.0e-3f),
+                                      "on the ring in the target's own direction from the head's axis");
+                                Check((standYaw >= 0.0f) == (y >= 0.0f) || std::fabs(y) < 1.0e-4f ||
+                                          std::fabs(std::fabs(y) - kPi) < 1.0e-4f,
+                                      "a target to the left stays to the left, a target to the right to the right");
+                                Check(Near(standDistance, distance > kMinRingDistance ? distance : kMinRingDistance,
+                                           distance * 1.0e-3f + 1.0e-3f),
+                                      "at the target's own distance, never nearer than the minimum");
+                                Check(Near(move.offscreen, OffscreenValue(ring, ratio), 1.0e-5f) &&
+                                          move.offscreen >= kOffscreenFloor,
+                                      "the off-screen value is the game's own formula on the head's ring");
+                                // BOTH EYES: each eye's own camera hands the game the same stand-in, the game finds
+                                // it inside its own ring, draws it where it stands, and reports it on screen.
+                                float seen[2][3];
+                                for (int side = -1; side <= 1; side += 2)
+                                {
+                                    const Camera eye = Eye(head, side * 0.032f, side * cant);
+                                    float placed[3];
+                                    const float gameValue = GamePlaces(eye, gameRing, move.point, placed);
+                                    Check(gameValue == 0.0f, "the game does not clamp the stand-in again");
+                                    Check(AngleBetween(eye, placed, move.point) < 0.01f,
+                                          "each eye draws the stand-in where it stands");
+                                    for (int i = 0; i < 3; ++i)
+                                        seen[side < 0 ? 0 : 1][i] = placed[i];
+                                }
+                                Check(std::fabs(seen[0][0] - seen[1][0]) + std::fabs(seen[0][1] - seen[1][1]) +
+                                              std::fabs(seen[0][2] - seen[1][2]) <
+                                          1.0e-3f * (1.0f + standDistance),
+                                      "both eyes are handed one point in the world: one arrow, not two");
+                            }
+                }
+    }
+    // The control arm: without the stand-in, the game clamps per eye about each eye's own axis. With canted eyes
+    // the two eyes then draw the same arrow in two different directions.
+    SessionEyes(eyes, 5.0f);
+    const Camera head = Head(0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, kEyeFov);
+    const RingField gameRing = GameRing(kEyeFov, 920.0f / 690.0f);
+    float target[3];
+    PointAt(head, 80.0f, 0.0f, 20.0f, target);
+    float perEye[2][3];
+    for (int side = -1; side <= 1; side += 2)
+    {
+        const Camera eye = Eye(head, side * 0.032f, side * 5.0f);
+        Check(GamePlaces(eye, gameRing, target, perEye[side < 0 ? 0 : 1]) > 0.0f, "the game's own ring clamps it");
+    }
+    Check(AngleBetween(head, perEye[0], perEye[1]) > 5.0f,
+          "stock, canted eyes: the same arrow in two directions, ten degrees apart");
+}
+
+void RingNumbers()
+{
+    // The game's formula, as read: half-width / pi * (ratio - 1), floored.
+    RingField ring;
+    ring.halfYaw = 24.0f * kDegToRad;
+    ring.halfPitch = 26.4f * kDegToRad;
+    Check(Near(OffscreenValue(ring, 2.0f), ring.halfYaw / kPi, 1.0e-6f), "twice as far out as the ring");
+    Check(OffscreenValue(ring, 1.0f) == kOffscreenFloor && OffscreenValue(ring, 1.0000001f) == kOffscreenFloor,
+          "on the ring: the floor, never zero (zero means drawn on the point)");
+    Check(Near(RingRatio(ring, ring.halfYaw, 0.0f), 1.0f, 1.0e-6f) &&
+              Near(RingRatio(ring, 0.0f, -ring.halfPitch), 1.0f, 1.0e-6f) &&
+              Near(RingRatio(ring, ring.halfYaw, ring.halfPitch), std::sqrt(2.0f), 1.0e-6f),
+          "the ring is an ellipse in the two angles");
+    // The angles, the game's way: yaw positive to the left, pitch positive up.
+    const Camera camera = Head(0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, kEyeFov);
+    float yaw = 0.0f, pitch = 0.0f, distance = 0.0f;
+    const float leftUp[3]{1.0f, 1.0f, 1.0f};  // +X forward, +Y left, +Z up
+    Check(RingAngles(camera, leftUp, yaw, pitch, &distance) && Near(yaw, kPi / 4.0f) &&
+              Near(pitch, std::atan(1.0f / std::sqrt(2.0f))) && Near(distance, std::sqrt(3.0f)),
+          "a point ahead, to the left and above: yaw 45 degrees left, pitch up");
+    const float behind[3]{-1.0f, -0.001f, 0.0f};
+    Check(RingAngles(camera, behind, yaw, pitch) && yaw < -3.0f, "a point behind and a hair to the right: yaw near -180");
+    Check(!RingAngles(camera, camera.position, yaw, pitch), "the camera's own position has no angles");
+    Check(Near(kMinRingDistance * 3.048f, 2.0f, 1.0e-4f), "the stand-in is never nearer than two metres");
+    Camera head = Head(10.0f, 20.0f, 30.0f, 0.0f, 0.0f, 0.0f, kEyeFov);
+    Check(HeadUsable(head), "a head turned, nodded and leaned is a unit perpendicular pair");
+    head.forward[0] *= 1.5f;
+    Check(!HeadUsable(head), "a forward that is not unit length is not a head");
+}
 } // namespace
 
 int main()
 {
     Sites();
     WitnessMath();
+    ArrowDirections();
+    SharedFields();
+    RingVerdicts();
+    RingGeometry();
+    RingNumbers();
     FieldOfView();
     Magnified();
     Projection();

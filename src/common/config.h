@@ -482,9 +482,17 @@ struct Config
     // Run in a game with one marker only (a King of the Hill hill marker); marked players and name tags have
     // not been on screen. A title that has not bound this keeps its own behaviour (log: NAV MARKERS <title>).
     bool nav_markers_on_target = true;
-    // DEV BUILDS ONLY (parsed and saved there; a player build always has 0). 1 = hook the game's marker
-    // projection read-only at the level's load and report the game's pixel against the eye's own picture.
+    // THE OFF-SCREEN ARROW STAYS IN VIEW (reach_nav_projection.inl). 1 = when a marker's target is out of view,
+    // the game's arrow for it is drawn on a ring about the HEAD's axis, at most 30 degrees out, as one point in
+    // the world for both eyes. Needs nav_markers_on_target. 0 = the game's own ring, about each eye's axis.
+    // Read when a level loads. Default 0 until a game run supports it.
+    bool nav_marker_arrow_in_view = false;
+    // DEV BUILDS ONLY (parsed and saved there; a player build always has these defaults).
+    // nav_marker_witness: 1 = report the pixel the game puts each marker on against the pixel the eye's own
+    // picture shows its target at. nav_marker_ring: the off-screen ring about the head, as a fraction of the
+    // field both eyes see (0.6 = the game's own 0.3 of the whole field); 0 = the game's own ring. Both live.
     int nav_marker_witness = 0;
+    float nav_marker_ring = 0.6f;
     // Live safety values for the tracker's yaw correction. Parsed and saved in DEV BUILDS ONLY; every build
     // runs with them, so a player build always has these defaults. sign: 1, or -1 if a title's seam turns
     // out mirrored. offset: degrees added after the sign.

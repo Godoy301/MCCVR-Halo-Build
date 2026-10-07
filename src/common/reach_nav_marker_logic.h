@@ -443,6 +443,48 @@ inline float OffAxis(const Camera& camera, const float point[3])
     c = c > 1.0f ? 1.0f : c < -1.0f ? -1.0f : c;
     return std::acos(c);
 }
+// WHERE AN EYE DRAWS SOMETHING, as a direction. The inverse of EyeRasterPixel: the tangents, in the eye's own
+// frame, of the line of sight through a raster pixel (across: positive to the right; up: positive up).
+inline bool EyePixelTangents(const EyeRaster& eye, const float pixel[2], float& across, float& up)
+{
+    if (!(eye.xScale > 0.0f) || !(eye.yScale > 0.0f) || !(eye.width > 0.0f) || !(eye.height > 0.0f) ||
+        !std::isfinite(eye.xScale) || !std::isfinite(eye.yScale))
+        return false;
+    const float a = (pixel[0] / eye.width - 0.5f) * 2.0f / eye.xScale;
+    const float u = (0.5f - pixel[1] / eye.height) * 2.0f / eye.yScale;
+    if (!std::isfinite(a) || !std::isfinite(u))
+        return false;
+    across = a;
+    up = u;
+    return true;
+}
+// That line of sight in the world, unit length (right = forward x up, as everywhere in this header).
+inline void EyeRay(const Camera& eye, float across, float up, float out[3])
+{
+    float right[3];
+    Cross(eye.forward, eye.up, right);
+    float v[3];
+    for (int i = 0; i < 3; ++i)
+        v[i] = eye.forward[i] + across * right[i] + up * eye.up[i];
+    const float length = std::sqrt(Dot(v, v));
+    for (int i = 0; i < 3; ++i)
+        out[i] = length > 0.0f ? v[i] / length : eye.forward[i];
+}
+// A world direction's two angles in a camera's frame, radians: across (positive to the right) and up, each the
+// arctangent of its tangent, as a screen would show them. False for a direction not in front of the camera.
+inline bool DirectionAngles(const Camera& camera, const float direction[3], float& across, float& up)
+{
+    float right[3];
+    Cross(camera.forward, camera.up, right);
+    const float depth = Dot(direction, camera.forward);
+    if (!(depth > 1.0e-6f))
+        return false;
+    across = std::atan(Dot(direction, right) / depth);
+    up = std::atan(Dot(direction, camera.up) / depth);
+    return std::isfinite(across) && std::isfinite(up);
+}
+inline constexpr float kArcMinutesPerRadian = 60.0f * 180.0f / kPi;
+
 // What the witness made of one projection. Counted by reason.
 enum class Witness : uint8_t
 {
@@ -468,5 +510,257 @@ inline const char* WitnessName(Witness what)
     case Witness::Fault: return "record read fault";
     default: return "?";
     }
+}
+
+// ====================================================================================================================
+// PART 2: THE OFF-SCREEN RING, IN THE HEADSET
+//
+// WHAT THE GAME DOES (retail +0x2E160C..+0x2E1831, the `ring` argument set). A caller that wants an off-screen
+// indicator gets the point's two angles in the camera's own space,
+//     yaw = atan2(left, forward)        pitch = atan2(up, hypot(forward, left))
+// and the ring is an ellipse in those angles, 0.3 of the camera's vertical field of view high and that times the
+// HUD's width over its height wide. Inside it the marker is drawn on the point itself. Outside it both angles
+// are divided by ratio = sqrt((yaw / halfWidth)^2 + (pitch / halfHeight)^2), the marker is drawn at that place on
+// the ring, and the record's off-screen value is max(halfWidth / pi * (ratio - 1), 0.0001), which the widget's
+// arrow turns on.
+//
+// With the eye's field of view (part 1) that ring is 0.3 of the eye's vertical field high and wider still.
+//   RUN IN A GAME (two frames, read by eye, simulator eye 100 deg, 40 deg nose-side limit): the arrow sat about
+//   32 deg from the eye's axis down and to the left, and about 39 deg to the right: inside the picture, the
+//   second at the edge of what the nose-side eye sees.
+//   COMPUTED, not run: on a headset with a 110 deg eye and the same 40 deg nose-side limit the sideways arrow
+//   would be about 44 deg out, beyond the nose-side eye's field: seen by one eye only.
+//   NOT YET MEASURED when this was written: whether the two eyes draw the arrow in the same direction. The game
+//   lays the ring out about each eye's own axis (read statically); with parallel eyes and a far target that
+//   could well agree, and only canted eyes would then differ. The witness below measures it.
+//
+// THE SEAM. A detour on the projection. When the caller asked for the ring and the point lies outside a ring laid
+// out about the HEAD's axis, the detour hands the game a stand-in point for that one call: the point's direction
+// brought onto the head's ring, at the point's own distance. Both eyes then project the SAME world point, inside
+// the game's own (larger) ring, so the game draws it on that point and the two eyes agree; when the game returns
+// the record's point is put back and its off-screen value is set by the game's own formula, so the widget still
+// shows its arrow. The game still draws its own art, text and colour. Nothing else is written.
+//
+// THE HEAD'S RING is the game's own rule applied to the field BOTH eyes see: the game's ring is six tenths of the
+// half field of view (0.3 of the whole), so the head's is six tenths of the half-angles, about the head's axis,
+// inside which a direction is visible to both eyes -- sideways, the nose-side limit of the two eyes; up and down,
+// the smaller of the two. It is never larger than the game's own ring for the same eye, so the game does not
+// clamp the stand-in again.
+// ====================================================================================================================
+
+// One eye as OpenXR reports it relative to the head: the four half-angles (left and down negative, radians) and
+// the eye's orientation in the head's space (x, y, z, w; +X right, +Y up, -Z forward).
+struct EyeField
+{
+    float angleLeft = 0.0f, angleRight = 0.0f, angleUp = 0.0f, angleDown = 0.0f;
+    float orientation[4]{0.0f, 0.0f, 0.0f, 1.0f};
+};
+// Half-angles of a ring, or of a field, about the head's axis: sideways and up-down, radians.
+struct RingField
+{
+    float halfYaw = 0.0f, halfPitch = 0.0f;
+};
+inline constexpr float kHeadRingFraction = 2.0f * kRingFraction;  // of the HALF field: the game's own 0.3 of the whole
+// The stand-in is never nearer than this (world units; about two metres): an indicator on the ring is read like
+// HUD, and a target at arm's length would pull the eyes in.
+inline constexpr float kMinRingDistance = 2.0f / 3.048f;
+
+// The field both eyes see, about the head's axis. False when an eye's angles or orientation are not usable.
+inline bool SharedField(const EyeField eyes[2], RingField& out)
+{
+    float right = 1.0e9f, left = 1.0e9f, up = 1.0e9f, down = 1.0e9f;
+    for (int eye = 0; eye < 2; ++eye)
+    {
+        const EyeField& e = eyes[eye];
+        float q[4]{e.orientation[0], e.orientation[1], e.orientation[2], e.orientation[3]};
+        const float norm = std::sqrt(q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]);
+        if (!std::isfinite(norm) || !(norm > 1.0e-6f) || !std::isfinite(e.angleLeft) ||
+            !std::isfinite(e.angleRight) || !std::isfinite(e.angleUp) || !std::isfinite(e.angleDown) ||
+            !(e.angleLeft < 0.0f) || !(e.angleRight > 0.0f) || !(e.angleUp > 0.0f) || !(e.angleDown < 0.0f) ||
+            !(e.angleLeft > -1.5f) || !(e.angleRight < 1.5f) || !(e.angleUp < 1.5f) || !(e.angleDown > -1.5f))
+            return false;
+        for (float& c : q)
+            c /= norm;
+        // The middle of each edge of the eye's field, as a ray in the eye's space, turned into the head's.
+        const float rays[4][3]{{std::tan(e.angleLeft), 0.0f, -1.0f},
+                               {std::tan(e.angleRight), 0.0f, -1.0f},
+                               {0.0f, std::tan(e.angleUp), -1.0f},
+                               {0.0f, std::tan(e.angleDown), -1.0f}};
+        float angle[4];
+        for (int i = 0; i < 4; ++i)
+        {
+            // v' = v + 2 w (q x v) + 2 q x (q x v)
+            const float* v = rays[i];
+            float qv[3], qqv[3];
+            Cross(q, v, qv);
+            Cross(q, qv, qqv);
+            const float x = v[0] + 2.0f * (q[3] * qv[0] + qqv[0]);
+            const float y = v[1] + 2.0f * (q[3] * qv[1] + qqv[1]);
+            const float z = v[2] + 2.0f * (q[3] * qv[2] + qqv[2]);
+            if (!(z < -1.0e-3f))
+                return false;
+            angle[i] = std::atan2(i < 2 ? x : y, -z);
+        }
+        left = -angle[0] < left ? -angle[0] : left;
+        right = angle[1] < right ? angle[1] : right;
+        up = angle[2] < up ? angle[2] : up;
+        down = -angle[3] < down ? -angle[3] : down;
+    }
+    const float halfYaw = left < right ? left : right, halfPitch = up < down ? up : down;
+    if (!(halfYaw > 0.01f) || !(halfPitch > 0.01f))
+        return false;
+    out.halfYaw = halfYaw;
+    out.halfPitch = halfPitch;
+    return true;
+}
+// The head's ring is never further out than this, whatever the headset's field: 30 degrees. Where the number
+// comes from: the reviewer's request for a cone "a headset can see comfortably, say 25 to 30 degrees". It is a
+// round upper bound, not something measured here.
+inline constexpr float kMaxRingAngle = 30.0f * kDegToRad;
+// The head's ring: `fraction` of the shared field's half-angles, each capped at kMaxRingAngle.
+inline RingField HeadRing(const RingField& shared, float fraction = kHeadRingFraction)
+{
+    RingField ring;
+    ring.halfYaw = shared.halfYaw * fraction;
+    ring.halfPitch = shared.halfPitch * fraction;
+    if (ring.halfYaw > kMaxRingAngle)
+        ring.halfYaw = kMaxRingAngle;
+    if (ring.halfPitch > kMaxRingAngle)
+        ring.halfPitch = kMaxRingAngle;
+    return ring;
+}
+// The game's own ring for a camera: 0.3 of its vertical field of view high, times the HUD's aspect wide.
+inline RingField GameRing(float verticalFov, float hudAspect)
+{
+    RingField ring;
+    ring.halfPitch = verticalFov * kRingFraction;
+    ring.halfYaw = ring.halfPitch * hudAspect;
+    return ring;
+}
+// A point's two angles in a camera's own space, as the game measures them (yaw positive to the left).
+// False for a point at the camera.
+inline bool RingAngles(const Camera& camera, const float point[3], float& yaw, float& pitch, float* distance = nullptr)
+{
+    const float d[3]{point[0] - camera.position[0], point[1] - camera.position[1], point[2] - camera.position[2]};
+    const float length = std::sqrt(Dot(d, d));
+    if (!std::isfinite(length) || !(length > 1.0e-5f))
+        return false;
+    float left[3];
+    Cross(camera.up, camera.forward, left);
+    const float x = Dot(d, camera.forward), y = Dot(d, left), z = Dot(d, camera.up);
+    yaw = std::atan2(y, x);
+    pitch = std::atan2(z, std::sqrt(x * x + y * y));
+    if (distance)
+        *distance = length;
+    return true;
+}
+// How far outside a ring: 1 on it, below 1 inside.
+inline float RingRatio(const RingField& ring, float yaw, float pitch)
+{
+    const float a = yaw / ring.halfYaw, b = pitch / ring.halfPitch;
+    return std::sqrt(a * a + b * b);
+}
+// The record's off-screen value for a point `ratio` times as far out as the ring (ratio above 1).
+inline float OffscreenValue(const RingField& ring, float ratio)
+{
+    const float value = ring.halfYaw / kPi * (ratio - 1.0f);
+    return value > kOffscreenFloor ? value : kOffscreenFloor;
+}
+
+// What the detour did with one projection. Counted by reason; only Moved writes anything.
+enum class Ring : uint8_t
+{
+    Moved,         // outside the head's ring: the game was handed the stand-in on it
+    OnTarget,      // inside the head's ring: the game draws the marker on the point itself
+    Plain,         // the caller did not ask for a ring: the point is projected as it is
+    SwitchOff,     // the player's switch is off
+    NoEyeScope,    // not inside an eye's own render
+    NotLocalUser,  // not output user 0's HUD
+    NotValid,      // the record's valid byte is clear: the game projects nothing
+    NoHead,        // the head's frame is not usable (not finite, not a unit perpendicular pair)
+    NoField,       // the eyes' fields are not usable
+    AtHead,        // the point is at the head: it has no direction
+    Fault,         // the record could not be read or written
+    Count
+};
+inline const char* RingName(Ring what)
+{
+    switch (what)
+    {
+    case Ring::Moved: return "brought onto the head's ring";
+    case Ring::OnTarget: return "on its target";
+    case Ring::Plain: return "no ring asked for";
+    case Ring::SwitchOff: return "switch off";
+    case Ring::NoEyeScope: return "not inside an eye's render";
+    case Ring::NotLocalUser: return "not the local user";
+    case Ring::NotValid: return "not a valid record";
+    case Ring::NoHead: return "no head frame";
+    case Ring::NoField: return "no eye field";
+    case Ring::AtHead: return "the point is at the head";
+    case Ring::Fault: return "record fault";
+    default: return "?";
+    }
+}
+// The stand-in the game is handed for one call, and what its record's off-screen value becomes afterwards.
+struct RingMove
+{
+    float point[3]{};
+    float offscreen = 0.0f;
+    float yaw = 0.0f, pitch = 0.0f;  // the point's own angles off the head's axis (radians), for the report
+    float ratio = 0.0f;
+};
+// A unit perpendicular pair, finite.
+inline bool HeadUsable(const Camera& head)
+{
+    const float ff = Dot(head.forward, head.forward), uu = Dot(head.up, head.up), fu = Dot(head.forward, head.up);
+    return std::isfinite(head.position[0]) && std::isfinite(head.position[1]) && std::isfinite(head.position[2]) &&
+           std::isfinite(ff) && std::isfinite(uu) && std::fabs(ff - 1.0f) <= 1.0e-3f &&
+           std::fabs(uu - 1.0f) <= 1.0e-3f && std::fabs(fu) <= 1.0e-3f;
+}
+// The verdict for one projection. `head`: the head's own camera for this frame (position, forward, up), the one
+// both eyes were built from. `ring`: the head's ring. Moved fills `out`; anything else leaves it untouched and
+// the game projects the point as it is. Identity only: no point is declined for being near, far or far off axis.
+inline Ring RingPoint(bool switchOn, bool eyeScope, int user, bool valid, bool wantsRing, const Camera& head,
+                      bool haveField, const RingField& ring, const float point[3], RingMove& out)
+{
+    if (!switchOn)
+        return Ring::SwitchOff;
+    if (!eyeScope)
+        return Ring::NoEyeScope;
+    if (user != 0)
+        return Ring::NotLocalUser;
+    if (!valid)
+        return Ring::NotValid;
+    if (!wantsRing)
+        return Ring::Plain;
+    if (!HeadUsable(head) || !std::isfinite(point[0]) || !std::isfinite(point[1]) || !std::isfinite(point[2]))
+        return Ring::NoHead;
+    if (!haveField || !(ring.halfYaw > 0.0f) || !(ring.halfPitch > 0.0f) || !std::isfinite(ring.halfYaw) ||
+        !std::isfinite(ring.halfPitch))
+        return Ring::NoField;
+    float yaw = 0.0f, pitch = 0.0f, distance = 0.0f;
+    if (!RingAngles(head, point, yaw, pitch, &distance))
+        return Ring::AtHead;
+    const float ratio = RingRatio(ring, yaw, pitch);
+    if (!std::isfinite(ratio))
+        return Ring::NoHead;
+    if (ratio <= 1.0f)
+        return Ring::OnTarget;
+    const float ringYaw = yaw / ratio, ringPitch = pitch / ratio;
+    const float reach = distance > kMinRingDistance ? distance : kMinRingDistance;
+    float left[3];
+    Cross(head.up, head.forward, left);
+    const float cp = std::cos(ringPitch), sp = std::sin(ringPitch), cy = std::cos(ringYaw), sy = std::sin(ringYaw);
+    RingMove move;
+    for (int i = 0; i < 3; ++i)
+        move.point[i] = head.position[i] + reach * (head.forward[i] * cp * cy + left[i] * cp * sy + head.up[i] * sp);
+    if (!std::isfinite(move.point[0]) || !std::isfinite(move.point[1]) || !std::isfinite(move.point[2]))
+        return Ring::NoHead;
+    move.offscreen = OffscreenValue(ring, ratio);
+    move.yaw = yaw;
+    move.pitch = pitch;
+    move.ratio = ratio;
+    out = move;
+    return Ring::Moved;
 }
 } // namespace reach_nav_markers
