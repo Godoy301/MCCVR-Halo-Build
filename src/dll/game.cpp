@@ -42,6 +42,7 @@
 #include "../common/first_person_view_logic.h"
 #include "../common/director_camera_logic.h"
 #include "../common/halo3_head_relative_logic.h"
+#include "../common/halo3_tracker_hud_height_logic.h"
 #include <windows.h>
 #include <tlhelp32.h>
 #include <array>
@@ -2587,6 +2588,10 @@ namespace
     // The motion tracker by the head's heading (halo3_head_relative.inl): two hooks on the tracker's contact builders.
     bool InstallHalo3HeadRelative(uintptr_t base, size_t size, uint32_t generation);
     bool RemoveHalo3HeadRelative();
+    // The tracker's blips move with the HUD height (halo3_tracker_hud_height.inl): one hook on the blip draw.
+    bool InstallHalo3TrackerHudHeight(uintptr_t base, size_t size, uint32_t generation);
+    bool RemoveHalo3TrackerHudHeight();
+    void Halo3TrackerHudHeightReport();
     void Halo3HeadRelativePublish(const float* forward, const float* up, bool gameplay);
     void Halo3HeadRelativeReport();
 #if HALOMCCVR_DEV_DIAGNOSTICS
@@ -2921,10 +2926,27 @@ namespace
     // changing its scale/aspect or the curvature tag data.
     using HudAnchorBasisFn = bool(__fastcall*)(int, void*, int, void*);
     HudAnchorBasisFn g_realHudAnchorBasis = nullptr;
+    // WHAT THIS HOOK DID, for the one part of the HUD it cannot reach: the height it last lowered a basis by on
+    // this thread since the motion tracker's blips were drawn (0 = it lowered none). The blips are not HUD widgets
+    // and read their centre elsewhere, so the blip draw has to be told (halo3_tracker_hud_height.inl consumes
+    // this). NOTE the hook runs for NESTED calls too: anchor 12, "my parent", makes the game call this function
+    // again for the parent widget's own anchor, so an element of a HUD widget is moved by twice the setting and a
+    // directly anchored one by once. halo3_tracker_hud_height_logic.h (kArtLevels) depends on exactly that:
+    // change the two together.
+    thread_local float t_halo3HudHeightLowered = 0.0f;
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    // How often the height reached one outermost basis (dev): once, twice, more. The tracker's blips are moved
+    // by twice; "more" would mean a HUD nests deeper than the code read says it can.
+    thread_local uint32_t t_halo3HudAnchorDepth = 0, t_halo3HudAnchorLevels = 0;
+    std::atomic<uint32_t> g_halo3HudAnchorChains[3]{};
+#endif
 
     bool __fastcall HudAnchorBasisHook(int userIndex, void* drawWidgetData,
                                        int anchorType, void* basis)
     {
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        ++t_halo3HudAnchorDepth;
+#endif
         const bool result = g_realHudAnchorBasis(
             userIndex, drawWidgetData, anchorType, basis);
         if (result && basis && !g_authoredReticleCaptureStarted &&
@@ -2936,8 +2958,23 @@ namespace
                 // Halo screen Y grows downward. The user-facing setting follows
                 // normal height semantics: positive raises, negative lowers.
                 reinterpret_cast<float*>(basis)[0x2C / sizeof(float)] -= height;
+                if (height != 0.0f)
+                {
+                    t_halo3HudHeightLowered = height;
+#if HALOMCCVR_DEV_DIAGNOSTICS
+                    ++t_halo3HudAnchorLevels;
+#endif
+                }
             }
         }
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        if (--t_halo3HudAnchorDepth == 0 && t_halo3HudAnchorLevels)
+        {
+            g_halo3HudAnchorChains[t_halo3HudAnchorLevels > 2 ? 2 : t_halo3HudAnchorLevels - 1].fetch_add(
+                1, std::memory_order_relaxed);
+            t_halo3HudAnchorLevels = 0;
+        }
+#endif
         return result;
     }
 
@@ -16702,6 +16739,7 @@ namespace
         if (!RemoveHalo3DualAim()) return false;
         RemoveHalo3GunBand();
         if (!RemoveHalo3HeadRelative()) return false;
+        if (!RemoveHalo3TrackerHudHeight()) return false;
         if (!LegacyDriveRemove(GameTitle::Halo3)) return false;
         if (!DisableAndRemoveHalo3ContactMelee()) return false;
         for (size_t i = g_installedGameHookCount; i > 0; --i)
@@ -17630,6 +17668,8 @@ namespace
         (void)InstallHalo3GunBand(base,size,runtimeGeneration);
         // The motion tracker by the head's heading (halo3_head_relative.inl): its own transaction, fails closed alone.
         (void)InstallHalo3HeadRelative(base,size,runtimeGeneration);
+        // The tracker's blips move with the HUD height (halo3_tracker_hud_height.inl): its own transaction too.
+        (void)InstallHalo3TrackerHudHeight(base,size,runtimeGeneration);
 #if HALOMCCVR_DEV_DIAGNOSTICS
         InstallHalo3AssistWitness(base,size);   // SHOT Halo 3 assist (dev): the turn, cap hits, residual
         InstallHalo3ImpactWitness(base,size);   // SHOT IMPACT / SHOT RETICLE Halo 3 (dev): where rounds really go
@@ -27763,6 +27803,7 @@ namespace
     #include "halo3_weapon_haptics.inl"
     #include "halo3_avatar.inl"
     #include "halo3_head_relative.inl"
+    #include "halo3_tracker_hud_height.inl"
     #include "odst_contact_melee_runtime.inl"
     #include "odst_physical_crouch.inl"
     #include "odst_muzzle_ownership.inl"
@@ -47920,6 +47961,7 @@ namespace
             LegacyDriveReport();
             GunAimReport();   // DRIVE Halo 3 gun-slaved seat (the gun camera's offset), SEAT LIMIT Halo 3 gun band
             Halo3HeadRelativeReport();   // TRACKER HEAD Halo 3: the switch, by the head / the game's own
+            Halo3TrackerHudHeightReport();   // TRACKER HUD HEIGHT Halo 3: the blips moved with the HUD height / not
             SeatAimFrameSync();   // Halo 3 / ODST seat aim: follow the first-person seat settings
 #if HALOMCCVR_DEV_DIAGNOSTICS
             Type13LogReport();   // the type-13 pilot-controller log lines (REACH SF, H4 T13)

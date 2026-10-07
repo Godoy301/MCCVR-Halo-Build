@@ -474,6 +474,14 @@ struct Config
     // has not bound its seam keeps the game's own behaviour (log: TRACKER HEAD / AUDIO HEAD <title>).
     bool tracker_follows_head = true;
     bool audio_follows_head = true;
+    // THE MOTION TRACKER'S BLIPS MOVE WITH THE HUD HEIGHT (halo3_tracker_hud_height_logic.h). Halo 3's HUD height
+    // raises the tracker's art (by twice hud_vertical_offset: the art's own anchor and its widget's) and cannot
+    // reach the blips, which the game draws around a centre it keeps elsewhere: every dot, the player's own
+    // included, sat below the tracker (half its radius at the default height). 1 = for the length of the blip
+    // draw that centre gets the art's move. 0 = the game's own centre, as before. Read live. Halo 3 only.
+    // Measured on the Spartan's HUD; the Elite's and the vehicle HUDs have not been on screen. A title that has
+    // not bound this keeps its own behaviour (log: TRACKER HUD HEIGHT <title>).
+    bool tracker_blips_follow_hud_height = true;
     // NAVIGATION MARKERS ARE PROJECTED WITH THE EYE'S FIELD OF VIEW (reach_nav_marker_logic.h). Halo: Reach's
     // HUD projects a world point to the screen with a camera it builds itself; 1 = that camera gets the vertical
     // field of view the eye was rendered with (it already gets the eye's position, forward and up). 0 = the

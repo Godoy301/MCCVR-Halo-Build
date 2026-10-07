@@ -1391,6 +1391,11 @@ void ConfigLoad(const wchar_t* path)
         }
         if (!strcmp(key, "tracker_follows_head")) { g_config.tracker_follows_head = atoi(val) != 0; continue; }
         if (!strcmp(key, "audio_follows_head")) { g_config.audio_follows_head = atoi(val) != 0; continue; }
+        if (!strcmp(key, "tracker_blips_follow_hud_height"))
+        {
+            g_config.tracker_blips_follow_hud_height = atoi(val) != 0;
+            continue;
+        }
         if (!strcmp(key, "nav_markers_on_target")) { g_config.nav_markers_on_target = atoi(val) != 0; continue; }
         if (!strcmp(key, "nav_marker_arrow_in_view")) { g_config.nav_marker_arrow_in_view = atoi(val) != 0; continue; }
         if (!strcmp(key, "experimental_hand_alignment"))
@@ -2117,6 +2122,12 @@ void ConfigSave()
     fprintf(f, "# turns with the turn stick only, never with the gun). Live in F1 > HUD. (default %d)\n",
         d.tracker_follows_head ? 1 : 0);
     fprintf(f, "tracker_follows_head = %d\n", g_config.tracker_follows_head ? 1 : 0);
+    fprintf(f, "# Motion tracker dots follow HUD height. Halo 3's HUD height moves the tracker but not the\n");
+    fprintf(f, "# dots on it, so every dot, your own included, was drawn below the tracker (half its radius\n");
+    fprintf(f, "# at the default height). 1 = the dots are drawn on the tracker wherever HUD height puts it.\n");
+    fprintf(f, "# 0 = where the game draws them, as before. Halo 3 only (log: TRACKER HUD HEIGHT <game>).\n");
+    fprintf(f, "# Live in F1 > HUD. (default %d)\n", d.tracker_blips_follow_hud_height ? 1 : 0);
+    fprintf(f, "tracker_blips_follow_hud_height = %d\n", g_config.tracker_blips_follow_hud_height ? 1 : 0);
     fprintf(f, "# Sound follows your head. 1 = you hear the world from the way your head faces. 0 = from the\n");
     fprintf(f, "# way the gun points, as the game does it. Halo: Reach and Halo 3 for now; a game that has no head-relative\n");
     fprintf(f, "# sound yet keeps its own (log: AUDIO HEAD <game>). Live in F1 > Comfort. (default %d)\n",
