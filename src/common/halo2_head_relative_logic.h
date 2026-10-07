@@ -478,6 +478,7 @@ enum class TrackerUse : uint8_t
     FromTheFuture,      // the publication's clock is ahead of this one's
     Stale,              // older than the age limit
     NoHeading,          // non-finite, or the head never had a heading
+    Overlapped,         // user 0's call arrived while another call for user 0 was inside (the runtime's flag)
     Count
 };
 inline const char* TrackerUseName(TrackerUse use)
@@ -494,6 +495,7 @@ inline const char* TrackerUseName(TrackerUse use)
     case TrackerUse::FromTheFuture: return "sample from the future";
     case TrackerUse::Stale: return "stale head sample";
     case TrackerUse::NoHeading: return "no heading";
+    case TrackerUse::Overlapped: return "an overlapping call";
     default: return "?";
     }
 }

@@ -24,12 +24,16 @@
 //     (100 ms) at every use.
 //   * EVERY REFUSAL IS THE GAME'S OWN POINTER, counted by reason: not local user 0, unproven, the switch off, the
 //     control update not running (the game's own sign that the director holds the player: a cinematic), no /
-//     stale / foreign sample, no heading. Identity and freshness only.
+//     stale / foreign sample, no heading, an overlapping call. Identity and freshness only.
+//   * THE PROOF AND THE HELD HEADING ARE ONE CALL'S AT A TIME (`inside`, tried and never waited for). By the call
+//     chain the sampler runs on the one thread that runs the game's ticks; no run has shown it. Halo 4's first
+//     run found its tracker build on three job threads, so this lane does not rest on the reading.
 //   * LTCG: `py -3 tools/audit_caller_area.py halo2.dll 6C3940:8:i` is clean (a leaf with no unwind entry that
 //     touches no stack; four native callers, none keeps a volatile register across the call), so a plain C++
 //     detour forwards through CallNativeWithSpareSlots.
-// Cost per call of the sampler's (once a tick): one clock read, two tick-count reads, one seqlock copy of the
-// publication, a dozen float operations. Every other caller: one compare. No allocation, no logging, no lock.
+// Cost per call of the sampler's (once a tick): one flag exchange, one clock read, two tick-count reads, one
+// seqlock copy of the publication, a dozen float operations. Every other caller: one compare. No allocation, no
+// logging, no waiting.
 static_assert(kOwnedUser == 0, "halo2_head_relative::TrackerYaw names local user 0");
 
 using Halo2TrackerAnglesFn = float* (__fastcall*)(int32_t user);
@@ -57,18 +61,24 @@ struct Halo2TrackerHeadRuntime
     std::atomic<uint32_t> faults{0};
     std::atomic<float> lastNativeDeg{0.0f}, lastHeadDeg{0.0f}, lastReferenceDeg{0.0f};
 #if HALOMCCVR_DEV_DIAGNOSTICS
-    // Dev: the head's heading whenever a usable sample was read (not only on a substitution), how old that sample
-    // was, how many of user 0's calls found the control update running (both show before the proof has passed,
-    // when every refusal reads "unproven"), the sampler's thread, and the calls of the accessor by its other
-    // callers (never changed).
+    // Dev: the head's heading whenever a usable sample was read (not only on a substitution), how old the last
+    // sample read was (usable or stale), how many of user 0's calls found the control update running (these show
+    // before the proof has passed, when every refusal reads "unproven"), the sampler's thread and how often it
+    // was not the thread of the call before, and the calls of the accessor by its other callers (never changed).
     std::atomic<float> seenHeadDeg{0.0f};
-    std::atomic<uint32_t> seenHead{0}, sampleAgeMs{0}, controlLive{0}, lastThread{0}, otherCalls{0};
+    std::atomic<uint32_t> seenHead{0}, sampleAgeMs{0}, controlLive{0}, lastThread{0}, threadChanges{0}, otherCalls{0};
 #endif
-    // The proof, on the sampler's thread; `proven`, `provenCount` and `withdrawnCount` are for the report.
-    halo2_head_relative::ArgumentProof proof;
+    // The proof and the held heading belong to user 0's call of the sampler. By the call chain that is one thread,
+    // the one that runs the game's ticks, one call at a time; that has not been seen in a game (Halo 4's tracker
+    // build turned out to run on job threads in its first run). `inside` makes "one at a time" a fact instead of a
+    // reading of the bytes: a call for user 0 that arrives while another is inside is forwarded untouched and
+    // counted (TrackerUse::Overlapped). It is tried, never waited for. `proven`, `provenCount` and
+    // `withdrawnCount` are for the report.
+    std::atomic<bool> inside{false};
+    halo2_head_relative::ArgumentProof proof;  // under `inside`
     std::atomic<bool> proven{false};
     std::atomic<uint32_t> provenCount{0}, withdrawnCount{0};
-    head_relative::HeadingHold hold;   // the sampler's thread only
+    head_relative::HeadingHold hold;           // under `inside`
     // The report's thread only.
     uint64_t reportMs = 0;
     int reportedSwitch = -1;
@@ -105,13 +115,15 @@ bool Halo2TrackerAimReference(float& yaw) noexcept
 }
 
 // The sampler's thread, for the sampler's own call. Decides the pointer it is handed: the game's own (`native`) or
-// the private pair. No allocation, no logging, no lock, no write to game memory.
+// the private pair. No allocation, no logging, no waiting (one flag that is tried, never waited for), no write to
+// game memory.
 __declspec(noinline) float* Halo2TrackerAnglesFor(float* native, int32_t user) noexcept
 {
     using namespace halo2_head_relative;
     auto& feature = g_halo2TrackerHead;
     TrackerUse use = TrackerUse::NoSample;
     float* handed = native;
+    volatile bool holding = false;  // this call is user 0's and holds `inside` (the handler reads it too)
     __try
     {
         const float nativeYaw = native[0], nativePitch = native[1];
@@ -120,78 +132,110 @@ __declspec(noinline) float* Halo2TrackerAnglesFor(float* native, int32_t user) n
         head_relative::HeadSample sample;
         if (user == 0)
         {
-            // The proof runs whatever the switch says: it is about the game, not about the player's choice.
-            float reference = 0.0f;
-            const bool usable = Halo2TrackerAimReference(reference);
-            const ProofStep step = StepProof(feature.proof, nativeYaw, usable, reference);
-            feature.steps[static_cast<size_t>(step)].fetch_add(1, std::memory_order_relaxed);
-            if (usable)
-                feature.lastReferenceDeg.store(WrapPi(reference) * head_relative::kRadToDeg, std::memory_order_relaxed);
-            if (step == ProofStep::Proven)
+            if (feature.inside.exchange(true, std::memory_order_acquire))
+                use = TrackerUse::Overlapped;
+            else
             {
-                feature.proven.store(true, std::memory_order_release);
-                feature.provenCount.fetch_add(1, std::memory_order_relaxed);
-            }
-            else if (step == ProofStep::Withdrawn)
-            {
-                feature.proven.store(false, std::memory_order_release);
-                feature.withdrawnCount.fetch_add(1, std::memory_order_relaxed);
-            }
-            feature.lastNativeDeg.store(WrapPi(nativeYaw) * head_relative::kRadToDeg, std::memory_order_relaxed);
-            // The head, as the observer last committed it (a coherent copy, or nothing).
-            Halo2ObserverPosePublication publication{};
-            if (Halo2Observer6Dof_ReadPublishedPose(publication))
-            {
-                for (int axis = 0; axis < 3; ++axis)
+                holding = true;
+                // The proof runs whatever the switch says: it is about the game, not about the player's choice.
+                float reference = 0.0f;
+                const bool usable = Halo2TrackerAimReference(reference);
+                const ProofStep step = StepProof(feature.proof, nativeYaw, usable, reference);
+                feature.steps[static_cast<size_t>(step)].fetch_add(1, std::memory_order_relaxed);
+                if (usable)
+                    feature.lastReferenceDeg.store(WrapPi(reference) * head_relative::kRadToDeg,
+                                                   std::memory_order_relaxed);
+                if (step == ProofStep::Proven)
                 {
-                    sample.forward[axis] = publication.tracked.forward[axis];
-                    sample.up[axis] = publication.tracked.up[axis];
+                    feature.proven.store(true, std::memory_order_release);
+                    feature.provenCount.fetch_add(1, std::memory_order_relaxed);
                 }
-                sample.stampUs = publication.publishedUs;
-                sample.generation = publication.generation;
-                sample.valid = publication.snapshot.valid;
+                else if (step == ProofStep::Withdrawn)
+                {
+                    feature.proven.store(false, std::memory_order_release);
+                    feature.withdrawnCount.fetch_add(1, std::memory_order_relaxed);
+                }
+                feature.lastNativeDeg.store(WrapPi(nativeYaw) * head_relative::kRadToDeg, std::memory_order_relaxed);
+                // The head, as the observer last committed it (a coherent copy, or nothing).
+                Halo2ObserverPosePublication publication{};
+                if (Halo2Observer6Dof_ReadPublishedPose(publication))
+                {
+                    for (int axis = 0; axis < 3; ++axis)
+                    {
+                        sample.forward[axis] = publication.tracked.forward[axis];
+                        sample.up[axis] = publication.tracked.up[axis];
+                    }
+                    sample.stampUs = publication.publishedUs;
+                    sample.generation = publication.generation;
+                    sample.valid = publication.snapshot.valid;
+                }
             }
         }
-        request.proven = feature.proof.proven;
-        request.switchOn = g_config.tracker_follows_head;
-        request.controlFresh = ControlFresh(g_halo2Drive.controlMs.load(std::memory_order_acquire), GetTickCount64());
-        request.sign = g_config.tracker_head_sign;
-        request.offsetDeg = g_config.tracker_head_offset_deg;
-        request.nowUs = Sight_NowUs();
-        // This hook belongs to one load of the title; a publication from another is not this tracker's head.
-        const uint32_t generation = g_generation.load(std::memory_order_acquire);
-        request.generation = generation == feature.generation ? generation : 0;
-        float replaced = nativeYaw, headYaw = 0.0f;
-        use = TrackerYaw(request, sample, feature.hold, nativeYaw, replaced, &headYaw);
-        if (use == TrackerUse::Used)
+        if (use != TrackerUse::Overlapped)
         {
-            t_halo2TrackerAngles[0] = replaced;
-            t_halo2TrackerAngles[1] = nativePitch;
-            handed = t_halo2TrackerAngles;
-            feature.lastHeadDeg.store(headYaw * head_relative::kRadToDeg, std::memory_order_relaxed);
+            // Only user 0's call, holding `inside`, reads the proof or reaches the held heading: TrackerYaw
+            // returns before `hold` for every other user.
+            request.proven = holding && feature.proof.proven;
+            request.switchOn = g_config.tracker_follows_head;
+            request.controlFresh =
+                ControlFresh(g_halo2Drive.controlMs.load(std::memory_order_acquire), GetTickCount64());
+            request.sign = g_config.tracker_head_sign;
+            request.offsetDeg = g_config.tracker_head_offset_deg;
+            request.nowUs = Sight_NowUs();
+            // This hook belongs to one load of the title; a publication from another is not this tracker's head.
+            const uint32_t generation = g_generation.load(std::memory_order_acquire);
+            request.generation = generation == feature.generation ? generation : 0;
+            float replaced = nativeYaw, headYaw = 0.0f;
+            use = TrackerYaw(request, sample, feature.hold, nativeYaw, replaced, &headYaw);
+            if (use == TrackerUse::Used)
+            {
+                t_halo2TrackerAngles[0] = replaced;
+                t_halo2TrackerAngles[1] = nativePitch;
+                handed = t_halo2TrackerAngles;
+                feature.lastHeadDeg.store(headYaw * head_relative::kRadToDeg, std::memory_order_relaxed);
+            }
+#if HALOMCCVR_DEV_DIAGNOSTICS
+            // Dev: the head's heading beside the game's on every call that had a usable sample, substituted or not
+            // (the first-run check reads the two side by side before the proof has passed), and the age of the
+            // last sample of this generation that was read, usable or stale (a slow headless run refuses on age
+            // alone, and then the age is the thing to see).
+            if (holding)
+            {
+                const head_relative::Use sampled =
+                    head_relative::SampleUse(sample, request.generation, request.nowUs);
+                if (sampled == head_relative::Use::Ok || sampled == head_relative::Use::Stale)
+                    feature.sampleAgeMs.store(static_cast<uint32_t>((request.nowUs - sample.stampUs) / 1000),
+                                              std::memory_order_relaxed);
+                float seen[3];
+                if (sampled == head_relative::Use::Ok && head_relative::Heading(sample.forward, kWorldUp, seen))
+                {
+                    feature.seenHeadDeg.store(std::atan2(seen[1], seen[0]) * head_relative::kRadToDeg,
+                                              std::memory_order_relaxed);
+                    feature.seenHead.fetch_add(1, std::memory_order_relaxed);
+                }
+                if (request.controlFresh)
+                    feature.controlLive.fetch_add(1, std::memory_order_relaxed);
+            }
+#endif
         }
 #if HALOMCCVR_DEV_DIAGNOSTICS
-        // Dev: the head's heading beside the game's on every call that had a usable sample, substituted or not
-        // (the first-run check reads the two side by side before the proof has passed).
-        float seen[3];
-        if (user == 0 && head_relative::SampleUse(sample, request.generation, request.nowUs) == head_relative::Use::Ok &&
-            head_relative::Heading(sample.forward, kWorldUp, seen))
-        {
-            feature.seenHeadDeg.store(std::atan2(seen[1], seen[0]) * head_relative::kRadToDeg, std::memory_order_relaxed);
-            feature.seenHead.fetch_add(1, std::memory_order_relaxed);
-            feature.sampleAgeMs.store(static_cast<uint32_t>((request.nowUs - sample.stampUs) / 1000),
-                                      std::memory_order_relaxed);
-        }
-        if (user == 0 && request.controlFresh)
-            feature.controlLive.fetch_add(1, std::memory_order_relaxed);
-        feature.lastThread.store(GetCurrentThreadId(), std::memory_order_relaxed);
+        // Dev: every thread the sampler was seen on is worth knowing; the report prints the last and says when
+        // it changed inside a window.
+        const uint32_t thread = GetCurrentThreadId();
+        const uint32_t before = feature.lastThread.exchange(thread, std::memory_order_relaxed);
+        if (before && before != thread)
+            feature.threadChanges.fetch_add(1, std::memory_order_relaxed);
 #endif
     }
     __except (EXCEPTION_EXECUTE_HANDLER)
     {
+        if (holding)
+            feature.inside.store(false, std::memory_order_release);
         feature.faults.fetch_add(1, std::memory_order_relaxed);
         return native;
     }
+    if (holding)
+        feature.inside.store(false, std::memory_order_release);
     feature.uses[static_cast<size_t>(use)].fetch_add(1, std::memory_order_relaxed);
     return handed;
 }
@@ -438,6 +482,7 @@ bool InstallHalo2HeadRelative(uintptr_t base, size_t size, uint32_t generation)
     feature.recordSlot = base + static_cast<uintptr_t>(sites.recordSlotRva);
     feature.recordStride = sites.recordStride;
     feature.yawOffset = sites.yawOffset;
+    feature.inside.store(false, std::memory_order_release);   // nothing can be inside: the hook is not created yet
     feature.proof = ArgumentProof{};
     feature.proven.store(false, std::memory_order_release);
     feature.provenCount.store(0, std::memory_order_relaxed);
@@ -456,6 +501,8 @@ bool InstallHalo2HeadRelative(uintptr_t base, size_t size, uint32_t generation)
     feature.seenHead.store(0, std::memory_order_relaxed);
     feature.controlLive.store(0, std::memory_order_relaxed);
     feature.otherCalls.store(0, std::memory_order_relaxed);
+    feature.lastThread.store(0, std::memory_order_relaxed);   // another load may tick on another thread
+    feature.threadChanges.store(0, std::memory_order_relaxed);
 #endif
     void* const target = reinterpret_cast<void*>(accessor);
     const auto created = MH_CreateHook(target, reinterpret_cast<void*>(&Halo2TrackerAnglesDetour), &feature.original);
@@ -587,14 +634,15 @@ void ReportHalo2HeadRelative() noexcept
     const uint32_t seen = feature.seenHead.exchange(0, std::memory_order_relaxed);
     const uint32_t control = feature.controlLive.exchange(0, std::memory_order_relaxed);
     const uint32_t others = feature.otherCalls.exchange(0, std::memory_order_relaxed);
+    const uint32_t threadChanges = feature.threadChanges.exchange(0, std::memory_order_relaxed);
     const float gameDeg = feature.lastNativeDeg.load(std::memory_order_relaxed);
     const float headDeg = feature.seenHeadDeg.load(std::memory_order_relaxed);
     const float apart = halo2_head_relative::WrapPi((headDeg - gameDeg) * head_relative::kDegToRad) * head_relative::kRadToDeg;
     LOG("TRACKER HEAD Halo 2 (dev): substituted %u; the game's heading %.1f deg, the head's %.1f deg, head minus "
-        "game %+.1f deg (last; a head sample was usable on %u calls, the last %u ms old; the control update was "
-        "running on %u); the aim the direct drive wrote %.1f deg; proof %s: agreed %u, lagging %u, disagreed %u, "
+        "game %+.1f deg (last; a head sample was usable on %u calls, the last one read was %u ms old; the control "
+        "update was running on %u); the aim the direct drive wrote %.1f deg; proof %s: agreed %u, lagging %u, disagreed %u, "
         "no reference %u; refused %u: %s; faults %u; the accessor's other callers %u calls (untouched); sampled "
-        "on thread %u; switch=%d sign=%d offset=%.1f deg",
+        "on thread %u (%u calls came on another thread than the call before); switch=%d sign=%d offset=%.1f deg",
         used, gameDeg, seen ? headDeg : 0.0f, seen ? apart : 0.0f, seen,
         feature.sampleAgeMs.load(std::memory_order_relaxed), control,
         feature.lastReferenceDeg.load(std::memory_order_relaxed),
@@ -603,8 +651,8 @@ void ReportHalo2HeadRelative() noexcept
         steps[static_cast<size_t>(ProofStep::Lagging)],
         steps[static_cast<size_t>(ProofStep::Disagreed)] + steps[static_cast<size_t>(ProofStep::Withdrawn)],
         steps[static_cast<size_t>(ProofStep::NoReference)], refused, length ? reasons : "none", faults, others,
-        feature.lastThread.load(std::memory_order_relaxed), switchNow, g_config.tracker_head_sign < 0 ? -1 : 1,
-        g_config.tracker_head_offset_deg);
+        feature.lastThread.load(std::memory_order_relaxed), threadChanges, switchNow,
+        g_config.tracker_head_sign < 0 ? -1 : 1, g_config.tracker_head_offset_deg);
 #else
     (void)steps;
 #endif
