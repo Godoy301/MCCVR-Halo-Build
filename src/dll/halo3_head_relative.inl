@@ -76,6 +76,15 @@ struct Halo3HeadRelativeLane
     std::atomic<uint32_t> uses[static_cast<size_t>(head_relative::Use::Count)]{};
     std::atomic<uint32_t> faults{0};
     std::atomic<float> lastNative[2]{}, lastUsed[2]{};   // the two headings of the last substitution (x, y)
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    // WHERE IS THE TRACKER CENTRED (dev)? The update's first object contact is the player's own unit (slot 0,
+    // no point). Its blip as the builder placed it, in fractions of the radius: x right, y DOWN. (0, 0) means
+    // the tracker is centred on the unit. The game centres it on the unit's HEAD MARKER (the update calls
+    // +0x355460, marker 0x9F), which the animated skeleton carries away from the body. A player reported the
+    // dot that stands for them sitting below the centre (2026-10-07).
+    std::atomic<float> ownBlipX{0.0f}, ownBlipY{0.0f}, ownRangeWu{0.0f};
+    std::atomic<uint32_t> ownBlips{0};
+#endif
     // Cold worker only.
     int reportedSwitch = -1;
     int reportedState = -1;
@@ -190,6 +199,32 @@ void Halo3TrackerPair(Halo3HeadRelativeLane& lane, const void* self, float& sinA
 }
 } // namespace
 
+#if HALOMCCVR_DEV_DIAGNOSTICS
+// ADDR-HYGIENE: dev-only (a diagnostic read, never a write, guarded). The blip's x / y are its first two
+// floats (the point builder's own stores at +0x32DA6C / +0x32DA85) and the range is the float both builders
+// read at state + 0xCBC, in world units.
+__declspec(noinline) void Halo3TrackerNoteOwnBlip(Halo3HeadRelativeLane& lane, const void* self,
+                                                  const void* blip) noexcept
+{
+    __try
+    {
+        if (!self || !blip)
+            return;
+        const float* placed = static_cast<const float*>(blip);
+        const float range = *reinterpret_cast<const float*>(static_cast<const uint8_t*>(self) + 0xCBC);
+        if (!std::isfinite(placed[0]) || !std::isfinite(placed[1]) || !std::isfinite(range))
+            return;
+        lane.ownBlipX.store(placed[0], std::memory_order_relaxed);
+        lane.ownBlipY.store(placed[1], std::memory_order_relaxed);
+        lane.ownRangeWu.store(range, std::memory_order_relaxed);
+        lane.ownBlips.fetch_add(1, std::memory_order_relaxed);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+    }
+}
+#endif
+
 __declspec(noinline) bool __fastcall Halo3TrackerPointDetour(void* self, const float* point, void* blip,
                                                              const float* origin, float sinA, float cosA)
 {
@@ -220,6 +255,10 @@ __declspec(noinline) bool __fastcall Halo3TrackerObjectDetour(void* self, int sl
         Halo3TrackerPair(lane, self, sinA, cosA);
         if (lane.objectOriginal)
             placed = CallNativeWithSpareSlots(lane.objectOriginal, self, slot, blip, origin, point, sinA, cosA);
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        if (placed && slot == 0 && !point)
+            Halo3TrackerNoteOwnBlip(lane, self, blip);
+#endif
     }
     __finally
     {
@@ -878,6 +917,14 @@ void HeadRelativeTrackerReport(Halo3HeadRelativeLane& lane)
         counts[static_cast<size_t>(Use::NotGameplay)], counts[static_cast<size_t>(Use::NoSample)],
         counts[static_cast<size_t>(Use::OtherGeneration)], counts[static_cast<size_t>(Use::FromTheFuture)],
         counts[static_cast<size_t>(Use::Stale)], counts[static_cast<size_t>(Use::NoHeading)], faults);
+    if (const uint32_t own = lane.ownBlips.exchange(0, std::memory_order_relaxed))
+    {
+        const float x = lane.ownBlipX.load(std::memory_order_relaxed), y = lane.ownBlipY.load(std::memory_order_relaxed);
+        const float rangeM = lane.ownRangeWu.load(std::memory_order_relaxed) * 3.048f;
+        LOG("TRACKER HEAD %s (dev): the player's own blip, %u placements; last at x %+.4f y %+.4f of the radius = "
+            "%+.2f m right, %+.2f m %s the centre (radius %.1f m). The centre is the unit's head marker, not the unit",
+            lane.title, own, x, y, x * rangeM, std::fabs(y) * rangeM, y > 0.0f ? "below" : "above", rangeM);
+    }
 #endif
 }
 
