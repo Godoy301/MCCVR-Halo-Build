@@ -510,6 +510,12 @@ if(BUILD_TESTING)
     add_executable(halomccvr_hook_lifecycle_tests tests/minhook_lifecycle_tests.cpp)
     target_link_libraries(halomccvr_hook_lifecycle_tests PRIVATE minhook)
     add_test(NAME halomccvr_hook_lifecycle_tests COMMAND halomccvr_hook_lifecycle_tests)
+    # A byte-pattern proof must read the GAME's code where this mod has hooked it (sigscan.h): real MinHook
+    # hooks on synthetic code, the production scanner, and the control that shows a hooked head reads our jump.
+    add_executable(halomccvr_proof_after_hook_tests tests/proof_after_hook_tests.cpp src/dll/sigscan.cpp)
+    target_compile_definitions(halomccvr_proof_after_hook_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    target_link_libraries(halomccvr_proof_after_hook_tests PRIVATE minhook)
+    add_test(NAME halomccvr_proof_after_hook_tests COMMAND halomccvr_proof_after_hook_tests)
     # Packaging runs this tiny program against a nonexistent path to generate
     # the current source tree's exact default config. It is intentionally not
     # installed by CMake: package-candidate stages and hashes its output while

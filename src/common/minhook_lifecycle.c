@@ -74,3 +74,41 @@ MH_STATUS WINAPI MCCVR_DisableHookForRetirement(LPVOID target)
     LeaveSpinLock();
     return status;
 }
+
+UINT WINAPI MCCVR_CopyEnabledHookPatches(LPCVOID base, SIZE_T size, MCCVR_HOOK_PATCH* out, UINT capacity)
+{
+    UINT count = 0;
+    const ULONG_PTR lo = (ULONG_PTR)base;
+    const ULONG_PTR hi = lo + size;
+    if (!size || hi < lo)
+        return 0;
+    EnterSpinLock();
+    if (g_hHeap != NULL)
+    {
+        UINT i;
+        for (i = 0; i < g_hooks.size; ++i)
+        {
+            const PHOOK_ENTRY hook = &g_hooks.pItems[i];
+            ULONG_PTR patch = (ULONG_PTR)hook->pTarget;
+            SIZE_T length = sizeof(JMP_REL);
+            if (!hook->isEnabled)
+                continue;
+            if (hook->patchAbove)
+            {
+                patch -= sizeof(JMP_REL);
+                length += sizeof(JMP_REL_SHORT);
+            }
+            if (patch >= hi || patch + length <= lo)
+                continue;
+            if (out && count < capacity)
+            {
+                out[count].address = (const unsigned char*)patch;
+                out[count].size = (unsigned char)length;
+                memcpy(out[count].original, hook->backup, sizeof(out[count].original));
+            }
+            ++count;
+        }
+    }
+    LeaveSpinLock();
+    return count;
+}

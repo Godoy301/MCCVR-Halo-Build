@@ -2,6 +2,8 @@
 #include <string>
 #include <cwctype>
 #include <MinHook.h>
+#include "../common/minhook_lifecycle.h"
+#include "sigscan.h"
 #include "../common/log.h"
 #include "../common/config.h"
 #include "d3d11_hook.h"
@@ -40,6 +42,81 @@
 // spawn a thread that does the real setup.
 
 static HMODULE g_hModule = nullptr;
+
+// Byte-pattern proofs read the GAME's code, not our jumps (sigscan.h). MinHook's own records say which bytes
+// each enabled hook replaced; sig::Find matches against those.
+static uint32_t EnabledHookPatches(uintptr_t base, size_t size, sig::HookPatch* out, uint32_t capacity)
+{
+    MCCVR_HOOK_PATCH local[64];
+    const uint32_t wanted = capacity < 64 ? capacity : 64;
+    const UINT total = MCCVR_CopyEnabledHookPatches(reinterpret_cast<LPCVOID>(base), size, local, wanted);
+    if (total > wanted && capacity > wanted)
+    {
+        // More hooks in this image than the local buffer: copy straight into a buffer of the caller's size.
+        auto* wide = static_cast<MCCVR_HOOK_PATCH*>(
+            HeapAlloc(GetProcessHeap(), 0, sizeof(MCCVR_HOOK_PATCH) * capacity));
+        if (!wide)
+            return 0;
+        const UINT again = MCCVR_CopyEnabledHookPatches(reinterpret_cast<LPCVOID>(base), size, wide, capacity);
+        const uint32_t copied = again < capacity ? again : capacity;
+        for (uint32_t i = 0; i < copied; ++i)
+        {
+            out[i].address = reinterpret_cast<uintptr_t>(wide[i].address);
+            out[i].size = wide[i].size;
+            memcpy(out[i].original, wide[i].original, sizeof(out[i].original));
+        }
+        HeapFree(GetProcessHeap(), 0, wide);
+        return again;
+    }
+    const uint32_t copied = total < wanted ? total : wanted;
+    for (uint32_t i = 0; i < copied; ++i)
+    {
+        out[i].address = reinterpret_cast<uintptr_t>(local[i].address);
+        out[i].size = local[i].size;
+        memcpy(out[i].original, local[i].original, sizeof(out[i].original));
+    }
+    return total;
+}
+
+// A proof that only held because our own hook was read as the bytes it replaced. It is not an error any more,
+// but it is an install order nobody chose: say so once per place, in every build, so the proof gets moved ahead
+// of the hook (tools/sweep_proof_hook_overlap.py lists the candidates offline).
+static void ProofReadThroughOurHook(uintptr_t match, size_t length, uintptr_t patch)
+{
+    static SRWLOCK lock = SRWLOCK_INIT;
+    static uintptr_t seen[64];
+    static size_t seenCount = 0;
+    bool first = true;
+    AcquireSRWLockExclusive(&lock);
+    for (size_t i = 0; i < seenCount; ++i)
+        if (seen[i] == match)
+            first = false;
+    if (first && seenCount < 64)
+        seen[seenCount++] = match;
+    else
+        first = false;
+    ReleaseSRWLockExclusive(&lock);
+    if (!first)
+        return;
+    HMODULE module = nullptr;
+    wchar_t path[MAX_PATH]{};
+    const wchar_t* name = L"?";
+    if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                           reinterpret_cast<LPCWSTR>(match), &module) &&
+        module && GetModuleFileNameW(module, path, MAX_PATH))
+    {
+        name = path;
+        for (const wchar_t* p = path; *p; ++p)
+            if (*p == L'\\' || *p == L'/')
+                name = p + 1;
+    }
+    const uintptr_t base = reinterpret_cast<uintptr_t>(module);
+    LOG("PROOF AFTER HOOK: a %zu-byte pattern at %ls+0x%llX reads this mod's own enabled hook at +0x%llX. It was "
+        "matched against the bytes the hook replaced, so the lane that asked is not refused; before 2026-10-06 "
+        "this proof read the jump and failed. Take the proof before that hook is enabled.",
+        length, name, static_cast<unsigned long long>(match - base),
+        static_cast<unsigned long long>(patch - base));
+}
 
 // Record WHICH edition of MCC this session ran on, for the same reason the
 // headset name is recorded: a log that cannot tell its own sessions apart
@@ -115,6 +192,8 @@ static DWORD WINAPI InitThread(LPVOID)
         LOG("FATAL: MinHook failed to initialize; mod inactive");
         return 0;
     }
+    sig::SetHookPatchSource(&EnabledHookPatches);
+    sig::SetProofThroughHookObserver(&ProofReadThroughOurHook);
     if (!InstallD3D11Hooks())
     {
         LOG("FATAL: D3D11 hooks failed to install; mod inactive");

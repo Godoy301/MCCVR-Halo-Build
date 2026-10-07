@@ -1283,6 +1283,224 @@ int main()
               "sig::Find locates a match at the final offset");
     }
     {
+        // THE IMAGE sig::Find MATCHES IS THE GAME'S, NOT THE ONE WE HAVE HOOKED (sigscan.h). With a hook patch
+        // source set, every answer must equal the byte-by-byte reference run over the image AS SHIPPED, whatever
+        // the hooks overwrote: Halo 4's and Reach's muzzle lanes were refused for every player because a proof
+        // of a function head ran after another lane's hook had turned that head into a jump.
+        //
+        // `shipped` is the game's code; `live` is what is in memory, with K five- and seven-byte patches drawn
+        // from the same tiny alphabet (so a patch often CREATES a live match that the game's bytes do not have,
+        // and often destroys one they do). Checked at every start offset the callers use: the whole image, and
+        // one byte past a hit (the uniqueness re-scan), which regularly begins inside a patch.
+        uint32_t rng = 0x2468ACE1u;
+        auto NextByte = [&rng]() -> uint8_t {
+            rng ^= rng << 13; rng ^= rng >> 17; rng ^= rng << 5;
+            return static_cast<uint8_t>(rng >> 24);
+        };
+        static std::vector<sig::HookPatch> fakePatches;
+        const sig::HookPatchSource source = [](uintptr_t base, size_t size, sig::HookPatch* out,
+                                               uint32_t capacity) -> uint32_t {
+            uint32_t count = 0;
+            for (const sig::HookPatch& patch : fakePatches)
+            {
+                if (patch.address >= base + size || patch.address + patch.size <= base)
+                    continue;
+                if (count < capacity)
+                    out[count] = patch;
+                ++count;
+            }
+            return count;
+        };
+        static uint32_t observedThrough = 0;
+        const sig::ProofThroughHookObserver observer = [](uintptr_t, size_t, uintptr_t) { ++observedThrough; };
+
+        bool allAgree = true, observerHonest = true;
+        uint32_t hitsThroughPatch = 0, liveOnlyRejected = 0, hits = 0, misses = 0, manyPatchRounds = 0;
+        bool correctedAgree = true;
+        uint32_t correctedCases = 0, correctedChanged = 0, ambiguousKept = 0;
+        for (int round = 0; round < 60; ++round)
+        {
+            std::vector<uint8_t> shipped(2048);
+            for (auto& b : shipped)
+                b = static_cast<uint8_t>(NextByte() & 0x03);
+            std::vector<uint8_t> live = shipped;
+            const uintptr_t liveBase = reinterpret_cast<uintptr_t>(live.data());
+            fakePatches.clear();
+            // Round 0 has none (the source is set but returns nothing); some rounds exceed the scanner's
+            // 64-patch local buffer.
+            const int patchCount = round == 0 ? 0 : (round % 7 == 0 ? 90 : 1 + NextByte() % 12);
+            manyPatchRounds += patchCount > 64 ? 1u : 0u;
+            for (int k = 0; k < patchCount; ++k)
+            {
+                sig::HookPatch patch{};
+                patch.size = (NextByte() & 1) ? 5 : 7;
+                // Non-overlapping slots of 20 bytes, like distinct function heads; the image's first bytes included.
+                const size_t slot = static_cast<size_t>(k) * 20 + (NextByte() % 13);
+                if (slot + patch.size > live.size())
+                    break;
+                patch.address = liveBase + slot;
+                for (size_t j = 0; j < patch.size; ++j)
+                {
+                    patch.original[j] = shipped[slot + j];
+                    live[slot + j] = static_cast<uint8_t>(NextByte() & 0x03);
+                }
+                fakePatches.push_back(patch);
+            }
+            sig::SetHookPatchSource(source);
+            sig::SetProofThroughHookObserver(observer);
+            for (int trial = 0; trial < 60; ++trial)
+            {
+                const size_t n = 1 + (NextByte() % 14);
+                std::vector<uint8_t> bytes(n), wild(n);
+                std::string pattern;
+                const bool fromImage = (NextByte() % 3) != 0;
+                // Bias the origin toward the patched slots: that is where the two images differ.
+                size_t origin = (static_cast<size_t>(NextByte()) * 8) % (shipped.size() - 16);
+                if ((NextByte() & 1) && !fakePatches.empty())
+                {
+                    const size_t slot = static_cast<size_t>(
+                        fakePatches[NextByte() % fakePatches.size()].address - liveBase);
+                    const size_t back = NextByte() % 6;
+                    origin = slot >= back ? slot - back : slot;
+                    if (origin > shipped.size() - 16)
+                        origin = shipped.size() - 16;
+                }
+                const std::vector<uint8_t>& from = (NextByte() % 5 == 0) ? live : shipped;
+                for (size_t j = 0; j < n; ++j)
+                {
+                    wild[j] = (NextByte() % 5 == 0) ? 1 : 0;
+                    bytes[j] = wild[j] ? 0 : (fromImage ? from[origin + j] : static_cast<uint8_t>(NextByte() & 0x03));
+                    if (!pattern.empty())
+                        pattern += ' ';
+                    static const char* kHex = "0123456789ABCDEF";
+                    if (wild[j])
+                    {
+                        pattern += "??";
+                    }
+                    else
+                    {
+                        pattern += kHex[bytes[j] >> 4];
+                        pattern += kHex[bytes[j] & 0x0F];
+                    }
+                }
+                bool anyConcrete = false;
+                for (uint8_t w : wild)
+                    anyConcrete = anyConcrete || !w;
+                if (!anyConcrete)
+                    continue; // all-wildcard is covered above
+                {
+                    // A scanner that counts live matches itself (Halo 2's region walker) hands its result to
+                    // CorrectLiveCountForHooks, which must make it the count over the image as shipped: exactly,
+                    // while the live count is below the 2 such a scanner stops at.
+                    const auto countIn = [&](const std::vector<uint8_t>& image, size_t& firstOut) -> uint32_t {
+                        uint32_t matches = 0;
+                        firstOut = SIZE_MAX;
+                        for (size_t at = 0; at + n <= image.size(); ++at)
+                        {
+                            bool match = true;
+                            for (size_t j = 0; j < n && match; ++j)
+                                match = wild[j] || image[at + j] == bytes[j];
+                            if (!match)
+                                continue;
+                            if (!matches)
+                                firstOut = at;
+                            ++matches;
+                        }
+                        return matches;
+                    };
+                    size_t liveFirst = SIZE_MAX, shippedFirst = SIZE_MAX;
+                    const uint32_t liveCount = countIn(live, liveFirst);
+                    const uint32_t shippedCount = countIn(shipped, shippedFirst);
+                    const uintptr_t liveFirstAddress = liveFirst == SIZE_MAX ? 0 : liveBase + liveFirst;
+                    uintptr_t first = liveFirstAddress;
+                    uint32_t count = liveCount > 2 ? 2 : liveCount;
+                    sig::CorrectLiveCountForHooks(liveBase, live.size(), bytes.data(), wild.data(), n, first, count);
+                    if (liveCount < 2)
+                    {
+                        ++correctedCases;
+                        const uintptr_t wanted = shippedFirst == SIZE_MAX ? 0 : liveBase + shippedFirst;
+                        if (count != shippedCount || first != wanted)
+                            correctedAgree = false;
+                        correctedChanged += (count != liveCount || first != liveFirstAddress) ? 1u : 0u;
+                    }
+                    else
+                    {
+                        ++ambiguousKept;
+                        if (count != 2 || first != liveFirstAddress)
+                            correctedAgree = false;
+                    }
+                }
+                size_t start = 0;
+                for (int pass = 0; pass < 3; ++pass)
+                {
+                    const uintptr_t expectedShipped =
+                        ReferenceFind(shipped.data() + start, shipped.size() - start, bytes, wild);
+                    const size_t expected = expectedShipped
+                        ? static_cast<size_t>(expectedShipped - reinterpret_cast<uintptr_t>(shipped.data()))
+                        : SIZE_MAX;
+                    const uintptr_t liveOnly = ReferenceFind(live.data() + start, live.size() - start, bytes, wild);
+                    const uint32_t observedBefore = observedThrough;
+                    const uintptr_t actualAddress =
+                        sig::Find(liveBase + start, live.size() - start, pattern.c_str());
+                    const size_t actual = actualAddress ? static_cast<size_t>(actualAddress - liveBase) : SIZE_MAX;
+                    if (actual != expected)
+                        allAgree = false;
+                    if (expected == SIZE_MAX)
+                        ++misses;
+                    else
+                        ++hits;
+                    if (liveOnly && (expected == SIZE_MAX || liveOnly - liveBase < expected))
+                        ++liveOnlyRejected; // the hooked bytes offered a match the game's code does not have
+                    // The observer fires exactly when the match needed the saved bytes.
+                    bool neededSaved = false;
+                    if (expected != SIZE_MAX)
+                        for (size_t j = 0; j < n; ++j)
+                            neededSaved = neededSaved || (!wild[j] && live[expected + j] != bytes[j]);
+                    hitsThroughPatch += neededSaved ? 1u : 0u;
+                    if ((observedThrough != observedBefore) != neededSaved)
+                        observerHonest = false;
+                    if (expected == SIZE_MAX)
+                        break;
+                    start = expected + 1; // the uniqueness re-scan
+                }
+            }
+        }
+        sig::SetHookPatchSource(nullptr);
+        sig::SetProofThroughHookObserver(nullptr);
+        Check(allAgree, "sig::Find with hooks present matches the reference run over the image as shipped");
+        Check(observerHonest, "the proof-through-hook observer fires exactly when a match needed the saved bytes");
+        Check(correctedAgree, "CorrectLiveCountForHooks turns a live count into the count over the image as shipped");
+        Check(correctedCases > 300 && correctedChanged > 30 && ambiguousKept > 100,
+              "the live-count corpus covered unchanged, corrected and ambiguous results");
+        Check(hits > 500 && misses > 100 && hitsThroughPatch > 50 && liveOnlyRejected > 50 && manyPatchRounds > 0,
+              "the hooked-image corpus covered hits, misses, matches read through a hook, live-only artefacts "
+              "and more than 64 hooks");
+        // And the source being gone restores the plain scan: a patched head is invisible again (the old defect).
+        std::vector<uint8_t> image{0x10, 0x48, 0x8B, 0xC4, 0x55, 0x53, 0x56, 0x57, 0x20};
+        const uintptr_t imageBase = reinterpret_cast<uintptr_t>(image.data());
+        fakePatches.clear();
+        sig::HookPatch head{};
+        head.address = imageBase + 1;
+        head.size = 5;
+        std::memcpy(head.original, image.data() + 1, 5);
+        fakePatches.push_back(head);
+        const uint8_t jump[5]{0xE9, 0x11, 0x22, 0x33, 0x44};
+        std::memcpy(image.data() + 1, jump, 5);
+        Check(sig::Find(imageBase, image.size(), "48 8B C4 55 53 56 57") == 0,
+              "without a patch source a hooked head reads as our jump (the defect)");
+        sig::SetHookPatchSource(source);
+        Check(sig::Find(imageBase, image.size(), "48 8B C4 55 53 56 57") == imageBase + 1,
+              "with it the head proves, whenever the proof runs");
+        uint8_t copy[9]{};
+        Check(sig::CopyUnhooked(imageBase, copy, sizeof(copy)) == 1 && copy[1] == 0x48 && copy[5] == 0x53 &&
+                  copy[0] == 0x10 && copy[8] == 0x20,
+              "sig::CopyUnhooked undoes the hook and nothing else");
+        Check(sig::CopyUnhooked(imageBase + 3, copy, 2) == 1 && copy[0] == 0xC4 && copy[1] == 0x55,
+              "sig::CopyUnhooked undoes a hook that only partly lies in the range");
+        sig::SetHookPatchSource(nullptr);
+        fakePatches.clear();
+    }
+    {
         // Level-load gate decision core. Each Observe() is one 50 ms worker
         // sample; `true` means the engine's player-view fingerprint changed.
         // Scenarios replay the preserved captures in
