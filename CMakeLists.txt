@@ -962,6 +962,13 @@ if(BUILD_TESTING)
     add_executable(halomccvr_halo3_head_relative_tests tests/halo3_head_relative_tests.cpp)
     target_include_directories(halomccvr_halo3_head_relative_tests PRIVATE src/common)
     add_test(NAME halomccvr_halo3_head_relative_tests COMMAND halomccvr_halo3_head_relative_tests)
+    # Halo 3: the motion tracker's blips move with the HUD height (src/common/halo3_tracker_hud_height_logic.h;
+    # retail-derived and run): the decode of the five sites on an image built from the header's patterns and
+    # every way it refuses (a missing site, a call elsewhere, a neighbouring field, a scale pair not beside its
+    # origin), the positions inside each pattern, and the move itself with its refusals and its restore rule.
+    add_executable(halomccvr_halo3_tracker_hud_height_tests tests/halo3_tracker_hud_height_tests.cpp)
+    target_include_directories(halomccvr_halo3_tracker_hud_height_tests PRIVATE src/common)
+    add_test(NAME halomccvr_halo3_tracker_hud_height_tests COMMAND halomccvr_halo3_tracker_hud_height_tests)
     # Halo 2's motion tracker follows the head (src/common/halo2_head_relative_logic.h; a retail-derived lead, not
     # H2EK-verified): the decode of the four sites and its refusals, the proof the hook takes at run time before
     # it changes anything (agree, disagree, a reference that did not move, withdrawal), the game's placement
