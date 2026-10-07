@@ -2343,6 +2343,7 @@ namespace
     bool RemoveReachMuzzle();
     void ReportReachMuzzle();
     void ReportReachHeadRelative();  // reach_head_relative.inl: the motion tracker follows the head
+    void ReportReachNavProjection(); // reach_nav_projection.inl: the marker projection's own hook
     // Weapon-order diagnostic tranche: read-only semantic-primary
     // observations reusing the title readers below. Defined after those
     // readers; called from the FP interpolate/palette hooks above them.
@@ -26261,7 +26262,7 @@ namespace
         const uint64_t now=GetTickCount64();
         if(now-lastLogMs<2000) return;
         lastLogMs=now;
-        if(title==GameTitle::HaloReach){ReportReachContactMelee();ReportReachMuzzle();ReportReachSightTrace();ReportReachHeadRelative();ReportReachNavMarkers();}
+        if(title==GameTitle::HaloReach){ReportReachContactMelee();ReportReachMuzzle();ReportReachSightTrace();ReportReachHeadRelative();ReportReachNavMarkers();ReportReachNavProjection();}
         if(title==GameTitle::Halo3) { ReportHalo3ContactMelee(); ReportHalo3WeaponHaptics(); ReportHalo3Avatar(); }
         if(title==GameTitle::Halo3ODST){ReportOdstContactMelee();ReportOdstMuzzle();ReportOdstWeaponHaptics();ReportOdstControllerFingers();}
         if(auto* melee=SharedMeleeForTitle(title))
@@ -27771,6 +27772,7 @@ namespace
     #include "reach_muzzle_lifecycle.inl"
     // The motion tracker (and the sound listener) follow the head instead of the aim.
     #include "reach_head_relative.inl"
+    #include "reach_nav_projection.inl"
     // Dev builds only: AS SEEN for Reach in VR (the file compiles to nothing otherwise).
     #include "reach_impact_witness.inl"
     #include "reach_visual_hand_offset.inl"
@@ -33232,6 +33234,7 @@ namespace
 #endif
         if (!RemoveReachMuzzle()) return false;
         if (!RemoveReachHeadRelative()) return false;
+        if (!RemoveReachNavProjection()) return false;
         RemoveReachNavMarkers();
         TitleAdapter_ClearCinematicControl(
             GameTitle::HaloReach,
@@ -36034,6 +36037,9 @@ namespace
             g_reachCamera.observerCameraTarget != nullptr &&
                 g_reachOrigObserverCamera != nullptr,
             kReachObserverCameraReturnRvas[kReachObserverCameraChudSite]);
+        // The marker projection's own hook proves itself against that hook's
+        // call site, so it binds after it (reach_nav_projection.inl).
+        (void)InstallReachNavProjection(base, size, generation);
         if (effectLocationCreated &&
             MH_EnableHook(effectLocation) != MH_OK)
         {

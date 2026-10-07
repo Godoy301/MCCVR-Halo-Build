@@ -1314,6 +1314,7 @@ void ConfigLoad(const wchar_t* path)
         if (!strcmp(key, "first_person_rung_fault")) { g_config.first_person_rung_fault=(int)strtol(val,nullptr,0)&0xF; continue; }
         if (!strcmp(key, "reach_sight_trace_length_m")) { g_config.reach_sight_trace_length_m=(float)atof(val); continue; }
         if (!strcmp(key, "tracker_head_sign")) { g_config.tracker_head_sign = atoi(val) < 0 ? -1 : 1; continue; }
+        if (!strcmp(key, "nav_marker_witness")) { g_config.nav_marker_witness = atoi(val) != 0 ? 1 : 0; continue; }
         if (!strcmp(key, "tracker_head_offset_deg"))
         {
             // A NaN fails both comparisons and reads as no offset.
@@ -2329,6 +2330,10 @@ void ConfigSave()
     fprintf(f, "# tracker turns AGAINST your head; tracker_head_offset_deg adds a fixed angle. Live.\n");
     fprintf(f, "tracker_head_sign = %d\n", g_config.tracker_head_sign < 0 ? -1 : 1);
     fprintf(f, "tracker_head_offset_deg = %.1f\n\n", g_config.tracker_head_offset_deg);
+    fprintf(f, "# DEV BUILD ONLY. Halo: Reach navigation markers: 1 = hook the game's marker projection read-only\n");
+    fprintf(f, "# and log the pixel the game puts each marker on against the pixel the eye's own picture shows\n");
+    fprintf(f, "# its target at (log: NAV MARKERS Reach (dev witness)). Read when a level loads. Leave at 0.\n");
+    fprintf(f, "nav_marker_witness = %d\n\n", g_config.nav_marker_witness);
 #endif
     fprintf(f, "# Vehicle seats: which seats your hand aims. With aim_direct_drive = 1 the seat's aim is written\n");
     fprintf(f, "# as on foot (Reach, Halo 3, ODST, Halo 4, Halo 2); Halo 3 and ODST seats also converge whenever\n");

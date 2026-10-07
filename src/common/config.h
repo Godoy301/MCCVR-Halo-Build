@@ -481,6 +481,9 @@ struct Config
     // flat-screen field of view and the HUD height, as before. Read live. A title that has not bound this
     // keeps its own behaviour (log: NAV MARKERS <title>).
     bool nav_markers_on_target = true;
+    // DEV BUILDS ONLY (parsed and saved there; a player build always has 0). 1 = hook the game's marker
+    // projection read-only at the level's load and report the game's pixel against the eye's own picture.
+    int nav_marker_witness = 0;
     // Live safety values for the tracker's yaw correction. Parsed and saved in DEV BUILDS ONLY; every build
     // runs with them, so a player build always has these defaults. sign: 1, or -1 if a title's seam turns
     // out mirrored. offset: degrees added after the sign.

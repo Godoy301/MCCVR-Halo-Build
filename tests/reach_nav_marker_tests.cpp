@@ -7,8 +7,10 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <initializer_list>
 #include <limits>
+#include <vector>
 
 namespace
 {
@@ -355,10 +357,247 @@ void Anchors()
     for (int anchor : {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 17, 18, 19, 20, 27, 32, 33, 34, 39, 50})
         Check(!AnchorIsWorld(anchor), "HUD furniture is not a world anchor");
 }
+
+// ---- the projection's own sites ------------------------------------------------------------------------------------
+// A pattern's bytes, wildcards as zero.
+std::vector<uint8_t> PatternBytes(const char* pattern)
+{
+    std::vector<uint8_t> bytes;
+    for (const char* at = pattern; *at;)
+    {
+        while (*at == ' ')
+            ++at;
+        if (!*at)
+            break;
+        if (at[0] == '?')
+        {
+            bytes.push_back(0);
+            while (*at == '?')
+                ++at;
+            continue;
+        }
+        char* end = nullptr;
+        bytes.push_back(static_cast<uint8_t>(std::strtoul(at, &end, 16)));
+        at = end;
+    }
+    return bytes;
+}
+void PutI32(std::vector<uint8_t>& bytes, size_t at, int32_t value) { std::memcpy(bytes.data() + at, &value, 4); }
+
+// The function as retail haloreach.dll lays it out (offsets from the module base measured 2026-10-07).
+constexpr int64_t kHeadRva = 0x2E1430, kCameraRva = 0x2E14FC, kPixelRva = 0x2E15BC, kRingRva = 0x2E172B,
+                  kOffscreenRva = 0x2E1817, kConverterRva = 0x287DFC, kChudReturnRva = 0x2E1525,
+                  kFractionRva = 0xA8ACB4, kPiRva = 0xA8B22C, kFloorRva = 0xA8A9B8;
+struct Image
+{
+    std::vector<uint8_t> head, camera, ring, offscreen, pixel;
+    uint8_t fraction[4]{}, pi[4]{}, floor[4]{};
+};
+Image Retail()
+{
+    Image image;
+    image.head = PatternBytes(kProjectionHeadPattern);
+    image.camera = PatternBytes(kProjectionCameraPattern);
+    PutI32(image.camera, kCameraConverterCall + 1,
+           static_cast<int32_t>(kConverterRva - (kCameraRva + static_cast<int64_t>(kCameraConverterReturn))));
+    image.ring = PatternBytes(kProjectionRingPattern);
+    PutI32(image.ring, kRingFovDisp, 0xA8);  // the camera is at rbp + 0x80
+    PutI32(image.ring, kRingFractionDisp,
+           static_cast<int32_t>(kFractionRva - (kRingRva + static_cast<int64_t>(kRingFractionNext))));
+    image.offscreen = PatternBytes(kProjectionOffscreenPattern);
+    PutI32(image.offscreen, kOffscreenPiDisp,
+           static_cast<int32_t>(kPiRva - (kOffscreenRva + static_cast<int64_t>(kOffscreenPiNext))));
+    PutI32(image.offscreen, kOffscreenFloorDisp,
+           static_cast<int32_t>(kFloorRva - (kOffscreenRva + static_cast<int64_t>(kOffscreenFloorNext))));
+    image.pixel = PatternBytes(kProjectionPixelPattern);
+    const float fraction = 0.3f, pi = kPi, floor = 0.0001f;
+    std::memcpy(image.fraction, &fraction, 4);
+    std::memcpy(image.pi, &pi, 4);
+    std::memcpy(image.floor, &floor, 4);
+    return image;
+}
+ProjectionBind Decode(const Image& image, ProjectionSites& sites, bool headIsFunction = true,
+                      int64_t cameraFunction = kHeadRva, int64_t ringFunction = kHeadRva,
+                      int64_t offscreenFunction = kHeadRva, int64_t pixelFunction = kHeadRva,
+                      int64_t ringRva = kRingRva)
+{
+    return DecodeProjectionSites(image.head.data(), kHeadRva, headIsFunction, image.camera.data(), kCameraRva,
+                                 cameraFunction, image.ring.data(), ringRva, ringFunction, image.offscreen.data(),
+                                 kOffscreenRva, offscreenFunction, image.pixel.data(), kPixelRva, pixelFunction,
+                                 sites);
+}
+
+void Sites()
+{
+    Check(PatternBytes(kProjectionHeadPattern).size() == kProjectionHeadBytes &&
+              PatternBytes(kProjectionCameraPattern).size() == kProjectionCameraBytes &&
+              PatternBytes(kProjectionRingPattern).size() == kProjectionRingBytes &&
+              PatternBytes(kProjectionOffscreenPattern).size() == kProjectionOffscreenBytes &&
+              PatternBytes(kProjectionPixelPattern).size() == kProjectionPixelBytes,
+          "every site's length is its pattern's");
+    const Image retail = Retail();
+    ProjectionSites sites;
+    Check(Decode(retail, sites) == ProjectionBind::Bound, "retail's layout decodes");
+    Check(sites.headRva == kHeadRva && sites.converterRva == kConverterRva &&
+              sites.converterReturnRva == kChudReturnRva,
+          "the hook, and the camera call's target and return address, are read from the instructions");
+    Check(sites.cameraFovOffset == kCameraVerticalFovOffset && sites.cameraFovOffset == 0x28,
+          "the ring reads the camera's vertical field of view at +0x28: where part 1 writes the eye's");
+    Check(sites.recordPoint == 4 && sites.recordPixel == 0x10 && sites.recordOffscreen == 0x20,
+          "the record: the point at +4, the pixel at +0x10, how far outside the ring at +0x20");
+    Check(sites.fractionRva == kFractionRva && sites.piRva == kPiRva && sites.floorRva == kFloorRva,
+          "the ring's three constants are where the instructions point");
+    Check(CheckProjectionConverter(sites, kConverterRva, kChudReturnRva) == ProjectionBind::Bound,
+          "the camera call is the observer-camera hook's function at its CHUD site");
+    Check(CheckProjectionConstants(retail.fraction, retail.pi, retail.floor) == ProjectionBind::Bound,
+          "the ring's constants are 0.3, pi and 0.0001");
+
+    // Every missing or ambiguous site binds nothing, and a refusal fills nothing.
+    ProjectionSites untouched;
+    Check(DecodeProjectionSites(nullptr, kHeadRva, true, retail.camera.data(), kCameraRva, kHeadRva,
+                                retail.ring.data(), kRingRva, kHeadRva, retail.offscreen.data(), kOffscreenRva,
+                                kHeadRva, retail.pixel.data(), kPixelRva, kHeadRva,
+                                untouched) == ProjectionBind::HeadMissing,
+          "no unique head: nothing binds");
+    Check(Decode(retail, untouched, false) == ProjectionBind::HeadMissing,
+          "a head that is not a function's beginning: nothing binds");
+    Check(DecodeProjectionSites(retail.head.data(), kHeadRva, true, nullptr, kCameraRva, kHeadRva,
+                                retail.ring.data(), kRingRva, kHeadRva, retail.offscreen.data(), kOffscreenRva,
+                                kHeadRva, retail.pixel.data(), kPixelRva, kHeadRva,
+                                untouched) == ProjectionBind::CameraMissing,
+          "no unique camera build: nothing binds");
+    Check(DecodeProjectionSites(retail.head.data(), kHeadRva, true, retail.camera.data(), kCameraRva, kHeadRva,
+                                nullptr, kRingRva, kHeadRva, retail.offscreen.data(), kOffscreenRva, kHeadRva,
+                                retail.pixel.data(), kPixelRva, kHeadRva, untouched) == ProjectionBind::RingMissing,
+          "no unique ring: nothing binds");
+    Check(DecodeProjectionSites(retail.head.data(), kHeadRva, true, retail.camera.data(), kCameraRva, kHeadRva,
+                                retail.ring.data(), kRingRva, kHeadRva, nullptr, kOffscreenRva, kHeadRva,
+                                retail.pixel.data(), kPixelRva, kHeadRva,
+                                untouched) == ProjectionBind::OffscreenMissing,
+          "no unique off-screen store: nothing binds");
+    Check(DecodeProjectionSites(retail.head.data(), kHeadRva, true, retail.camera.data(), kCameraRva, kHeadRva,
+                                retail.ring.data(), kRingRva, kHeadRva, retail.offscreen.data(), kOffscreenRva,
+                                kHeadRva, nullptr, kPixelRva, kHeadRva, untouched) == ProjectionBind::PixelMissing,
+          "no unique pixel store: nothing binds");
+    // A site in another function, in no function, or out of order.
+    Check(Decode(retail, untouched, true, kHeadRva + 0x40) == ProjectionBind::OutsideFunction &&
+              Decode(retail, untouched, true, kHeadRva, -1) == ProjectionBind::OutsideFunction &&
+              Decode(retail, untouched, true, kHeadRva, kHeadRva, kHeadRva - 0x100) ==
+                  ProjectionBind::OutsideFunction &&
+              Decode(retail, untouched, true, kHeadRva, kHeadRva, kHeadRva, 0) == ProjectionBind::OutsideFunction,
+          "a site outside the matched function is refused");
+    Check(Decode(retail, untouched, true, kHeadRva, kHeadRva, kHeadRva, kHeadRva, kCameraRva - 8) ==
+              ProjectionBind::OutsideFunction,
+          "sites out of order are refused");
+
+    // THE NEIGHBOURING FIELD. The likeliest way a patch goes wrong: the ring reads the field beside the vertical
+    // field of view (+0x2C, a second angle the converter also scales). Part 1 would then write the eye's angle
+    // into a field the projection does not use.
+    Image moved = retail;
+    PutI32(moved.ring, kRingFovDisp, 0xA8 + 4);
+    Check(Decode(moved, untouched) == ProjectionBind::FovMismatch, "a ring reading the neighbouring field is refused");
+    moved = retail;
+    PutI32(moved.ring, kRingFovDisp, 0xA8 - 4);
+    Check(Decode(moved, untouched) == ProjectionBind::FovMismatch, "a ring reading the field before is refused");
+    moved = retail;
+    PutI32(moved.camera, kCameraBufferDisp, 0x90);  // the camera buffer moved, the ring's read did not
+    Check(Decode(moved, untouched) == ProjectionBind::FovMismatch, "a camera buffer that moved alone is refused");
+    moved = retail;
+    PutI32(moved.camera, kCameraPositionYDisp, 0x88);
+    Check(Decode(moved, untouched) == ProjectionBind::FovMismatch,
+          "a position that is not the camera's first field is refused");
+    // The record.
+    moved = retail;
+    moved.camera[kCameraPointX] = 8;
+    Check(Decode(moved, untouched) == ProjectionBind::RecordMismatch, "a point that moved alone is refused");
+    moved = retail;
+    moved.camera[kCameraPointX] = 5;
+    moved.camera[kCameraPointY] = 9;
+    Check(Decode(moved, untouched) == ProjectionBind::RecordMismatch, "a point that is not float-aligned is refused");
+    moved = retail;
+    moved.pixel[kPixelX] = 0x14;
+    Check(Decode(moved, untouched) == ProjectionBind::RecordMismatch, "a pixel that moved alone is refused");
+    moved = retail;
+    moved.pixel[kPixelY] = 0x18;
+    Check(Decode(moved, untouched) == ProjectionBind::RecordMismatch, "a pixel whose halves are apart is refused");
+    moved = retail;
+    moved.offscreen[kOffscreenRecord] = 0x24;
+    Check(Decode(moved, untouched) == ProjectionBind::RecordMismatch, "an off-screen value that moved alone is refused");
+    // The camera call.
+    moved = retail;
+    moved.camera[kCameraConverterCall] = 0xE9;
+    Check(Decode(moved, untouched) == ProjectionBind::ConverterMismatch, "a camera call that is not a call is refused");
+    Check(untouched.headRva == 0 && untouched.recordPoint == 0 && untouched.converterRva == 0,
+          "a refusal fills nothing");
+    Check(CheckProjectionConverter(sites, kConverterRva + 0x10, kChudReturnRva) == ProjectionBind::ConverterMismatch &&
+              CheckProjectionConverter(sites, kConverterRva, kChudReturnRva + 5) ==
+                  ProjectionBind::ConverterMismatch &&
+              CheckProjectionConverter(sites, 0, kChudReturnRva) == ProjectionBind::ConverterMismatch,
+          "a camera call that is not the hooked function at the CHUD site is refused");
+    // The constants.
+    uint8_t wrong[4];
+    for (float value : {0.25f, 0.6f, 0.0f, std::numeric_limits<float>::quiet_NaN()})
+    {
+        std::memcpy(wrong, &value, 4);
+        Check(CheckProjectionConstants(wrong, retail.pi, retail.floor) == ProjectionBind::ConstantMismatch &&
+                  CheckProjectionConstants(retail.fraction, wrong, retail.floor) == ProjectionBind::ConstantMismatch &&
+                  CheckProjectionConstants(retail.fraction, retail.pi, wrong) == ProjectionBind::ConstantMismatch,
+              "a ring whose constants are not 0.3, pi and 0.0001 is refused");
+    }
+    Check(CheckProjectionConstants(nullptr, retail.pi, retail.floor) == ProjectionBind::ConstantMismatch &&
+              CheckProjectionConstants(retail.fraction, nullptr, retail.floor) == ProjectionBind::ConstantMismatch &&
+              CheckProjectionConstants(retail.fraction, retail.pi, nullptr) == ProjectionBind::ConstantMismatch,
+          "an unreadable constant is refused");
+    for (int why = 0; why < static_cast<int>(ProjectionBind::Count); ++why)
+        Check(ProjectionBindName(static_cast<ProjectionBind>(why))[0] != '?', "every refusal has a name for the log");
+    Check(kRingFraction == 0.3f && kOffscreenFloor == 0.0001f, "the game's own ring numbers");
+}
+
+// The witness's arithmetic: the eye's own picture by its projection matrix agrees with the model by field of view.
+void WitnessMath()
+{
+    const Camera camera = Head(-35.0f, 12.0f, 8.0f, 4.0f, 5.0f, 6.0f, kEyeFov);
+    EyeRaster eye;
+    eye.camera = camera;
+    const float t = std::tan(kEyeFov * 0.5f), aspect = kWidth / kHeight;
+    eye.xScale = 1.0f / (aspect * t);
+    eye.yScale = 1.0f / t;
+    eye.width = kWidth;
+    eye.height = kHeight;
+    for (float rightDeg : {-40.0f, -10.0f, 0.0f, 25.0f})
+        for (float upDeg : {-30.0f, 0.0f, 15.0f})
+        {
+            float point[3], byMatrix[2], byFov[2];
+            PointAt(camera, rightDeg, upDeg, 12.0f, point);
+            Check(EyeRasterPixel(eye, point, byMatrix) && ProjectToRaster(camera, point, kWidth, kHeight, byFov) &&
+                      Near(byMatrix[0], byFov[0], 0.05f) && Near(byMatrix[1], byFov[1], 0.05f),
+                  "the eye's picture by its projection matrix is the model's by its field of view");
+            const float expect = std::acos(1.0f / std::sqrt(1.0f + std::pow(std::tan(rightDeg * kDegToRad), 2.0f) +
+                                                            std::pow(std::tan(upDeg * kDegToRad), 2.0f)));
+            Check(Near(OffAxis(camera, point), expect, 1.0e-3f), "the angle off the eye's axis");
+        }
+    float out[2]{-1.0f, -1.0f};
+    const float behind[3]{camera.position[0] - camera.forward[0], camera.position[1] - camera.forward[1],
+                          camera.position[2] - camera.forward[2]};
+    Check(!EyeRasterPixel(eye, behind, out) && out[0] == -1.0f, "a point behind the eye has no pixel in its picture");
+    EyeRaster broken = eye;
+    broken.xScale = 0.0f;
+    float front[3];
+    PointAt(camera, 0.0f, 0.0f, 3.0f, front);
+    Check(!EyeRasterPixel(broken, front, out), "a raster without a scale has no pixel");
+    broken = eye;
+    broken.height = 0.0f;
+    Check(!EyeRasterPixel(broken, front, out), "a raster without a size has no pixel");
+    Check(OffAxis(camera, camera.position) == 0.0f, "the eye's own position is on its axis");
+    for (int what = 0; what < static_cast<int>(Witness::Count); ++what)
+        Check(WitnessName(static_cast<Witness>(what))[0] != '?', "every witness verdict has a name for the log");
+}
 } // namespace
 
 int main()
 {
+    Sites();
+    WitnessMath();
     FieldOfView();
     Magnified();
     Projection();
