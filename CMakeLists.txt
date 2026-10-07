@@ -907,6 +907,16 @@ if(BUILD_TESTING)
     add_executable(halomccvr_head_relative_tests tests/head_relative_tests.cpp)
     target_include_directories(halomccvr_head_relative_tests PRIVATE src/common)
     add_test(NAME halomccvr_head_relative_tests COMMAND halomccvr_head_relative_tests)
+    # The F8/F9 pitch trim (src/common/pitch_trim_logic.h): applied with stereo off, zero in stereo VR, and a key
+    # press in stereo changes nothing (two stray F9 presses once put the reticle 4 degrees above every shot).
+    add_executable(halomccvr_pitch_trim_tests tests/pitch_trim_tests.cpp)
+    target_include_directories(halomccvr_pitch_trim_tests PRIVATE src/common)
+    add_test(NAME halomccvr_pitch_trim_tests COMMAND halomccvr_pitch_trim_tests)
+    # Mod hotkeys are bare keys (src/common/hotkey_logic.h): a key with Ctrl, Alt or a Windows key held is
+    # another tool's chord (a replay-capture Ctrl+F9 once trimmed the view two degrees per clip).
+    add_executable(halomccvr_hotkey_tests tests/hotkey_tests.cpp)
+    target_include_directories(halomccvr_hotkey_tests PRIVATE src/common)
+    add_test(NAME halomccvr_hotkey_tests COMMAND halomccvr_hotkey_tests)
     # Head-relative motion tracker, Halo 3 / ODST (src/common/halo3_head_relative_logic.h): the game's placement
     # arithmetic as read from halo3.dll, the head's heading substituted into it, every refusal, the signatures'
     # decode offsets, and the two headset checks as geometry.

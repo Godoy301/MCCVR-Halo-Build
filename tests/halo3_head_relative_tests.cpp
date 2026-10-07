@@ -658,6 +658,37 @@ void TestListenerPatterns()
 }
 } // namespace
 
+// The player's own blip: the update's slot 0, handed over with no point, is placed AT the origin.
+void TestOwnBlip()
+{
+    using namespace halo3_head_relative;
+    const float origin[3]{10.0f, -4.0f, 2.0f};
+    const float other[3]{12.0f, -1.0f, 2.0f};
+    Check(OwnBlipPoint(true, 0, nullptr, origin) == origin, "own unit (slot 0, no point), switch on: the origin is the point");
+    Check(OwnBlipPoint(false, 0, nullptr, origin) == nullptr, "switch off or not the local user: the game's own placement");
+    Check(OwnBlipPoint(true, 0, other, origin) == other, "slot 0 with a point of its own keeps it");
+    Check(OwnBlipPoint(true, -1, other, origin) == other, "another object (slot -1 with its point) is untouched");
+    Check(OwnBlipPoint(true, -1, nullptr, origin) == nullptr, "slot -1 with no point is untouched");
+    Check(OwnBlipPoint(true, 3, nullptr, origin) == nullptr, "any other tracked slot is untouched");
+    Check(OwnBlipPoint(true, 0, nullptr, nullptr) == nullptr, "no origin: nothing to hand over");
+    // What the builder then computes: point - origin = 0, so the blip is at the centre for every heading pair.
+    const float* point = OwnBlipPoint(true, 0, nullptr, origin);
+    for (float yaw = -3.0f; yaw < 3.1f; yaw += 0.7f)
+    {
+        float out[2]{9.0f, 9.0f};
+        Place(point[0] - origin[0], point[1] - origin[1], -std::cos(yaw), -std::sin(yaw), 1.0f / 8.2f, out);
+        Check(out[0] == 0.0f && out[1] == 0.0f, "the own blip is exactly at the centre at every heading");
+    }
+    // The measured stock placement, for the record: the body 0.40 m behind the head marker along the heading
+    // lands 1.6% of a 25 m radius below the centre (y is down).
+    {
+        const float yaw = 1.2f, range = 25.0f / 3.048f, behind = 0.40f / 3.048f;
+        float out[2]{};
+        Place(-behind * std::cos(yaw), -behind * std::sin(yaw), -std::cos(yaw), -std::sin(yaw), 1.0f / range, out);
+        Check(Near(out[0], 0.0f) && Near(out[1], 0.016f, 5.0e-4f), "stock: 0.40 m behind = 0.016 of the radius below centre");
+    }
+}
+
 int main()
 {
     TestNativeModel();
@@ -673,6 +704,7 @@ int main()
     TestListenerVelocity();
     TestListenerRefusals();
     TestListenerPatterns();
+    TestOwnBlip();
     std::printf("halo3_head_relative_tests: %u checks, %u failures\n", checks, failures);
     return failures ? 1 : 0;
 }

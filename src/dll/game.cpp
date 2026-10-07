@@ -31,6 +31,7 @@
 #include "../common/minhook_lifecycle.h"
 #include "../common/manual_vr_recovery.h"
 #include "../common/manual_vr_recovery_logic.h"
+#include "../common/pitch_trim_logic.h"
 #include "../common/vr_interaction_refinement_logic.h"
 #include "../common/contact_melee_motion.h"
 #include "../common/halo3_melee_selection_logic.h"
@@ -594,7 +595,15 @@ namespace
     std::atomic<bool> g_needPosRecenter{false}; // enabling leaning: position only, no yaw snap
     std::atomic<float> g_yawSign{-1.0f};       // F4  (default matches PSVR2 mapping)
     std::atomic<float> g_pitchSign{1.0f};      // F5
-    std::atomic<float> g_pitchTrim{0.0f};      // F8/F9, radians
+    std::atomic<float> g_pitchTrim{0.0f};      // F8/F9, radians: the STORED trim; cameras read PitchTrimNow()
+    // What a head camera adds to the tracked pitch now: the stored trim with stereo off, and zero in stereo VR
+    // (pitch_trim_logic.h). In the headset the head pose is the player's real one, and a trim tilts the view
+    // against the hands, the shot and the compositor reticle: 4 degrees put the reticle 1.4 m above the impact
+    // at 20 m (2026-10-07, two stray F9 presses in a Reach session).
+    inline float PitchTrimNow()
+    {
+        return pitch_trim::Effective(g_pitchTrim.load(std::memory_order_relaxed), VR_IsStereoEnabled());
+    }
     std::atomic<bool> g_writeUp{true};         // F7
     std::atomic<bool> g_positional{true};      // M2: 6DOF head translation on by default; F6 toggles
     std::atomic<int> g_stereoEye{-1};           // M2: -1 mono, 0 left, 1 right
@@ -4965,7 +4974,7 @@ namespace
                 g_yawSign.load() * WrapPi(yaw - g_headYawRef);
             const float trackedPitch = Clamp(
                 g_pitchSign.load() * pitch +
-                    (head ? g_pitchTrim.load() : 0.0f),
+                    (head ? PitchTrimNow() : 0.0f),
                 -1.5f, 1.5f);
             if (Halo3ComposeRollStableFollowBasis(
                     hullYaw, hullPitch, g_gameYawRef, trackedYawDelta,
@@ -4976,7 +4985,7 @@ namespace
         // Exact established mapping when optional follow is off, stale, or
         // invalid. That feature can fail without affecting controller poses.
         const float gy=g_gameYawRef+g_yawSign.load()*WrapPi(yaw-g_headYawRef);
-        const float gp=Clamp(g_pitchSign.load()*pitch+(head?g_pitchTrim.load():0.0f),-1.5f,1.5f);
+        const float gp=Clamp(g_pitchSign.load()*pitch+(head?PitchTrimNow():0.0f),-1.5f,1.5f);
         const float cp=cosf(gp),sp=sinf(gp),cy=cosf(gy),sy=sinf(gy);
         const float cr=cosf(roll),sr=sinf(roll);
         const float forward[3]={cp*cy,cp*sy,sp};
@@ -8591,7 +8600,7 @@ namespace
 
         // Rotation: yaw relative + recenter, pitch absolute + trim.
         const float gy = g_gameYawRef + g_yawSign.load() * WrapPi(hy - g_headYawRef);
-        const float gp = Clamp(g_pitchSign.load() * hp + g_pitchTrim.load(), -1.5f, 1.5f);
+        const float gp = Clamp(g_pitchSign.load() * hp + PitchTrimNow(), -1.5f, 1.5f);
         const float cgp = cosf(gp), sgp = sinf(gp), cgy = cosf(gy), sgy = sinf(gy);
 
         float hullYaw = 0.0f, hullPitch = 0.0f, followBasis[9];
@@ -13853,7 +13862,7 @@ namespace
                 g_gameYawRef, g_headYawRef, headYaw, headPitch, headRoll,
                 g_yawSign.load(std::memory_order_relaxed),
                 g_pitchSign.load(std::memory_order_relaxed),
-                g_pitchTrim.load(std::memory_order_relaxed), look))
+                PitchTrimNow(), look))
             return;
         const float gameYaw = look.yaw;
         const float gamePitch = look.pitch;
@@ -16798,7 +16807,7 @@ namespace
         }
         TitleAdapter_PublishMode(
             GameTitle::Halo3, runtimeGeneration, RuntimeMode::Loading);
-        LOG("M1: camera hooked. F2 head tracking, F3 recenter, F6 leaning, F8/F9 pitch trim, F10 screen-follow (yaw/pitch/up flips: F1 menu)");
+        LOG("M1: camera hooked. F2 head tracking, F3 recenter, F6 leaning, F8/F9 pitch trim (flat screen only), F10 screen-follow (yaw/pitch/up flips: F1 menu)");
 
         RememberInstalledGameHook(target);
         // Comfort invariant: the OpenXR pose, not Halo's authored screen-shake
@@ -23880,7 +23889,7 @@ namespace
         const float trackedYawDelta =
             g_yawSign.load() * WrapPi(hy - effectiveHeadYawRef);
         const float gy = effectiveGameYawRef + trackedYawDelta;
-        const float gp = Clamp(g_pitchSign.load() * hp + g_pitchTrim.load(),
+        const float gp = Clamp(g_pitchSign.load() * hp + PitchTrimNow(),
                                -1.5f, 1.5f);
         const float cgp = cosf(gp), sgp = sinf(gp), cgy = cosf(gy), sgy = sinf(gy);
         float hullYaw = 0.0f, hullPitch = 0.0f, followBasis[9];
@@ -44837,8 +44846,7 @@ namespace
                 headInput.yawSign = g_yawSign.load(std::memory_order_relaxed);
                 headInput.pitchSign =
                     g_pitchSign.load(std::memory_order_relaxed);
-                headInput.pitchTrim =
-                    g_pitchTrim.load(std::memory_order_relaxed);
+                headInput.pitchTrim = PitchTrimNow();
                 headInput.worldScale = worldScale;
                 headInput.positional =
                     g_positional.load(std::memory_order_relaxed);
@@ -49670,7 +49678,7 @@ bool Game_ComputeHalo4PitchStick(float& outRy)
     // on the middle of the view rather than somewhere near it.
     const float target = Clamp(
         g_pitchSign.load(std::memory_order_relaxed) * head.pitch +
-            g_pitchTrim.load(std::memory_order_relaxed), -1.5f, 1.5f);
+            PitchTrimNow(), -1.5f, 1.5f);
     const float enginePitch =
         g_halo4Camera.enginePitch.load(std::memory_order_relaxed);
     outRy = Halo4PitchServoStep(
@@ -51416,9 +51424,18 @@ void Game_ForcePositional()
 
 void Game_PitchTrim(int dir)
 {
-    const float t = Clamp(g_pitchTrim.load() + dir * 0.035f, -0.8f, 0.8f); // ~2 deg steps
+    // F8 / F9, about 2 degrees a press (pitch_trim_logic.h). A press in stereo VR changes nothing: a stray key
+    // must not tilt the view in the headset, nor bank a trim that appears when stereo next goes off.
+    bool ignored = false;
+    const float t = pitch_trim::Step(g_pitchTrim.load(), dir, VR_IsStereoEnabled(), ignored);
+    if (ignored)
+    {
+        LOG("pitch trim key ignored: F8/F9 trim the flat-screen head view only and do nothing in stereo VR "
+            "(stored trim %.1f deg; applied in VR: 0.0)", t * 57.2958f);
+        return;
+    }
     g_pitchTrim = t;
-    LOG("pitch trim %.1f deg", t * 57.2958f);
+    LOG("pitch trim %.1f deg (flat-screen head view; not applied in stereo VR)", t * 57.2958f);
 }
 
 void Game_LeanScale(int dir)
