@@ -270,9 +270,14 @@ bool InstallReachImpactWitness(uintptr_t base, size_t size)
     struct Binding { uint32_t rva; const char* pattern; };
     constexpr Binding bindings[]{
         {0x46D6E0, "40 53 55 56 57 41 54 41 55 41 56 41 57 48 81 EC A8 00 00 00 8B 41 18 49 83 CC FF 45 33 C0 C1 E8 04"},
+        // object_new copies FIVE placement vectors with the same eighteen bytes each (position, forward, up,
+        // velocity, angular velocity). The first version of this pattern held four of them, so it also matched one
+        // copy later (+0x46D9B8) and its own uniqueness re-scan called it ambiguous on the image as shipped: the
+        // witness logged "StockFallback: binding +0x46D9A6 missing or ambiguous" at every Reach level from the day
+        // it was written (2026-10-04). All five copies match once, here.
         {0x46D9A6, "F2 41 0F 10 46 ?? F2 0F 11 47 ?? 41 8B 46 ?? 89 47 ?? F2 41 0F 10 46 ?? F2 0F 11 47 ?? 41 8B 46 ?? 89 "
                    "47 ?? F2 41 0F 10 46 ?? F2 0F 11 47 ?? 41 8B 46 ?? 89 47 ?? F2 41 0F 10 46 ?? F2 0F 11 47 ?? 41 8B "
-                   "46 ?? 89 47"},
+                   "46 ?? 89 47 ?? F2 41 0F 10 46 ?? F2 0F 11 47 ?? 41 8B 46 ?? 89 47"},
         {0x4C3CDA, "48 8D 8D ?? ?? 00 00 E8 ?? ?? ?? ?? 45 33 DB E9 ?? ?? ?? ?? E8 ?? ?? ?? ?? 44 8B F8 3B C3 0F 84"}};
     for (const auto& binding : bindings)
     {
