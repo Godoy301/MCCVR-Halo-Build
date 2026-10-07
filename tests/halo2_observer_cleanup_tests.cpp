@@ -18,8 +18,11 @@ bool RemoveHalo2WeaponHaptics(){return hapticReady;}
 bool RemoveHalo2ContactMelee(){return optionalReady;}
 bool RemoveHalo2DualAim(){return optionalReady;}
 bool RemoveHalo2WorldCollision(){return optionalReady;}
-bool driveReady=true;unsigned driveRemoves{};
-bool RemoveHalo2Drive() noexcept {++driveRemoves;return driveReady;}
+unsigned retireSequence{};
+bool driveReady=true;unsigned driveRemoves{},driveAt{};
+bool RemoveHalo2Drive() noexcept {++driveRemoves;driveAt=++retireSequence;return driveReady;}
+bool trackerReady=true;unsigned trackerRemoves{},trackerAt{};
+bool RemoveHalo2HeadRelative() noexcept {++trackerRemoves;trackerAt=++retireSequence;return trackerReady;}
 std::atomic<bool> g_armed{},g_teardownRequested{},g_finalPaletteReady{},g_vehicleSeatVerified{},
     g_vehicleFrameVerified{},g_passCamerasSet{},g_installed{},g_referenceValid{},g_recenterRequested{};
 std::atomic<uintptr_t> g_objectDatumAccessor{},g_interpolatorResetAddress{},g_observerResult{},g_moduleBase{};
@@ -103,6 +106,7 @@ void Reset()
     g_coreState=CoreState::Installed;g_armed=true;g_teardownRequested=false;g_finalPaletteReady=true;
     g_generation=7;g_moduleBase=0x123000;g_installed=true;g_moduleReference=reinterpret_cast<HMODULE>(0x123000);
     g_objectDatumAccessor=0x456000;g_referenceValid=true;optionalReady=true;hapticReady=true;driveReady=true;
+    trackerReady=true;
     failDisable=failRemove=ingress=-1;removes=0;
 }
 }
@@ -142,6 +146,14 @@ int main()
     driveReady=true;{const unsigned before=driveRemoves;
     Check(RemoveCore("drive retry")&&driveRemoves>before&&g_footViewEngagedMs==0&&g_seatViewEngagedMs==0&&!g_nativeAimTarget,
         "the live cleanup retires the drive and drops the foot view's engagement");}
+    // The head-relative tracker's hook (halo2_head_relative.inl) retires with the live cleanup too, ahead of the
+    // drive whose state it reads; while it cannot retire, the drive and the core stay.
+    Reset();trackerReady=false;{const unsigned drivesBefore=driveRemoves;
+    Check(!RemoveCore("tracker hook still busy")&&g_target&&g_nativeAimTarget&&driveRemoves==drivesBefore,
+        "a tracker-hook refusal retains the drive and the core");}
+    trackerReady=true;{const unsigned before=trackerRemoves;
+    Check(RemoveCore("tracker retry")&&trackerRemoves>before&&trackerAt<driveAt&&!g_target,
+        "the live cleanup retires the tracker hook ahead of the drive");}
     Reset();for(int i=0;i<12;++i){enabled[i]=false;exists[i]=false;}
     Check(RemoveCore("already removed")&&g_generation==0,"absent entries converge safely");
     std::printf("PASS: %u Halo 2 production cleanup checks\n",checks);
