@@ -37,13 +37,15 @@
 
 namespace halo3_head_relative
 {
-// Blam's world up.
+// Blam's world up. ADDR-HYGIENE: structural (the engine's axis convention, not a measurement of a build).
 inline constexpr float kWorldUp[3]{0.0f, 0.0f, 1.0f};
 
 // ---- the signatures (halo3.dll and halo3odst.dll: each matches exactly once in both; the verifier checks) ----
 // ADDR-HYGIENE: resolved. No address or offset below is a constant of ours: every one is decoded from a pattern
 // that must match exactly once, and each hook target is proven twice (the update's call operand AND the builder's
 // own entry pattern at that address), with ValueAgreement on the rest (the install lists them).
+// The integers beside each pattern (kUpdateUserDisp, kTrigCallA, ...) are positions INSIDE that matched pattern,
+// not image offsets: ADDR-HYGIENE: structural (the unit tests check that each lands on the bytes its comment names).
 //
 // The tracker update's entry: ... mov ecx,[rcx+USER]; mov rsi,rdx; ...; call <unit of output user>; cmp eax,-1.
 // USER (the output user index in the tracker state) is the disp32 at +41; the call's rel32 at +53.
@@ -85,7 +87,8 @@ inline constexpr char kObjectPlacePattern[] =
     "0F 28 C6 F3 0F 59 B4 24 A8 00 00 00 F3 0F 59 84 24 B0 00 00 00 0F 28 CF F3 0F 59 8C 24 A8 00 00 00 "
     "F3 0F 59 BC 24 B0 00 00 00 F3 0F 5C C8 F3 0F 58 F7";
 // How far past its entry a site of the same function may lie (the update is 0x2DB bytes, the builders 0xEF and
-// 0x327; a site further away is in another function).
+// 0x327; a site further away is in another function). ADDR-HYGIENE: guarded -- a measurement of this build used
+// only as an upper bound on top of the unique matches and their order; too small on another build fails closed.
 inline constexpr uint32_t kUpdateExtent = 0x400, kPointExtent = 0x100, kObjectExtent = 0x340;
 
 // ---- the model of the game's arithmetic ----
@@ -231,6 +234,12 @@ inline head_relative::Use Substitute(const Request& in, Hold& hold, float& sinA,
 // There is no sign to get wrong: the head's forward and up go into the slots the game filled from the
 // observer's forward and up, through the game's own left = up x forward.
 
+// ADDR-HYGIENE: resolved + guarded. No address and no record offset ships: the update's entry (the hook), the sound
+// globals pointer and listener 0's location / built / matrix / velocity offsets are decoded from patterns that
+// must each match exactly once, inside the update and in order; both helpers are proven twice (the build's call
+// operand AND the helper's own whole body there); the record's layout must agree with the matrix's (the install
+// lists it). The integers beside each pattern are positions INSIDE that matched pattern (structural; unit-tested).
+//
 // The listener update's entry (the hook target).
 inline constexpr char kListenerEntryPattern[] =
     "88 4C 24 08 55 53 56 57 41 54 41 55 41 56 41 57 48 8D AC 24 F8 FE FF FF 48 81 EC 08 02 00 00 "
@@ -288,9 +297,13 @@ inline constexpr char kListenerVelocityHelperPattern[] =
     "F3 41 0F 11 10 F3 0F 59 59 14 F3 0F 59 41 10 F3 0F 59 49 18 F3 0F 58 D8 F3 0F 58 D9 F3 41 0F 11 58 04 "
     "F3 0F 59 61 20 F3 0F 59 71 24 F3 0F 59 69 1C F3 0F 58 E5 F3 0F 58 E6 0F 28 34 24 F3 41 0F 11 60 08 "
     "48 83 C4 18 C3";
-// The matrix's layout, as the two helpers above fix it (bytes from the matrix's start).
+// The matrix's layout (bytes from the matrix's start). ADDR-HYGIENE: structural + guarded. These ARE fixed
+// offsets, of the engine's 4x3 matrix: the matrix helper's whole-body pattern above writes exactly these fields
+// (a build that lays the matrix out differently does not match it: StockFallback), and every rewrite first
+// requires the live record to be such a matrix (scale exactly 1, rows orthonormal, left = up x forward).
 inline constexpr int kMatrixScale = 0x00, kMatrixForward = 0x04, kMatrixLeft = 0x10, kMatrixUp = 0x1C,
                      kMatrixPosition = 0x28;
+// ADDR-HYGIENE: guarded -- the update is 0x699 bytes here; an upper bound on top of the unique matches.
 inline constexpr uint32_t kListenerUpdateExtent = 0x700;
 
 // A listener's basis as the game's matrix helper builds it: forward, left = up x forward, up.
