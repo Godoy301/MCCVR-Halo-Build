@@ -58,7 +58,8 @@ struct BoneMatrix {float scale=1,rotation[9]{1,0,0,0,1,0,0,0,1},translation[3]{}
 struct ReachFpInterpolationContext {
     bool valid=true;uint32_t generation=7,muzzleUnit=owner,muzzleWeapon=primary;
     int interpolationView=0,interpolationSlot=0;uint64_t preparedSerial=11;
-    struct {uint64_t contactSerial=11,contactReference=3;int64_t contactTimeNs=1000000000;bool rightWristValid=true;} targets;
+    // contactReference is Reach's melee hash of the tracking-space epoch (3 here): never equal to it.
+    struct {uint64_t contactSerial=11,contactReference=0x9E3779B97F4A7C15ull,contactSpaceEpoch=3;int64_t contactTimeNs=1000000000;bool rightWristValid=true;} targets;
 };
 static struct {bool armed=true;uint64_t preparedSerial=11;} g_reachFpPairScope;
 static uint32_t liveChecksum=0;static int liveCount=0;
@@ -224,6 +225,10 @@ static void PublicationTests()
         ReachFpInterpolationContext context;ReachPublishMuzzlePalette(123,context,destination);weapon_muzzle::Receipt sample{};weapon_muzzle::Ray expected{};
         Check(weapon_muzzle::Transform(marker,2,destination[marker.node].rotation,destination[marker.node].translation,expected),"Reach authored marker fixture");
         Check(g_reachBarrelMuzzles.Read(GameTitle::HaloReach,7,owner,primary,3,GetTickCount64(),1000000000,0,marker.barrel,false,sample)&&sample.ray.position[0]==expected.position[0],"actual committed Reach node publishes correct barrel");
+        // The lane reads the receipt back with the tracking snapshot's epoch (3). Published under Reach's melee
+        // hash of that epoch, as it was, no read could ever match: the lane refused every shot it was asked for.
+        Check(!g_reachBarrelMuzzles.Read(GameTitle::HaloReach,7,owner,primary,0x9E3779B97F4A7C15ull,GetTickCount64(),1000000000,0,marker.barrel,false,sample),
+            "the receipt's space is the tracking-space epoch, not the melee hash of it");
         context.muzzleWeapon^=0x10000;ReachPublishMuzzlePalette(123,context,destination);
         Check(!g_reachBarrelMuzzles.Read(GameTitle::HaloReach,7,owner,primary,3,GetTickCount64(),1000000000,0,marker.barrel,false,sample),"replacement weapon invalidates old marker");
     }
@@ -333,6 +338,30 @@ static void LifecycleTests()
     {
         reset();image[edge[0]]^=1;Check(!InstallReachMuzzle(lifecycleBase,size,7)&&createCalls==0,"changed downstream edge prevents adaptation");image[edge[0]]^=1;
     }
+    // THE ORDER THE GAME INSTALLS IN. The proof is taken, THEN the core hooks the unit-adjust, whose head (binding 4,
+    // +0x484F24) reads our jump from then on. Proving after the hook is what logged "missing/ambiguous binding
+    // +484F24" in every Reach session; the preflight is what the lane installs on now.
+    reset();g_reachMuzzleImageProof={};ReachMuzzlePreflight(lifecycleBase,size,7);
+    Check(g_reachMuzzleImageProof.proven&&bindingScan==28,"preflight proves all fourteen patterns and their uniqueness");
+    bindingScan=0;missingBinding=4;
+    Check(InstallReachMuzzle(lifecycleBase,size,7)&&bindingScan==0&&createCalls==4,
+        "the proof taken before the unit-adjust hook authorises the lane; nothing is read again through the hook");
+    missingBinding=-1;Check(RemoveReachMuzzle(),"preflight install cleanup");
+    reset();g_reachMuzzleImageProof={};missingBinding=4;
+    Check(!InstallReachMuzzle(lifecycleBase,size,7)&&createCalls==0,"control: a proof read after the hook sees the jump and refuses");
+    reset();g_reachMuzzleImageProof={};ReachMuzzlePreflight(lifecycleBase,size,6);bindingScan=0;missingBinding=4;
+    Check(!InstallReachMuzzle(lifecycleBase,size,7)&&createCalls==0,"another generation's proof is not reused");
+    reset();g_reachMuzzleImageProof={};ReachMuzzlePreflight(lifecycleBase+0x1000,size,7);bindingScan=0;missingBinding=4;
+    Check(!InstallReachMuzzle(lifecycleBase,size,7)&&createCalls==0,"another image's proof is not reused");
+    reset();g_reachMuzzleImageProof={};missingBinding=9;ReachMuzzlePreflight(lifecycleBase,size,7);
+    missingBinding=-1;bindingScan=0;
+    Check(!g_reachMuzzleImageProof.proven&&g_reachMuzzleImageProof.failedRva==0x4C2A4F&&!g_reachMuzzleImageProof.failedEdge,
+        "a failed preflight names the binding");
+    Check(!InstallReachMuzzle(lifecycleBase,size,7)&&bindingScan==0&&createCalls==0,"a failed preflight is not retried behind the hooks");
+    reset();g_reachMuzzleImageProof={};image[0x4C303A]^=1;ReachMuzzlePreflight(lifecycleBase,size,7);image[0x4C303A]^=1;
+    Check(!g_reachMuzzleImageProof.proven&&g_reachMuzzleImageProof.failedEdge&&g_reachMuzzleImageProof.failedRva==0x4C303A,
+        "a changed edge at the preflight is named as an edge");
+    g_reachMuzzleImageProof={};
     reset();Check(InstallReachMuzzle(lifecycleBase,size,7),"fixture installed");ingress=true;
     Check(!RemoveReachMuzzle()&&removeCalls==0,"zero counter with thread in ingress retains code");ingress=false;
     g_reachBarrel.callbacks=1;Check(!RemoveReachMuzzle()&&removeCalls==0,"active callback retains code");

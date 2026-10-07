@@ -4683,6 +4683,16 @@ namespace
                 }
                 cursor = regionEnd;
             }
+            // The count above is of the bytes in memory. Where this mod has an
+            // enabled hook those are our jump, not the game's code: a Halo 2
+            // lane that proved a function head after another lane hooked it
+            // would read "missing" on a healthy game (the defect that kept
+            // Halo 4's and Reach's muzzle lanes off, sigscan.h). Make it the
+            // count over the game's own bytes; a match that needed them is
+            // reported once as PROOF AFTER HOOK.
+            sig::CorrectLiveCountForHooks(
+                base, size, compiled.bytes, compiled.wild, compiled.length,
+                firstMatch, matchCount);
         }
         __except (EXCEPTION_EXECUTE_HANDLER)
         {
