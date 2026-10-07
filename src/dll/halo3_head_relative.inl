@@ -498,6 +498,12 @@ struct Halo3HeadAudioLane
     std::atomic<uint32_t> uses[static_cast<size_t>(head_relative::Use::Count)]{};
     std::atomic<uint32_t> faults{0};
     std::atomic<float> lastNative[3]{}, lastHead[3]{};   // the two forwards of the last rewrite
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    // Which thread updates the listeners (dev): the first one seen since the install, and how many updates came
+    // from any other. Offline, two entries reach the update through pointers, so their thread is not provable;
+    // a second thread here would mean a reader could see the game's basis between its write and ours.
+    std::atomic<uint32_t> firstThread{0}, otherThread{0}, otherThreadUpdates{0}, updates{0};
+#endif
     // Cold worker only.
     int reportedSwitch = -1;
     int reportedState = -1;
@@ -578,6 +584,16 @@ __declspec(noinline) void __fastcall Halo3ListenerUpdateDetour(bool flag)
         if (lane.original)
             CallNativeWithSpareSlots(lane.original, flag);
         Halo3ListenerApplyHead(lane);
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        const uint32_t thread = GetCurrentThreadId();
+        uint32_t first = 0;
+        lane.updates.fetch_add(1, std::memory_order_relaxed);
+        if (!lane.firstThread.compare_exchange_strong(first, thread, std::memory_order_relaxed) && first != thread)
+        {
+            lane.otherThread.store(thread, std::memory_order_relaxed);
+            lane.otherThreadUpdates.fetch_add(1, std::memory_order_relaxed);
+        }
+#endif
     }
     __finally
     {
@@ -729,6 +745,12 @@ bool InstallHeadRelativeAudio(Halo3HeadAudioLane& lane, uintptr_t base, size_t s
     for (auto& use : lane.uses)
         use.store(0, std::memory_order_relaxed);
     lane.faults.store(0, std::memory_order_relaxed);
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    lane.firstThread.store(0, std::memory_order_relaxed);
+    lane.otherThread.store(0, std::memory_order_relaxed);
+    lane.otherThreadUpdates.store(0, std::memory_order_relaxed);
+    lane.updates.store(0, std::memory_order_relaxed);
+#endif
     lane.reportedState = -1;
     void* const target = reinterpret_cast<void*>(proof.update);
     if (MH_CreateHook(target, detour, reinterpret_cast<void**>(&lane.original)) != MH_OK)
@@ -923,13 +945,16 @@ void HeadRelativeAudioReport(Halo3HeadAudioLane& lane)
     LOG("AUDIO HEAD %s (dev): %u listener updates rewritten with the head (last: the game's forward yaw %.1f pitch "
         "%.1f deg, the head's yaw %.1f pitch %.1f); refused %u: switch off %u, no listener for the local user %u, not "
         "gameplay %u, no head sample %u, another generation %u, from the future %u, stale %u, no usable basis %u; "
-        "record read faults %u",
+        "record read faults %u; threads since the install: %u updates, first on thread %u, %u on other threads "
+        "(last other %u)",
         lane.title, used, used ? yawDeg(native) : 0.0f, used ? pitchDeg(native) : 0.0f, used ? yawDeg(head) : 0.0f,
         used ? pitchDeg(head) : 0.0f, refused, counts[static_cast<size_t>(Use::SwitchOff)],
         counts[static_cast<size_t>(Use::NotLocalUser)], counts[static_cast<size_t>(Use::NotGameplay)],
         counts[static_cast<size_t>(Use::NoSample)], counts[static_cast<size_t>(Use::OtherGeneration)],
         counts[static_cast<size_t>(Use::FromTheFuture)], counts[static_cast<size_t>(Use::Stale)],
-        counts[static_cast<size_t>(Use::NoHeading)], faults);
+        counts[static_cast<size_t>(Use::NoHeading)], faults, lane.updates.load(std::memory_order_relaxed),
+        lane.firstThread.load(std::memory_order_relaxed), lane.otherThreadUpdates.load(std::memory_order_relaxed),
+        lane.otherThread.load(std::memory_order_relaxed));
 #endif
 }
 
