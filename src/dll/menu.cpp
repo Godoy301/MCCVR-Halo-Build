@@ -1860,7 +1860,8 @@ namespace
                             "Halo: Reach, Halo 3 and Halo 4 for now; other games keep their own tracker. Live.\n"
                             "Halo 4 starts each level on the game's own tracker and changes over once it has\n"
                             "checked that the heading it replaces follows your aim: a few seconds on foot with\n"
-                            "Direct drive on (Weapon & Aim). Not yet seen in a headset.");
+                            "Direct drive on (Weapon & Aim). Not yet seen in a headset.\n"
+                            "Halo 2 does the same, at your first aim movement in a level. Not yet seen in a headset.");
         ImGui::Spacing();
         ImGui::Separator();
         ImGui::Text("HUD layout");

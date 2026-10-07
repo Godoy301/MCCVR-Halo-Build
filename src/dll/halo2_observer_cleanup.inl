@@ -18,6 +18,9 @@ bool RemoveCore(const char* reason) noexcept
     if constexpr(kHalo2DebugGlobalAimAssistOverrideEnabled) Game_Halo2RestoreAimAssist();
     if (!RemoveParticleGate()||!RemoveHalo2ContactMelee()||!RemoveHalo2WeaponHaptics()||!RemoveHalo2DualAim()||
         !RemoveHalo2WorldCollision()) return false;
+    // The head-relative tracker's hook reads the drive's state (its written yaw, its control stamp): retire it
+    // ahead of the drive, and before the module can go (halo2_head_relative.inl).
+    if (!RemoveHalo2HeadRelative()) return false;
     // The drive reads the unit through the accessor the unit-aim hook owns: retire it first. Left installed,
     // it outlived the module (a title switch unloads halo2.dll), and its stale target kept the next module
     // from ever being hooked.
