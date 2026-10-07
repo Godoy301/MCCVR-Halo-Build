@@ -2100,7 +2100,10 @@ void ConfigSave()
     fprintf(f, "# game turns its motion tracker with the aim. 1 = contacts are placed by where your head faces,\n");
     fprintf(f, "# so sweeping the gun moves nothing and turning your head turns them. 0 = the game's own\n");
     fprintf(f, "# tracker, turned by the gun. A game that has no head-relative tracker yet keeps its own\n");
-    fprintf(f, "# (log: TRACKER HEAD <game>). Live in F1 > HUD. (default %d)\n", d.tracker_follows_head ? 1 : 0);
+    fprintf(f, "# (log: TRACKER HEAD <game>). Halo 4 starts each level on the game's own tracker and changes\n");
+    fprintf(f, "# over once it has checked that the heading it replaces follows your aim: a few seconds on\n");
+    fprintf(f, "# foot with aim_direct_drive = 1. Live in F1 > HUD. (default %d)\n",
+        d.tracker_follows_head ? 1 : 0);
     fprintf(f, "tracker_follows_head = %d\n", g_config.tracker_follows_head ? 1 : 0);
     fprintf(f, "# Sound follows your head. 1 = you hear the world from the way your head faces. 0 = from the\n");
     fprintf(f, "# way the gun points, as the game does it. Halo: Reach, Halo 3 and ODST (ODST not yet tested) for now; a game with no head-relative\n");

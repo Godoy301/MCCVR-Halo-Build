@@ -241,6 +241,10 @@ bool LegacyDriveInstall(GameTitle title, uintptr_t base, size_t size);
 bool LegacyDriveRemove(GameTitle title);
 bool LegacyDriveLive(GameTitle title);
 void LegacyDriveReport();
+// The Halo 4 tracker lane's run-time proof (halo4_head_relative.inl) compares the game's heading with this: the aim
+// yaw this mod's direct drive is WRITING into the game's own aim, on foot. False when the drive is not live or
+// nothing that fresh was published. Defined after legacy_direct_drive.inl.
+bool Halo4TrackerAimReference(float& yaw) noexcept;
 // The vehicle-gun aim lane's cold-worker lines (the gun camera's offset in Halo 3 gun-slaved seats, the look-steered
 // drivers' gun band): edges in every build, windows in dev builds.
 void GunAimReport();
@@ -314,6 +318,7 @@ bool Halo4Type13LogRemove();
 #endif
 #include "halo4_adapter.h"
 #include "halo4_cold_observation.h"
+#include "../common/halo4_head_relative_logic.h"
 #include "../common/odst_bringup_logic.h"
 #include "../common/odst_vehicle_logic.h"
 #include "../common/scope_logic.h"
@@ -41487,6 +41492,8 @@ namespace
     #include "halo4_muzzle_publication.inl"
     #include "halo4_muzzle_shots.inl"
     #include "halo4_muzzle_lifecycle.inl"
+    // The motion tracker follows the head instead of the aim (retail-derived lead, proves itself at run time).
+    #include "halo4_head_relative.inl"
     // Dev builds only: Halo 4 seated convergence, stages 0-1 (the file compiles to nothing otherwise).
     #include "halo4_seat_sight.inl"
     // Flat parity's fire eye, Halo 4 on foot: measured, proven at rest (every build).
@@ -45002,6 +45009,11 @@ namespace
         // which is read back AFTER ApplyHeadLook.
         if (Halo4ValidateCameraBasis(stock))
             Halo4PublishCenterRoot(stock);
+        // The head this frame is seen with, for what must turn with the head instead of the aim on another thread
+        // (the motion tracker; halo4_head_relative.inl). `stock` carries the head-look only when headTracked.
+        Halo4PublishHeadSample(stock.forward, stock.up, headTracked,
+                               ReadHalo4CinematicControl() == CinematicControlState::PlayerControlled,
+                               g_halo4Camera.generation.load(std::memory_order_acquire));
         if (Halo4ValidateCameraBasis(controllerRoot))
         {
             g_halo4HandsLiftZ.store(handsLiftZ, std::memory_order_relaxed);
@@ -46443,6 +46455,8 @@ namespace
         RemoveHalo4FireEye();   // asked only from inside the contact and muzzle detours, drained below
         if(!RemoveHalo4Muzzle())
         { LOG("Halo 4 teardown: optional muzzle hooks need cleanup retry; retaining native dependencies");return false; }
+        if(!RemoveHalo4HeadRelative())
+        { LOG("Halo 4 teardown: the head-relative tracker hook needs cleanup retry; retaining native dependencies");return false; }
         const uint32_t generation =
             g_halo4Camera.generation.load(std::memory_order_acquire);
         // The module can stay resident across levels, so capability withdrawal
@@ -46877,6 +46891,8 @@ namespace
         (void)Halo4Type13LogInstall(base,size,generation);
 #endif
         (void)InstallHalo4Muzzle(base,size,generation);
+        // Optional and feature-local: a refusal leaves the game's own tracker and nothing else changes.
+        (void)InstallHalo4HeadRelative(base,size,generation);
         InstallHalo4FireEye(base,size,generation);   // flat parity's measured fire eye (halo4_fire_eye.inl)
 #if HALOMCCVR_DEV_DIAGNOSTICS
         InstallHalo4SeatSight(base,size,generation);   // after the muzzle lane: its bindings and view detour
@@ -47265,6 +47281,7 @@ namespace
             g_halo4WorldCollision.failures.load(std::memory_order_relaxed);
         ReportHalo4ContactMelee();
         ReportHalo4Muzzle();
+        ReportHalo4HeadRelative();
         ReportHalo4FireEye();
 #if HALOMCCVR_DEV_DIAGNOSTICS
         ReportHalo4AsSeen();
@@ -52994,6 +53011,24 @@ static bool ReachSeatAimFrameBindingInstalled()
 }
 #include "seat_aim_world_frame.inl"
 #include "legacy_direct_drive.inl"
+// The Halo 4 tracker lane's proof reference (declared with the legacy drive's other accessors, above): the yaw
+// the input thread last published for the direct drive to write. Only while the drive is LIVE (armed on its own
+// validated record and run within 150 ms): then the mod is writing this yaw into the game's aim, and the game's
+// heading can be held against it. Under the stick servo the same number is a target the game's aim trails by
+// an unbounded angle, so it is no reference. On foot only: a seat's record is not always in world angles.
+bool Halo4TrackerAimReference(float& yaw) noexcept
+{
+    const int slot = LegacyDriveSlot(GameTitle::Halo4);
+    if (slot < 0 || !LegacyDriveLive(GameTitle::Halo4))
+        return false;
+    const LegacyDrivePublication publication = LegacyDriveReadPublication(g_legacyDrive[slot]);
+    const uint64_t now = GetTickCount64();
+    if (!publication.coherent || !publication.valid || publication.seated || !publication.setMs ||
+        now < publication.setMs || now - publication.setMs > 100 || !std::isfinite(publication.yaw))
+        return false;
+    yaw = publication.yaw;
+    return true;
+}
 #if HALOMCCVR_DEV_DIAGNOSTICS
 #include "type13_flight_log.inl"
 #endif
