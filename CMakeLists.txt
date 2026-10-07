@@ -896,6 +896,11 @@ if(BUILD_TESTING)
     add_executable(halomccvr_seat_converge_tests tests/seat_converge_tests.cpp)
     target_include_directories(halomccvr_seat_converge_tests PRIVATE src/common)
     add_test(NAME halomccvr_seat_converge_tests COMMAND halomccvr_seat_converge_tests)
+    # Reach's motion tracker follows the head (src/common/reach_head_relative_logic.h): the decode of the game's
+    # own heading store and its two readers, and the two headset checks on the game's own placement arithmetic.
+    add_executable(halomccvr_reach_head_relative_tests tests/reach_head_relative_tests.cpp)
+    target_include_directories(halomccvr_reach_head_relative_tests PRIVATE src/common)
+    add_test(NAME halomccvr_reach_head_relative_tests COMMAND halomccvr_reach_head_relative_tests)
     # Head-relative HUD and sound, the shared pure half (src/common/head_relative_logic.h): the heading of a
     # forward vector, the game's forward with the head's yaw, the head sample's verdict, and the player's two
     # headset checks (gun swept: contacts stay put; head turned: contacts turn) as geometry.
