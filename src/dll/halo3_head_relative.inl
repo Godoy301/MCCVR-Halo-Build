@@ -1,0 +1,555 @@
+// Included in game.cpp (inside its anonymous namespace) after halo3_avatar.inl. Declared ahead of ApplyHeadLook, which
+// publishes the head (Halo3HeadRelativePublish); installed and retired with the Halo 3 core (InstallHook,
+// RemoveInstalledGameHooks); reported by the cold worker (Halo3HeadRelativeReport).
+//
+// THE MOTION TRACKER BY THE HEAD'S HEADING, Halo 3 (src/common/halo3_head_relative_logic.h has the mechanism, the
+// signatures and the arithmetic; docs/RE-notes.md "Halo 3 motion tracker" the evidence).
+//
+// The player aims with the hand and looks with the head. Halo 3's tracker turns its contacts by ONE heading, the
+// player-control facing yaw, which direct drive steers with the hand: sweep the gun and every contact swings, turn
+// the head and nothing moves. The tracker update (halo3 +0x32DA98) turns that yaw into a sine / cosine pair and hands
+// it to the two builders that place a contact (+0x32D9A8 a world point, +0x32D680 an object), which nothing else
+// calls. The detours on those two builders replace the pair with the pair of the HEAD's heading.
+//
+//   * WHAT IT CANNOT TOUCH. It reads one integer of the tracker's own state (the output user) and rewrites two float
+//     ARGUMENTS of the tracker's own builders. No write to the game at all: not player control, not the aim record,
+//     not the observer or any camera, nothing a shot, the firing assist, the view or the network reads.
+//   * THE HEAD crosses threads (the two clocks): ApplyHeadLook, on the camera thread, publishes the forward and up
+//     it has just written into the view (world space), stamped on the sight clock with the title generation, and
+//     whether that frame was player-controlled. The builders run where the HUD updates. A sample older than
+//     100 ms, from another generation or from a cinematic frame is refused.
+//   * EVERY REFUSAL IS THE GAME'S OWN PAIR, untouched, counted by reason (head_relative::Use): the switch off, not
+//     output user 0, no / stale / foreign sample, a cinematic, no heading. Identity and freshness only.
+//   * PROOF (addrcascade: resolved + guarded, nothing hardcoded): nine signatures, each unique in the image; both
+//     hook targets proven twice (the update's call operand and the builder's own entry pattern at that address);
+//     the argument slots and the placement arithmetic are in the patterns; ValueAgreement: the pi/2 constant, the
+//     sign mask, the two trig calls resolve to the C runtime's sinf and cosf (in that order), and the update's unit
+//     call is the output-user unit getter the vehicle lane bound independently. Any miss: StockFallback, one line.
+//   * LTCG: `py -3 tools/audit_caller_area.py halo3.dll 32D9A8:10:i 32D680:11:i` is clean (the builders read only
+//     their declared stack arguments; their one native caller keeps no volatile register across the calls); both
+//     detours forward through CallNativeWithSpareSlots.
+// Cost per contact: one seqlock read, one clock read, a dozen float operations. No allocation, no logging.
+
+using Halo3TrackerPointFn = bool(__fastcall*)(void* self, const float* point, void* blip, const float* origin,
+                                               float sinA, float cosA);
+using Halo3TrackerObjectFn = bool(__fastcall*)(void* self, int slot, void* blip, const float* origin,
+                                                const float* point, float sinA, float cosA);
+
+// The head, as the camera thread last rendered with it (seqlock; publishers take turns through `writing`).
+struct HeadRelativePublication
+{
+    std::atomic<bool> writing{false};
+    std::atomic<uint32_t> seq{0};
+    std::atomic<float> forward[3]{}, up[3]{};
+    std::atomic<uint64_t> stampUs{0};
+    std::atomic<uint32_t> generation{0};
+    std::atomic<bool> gameplay{false}, valid{false};
+};
+
+struct Halo3HeadRelativeLane
+{
+    const char* title = "Halo 3";
+    const std::atomic<uint32_t>* runtimeGeneration = nullptr;
+    // The hooks (worker-owned; the detours read `ready` and the originals).
+    void* pointTarget = nullptr;
+    void* objectTarget = nullptr;
+    Halo3TrackerPointFn pointOriginal = nullptr;
+    Halo3TrackerObjectFn objectOriginal = nullptr;
+    std::atomic<uint32_t> callbacks{0};
+    std::atomic<bool> ready{false};
+    int32_t userOffset = 0;   // the output user index in the tracker state, decoded at install
+    HeadRelativePublication head;
+    // Verdicts, counted where the builders run; the cold worker reads and clears them.
+    std::atomic<uint32_t> uses[static_cast<size_t>(head_relative::Use::Count)]{};
+    std::atomic<uint32_t> faults{0};
+    std::atomic<float> lastNative[2]{}, lastUsed[2]{};   // the two headings of the last substitution (x, y)
+    // Cold worker only.
+    int reportedSwitch = -1;
+    int reportedState = -1;
+    uint64_t reportMs = 0;
+};
+Halo3HeadRelativeLane g_halo3HeadRelative;
+
+// The last heading the head had, on the thread that builds the tracker.
+thread_local halo3_head_relative::Hold t_halo3TrackerHold;
+
+// Camera thread: the view this frame renders with. `forward` / `up` null: the frame is not the player's (a
+// cutscene theatre), published so the tracker's refusal names it.
+void HeadRelativePublishTo(HeadRelativePublication& p, uint32_t generation, const float* forward, const float* up,
+                           bool gameplay)
+{
+    if (!generation || p.writing.exchange(true, std::memory_order_acquire))
+        return;
+    const bool vectors = forward && up;
+    const bool finite = !vectors || (head_relative::Finite3(forward) && head_relative::Finite3(up));
+    p.seq.fetch_add(1, std::memory_order_acq_rel);
+    for (int i = 0; i < 3; ++i)
+    {
+        p.forward[i].store(vectors && finite ? forward[i] : 0.0f, std::memory_order_relaxed);
+        p.up[i].store(vectors && finite ? up[i] : 0.0f, std::memory_order_relaxed);
+    }
+    p.stampUs.store(Sight_NowUs(), std::memory_order_relaxed);
+    p.generation.store(generation, std::memory_order_relaxed);
+    p.gameplay.store(gameplay && vectors && finite, std::memory_order_relaxed);
+    p.valid.store(finite, std::memory_order_relaxed);
+    p.seq.fetch_add(1, std::memory_order_release);
+    p.writing.store(false, std::memory_order_release);
+}
+
+// Any thread: a coherent copy of the last published head, or false while a publisher is mid-write.
+bool HeadRelativeRead(const HeadRelativePublication& p, head_relative::HeadSample& out, bool& gameplay)
+{
+    for (int attempt = 0; attempt < 3; ++attempt)
+    {
+        const uint32_t before = p.seq.load(std::memory_order_acquire);
+        if (before & 1u)
+            continue;
+        for (int i = 0; i < 3; ++i)
+        {
+            out.forward[i] = p.forward[i].load(std::memory_order_relaxed);
+            out.up[i] = p.up[i].load(std::memory_order_relaxed);
+        }
+        out.stampUs = p.stampUs.load(std::memory_order_relaxed);
+        out.generation = p.generation.load(std::memory_order_relaxed);
+        out.valid = p.valid.load(std::memory_order_relaxed);
+        gameplay = p.gameplay.load(std::memory_order_relaxed);
+        std::atomic_thread_fence(std::memory_order_acquire);
+        if (p.seq.load(std::memory_order_relaxed) == before)
+            return true;
+    }
+    return false;
+}
+
+void Halo3HeadRelativePublish(const float* forward, const float* up, bool gameplay)
+{
+    HeadRelativePublishTo(g_halo3HeadRelative.head, g_halo3RuntimeGeneration.load(std::memory_order_acquire), forward,
+                          up, gameplay);
+}
+
+namespace
+{
+// The output user the tracker state belongs to. Guarded: the state is the game's own argument.
+bool Halo3TrackerUser(const void* self, int32_t offset, int32_t& user)
+{
+    __try
+    {
+        if (!self)
+            return false;
+        user = *reinterpret_cast<const int32_t*>(static_cast<const uint8_t*>(self) + offset);
+        return true;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return false;
+    }
+}
+
+// One contact placement: the pair to hand the builder (the game's own unless every gate passes).
+void Halo3TrackerPair(Halo3HeadRelativeLane& lane, const void* self, float& sinA, float& cosA)
+{
+    halo3_head_relative::Request in{};
+    in.switchOn = lane.ready.load(std::memory_order_acquire) && g_config.tracker_follows_head;
+    if (in.switchOn)
+    {
+        if (!Halo3TrackerUser(self, lane.userOffset, in.user))
+        {
+            in.user = -1;
+            lane.faults.fetch_add(1, std::memory_order_relaxed);
+        }
+        if (in.user == 0)
+        {
+            in.sampleRead = HeadRelativeRead(lane.head, in.sample, in.gameplay);
+            in.generation = lane.runtimeGeneration ? lane.runtimeGeneration->load(std::memory_order_acquire) : 0;
+            in.nowUs = Sight_NowUs();
+            in.sign = g_config.tracker_head_sign;
+            in.offsetRad = g_config.tracker_head_offset_deg * head_relative::kDegToRad;
+        }
+    }
+    float native[3], used[3];
+    const head_relative::Use use = halo3_head_relative::Substitute(in, t_halo3TrackerHold, sinA, cosA, native, used);
+    lane.uses[static_cast<size_t>(use)].fetch_add(1, std::memory_order_relaxed);
+    if (use == head_relative::Use::Ok)
+        for (int i = 0; i < 2; ++i)
+        {
+            lane.lastNative[i].store(native[i], std::memory_order_relaxed);
+            lane.lastUsed[i].store(used[i], std::memory_order_relaxed);
+        }
+}
+} // namespace
+
+__declspec(noinline) bool __fastcall Halo3TrackerPointDetour(void* self, const float* point, void* blip,
+                                                             const float* origin, float sinA, float cosA)
+{
+    auto& lane = g_halo3HeadRelative;
+    lane.callbacks.fetch_add(1, std::memory_order_acq_rel);
+    bool placed = false;
+    __try
+    {
+        Halo3TrackerPair(lane, self, sinA, cosA);
+        if (lane.pointOriginal)
+            placed = CallNativeWithSpareSlots(lane.pointOriginal, self, point, blip, origin, sinA, cosA);
+    }
+    __finally
+    {
+        lane.callbacks.fetch_sub(1, std::memory_order_acq_rel);
+    }
+    return placed;
+}
+
+__declspec(noinline) bool __fastcall Halo3TrackerObjectDetour(void* self, int slot, void* blip, const float* origin,
+                                                              const float* point, float sinA, float cosA)
+{
+    auto& lane = g_halo3HeadRelative;
+    lane.callbacks.fetch_add(1, std::memory_order_acq_rel);
+    bool placed = false;
+    __try
+    {
+        Halo3TrackerPair(lane, self, sinA, cosA);
+        if (lane.objectOriginal)
+            placed = CallNativeWithSpareSlots(lane.objectOriginal, self, slot, blip, origin, point, sinA, cosA);
+    }
+    __finally
+    {
+        lane.callbacks.fetch_sub(1, std::memory_order_acq_rel);
+    }
+    return placed;
+}
+
+// Worker: retire both hooks (disable, prove nothing is inside, remove). Idempotent; false = try again.
+bool RemoveHeadRelativeTracker(Halo3HeadRelativeLane& lane, const void* pointDetour, const void* objectDetour)
+{
+    lane.ready.store(false, std::memory_order_release);
+    if (!lane.pointTarget && !lane.objectTarget)
+        return true;
+    for (void* target : {lane.pointTarget, lane.objectTarget})
+    {
+        if (!target)
+            continue;
+        const auto status = MCCVR_DisableHookForRetirement(target);
+        if (status != MH_OK && status != MH_ERROR_DISABLED && status != MH_ERROR_NOT_CREATED)
+        {
+            LOG("TRACKER HEAD %s CleanupRequired: a tracker hook did not disable (%d)", lane.title,
+                static_cast<int>(status));
+            return false;
+        }
+    }
+    const void* functions[]{pointDetour, objectDetour};
+    const void* trampolines[]{reinterpret_cast<const void*>(lane.pointOriginal),
+                              reinterpret_cast<const void*>(lane.objectOriginal)};
+    if (!WaitForNativeDetourQuiescence(functions, trampolines, 2, lane.callbacks))
+    {
+        LOG("TRACKER HEAD %s CleanupRequired: the tracker detours are busy", lane.title);
+        return false;
+    }
+    for (void** target : {&lane.pointTarget, &lane.objectTarget})
+    {
+        if (!*target)
+            continue;
+        const auto removed = MH_RemoveHook(*target);
+        if (removed != MH_OK && removed != MH_ERROR_NOT_CREATED)
+        {
+            LOG("TRACKER HEAD %s CleanupRequired: a tracker hook was not removed (%d)", lane.title,
+                static_cast<int>(removed));
+            return false;
+        }
+        *target = nullptr;
+    }
+    lane.pointOriginal = nullptr;
+    lane.objectOriginal = nullptr;
+    return true;
+}
+
+namespace
+{
+// What the install decoded from the image.
+struct Halo3TrackerProof
+{
+    uintptr_t update = 0, point = 0, object = 0;
+    int32_t userOffset = 0;
+    bool unitGetterAgrees = false;   // the update's unit call is the getter the vehicle lane bound
+    const char* trig = "";           // how sinf / cosf were proven
+};
+
+// `function`(x) against the C runtime's own sine or cosine at two angles. Guarded: `function` is a pointer read
+// from the title's import table.
+bool Halo3TrackerTrigAnswers(float (*function)(float), bool sine)
+{
+    const float angles[2]{0.5f, -2.25f};
+    __try
+    {
+        for (int i = 0; i < 2; ++i)
+        {
+            const float expected = sine ? std::sin(angles[i]) : std::cos(angles[i]);
+            if (!(std::fabs(function(angles[i]) - expected) <= 1.0e-5f))
+                return false;
+        }
+        return true;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return false;
+    }
+}
+
+// Every site of the tracker's heading, from the game's own bytes. Null = proven; otherwise what did not prove.
+// Every read is of matched pattern bytes or of an address checked to lie inside the image first.
+const char* Halo3TrackerProve(uintptr_t base, size_t size, uintptr_t unitGetter, Halo3TrackerProof& out)
+{
+    namespace t = halo3_head_relative;
+    const auto unique = [&](const char* pattern) -> uintptr_t {
+        const uintptr_t hit = sig::Find(base, size, pattern);
+        return hit && !sig::Find(hit + 1, base + size - hit - 1, pattern) ? hit : 0;
+    };
+    const auto inside = [&](uintptr_t address, size_t bytes) {
+        return address >= base && address <= base + size && bytes <= base + size - address;
+    };
+    const auto i32 = [](uintptr_t at) {
+        int32_t v = 0;
+        memcpy(&v, reinterpret_cast<const void*>(at), sizeof(v));
+        return v;
+    };
+    // The target of the E8 at `at` (a matched byte), or 0.
+    const auto callTarget = [&](uintptr_t at) -> uintptr_t {
+        if (*reinterpret_cast<const uint8_t*>(at) != 0xE8)
+            return 0;
+        const uintptr_t target = at + 5 + i32(at + 1);
+        return inside(target, 16) ? target : 0;
+    };
+    const auto within = [](uintptr_t site, uintptr_t entry, uint32_t extent) {
+        return site > entry && site - entry < extent;
+    };
+
+    const uintptr_t update = unique(t::kUpdateEntryPattern);
+    if (!update)
+        return "the tracker update's entry";
+    const uintptr_t trig = unique(t::kTrigPattern);
+    if (!trig || !within(trig, update, t::kUpdateExtent))
+        return "the heading's sine / cosine inside the update";
+    const uintptr_t pointCall = unique(t::kPointCallPattern);
+    const uintptr_t objectCallA = unique(t::kObjectCallAPattern);
+    const uintptr_t objectCallB = unique(t::kObjectCallBPattern);
+    if (!pointCall || !objectCallA || !objectCallB || !within(pointCall, update, t::kUpdateExtent) ||
+        !within(objectCallA, update, t::kUpdateExtent) || !within(objectCallB, update, t::kUpdateExtent) ||
+        !(trig < pointCall && pointCall < objectCallA && objectCallA < objectCallB))
+        return "the update's three builder calls";
+    const uintptr_t point = callTarget(pointCall + t::kPointCall);
+    const uintptr_t object = callTarget(objectCallA + t::kObjectCallA);
+    if (!point || !object || point == object || object != callTarget(objectCallB + t::kObjectCallB))
+        return "the builder calls' targets";
+    // The second, independent site of each hook target: its own entry, and its placement arithmetic inside it.
+    if (unique(t::kPointEntryPattern) != point)
+        return "the point builder's entry at the update's call target";
+    if (unique(t::kObjectEntryPattern) != object)
+        return "the object builder's entry at the update's call target";
+    const uintptr_t pointPlace = unique(t::kPointPlacePattern), objectPlace = unique(t::kObjectPlacePattern);
+    if (!pointPlace || !within(pointPlace, point, t::kPointExtent))
+        return "the point builder's placement";
+    if (!objectPlace || !within(objectPlace, object, t::kObjectExtent))
+        return "the object builder's placement";
+    // ValueAgreement: the angle is -(yaw + pi/2) ...
+    const uintptr_t halfPiAt = trig + t::kTrigHalfPi + 4 + i32(trig + t::kTrigHalfPi);
+    const uintptr_t maskAt = trig + t::kTrigMask + 4 + i32(trig + t::kTrigMask);
+    if (!inside(halfPiAt, sizeof(float)) || !inside(maskAt, sizeof(uint32_t)))
+        return "the heading's constants lie outside the module";
+    float halfPi = 0.0f;
+    uint32_t mask = 0;
+    memcpy(&halfPi, reinterpret_cast<const void*>(halfPiAt), sizeof(halfPi));
+    memcpy(&mask, reinterpret_cast<const void*>(maskAt), sizeof(mask));
+    if (!(std::fabs(halfPi - 1.5707964f) <= 1.0e-6f) || mask != 0x80000000u)
+        return "the heading's constants are not pi/2 and the sign mask";
+    // ... and call A is sinf, call B cosf: each is an import thunk (jmp [slot]) whose slot holds the C runtime's own.
+    float (*imported[2])(float) = {nullptr, nullptr};
+    const int callAt[2]{t::kTrigCallA, t::kTrigCallB};
+    for (int i = 0; i < 2; ++i)
+    {
+        const uintptr_t thunk = callTarget(trig + callAt[i]);
+        if (!thunk || !inside(thunk, 6) || *reinterpret_cast<const uint8_t*>(thunk) != 0xFF ||
+            *reinterpret_cast<const uint8_t*>(thunk + 1) != 0x25)
+            return "the heading's trig calls are not import thunks";
+        const uintptr_t slot = thunk + 6 + i32(thunk + 2);
+        if (!inside(slot, sizeof(void*)))
+            return "a trig import slot lies outside the module";
+        uintptr_t function = 0;
+        memcpy(&function, reinterpret_cast<const void*>(slot), sizeof(function));
+        if (!function || inside(function, 1))
+            return "a trig import is not bound";
+        imported[i] = reinterpret_cast<float (*)(float)>(function);
+    }
+    const HMODULE runtime = GetModuleHandleW(L"ucrtbase.dll");
+    const void* runtimeSin = runtime ? reinterpret_cast<const void*>(GetProcAddress(runtime, "sinf")) : nullptr;
+    const void* runtimeCos = runtime ? reinterpret_cast<const void*>(GetProcAddress(runtime, "cosf")) : nullptr;
+    if (runtimeSin && runtimeCos && reinterpret_cast<const void*>(imported[0]) == runtimeSin &&
+        reinterpret_cast<const void*>(imported[1]) == runtimeCos)
+        out.trig = "the imports are ucrtbase's sinf and cosf";
+    else if (Halo3TrackerTrigAnswers(imported[0], true) && Halo3TrackerTrigAnswers(imported[1], false))
+        out.trig = "the imports answer as sinf and cosf";
+    else
+        return "the heading's trig calls are not sinf then cosf";
+    // The output user: the update reads it from its state and asks for that user's unit.
+    out.userOffset = i32(update + t::kUpdateUserDisp);
+    if (out.userOffset <= 0 || out.userOffset > 0x10000 || (out.userOffset & 3))
+        return "the output user's offset did not decode plausibly";
+    const uintptr_t unitCall = callTarget(update + t::kUpdateUnitCall);
+    if (!unitCall)
+        return "the update's unit call";
+    if (unitGetter && unitCall != unitGetter)
+        return "the update's unit call is not the output-user unit getter";
+    out.unitGetterAgrees = unitGetter != 0;
+    out.update = update;
+    out.point = point;
+    out.object = object;
+    return nullptr;
+}
+} // namespace
+
+// Install thread. Its own transaction: any miss leaves the game's own tracker, said once.
+bool InstallHeadRelativeTracker(Halo3HeadRelativeLane& lane, uintptr_t base, size_t size, uint32_t generation,
+                                uintptr_t unitGetter, void* pointDetour, void* objectDetour)
+{
+    lane.ready.store(false, std::memory_order_release);
+    if (lane.pointTarget || lane.objectTarget)
+    {
+        LOG("TRACKER HEAD %s: StockFallback: a previous tracker hook has not retired", lane.title);
+        return false;
+    }
+    Halo3TrackerProof proof{};
+    if (const char* why = Halo3TrackerProve(base, size, unitGetter, proof))
+    {
+        LOG("TRACKER HEAD %s: StockFallback: %s did not prove; the motion tracker keeps the game's own heading "
+            "(the aim)", lane.title, why);
+        return false;
+    }
+    lane.userOffset = proof.userOffset;
+    for (auto& use : lane.uses)
+        use.store(0, std::memory_order_relaxed);
+    lane.faults.store(0, std::memory_order_relaxed);
+    lane.reportedState = -1;
+    void* const point = reinterpret_cast<void*>(proof.point);
+    void* const object = reinterpret_cast<void*>(proof.object);
+    if (MH_CreateHook(point, pointDetour, reinterpret_cast<void**>(&lane.pointOriginal)) != MH_OK)
+    {
+        lane.pointOriginal = nullptr;
+        LOG("TRACKER HEAD %s: StockFallback: the point builder's hook was not created", lane.title);
+        return false;
+    }
+    lane.pointTarget = point;
+    if (MH_CreateHook(object, objectDetour, reinterpret_cast<void**>(&lane.objectOriginal)) != MH_OK)
+    {
+        lane.objectOriginal = nullptr;
+        LOG("TRACKER HEAD %s: StockFallback: the object builder's hook was not created", lane.title);
+        (void)RemoveHeadRelativeTracker(lane, pointDetour, objectDetour);
+        return false;
+    }
+    lane.objectTarget = object;
+    lane.ready.store(true, std::memory_order_release);
+    if (MH_EnableHook(point) != MH_OK || MH_EnableHook(object) != MH_OK)
+    {
+        LOG("TRACKER HEAD %s: StockFallback: a tracker hook did not enable", lane.title);
+        (void)RemoveHeadRelativeTracker(lane, pointDetour, objectDetour);
+        return false;
+    }
+    LOG("TRACKER HEAD %s: Installed (generation %u): the tracker update +0x%llX turns its user's player-control yaw into "
+        "sinf / cosf of -(yaw + pi/2) and hands the pair to its contact builders +0x%llX (world points) and +0x%llX "
+        "(objects), which nothing else calls; both are hooked and get the pair of the HEAD's heading for output user "
+        "0 (tracker state +0x%X). Proven: nine unique signatures, both targets at the update's call operands and "
+        "at their own entries, pi/2 and the sign mask, %s, the unit call %s. Nothing in the game is written. "
+        "tracker_follows_head is %s",
+        lane.title, generation, static_cast<unsigned long long>(proof.update - base),
+        static_cast<unsigned long long>(proof.point - base), static_cast<unsigned long long>(proof.object - base),
+        static_cast<unsigned>(proof.userOffset), proof.trig,
+        proof.unitGetterAgrees ? "is the bound output-user unit getter" : "unchecked (no unit getter bound)",
+        g_config.tracker_follows_head ? "on" : "off");
+    lane.reportedSwitch = g_config.tracker_follows_head ? 1 : 0;
+    return true;
+}
+
+bool InstallHalo3HeadRelative(uintptr_t base, size_t size, uint32_t generation)
+{
+    auto& lane = g_halo3HeadRelative;
+    lane.title = "Halo 3";
+    lane.runtimeGeneration = &g_halo3RuntimeGeneration;
+    return InstallHeadRelativeTracker(lane, base, size, generation,
+                                      reinterpret_cast<uintptr_t>(g_halo3PlayerUnitGetter),
+                                      reinterpret_cast<void*>(&Halo3TrackerPointDetour),
+                                      reinterpret_cast<void*>(&Halo3TrackerObjectDetour));
+}
+
+bool RemoveHalo3HeadRelative()
+{
+    return RemoveHeadRelativeTracker(g_halo3HeadRelative, reinterpret_cast<const void*>(&Halo3TrackerPointDetour),
+                                     reinterpret_cast<const void*>(&Halo3TrackerObjectDetour));
+}
+
+// Cold worker, every 2 s. Every build: the player's switch when it changes, and the tracker's state when it
+// changes (placing by the head / the game's own, with the reason). Dev builds: the window.
+void HeadRelativeTrackerReport(Halo3HeadRelativeLane& lane)
+{
+    const uint64_t now = GetTickCount64();
+    if (now - lane.reportMs < 2000)
+        return;
+    lane.reportMs = now;
+    if (!lane.ready.load(std::memory_order_acquire))
+        return;
+    using head_relative::Use;
+    const int switchNow = g_config.tracker_follows_head ? 1 : 0;
+    if (lane.reportedSwitch != switchNow)
+    {
+        lane.reportedSwitch = switchNow;
+        LOG("TRACKER HEAD %s: the switch is now %s: the motion tracker turns with %s", lane.title,
+            switchNow ? "ON" : "OFF", switchNow ? "the head" : "the aim, as the game makes it");
+    }
+    uint32_t counts[static_cast<size_t>(Use::Count)]{};
+    uint32_t total = 0, refused = 0;
+    size_t most = static_cast<size_t>(Use::Count);
+    for (size_t i = 0; i < static_cast<size_t>(Use::Count); ++i)
+    {
+        counts[i] = lane.uses[i].exchange(0, std::memory_order_relaxed);
+        total += counts[i];
+        if (i != static_cast<size_t>(Use::Ok))
+        {
+            refused += counts[i];
+            if (counts[i] && (most == static_cast<size_t>(Use::Count) || counts[i] > counts[most]))
+                most = i;
+        }
+    }
+    const uint32_t faults = lane.faults.exchange(0, std::memory_order_relaxed);
+    if (!total && !faults)
+        return;
+    const uint32_t used = counts[static_cast<size_t>(Use::Ok)];
+    // The state: 0 = by the head; 1 + reason = the game's own for that reason (the larger share of the window).
+    const int state = used >= refused ? 0 : 1 + static_cast<int>(most);
+    if (state != lane.reportedState)
+    {
+        lane.reportedState = state;
+        if (!state)
+            LOG("TRACKER HEAD %s: contacts are placed by the head's heading", lane.title);
+        else if (most != static_cast<size_t>(Use::SwitchOff))
+            LOG("TRACKER HEAD %s: the game's own tracker (the aim): %s", lane.title,
+                head_relative::UseName(static_cast<Use>(most)));
+    }
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    const float nativeDeg = std::atan2(lane.lastNative[1].load(std::memory_order_relaxed),
+                                       lane.lastNative[0].load(std::memory_order_relaxed)) * head_relative::kRadToDeg;
+    const float usedDeg = std::atan2(lane.lastUsed[1].load(std::memory_order_relaxed),
+                                     lane.lastUsed[0].load(std::memory_order_relaxed)) * head_relative::kRadToDeg;
+    float turned = usedDeg - nativeDeg;
+    while (turned > 180.0f)
+        turned -= 360.0f;
+    while (turned <= -180.0f)
+        turned += 360.0f;
+    LOG("TRACKER HEAD %s (dev): %u contact placements by the head (last: the game's heading %.1f deg, handed %.1f deg, "
+        "turned %+.1f; sign %d, offset %.1f deg); refused %u: switch off %u, not the local user %u, not gameplay %u, "
+        "no head sample %u, another generation %u, from the future %u, stale %u, no heading %u; state read faults %u",
+        lane.title, used, used ? nativeDeg : 0.0f, used ? usedDeg : 0.0f, used ? turned : 0.0f,
+        g_config.tracker_head_sign < 0 ? -1 : 1, g_config.tracker_head_offset_deg, refused,
+        counts[static_cast<size_t>(Use::SwitchOff)], counts[static_cast<size_t>(Use::NotLocalUser)],
+        counts[static_cast<size_t>(Use::NotGameplay)], counts[static_cast<size_t>(Use::NoSample)],
+        counts[static_cast<size_t>(Use::OtherGeneration)], counts[static_cast<size_t>(Use::FromTheFuture)],
+        counts[static_cast<size_t>(Use::Stale)], counts[static_cast<size_t>(Use::NoHeading)], faults);
+#endif
+}
+
+void Halo3HeadRelativeReport()
+{
+    HeadRelativeTrackerReport(g_halo3HeadRelative);
+}

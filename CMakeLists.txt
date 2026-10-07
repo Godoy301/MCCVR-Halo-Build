@@ -907,6 +907,12 @@ if(BUILD_TESTING)
     add_executable(halomccvr_head_relative_tests tests/head_relative_tests.cpp)
     target_include_directories(halomccvr_head_relative_tests PRIVATE src/common)
     add_test(NAME halomccvr_head_relative_tests COMMAND halomccvr_head_relative_tests)
+    # Head-relative motion tracker, Halo 3 / ODST (src/common/halo3_head_relative_logic.h): the game's placement
+    # arithmetic as read from halo3.dll, the head's heading substituted into it, every refusal, the signatures'
+    # decode offsets, and the two headset checks as geometry.
+    add_executable(halomccvr_halo3_head_relative_tests tests/halo3_head_relative_tests.cpp)
+    target_include_directories(halomccvr_halo3_head_relative_tests PRIVATE src/common)
+    add_test(NAME halomccvr_halo3_head_relative_tests COMMAND halomccvr_halo3_head_relative_tests)
     # Gun-slaved seats (src/common/gun_slaved_seat_logic.h): seat flag bit 7, the occupant-aim binding, the servo's
     # feedback and lag gate, the gun-settle gate of the crosshair witness and the nod witness.
     add_executable(halomccvr_gun_slaved_seat_tests tests/gun_slaved_seat_tests.cpp)
