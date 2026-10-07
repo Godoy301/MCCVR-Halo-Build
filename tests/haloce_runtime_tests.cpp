@@ -30,6 +30,8 @@ float VR_RecenterStandingLiftM(GameTitle) noexcept { return 0.0f; }
 // The sight clock (sight_layer.cpp is not linked here): the gameplay context's camera stamp.
 uint64_t Sight_NowUs() { static uint64_t now=1000000; return now+=1000; }
 float HaloCEControls_PhysicalCrouchCorrection(uint32_t,uint64_t,float,bool) noexcept { return 0; }
+// No seat in this fixture: the tracking frame keeps the native camera heading.
+bool HaloCEControls_SeatHeading(uint32_t,halo_ce::Vec3&) noexcept { return false; }
 bool HaloCEHud_HasCrosshairScope() noexcept { return naturalHudFrame; }
 roomscale_admission::Verdict Game_RoomscaleCameraVerdict(GameTitle) {
     roomscale_admission::Verdict verdict{};

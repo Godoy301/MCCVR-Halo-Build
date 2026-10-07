@@ -110,11 +110,13 @@ void FrameDiag(const HaloCELocalPlayerState& player,const RenderContext& frame,i
     };
     const Vec3 stock=world(before),sent=world(after);
     LOG("CE action frame (dev): %s seat %d parent 0x%08X perspective %d | native camera yaw %.1f pitch %.1f | "
-        "stock action (the player's own control) yaw %.1f pitch %.1f | hand through the camera frame yaw %.1f pitch "
+        "stock action (the player's own control) yaw %.1f pitch %.1f | frame heading yaw %.1f (%s) | hand through that frame yaw %.1f pitch "
         "%.1f | written%s yaw %.1f pitch %.1f (sent yaw %.1f pitch %.1f) | unit aim yaw %.1f pitch %.1f, desired "
         "yaw %.1f pitch %.1f | vehicle aim yaw %.1f pitch %.1f, hull yaw %.1f",
         player.onFoot?"on foot":"seated",int(seat),unsigned(player.parent),int(player.nativePerspective),
         YawDeg(frame.camera.forward),PitchDeg(frame.camera.forward),YawDeg(stock),PitchDeg(stock),
+        frame.reference.seatHeadingValid?YawDeg(frame.reference.seatHeading):YawDeg(frame.camera.forward),
+        frame.reference.seatHeadingValid?"the control yaw: a seat":"the native camera's",
         YawDeg(hand),PitchDeg(hand),converged?" (converged)":"",YawDeg(written),PitchDeg(written),
         YawDeg(sent),PitchDeg(sent),YawDeg(unitAim),PitchDeg(unitAim),YawDeg(unitDesired),PitchDeg(unitDesired),
         YawDeg(vehicleAim),PitchDeg(vehicleAim),YawDeg(hull));
