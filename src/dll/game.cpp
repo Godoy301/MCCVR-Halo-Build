@@ -32733,8 +32733,11 @@ namespace
         return removed;
     }
 
+    // Why the last ScanForReachDetourIngress returned false (the worker's thread only).
+    const char* g_reachIngressScanWhy = "";
     bool ScanForReachDetourIngress(bool& busy)
     {
+        g_reachIngressScanWhy = "";
         static bool rangesResolved = false;
         // Dev builds add the log-only type-13 controller detour (type13_flight_log.inl) as the last entry.
         static ReachDetourCodeRange ranges[20 + (HALOMCCVR_DEV_DIAGNOSTICS ? 1 : 0)]{};
@@ -32774,7 +32777,10 @@ namespace
             for (size_t i = 0; i < _countof(functions); ++i)
                 resolved &= ResolveReachDetourCodeRange(functions[i], ranges[i]);
             if (!resolved)
+            {
+                g_reachIngressScanWhy = "a detour's own code range could not be resolved";
                 return false;
+            }
             rangesResolved = true;
         }
 
@@ -32835,7 +32841,10 @@ namespace
 
         ReachThreadFreeze frozenThreads;
         if (!frozenThreads.Capture())
+        {
+            g_reachIngressScanWhy = "the process's threads could not be frozen";
             return false;
+        }
 
         busy = false;
         bool scanOk = true;
@@ -32889,6 +32898,10 @@ namespace
         // Hooks are disabled and every other live thread remains suspended
         // through this RIP/counter snapshot, so an all-clear survives resume.
         const bool resumed = frozenThreads.Release();
+        if (!resumed)
+            g_reachIngressScanWhy = "the frozen threads could not all be resumed";
+        else if (!scanOk)
+            g_reachIngressScanWhy = "a live thread's position could not be read, or a hook has no trampoline";
         return scanOk && resumed;
     }
 
@@ -32904,7 +32917,8 @@ namespace
                 bool ingressBusy = false;
                 if (!ScanForReachDetourIngress(ingressBusy))
                 {
-                    LOG("Reach camera cleanup: detour ingress scan failed");
+                    LOG("Reach camera cleanup: detour ingress scan failed: %s (nothing was found busy)",
+                        g_reachIngressScanWhy);
                     return false;
                 }
                 if (!ingressBusy &&
@@ -32916,7 +32930,12 @@ namespace
             }
             Sleep(1);
         }
-        LOG("Reach camera cleanup: callbacks did not reach verified quiescence");
+        LOG("Reach camera cleanup: callbacks did not reach verified quiescence in 2 s: %s",
+            g_reachCamera.activeCallbacks.load(std::memory_order_acquire) != 0
+                ? "a camera callback is still counted as running"
+                : g_reachWorldCollision.callbacks.load(std::memory_order_acquire) != 0
+                    ? "a world-collision callback is still counted as running"
+                    : "a thread stood in a detour or its trampoline at the last scan");
         return false;
     }
 
@@ -56302,16 +56321,30 @@ bool WaitForNativeDetourQuiescence(const void* const* functions,
     // This shared worker-side retirement path serves CE's nine control
     // callbacks and Reach's larger grouped hook sets. Keep the bound fixed and
     // stack-backed so teardown never allocates while validating detours.
+    // WHY IT WAS NOT VERIFIED. Every caller prints one line of its own ("... callbacks or ingress busy") for all
+    // of these, and they are not the same thing: a thread that really stands in a detour, a callback counter
+    // that never came back to zero, or a scan that could not be made at all (at a forced close the threads
+    // cannot be frozen, and the log said "busy"). One line here, before the caller's, says which.
+    const auto notVerified=[count](const char* why)
+    {
+        LOG("detour quiescence not verified for %zu hook%s: %s (the cleanup line that follows names them)",
+            count,count==1?"":"s",why);
+        return false;
+    };
     if(!functions || !trampolines || !count || count>kNativeDetourRangeCapacity) return false;
     ReachDetourCodeRange ranges[kNativeDetourRangeCapacity]{};
     for(size_t i=0;i<count;++i)
-        if(!functions[i] || !ResolveReachDetourCodeRange(functions[i],ranges[i])) return false;
+        if(!functions[i] || !ResolveReachDetourCodeRange(functions[i],ranges[i]))
+            return notVerified("a detour's own code range could not be resolved, so no thread could be checked against it");
+    bool counterBusy=false,threadInDetour=false;
     for(unsigned waited=0;waited<2000;++waited)
     {
-        if(!callbacks.load(std::memory_order_acquire))
+        counterBusy=callbacks.load(std::memory_order_acquire)!=0;
+        if(!counterBusy)
         {
             ReachThreadFreeze frozen;
-            if(!frozen.Capture()) return false;
+            if(!frozen.Capture())
+                return notVerified("the process's threads could not be frozen for the scan (nothing was found busy)");
             bool busy=false,scanOk=true;
             for(const ReachFrozenThread& thread:frozen.Threads())
             {
@@ -56330,14 +56363,20 @@ bool WaitForNativeDetourQuiescence(const void* const* functions,
                         (trampoline && context.Rip>=trampoline && context.Rip<trampoline+64);
                 }
             }
-            busy |= callbacks.load(std::memory_order_acquire)!=0;
+            threadInDetour=busy;
+            counterBusy=callbacks.load(std::memory_order_acquire)!=0;
+            busy |= counterBusy;
             const bool resumed=frozen.Release();
-            if(!scanOk || !resumed) return false;
+            if(!resumed) return notVerified("the frozen threads could not all be resumed");
+            if(!scanOk) return notVerified("a live thread's position could not be read (nothing was found busy)");
             if(!busy) return true;
         }
         Sleep(1);
     }
-    return false;
+    return notVerified(counterBusy
+        ? "for 2 s the callback counter never returned to zero: a callback is running, or one never came back"
+        : threadInDetour ? "for 2 s a thread stood in a detour or its trampoline at every scan"
+                         : "for 2 s the callback counter and the scan took turns being busy");
 }
 
 #if HALOMCCVR_DEV_DIAGNOSTICS
