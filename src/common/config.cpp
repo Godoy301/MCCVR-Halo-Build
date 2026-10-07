@@ -2103,7 +2103,8 @@ void ConfigSave()
     fprintf(f, "# (log: TRACKER HEAD <game>). Halo 4 starts each level on the game's own tracker and changes\n");
     fprintf(f, "# over once it has checked that the heading it replaces follows your aim: a few seconds on\n");
     fprintf(f, "# foot with aim_direct_drive = 1. Halo 2 does the same, at your first aim movement in a\n");
-    fprintf(f, "# level. Live in F1 > HUD. (default %d)\n",
+    fprintf(f, "# level. Halo: CE follows your head from about a second into a level (CE's own tracker\n");
+    fprintf(f, "# turns with the turn stick only, never with the gun). Live in F1 > HUD. (default %d)\n",
         d.tracker_follows_head ? 1 : 0);
     fprintf(f, "tracker_follows_head = %d\n", g_config.tracker_follows_head ? 1 : 0);
     fprintf(f, "# Sound follows your head. 1 = you hear the world from the way your head faces. 0 = from the\n");

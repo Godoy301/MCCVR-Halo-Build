@@ -1,5 +1,6 @@
 #include "haloce_stereo_core.h"
 #include "haloce_controls.h"
+#include "haloce_head_relative.h"
 #include "physical_crouch_camera.h"
 uint64_t VR_PhysicalCrouchEpoch() noexcept;
 float VR_RecenterStandingLiftM(GameTitle title) noexcept;   // vr.h
@@ -264,6 +265,9 @@ void PublishGameplayContext(const RenderContext& context) noexcept
     ReleaseSRWLockExclusive(&gameplayCameraTrackLock);
     stamped.cameraVel=stamped.cameraVelValid?Vec3{velocity[0],velocity[1],velocity[2]}:Vec3{};
     gameplayCamera.Publish({stamped,GetTickCount64()});
+    // The same frame's head, for what is drawn against where the player LOOKS (the motion tracker,
+    // haloce_head_relative.cpp): this stock centre, tracking sample and reference, on this sight-clock stamp.
+    HaloCEHeadRelative_PublishHead(stamped,Anniversary());
 }
 void FollowRoomscale(const Camera& source,const Tracking& tracking,Reference& frozen,
     float scale,bool positional,uint64_t revision) noexcept

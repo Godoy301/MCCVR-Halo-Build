@@ -317,6 +317,7 @@ add_library(halo3xr SHARED
     src/dll/haloce_controls.cpp
     src/dll/haloce_comfort.cpp
     src/dll/haloce_orientation.cpp
+    src/dll/haloce_head_relative.cpp
     src/dll/haloce_unit_control.cpp
     src/dll/haloce_network_input.cpp
     src/dll/halo2_anniversary_stereo.cpp
@@ -914,6 +915,30 @@ if(BUILD_TESTING)
     add_executable(halomccvr_head_relative_tests tests/head_relative_tests.cpp)
     target_include_directories(halomccvr_head_relative_tests PRIVATE src/common)
     add_test(NAME halomccvr_head_relative_tests COMMAND halomccvr_head_relative_tests)
+    # Head-relative motion tracker, Halo CE (src/common/haloce_head_relative_logic.h; a retail-derived lead, not
+    # HCEEK-verified): the decode of the nine sites and every refusal of it, the exact guard on the stored heading,
+    # the two-stage proof taken at run time (provisional at rest, confirmed by a turn, withdrawal, no second
+    # provisional pass), the head built from the frame's own context, and the headset check as geometry.
+    add_executable(halomccvr_ce_head_relative_tests tests/haloce_head_relative_tests.cpp)
+    target_include_directories(halomccvr_ce_head_relative_tests PRIVATE src/common)
+    add_test(NAME halomccvr_ce_head_relative_tests COMMAND halomccvr_ce_head_relative_tests)
+    # The same lane's PRODUCTION body (src/dll/haloce_head_relative.cpp) over a synthetic image built from the
+    # header's patterns at addresses that are not retail's: the install proof through sig::Find and the function
+    # table, the detour and its one write, every report line as formatted, the retirement and what a reinstall
+    # keeps. Player flavour, then dev flavour (the 2-second line the first run is judged by).
+    add_executable(halomccvr_ce_head_relative_runtime_tests tests/haloce_head_relative_runtime_tests.cpp
+        src/dll/sigscan.cpp src/common/config.cpp)
+    target_include_directories(halomccvr_ce_head_relative_runtime_tests PRIVATE src/common src/dll)
+    target_compile_definitions(halomccvr_ce_head_relative_runtime_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    target_link_libraries(halomccvr_ce_head_relative_runtime_tests PRIVATE minhook psapi)
+    add_test(NAME halomccvr_ce_head_relative_runtime_tests COMMAND halomccvr_ce_head_relative_runtime_tests)
+    add_executable(halomccvr_ce_head_relative_runtime_dev_tests tests/haloce_head_relative_runtime_tests.cpp
+        src/dll/sigscan.cpp src/common/config.cpp)
+    target_include_directories(halomccvr_ce_head_relative_runtime_dev_tests PRIVATE src/common src/dll)
+    target_compile_definitions(halomccvr_ce_head_relative_runtime_dev_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN
+        HALOMCCVR_DEV_DIAGNOSTICS=1)
+    target_link_libraries(halomccvr_ce_head_relative_runtime_dev_tests PRIVATE minhook psapi)
+    add_test(NAME halomccvr_ce_head_relative_runtime_dev_tests COMMAND halomccvr_ce_head_relative_runtime_dev_tests)
     # The F8/F9 pitch trim (src/common/pitch_trim_logic.h): applied with stereo off, zero in stereo VR, and a key
     # press in stereo changes nothing (two stray F9 presses once put the reticle 4 degrees above every shot).
     add_executable(halomccvr_pitch_trim_tests tests/pitch_trim_tests.cpp)

@@ -66,6 +66,7 @@
 #include "../common/haloce_pause_logic.h"
 #include "haloce_comfort.h"
 #include "haloce_orientation.h"
+#include "haloce_head_relative.h"
 #include "haloce_unit_control.h"
 #include "title_reentry_probe.h"
 #include "roomscale.h"
@@ -48228,6 +48229,9 @@ namespace
                 (void)HaloCEHudLayout_Poll(ceBase,ceSize,ceGeneration,ceActive&&HaloCE_Armed());
                 (void)HaloCEComfort_Poll(ceBase,ceSize,ceGeneration,ceActive&&HaloCE_Armed());
                 (void)HaloCEOrientation_Poll(ceBase,ceSize,ceGeneration,ceActive&&HaloCE_Armed());
+                // The motion tracker by the head's heading (haloce_head_relative.cpp). After the controls: it
+                // reads the local player's state through them.
+                (void)HaloCEHeadRelative_Poll(ceBase,ceSize,ceGeneration,ceActive&&HaloCE_Armed());
                 (void)HaloCENetworkInput_Poll(ceBase,ceSize,ceGeneration,ceActive&&HaloCE_Armed());
                 (void)HaloCEUnitControl_Poll(ceBase,ceSize,ceGeneration,ceActive&&HaloCE_Armed());
             }
