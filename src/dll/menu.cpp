@@ -656,7 +656,7 @@ namespace
         changed |= ImGui::Checkbox("Sound follows your head", &g_config.audio_follows_head);
         ImGui::TextDisabled("ON: you hear the world from the way your head faces.\n"
                             "OFF: from the way your gun points, as the game does it.\n"
-                            "Halo: Reach for now; other games keep their own sound. Live.");
+                            "Halo: Reach and Halo 3 for now; other games keep their own sound. Live.");
         ImGui::Spacing();
         ImGui::Separator();
         ImGui::Text("Startup");

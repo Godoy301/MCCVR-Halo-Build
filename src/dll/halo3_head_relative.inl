@@ -26,9 +26,22 @@
 //     sign mask, the two trig calls resolve to the C runtime's sinf and cosf (in that order), and the update's unit
 //     call is the output-user unit getter the vehicle lane bound independently. Any miss: StockFallback, one line.
 //   * LTCG: `py -3 tools/audit_caller_area.py halo3.dll 32D9A8:10:i 32D680:11:i` is clean (the builders read only
-//     their declared stack arguments; their one native caller keeps no volatile register across the calls); both
+//     their declared stack arguments; +0x32D9A8 has one call site, +0x32DBC3, and +0x32D680 two, +0x32DC4E and
+//     +0x32DD2E, all inside the tracker update, and none keeps a volatile register across the call); both
 //     detours forward through CallNativeWithSpareSlots.
 // Cost per contact: one seqlock read, one clock read, a dozen float operations. No allocation, no logging.
+//
+// THE SOUND LISTENER BY THE HEAD'S ORIENTATION, Halo 3 (the second half of this file; the same header has its
+// mechanism). The sound manager's listener update (halo3 +0xAB650) rebuilds listener 0 from the observer's forward
+// and up three times per loop pass, the last time after observer_update has rebuilt that camera from the game's own
+// aim and before the render in which this mod writes the head: the listener turns with the gun. One detour on that
+// update runs the game's own first and then rewrites listener 0's basis with the head's (forward, left = up x
+// forward, up) and re-expresses the listener-relative velocity, so the world velocity is unchanged. Position,
+// location, scale and the other listeners are untouched; only the sound manager's own record is written. Every
+// call is rewritten (the rewrite is idempotent from one head sample). Same gates and refusals as the tracker, under
+// audio_follows_head, plus a guard on the record itself: scale exactly 1 and rows orthonormal with left = up x
+// forward, or nothing is written. `py -3 tools/audit_caller_area.py halo3.dll AB650:8:v` is clean (no caller-area
+// slot touched; four native callers, none keeps a volatile register or reads a return value).
 
 using Halo3TrackerPointFn = bool(__fastcall*)(void* self, const float* point, void* blip, const float* origin,
                                                float sinA, float cosA);
@@ -463,21 +476,340 @@ bool InstallHeadRelativeTracker(Halo3HeadRelativeLane& lane, uintptr_t base, siz
     return true;
 }
 
+// ====================================================================================================
+// THE SOUND LISTENER (the header of this file; src/common/halo3_head_relative_logic.h).
+
+using Halo3ListenerUpdateFn = void(__fastcall*)(bool);
+
+struct Halo3HeadAudioLane
+{
+    const char* title = "Halo 3";
+    const std::atomic<uint32_t>* runtimeGeneration = nullptr;
+    const HeadRelativePublication* head = nullptr;   // what ApplyHeadLook publishes (the tracker lane's)
+    // The hook (worker-owned; the detour reads `ready` and the original).
+    void* target = nullptr;
+    Halo3ListenerUpdateFn original = nullptr;
+    std::atomic<uint32_t> callbacks{0};
+    std::atomic<bool> ready{false};
+    // Decoded at install: the static that holds the sound manager's globals, and listener 0's fields in them.
+    uintptr_t globalsPointer = 0;
+    int32_t locationOffset = 0, builtOffset = 0, matrixOffset = 0, velocityOffset = 0;
+    // Verdicts, counted where the listener is updated; the cold worker reads and clears them.
+    std::atomic<uint32_t> uses[static_cast<size_t>(head_relative::Use::Count)]{};
+    std::atomic<uint32_t> faults{0};
+    std::atomic<float> lastNative[3]{}, lastHead[3]{};   // the two forwards of the last rewrite
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    // Which thread updates the listeners (dev): the first one seen since the install, and how many updates came
+    // from any other. Offline, two entries reach the update through pointers, so their thread is not provable;
+    // a second thread here would mean a reader could see the game's basis between its write and ours.
+    std::atomic<uint32_t> firstThread{0}, otherThread{0}, otherThreadUpdates{0}, updates{0};
+#endif
+    // Cold worker only.
+    int reportedSwitch = -1;
+    int reportedState = -1;
+    uint64_t reportMs = 0;
+};
+Halo3HeadAudioLane g_halo3HeadAudio;
+
+namespace
+{
+// Listener 0, after the game's own update: read it, and when every gate passes store the head's basis and the
+// same world velocity in it. Guarded: the record is the sound manager's, reached through a static of the title.
+head_relative::Use Halo3ListenerRewrite(Halo3HeadAudioLane& lane)
+{
+    namespace t = halo3_head_relative;
+    using head_relative::Use;
+    __try
+    {
+        uint8_t* const globals = *reinterpret_cast<uint8_t* const*>(lane.globalsPointer);
+        if (!globals)
+            return Use::NotLocalUser;
+        uint8_t* const matrix = globals + lane.matrixOffset;
+        uint8_t* const velocityAt = globals + lane.velocityOffset;
+        t::ListenerRequest in{};
+        in.switchOn = true;
+        // The game's own test of a listener (its sound readers, +0x15AD6C / +0x15AD7A): built, and a location set.
+        in.listener = globals[lane.builtOffset] != 0 && globals[lane.locationOffset] != 0xFF;
+        t::ListenerBasis basis;
+        float velocity[3];
+        memcpy(&in.scale, matrix + t::kMatrixScale, sizeof(in.scale));
+        memcpy(basis.forward, matrix + t::kMatrixForward, sizeof(basis.forward));
+        memcpy(basis.left, matrix + t::kMatrixLeft, sizeof(basis.left));
+        memcpy(basis.up, matrix + t::kMatrixUp, sizeof(basis.up));
+        memcpy(velocity, velocityAt, sizeof(velocity));
+        if (in.listener)
+        {
+            in.sampleRead = lane.head && HeadRelativeRead(*lane.head, in.sample, in.gameplay);
+            in.generation = lane.runtimeGeneration ? lane.runtimeGeneration->load(std::memory_order_acquire) : 0;
+            in.nowUs = Sight_NowUs();
+        }
+        const float nativeForward[3]{basis.forward[0], basis.forward[1], basis.forward[2]};
+        const Use use = t::SubstituteListener(in, basis, velocity);
+        if (use == Use::Ok)
+        {
+            memcpy(matrix + t::kMatrixForward, basis.forward, sizeof(basis.forward));
+            memcpy(matrix + t::kMatrixLeft, basis.left, sizeof(basis.left));
+            memcpy(matrix + t::kMatrixUp, basis.up, sizeof(basis.up));
+            memcpy(velocityAt, velocity, sizeof(velocity));
+            for (int i = 0; i < 3; ++i)
+            {
+                lane.lastNative[i].store(nativeForward[i], std::memory_order_relaxed);
+                lane.lastHead[i].store(basis.forward[i], std::memory_order_relaxed);
+            }
+        }
+        return use;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        lane.faults.fetch_add(1, std::memory_order_relaxed);
+        return head_relative::Use::NotLocalUser;
+    }
+}
+
+void Halo3ListenerApplyHead(Halo3HeadAudioLane& lane)
+{
+    const head_relative::Use use = lane.ready.load(std::memory_order_acquire) && g_config.audio_follows_head
+                                       ? Halo3ListenerRewrite(lane)
+                                       : head_relative::Use::SwitchOff;
+    lane.uses[static_cast<size_t>(use)].fetch_add(1, std::memory_order_relaxed);
+}
+} // namespace
+
+__declspec(noinline) void __fastcall Halo3ListenerUpdateDetour(bool flag)
+{
+    auto& lane = g_halo3HeadAudio;
+    lane.callbacks.fetch_add(1, std::memory_order_acq_rel);
+    __try
+    {
+        if (lane.original)
+            CallNativeWithSpareSlots(lane.original, flag);
+        Halo3ListenerApplyHead(lane);
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        const uint32_t thread = GetCurrentThreadId();
+        uint32_t first = 0;
+        lane.updates.fetch_add(1, std::memory_order_relaxed);
+        if (!lane.firstThread.compare_exchange_strong(first, thread, std::memory_order_relaxed) && first != thread)
+        {
+            lane.otherThread.store(thread, std::memory_order_relaxed);
+            lane.otherThreadUpdates.fetch_add(1, std::memory_order_relaxed);
+        }
+#endif
+    }
+    __finally
+    {
+        lane.callbacks.fetch_sub(1, std::memory_order_acq_rel);
+    }
+}
+
+// Worker: retire the listener hook (disable, prove nothing is inside, remove). Idempotent; false = try again.
+bool RemoveHeadRelativeAudio(Halo3HeadAudioLane& lane, const void* detour)
+{
+    lane.ready.store(false, std::memory_order_release);
+    if (!lane.target)
+        return true;
+    const auto status = MCCVR_DisableHookForRetirement(lane.target);
+    if (status != MH_OK && status != MH_ERROR_DISABLED && status != MH_ERROR_NOT_CREATED)
+    {
+        LOG("AUDIO HEAD %s CleanupRequired: the listener hook did not disable (%d)", lane.title,
+            static_cast<int>(status));
+        return false;
+    }
+    const void* functions[]{detour};
+    const void* trampolines[]{reinterpret_cast<const void*>(lane.original)};
+    if (!WaitForNativeDetourQuiescence(functions, trampolines, 1, lane.callbacks))
+    {
+        LOG("AUDIO HEAD %s CleanupRequired: the listener detour is busy", lane.title);
+        return false;
+    }
+    const auto removed = MH_RemoveHook(lane.target);
+    if (removed != MH_OK && removed != MH_ERROR_NOT_CREATED)
+    {
+        LOG("AUDIO HEAD %s CleanupRequired: the listener hook was not removed (%d)", lane.title,
+            static_cast<int>(removed));
+        return false;
+    }
+    lane.target = nullptr;
+    lane.original = nullptr;
+    lane.globalsPointer = 0;
+    return true;
+}
+
+namespace
+{
+struct Halo3ListenerProof
+{
+    uintptr_t update = 0, globalsPointer = 0, matrixHelper = 0, velocityHelper = 0;
+    int32_t locationOffset = 0, builtOffset = 0, matrixOffset = 0, velocityOffset = 0, observerStride = 0;
+    uint8_t stride = 0;
+};
+
+// Every site of the listener's build, from the game's own bytes. Null = proven; otherwise what did not prove.
+// Every read is of matched pattern bytes or of an address checked to lie inside the image first.
+const char* Halo3ListenerProve(uintptr_t base, size_t size, Halo3ListenerProof& out)
+{
+    namespace t = halo3_head_relative;
+    const auto unique = [&](const char* pattern) -> uintptr_t {
+        const uintptr_t hit = sig::Find(base, size, pattern);
+        return hit && !sig::Find(hit + 1, base + size - hit - 1, pattern) ? hit : 0;
+    };
+    const auto inside = [&](uintptr_t address, size_t bytes) {
+        return address >= base && address <= base + size && bytes <= base + size - address;
+    };
+    const auto i32 = [](uintptr_t at) {
+        int32_t v = 0;
+        memcpy(&v, reinterpret_cast<const void*>(at), sizeof(v));
+        return v;
+    };
+    const auto callTarget = [&](uintptr_t at) -> uintptr_t {
+        if (*reinterpret_cast<const uint8_t*>(at) != 0xE8)
+            return 0;
+        const uintptr_t target = at + 5 + i32(at + 1);
+        return inside(target, 16) ? target : 0;
+    };
+    const auto within = [](uintptr_t site, uintptr_t entry, uint32_t extent) {
+        return site > entry && site - entry < extent;
+    };
+
+    const uintptr_t update = unique(t::kListenerEntryPattern);
+    if (!update)
+        return "the listener update's entry";
+    const uintptr_t init = unique(t::kListenerInitPattern);
+    const uintptr_t globalsSite = unique(t::kListenerGlobalsPattern);
+    const uintptr_t built = unique(t::kListenerBuiltPattern);
+    const uintptr_t build = unique(t::kListenerBuildPattern);
+    const uintptr_t loop = unique(t::kListenerLoopPattern);
+    if (!init || !globalsSite || !built || !build || !loop || !within(init, update, t::kListenerUpdateExtent) ||
+        !within(globalsSite, update, t::kListenerUpdateExtent) || !within(built, update, t::kListenerUpdateExtent) ||
+        !within(build, update, t::kListenerUpdateExtent) || !within(loop, update, t::kListenerUpdateExtent) ||
+        !(init < globalsSite && globalsSite < built && built < build && build < loop))
+        return "the listener loop inside the update (its start, its globals, the built mark, one listener's build, "
+               "its foot)";
+    // The helpers, each proven twice: the update's call operand and the helper's own whole body there.
+    const uintptr_t matrixHelper = callTarget(build + t::kListenerMatrixCall);
+    const uintptr_t velocityHelper = callTarget(build + t::kListenerVelocityCall);
+    if (!matrixHelper || unique(t::kListenerMatrixHelperPattern) != matrixHelper)
+        return "the matrix helper (scale 1, forward, left = up x forward, up) at the build's first call";
+    if (!velocityHelper || unique(t::kListenerVelocityHelperPattern) != velocityHelper)
+        return "the velocity helper (a vector into the matrix's basis) at the build's second call";
+    // The record: the globals pointer, and listener 0's location, matrix and velocity in the globals.
+    const uintptr_t globalsPointer = globalsSite + t::kListenerGlobalsRel + 4 + i32(globalsSite + t::kListenerGlobalsRel);
+    if (!inside(globalsPointer, sizeof(void*)) || (globalsPointer & 7))
+        return "the sound globals pointer lies outside the module";
+    out.matrixOffset = i32(build + t::kListenerMatrixDisp);
+    out.velocityOffset = i32(build + t::kListenerVelocityDisp);
+    out.locationOffset = i32(build + t::kListenerLocationDisp);
+    out.builtOffset = i32(built + t::kListenerBuiltDisp);
+    // ValueAgreement on the layout: the location word sits 8 bytes before the matrix (record +4 and +0xC) with the
+    // built mark between them (record +8), the velocity right after the 0x34-byte matrix, and one record (the
+    // loop's stride) holds all of it.
+    out.stride = *reinterpret_cast<const uint8_t*>(loop + t::kListenerLoopStride);
+    out.observerStride = i32(loop + t::kListenerLoopObserverA);
+    if (out.locationOffset < 4 || out.locationOffset > 0x4000 || out.builtOffset != out.locationOffset + 4 ||
+        out.matrixOffset != out.locationOffset + 8 ||
+        out.velocityOffset != out.matrixOffset + t::kMatrixPosition + 12 ||
+        out.stride < out.velocityOffset + 12 - (out.locationOffset - 4) || out.stride > 0x7F)
+        return "the listener record's layout (location, built mark, matrix, velocity, stride) does not agree with "
+               "the matrix's";
+    if (out.observerStride < 0x100 || out.observerStride != i32(loop + t::kListenerLoopObserverB))
+        return "the loop's observer stride";
+    out.update = update;
+    out.globalsPointer = globalsPointer;
+    out.matrixHelper = matrixHelper;
+    out.velocityHelper = velocityHelper;
+    return nullptr;
+}
+} // namespace
+
+// Install thread. Its own transaction: any miss leaves the game's own listener, said once.
+bool InstallHeadRelativeAudio(Halo3HeadAudioLane& lane, uintptr_t base, size_t size, uint32_t generation,
+                              void* detour)
+{
+    lane.ready.store(false, std::memory_order_release);
+    if (lane.target)
+    {
+        LOG("AUDIO HEAD %s: StockFallback: a previous listener hook has not retired", lane.title);
+        return false;
+    }
+    Halo3ListenerProof proof{};
+    if (const char* why = Halo3ListenerProve(base, size, proof))
+    {
+        LOG("AUDIO HEAD %s: StockFallback: %s did not prove; the sound listener keeps the game's own orientation "
+            "(the aim)", lane.title, why);
+        return false;
+    }
+    lane.globalsPointer = proof.globalsPointer;
+    lane.locationOffset = proof.locationOffset;
+    lane.builtOffset = proof.builtOffset;
+    lane.matrixOffset = proof.matrixOffset;
+    lane.velocityOffset = proof.velocityOffset;
+    for (auto& use : lane.uses)
+        use.store(0, std::memory_order_relaxed);
+    lane.faults.store(0, std::memory_order_relaxed);
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    lane.firstThread.store(0, std::memory_order_relaxed);
+    lane.otherThread.store(0, std::memory_order_relaxed);
+    lane.otherThreadUpdates.store(0, std::memory_order_relaxed);
+    lane.updates.store(0, std::memory_order_relaxed);
+#endif
+    lane.reportedState = -1;
+    void* const target = reinterpret_cast<void*>(proof.update);
+    if (MH_CreateHook(target, detour, reinterpret_cast<void**>(&lane.original)) != MH_OK)
+    {
+        lane.original = nullptr;
+        LOG("AUDIO HEAD %s: StockFallback: the listener hook was not created", lane.title);
+        return false;
+    }
+    lane.target = target;
+    lane.ready.store(true, std::memory_order_release);
+    if (MH_EnableHook(target) != MH_OK)
+    {
+        LOG("AUDIO HEAD %s: StockFallback: the listener hook did not enable", lane.title);
+        (void)RemoveHeadRelativeAudio(lane, detour);
+        return false;
+    }
+    LOG("AUDIO HEAD %s: Installed (generation %u): the listener update +0x%llX rebuilds listener 0 (sound globals at "
+        "+0x%llX: location +0x%X, matrix +0x%X, relative velocity +0x%X, 0x%X bytes a listener) from the observer's "
+        "forward and up through +0x%llX (scale 1, forward, left = up x forward, up) and +0x%llX; after each update its "
+        "basis becomes the HEAD's and its velocity is re-expressed in it; position, location and the other listeners "
+        "are untouched. Proven: eight unique signatures, both helpers at the update's call operands and by their whole "
+        "bodies, the record's layout against the matrix's; each rewrite also requires scale 1 and orthonormal rows. "
+        "audio_follows_head is %s",
+        lane.title, generation, static_cast<unsigned long long>(proof.update - base),
+        static_cast<unsigned long long>(proof.globalsPointer - base), static_cast<unsigned>(proof.locationOffset),
+        static_cast<unsigned>(proof.matrixOffset), static_cast<unsigned>(proof.velocityOffset),
+        static_cast<unsigned>(proof.stride), static_cast<unsigned long long>(proof.matrixHelper - base),
+        static_cast<unsigned long long>(proof.velocityHelper - base), g_config.audio_follows_head ? "on" : "off");
+    lane.reportedSwitch = g_config.audio_follows_head ? 1 : 0;
+    return true;
+}
+
+// Both halves, each its own transaction (a miss in one leaves the other).
 bool InstallHalo3HeadRelative(uintptr_t base, size_t size, uint32_t generation)
 {
     auto& lane = g_halo3HeadRelative;
     lane.title = "Halo 3";
     lane.runtimeGeneration = &g_halo3RuntimeGeneration;
-    return InstallHeadRelativeTracker(lane, base, size, generation,
-                                      reinterpret_cast<uintptr_t>(g_halo3PlayerUnitGetter),
-                                      reinterpret_cast<void*>(&Halo3TrackerPointDetour),
-                                      reinterpret_cast<void*>(&Halo3TrackerObjectDetour));
+    const bool tracker = InstallHeadRelativeTracker(lane, base, size, generation,
+                                                    reinterpret_cast<uintptr_t>(g_halo3PlayerUnitGetter),
+                                                    reinterpret_cast<void*>(&Halo3TrackerPointDetour),
+                                                    reinterpret_cast<void*>(&Halo3TrackerObjectDetour));
+    auto& audio = g_halo3HeadAudio;
+    audio.title = "Halo 3";
+    audio.runtimeGeneration = &g_halo3RuntimeGeneration;
+    audio.head = &lane.head;
+    const bool listener = InstallHeadRelativeAudio(audio, base, size, generation,
+                                                   reinterpret_cast<void*>(&Halo3ListenerUpdateDetour));
+    return tracker || listener;
 }
 
 bool RemoveHalo3HeadRelative()
 {
-    return RemoveHeadRelativeTracker(g_halo3HeadRelative, reinterpret_cast<const void*>(&Halo3TrackerPointDetour),
-                                     reinterpret_cast<const void*>(&Halo3TrackerObjectDetour));
+    const bool tracker =
+        RemoveHeadRelativeTracker(g_halo3HeadRelative, reinterpret_cast<const void*>(&Halo3TrackerPointDetour),
+                                  reinterpret_cast<const void*>(&Halo3TrackerObjectDetour));
+    const bool listener =
+        RemoveHeadRelativeAudio(g_halo3HeadAudio, reinterpret_cast<const void*>(&Halo3ListenerUpdateDetour));
+    return tracker && listener;
 }
 
 // Cold worker, every 2 s. Every build: the player's switch when it changes, and the tracker's state when it
@@ -549,7 +881,85 @@ void HeadRelativeTrackerReport(Halo3HeadRelativeLane& lane)
 #endif
 }
 
+// Cold worker, every 2 s. Every build: the player's switch when it changes, and the listener's state when it
+// changes (by the head / the game's own, with the reason). Dev builds: the window.
+void HeadRelativeAudioReport(Halo3HeadAudioLane& lane)
+{
+    const uint64_t now = GetTickCount64();
+    if (now - lane.reportMs < 2000)
+        return;
+    lane.reportMs = now;
+    if (!lane.ready.load(std::memory_order_acquire))
+        return;
+    using head_relative::Use;
+    const int switchNow = g_config.audio_follows_head ? 1 : 0;
+    if (lane.reportedSwitch != switchNow)
+    {
+        lane.reportedSwitch = switchNow;
+        LOG("AUDIO HEAD %s: the switch is now %s: you hear the world from the way %s", lane.title,
+            switchNow ? "ON" : "OFF", switchNow ? "your head faces" : "the gun points, as the game makes it");
+    }
+    uint32_t counts[static_cast<size_t>(Use::Count)]{};
+    uint32_t total = 0, refused = 0;
+    size_t most = static_cast<size_t>(Use::Count);
+    for (size_t i = 0; i < static_cast<size_t>(Use::Count); ++i)
+    {
+        counts[i] = lane.uses[i].exchange(0, std::memory_order_relaxed);
+        total += counts[i];
+        if (i != static_cast<size_t>(Use::Ok))
+        {
+            refused += counts[i];
+            if (counts[i] && (most == static_cast<size_t>(Use::Count) || counts[i] > counts[most]))
+                most = i;
+        }
+    }
+    const uint32_t faults = lane.faults.exchange(0, std::memory_order_relaxed);
+    if (!total && !faults)
+        return;
+    const uint32_t used = counts[static_cast<size_t>(Use::Ok)];
+    const int state = used >= refused ? 0 : 1 + static_cast<int>(most);
+    if (state != lane.reportedState)
+    {
+        lane.reportedState = state;
+        if (!state)
+            LOG("AUDIO HEAD %s: the sound listener has the head's orientation", lane.title);
+        else if (most != static_cast<size_t>(Use::SwitchOff))
+            LOG("AUDIO HEAD %s: the game's own listener (the aim): %s", lane.title,
+                most == static_cast<size_t>(Use::NotLocalUser)
+                    ? "the game has no listener for the local user"
+                    : most == static_cast<size_t>(Use::NoHeading)
+                          ? "the listener record or the head has no usable basis"
+                          : head_relative::UseName(static_cast<Use>(most)));
+    }
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    float native[3], head[3];
+    for (int i = 0; i < 3; ++i)
+    {
+        native[i] = lane.lastNative[i].load(std::memory_order_relaxed);
+        head[i] = lane.lastHead[i].load(std::memory_order_relaxed);
+    }
+    const auto yawDeg = [](const float v[3]) { return std::atan2(v[1], v[0]) * head_relative::kRadToDeg; };
+    const auto pitchDeg = [](const float v[3]) {
+        return std::atan2(v[2], std::sqrt(v[0] * v[0] + v[1] * v[1])) * head_relative::kRadToDeg;
+    };
+    LOG("AUDIO HEAD %s (dev): %u listener updates rewritten with the head (last: the game's forward yaw %.1f pitch "
+        "%.1f deg, the head's yaw %.1f pitch %.1f); refused %u: switch off %u, no listener for the local user %u, not "
+        "gameplay %u, no head sample %u, another generation %u, from the future %u, stale %u, no usable basis %u; "
+        "record read faults %u; threads since the install: %u updates, first on thread %u, %u on other threads "
+        "(last other %u)",
+        lane.title, used, used ? yawDeg(native) : 0.0f, used ? pitchDeg(native) : 0.0f, used ? yawDeg(head) : 0.0f,
+        used ? pitchDeg(head) : 0.0f, refused, counts[static_cast<size_t>(Use::SwitchOff)],
+        counts[static_cast<size_t>(Use::NotLocalUser)], counts[static_cast<size_t>(Use::NotGameplay)],
+        counts[static_cast<size_t>(Use::NoSample)], counts[static_cast<size_t>(Use::OtherGeneration)],
+        counts[static_cast<size_t>(Use::FromTheFuture)], counts[static_cast<size_t>(Use::Stale)],
+        counts[static_cast<size_t>(Use::NoHeading)], faults, lane.updates.load(std::memory_order_relaxed),
+        lane.firstThread.load(std::memory_order_relaxed), lane.otherThreadUpdates.load(std::memory_order_relaxed),
+        lane.otherThread.load(std::memory_order_relaxed));
+#endif
+}
+
 void Halo3HeadRelativeReport()
 {
     HeadRelativeTrackerReport(g_halo3HeadRelative);
+    HeadRelativeAudioReport(g_halo3HeadAudio);
 }

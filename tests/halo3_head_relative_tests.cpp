@@ -366,6 +366,296 @@ void TestPatterns()
         Check(exact, "the builders' entry and placement patterns are exact bytes, 40 or more");
     }
 }
+
+// ====================================================================================================
+// The sound listener by the head's orientation.
+
+bool Near3(const float a[3], float x, float y, float z, float tol = 2.0e-4f)
+{
+    return Near(a[0], x, tol) && Near(a[1], y, tol) && Near(a[2], z, tol);
+}
+bool Same3(const float a[3], const float b[3], float tol = 2.0e-4f) { return Near3(a, b[0], b[1], b[2], tol); }
+
+// A camera's forward and up at yaw / pitch / roll (degrees; roll about forward, positive = right ear down).
+void CameraAxes(float yawDeg, float pitchDeg, float rollDeg, float forward[3], float up[3])
+{
+    Forward(yawDeg, pitchDeg, forward);
+    const float yaw = yawDeg * kDegToRad, pitch = pitchDeg * kDegToRad, roll = rollDeg * kDegToRad;
+    // Level up for that forward, then rolled toward the camera's right (sin yaw, -cos yaw, 0).
+    const float levelUp[3]{-std::sin(pitch) * std::cos(yaw), -std::sin(pitch) * std::sin(yaw), std::cos(pitch)};
+    const float right[3]{std::sin(yaw), -std::cos(yaw), 0.0f};
+    for (int i = 0; i < 3; ++i)
+        up[i] = levelUp[i] * std::cos(roll) + right[i] * std::sin(roll);
+}
+// The listener the game builds from a camera at that pose (the model of its matrix helper).
+ListenerBasis GameListener(float yawDeg, float pitchDeg = 0.0f, float rollDeg = 0.0f)
+{
+    float forward[3], up[3];
+    CameraAxes(yawDeg, pitchDeg, rollDeg, forward, up);
+    ListenerBasis b;
+    BasisFromForwardUp(forward, up, b);
+    return b;
+}
+// A fresh request whose head looks along yaw / pitch / roll.
+ListenerRequest Heard(float yawDeg, float pitchDeg = 0.0f, float rollDeg = 0.0f)
+{
+    ListenerRequest in{};
+    in.switchOn = true;
+    in.listener = true;
+    in.scale = 1.0f;
+    in.sampleRead = true;
+    in.gameplay = true;
+    CameraAxes(yawDeg, pitchDeg, rollDeg, in.sample.forward, in.sample.up);
+    in.sample.stampUs = kNowUs - 9000;
+    in.sample.generation = kGeneration;
+    in.sample.valid = true;
+    in.generation = kGeneration;
+    in.nowUs = kNowUs;
+    return in;
+}
+
+void TestListenerModel()
+{
+    // Blam: +X forward, +Y left, +Z up. The helper's second row is up x forward.
+    const ListenerBasis level = GameListener(0.0f);
+    Check(Near3(level.forward, 1, 0, 0) && Near3(level.left, 0, 1, 0) && Near3(level.up, 0, 0, 1),
+          "a level camera along +X: forward +X, left = up x forward = +Y, up +Z");
+    Check(BasisValid(level), "the game's listener basis is orthonormal with left = up x forward");
+    for (float yaw : {-140.0f, 35.0f})
+        for (float pitch : {-50.0f, 0.0f, 70.0f})
+            for (float roll : {-30.0f, 0.0f, 45.0f})
+                Check(BasisValid(GameListener(yaw, pitch, roll)), "every camera pose makes a valid basis");
+    ListenerBasis mirrored = level;
+    mirrored.left[1] = -1.0f;
+    Check(!BasisValid(mirrored), "a mirrored basis (left = forward x up) is not the game's");
+    ListenerBasis skewed = level;
+    skewed.up[0] = 0.2f;
+    Check(!BasisValid(skewed), "an up that is not perpendicular is refused");
+    ListenerBasis scaled = level;
+    scaled.forward[0] = 1.1f;
+    Check(!BasisValid(scaled), "a forward that is not unit length is refused");
+    // The velocity helper: (v . forward, v . left, v . up), and its inverse.
+    const ListenerBasis turned = GameListener(90.0f);   // facing +Y: left is -X
+    const float world[3]{2.0f, 3.0f, -1.0f};
+    float local[3], back[3];
+    ToListener(turned, world, local);
+    Check(Near3(local, 3.0f, -2.0f, -1.0f), "facing +Y: +Y is ahead, +X is to the right (left = -2)");
+    ToWorld(turned, local, back);
+    Check(Same3(back, world), "listener-relative -> world is the inverse");
+    // The head's basis is rebuilt square from a sloppy forward / up.
+    ListenerBasis head;
+    const float longForward[3]{3.0f, 0.0f, 0.0f}, leaningUp[3]{0.4f, 0.0f, 2.0f};
+    Check(HeadBasis(longForward, leaningUp, head) && Near3(head.forward, 1, 0, 0) && Near3(head.up, 0, 0, 1) &&
+              Near3(head.left, 0, 1, 0),
+          "forward normalised, up made perpendicular, left = up x forward");
+    const float along[3]{2.0f, 0.0f, 0.0f}, zero[3]{}, nan[3]{std::numeric_limits<float>::quiet_NaN(), 0.0f, 1.0f};
+    Check(!HeadBasis(longForward, along, head), "an up along forward has no basis");
+    Check(!HeadBasis(zero, leaningUp, head) && !HeadBasis(longForward, nan, head) && !HeadBasis(nan, leaningUp, head),
+          "zero and non-finite vectors have no basis");
+}
+
+// Where a world offset is heard: degrees to the LEFT of straight ahead, and degrees above the ear plane.
+void HeardAt(const ListenerBasis& b, const float offset[3], float& leftDeg, float& aboveDeg)
+{
+    float local[3];
+    ToListener(b, offset, local);
+    leftDeg = std::atan2(local[1], local[0]) * kRadToDeg;
+    aboveDeg = std::atan2(local[2], std::sqrt(local[0] * local[0] + local[1] * local[1])) * kRadToDeg;
+}
+
+void TestListenerFollowsHead()
+{
+    // Gun swept, head still: a sound keeps its place. Head turned, gun still: it moves against the turn.
+    const float source[3]{std::cos(40.0f * kDegToRad), std::sin(40.0f * kDegToRad), 0.0f};   // at 40 deg
+    for (float aim : {-170.0f, -45.0f, 0.0f, 40.0f, 133.0f})
+    {
+        ListenerBasis basis = GameListener(aim, 10.0f);
+        float velocity[3]{};
+        Check(SubstituteListener(Heard(40.0f), basis, velocity) == Use::Ok, "a fresh head sample is used");
+        float left = 9.0f, above = 9.0f;
+        HeardAt(basis, source, left, above);
+        Check(Near(left, 0.0f, 1.0e-2f) && Near(above, 0.0f, 1.0e-2f),
+              "a sound straight ahead of the head is heard straight ahead, whatever the aim");
+        basis = GameListener(aim, 10.0f);
+        Check(SubstituteListener(Heard(130.0f), basis, velocity) == Use::Ok, "head turned 90 deg left");
+        HeardAt(basis, source, left, above);
+        Check(Near(left, -90.0f, 1.0e-2f), "the sound is now 90 deg to the RIGHT");
+        // Stock for the same aim: the sound sits at its bearing from the gun.
+        const ListenerBasis stock = GameListener(aim);
+        HeardAt(stock, source, left, above);
+        Check(Near(Wrap((left - (40.0f - aim)) * kDegToRad), 0.0f, 1.0e-3f), "stock: heard from the aim's heading");
+    }
+    // Pitch and roll count for sound (unlike the tracker).
+    ListenerBasis basis = GameListener(0.0f);
+    float velocity[3]{};
+    const float overhead[3]{std::cos(60.0f * kDegToRad), 0.0f, std::sin(60.0f * kDegToRad)};   // 60 deg up, ahead
+    Check(SubstituteListener(Heard(0.0f, 60.0f), basis, velocity) == Use::Ok, "head looking 60 deg up");
+    float left = 9.0f, above = 9.0f;
+    HeardAt(basis, overhead, left, above);
+    Check(Near(left, 0.0f, 1.0e-2f) && Near(above, 0.0f, 1.0e-2f), "a sound 60 deg up is straight ahead of that head");
+    basis = GameListener(0.0f);
+    const float toTheLeft[3]{0.0f, 1.0f, 0.0f};
+    Check(SubstituteListener(Heard(0.0f, 0.0f, 90.0f), basis, velocity) == Use::Ok, "head rolled right ear down");
+    HeardAt(basis, toTheLeft, left, above);
+    Check(Near(above, -90.0f, 1.0e-2f),
+          "the top of the skull now points right, so a sound on the world's left is straight below the ear plane");
+    // The basis stored is exactly the head's, built the game's way.
+    basis = GameListener(-20.0f, 5.0f);
+    Check(SubstituteListener(Heard(77.0f, -30.0f, 15.0f), basis, velocity) == Use::Ok, "an arbitrary head pose");
+    const ListenerBasis expected = GameListener(77.0f, -30.0f, 15.0f);
+    Check(Same3(basis.forward, expected.forward) && Same3(basis.left, expected.left) && Same3(basis.up, expected.up) &&
+              BasisValid(basis),
+          "the stored basis is the head's forward, up x forward, up");
+}
+
+void TestListenerVelocity()
+{
+    // The world velocity the game stored is unchanged by the substitution (Doppler does not turn with the head).
+    const float world[3]{4.0f, -2.5f, 1.25f};
+    for (float aim : {-90.0f, 10.0f, 150.0f})
+        for (float head : {-120.0f, 0.0f, 60.0f})
+        {
+            ListenerBasis basis = GameListener(aim, -15.0f, 5.0f);
+            float velocity[3], after[3];
+            ToListener(basis, world, velocity);
+            Check(SubstituteListener(Heard(head, 20.0f, -10.0f), basis, velocity) == Use::Ok, "substituted");
+            ToWorld(basis, velocity, after);
+            Check(Same3(after, world, 1.0e-3f), "the listener's world velocity is the game's, in the head's basis");
+        }
+    // Twice from the same sample is once: every listener update of a loop pass may be rewritten.
+    ListenerBasis basis = GameListener(33.0f);
+    float velocity[3];
+    ToListener(basis, world, velocity);
+    const ListenerRequest in = Heard(-75.0f, 12.0f, 8.0f);
+    Check(SubstituteListener(in, basis, velocity) == Use::Ok, "first rewrite");
+    const ListenerBasis once = basis;
+    float onceVelocity[3]{velocity[0], velocity[1], velocity[2]};
+    Check(SubstituteListener(in, basis, velocity) == Use::Ok, "second rewrite of the same record");
+    Check(Same3(basis.forward, once.forward, 1.0e-5f) && Same3(basis.left, once.left, 1.0e-5f) &&
+              Same3(basis.up, once.up, 1.0e-5f) && Same3(velocity, onceVelocity, 1.0e-4f),
+          "rewriting an already rewritten listener changes nothing");
+}
+
+void TestListenerRefusals()
+{
+    const float world[3]{1.0f, 2.0f, 3.0f};
+    const auto refused = [&](ListenerRequest in, Use expected, const char* what, const ListenerBasis* given = nullptr,
+                             const float* givenVelocity = nullptr) {
+        ListenerBasis basis = given ? *given : GameListener(25.0f, 5.0f);
+        float velocity[3];
+        if (givenVelocity)
+            std::memcpy(velocity, givenVelocity, sizeof(velocity));
+        else
+            ToListener(basis, world, velocity);
+        const ListenerBasis before = basis;
+        float beforeVelocity[3];
+        std::memcpy(beforeVelocity, velocity, sizeof(velocity));
+        Check(SubstituteListener(in, basis, velocity) == expected, what);
+        Check(std::memcmp(&before, &basis, sizeof(basis)) == 0 &&
+                  std::memcmp(beforeVelocity, velocity, sizeof(velocity)) == 0,
+              "a refusal leaves the listener exactly as the game built it");
+    };
+    ListenerRequest in = Heard(100.0f);
+    in.switchOn = false;
+    refused(in, Use::SwitchOff, "the player's switch off");
+    in = Heard(100.0f);
+    in.listener = false;
+    refused(in, Use::NotLocalUser, "the game has no listener for output user 0");
+    in = Heard(100.0f);
+    in.sampleRead = false;
+    refused(in, Use::NoSample, "no coherent sample read");
+    in = Heard(100.0f);
+    in.sample.valid = false;
+    refused(in, Use::NoSample, "the head view was not live");
+    in = Heard(100.0f);
+    in.sample.stampUs = kNowUs - head_relative::kMaxSampleAgeUs - 1;
+    refused(in, Use::Stale, "a head sample older than 100 ms");
+    in = Heard(100.0f);
+    in.sample.stampUs = kNowUs + 5;
+    refused(in, Use::FromTheFuture, "a sample stamped after now");
+    in = Heard(100.0f);
+    in.sample.generation = kGeneration + 3;
+    refused(in, Use::OtherGeneration, "a sample from another load of the title");
+    in = Heard(100.0f);
+    in.gameplay = false;
+    refused(in, Use::NotGameplay, "a cinematic frame");
+    in = Heard(100.0f);
+    in.scale = 0.5f;
+    refused(in, Use::NoHeading, "a matrix scale that is not the helper's 1");
+    in = Heard(100.0f);
+    ListenerBasis mirrored = GameListener(25.0f);
+    for (float& component : mirrored.left)
+        component = -component;
+    refused(in, Use::NoHeading, "a record whose rows are not forward, up x forward, up", &mirrored);
+    ListenerBasis junk{};
+    junk.forward[0] = 5.0f;
+    refused(in, Use::NoHeading, "a record that is not a rotation at all", &junk);
+    const float nanVelocity[3]{0.0f, std::numeric_limits<float>::infinity(), 0.0f};
+    refused(in, Use::NoHeading, "a non-finite stored velocity", nullptr, nanVelocity);
+    in = Heard(100.0f);
+    std::memcpy(in.sample.up, in.sample.forward, sizeof(in.sample.up));
+    refused(in, Use::NoHeading, "a head up along its forward");
+    in = Heard(100.0f);
+    in.sample.forward[2] = std::numeric_limits<float>::quiet_NaN();
+    refused(in, Use::NoHeading, "a non-finite head forward");
+}
+
+void TestListenerPatterns()
+{
+    const auto wild = [](const std::vector<std::string>& t, int at, int count) {
+        for (int i = 0; i < count; ++i)
+            if (at + i < 0 || static_cast<size_t>(at + i) >= t.size() || t[at + i] != "??")
+                return false;
+        return true;
+    };
+    const auto call = [&](const std::vector<std::string>& t, int at) {
+        return at >= 0 && static_cast<size_t>(at) + 5 <= t.size() && t[at] == "E8" && wild(t, at + 1, 4);
+    };
+    const auto entry = Tokens(kListenerEntryPattern);
+    Check(entry.size() == 47 && entry[0] == "88" && entry[3] == "08", "the listener update's entry: mov [rsp+8],cl first");
+    const auto init = Tokens(kListenerInitPattern);
+    Check(init.size() == 44 && init[19] == "45" && init[20] == "8B" && init[21] == "E3" && init[38] == "45" &&
+              init[39] == "8B" && init[40] == "FB",
+          "the loop's start: mov r12d,r11d and mov r15d,r11d (user 0 is listener 0, at the array's base)");
+    const auto globals = Tokens(kListenerGlobalsPattern);
+    Check(globals.size() == 33 && globals[kListenerGlobalsRel - 3] == "4C" && globals[kListenerGlobalsRel - 2] == "8B" &&
+              globals[kListenerGlobalsRel - 1] == "2D" && wild(globals, kListenerGlobalsRel, 4),
+          "the globals site: mov r13,[rip+rel32] with the rel32 at its offset");
+    const auto built = Tokens(kListenerBuiltPattern);
+    Check(built.size() == 26 && built[0] == "41" && built[1] == "BE" && built[2] == "01" &&
+              built[kListenerBuiltDisp - 4] == "47" && built[kListenerBuiltDisp - 3] == "88" &&
+              built[kListenerBuiltDisp - 2] == "B4" && built[kListenerBuiltDisp - 1] == "2F" &&
+              wild(built, kListenerBuiltDisp, 2),
+          "the built mark: mov r14d,1 ... mov [r15+r13+BUILT],r14b");
+    const auto build = Tokens(kListenerBuildPattern);
+    Check(build.size() == 90, "the build site is 90 bytes");
+    Check(build[kListenerMatrixDisp - 3] == "49" && build[kListenerMatrixDisp - 2] == "8D" &&
+              build[kListenerMatrixDisp - 1] == "8D" && wild(build, kListenerMatrixDisp, 2) &&
+              build[kListenerMatrixDisp + 2] == "00",
+          "the build site: lea rcx,[r13+MATRIX]");
+    Check(call(build, kListenerMatrixCall) && call(build, kListenerVelocityCall), "the build site: both helper calls");
+    Check(build[kListenerVelocityDisp - 3] == "4D" && build[kListenerVelocityDisp - 2] == "8D" &&
+              build[kListenerVelocityDisp - 1] == "85" && wild(build, kListenerVelocityDisp, 2),
+          "the build site: lea r8,[r13+VELOCITY]");
+    Check(build[kListenerLocationDisp - 5] == "66" && build[kListenerLocationDisp - 2] == "9C" &&
+              build[kListenerLocationDisp - 1] == "2F" && wild(build, kListenerLocationDisp, 2),
+          "the build site: mov [r15+r13+LOCATION],bx");
+    Check(build[56] == "F2" && build[59] == "41" && build[60] == "28" && build[65] == "41" && build[66] == "30",
+          "the build site: the position goes to matrix +0x28 / +0x30");
+    const auto loop = Tokens(kListenerLoopPattern);
+    Check(loop.size() == 45 && wild(loop, kListenerLoopObserverA, 2) && wild(loop, kListenerLoopObserverB, 2) &&
+              loop[kListenerLoopStride - 3] == "49" && loop[kListenerLoopStride - 2] == "83" &&
+              loop[kListenerLoopStride - 1] == "C7" && loop[kListenerLoopStride] == "??" && loop[38] == "04",
+          "the loop's foot: both observer strides, add r15,STRIDE, four users");
+    const auto matrix = Tokens(kListenerMatrixHelperPattern);
+    bool exact = matrix.size() == 162;
+    for (const auto& token : matrix)
+        exact = exact && token != "??";
+    Check(exact && matrix[4] == "C7" && matrix[9] == "3F", "the matrix helper: 162 exact bytes, scale 1.0f first");
+    Check(kMatrixScale == 0 && kMatrixForward == 4 && kMatrixLeft == 0x10 && kMatrixUp == 0x1C && kMatrixPosition == 0x28,
+          "the matrix layout the helper writes");
+    Check(Tokens(kListenerVelocityHelperPattern).size() == 207, "the velocity helper: 207 bytes");
+}
 } // namespace
 
 int main()
@@ -378,6 +668,11 @@ int main()
     TestHold();
     TestIdentityWhenHeadIsAim();
     TestPatterns();
+    TestListenerModel();
+    TestListenerFollowsHead();
+    TestListenerVelocity();
+    TestListenerRefusals();
+    TestListenerPatterns();
     std::printf("halo3_head_relative_tests: %u checks, %u failures\n", checks, failures);
     return failures ? 1 : 0;
 }
