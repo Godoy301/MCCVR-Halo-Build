@@ -2572,6 +2572,13 @@ namespace
     bool RemoveHalo3HeadRelative();
     void Halo3HeadRelativePublish(const float* forward, const float* up, bool gameplay);
     void Halo3HeadRelativeReport();
+#if HALOMCCVR_EXPERIMENTAL_ODST_BRINGUP
+    // The same two seams in ODST (halo3_head_relative.inl; never run in a game yet).
+    bool InstallOdstHeadRelative(uintptr_t base, size_t size, uint32_t generation);
+    bool RemoveOdstHeadRelative();
+    void OdstHeadRelativePublish(const float* forward, const float* up, bool gameplay);
+    void OdstHeadRelativeReport();
+#endif
 #if HALOMCCVR_DEV_DIAGNOSTICS
     // The firing assist witness (dev; halo3_assist_witness.inl): a hook on 0x13BAD0, witness only.
     void InstallHalo3AssistWitness(uintptr_t base, size_t size);
@@ -13796,7 +13803,10 @@ namespace
                 cinematicControl, GetTickCount64());
         }
         if (cinematic && VR_IsCutsceneTheaterActive())
+        {
+            OdstHeadRelativePublish(nullptr, nullptr, false); // not the player's frame: tracker and listener stay the game's
             return; // keep ODST's pristine authored camera on the theatre screen
+        }
         const bool cinematicBoundary =
             (cinematic && (!prevCinematic ||
                 cinematicScene != prevScene || cinematicShot != prevShot)) ||
@@ -13882,6 +13892,9 @@ namespace
             up[1] = (-sinPitch * sinYaw) * cosRoll - cosYaw * sinRoll;
             up[2] = cosPitch * cosRoll;
         }
+        // The head this frame is seen with, for what must turn with the head instead of the aim (the motion
+        // tracker and the sound listener: halo3_head_relative.inl).
+        OdstHeadRelativePublish(forward, up, !cinematic);
 
         // O2 seat placement, in the same slot Halo 3 uses: after the rotation
         // is written and BEFORE the room-scale lean is added, so leaning still
@@ -19325,6 +19338,7 @@ namespace
     bool DisableAndRemoveOdstHooks()
     {
         if(!RemoveOdstWeaponHaptics())return false;
+        if(!RemoveOdstHeadRelative())return false;
         if(!RemoveOdstMuzzle())return false;
         if(!LegacyDriveRemove(GameTitle::Halo3ODST)) return false;
         // The seat aim rebase skip is retired further down, after the
@@ -19725,6 +19739,8 @@ namespace
         (void)SeatAimFrameInstall(GameTitle::Halo3ODST,base,size,runtimeGeneration);
         (void)InstallOdstMuzzle(base,size,runtimeGeneration);
         (void)InstallOdstWeaponHaptics(base,size,runtimeGeneration);
+        // The motion tracker and the sound listener by the head (halo3_head_relative.inl): own transactions.
+        (void)InstallOdstHeadRelative(base,size,runtimeGeneration);
 
         // The ownership block that used to sit here now runs the moment the
         // core hooks go live, above. In particular g_odstLastCamCopyMs is NOT
@@ -47869,6 +47885,9 @@ namespace
             LegacyDriveReport();
             GunAimReport();   // DRIVE Halo 3 gun-slaved seat (the gun camera's offset), SEAT LIMIT Halo 3 gun band
             Halo3HeadRelativeReport();   // TRACKER HEAD Halo 3: the switch, by the head / the game's own
+#if HALOMCCVR_EXPERIMENTAL_ODST_BRINGUP
+            OdstHeadRelativeReport();    // TRACKER HEAD ODST / AUDIO HEAD ODST
+#endif
             SeatAimFrameSync();   // Halo 3 / ODST seat aim: follow the first-person seat settings
 #if HALOMCCVR_DEV_DIAGNOSTICS
             Type13LogReport();   // the type-13 pilot-controller log lines (REACH SF, H4 T13)

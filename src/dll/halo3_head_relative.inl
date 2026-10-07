@@ -157,8 +157,10 @@ bool Halo3TrackerUser(const void* self, int32_t offset, int32_t& user)
     }
 }
 
-// One contact placement: the pair to hand the builder (the game's own unless every gate passes).
-void Halo3TrackerPair(Halo3HeadRelativeLane& lane, const void* self, float& sinA, float& cosA)
+// One contact placement: the pair to hand the builder (the game's own unless every gate passes). `hold`: the last
+// heading the head had, the calling title's own, on this thread.
+void Halo3TrackerPair(Halo3HeadRelativeLane& lane, halo3_head_relative::Hold& hold, const void* self, float& sinA,
+                      float& cosA)
 {
     halo3_head_relative::Request in{};
     in.switchOn = lane.ready.load(std::memory_order_acquire) && g_config.tracker_follows_head;
@@ -179,7 +181,7 @@ void Halo3TrackerPair(Halo3HeadRelativeLane& lane, const void* self, float& sinA
         }
     }
     float native[3], used[3];
-    const head_relative::Use use = halo3_head_relative::Substitute(in, t_halo3TrackerHold, sinA, cosA, native, used);
+    const head_relative::Use use = halo3_head_relative::Substitute(in, hold, sinA, cosA, native, used);
     lane.uses[static_cast<size_t>(use)].fetch_add(1, std::memory_order_relaxed);
     if (use == head_relative::Use::Ok)
         for (int i = 0; i < 2; ++i)
@@ -198,7 +200,7 @@ __declspec(noinline) bool __fastcall Halo3TrackerPointDetour(void* self, const f
     bool placed = false;
     __try
     {
-        Halo3TrackerPair(lane, self, sinA, cosA);
+        Halo3TrackerPair(lane, t_halo3TrackerHold, self, sinA, cosA);
         if (lane.pointOriginal)
             placed = CallNativeWithSpareSlots(lane.pointOriginal, self, point, blip, origin, sinA, cosA);
     }
@@ -217,7 +219,7 @@ __declspec(noinline) bool __fastcall Halo3TrackerObjectDetour(void* self, int sl
     bool placed = false;
     __try
     {
-        Halo3TrackerPair(lane, self, sinA, cosA);
+        Halo3TrackerPair(lane, t_halo3TrackerHold, self, sinA, cosA);
         if (lane.objectOriginal)
             placed = CallNativeWithSpareSlots(lane.objectOriginal, self, slot, blip, origin, point, sinA, cosA);
     }
@@ -963,3 +965,120 @@ void Halo3HeadRelativeReport()
     HeadRelativeTrackerReport(g_halo3HeadRelative);
     HeadRelativeAudioReport(g_halo3HeadAudio);
 }
+
+// ====================================================================================================
+// ODST (halo3odst.dll carries the same tracker and listener code: every signature above matches exactly once
+// there too; tools/verify-halo3-motion-tracker.py odst, tools/verify-halo3-sound-listener.py odst). The same two
+// seams, proofs, gates and refusals, with ODST's own lanes, detours, head publication (OdstApplyHeadLook) and
+// title generation. NEVER RUN IN A GAME: built, unit-tested and proven offline only. Log: TRACKER HEAD ODST /
+// AUDIO HEAD ODST. `py -3 tools/audit_caller_area.py halo3odst.dll 3654B0:10:i 365188:11:i B8898:8:v` is clean.
+#if HALOMCCVR_EXPERIMENTAL_ODST_BRINGUP
+Halo3HeadRelativeLane g_odstHeadRelative;
+Halo3HeadAudioLane g_odstHeadAudio;
+thread_local halo3_head_relative::Hold t_odstTrackerHold;
+
+void OdstHeadRelativePublish(const float* forward, const float* up, bool gameplay)
+{
+    HeadRelativePublishTo(g_odstHeadRelative.head, g_odstRuntimeGeneration.load(std::memory_order_acquire), forward,
+                          up, gameplay);
+}
+
+__declspec(noinline) bool __fastcall OdstTrackerPointDetour(void* self, const float* point, void* blip,
+                                                            const float* origin, float sinA, float cosA)
+{
+    auto& lane = g_odstHeadRelative;
+    lane.callbacks.fetch_add(1, std::memory_order_acq_rel);
+    bool placed = false;
+    __try
+    {
+        Halo3TrackerPair(lane, t_odstTrackerHold, self, sinA, cosA);
+        if (lane.pointOriginal)
+            placed = CallNativeWithSpareSlots(lane.pointOriginal, self, point, blip, origin, sinA, cosA);
+    }
+    __finally
+    {
+        lane.callbacks.fetch_sub(1, std::memory_order_acq_rel);
+    }
+    return placed;
+}
+
+__declspec(noinline) bool __fastcall OdstTrackerObjectDetour(void* self, int slot, void* blip, const float* origin,
+                                                             const float* point, float sinA, float cosA)
+{
+    auto& lane = g_odstHeadRelative;
+    lane.callbacks.fetch_add(1, std::memory_order_acq_rel);
+    bool placed = false;
+    __try
+    {
+        Halo3TrackerPair(lane, t_odstTrackerHold, self, sinA, cosA);
+        if (lane.objectOriginal)
+            placed = CallNativeWithSpareSlots(lane.objectOriginal, self, slot, blip, origin, point, sinA, cosA);
+    }
+    __finally
+    {
+        lane.callbacks.fetch_sub(1, std::memory_order_acq_rel);
+    }
+    return placed;
+}
+
+__declspec(noinline) void __fastcall OdstListenerUpdateDetour(bool flag)
+{
+    auto& lane = g_odstHeadAudio;
+    lane.callbacks.fetch_add(1, std::memory_order_acq_rel);
+    __try
+    {
+        if (lane.original)
+            CallNativeWithSpareSlots(lane.original, flag);
+        Halo3ListenerApplyHead(lane);
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        const uint32_t thread = GetCurrentThreadId();
+        uint32_t first = 0;
+        lane.updates.fetch_add(1, std::memory_order_relaxed);
+        if (!lane.firstThread.compare_exchange_strong(first, thread, std::memory_order_relaxed) && first != thread)
+        {
+            lane.otherThread.store(thread, std::memory_order_relaxed);
+            lane.otherThreadUpdates.fetch_add(1, std::memory_order_relaxed);
+        }
+#endif
+    }
+    __finally
+    {
+        lane.callbacks.fetch_sub(1, std::memory_order_acq_rel);
+    }
+}
+
+// Both halves, each its own transaction (a miss in one leaves the other).
+bool InstallOdstHeadRelative(uintptr_t base, size_t size, uint32_t generation)
+{
+    auto& lane = g_odstHeadRelative;
+    lane.title = "ODST";
+    lane.runtimeGeneration = &g_odstRuntimeGeneration;
+    const bool tracker = InstallHeadRelativeTracker(lane, base, size, generation,
+                                                    reinterpret_cast<uintptr_t>(g_odstPlayerUnitGetter),
+                                                    reinterpret_cast<void*>(&OdstTrackerPointDetour),
+                                                    reinterpret_cast<void*>(&OdstTrackerObjectDetour));
+    auto& audio = g_odstHeadAudio;
+    audio.title = "ODST";
+    audio.runtimeGeneration = &g_odstRuntimeGeneration;
+    audio.head = &lane.head;
+    const bool listener = InstallHeadRelativeAudio(audio, base, size, generation,
+                                                   reinterpret_cast<void*>(&OdstListenerUpdateDetour));
+    return tracker || listener;
+}
+
+bool RemoveOdstHeadRelative()
+{
+    const bool tracker =
+        RemoveHeadRelativeTracker(g_odstHeadRelative, reinterpret_cast<const void*>(&OdstTrackerPointDetour),
+                                  reinterpret_cast<const void*>(&OdstTrackerObjectDetour));
+    const bool listener =
+        RemoveHeadRelativeAudio(g_odstHeadAudio, reinterpret_cast<const void*>(&OdstListenerUpdateDetour));
+    return tracker && listener;
+}
+
+void OdstHeadRelativeReport()
+{
+    HeadRelativeTrackerReport(g_odstHeadRelative);
+    HeadRelativeAudioReport(g_odstHeadAudio);
+}
+#endif
