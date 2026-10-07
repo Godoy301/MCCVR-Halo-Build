@@ -466,6 +466,19 @@ struct Config
     // character crouches his eye drops, and the limit drops with him. The hands and the reticle ray are
     // lifted with the view, so holding the view does not make them sink away from your eyes. <0 = off.
     float head_leash_below_eye_m = 0.10f;
+    // HEAD-RELATIVE HUD AND SOUND (head_relative_logic.h). The player aims with the hand and looks with the
+    // head, so the game's own camera heading -- the aim -- is the wrong one for anything read against where
+    // the player LOOKS. tracker_follows_head: the motion tracker places its contacts by the head's heading
+    // (yaw only) instead of the aim's, so sweeping the gun moves nothing and turning the head turns them.
+    // audio_follows_head: the sound listener takes the head's orientation. Both are read live. A title that
+    // has not bound its seam keeps the game's own behaviour (log: TRACKER HEAD / AUDIO HEAD <title>).
+    bool tracker_follows_head = true;
+    bool audio_follows_head = true;
+    // Live safety values for the tracker's yaw correction. Parsed and saved in DEV BUILDS ONLY; every build
+    // runs with them, so a player build always has these defaults. sign: 1, or -1 if a title's seam turns
+    // out mirrored. offset: degrees added after the sign.
+    int tracker_head_sign = 1;
+    float tracker_head_offset_deg = 0.0f;
     bool turn_smooth = true;           // false = snap turn, true = smooth turn
     bool vehicle_smooth_turn = false; // temporary smooth VR turning while seated
     float turn_snap_deg = 30.0f;       // degrees per snap
