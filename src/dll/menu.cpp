@@ -1866,6 +1866,14 @@ namespace
                             "with the turn stick only, never with the gun). Not yet seen in a headset.");
         ImGui::Spacing();
         ImGui::Separator();
+        ImGui::Text("Waypoints");
+        changed |= ImGui::Checkbox("Markers use the headset's field of view", &g_config.nav_markers_on_target);
+        ImGui::TextDisabled("ON: objective markers are projected with the field of view each eye is drawn with,\n"
+                            "so a marker stays on its point when you turn your head.\n"
+                            "OFF: the game's flat-screen field of view, as before (about twice as far off-centre).\n"
+                            "Halo: Reach only. Markers on other players are untested. Live.");
+        ImGui::Spacing();
+        ImGui::Separator();
         ImGui::Text("HUD layout");
         changed |= ImGui::Checkbox("Hide HUD completely", &g_config.hide_hud);
         if(g_config.hide_hud) {

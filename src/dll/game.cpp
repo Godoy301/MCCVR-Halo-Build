@@ -117,6 +117,7 @@ static void AimNoUnit_Note(GameTitle title, bool unitPresent) noexcept
 #include "reach_aim_provider.h"
 #include "../common/reach_observer_logic.h"
 #include "../common/reach_head_relative_logic.h"
+#include "../common/reach_nav_marker_logic.h"
 #endif
 #if HALOMCCVR_EXPERIMENTAL_REACH_RENDER_CANDIDATE
 // Reach direct-drive (reach_direct_drive==3): hook the per-user control update haloreach+0x6375C (the
@@ -2348,6 +2349,7 @@ namespace
     bool RemoveReachMuzzle();
     void ReportReachMuzzle();
     void ReportReachHeadRelative();  // reach_head_relative.inl: the motion tracker follows the head
+    void ReportReachNavProjection(); // reach_nav_projection.inl: the marker projection's own hook
     // Weapon-order diagnostic tranche: read-only semantic-primary
     // observations reusing the title readers below. Defined after those
     // readers; called from the FP interpolate/palette hooks above them.
@@ -22021,6 +22023,11 @@ namespace
     }
 
     #include "reach_hud_height.inl"
+    // Navigation markers are projected with the eye's field of view (reach_nav_markers.inl). Its report
+    // formats its refusals with the head-relative lane's helper, which is defined further down.
+    int ReachHeadRelativeReasons(char* text, size_t capacity, const uint32_t* counts, size_t count,
+                                 size_t used, const char* (*name)(size_t));
+    #include "reach_nav_markers.inl"
 
     // REACHHUD diagnostic counters. The CHUD hook is a hot hook, so it only
     // bumps atomics here; every log line is emitted by the 50 ms worker.
@@ -22847,6 +22854,12 @@ namespace
             memcpy(out + 0x18, headUp, sizeof(float) * 3);
             g_reachObserverCameraCorrected[site].fetch_add(
                 1, std::memory_order_relaxed);
+            // The marker projection builds its own projection from this
+            // camera, so it also needs the field of view this eye was
+            // rasterised with, or a marker is only right on the eye's axis
+            // (reach_nav_markers.inl). The other sites keep the game's.
+            if (site == kReachObserverCameraChudSite)
+                ReachNavMarkerEyeFov(out, scope.compact);
         }
         __finally
         {
@@ -26255,7 +26268,7 @@ namespace
         const uint64_t now=GetTickCount64();
         if(now-lastLogMs<2000) return;
         lastLogMs=now;
-        if(title==GameTitle::HaloReach){ReportReachContactMelee();ReportReachMuzzle();ReportReachSightTrace();ReportReachHeadRelative();}
+        if(title==GameTitle::HaloReach){ReportReachContactMelee();ReportReachMuzzle();ReportReachSightTrace();ReportReachHeadRelative();ReportReachNavMarkers();ReportReachNavProjection();}
         if(title==GameTitle::Halo3) { ReportHalo3ContactMelee(); ReportHalo3WeaponHaptics(); ReportHalo3Avatar(); }
         if(title==GameTitle::Halo3ODST){ReportOdstContactMelee();ReportOdstMuzzle();ReportOdstWeaponHaptics();ReportOdstControllerFingers();}
         if(auto* melee=SharedMeleeForTitle(title))
@@ -27765,6 +27778,7 @@ namespace
     #include "reach_muzzle_lifecycle.inl"
     // The motion tracker (and the sound listener) follow the head instead of the aim.
     #include "reach_head_relative.inl"
+    #include "reach_nav_projection.inl"
     // Dev builds only: AS SEEN for Reach in VR (the file compiles to nothing otherwise).
     #include "reach_impact_witness.inl"
     #include "reach_visual_hand_offset.inl"
@@ -33226,6 +33240,8 @@ namespace
 #endif
         if (!RemoveReachMuzzle()) return false;
         if (!RemoveReachHeadRelative()) return false;
+        if (!RemoveReachNavProjection()) return false;
+        RemoveReachNavMarkers();
         TitleAdapter_ClearCinematicControl(
             GameTitle::HaloReach,
             g_reachCamera.generation.load(std::memory_order_acquire));
@@ -36021,6 +36037,15 @@ namespace
                 static_cast<unsigned long long>(
                     kReachRenderCameraFromObserverRva));
         }
+        // Rides that hook: a refusal leaves the game's own marker projection
+        // and nothing else changes.
+        InstallReachNavMarkers(
+            g_reachCamera.observerCameraTarget != nullptr &&
+                g_reachOrigObserverCamera != nullptr,
+            kReachObserverCameraReturnRvas[kReachObserverCameraChudSite]);
+        // The marker projection's own hook proves itself against that hook's
+        // call site, so it binds after it (reach_nav_projection.inl).
+        (void)InstallReachNavProjection(base, size, generation);
         if (effectLocationCreated &&
             MH_EnableHook(effectLocation) != MH_OK)
         {

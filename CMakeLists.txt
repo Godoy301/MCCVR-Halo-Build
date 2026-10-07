@@ -909,6 +909,13 @@ if(BUILD_TESTING)
     add_executable(halomccvr_halo4_head_relative_tests tests/halo4_head_relative_tests.cpp)
     target_include_directories(halomccvr_halo4_head_relative_tests PRIVATE src/common)
     add_test(NAME halomccvr_halo4_head_relative_tests COMMAND halomccvr_halo4_head_relative_tests)
+    # Reach's navigation markers, the pure half (src/common/reach_nav_marker_logic.h). Geometry on the header's
+    # own MODEL of the game's projection, not on the game: with the eye's field of view the model's marker is
+    # on its point's pixel for each eye with the head turned and the gun swept; with the game's it is off by
+    # the magnification; the field-of-view verdicts; the decoding of the projection's sites from byte patterns.
+    add_executable(halomccvr_reach_nav_marker_tests tests/reach_nav_marker_tests.cpp)
+    target_include_directories(halomccvr_reach_nav_marker_tests PRIVATE src/common)
+    add_test(NAME halomccvr_reach_nav_marker_tests COMMAND halomccvr_reach_nav_marker_tests)
     # Head-relative HUD and sound, the shared pure half (src/common/head_relative_logic.h): the heading of a
     # forward vector, the game's forward with the head's yaw, the head sample's verdict, and the player's two
     # headset checks (gun swept: contacts stay put; head turned: contacts turn) as geometry.

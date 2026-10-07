@@ -1314,6 +1314,7 @@ void ConfigLoad(const wchar_t* path)
         if (!strcmp(key, "first_person_rung_fault")) { g_config.first_person_rung_fault=(int)strtol(val,nullptr,0)&0xF; continue; }
         if (!strcmp(key, "reach_sight_trace_length_m")) { g_config.reach_sight_trace_length_m=(float)atof(val); continue; }
         if (!strcmp(key, "tracker_head_sign")) { g_config.tracker_head_sign = atoi(val) < 0 ? -1 : 1; continue; }
+        if (!strcmp(key, "nav_marker_witness")) { g_config.nav_marker_witness = atoi(val) != 0 ? 1 : 0; continue; }
         if (!strcmp(key, "tracker_head_offset_deg"))
         {
             // A NaN fails both comparisons and reads as no offset.
@@ -1383,6 +1384,7 @@ void ConfigLoad(const wchar_t* path)
         }
         if (!strcmp(key, "tracker_follows_head")) { g_config.tracker_follows_head = atoi(val) != 0; continue; }
         if (!strcmp(key, "audio_follows_head")) { g_config.audio_follows_head = atoi(val) != 0; continue; }
+        if (!strcmp(key, "nav_markers_on_target")) { g_config.nav_markers_on_target = atoi(val) != 0; continue; }
         if (!strcmp(key, "experimental_hand_alignment"))
         {
             g_config.experimental_hand_alignment = atoi(val) != 0;
@@ -2111,7 +2113,15 @@ void ConfigSave()
     fprintf(f, "# way the gun points, as the game does it. Halo: Reach and Halo 3 for now; a game that has no head-relative\n");
     fprintf(f, "# sound yet keeps its own (log: AUDIO HEAD <game>). Live in F1 > Comfort. (default %d)\n",
         d.audio_follows_head ? 1 : 0);
-    fprintf(f, "audio_follows_head = %d\n\n", g_config.audio_follows_head ? 1 : 0);
+    fprintf(f, "audio_follows_head = %d\n", g_config.audio_follows_head ? 1 : 0);
+    fprintf(f, "# Markers use your headset's field of view. 1 = Halo: Reach's objective markers are projected\n");
+    fprintf(f, "# with the field of view each eye is drawn with, so a marker stays on its point when you turn\n");
+    fprintf(f, "# your head. 0 = with the game's flat-screen field of view, as before: a marker is then right\n");
+    fprintf(f, "# only where you look straight at it and is drawn about twice as far off-centre everywhere\n");
+    fprintf(f, "# else. Halo: Reach only. Tested with an objective marker; markers on other players are\n");
+    fprintf(f, "# untested (log: NAV MARKERS <game>). Live in F1 > HUD. (default %d)\n",
+        d.nav_markers_on_target ? 1 : 0);
+    fprintf(f, "nav_markers_on_target = %d\n\n", g_config.nav_markers_on_target ? 1 : 0);
     fprintf(f, "# Degrees per snap turn.\n");
     fprintf(f, "# (default %.0f, range 5 to 90)\n", d.turn_snap_deg);
     fprintf(f, "turn_snap_deg = %.0f\n\n", g_config.turn_snap_deg);
@@ -2326,6 +2336,10 @@ void ConfigSave()
     fprintf(f, "# tracker turns AGAINST your head; tracker_head_offset_deg adds a fixed angle. Live.\n");
     fprintf(f, "tracker_head_sign = %d\n", g_config.tracker_head_sign < 0 ? -1 : 1);
     fprintf(f, "tracker_head_offset_deg = %.1f\n\n", g_config.tracker_head_offset_deg);
+    fprintf(f, "# DEV BUILD ONLY. Halo: Reach navigation markers: 1 = hook the game's marker projection read-only\n");
+    fprintf(f, "# and log the pixel the game puts each marker on against the pixel the eye's own picture shows\n");
+    fprintf(f, "# its target at (log: NAV MARKERS Reach (dev witness)). Read when a level loads. Leave at 0.\n");
+    fprintf(f, "nav_marker_witness = %d\n\n", g_config.nav_marker_witness);
 #endif
     fprintf(f, "# Vehicle seats: which seats your hand aims. With aim_direct_drive = 1 the seat's aim is written\n");
     fprintf(f, "# as on foot (Reach, Halo 3, ODST, Halo 4, Halo 2); Halo 3 and ODST seats also converge whenever\n");
