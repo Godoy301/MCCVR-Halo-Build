@@ -650,13 +650,9 @@ namespace
             changed = true;
         }
         ImGui::TextDisabled("Raw by default. Try 5%% only for micro-jitter; capped at 10%% for comfort.");
-        ImGui::Spacing();
-        ImGui::Separator();
-        ImGui::Text("Sound");
-        changed |= ImGui::Checkbox("Sound follows your head", &g_config.audio_follows_head);
-        ImGui::TextDisabled("ON: you hear the world from the way your head faces.\n"
-                            "OFF: from the way your gun points, as the game does it.\n"
-                            "Halo: Reach and Halo 3 for now. Live.");
+        // "Sound follows your head" (audio_follows_head) has no control here yet: the key is read and saved,
+        // and no title has a head-relative listener to switch. It comes back with the first lane that reads it,
+        // naming the games it works in.
         ImGui::Spacing();
         ImGui::Separator();
         ImGui::Text("Startup");

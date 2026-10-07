@@ -2103,8 +2103,8 @@ void ConfigSave()
     fprintf(f, "# (log: TRACKER HEAD <game>). Live in F1 > HUD. (default %d)\n", d.tracker_follows_head ? 1 : 0);
     fprintf(f, "tracker_follows_head = %d\n", g_config.tracker_follows_head ? 1 : 0);
     fprintf(f, "# Sound follows your head. 1 = you hear the world from the way your head faces. 0 = from the\n");
-    fprintf(f, "# way the gun points, as the game does it. A game that has no head-relative sound yet keeps\n");
-    fprintf(f, "# its own (log: AUDIO HEAD <game>). Live in F1 > Comfort. (default %d)\n",
+    fprintf(f, "# way the gun points, as the game does it. NOT IN ANY GAME YET: this build reads the key and\n");
+    fprintf(f, "# nothing uses it, so every game keeps its own sound. (default %d)\n",
         d.audio_follows_head ? 1 : 0);
     fprintf(f, "audio_follows_head = %d\n\n", g_config.audio_follows_head ? 1 : 0);
     fprintf(f, "# Degrees per snap turn.\n");
