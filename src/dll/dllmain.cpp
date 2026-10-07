@@ -4,6 +4,7 @@
 #include <MinHook.h>
 #include "../common/minhook_lifecycle.h"
 #include "sigscan.h"
+#include "host_unload_gate.h"
 #include "../common/log.h"
 #include "../common/config.h"
 #include "d3d11_hook.h"
@@ -194,6 +195,8 @@ static DWORD WINAPI InitThread(LPVOID)
     }
     sig::SetHookPatchSource(&EnabledHookPatches);
     sig::SetProofThroughHookObserver(&ProofReadThroughOurHook);
+    // MCC's reload of a game DLL after a game waits for a title core that still holds it (host_unload_gate.cpp).
+    (void)HostUnloadGate_Install();
     if (!InstallD3D11Hooks())
     {
         LOG("FATAL: D3D11 hooks failed to install; mod inactive");

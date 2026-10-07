@@ -1,0 +1,477 @@
+// MCC'S RELOAD OF A GAME DLL WAITS FOR OUR TEARDOWN.
+//
+// WHAT WAS WRONG (2026-10-07; docs/REACH-SECOND-GAME-2026-10-07.md). A second Halo: Reach game in one MCC session
+// bounced back to the lobby at the first try and started at the next. Every game is meant to start in a fresh
+// image of its DLL. When a game ends, everyone lets go of the DLL (measured, in ms after the last frame: a CRT
+// worker of the game at 530, MCC's own FreeLibrary between 1080 and 1800, the game's main thread with
+// FreeLibraryAndExitThread at 1750), it unloads, and MCC then loads all six game DLLs again for its menus (2840). Reach's camera core keeps a loader
+// reference on haloreach.dll for as long as MinHook owns addresses inside it, and lets go when its teardown has
+// finished, 4.4 s after the last frame. MCC's reload came before that: it found the old image still there, took
+// it, and the next game started in a module whose own shutdown had already run. Halo 3's core holds no such
+// reference: its DLL unloads and its second game starts.
+//
+// THE FIX keeps the reference (the hooks still need the image mapped while they are removed) and makes the reload
+// wait for it: one hook on ntdll's LdrLoadDll, where every way of loading a DLL arrives. A load of a DLL that a
+// core has registered, while that core is tearing down, waits until the core has let go. The old image is gone
+// by then, and the load maps a fresh one. (The reload follows the unload within a millisecond and lands on the
+// same base, so the module poll cannot see it: TitleAdapter_NoteImageUnloading tells the adapter.)
+//
+//   * WHO WAITS: whoever loads that DLL by name while the core's teardown is under way. A teardown always ends,
+//     so the wait does: when the core lets go, when it says it cannot (HostUnloadGate_Abandon), or after kWaitMs.
+//     Then the load goes on exactly as it always did. Nothing waits during play or a pause: no teardown is under
+//     way then.
+//   * WHAT IT COSTS: MCC's loading thread stands still for the rest of the teardown, once per game end (1.7 s
+//     measured). Every other DLL load in the process pays one pointer compare per registered core.
+//   * IT CANNOT MAKE THINGS WORSE THAN BEFORE: a load it lets through unwaited, or after a time-out, gets the old
+//     image, which is what every load got before this file.
+//   * TWO THINGS TRIED FIRST, AND WHY THEY WERE WRONG. (1) A hook on FreeLibrary that made "any caller that is not
+//     this mod" wait: FreeLibrary on a game DLL is called a thousand times a minute during play by this mod's
+//     own scoped references, and they arrive through Steam's overlay (gameoverlayrenderer64.dll hooks
+//     FreeLibrary), so the caller was never this mod's address; the first run tore the core down seconds into a
+//     level. (2) Making the game's main thread wait before it leaves the DLL: it waited, left last, and the image
+//     still stayed, because MCC's reload had already taken it. The dev census below is what showed each.
+//   * NOT WHILE MCC CLOSES. Closing MCC from inside a game ends the game the same way, reload and all, while
+//     the rest of MCC shuts down around it. A reload held back there coincided, in the one run that did it,
+//     with a first-chance access violation in MCC's own code (MCC-Win64-Shipping.exe+0x8AD697 reading
+//     0x540, on one of MCC's task threads). So the game window's WM_CLOSE / WM_DESTROY ends every wait and
+//     prevents new ones (HostUnloadGate_HostClosing): at a close everything is as it was before this file.
+//   * title_unload_wait = 0: no wait, the behaviour before this file.
+//   * No logging and no allocation in the hook; the cold worker reports each game end once.
+#include "host_unload_gate.h"
+#include "../common/config.h"
+#include "../common/log.h"
+#include <MinHook.h>
+#include <cstdint>
+#include <cstdio>
+#include <cstring>
+
+namespace
+{
+constexpr uint32_t kWaitMs = 6000;   // a teardown takes 3.5 s (measured); past this the old behaviour is kinder
+constexpr int kPins = 4;             // one per title core that holds its DLL
+constexpr int kNameChars = 40;
+
+struct LoaderString   // ntdll's UNICODE_STRING
+{
+    USHORT length, maximumLength;   // bytes
+    PWSTR buffer;
+};
+using LdrLoadDllFn = LONG(NTAPI*)(PWSTR, PULONG, LoaderString*, PVOID*);
+
+struct Pin
+{
+    std::atomic<HMODULE> module{nullptr};
+    std::atomic<const std::atomic<bool>*> tearingDown{nullptr};
+    std::atomic<const std::atomic<uint64_t>*> lastFrameMs{nullptr};   // GetTickCount64 of the title's last frame
+    std::atomic<uint32_t> abandoned{0};   // counts the core's "I cannot let go" notices
+    std::atomic<const char*> title{""};
+    wchar_t name[kNameChars]{};   // the DLL's file name, lower case; written before `module`
+    int nameLength = 0;
+};
+
+struct Gate
+{
+    LdrLoadDllFn original = nullptr;
+    uintptr_t selfBase = 0, selfSize = 0;
+    Pin pins[kPins];
+    // Since the last report. A game end is one wait; the counters exist so nothing is lost if two come close.
+    std::atomic<uint32_t> released{0}, releasedStillLoaded{0}, timedOut{0}, abandoned{0}, switchedOff{0};
+    std::atomic<uint32_t> hostClosed{0};
+    std::atomic<bool> hostClosing{false};
+    std::atomic<uint32_t> longestMs{0}, arrivedMs{0}, waiting{0};
+    std::atomic<const char*> lastTitle{""};
+} g_gate;
+
+uint64_t FrameAge(const Pin& pin, uint64_t now) noexcept
+{
+    const std::atomic<uint64_t>* const frame = pin.lastFrameMs.load(std::memory_order_acquire);
+    const uint64_t last = frame ? frame->load(std::memory_order_acquire) : 0;
+    return last && now >= last ? now - last : 0;   // 0: no frame yet, or the clock is ahead
+}
+
+// `name` is a path or a bare file name; true if its file name is the pin's, whatever the case.
+bool NamesPin(const Pin& pin, const LoaderString& name) noexcept
+{
+    const int chars = name.length / 2, wanted = pin.nameLength;
+    if (!name.buffer || !wanted || chars < wanted)
+        return false;
+    const wchar_t* const tail = name.buffer + (chars - wanted);
+    if (chars > wanted && tail[-1] != L'\\' && tail[-1] != L'/')
+        return false;
+    for (int i = 0; i < wanted; ++i)
+    {
+        wchar_t c = tail[i];
+        if (c >= L'A' && c <= L'Z')
+            c = static_cast<wchar_t>(c + (L'a' - L'A'));
+        if (c != pin.name[i])
+            return false;
+    }
+    return true;
+}
+
+// Someone loads a game DLL whose core is tearing down: the game has ended and MCC wants the DLL again.
+__declspec(noinline) void LoadWaits(Pin& pin, HMODULE module) noexcept
+{
+    Gate& gate = g_gate;
+    gate.lastTitle.store(pin.title.load(std::memory_order_relaxed), std::memory_order_relaxed);
+    const ULONGLONG start = GetTickCount64();
+    gate.arrivedMs.store(static_cast<uint32_t>(FrameAge(pin, start)), std::memory_order_relaxed);
+    if (!g_config.title_unload_wait)
+    {
+        gate.switchedOff.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    if (gate.hostClosing.load(std::memory_order_acquire))
+    {
+        gate.hostClosed.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    const uint32_t abandonedAtEntry = pin.abandoned.load(std::memory_order_acquire);
+    gate.waiting.fetch_add(1, std::memory_order_acq_rel);
+    std::atomic<uint32_t>* outcome = &gate.timedOut;
+    while (GetTickCount64() - start < kWaitMs)
+    {
+        if (pin.module.load(std::memory_order_acquire) != module)
+        {
+            // The core has let go. Is the old image gone? (Nothing of ours is held here: no loader lock.)
+            HMODULE still = nullptr;
+            outcome = GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                                             GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                                         reinterpret_cast<LPCWSTR>(module), &still) && still == module
+                          ? &gate.releasedStillLoaded
+                          : &gate.released;
+            break;
+        }
+        if (pin.abandoned.load(std::memory_order_acquire) != abandonedAtEntry)
+        {
+            outcome = &gate.abandoned;
+            break;
+        }
+        if (gate.hostClosing.load(std::memory_order_acquire))
+        {
+            outcome = &gate.hostClosed;
+            break;
+        }
+        Sleep(1);
+    }
+    const uint32_t waited = static_cast<uint32_t>(GetTickCount64() - start);
+    uint32_t longest = gate.longestMs.load(std::memory_order_relaxed);
+    while (waited > longest && !gate.longestMs.compare_exchange_weak(longest, waited, std::memory_order_relaxed))
+    {
+    }
+    outcome->fetch_add(1, std::memory_order_relaxed);
+    gate.waiting.fetch_sub(1, std::memory_order_acq_rel);
+}
+
+LONG NTAPI LdrLoadDllDetour(PWSTR path, PULONG flags, LoaderString* name, PVOID* handle)
+{
+    Gate& gate = g_gate;
+    if (name)
+        for (Pin& pin : gate.pins)
+        {
+            const HMODULE module = pin.module.load(std::memory_order_acquire);
+            if (!module)
+                continue;
+            const std::atomic<bool>* const tearingDown = pin.tearingDown.load(std::memory_order_acquire);
+            if (tearingDown && tearingDown->load(std::memory_order_acquire) && NamesPin(pin, *name))
+            {
+                LoadWaits(pin, module);
+                break;
+            }
+        }
+    return gate.original(path, flags, name, handle);
+}
+
+#if HALOMCCVR_DEV_DIAGNOSTICS
+// WHO LETS GO OF A HELD GAME DLL ONCE ITS FRAMES HAVE STOPPED (dev, read-only). Every way into the loader ends in
+// ntdll's LdrUnloadDll: FreeLibrary, FreeLibraryAndExitThread, a direct call. One row per distinct first frame
+// outside the system's own loader modules and Steam's overlay (which relays everyone's FreeLibrary), with the
+// stack it came by. Calls with a frame of this mod in them (its own scoped references) are left out.
+using LdrUnloadDllFn = LONG(NTAPI*)(PVOID);
+constexpr uint64_t kStillMs = 250;
+constexpr int kCensusRows = 8, kCensusFrames = 10, kCensusSkipped = 4;
+struct CensusRow
+{
+    std::atomic<uintptr_t> key{0};
+    std::atomic<uint32_t> count{0}, thread{0}, stillMs{0}, depth{0};
+    void* frames[kCensusFrames]{};
+};
+struct Census
+{
+    LdrUnloadDllFn original = nullptr;
+    uintptr_t skippedBase[kCensusSkipped]{}, skippedSize[kCensusSkipped]{};
+    CensusRow rows[kCensusRows];
+    std::atomic<uint32_t> overflow{0};
+} g_census;
+
+bool CensusSkippedFrame(uintptr_t address) noexcept
+{
+    for (int i = 0; i < kCensusSkipped; ++i)
+        if (address - g_census.skippedBase[i] < g_census.skippedSize[i])
+            return true;
+    return false;
+}
+
+LONG NTAPI LdrUnloadDllDetour(PVOID base)
+{
+    Gate& gate = g_gate;
+    if (base)
+        for (Pin& pin : gate.pins)
+            if (pin.module.load(std::memory_order_acquire) == base)
+            {
+                const uint64_t age = FrameAge(pin, GetTickCount64());
+                if (age < kStillMs)
+                    break;   // frames are still coming (or none has come): a scoped reference, not an unload
+                void* stack[kCensusFrames]{};
+                const USHORT depth = CaptureStackBackTrace(1, kCensusFrames, stack, nullptr);
+                uintptr_t key = 0;
+                bool ours = false;
+                for (USHORT i = 0; i < depth; ++i)
+                {
+                    const uintptr_t address = reinterpret_cast<uintptr_t>(stack[i]);
+                    ours |= address - gate.selfBase < gate.selfSize;
+                    if (!key && !CensusSkippedFrame(address))
+                        key = address;
+                }
+                if (!key || ours)
+                    break;
+                bool placed = false;
+                for (CensusRow& row : g_census.rows)
+                {
+                    uintptr_t held = row.key.load(std::memory_order_acquire);
+                    if (!held && row.key.compare_exchange_strong(held, key, std::memory_order_acq_rel))
+                    {
+                        row.thread.store(GetCurrentThreadId(), std::memory_order_relaxed);
+                        row.stillMs.store(static_cast<uint32_t>(age), std::memory_order_relaxed);
+                        memcpy(row.frames, stack, sizeof(stack));
+                        row.depth.store(depth, std::memory_order_release);
+                        held = key;
+                    }
+                    if (held == key)
+                    {
+                        row.count.fetch_add(1, std::memory_order_relaxed);
+                        placed = true;
+                        break;
+                    }
+                }
+                if (!placed)
+                    g_census.overflow.fetch_add(1, std::memory_order_relaxed);
+                break;
+            }
+    return g_census.original(base);
+}
+
+void CensusInstall() noexcept
+{
+    // The overlay may not be there (a launch outside Steam): its row then stays empty.
+    const wchar_t* const names[kCensusSkipped]{L"ntdll.dll", L"kernelbase.dll", L"kernel32.dll",
+                                                L"gameoverlayrenderer64.dll"};
+    for (int i = 0; i < kCensusSkipped; ++i)
+        if (const HMODULE module = GetModuleHandleW(names[i]))
+        {
+            const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(module);
+            const auto* nt =
+                reinterpret_cast<const IMAGE_NT_HEADERS*>(reinterpret_cast<const uint8_t*>(module) + dos->e_lfanew);
+            g_census.skippedBase[i] = reinterpret_cast<uintptr_t>(module);
+            g_census.skippedSize[i] = nt->OptionalHeader.SizeOfImage;
+        }
+    const HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+    void* const target = ntdll ? reinterpret_cast<void*>(GetProcAddress(ntdll, "LdrUnloadDll")) : nullptr;
+    if (!target || MH_CreateHook(target, reinterpret_cast<void*>(&LdrUnloadDllDetour),
+                                 reinterpret_cast<void**>(&g_census.original)) != MH_OK ||
+        MH_EnableHook(target) != MH_OK)
+        LOG("UNLOAD GATE (dev): the unload census could not hook ntdll's LdrUnloadDll");
+}
+
+void CensusReport() noexcept
+{
+    for (CensusRow& row : g_census.rows)
+    {
+        const uint32_t depth = row.depth.load(std::memory_order_acquire);
+        const uint32_t count = row.count.exchange(0, std::memory_order_relaxed);
+        if (!depth || !count)
+            continue;
+        char text[900];
+        int length = 0;
+        text[0] = 0;
+        for (uint32_t i = 0; i < depth && length < static_cast<int>(sizeof(text)) - 80; ++i)
+        {
+            const uintptr_t address = reinterpret_cast<uintptr_t>(row.frames[i]);
+            HMODULE module = nullptr;
+            char file[MAX_PATH]{};
+            const char* name = "?";
+            if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                                   reinterpret_cast<LPCWSTR>(address), &module) && module &&
+                GetModuleFileNameA(module, file, MAX_PATH))
+            {
+                name = file;
+                for (const char* p = file; *p; ++p)
+                    if (*p == '\\' || *p == '/')
+                        name = p + 1;
+            }
+            const int wrote = _snprintf_s(text + length, sizeof(text) - length, _TRUNCATE, "%s%s+0x%llX",
+                                          i ? " < " : "", name,
+                                          static_cast<unsigned long long>(
+                                              module ? address - reinterpret_cast<uintptr_t>(module) : address));
+            if (wrote > 0)
+                length += wrote;
+        }
+        LOG("UNLOAD GATE (dev census): a held game DLL was let go %u time%s after its frames had stopped (the first "
+            "of them %u ms after the last frame, on thread %u) by: %s",
+            count, count == 1 ? "" : "s", row.stillMs.load(std::memory_order_relaxed),
+            row.thread.load(std::memory_order_relaxed), text);
+    }
+    if (const uint32_t overflow = g_census.overflow.exchange(0, std::memory_order_relaxed))
+        LOG("UNLOAD GATE (dev census): %u more came from callers past the table's %d rows", overflow, kCensusRows);
+}
+#endif
+} // namespace
+
+bool HostUnloadGate_Install()
+{
+    Gate& gate = g_gate;
+    if (gate.original)
+        return true;
+    HMODULE self = nullptr;
+    if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                           reinterpret_cast<LPCWSTR>(&HostUnloadGate_Install), &self) && self)
+    {
+        const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(self);
+        const auto* nt =
+            reinterpret_cast<const IMAGE_NT_HEADERS*>(reinterpret_cast<const uint8_t*>(self) + dos->e_lfanew);
+        gate.selfBase = reinterpret_cast<uintptr_t>(self);
+        gate.selfSize = nt->OptionalHeader.SizeOfImage;
+    }
+    const HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+    void* const target = ntdll ? reinterpret_cast<void*>(GetProcAddress(ntdll, "LdrLoadDll")) : nullptr;
+    const char* const fallback = "a game DLL a core holds stays loaded past the game's end, as before (a second Halo: "
+                                 "Reach game may bounce to the lobby once)";
+    if (!target || MH_CreateHook(target, reinterpret_cast<void*>(&LdrLoadDllDetour),
+                                 reinterpret_cast<void**>(&gate.original)) != MH_OK)
+    {
+        gate.original = nullptr;
+        LOG("UNLOAD GATE: StockFallback: ntdll's LdrLoadDll could not be hooked; %s", fallback);
+        return false;
+    }
+    if (MH_EnableHook(target) != MH_OK)
+    {
+        MH_RemoveHook(target);
+        gate.original = nullptr;
+        LOG("UNLOAD GATE: StockFallback: the LdrLoadDll hook did not enable; %s", fallback);
+        return false;
+    }
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    CensusInstall();
+#endif
+    LOG("UNLOAD GATE: Installed: when a game ends MCC loads its DLL again for the menus. While a title core of this "
+        "mod is tearing down and still holds that DLL, the load waits (at most %u ms) for the core to let go, so the "
+        "old image unloads first and the next game starts in a fresh one. title_unload_wait is %s",
+        kWaitMs, g_config.title_unload_wait ? "on" : "off");
+    return true;
+}
+
+void HostUnloadGate_Pin(HMODULE module, const std::atomic<bool>* tearingDown,
+                        const std::atomic<uint64_t>* lastFrameMs, const char* title)
+{
+    if (!module || !tearingDown)
+        return;
+    wchar_t path[MAX_PATH]{};
+    const DWORD length = GetModuleFileNameW(module, path, MAX_PATH);
+    if (!length || length >= MAX_PATH)
+        return;
+    const wchar_t* file = path;
+    for (const wchar_t* p = path; *p; ++p)
+        if (*p == L'\\' || *p == L'/')
+            file = p + 1;
+    const int nameLength = static_cast<int>(wcslen(file));
+    if (!nameLength || nameLength >= kNameChars)
+        return;
+    for (Pin& pin : g_gate.pins)
+    {
+        if (pin.module.load(std::memory_order_acquire) == module)
+            return;
+        if (!pin.module.load(std::memory_order_acquire))
+        {
+            // Everything else first: a hook that sees the module must see the rest. One thread registers (the
+            // worker), so an empty slot stays empty until the store below.
+            for (int i = 0; i < nameLength; ++i)
+                pin.name[i] = file[i] >= L'A' && file[i] <= L'Z' ? static_cast<wchar_t>(file[i] + (L'a' - L'A'))
+                                                                 : file[i];
+            pin.nameLength = nameLength;
+            pin.tearingDown.store(tearingDown, std::memory_order_release);
+            pin.lastFrameMs.store(lastFrameMs, std::memory_order_release);
+            pin.title.store(title, std::memory_order_release);
+            pin.module.store(module, std::memory_order_release);
+            return;
+        }
+    }
+}
+
+void HostUnloadGate_Unpin(HMODULE module)
+{
+    if (!module)
+        return;
+    for (Pin& pin : g_gate.pins)
+    {
+        HMODULE held = module;
+        (void)pin.module.compare_exchange_strong(held, nullptr, std::memory_order_acq_rel);
+    }
+}
+
+void HostUnloadGate_Abandon(HMODULE module)
+{
+    if (!module)
+        return;
+    for (Pin& pin : g_gate.pins)
+        if (pin.module.load(std::memory_order_acquire) == module)
+            pin.abandoned.fetch_add(1, std::memory_order_acq_rel);
+}
+
+void HostUnloadGate_HostClosing() noexcept
+{
+    g_gate.hostClosing.store(true, std::memory_order_release);
+}
+
+void HostUnloadGate_Report()
+{
+    Gate& gate = g_gate;
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    CensusReport();
+#endif
+    if (gate.waiting.load(std::memory_order_acquire))
+        return;   // one line per game end, once its wait is over
+    const uint32_t released = gate.released.exchange(0, std::memory_order_relaxed);
+    const uint32_t stillLoaded = gate.releasedStillLoaded.exchange(0, std::memory_order_relaxed);
+    const uint32_t timedOut = gate.timedOut.exchange(0, std::memory_order_relaxed);
+    const uint32_t abandoned = gate.abandoned.exchange(0, std::memory_order_relaxed);
+    const uint32_t switchedOff = gate.switchedOff.exchange(0, std::memory_order_relaxed);
+    const uint32_t hostClosed = gate.hostClosed.exchange(0, std::memory_order_relaxed);
+    if (!released && !stillLoaded && !timedOut && !abandoned && !switchedOff && !hostClosed)
+        return;
+    const uint32_t longest = gate.longestMs.exchange(0, std::memory_order_relaxed);
+    const uint32_t arrived = gate.arrivedMs.load(std::memory_order_relaxed);
+    const char* const title = gate.lastTitle.load(std::memory_order_relaxed);
+    const char* const stays = "the load takes the old image as before and the next game of this title may bounce to "
+                              "the lobby once";
+    if (released)
+        LOG("UNLOAD GATE %s: the game ended; MCC's reload of the game DLL came %u ms after the last frame and waited "
+            "%u ms for this mod's teardown. The old image had unloaded by then, so the next game starts in a fresh "
+            "one (%u load%s waited)", title, arrived, longest, released, released == 1 ? "" : "s");
+    if (stillLoaded)
+        LOG("UNLOAD GATE %s: the game ended; MCC's reload of the game DLL came %u ms after the last frame and waited "
+            "%u ms for this mod's teardown, but the old image was STILL LOADED when the mod had let go (someone else "
+            "holds it): %s", title, arrived, longest, stays);
+    if (timedOut)
+        LOG("UNLOAD GATE %s: the game ended; MCC's reload of the game DLL came %u ms after the last frame, waited the "
+            "whole %u ms and this mod's teardown had not finished: %s", title, arrived, longest, stays);
+    if (abandoned)
+        LOG("UNLOAD GATE %s: the game ended; MCC's reload of the game DLL came %u ms after the last frame and stopped "
+            "waiting after %u ms because this mod's teardown cannot finish without the game's own thread: %s",
+            title, arrived, longest, stays);
+    if (hostClosed)
+        LOG("UNLOAD GATE %s: MCC is closing; its reload of the game DLL came %u ms after the last frame and was not "
+            "held back (waited %u ms)", title, arrived, longest);
+    if (switchedOff)
+        LOG("UNLOAD GATE %s: the game ended; MCC's reload of the game DLL came %u ms after the last frame and was not "
+            "made to wait (title_unload_wait = 0): %s", title, arrived, stays);
+}

@@ -1391,6 +1391,7 @@ void ConfigLoad(const wchar_t* path)
         }
         if (!strcmp(key, "tracker_follows_head")) { g_config.tracker_follows_head = atoi(val) != 0; continue; }
         if (!strcmp(key, "audio_follows_head")) { g_config.audio_follows_head = atoi(val) != 0; continue; }
+        if (!strcmp(key, "title_unload_wait")) { g_config.title_unload_wait = atoi(val) != 0; continue; }
         if (!strcmp(key, "tracker_blips_follow_hud_height"))
         {
             g_config.tracker_blips_follow_hud_height = atoi(val) != 0;
@@ -2128,6 +2129,12 @@ void ConfigSave()
     fprintf(f, "# 0 = where the game draws them, as before. Halo 3 only (log: TRACKER HUD HEIGHT <game>).\n");
     fprintf(f, "# Live in F1 > HUD. (default %d)\n", d.tracker_blips_follow_hud_height ? 1 : 0);
     fprintf(f, "tracker_blips_follow_hud_height = %d\n", g_config.tracker_blips_follow_hud_height ? 1 : 0);
+    fprintf(f, "# A second game in one session starts at the first try. When a game ends its DLL unloads and\n");
+    fprintf(f, "# MCC loads a fresh one; this mod's own hold on Halo: Reach's DLL used to defeat that, and the\n");
+    fprintf(f, "# next Reach game bounced back to the lobby once. 1 = MCC's reload waits (6 s at most) for\n");
+    fprintf(f, "# the mod to let go. 0 = as before. No menu control (log: UNLOAD GATE). (default %d)\n",
+        d.title_unload_wait ? 1 : 0);
+    fprintf(f, "title_unload_wait = %d\n", g_config.title_unload_wait ? 1 : 0);
     fprintf(f, "# Sound follows your head. 1 = you hear the world from the way your head faces. 0 = from the\n");
     fprintf(f, "# way the gun points, as the game does it. Halo: Reach and Halo 3 for now; a game that has no head-relative\n");
     fprintf(f, "# sound yet keeps its own (log: AUDIO HEAD <game>). Live in F1 > Comfort. (default %d)\n",
