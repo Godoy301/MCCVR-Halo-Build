@@ -914,6 +914,13 @@ if(BUILD_TESTING)
     add_executable(halomccvr_head_relative_tests tests/head_relative_tests.cpp)
     target_include_directories(halomccvr_head_relative_tests PRIVATE src/common)
     add_test(NAME halomccvr_head_relative_tests COMMAND halomccvr_head_relative_tests)
+    # Head-relative motion tracker, Halo CE (src/common/haloce_head_relative_logic.h; a retail-derived lead, not
+    # HCEEK-verified): the decode of the nine sites and every refusal of it, the exact guard on the stored heading,
+    # the two-stage proof taken at run time (provisional at rest, confirmed by a turn, withdrawal, no second
+    # provisional pass), the head built from the frame's own context, and the headset check as geometry.
+    add_executable(halomccvr_ce_head_relative_tests tests/haloce_head_relative_tests.cpp)
+    target_include_directories(halomccvr_ce_head_relative_tests PRIVATE src/common)
+    add_test(NAME halomccvr_ce_head_relative_tests COMMAND halomccvr_ce_head_relative_tests)
     # The F8/F9 pitch trim (src/common/pitch_trim_logic.h): applied with stereo off, zero in stereo VR, and a key
     # press in stereo changes nothing (two stray F9 presses once put the reticle 4 degrees above every shot).
     add_executable(halomccvr_pitch_trim_tests tests/pitch_trim_tests.cpp)
