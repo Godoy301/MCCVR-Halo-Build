@@ -57,9 +57,11 @@ struct Halo2TrackerHeadRuntime
     std::atomic<float> lastNativeDeg{0.0f}, lastHeadDeg{0.0f}, lastReferenceDeg{0.0f};
 #if HALOMCCVR_DEV_DIAGNOSTICS
     // Dev: the head's heading whenever a usable sample was read (not only on a substitution), how old that sample
-    // was, the sampler's thread, and the calls of the accessor by its other callers (never changed).
+    // was, how many of user 0's calls found the control update running (both show before the proof has passed,
+    // when every refusal reads "unproven"), the sampler's thread, and the calls of the accessor by its other
+    // callers (never changed).
     std::atomic<float> seenHeadDeg{0.0f};
-    std::atomic<uint32_t> seenHead{0}, sampleAgeMs{0}, lastThread{0}, otherCalls{0};
+    std::atomic<uint32_t> seenHead{0}, sampleAgeMs{0}, controlLive{0}, lastThread{0}, otherCalls{0};
 #endif
     // The proof, on the sampler's thread; `proven`, `provenCount` and `withdrawnCount` are for the report.
     halo2_head_relative::ArgumentProof proof;
@@ -179,6 +181,8 @@ __declspec(noinline) float* Halo2TrackerAnglesFor(float* native, int32_t user) n
             feature.sampleAgeMs.store(static_cast<uint32_t>((request.nowUs - sample.stampUs) / 1000),
                                       std::memory_order_relaxed);
         }
+        if (user == 0 && request.controlFresh)
+            feature.controlLive.fetch_add(1, std::memory_order_relaxed);
         feature.lastThread.store(GetCurrentThreadId(), std::memory_order_relaxed);
 #endif
     }
@@ -449,6 +453,7 @@ bool InstallHalo2HeadRelative(uintptr_t base, size_t size, uint32_t generation)
     feature.faults.store(0, std::memory_order_relaxed);
 #if HALOMCCVR_DEV_DIAGNOSTICS
     feature.seenHead.store(0, std::memory_order_relaxed);
+    feature.controlLive.store(0, std::memory_order_relaxed);
     feature.otherCalls.store(0, std::memory_order_relaxed);
 #endif
     void* const target = reinterpret_cast<void*>(accessor);
@@ -575,19 +580,22 @@ void ReportHalo2HeadRelative() noexcept
     }
 #if HALOMCCVR_DEV_DIAGNOSTICS
     // THE FIRST-RUN CHECK: the game's heading beside the head's, and their difference. `seen` counts the calls of
-    // this window in which a usable head sample was read, substituted or not.
+    // this window in which a usable head sample was read, and `control` those that found the control update
+    // running, substituted or not.
     const uint32_t seen = feature.seenHead.exchange(0, std::memory_order_relaxed);
+    const uint32_t control = feature.controlLive.exchange(0, std::memory_order_relaxed);
     const uint32_t others = feature.otherCalls.exchange(0, std::memory_order_relaxed);
     const float gameDeg = feature.lastNativeDeg.load(std::memory_order_relaxed);
     const float headDeg = feature.seenHeadDeg.load(std::memory_order_relaxed);
     const float apart = halo2_head_relative::WrapPi((headDeg - gameDeg) * head_relative::kDegToRad) * head_relative::kRadToDeg;
     LOG("TRACKER HEAD Halo 2 (dev): substituted %u; the game's heading %.1f deg, the head's %.1f deg, head minus "
-        "game %+.1f deg (last; a head sample was usable on %u calls, the last %u ms old); the aim the direct drive "
-        "wrote %.1f deg; proof %s: agreed %u, lagging %u, disagreed %u, no reference %u; refused %u: %s; faults "
-        "%u; the accessor's other callers %u calls (untouched); sampled on thread %u; switch=%d sign=%d "
-        "offset=%.1f deg",
+        "game %+.1f deg (last; a head sample was usable on %u calls, the last %u ms old; the control update was "
+        "running on %u); the aim the direct drive wrote %.1f deg; proof %s: agreed %u, lagging %u, disagreed %u, "
+        "no reference %u; refused %u: %s; faults %u; the accessor's other callers %u calls (untouched); sampled "
+        "on thread %u; switch=%d sign=%d offset=%.1f deg",
         used, gameDeg, seen ? headDeg : 0.0f, seen ? apart : 0.0f, seen,
-        feature.sampleAgeMs.load(std::memory_order_relaxed), feature.lastReferenceDeg.load(std::memory_order_relaxed),
+        feature.sampleAgeMs.load(std::memory_order_relaxed), control,
+        feature.lastReferenceDeg.load(std::memory_order_relaxed),
         feature.proven.load(std::memory_order_acquire) ? "PASSED" : "pending",
         steps[static_cast<size_t>(ProofStep::Agreed)] + steps[static_cast<size_t>(ProofStep::Proven)],
         steps[static_cast<size_t>(ProofStep::Lagging)],

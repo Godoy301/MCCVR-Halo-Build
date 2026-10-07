@@ -12,8 +12,9 @@
 // WHAT RETAIL DOES (tools/verify-halo2-head-relative.py re-derives every address from the patterns here).
 // The motion sensor's state is one game-state allocation ("motion sensor (radar)", 0xBC8 bytes): four users of
 // 0x2F0 bytes -- ten history slots of 0x44 (sixteen 4-byte blips and a count), sixteen tracked object indices --
-// then the ring's cursor. Once per game TICK (game_update -> the HUD update -> the tracker update +0x830A60) the
-// update steps the cursor and calls the SAMPLER (+0x82FE80) for each playing local user. The sampler asks
+// then the ring's cursor. Once per game TICK, not per rendered frame (game_update -> the HUD update -> the tracker
+// update +0x830A60), the update steps the cursor and calls the SAMPLER (+0x82FE80) for each playing local user.
+// The sampler asks
 //     +0x6C3940(user)  ->  *[player control globals] + user * 0xB8 + 0x38       ; a 25-byte leaf
 // for a POINTER to that user's desired angles -- the record this mod's direct drive writes the hand into
 // (E-H2-81) -- reads ONE float through it (the yaw) and builds, in registers only,
@@ -363,7 +364,8 @@ inline float TrackerPointBearing(const float point[2])
 // between the tolerance and the disagreement bound counts for nothing either way. Once proven, kProofWithdrawRun
 // disagreements in a row withdraw it. A pass also settles the SIGN: the float is then the aim's yaw in the
 // convention the drive writes, and the head's yaw is measured the same way (atan2(y, x) of a world forward).
-// The sampler runs once a game tick, so thirty samples are about a second of play.
+// The sampler runs once a game tick: at the 60 ticks a second this repository has measured for Halo 2 (E-H2-28)
+// thirty samples are half a second of play, and the withdrawal run a whole one.
 // (These five are thresholds of the proof, not addresses or offsets: nothing here locates anything in the game.)
 inline constexpr uint32_t kProofSamples = 30;
 inline constexpr uint32_t kProofWithdrawRun = 60;
@@ -467,9 +469,10 @@ inline const char* TrackerUseName(TrackerUse use)
     default: return "?";
     }
 }
-// The game runs local user 0's control update once a pass of its main loop, and skips the part this mod stamps
-// while the director holds the player (a cinematic). Older than this, the player is not in control.
-// (A threshold of ours: it locates nothing in the game.)
+// The game runs the users' control update once per pass of its main-loop body, ahead of that pass's ticks (the
+// sampler runs inside a tick), and skips the call this mod stamps while the director holds the player (a
+// cinematic). So at the sampler a live stamp is a few milliseconds old; older than this, the player is not in
+// control. (A threshold of ours: it locates nothing in the game.)
 inline constexpr uint64_t kControlFreshMs = 120;
 inline bool ControlFresh(uint64_t stampMs, uint64_t nowMs)
 {
