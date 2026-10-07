@@ -26,6 +26,7 @@
 #include "../common/legacy_runtime_weapon_bounds.h"
 #include "menu.h"
 #include "hook_quiescence.h"
+#include "title_image_guard.h"
 #include "native_forward.h"
 #include "../common/minhook_lifecycle.h"
 #include "../common/manual_vr_recovery.h"
@@ -478,6 +479,9 @@ std::atomic<bool> g_halo4NativePauseAvailable{false};
 
 #include "halo4_effect_hide_bridge.inl"
 #endif
+// Addresses inside a title's image that the loader's unload notification retired (TitleImageUnloading, above
+// Game_Init); the worker reports the change.
+static std::atomic<uint32_t> g_titleImageAddressesRetired{0};
 // M1 head tracking. We hook the game's per-frame camera-update function and,
 // each frame, overwrite the authoritative camera's forward/up vectors with the
 // direction of the headset. Writing from inside the game's own frame (rather
@@ -12185,7 +12189,7 @@ namespace
             privateBuildEnabled, adapterReportsOdst, runtimeStateOwned);
     }
 
-    bool ReadOdstEnginePaused(bool& paused)
+    bool ReadOdstEnginePausedGuarded(bool& paused)
     {
         const uintptr_t address = g_odstNativePauseFlag.load(
             std::memory_order_acquire);
@@ -12203,6 +12207,15 @@ namespace
         {
             return false;
         }
+    }
+    // An address inside halo3odst.dll: read under the image guard, retired by the loader's unload notification
+    // (title_image_guard.h; the same shape as Halo 3's ReadEnginePaused, whose read after unload was the one seen).
+    bool ReadOdstEnginePaused(bool& paused)
+    {
+        title_image_guard::BeginRead();
+        const bool known = ReadOdstEnginePausedGuarded(paused);
+        title_image_guard::EndRead();
+        return known;
     }
 
     void OdstRequestFallback(OdstFallbackReason reason)
@@ -16298,7 +16311,7 @@ namespace
             (unsigned long long)(hit - base));
     }
 
-    bool ReadEnginePaused(bool& paused)
+    bool ReadEnginePausedGuarded(bool& paused)
     {
         const uintptr_t flag = g_nativePauseFlag.load(std::memory_order_acquire);
         if (!flag)
@@ -16315,6 +16328,17 @@ namespace
         {
             return false;
         }
+    }
+    // The flag is an address inside halo3.dll, read every frame. The image guard keeps the DLL mapped from the
+    // load of that address to the end of the read, and the loader's unload notification zeroes the address
+    // (TitleImageUnloading) before the image goes: this reader used to read halo3.dll+0xA3CA9A once after MCC
+    // freed the title at exit (title_image_guard.h). The SEH above stays as the last line, not the mechanism.
+    bool ReadEnginePaused(bool& paused)
+    {
+        title_image_guard::BeginRead();
+        const bool known = ReadEnginePausedGuarded(paused);
+        title_image_guard::EndRead();
+        return known;
     }
 
     // H3 callbacks retain their trampolines through native calls as well as
@@ -36987,7 +37011,7 @@ namespace
     // ReadEnginePaused and ODST's ReadOdstEnginePaused: a value outside {0,1}
     // means the binding is no longer trustworthy, so report "unknown" and let
     // the caller behave exactly as it did before this feature existed.
-    bool ReadReachEnginePaused(bool& paused)
+    bool ReadReachEnginePausedGuarded(bool& paused)
     {
         const uintptr_t flag =
             g_reachNativePauseFlag.load(std::memory_order_acquire);
@@ -37005,6 +37029,15 @@ namespace
         {
             return false;
         }
+    }
+    // An address inside haloreach.dll: read under the image guard, retired by the loader's unload notification
+    // (title_image_guard.h; the same shape as Halo 3's ReadEnginePaused, whose read after unload was the one seen).
+    bool ReadReachEnginePaused(bool& paused)
+    {
+        title_image_guard::BeginRead();
+        const bool known = ReadReachEnginePausedGuarded(paused);
+        title_image_guard::EndRead();
+        return known;
     }
 
     // 50 ms worker: locate Reach's native pause flag once per module
@@ -47773,6 +47806,20 @@ namespace
         {
             const uint64_t pollNow = GetTickCount64();
             NativeFaultProbe_Poll();
+            {
+                // title_image_guard.h: said here, not in the loader's callback (which may not log).
+                static uint32_t reportedRetired = 0;
+                const uint32_t retired = g_titleImageAddressesRetired.load(std::memory_order_relaxed);
+                if (retired != reportedRetired)
+                {
+                    LOG("Title image guard: %u per-frame address(es) inside a title DLL retired at its unload, "
+                        "before the image was unmapped (%llu DLL unloads seen, %llu past the guard's bound)",
+                        retired - reportedRetired,
+                        static_cast<unsigned long long>(title_image_guard::UnloadsSeen()),
+                        static_cast<unsigned long long>(title_image_guard::UnguardedUnloads()));
+                    reportedRetired = retired;
+                }
+            }
             Roomscale_Report();
             // Trace-and-reaim outside Reach (sight_layer.h): traces, cost and converged polls, per title.
             Sight_Report();
@@ -48880,8 +48927,55 @@ void Game_ReadFramePerfCounters(GameFramePerfCounters& out)
         g_perfFpDriverRateLogWrites.load(std::memory_order_relaxed);
 }
 
+// A DLL is about to be unmapped (title_image_guard.h: loader lock held, the image guard held exclusively, so no
+// per-frame reader is inside its read). Retire every address a per-frame reader keeps inside that image. Atomic
+// stores only: no logging, no allocation, nothing that can take the loader lock. The worker reports the count.
+static void TitleImageUnloading(uintptr_t base, size_t size)
+{
+    uint32_t retired = 0;
+    if (title_image_guard::Within(g_nativePauseFlag.load(std::memory_order_acquire), base, size))
+    {
+        // Halo 3. The proof goes with the address: Game_HasAuthoritativePauseState reads g_enginePauseValidated.
+        g_nativePauseFlag.store(0, std::memory_order_release);
+        g_enginePauseValidated.store(false, std::memory_order_release);
+        ++retired;
+    }
+#if HALOMCCVR_EXPERIMENTAL_ODST_BRINGUP
+    if (title_image_guard::Within(g_odstNativePauseFlag.load(std::memory_order_acquire), base, size))
+    {
+        g_odstNativePauseFlag.store(0, std::memory_order_release);
+        ++retired;
+    }
+#endif
+#if HALOMCCVR_EXPERIMENTAL_REACH_RENDER_CANDIDATE
+    if (title_image_guard::Within(g_reachNativePauseFlag.load(std::memory_order_acquire), base, size))
+    {
+        g_reachNativePauseFlag.store(0, std::memory_order_release);
+        g_reachEnginePauseCache.store(-1, std::memory_order_release);
+        ++retired;
+    }
+#endif
+#if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA
+    if (g_halo4Restoration.pauseProven.load(std::memory_order_acquire) &&
+        (title_image_guard::Within(reinterpret_cast<uintptr_t>(g_halo4Restoration.pauseReason), base, size) ||
+         title_image_guard::Within(reinterpret_cast<uintptr_t>(g_halo4EngineTlsIndex), base, size)))
+    {
+        // Halo 4's reader calls a getter in the image; unproven, it calls nothing (halo4_pause_reader.inl).
+        g_halo4Restoration.pauseProven.store(false, std::memory_order_release);
+        g_halo4NativePauseAvailable.store(false, std::memory_order_release);
+        ++retired;
+    }
+#endif
+    if (retired)
+        g_titleImageAddressesRetired.fetch_add(retired, std::memory_order_relaxed);
+}
+
 void Game_Init()
 {
+    // Per-frame readers of a title's image stop at the title's unload, not at the worker's next poll.
+    if (!title_image_guard::Install(&TitleImageUnloading))
+        LOG("Title image guard: the loader's unload notification could not be registered; per-frame readers of "
+            "a title's image rely on the module poll and their own fault handlers, as before");
     // Establish the atomic title policy before globally shared input detours can
     // receive their first call. The worker refreshes it throughout transitions.
     TitleAdapter_PollLoaded(GetTickCount64());
@@ -50801,7 +50895,11 @@ void Game_AutoVrTick()
     if (TitleAdapter_GetActiveTitle() == GameTitle::Halo4)
     {
         bool halo4Paused = false;
+        // The getter and the TLS index it starts from are addresses inside halo4.dll: under the image guard, and
+        // unproven by the loader's unload notification before the image goes (title_image_guard.h).
+        title_image_guard::BeginRead();
         const bool halo4PauseKnown = Halo4ReadNativePaused(halo4Paused);
+        title_image_guard::EndRead();
         const uint64_t halo4Now = GetTickCount64();
         if (halo4PauseKnown)
         {

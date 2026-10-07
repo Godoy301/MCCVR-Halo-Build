@@ -295,6 +295,7 @@ add_library(halo3xr SHARED
     src/dll/sight_layer.cpp
     src/dll/dev_pad.cpp
     src/dll/title_adapter.cpp
+    src/dll/title_image_guard.cpp
     src/dll/title_reentry_probe.cpp
     src/dll/reach_adapter.cpp
     src/dll/halo2_adapter.cpp
@@ -516,6 +517,11 @@ if(BUILD_TESTING)
     target_compile_definitions(halomccvr_proof_after_hook_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
     target_link_libraries(halomccvr_proof_after_hook_tests PRIVATE minhook)
     add_test(NAME halomccvr_proof_after_hook_tests COMMAND halomccvr_proof_after_hook_tests)
+    # A per-frame reader of a title's image stops at the title's unload (title_image_guard.h): a real DLL is
+    # loaded and freed under a reader thread.
+    add_executable(halomccvr_title_image_guard_tests tests/title_image_guard_tests.cpp src/dll/title_image_guard.cpp)
+    target_compile_definitions(halomccvr_title_image_guard_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    add_test(NAME halomccvr_title_image_guard_tests COMMAND halomccvr_title_image_guard_tests)
     # Packaging runs this tiny program against a nonexistent path to generate
     # the current source tree's exact default config. It is intentionally not
     # installed by CMake: package-candidate stages and hashes its output while
