@@ -991,6 +991,14 @@ if(BUILD_TESTING)
     add_executable(halomccvr_halo2_head_relative_tests tests/halo2_head_relative_tests.cpp)
     target_include_directories(halomccvr_halo2_head_relative_tests PRIVATE src/common)
     add_test(NAME halomccvr_halo2_head_relative_tests COMMAND halomccvr_halo2_head_relative_tests)
+    # The dev sound listener witness, the pure half (src/common/sound_listener_witness_logic.h, and per title
+    # halo2_sound_listener_logic.h -- a retail-derived lead, not H2EK-verified -- and haloce_sound_listener_logic.h):
+    # the angle between two directions, the window and its verdict (head / aim / together / the game's camera /
+    # neither), the decode of Halo 2's listener sites and record with every refusal, and Halo CE's packet held
+    # against the head the listener hook builds. The runtime that uses them exists in dev builds only.
+    add_executable(halomccvr_sound_listener_witness_tests tests/sound_listener_witness_tests.cpp src/dll/ik.cpp)
+    target_include_directories(halomccvr_sound_listener_witness_tests PRIVATE src/common)
+    add_test(NAME halomccvr_sound_listener_witness_tests COMMAND halomccvr_sound_listener_witness_tests)
     # Gun-slaved seats (src/common/gun_slaved_seat_logic.h): seat flag bit 7, the occupant-aim binding, the servo's
     # feedback and lag gate, the gun-settle gate of the crosshair witness and the nod witness.
     add_executable(halomccvr_gun_slaved_seat_tests tests/gun_slaved_seat_tests.cpp)
@@ -1229,6 +1237,16 @@ if(BUILD_TESTING)
     target_compile_definitions(halomccvr_ce_orientation_runtime_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
     target_link_libraries(halomccvr_ce_orientation_runtime_tests PRIVATE minhook)
     add_test(NAME halomccvr_ce_orientation_runtime_tests COMMAND halomccvr_ce_orientation_runtime_tests)
+    # The same production body with the dev sound listener witness compiled in (it samples inside the listener
+    # detour): every check above must still hold -- the witness changes nothing that is handed on -- and the
+    # witness must have measured the game's own packet and the handed one against the head.
+    add_executable(halomccvr_ce_orientation_runtime_dev_tests tests/haloce_orientation_runtime_tests.cpp
+        src/dll/haloce_native_bindings.cpp src/dll/ik.cpp)
+    target_include_directories(halomccvr_ce_orientation_runtime_dev_tests PRIVATE src/common src/dll)
+    target_compile_definitions(halomccvr_ce_orientation_runtime_dev_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN
+        HALOMCCVR_DEV_DIAGNOSTICS=1)
+    target_link_libraries(halomccvr_ce_orientation_runtime_dev_tests PRIVATE minhook)
+    add_test(NAME halomccvr_ce_orientation_runtime_dev_tests COMMAND halomccvr_ce_orientation_runtime_dev_tests)
     add_executable(halomccvr_ce_unit_control_runtime_tests tests/haloce_unit_control_runtime_tests.cpp
         src/dll/sight_layer.cpp)
     target_include_directories(halomccvr_ce_unit_control_runtime_tests PRIVATE src/common src/dll "${minhook_SOURCE_DIR}/include")

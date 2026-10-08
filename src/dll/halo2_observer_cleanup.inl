@@ -21,6 +21,9 @@ bool RemoveCore(const char* reason) noexcept
     // The head-relative tracker's hook reads the drive's state (its written yaw, its control stamp): retire it
     // ahead of the drive, and before the module can go (halo2_head_relative.inl).
     if (!RemoveHalo2HeadRelative()) return false;
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    RetireHalo2ListenerWitness();   // dev: its one caller (the tracker's detour) is gone; reads only, nothing to drain
+#endif
     // The drive reads the unit through the accessor the unit-aim hook owns: retire it first. Left installed,
     // it outlived the module (a title switch unloads halo2.dll), and its stale target kept the next module
     // from ever being hooked.

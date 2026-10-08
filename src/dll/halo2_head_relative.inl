@@ -297,6 +297,11 @@ __declspec(noinline) float* __fastcall Halo2TrackerAnglesDetour(int32_t user)
         {
             if (angles && feature.enabled.load(std::memory_order_acquire))
                 angles = Halo2TrackerAnglesFor(angles, user);
+#if HALOMCCVR_DEV_DIAGNOSTICS
+            // Dev: the sound listener witness samples here, once a game tick (halo2_sound_listener_witness.inl).
+            // It reads only, and it does not touch `angles`.
+            Halo2ListenerWitnessTick(user);
+#endif
         }
 #if HALOMCCVR_DEV_DIAGNOSTICS
         else
