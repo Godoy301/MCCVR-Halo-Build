@@ -20,6 +20,9 @@ struct Halo4HeadPublication
 {
     std::atomic<uint32_t> sequence{0};
     std::atomic<float> forward[3]{}, up[3]{};
+    // For the sound listener (halo4_sound_listener.inl): where that head-look camera is, the game's own camera
+    // of the same frame before the head pose was applied -- the aim -- and where this frame's two eye cameras are.
+    std::atomic<float> position[3]{}, aimForward[3]{}, aimPosition[3]{}, eyePosition[2][3]{};
     std::atomic<uint64_t> stampUs{0};
     std::atomic<uint32_t> generation{0};
     std::atomic<uint32_t> flags{0};   // bit 0: the mod's head view was live; bit 1: the player had control
@@ -27,11 +30,14 @@ struct Halo4HeadPublication
 } g_halo4HeadPublication;
 constexpr uint32_t kHalo4HeadLive = 1u, kHalo4HeadGameplay = 2u;
 
-// The render thread, once per stereo transaction. `forward` / `up`: the head-look camera in the game's world;
-// `headTracked`: the head pose steered it in this frame (false in the cutscene theatre and when no pose was
-// applied); `gameplay`: the game says the player has control (no cinematic).
-void Halo4PublishHeadSample(const float* forward, const float* up, bool headTracked, bool gameplay,
-                            uint32_t generation) noexcept
+// The render thread, once per stereo transaction. `forward` / `up` / `position`: the head-look camera in the
+// game's world; `aimForward` / `aimPosition`: the game's own camera of this frame before the head pose (the aim);
+// `leftEye` / `rightEye`: where the two eye cameras this transaction is about to render from are; `headTracked`:
+// the head pose steered it in this frame (false in the cutscene theatre and when no pose was applied);
+// `gameplay`: the game says the player has control (no cinematic).
+void Halo4PublishHeadSample(const float* forward, const float* up, const float* position, const float* aimForward,
+                            const float* aimPosition, const float* leftEye, const float* rightEye, bool headTracked,
+                            bool gameplay, uint32_t generation) noexcept
 {
     auto& published = g_halo4HeadPublication;
     const bool live = headTracked && generation && head_relative::Finite3(forward) && head_relative::Finite3(up);
@@ -43,6 +49,12 @@ void Halo4PublishHeadSample(const float* forward, const float* up, bool headTrac
     {
         published.forward[i].store(forward ? forward[i] : 0.0f);
         published.up[i].store(up ? up[i] : 0.0f);
+        // A position that was not handed over reads as not finite, so a consumer that needs it refuses.
+        published.position[i].store(position ? position[i] : std::numeric_limits<float>::quiet_NaN());
+        published.aimForward[i].store(aimForward ? aimForward[i] : 0.0f);
+        published.aimPosition[i].store(aimPosition ? aimPosition[i] : std::numeric_limits<float>::quiet_NaN());
+        published.eyePosition[0][i].store(leftEye ? leftEye[i] : std::numeric_limits<float>::quiet_NaN());
+        published.eyePosition[1][i].store(rightEye ? rightEye[i] : std::numeric_limits<float>::quiet_NaN());
     }
     published.stampUs.store(nowUs);
     published.generation.store(generation);
@@ -72,6 +84,36 @@ bool Halo4ReadHeadSample(head_relative::HeadSample& sample, bool& gameplay) noex
         if (published.sequence.load() != before)
             continue;
         sample.valid = (flags & kHalo4HeadLive) != 0;
+        gameplay = (flags & kHalo4HeadGameplay) != 0;
+        return true;
+    }
+    return false;
+}
+// The same sample with the head's position and the frame's aim camera (the sound listener). Any thread.
+bool Halo4ReadHeadFrame(halo4_sound_listener::HeadFrame& frame, bool& gameplay) noexcept
+{
+    auto& published = g_halo4HeadPublication;
+    for (int attempt = 0; attempt < 4; ++attempt)
+    {
+        const uint32_t before = published.sequence.load();
+        if (before & 1u)
+            continue;
+        for (int i = 0; i < 3; ++i)
+        {
+            frame.sample.forward[i] = published.forward[i].load();
+            frame.sample.up[i] = published.up[i].load();
+            frame.position[i] = published.position[i].load();
+            frame.aimForward[i] = published.aimForward[i].load();
+            frame.aimPosition[i] = published.aimPosition[i].load();
+            frame.eyePosition[0][i] = published.eyePosition[0][i].load();
+            frame.eyePosition[1][i] = published.eyePosition[1][i].load();
+        }
+        frame.sample.stampUs = published.stampUs.load();
+        frame.sample.generation = published.generation.load();
+        const uint32_t flags = published.flags.load();
+        if (published.sequence.load() != before)
+            continue;
+        frame.sample.valid = (flags & kHalo4HeadLive) != 0;
         gameplay = (flags & kHalo4HeadGameplay) != 0;
         return true;
     }

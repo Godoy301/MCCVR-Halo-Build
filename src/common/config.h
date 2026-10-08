@@ -550,6 +550,11 @@ struct Config
     // out mirrored. offset: degrees added after the sign.
     int tracker_head_sign = 1;
     float tracker_head_offset_deg = 0.0f;
+    // Halo 4's head-relative sound (halo4_sound_listener_logic.h), which of its writes are made while
+    // audio_follows_head is on: 1 = the copy handed to the audio middleware, 2 = the game's own listener record,
+    // 4 = the listener is also moved to the head. Parsed and saved in DEV BUILDS ONLY (a listening test can then
+    // say which of them the ear follows); every build runs with it, so a player build always has 7. Live.
+    int audio_head_halo4_parts = 7;
     bool turn_smooth = true;           // false = snap turn, true = smooth turn
     bool vehicle_smooth_turn = false; // temporary smooth VR turning while seated
     float turn_snap_deg = 30.0f;       // degrees per snap

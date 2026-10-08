@@ -1335,6 +1335,7 @@ void ConfigLoad(const wchar_t* path)
         if (!strcmp(key, "first_person_rung_fault")) { g_config.first_person_rung_fault=(int)strtol(val,nullptr,0)&0xF; continue; }
         if (!strcmp(key, "reach_sight_trace_length_m")) { g_config.reach_sight_trace_length_m=(float)atof(val); continue; }
         if (!strcmp(key, "tracker_head_sign")) { g_config.tracker_head_sign = atoi(val) < 0 ? -1 : 1; continue; }
+        if (!strcmp(key, "audio_head_halo4_parts")) { g_config.audio_head_halo4_parts = atoi(val) & 7; continue; }
         if (!strcmp(key, "nav_marker_witness")) { g_config.nav_marker_witness = atoi(val) != 0 ? 1 : 0; continue; }
         if (!strcmp(key, "tracker_head_offset_deg"))
         {
@@ -2170,7 +2171,7 @@ void ConfigSave()
         d.title_unload_wait ? 1 : 0);
     fprintf(f, "title_unload_wait = %d\n", g_config.title_unload_wait ? 1 : 0);
     fprintf(f, "# Sound follows your head. 1 = you hear the world from the way your head faces. 0 = from the\n");
-    fprintf(f, "# way the gun points, as the game does it. Halo: Reach and Halo 3 for now; a game that has no head-relative\n");
+    fprintf(f, "# way the gun points, as the game does it. Halo: Reach, Halo 3 and Halo 4 for now; a game with no head-relative\n");
     fprintf(f, "# sound yet keeps its own (log: AUDIO HEAD <game>). Live in F1 > Comfort. (default %d)\n",
         d.audio_follows_head ? 1 : 0);
     fprintf(f, "audio_follows_head = %d\n", g_config.audio_follows_head ? 1 : 0);
@@ -2439,6 +2440,10 @@ void ConfigSave()
     fprintf(f, "# tracker turns AGAINST your head; tracker_head_offset_deg adds a fixed angle. Live.\n");
     fprintf(f, "tracker_head_sign = %d\n", g_config.tracker_head_sign < 0 ? -1 : 1);
     fprintf(f, "tracker_head_offset_deg = %.1f\n\n", g_config.tracker_head_offset_deg);
+    fprintf(f, "# DEV BUILD ONLY (players always get 7). Halo 4's head-relative sound, with audio_follows_head = 1:\n");
+    fprintf(f, "# which of its writes are made. Add up: 1 = the copy handed to the audio middleware, 2 = the game's\n");
+    fprintf(f, "# own listener record, 4 = the listener is also moved to the head. 0 = measure only. Live.\n");
+    fprintf(f, "audio_head_halo4_parts = %d\n\n", g_config.audio_head_halo4_parts & 7);
     fprintf(f, "# DEV BUILD ONLY. Halo: Reach navigation markers. nav_marker_witness = 1 logs the pixel the game\n");
     fprintf(f, "# puts each marker on against the pixel the eye's own picture shows its target at (log: NAV\n");
     fprintf(f, "# MARKERS Reach (dev witness)). Live.\n");

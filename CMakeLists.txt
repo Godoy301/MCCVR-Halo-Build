@@ -913,6 +913,13 @@ if(BUILD_TESTING)
     add_executable(halomccvr_halo4_head_relative_tests tests/halo4_head_relative_tests.cpp)
     target_include_directories(halomccvr_halo4_head_relative_tests PRIVATE src/common)
     add_test(NAME halomccvr_halo4_head_relative_tests COMMAND halomccvr_halo4_head_relative_tests)
+    # Halo 4's sound listener follows the head (src/common/halo4_sound_listener_logic.h; a retail-derived lead, not
+    # H4EK-verified): the decode of the four sites and its refusals, the value agreement and the proof the hook
+    # takes at run time before it changes anything, what the listener is given on the game's own builder,
+    # transform and mirror, every refusal, and the measurement the dev report prints.
+    add_executable(halomccvr_halo4_sound_listener_tests tests/halo4_sound_listener_tests.cpp)
+    target_include_directories(halomccvr_halo4_sound_listener_tests PRIVATE src/common)
+    add_test(NAME halomccvr_halo4_sound_listener_tests COMMAND halomccvr_halo4_sound_listener_tests)
     # Reach's navigation markers, the pure half (src/common/reach_nav_marker_logic.h). Geometry on the header's
     # own MODEL of the game's projection, not on the game: with the eye's field of view the model's marker is
     # on its point's pixel for each eye with the head turned and the gun swept; with the game's it is off by
