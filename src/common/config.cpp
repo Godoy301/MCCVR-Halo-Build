@@ -2171,8 +2171,7 @@ void ConfigSave()
         d.title_unload_wait ? 1 : 0);
     fprintf(f, "title_unload_wait = %d\n", g_config.title_unload_wait ? 1 : 0);
     fprintf(f, "# Sound follows your head. 1 = you hear the world from the way your head faces. 0 = from the\n");
-    fprintf(f, "# way the gun points, as the game does it. Halo: Reach, Halo 3, Halo 4 and ODST (ODST not yet tested) for now; a game with no head-relative
-");
+    fprintf(f, "# way the gun points, as the game does it. Halo: Reach, Halo 3, Halo 4 and ODST (ODST not yet tested) for now; a game with no head-relative\n");
     fprintf(f, "# sound yet keeps its own (log: AUDIO HEAD <game>). Live in F1 > Comfort. (default %d)\n",
         d.audio_follows_head ? 1 : 0);
     fprintf(f, "audio_follows_head = %d\n", g_config.audio_follows_head ? 1 : 0);
