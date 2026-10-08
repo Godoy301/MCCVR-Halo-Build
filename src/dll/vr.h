@@ -1197,8 +1197,12 @@ float VR_RecenterStandingLiftM(GameTitle title) noexcept;
 // with the head height the reference is compared against and the reference itself: once the standing height is
 // confirmed, a reference more than 5 cm under it glides up to it (30 cm a second; up only; never in a seat;
 // view_follows_standing_height). True when it moved `referenceY`. `state` is the caller's, one per reference.
+// It is called from the per-frame camera hooks: it takes no lock and writes no log (it reads a lock-free copy
+// of the crouch sample, and a glide's start is said by VR_ReportStandingFollow).
 using VrStandingFollow = standing_follow::State;
 bool VR_FollowStandingHeight(GameTitle title, float headY, float& referenceY, VrStandingFollow& state) noexcept;
+// Cold worker: the VIEW HEIGHT line for a glide that began since the last call.
+void VR_ReportStandingFollow() noexcept;
 // Diagnostics (the CROUCH line): the continuous frame's carry (m) and how each discontinuity was met.
 struct VrCrouchContinuityStats
 {
