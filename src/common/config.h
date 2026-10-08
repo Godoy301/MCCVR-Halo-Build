@@ -963,6 +963,14 @@ struct Config
     bool crosshair = true;
     float crosshair_distance_m = 41.0f; // how far along the aim ray it floats
     float crosshair_size_deg = 10.10f;  // apparent (angular) size
+    // The crosshair's opacity and brightness, as a scale on its own headset layer (1 = as the game draws it).
+    // Opacity scales the art's alpha: below 1 it is more see-through, above 1 a faint crosshair becomes more
+    // solid. Brightness scales its colour: below 1 dimmer, above 1 brighter (towards white). 0 to 2 each.
+    // Every title's crosshair, the game's own art and the mod's. Needs the OpenXR runtime to offer layer
+    // colour scaling (XR_KHR_composition_layer_color_scale_bias; log: CROSSHAIR TINT); without it they do
+    // nothing. Read live, every frame.
+    float crosshair_opacity = 1.0f;
+    float crosshair_brightness = 1.0f;
 
     // EVERY TITLE, while the aim converges (Reach through its own trace, the others through the sight
     // layer -- vr.cpp's traced_reticle_placement): Halo: Campaign Evolved's reticle placement

@@ -446,6 +446,10 @@ static void Clamp()
         std::clamp(g_config.halo4_hand_lateral_m, -0.50f, 0.50f);
     g_config.crosshair_distance_m = std::clamp(g_config.crosshair_distance_m, 2.0f, 50.0f);
     g_config.crosshair_size_deg = std::clamp(g_config.crosshair_size_deg, 0.3f, 20.0f);
+    g_config.crosshair_opacity = std::isfinite(g_config.crosshair_opacity)
+        ? std::clamp(g_config.crosshair_opacity, 0.0f, 2.0f) : 1.0f;
+    g_config.crosshair_brightness = std::isfinite(g_config.crosshair_brightness)
+        ? std::clamp(g_config.crosshair_brightness, 0.0f, 2.0f) : 1.0f;
     g_config.reticle_max_dist_m = std::clamp(g_config.reticle_max_dist_m, 1.0f, 50.0f);
     g_config.reticle_surface_offset_m = std::clamp(g_config.reticle_surface_offset_m, 0.0f, 2.0f);
     g_config.reticle_min_scale_dist_m =
@@ -1392,6 +1396,8 @@ void ConfigLoad(const wchar_t* path)
         if (!strcmp(key, "tracker_follows_head")) { g_config.tracker_follows_head = atoi(val) != 0; continue; }
         if (!strcmp(key, "audio_follows_head")) { g_config.audio_follows_head = atoi(val) != 0; continue; }
         if (!strcmp(key, "title_unload_wait")) { g_config.title_unload_wait = atoi(val) != 0; continue; }
+        if (!strcmp(key, "crosshair_opacity")) { ParseFloatSetting(key, val, g_config.crosshair_opacity); continue; }
+        if (!strcmp(key, "crosshair_brightness")) { ParseFloatSetting(key, val, g_config.crosshair_brightness); continue; }
         // Hand smoothing (hand_smoothing.h). Outside the chain below: it is at the compiler's nesting limit.
         if (!strncmp(key, "hand_smoothing", 14))
         {
@@ -2287,6 +2293,13 @@ void ConfigSave()
     fprintf(f, "# Apparent size of the crosshair, in degrees.\n");
     fprintf(f, "# (default %.2f, range 0.3 to 20)\n", d.crosshair_size_deg);
     fprintf(f, "crosshair_size_deg = %.2f\n\n", g_config.crosshair_size_deg);
+    fprintf(f, "# Crosshair opacity and brightness. 1 = as the game draws it. Opacity below 1 is more\n");
+    fprintf(f, "# see-through, above 1 makes a faint crosshair more solid; brightness below 1 is dimmer,\n");
+    fprintf(f, "# above 1 brighter. Every game. Live in F1 > Crosshair. They need an OpenXR runtime that\n");
+    fprintf(f, "# offers layer colour scaling (log: CROSSHAIR TINT). (defaults %.2f and %.2f, range 0 to 2)\n",
+        d.crosshair_opacity, d.crosshair_brightness);
+    fprintf(f, "crosshair_opacity = %.2f\n", g_config.crosshair_opacity);
+    fprintf(f, "crosshair_brightness = %.2f\n\n", g_config.crosshair_brightness);
     fprintf(f, "# Every game, while the aim converges: the crosshair sits on the surface you aim at, pulled\n");
     fprintf(f, "# back reticle_surface_offset_m, and parks at reticle_max_dist_m beyond that.\n");
     fprintf(f, "# It shrinks away as a surface comes closer than reticle_min_scale_dist_m\n");

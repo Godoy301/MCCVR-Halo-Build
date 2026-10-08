@@ -629,6 +629,9 @@ void VR_ToggleScreenFollow();
 // submits the two retained images as an OpenXR projection layer.
 void VR_ToggleStereo();
 bool VR_IsStereoEnabled();
+// Whether crosshair_opacity / crosshair_brightness can act: 1 = the OpenXR runtime offers layer colour scaling
+// and it is enabled; 0 = it does not (the crosshair is as the game draws it); -1 = no OpenXR instance yet.
+int VR_CrosshairTintSupport() noexcept;
 // True only while the shared compositor is presenting a proven authored,
 // player-locked cinematic on its room-fixed stereo theatre screen.
 bool VR_IsCutsceneTheaterActive();
