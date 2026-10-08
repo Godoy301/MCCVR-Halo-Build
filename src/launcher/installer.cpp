@@ -118,7 +118,17 @@ bool ProbeInstall(const fs::path& candidate, GameInstall& result) {
             const auto bin = base / L"MCC" / L"Binaries" / L"Win64";
             const bool store = IsFile(bin / L"MCCWinStore-Win64-Shipping.exe");
             if (store || IsFile(bin / L"MCC-Win64-Shipping.exe")) {
-                result = {base.lexically_normal(), store || IsFile(base / L"MicrosoftGame.config")};
+                // The folder's REAL path. Windows registers a Store install as
+                // C:\Program Files\WindowsApps\Microsoft.Chelan_..., which is a junction to the Xbox library
+                // folder (...\XboxGames\...\Content). Both were listed, the junction first, and installing to
+                // that one stopped at "Installation through a junction ... is not supported": the entry a
+                // Game Pass player was offered by default did not work (seen on the owner's PC, 2026-10-08).
+                // Resolved, both are the same folder and are listed once. If it cannot be resolved the
+                // path stays as it was found.
+                std::error_code resolveError;
+                const auto real = fs::canonical(base, resolveError);
+                const auto root = resolveError || real.empty() ? base.lexically_normal() : real;
+                result = {root, store || IsFile(base / L"MicrosoftGame.config")};
                 return true;
             }
         }
