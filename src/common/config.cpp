@@ -2125,9 +2125,9 @@ void ConfigSave()
         d.tracker_follows_head ? 1 : 0);
     fprintf(f, "tracker_follows_head = %d\n", g_config.tracker_follows_head ? 1 : 0);
     fprintf(f, "# Motion tracker dots follow HUD height. Halo 3's HUD height moves the tracker but not the\n");
-    fprintf(f, "# dots on it, so every dot, your own included, was drawn below the tracker (half its radius\n");
+    fprintf(f, "# dots on it, so every dot, your own included, is drawn below the tracker (a quarter of its radius\n");
     fprintf(f, "# at the default height). 1 = the dots are drawn on the tracker wherever HUD height puts it.\n");
-    fprintf(f, "# 0 = where the game draws them, as before. Halo 3 only (log: TRACKER HUD HEIGHT <game>).\n");
+    fprintf(f, "# 0 = where the game draws them. Halo 3 only (log: TRACKER HUD HEIGHT <game>).\n");
     fprintf(f, "# Live in F1 > HUD. (default %d)\n", d.tracker_blips_follow_hud_height ? 1 : 0);
     fprintf(f, "tracker_blips_follow_hud_height = %d\n", g_config.tracker_blips_follow_hud_height ? 1 : 0);
     fprintf(f, "# A second game in one session starts at the first try. When a game ends its DLL unloads and\n");

@@ -4,7 +4,7 @@
 // THE MOTION TRACKER'S BLIPS MOVE WITH THE HUD HEIGHT, Halo 3 (src/common/halo3_tracker_hud_height_logic.h has the
 // mechanism, the signatures and the arithmetic; docs/HALO3-TRACKER-HUD-HEIGHT-2026-10-07.md the evidence).
 //
-// The HUD height hook (game.cpp, HudAnchorBasisHook) lowers the tracker's ART, twice (the header says why), and
+// The HUD height hook (game.cpp, HudAnchorBasisHook) lowers the tracker's ART (once, like every HUD element), and
 // cannot reach its BLIPS: the blip draw (halo3 +0x2F3904) places them around a centre it reads from the HUD's frame
 // globals. A player saw every dot, their own included, below the tracker. One detour on that draw lowers the
 // centre's y by what the art was lowered in this HUD pass, calls the game's own draw and puts the game's y back.
@@ -221,7 +221,7 @@ bool InstallHalo3TrackerHudHeight(uintptr_t base, size_t size, uint32_t generati
     if (bind != t::Bind::Bound)
     {
         LOG("TRACKER HUD HEIGHT Halo 3: StockFallback: %s; the motion tracker's blips stay where the game draws them "
-            "(below the tracker by twice the HUD height)", t::BindName(bind));
+            "(below the tracker by the HUD height)", t::BindName(bind));
         return false;
     }
     float* const origin = reinterpret_cast<float*>(base + static_cast<uintptr_t>(sites.originRva));
@@ -265,14 +265,14 @@ bool InstallHalo3TrackerHudHeight(uintptr_t base, size_t size, uint32_t generati
     }
     LOG("TRACKER HUD HEIGHT Halo 3: Installed (generation %u): the blip draw +0x%llX places the motion tracker's blips "
         "around a centre it reads at +0x%llX, which the HUD frame setup copies from the current HUD-resolution record "
-        "(+0x18) every pass and the HUD height hook never moves, while that hook raises the tracker's art by %d x the "
-        "HUD height (the art's own basis and its widget's). For the length of each blip draw the centre's y gets "
+        "(+0x18) every pass and the HUD height hook never moves, while that hook raises the tracker's art by the "
+        "HUD height (once, on its finished basis). For the length of each blip draw the centre's y gets "
         "that same move, then the game's own goes back. Proven: five unique signatures, the draw at its own entry "
         "and at its one call's operand, the centre at three sites (the draw's read, the contact builder's read, the "
         "frame setup's write) with the scale pair behind it at each, and the page is the title's own writable data. "
         "tracker_blips_follow_hud_height is %s",
         generation, static_cast<unsigned long long>(sites.drawRva), static_cast<unsigned long long>(sites.originRva),
-        t::kArtLevels, g_config.tracker_blips_follow_hud_height ? "on" : "off");
+        g_config.tracker_blips_follow_hud_height ? "on" : "off");
     lane.reportedSwitch = g_config.tracker_blips_follow_hud_height ? 1 : 0;
     return true;
 }
@@ -295,7 +295,7 @@ void Halo3TrackerHudHeightReport()
         lane.reportedSwitch = switchNow;
         LOG("TRACKER HUD HEIGHT Halo 3: the switch is now %s: the motion tracker's blips %s", switchNow ? "ON" : "OFF",
             switchNow ? "are drawn on the tracker wherever the HUD height puts it"
-                      : "are drawn where the game puts them, below the tracker by twice the HUD height");
+                      : "are drawn where the game puts them, below the tracker by the HUD height");
     }
     uint32_t counts[static_cast<size_t>(t::Use::Count)]{};
     uint32_t total = 0, refused = 0;
@@ -331,8 +331,8 @@ void Halo3TrackerHudHeightReport()
         lane.reportedState = state;
         if (!state)
             LOG("TRACKER HUD HEIGHT Halo 3: the motion tracker's blips are drawn %.0f HUD units %s the game's own "
-                "place, with the tracker's art (HUD height %+.0f, %d times)",
-                std::fabs(loweredY - originY), loweredY < originY ? "above" : "below", height, t::kArtLevels);
+                "place, with the tracker's art (HUD height %+.0f)",
+                std::fabs(loweredY - originY), loweredY < originY ? "above" : "below", height);
         else if (most != static_cast<size_t>(t::Use::SwitchOff))
             LOG("TRACKER HUD HEIGHT Halo 3: the motion tracker's blips are where the game draws them: %s",
                 t::UseName(static_cast<t::Use>(most)));
@@ -344,7 +344,7 @@ void Halo3TrackerHudHeightReport()
     LOG("TRACKER HUD HEIGHT Halo 3 (dev): %u blip draws moved (last: HUD height %+.1f, the centre x %.2f y %.2f drawn at "
         "y %.2f; scale %.3f %.3f; the HUD record's own centre x %.2f y %.2f); not moved %u: switch off %u, the HUD "
         "height moved nothing %u, not a number %u, unreadable %u; faults %u, centre rewritten meanwhile %u; outermost "
-        "anchor bases the height reached once %u, twice %u, more often %u",
+        "anchor bases moved (each once): anchored directly %u, through one parent %u, nested deeper %u",
         moved, height, lane.lastOriginX.load(std::memory_order_relaxed), originY, loweredY,
         lane.lastScale[0].load(std::memory_order_relaxed), lane.lastScale[1].load(std::memory_order_relaxed),
         lane.lastRecord[0].load(std::memory_order_relaxed), lane.lastRecord[1].load(std::memory_order_relaxed),

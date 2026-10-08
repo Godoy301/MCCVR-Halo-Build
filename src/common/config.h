@@ -481,12 +481,11 @@ struct Config
     bool tracker_follows_head = true;
     bool audio_follows_head = true;
     // THE MOTION TRACKER'S BLIPS MOVE WITH THE HUD HEIGHT (halo3_tracker_hud_height_logic.h). Halo 3's HUD height
-    // raises the tracker's art (by twice hud_vertical_offset: the art's own anchor and its widget's) and cannot
-    // reach the blips, which the game draws around a centre it keeps elsewhere: every dot, the player's own
-    // included, sat below the tracker (half its radius at the default height). 1 = for the length of the blip
-    // draw that centre gets the art's move. 0 = the game's own centre, as before. Read live. Halo 3 only.
-    // Measured on the Spartan's HUD; the Elite's and the vehicle HUDs have not been on screen. A title that has
-    // not bound this keeps its own behaviour (log: TRACKER HUD HEIGHT <title>).
+    // raises the tracker's art (by hud_vertical_offset, like every HUD element) and cannot reach the blips,
+    // which the game draws around a centre it keeps elsewhere: every dot, the player's own included, sat below
+    // the tracker (a quarter of its radius at the default height). 1 = for the length of the blip draw that
+    // centre gets the art's move. 0 = the game's own centre. Read live. Halo 3 only. A title that has not
+    // bound this keeps its own behaviour (log: TRACKER HUD HEIGHT <title>).
     bool tracker_blips_follow_hud_height = true;
     // MCC'S RELOAD OF A GAME DLL WAITS FOR OUR TEARDOWN (host_unload_gate.cpp). A game's DLL unloads when the
     // game ends and MCC loads a fresh one for its menus. A title core that keeps its own reference on that DLL
