@@ -967,9 +967,9 @@ struct Config
     // The crosshair's opacity and brightness, as a scale on its own headset layer (1 = as the game draws it).
     // Opacity scales the art's alpha: below 1 it is more see-through, above 1 a faint crosshair becomes more
     // solid. Brightness scales its colour: below 1 dimmer, above 1 brighter (towards white). 0 to 2 each.
-    // Every title's crosshair, the game's own art and the mod's. Needs the OpenXR runtime to offer layer
-    // colour scaling (XR_KHR_composition_layer_color_scale_bias; log: CROSSHAIR TINT); without it they do
-    // nothing. Read live, every frame.
+    // Every title's crosshair, the game's own art and the mod's. Where the OpenXR runtime offers layer colour
+    // scaling (XR_KHR_composition_layer_color_scale_bias) the compositor applies them; where it does not
+    // (SteamVR) the mod applies them to the crosshair's own image. Log: CROSSHAIR TINT. Read live.
     float crosshair_opacity = 1.0f;
     float crosshair_brightness = 1.0f;
 

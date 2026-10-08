@@ -1759,12 +1759,8 @@ namespace
                     g_config.crosshair_opacity = g_config.crosshair_brightness = 1.0f;
                     changed = true;
                 }
-                if (VR_CrosshairTintSupport() == 0)
-                    ImGui::TextDisabled("Your OpenXR runtime does not offer layer colour scaling, so these two do\n"
-                                        "nothing here: the crosshair is as the game draws it.");
-                else
-                    ImGui::TextDisabled("100%% is the crosshair as the game draws it. Opacity above 100%% makes a\n"
-                                        "faint crosshair more solid; below, more see-through. Every game. Live.");
+                ImGui::TextDisabled("100%% is the crosshair as the game draws it. Opacity above 100%% makes a\n"
+                                    "faint crosshair more solid; below, more see-through. Every game. Live.");
             }
             changed |= vr_menu::SliderFloat("Crosshair size (deg)", &g_config.crosshair_size_deg,
                                           0.3f, 20.0f, "%.1f");

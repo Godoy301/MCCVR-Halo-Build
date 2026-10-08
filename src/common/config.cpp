@@ -2295,8 +2295,8 @@ void ConfigSave()
     fprintf(f, "crosshair_size_deg = %.2f\n\n", g_config.crosshair_size_deg);
     fprintf(f, "# Crosshair opacity and brightness. 1 = as the game draws it. Opacity below 1 is more\n");
     fprintf(f, "# see-through, above 1 makes a faint crosshair more solid; brightness below 1 is dimmer,\n");
-    fprintf(f, "# above 1 brighter. Every game. Live in F1 > Crosshair. They need an OpenXR runtime that\n");
-    fprintf(f, "# offers layer colour scaling (log: CROSSHAIR TINT). (defaults %.2f and %.2f, range 0 to 2)\n",
+    fprintf(f, "# above 1 brighter. Every game. Live in F1 > Crosshair.\n");
+    fprintf(f, "# (defaults %.2f and %.2f, range 0 to 2)\n",
         d.crosshair_opacity, d.crosshair_brightness);
     fprintf(f, "crosshair_opacity = %.2f\n", g_config.crosshair_opacity);
     fprintf(f, "crosshair_brightness = %.2f\n\n", g_config.crosshair_brightness);
