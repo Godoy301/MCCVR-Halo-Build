@@ -1228,6 +1228,16 @@ if(BUILD_TESTING)
     target_compile_definitions(halomccvr_ce_orientation_runtime_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
     target_link_libraries(halomccvr_ce_orientation_runtime_tests PRIVATE minhook)
     add_test(NAME halomccvr_ce_orientation_runtime_tests COMMAND halomccvr_ce_orientation_runtime_tests)
+    # The same production body with the dev sound listener witness compiled in (it samples inside the listener
+    # detour): every check above must still hold -- the witness changes nothing that is handed on -- and the
+    # witness must have measured the game's own packet and the handed one against the head.
+    add_executable(halomccvr_ce_orientation_runtime_dev_tests tests/haloce_orientation_runtime_tests.cpp
+        src/dll/haloce_native_bindings.cpp src/dll/ik.cpp)
+    target_include_directories(halomccvr_ce_orientation_runtime_dev_tests PRIVATE src/common src/dll)
+    target_compile_definitions(halomccvr_ce_orientation_runtime_dev_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN
+        HALOMCCVR_DEV_DIAGNOSTICS=1)
+    target_link_libraries(halomccvr_ce_orientation_runtime_dev_tests PRIVATE minhook)
+    add_test(NAME halomccvr_ce_orientation_runtime_dev_tests COMMAND halomccvr_ce_orientation_runtime_dev_tests)
     add_executable(halomccvr_ce_unit_control_runtime_tests tests/haloce_unit_control_runtime_tests.cpp
         src/dll/sight_layer.cpp)
     target_include_directories(halomccvr_ce_unit_control_runtime_tests PRIVATE src/common src/dll "${minhook_SOURCE_DIR}/include")
