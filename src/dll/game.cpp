@@ -3110,30 +3110,49 @@ namespace
     }
 
 #if HALOMCCVR_EXPERIMENTAL_ODST_BRINGUP
+    // ONCE PER ELEMENT, as Halo 3's hook above (HudAnchorBasisHook has the why): ODST has the same anchor
+    // recursion (anchor 12, "my parent", calls this function again for the parent and composes the two;
+    // halo3odst.dll +0x329824 calling +0x32954C by the static read), and until 2026-10-08 this hook lowered
+    // the basis at every level, so an element of a HUD widget moved by twice the setting and anything anchored
+    // directly by once. Only the outermost call's finished basis is moved now. NOT RUN: ODST has not been
+    // reached headless on this machine, and nobody has looked at its HUD height since.
+    thread_local uint32_t t_odstHudAnchorDepth = 0;
     __declspec(noinline) bool __fastcall OdstHudAnchorBasisHook(
         int userIndex, void* drawWidgetData, int anchorType, void* basis)
     {
         g_odstCamera.activeCallbacks.fetch_add(
             1, std::memory_order_acq_rel);
-        HudAnchorBasisFn original = reinterpret_cast<HudAnchorBasisFn>(
-            g_odstCamera.originalHudAnchorBasis);
-        const bool result = original &&
-            original(userIndex, drawWidgetData, anchorType, basis);
-        if (result && basis && !g_authoredReticleCaptureStarted &&
-            g_odstCamera.armed.load(std::memory_order_acquire) &&
-            !g_odstCamera.teardownRequested.load(
-                std::memory_order_acquire) &&
-            g_enabled.load(std::memory_order_relaxed) &&
-            VR_IsStereoEnabled())
+        const bool outermost = t_odstHudAnchorDepth++ == 0;
+        bool result = false;
+        // The depth and the callback count must come back down if the game's own function faults: a depth
+        // left up would make every later call on this thread look nested and the HUD height would silently
+        // stop; a count left up would hold the core's teardown for good.
+        __try
         {
-            const float height = g_config.hud_vertical_offset;
-            if (isfinite(height) &&
-                height >= kHudHeightMin && height <= kHudHeightMax)
-                reinterpret_cast<float*>(basis)[0x2C / sizeof(float)] -=
-                    height;
+            HudAnchorBasisFn original = reinterpret_cast<HudAnchorBasisFn>(
+                g_odstCamera.originalHudAnchorBasis);
+            result = original &&
+                original(userIndex, drawWidgetData, anchorType, basis);
+            if (outermost && result && basis && !g_authoredReticleCaptureStarted &&
+                g_odstCamera.armed.load(std::memory_order_acquire) &&
+                !g_odstCamera.teardownRequested.load(
+                    std::memory_order_acquire) &&
+                g_enabled.load(std::memory_order_relaxed) &&
+                VR_IsStereoEnabled())
+            {
+                const float height = g_config.hud_vertical_offset;
+                if (isfinite(height) &&
+                    height >= kHudHeightMin && height <= kHudHeightMax)
+                    reinterpret_cast<float*>(basis)[0x2C / sizeof(float)] -=
+                        height;
+            }
         }
-        g_odstCamera.activeCallbacks.fetch_sub(
-            1, std::memory_order_acq_rel);
+        __finally
+        {
+            --t_odstHudAnchorDepth;
+            g_odstCamera.activeCallbacks.fetch_sub(
+                1, std::memory_order_acq_rel);
+        }
         return result;
     }
 
