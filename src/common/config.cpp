@@ -2440,7 +2440,8 @@ void ConfigSave()
     fprintf(f, "# tracker turns AGAINST your head; tracker_head_offset_deg adds a fixed angle. Live.\n");
     fprintf(f, "tracker_head_sign = %d\n", g_config.tracker_head_sign < 0 ? -1 : 1);
     fprintf(f, "tracker_head_offset_deg = %.1f\n\n", g_config.tracker_head_offset_deg);
-    fprintf(f, "# DEV BUILD ONLY (players always get 7). Halo 4's head-relative sound, with audio_follows_head = 1:\n");
+    fprintf(f, "# DEV BUILD ONLY (players always get 3: turned to the head, not moved, as in Reach and Halo 3).\n");
+    fprintf(f, "# Halo 4's head-relative sound, with audio_follows_head = 1:\n");
     fprintf(f, "# which of its writes are made. Add up: 1 = the copy handed to the audio middleware, 2 = the game's\n");
     fprintf(f, "# own listener record, 4 = the listener is also moved to the head. 0 = measure only. Live.\n");
     fprintf(f, "audio_head_halo4_parts = %d\n\n", g_config.audio_head_halo4_parts & 7);
