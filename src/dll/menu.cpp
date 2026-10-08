@@ -677,7 +677,7 @@ namespace
         changed |= ImGui::Checkbox("Sound follows your head", &g_config.audio_follows_head);
         ImGui::TextDisabled("ON: you hear the world from the way your head faces.\n"
                             "OFF: from the way your gun points, as the game does it.\n"
-                            "Halo: Reach and Halo 3 for now; other games keep their own sound. Live.");
+                            "Halo: Reach, Halo 3 and ODST (ODST not yet tested) for now; other games keep their own sound. Live.");
         ImGui::Spacing();
         ImGui::Separator();
         ImGui::Text("Startup");
@@ -2001,7 +2001,8 @@ namespace
         ImGui::TextDisabled("ON: contacts are placed by where your head faces, so they match what you see:\n"
                             "sweeping the gun moves nothing, turning your head turns them.\n"
                             "OFF: by where your gun points, as the game draws it.\n"
-                            "Halo: Reach, Halo 3 and Halo 4 for now; other games keep their own tracker. Live.\n"
+                            "Halo: Reach, Halo 3, Halo 4 and ODST (ODST not yet tested) for now; other games keep\n"
+                            "their own tracker. Live.\n"
                             "Halo 4 starts each level on the game's own tracker and changes over once it has\n"
                             "checked that the heading it replaces follows your aim: a few seconds on foot with\n"
                             "Direct drive on (Weapon & Aim). Not yet seen in a headset.\n"
