@@ -323,6 +323,7 @@ bool Halo4Type13LogRemove();
 #include "halo4_adapter.h"
 #include "halo4_cold_observation.h"
 #include "../common/halo4_head_relative_logic.h"
+#include "../common/halo4_sound_listener_logic.h"
 #include "../common/odst_bringup_logic.h"
 #include "../common/odst_vehicle_logic.h"
 #include "../common/scope_logic.h"
@@ -41705,6 +41706,8 @@ namespace
     #include "halo4_muzzle_lifecycle.inl"
     // The motion tracker follows the head instead of the aim (retail-derived lead, proves itself at run time).
     #include "halo4_head_relative.inl"
+    // The sound listener follows the head instead of the aim (the same evidence class, the same head sample).
+    #include "halo4_sound_listener.inl"
     // Dev builds only: Halo 4 seated convergence, stages 0-1 (the file compiles to nothing otherwise).
     #include "halo4_seat_sight.inl"
     // Flat parity's fire eye, Halo 4 on foot: measured, proven at rest (every build).
@@ -45227,8 +45230,12 @@ namespace
         if (Halo4ValidateCameraBasis(stock))
             Halo4PublishCenterRoot(stock);
         // The head this frame is seen with, for what must turn with the head instead of the aim on another thread
-        // (the motion tracker; halo4_head_relative.inl). `stock` carries the head-look only when headTracked.
-        Halo4PublishHeadSample(stock.forward, stock.up, headTracked,
+        // (the motion tracker, halo4_head_relative.inl; the sound listener, halo4_sound_listener.inl). `stock`
+        // carries the head-look only when headTracked; `controllerRoot` is the game's own camera before it; the
+        // eye cameras are the ones written into the observer record below, one after the other.
+        Halo4PublishHeadSample(stock.forward, stock.up, stock.position, controllerRoot.forward,
+                               controllerRoot.position, eyeCameras[0].position, eyeCameras[1].position,
+                               headTracked,
                                ReadHalo4CinematicControl() == CinematicControlState::PlayerControlled,
                                g_halo4Camera.generation.load(std::memory_order_acquire));
         if (Halo4ValidateCameraBasis(controllerRoot))
@@ -46674,6 +46681,8 @@ namespace
         { LOG("Halo 4 teardown: optional muzzle hooks need cleanup retry; retaining native dependencies");return false; }
         if(!RemoveHalo4HeadRelative())
         { LOG("Halo 4 teardown: the head-relative tracker hook needs cleanup retry; retaining native dependencies");return false; }
+        if(!RemoveHalo4SoundListener())
+        { LOG("Halo 4 teardown: the head-relative sound listener hook needs cleanup retry; retaining native dependencies");return false; }
         const uint32_t generation =
             g_halo4Camera.generation.load(std::memory_order_acquire);
         // The module can stay resident across levels, so capability withdrawal
@@ -47110,6 +47119,8 @@ namespace
         (void)InstallHalo4Muzzle(base,size,generation);
         // Optional and feature-local: a refusal leaves the game's own tracker and nothing else changes.
         (void)InstallHalo4HeadRelative(base,size,generation);
+        // The same for the sound listener: it binds or refuses on its own, and neither gates the other.
+        (void)InstallHalo4SoundListener(base,size,generation);
         InstallHalo4FireEye(base,size,generation);   // flat parity's measured fire eye (halo4_fire_eye.inl)
 #if HALOMCCVR_DEV_DIAGNOSTICS
         InstallHalo4SeatSight(base,size,generation);   // after the muzzle lane: its bindings and view detour
@@ -47499,6 +47510,7 @@ namespace
         ReportHalo4ContactMelee();
         ReportHalo4Muzzle();
         ReportHalo4HeadRelative();
+        ReportHalo4SoundListener();
         ReportHalo4FireEye();
 #if HALOMCCVR_DEV_DIAGNOSTICS
         ReportHalo4AsSeen();
