@@ -924,6 +924,19 @@ namespace
     std::atomic<uint64_t> g_crouchReferenceSerial{0};
     VrPhysicalCrouchSample g_crouchSample;     // g_headCs
     uint64_t g_crouchSampleAtMs = 0;           // g_headCs
+    // THE SAME SAMPLE WITHOUT THE LOCK, for the camera hooks (VR_FollowStandingHeight runs in them on every
+    // camera build, and AGENTS.md keeps locks out of render hooks). The OpenXR frame thread is the one writer:
+    // it makes the sequence odd, stores, and makes it even. A reader that meets a write does not wait: it has
+    // no sample this frame, which the follow already treats as "do nothing".
+    std::atomic<uint32_t> g_crouchPeekSeq{0};
+    std::atomic<float> g_crouchPeekHeight{0.0f}, g_crouchPeekBaseline{0.0f};
+    std::atomic<uint32_t> g_crouchPeekFlags{0};   // 1 valid, 2 calibrated, 4 confirmed, 8 rise capped
+    std::atomic<uint64_t> g_crouchPeekAtMs{0};
+    // A glide's start, for the cold worker to say (VR_ReportStandingFollow): the hook only counts and stores.
+    std::atomic<uint32_t> g_standingFollowStarts{0};
+    std::atomic<int32_t> g_standingFollowTitle{0};
+    std::atomic<float> g_standingFollowBelowMm{0.0f};
+    std::atomic<bool> g_standingFollowCalibrated{false};
     VrCrouchContinuityStats g_crouchStats;     // g_headCs
 
     // Screen placement while head tracking is on. World-locked (default) reads
@@ -8523,6 +8536,18 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
             g_crouchSample.confirmed = g_crouchReference.Confirmed();
             g_crouchSample.riseCapped = g_crouchReference.RiseCapped();
             g_crouchSampleAtMs = crouchNowMs;
+            {
+                const uint32_t sequence = g_crouchPeekSeq.load(std::memory_order_relaxed);
+                g_crouchPeekSeq.store(sequence + 1, std::memory_order_release);
+                g_crouchPeekHeight.store(g_crouchSample.height, std::memory_order_relaxed);
+                g_crouchPeekBaseline.store(g_crouchSample.baseline, std::memory_order_relaxed);
+                g_crouchPeekFlags.store((g_crouchSample.valid ? 1u : 0u) | (g_crouchSample.calibrated ? 2u : 0u) |
+                                            (g_crouchSample.confirmed ? 4u : 0u) |
+                                            (g_crouchSample.riseCapped ? 8u : 0u),
+                                        std::memory_order_relaxed);
+                g_crouchPeekAtMs.store(crouchNowMs, std::memory_order_relaxed);
+                g_crouchPeekSeq.store(sequence + 2, std::memory_order_release);
+            }
             g_crouchStats.carry = g_crouchContinuity.Carry();
             g_crouchStats.announced = g_crouchContinuity.Announced();
             g_crouchStats.unannounced = g_crouchContinuity.Unannounced();
@@ -24700,12 +24725,34 @@ float VR_RecenterStandingLiftM(GameTitle title) noexcept
     const float below=sample.baseline-sample.height;
     return std::isfinite(below)&&below>0.0f?std::min(below,1.0f):0.0f;
 }
+// VR_GetPhysicalCrouchSample without the lock: the published copy, whole or not at all. `reference` is not
+// carried (the follow does not use it).
+static bool PeekPhysicalCrouchSample(VrPhysicalCrouchSample& out) noexcept
+{
+    out={};
+    for(int attempt=0;attempt<2;++attempt)
+    {
+        const uint32_t before=g_crouchPeekSeq.load(std::memory_order_acquire);
+        if(before&1u) continue;
+        const float height=g_crouchPeekHeight.load(std::memory_order_relaxed);
+        const float baseline=g_crouchPeekBaseline.load(std::memory_order_relaxed);
+        const uint32_t flags=g_crouchPeekFlags.load(std::memory_order_relaxed);
+        const uint64_t at=g_crouchPeekAtMs.load(std::memory_order_relaxed);
+        if(g_crouchPeekSeq.load(std::memory_order_acquire)!=before) continue;
+        const uint64_t now=GetTickCount64();
+        out.height=height;out.baseline=baseline;
+        out.calibrated=(flags&2u)!=0;out.confirmed=(flags&4u)!=0;out.riseCapped=(flags&8u)!=0;
+        out.valid=(flags&1u)!=0&&at&&now>=at&&now-at<=100;
+        return out.valid;
+    }
+    return false;
+}
 bool VR_FollowStandingHeight(GameTitle title,float headY,float& referenceY,VrStandingFollow& state) noexcept
 {
-    // The switches first: with the physical crouch off this is two loads and no lock.
+    // In the per-frame camera hooks: no lock, no log, no allocation. The switches first.
     VrPhysicalCrouchSample sample{};
     const bool wanted=g_config.view_follows_standing_height&&g_config.physical_crouch;
-    const bool fresh=wanted&&VR_GetPhysicalCrouchSample(sample);
+    const bool fresh=wanted&&PeekPhysicalCrouchSample(sample);
     const bool eligible=fresh&&sample.confirmed&&!Game_TitleSeated(title);
     // No fresh sample: not a number, so the follow neither learns from it nor moves.
     const float none=std::numeric_limits<float>::quiet_NaN();
@@ -24715,15 +24762,31 @@ bool VR_FollowStandingHeight(GameTitle title,float headY,float& referenceY,VrSta
     const float step=standing_follow::Step(state,eligible,headY,baseline,height,referenceY,GetTickCount64(),
         &started);
     if(started)
-        LOG("VIEW HEIGHT title=%d: the view's neutral height was %.0f mm below your standing height (a recenter "
-            "caught you low, or came before the height was known); you have now stood at that height for 20 s, so "
-            "it is raised to it at %.0f mm a second (view_follows_standing_height; standing height %s)",
-            static_cast<int>(title),
-            (headY+below-referenceY)*1000.0f,standing_follow::kRateMps*1000.0f,
-            sample.calibrated?"calibrated":"learned");
+    {
+        // Said by the cold worker (VR_ReportStandingFollow), not here.
+        g_standingFollowTitle.store(static_cast<int32_t>(title),std::memory_order_relaxed);
+        g_standingFollowBelowMm.store((headY+below-referenceY)*1000.0f,std::memory_order_relaxed);
+        g_standingFollowCalibrated.store(sample.calibrated,std::memory_order_relaxed);
+        g_standingFollowStarts.fetch_add(1,std::memory_order_release);
+    }
     if(!(step>0.0f)) return false;
     referenceY+=step;
     return true;
+}
+void VR_ReportStandingFollow() noexcept
+{
+    static uint32_t reported=0;   // the cold worker only
+    const uint32_t starts=g_standingFollowStarts.load(std::memory_order_acquire);
+    if(starts==reported) return;
+    const uint32_t glides=starts-reported;
+    reported=starts;
+    LOG("VIEW HEIGHT title=%d: the view's neutral height was %.0f mm below your standing height (a recenter "
+        "caught you low, or came before the height was known); you have now stood at that height for 20 s, so "
+        "it is raised to it at %.0f mm a second (view_follows_standing_height; standing height %s)%s",
+        static_cast<int>(g_standingFollowTitle.load(std::memory_order_relaxed)),
+        g_standingFollowBelowMm.load(std::memory_order_relaxed),standing_follow::kRateMps*1000.0f,
+        g_standingFollowCalibrated.load(std::memory_order_relaxed)?"calibrated":"learned",
+        glides>1?"; more than one glide began since the last report, this is the latest":"");
 }
 void VR_GetCrouchContinuityStats(VrCrouchContinuityStats& out) noexcept
 {
