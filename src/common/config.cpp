@@ -2257,7 +2257,7 @@ void ConfigSave()
     fprintf(f, "# Hand smoothing. Steadies your tracked hands before anything reads them, so aim, the arms,\n");
     fprintf(f, "# two-handed holds and reload all see the same steadied hands. A still hand is held steady; a\n");
     fprintf(f, "# fast move passes through with little lag. Swing melee and arm-swing running read your raw\n");
-    fprintf(f, "# motion. Your headset is not smoothed. Live in F1 > Comfort > Hand motion.\n");
+    fprintf(f, "# motion. Your headset is not smoothed. Live in F1 > Weapon & Aim > Hand smoothing.\n");
     fprintf(f, "# 1 = on, 0 = your hands exactly as the headset tracks them. (default %d)\n", d.hand_smoothing ? 1 : 0);
     fprintf(f, "hand_smoothing = %d\n", g_config.hand_smoothing ? 1 : 0);
     fprintf(f, "# Which hands: 0 both, 1 only the hand you aim with, 2 only your other hand. (default %d)\n",
