@@ -48126,6 +48126,7 @@ namespace
             Halo3TrackerHudHeightReport();   // TRACKER HUD HEIGHT Halo 3: the blips moved with the HUD height / not
             HostUnloadGate_Report();   // UNLOAD GATE <title>: MCC's reload of a game DLL waited for our teardown / not
             VR_ReportStandingFollow();   // VIEW HEIGHT title=N: the neutral height began to follow the standing height
+            VR_ReportHolsterCapture();   // HOLSTER SPOT set by hand: saves the config after a calibration
 #if HALOMCCVR_DEV_DIAGNOSTICS
             DevViewAboveEyeReport();   // VIEW HEIGHT (dev): the published view above the character's own eye
 #endif

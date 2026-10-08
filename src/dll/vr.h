@@ -1138,6 +1138,9 @@ void VR_HolsterCaptureArm(bool arm) noexcept;
 bool VR_HolsterCaptureArmed() noexcept;
 uint32_t VR_HolsterCaptureCount() noexcept;
 uint32_t VR_HolsterCaptureTimedOut() noexcept;
+// Cold worker: a capture's config save and its HOLSTER SPOT log line (the capture itself happens in the frame
+// function, which does neither).
+void VR_ReportHolsterCapture() noexcept;
 // Authored recoil whose native source/owner has been proven by its title.
 // Secondary is a weapon role; coupled support is rechecked on the XR frame.
 uint64_t VR_WeaponHapticToken(GameTitle title,uint32_t generation,bool secondary) noexcept;

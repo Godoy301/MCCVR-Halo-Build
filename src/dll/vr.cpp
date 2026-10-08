@@ -8656,6 +8656,8 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
     uint64_t g_reticleTintNextMs = 0;
     uint64_t g_reticleTintDraws = 0;
     float g_dualReticleTint[2]{1.0f, 1.0f};
+    uint64_t g_dualReticleTintNextMs = 0;
+    uint32_t g_reticleTintAcquireMisses = 0;
 
     // The scale the image itself must carry: the sliders, or 1 and 1 when the compositor scales the layer.
     void ReticleTintWanted(float out[2])
@@ -8831,22 +8833,38 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         wait.timeout = 1000000000;
         XrSwapchainImageReleaseInfo release{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
         if (xrAcquireSwapchainImage(g_reticleChain, &acquire, &index) != XR_SUCCESS)
-            return;
-        bool tinted = false;
-        if (xrWaitSwapchainImage(g_reticleChain, &wait) == XR_SUCCESS && index < g_reticleImages.size())
         {
-            const bool plain = want[0] == 1.0f && want[1] == 1.0f;
-            tinted = !plain && DrawReticleTint(index, want);
-            // Never release an image nobody wrote: without the tint it is the master as it was published.
-            if (!tinted)
-                g_context->CopyResource(g_reticleImages[index], g_reticleMaster);
-            tinted = tinted || plain;
+            // Nothing is held, so this may be tried again (a session that is not running yet hands out no
+            // image): two seconds from now rather than fifty milliseconds, and five times at most.
+            g_reticleTintNextMs = now + 2000;
+            if (++g_reticleTintAcquireMisses >= 5)
+                ReticleTintFail("the crosshair's chain did not hand out an image for a slider change, five times");
+            return;
         }
-        if (XR_SUCCEEDED(xrReleaseSwapchainImage(g_reticleChain, &release)) && tinted)
+        g_reticleTintAcquireMisses = 0;
+        if (xrWaitSwapchainImage(g_reticleChain, &wait) != XR_SUCCESS || index >= g_reticleImages.size())
+        {
+            // The image is acquired and was never ready to write: releasing it now is a call-order error that
+            // leaves it acquired, and trying again would take another. So this is the last try. (A wait that
+            // times out blocked the frame thread for a second already.)
+            ReticleTintFail("the crosshair's image was not ready to write for a slider change (it stays acquired)");
+            return;
+        }
+        const bool plain = want[0] == 1.0f && want[1] == 1.0f;
+        const bool tinted = !plain && DrawReticleTint(index, want);
+        // Never release an image nobody wrote: without the tint it is the master as it was published.
+        if (!tinted)
+            g_context->CopyResource(g_reticleImages[index], g_reticleMaster);
+        const bool released = XR_SUCCEEDED(xrReleaseSwapchainImage(g_reticleChain, &release));
+        if (released && (tinted || plain))
         {
             g_reticleTintApplied[0] = want[0];
             g_reticleTintApplied[1] = want[1];
         }
+        else
+            // The draw could not be made (it has said why if it could), or the release failed: the image
+            // shows the crosshair as published, and nothing here runs again this session.
+            ReticleTintFail(released ? "the tint could not be drawn" : "the crosshair's image was not released");
     }
 
     bool PaintReticle(float cr, float cg, float cb, float opacity)
@@ -8885,9 +8903,14 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         // pixels as they are painted (on the stored, encoded values: close to the single crosshair's, not equal).
         float tint[2];
         ReticleTintWanted(tint);
+        // A slider being dragged changes the tint every frame; each repaint builds 262,144 pixels and does a
+        // swapchain acquire, wait and release on the frame thread. At most twenty a second, like the single
+        // crosshair's (the colour and the first paint are not held back).
+        const uint64_t dualNow=GetTickCount64();
+        const bool tintDue=(tint[0]!=g_dualReticleTint[0] || tint[1]!=g_dualReticleTint[1]) &&
+            dualNow>=g_dualReticleTintNextMs;
         const bool dirty=!g_dualReticleReady || color[0]!=g_dualReticleColor[0] ||
-            color[1]!=g_dualReticleColor[1] || color[2]!=g_dualReticleColor[2] ||
-            tint[0]!=g_dualReticleTint[0] || tint[1]!=g_dualReticleTint[1];
+            color[1]!=g_dualReticleColor[1] || color[2]!=g_dualReticleColor[2] || tintDue;
         if(!dirty&&!g_dualReticleAcquired) return true;
         XrSwapchainImageAcquireInfo acquire{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
         XrSwapchainImageWaitInfo wait{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
@@ -8928,6 +8951,7 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         std::copy(std::begin(color),std::end(color),g_dualReticleColor);
         g_dualReticleTint[0]=tint[0];
         g_dualReticleTint[1]=tint[1];
+        g_dualReticleTintNextMs=GetTickCount64()+50;
         g_dualReticleReady=true;
         return true;
     }
@@ -9388,6 +9412,11 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                 g_reticleChainFailed.store(true, std::memory_order_release);
                 return false;
             }
+            // The tint's shader is compiled here, with the chain, rather than at the first crosshair of a
+            // level: the default opacity and brightness are not 100%, so on a runtime without layer colour
+            // scaling every player would otherwise take the compile as a hitch at that first publish.
+            if (g_layerColorScaleExt.load(std::memory_order_acquire) != 1)
+                (void)EnsureReticleTintPipeline();
         }
         const GameTitle reticleTitle = TitleAdapter_GetActiveTitle();
         const bool titleHasAuthoredCapture =
@@ -10459,6 +10488,10 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
     std::atomic<int> g_holsterCaptureRequest{0};
     std::atomic<bool> g_holsterCaptureArmed{false};
     std::atomic<uint32_t> g_holsterCaptureCount{0}, g_holsterCaptureTimedOut{0};
+    // A capture's config save and log line are the cold worker's (VR_ReportHolsterCapture): the capture happens
+    // inside the OpenXR frame function, where a rewrite of the whole config file is a dropped frame.
+    std::atomic<bool> g_holsterCaptureSavePending{false};
+    std::atomic<bool> g_holsterCaptureLeftHanded{false};
     weapon_model::Observations g_weaponModels;
     weapon_interaction::ReloadTargets g_reloadTargets;
     WeaponAccessoryRenderer g_weaponAccessoryRenderer;
@@ -14852,8 +14885,19 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                 weapon_interaction::Vec spot{};
                 const bool menuOpen=Menu_IsOpen();
                 if(menuOpen) g_holsterCapture.Defer(inputNow);
-                const bool handTracked=!menuOpen&&headValid&&valid&&primaryGripActive&&
-                    (location.locationFlags&tracked)==tracked;
+                // THE WEAPON HAND'S OWN STATE. `location.pose`, `valid` and pad.gripR were swapped for a
+                // left-handed player further up; the location FLAGS and the two grip-active booleans were not
+                // (they are still the physical right and left controllers'). A left-handed capture read the
+                // right controller's tracking for the left hand's pose. And only VALID is asked of it, not
+                // TRACKED: a holster belongs behind the shoulder, where an inside-out headset stops seeing the
+                // controller and the runtime carries the pose on its own sensors; refusing that swallowed the
+                // squeeze with nothing to say why.
+                constexpr XrSpaceLocationFlags posed = XR_SPACE_LOCATION_POSITION_VALID_BIT |
+                    XR_SPACE_LOCATION_ORIENTATION_VALID_BIT;
+                const XrSpaceLocationFlags weaponFlags=leftHanded?leftLocation.locationFlags:location.locationFlags;
+                const bool weaponGripActive=leftHanded?supportGripActive:primaryGripActive;
+                const bool handTracked=!menuOpen&&headValid&&valid&&weaponGripActive&&
+                    (weaponFlags&posed)==posed;
                 const auto captured=g_holsterCapture.Update(inputNow,handTracked,sample.head,
                     sample.headRotation,sample.primary,pad.gripR,leftHanded,spot);
                 if(captured==weapon_interaction::HolsterCapture::Result::Captured)
@@ -14865,13 +14909,11 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                     g_config.weapon_holsters=true;
                     if(!g_config.weapon_holster_slide&&!g_config.weapon_holster_click)
                         g_config.weapon_holster_click=true;
-                    ConfigSave();
                     VR_PulseContactHaptics(false,0.6f);
                     g_holsterCaptureCount.fetch_add(1,std::memory_order_relaxed);
-                    LOG("HOLSTER SPOT set by hand: %.0f cm to the weapon side, %.0f cm %s the head, %.0f cm %s it "
-                        "(weapon_holster_location = 3; %s-handed)",
-                        spot.x*100.0f,std::fabs(spot.y)*100.0f,spot.y<0?"below":"above",
-                        std::fabs(spot.z)*100.0f,spot.z<0?"behind":"in front of",leftHanded?"left":"right");
+                    // The save and the log line: the cold worker's (VR_ReportHolsterCapture).
+                    g_holsterCaptureLeftHanded.store(leftHanded,std::memory_order_relaxed);
+                    g_holsterCaptureSavePending.store(true,std::memory_order_release);
                 }
                 else if(captured==weapon_interaction::HolsterCapture::Result::TimedOut)
                     g_holsterCaptureTimedOut.fetch_add(1,std::memory_order_relaxed);
@@ -21517,6 +21559,19 @@ void VR_HolsterCaptureArm(bool arm) noexcept
 bool VR_HolsterCaptureArmed() noexcept { return g_holsterCaptureArmed.load(std::memory_order_acquire); }
 uint32_t VR_HolsterCaptureCount() noexcept { return g_holsterCaptureCount.load(std::memory_order_relaxed); }
 uint32_t VR_HolsterCaptureTimedOut() noexcept { return g_holsterCaptureTimedOut.load(std::memory_order_relaxed); }
+void VR_ReportHolsterCapture() noexcept
+{
+    if (!g_holsterCaptureSavePending.exchange(false, std::memory_order_acq_rel))
+        return;
+    ConfigSave();
+    const float x = g_config.weapon_holster_custom_x_m, y = g_config.weapon_holster_custom_y_m,
+                z = g_config.weapon_holster_custom_z_m;
+    LOG("HOLSTER SPOT set by hand: %.0f cm to the weapon side, %.0f cm %s the head, %.0f cm %s it "
+        "(weapon_holster_location = 3; %s-handed); saved",
+        x * 100.0f, std::fabs(y) * 100.0f, y < 0 ? "below" : "above", std::fabs(z) * 100.0f,
+        z < 0 ? "behind" : "in front of",
+        g_holsterCaptureLeftHanded.load(std::memory_order_relaxed) ? "left" : "right");
+}
 
 int VR_CrosshairTintSupport() noexcept
 {

@@ -77,6 +77,9 @@ struct Halo3HeadRelativeLane
     // the proof no contact is centred.
     int (__fastcall* const* unitGetter)(int) = nullptr;
     bool ownUnitProven = false;
+    // The getter the install proved the update calls: the detour calls THIS pointer, never the global again (the
+    // worker nulls and re-binds that global at a re-resolve). Null whenever the lane is not installed.
+    std::atomic<int (__fastcall*)(int)> provenUnitGetter{nullptr};
     HeadRelativePublication head;
     // Verdicts, counted where the builders run; the cold worker reads and clears them.
     std::atomic<uint32_t> uses[static_cast<size_t>(head_relative::Use::Count)]{};
@@ -216,13 +219,13 @@ bool Halo3TrackerPair(Halo3HeadRelativeLane& lane, halo3_head_relative::Hold& ho
 __declspec(noinline) bool Halo3TrackerSlotIsOwn(Halo3HeadRelativeLane& lane, const void* self, int slot) noexcept
 {
     using namespace halo3_head_relative;
-    if (!lane.ownUnitProven || !lane.unitGetter || !self || slot < 0 || slot >= kTrackedEntries)
+    if (!self || slot < 0 || slot >= kTrackedEntries)
+        return false;
+    const auto getter = lane.provenUnitGetter.load(std::memory_order_acquire);
+    if (!getter)
         return false;
     __try
     {
-        const auto getter = *lane.unitGetter;
-        if (!getter)
-            return false;
         const int32_t entry = *reinterpret_cast<const int32_t*>(static_cast<const uint8_t*>(self) +
                                                               static_cast<size_t>(slot) * kTrackedEntryBytes);
         return entry != -1 && SlotIsOwnUnit(slot, entry, getter(0));
@@ -311,6 +314,7 @@ __declspec(noinline) bool __fastcall Halo3TrackerObjectDetour(void* self, int sl
 bool RemoveHeadRelativeTracker(Halo3HeadRelativeLane& lane, const void* pointDetour, const void* objectDetour)
 {
     lane.ready.store(false, std::memory_order_release);
+    lane.provenUnitGetter.store(nullptr, std::memory_order_release);
     if (!lane.pointTarget && !lane.objectTarget)
         return true;
     for (void* target : {lane.pointTarget, lane.objectTarget})
@@ -543,6 +547,8 @@ bool InstallHeadRelativeTracker(Halo3HeadRelativeLane& lane, uintptr_t base, siz
     }
     lane.objectTarget = object;
     lane.ownUnitProven = proof.unitGetterAgrees && proof.slotEntryAgrees && lane.unitGetter != nullptr;
+    lane.provenUnitGetter.store(lane.ownUnitProven ? reinterpret_cast<int (__fastcall*)(int)>(unitGetter) : nullptr,
+                                std::memory_order_release);
     lane.ready.store(true, std::memory_order_release);
     if (MH_EnableHook(point) != MH_OK || MH_EnableHook(object) != MH_OK)
     {
