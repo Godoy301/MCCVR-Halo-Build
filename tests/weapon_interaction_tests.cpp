@@ -60,6 +60,101 @@ int main()
         miss.s.primary=shoulder.s.primary;miss.Step();miss.s.primaryGrip=1;
         Check(!miss.Step().swapRequested,"a squeeze with the gun held in front does not");
     }
+    // THE CUSTOM SPOT (location 3) and setting it with a hand.
+    for(bool left:{false,true})
+    {
+        const float side=left?-1.f:1.f;
+        Rig over(GameTitle::Halo3,left,2),custom(GameTitle::Halo3,left,3);
+        Check(Near(custom.holster,over.holster,.0001f),"until it is set, the custom spot is the over-the-shoulder one");
+        // A head turned 70 degrees to the left and tipped 35 degrees down: the frame is its flattened facing.
+        const float yaw=1.2217f,pitch=-0.6109f;
+        const Quat qy{0,std::sin(yaw/2),0,std::cos(yaw/2)},qp{std::sin(pitch/2),0,0,std::cos(pitch/2)};
+        const Quat turned{qy.w*qp.x,qy.y*qp.w,-qy.y*qp.x,qy.w*qp.w};
+        Rig rig(GameTitle::HaloReach,left,3);
+        rig.s.headRotation=turned;
+        const Vec hand=rig.s.head+Vec{.31f*side,-.24f,.17f};
+        Vec spot{};
+        Check(HolsterOffsetOfHand(rig.s.head,rig.s.headRotation,hand,left,spot),"a tracked hand has a spot");
+        rig.c.holsterCustom=spot;
+        Check(Zones(rig.s,rig.c,rig.pouch,rig.holster)&&Near(rig.holster,hand,.0002f),
+            "the holster is where the hand was when it was set");
+        // The same spot follows the body's facing, not the head's pitch: level, it is the same place.
+        rig.s.headRotation=qy;
+        Check(Zones(rig.s,rig.c,rig.pouch,rig.holster)&&Near(rig.holster,hand,.0002f),
+            "looking down while setting it does not tilt the spot");
+        // Facing the other way, it is on the same side of the body.
+        rig.s.headRotation=Quat{};
+        Zones(rig.s,rig.c,rig.pouch,rig.holster);
+        Check(std::fabs(Dot(rig.holster-rig.s.head,Vec{1,0,0})*side-spot.x)<.0002f&&
+              std::fabs((rig.holster-rig.s.head).y-spot.y)<.0002f,"the spot turns with the body");
+        // The gesture works there like at any other spot.
+        rig.c.holsterClick=true;rig.c.holsterSlide=false;rig.c.swapButton=0x8000;
+        rig.s.primaryGrip=0;rig.s.supportGrip=0;rig.Step();
+        rig.s.primary=rig.holster;rig.Step();rig.s.primaryGrip=1;
+        Check(rig.Step().swapRequested,"a squeeze at the custom spot switches weapons");
+        // A hand far away, or a bad pose, is kept within the limit or refused.
+        Check(HolsterOffsetOfHand(rig.s.head,Quat{},rig.s.head+Vec{3,-2,5},left,spot)&&
+              std::fabs(spot.x)<=kHolsterCustomLimit&&spot.y==-kHolsterCustomLimit&&spot.z==-kHolsterCustomLimit,
+            "a spot is never further than the limit in any direction");
+        Check(!HolsterOffsetOfHand(rig.s.head,Quat{0,0,0,0},hand,left,spot)&&
+              !HolsterOffsetOfHand(rig.s.head,Quat{},Vec{std::numeric_limits<float>::quiet_NaN(),0,0},left,spot),
+            "no spot from a head with no orientation or a hand with no position");
+        Settings bad;bad.holsterLocation=3;bad.leftHanded=left;
+        bad.holsterCustom={std::numeric_limits<float>::quiet_NaN(),9.f,-9.f};
+        Rig fallback(GameTitle::Halo3,left,2);Vec pouch{},holster{};
+        Check(Zones(fallback.s,bad,pouch,holster)&&std::fabs((holster-fallback.s.head).x-side*kOverShoulderSide)<.0001f&&
+              std::fabs((holster-fallback.s.head).y-kHolsterCustomLimit)<.0001f,
+            "a config value that is not a number falls back; one out of range is kept within the limit");
+
+        // The arming.
+        HolsterCapture capture;
+        using R=HolsterCapture::Result;
+        const Vec head{0,1.65f,0};const Vec at=head+Vec{.25f*side,-.05f,.20f};
+        Check(capture.Update(1000,true,head,Quat{},at,1,left,spot)==R::Idle&&!capture.ConsumesGrip(),
+            "nothing is recorded until it is armed");
+        capture.Arm(1000);
+        Check(capture.Armed()&&capture.ConsumesGrip(),"armed: the weapon grip is not the game's");
+        Check(capture.Update(1020,true,head,Quat{},at,1,left,spot)==R::Waiting,
+            "a grip already held when arming is not the squeeze");
+        Check(capture.Update(1040,true,head,Quat{},at,.45f,left,spot)==R::Waiting,"nor is easing it halfway");
+        Check(capture.Update(1060,true,head,Quat{},at,0,left,spot)==R::Waiting,"released: waiting for the squeeze");
+        Check(capture.Update(1080,true,head,Quat{},at,.5f,left,spot)==R::Waiting,"not yet past the threshold");
+        Check(capture.Update(1100,false,head,Quat{},at,1,left,spot)==R::Waiting&&capture.Armed(),
+            "a squeeze with the hand or head untracked records nothing and stays armed");
+        Check(capture.Update(1120,true,head,Quat{},at,std::numeric_limits<float>::quiet_NaN(),left,spot)==R::Waiting,
+            "a grip that is not a number is not a squeeze");
+        Check(capture.Update(1140,true,head,Quat{},at,1,left,spot)==R::Captured&&!capture.Armed()&&
+              std::fabs(spot.x-.25f)<.0001f&&std::fabs(spot.y+.05f)<.0001f&&std::fabs(spot.z+.20f)<.0001f,
+            "the squeeze records the hand: to the weapon side, up, forward");
+        Check(capture.ConsumesGrip(),"the capturing squeeze stays out of the game while it is held");
+        Check(capture.Update(1160,true,head,Quat{},at,1,left,spot)==R::Idle&&capture.ConsumesGrip(),
+            "and records nothing more");
+        Check(capture.Update(1180,true,head,Quat{},at,0,left,spot)==R::Idle&&!capture.ConsumesGrip(),
+            "letting go gives the grip back");
+        capture.Arm(5000);
+        Check(capture.Update(5000+kHolsterCaptureTimeoutMs,true,head,Quat{},at,0,left,spot)==R::Waiting&&
+              capture.Update(5001+kHolsterCaptureTimeoutMs,true,head,Quat{},at,1,left,spot)==R::TimedOut&&
+              !capture.Armed()&&!capture.ConsumesGrip(),"an arming with no squeeze lapses after thirty seconds");
+        // While the menu that armed it is open the caller holds the clock: the thirty seconds run from its close.
+        capture.Arm(5000);
+        for(uint64_t t=5000;t<=5000+3*kHolsterCaptureTimeoutMs;t+=10000)
+        { capture.Defer(t);Check(capture.Update(t,false,head,Quat{},at,0,left,spot)==R::Waiting,"armed through a long look at the menu"); }
+        Check(capture.Update(5000+3*kHolsterCaptureTimeoutMs+20,true,head,Quat{},at,1,left,spot)==R::Captured,
+            "and the first squeeze after it closes is taken");
+        capture.Update(5000+3*kHolsterCaptureTimeoutMs+40,true,head,Quat{},at,0,left,spot);
+        capture.Arm(9000);capture.Cancel();
+        Check(capture.Update(9020,true,head,Quat{},at,0,left,spot)==R::Idle,"cancel disarms");
+        // In the machine: a new spot is a new identity, so the squeeze that set it cannot also switch weapons.
+        Rig live(GameTitle::Halo3,left,3);
+        live.c.holsterClick=true;live.c.holsterSlide=false;live.c.swapButton=0x8000;
+        live.s.primaryGrip=0;live.s.supportGrip=0;live.Step();
+        live.s.primary=live.s.head+Vec{.30f*side,-.30f,.10f};live.s.primaryGrip=1;
+        HolsterOffsetOfHand(live.s.head,live.s.headRotation,live.s.primary,left,live.c.holsterCustom);
+        Check(!live.Step().swapRequested&&!live.Step().swapRequested,
+            "the squeeze that sets the spot does not switch weapons there");
+        live.s.primaryGrip=0;live.Step();live.s.primaryGrip=1;
+        Check(live.Step().swapRequested,"the next squeeze at the new spot does");
+    }
     for(int title=1;title<=6;++title) for(bool left:{false,true}) for(int location:{0,1})
     {
         Rig rig(static_cast<GameTitle>(title),left);

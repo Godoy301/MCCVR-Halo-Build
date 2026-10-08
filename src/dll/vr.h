@@ -1130,6 +1130,14 @@ void VR_SetGameHaptics(float amplitude);
 // Adds a lock-free, one-shot collision pulse for one OpenXR hand. It is merged
 // with (and never replaces) the title's ordinary XInput rumble.
 void VR_PulseContactHaptics(bool left, float amplitude);
+// SETTING THE HOLSTER SPOT WITH A HAND (weapon_interaction::HolsterCapture). Arm: the next fresh squeeze of the
+// weapon grip records where that hand is relative to the head as the custom holster spot, switches the
+// holster to it and saves the config. false cancels. Armed: still waiting for that squeeze. Count: how many
+// spots have been recorded this session; TimedOut: how many armings lapsed with no squeeze.
+void VR_HolsterCaptureArm(bool arm) noexcept;
+bool VR_HolsterCaptureArmed() noexcept;
+uint32_t VR_HolsterCaptureCount() noexcept;
+uint32_t VR_HolsterCaptureTimedOut() noexcept;
 // Authored recoil whose native source/owner has been proven by its title.
 // Secondary is a weapon role; coupled support is rechecked on the XR frame.
 uint64_t VR_WeaponHapticToken(GameTitle title,uint32_t generation,bool secondary) noexcept;

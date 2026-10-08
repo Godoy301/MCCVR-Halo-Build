@@ -1252,7 +1252,17 @@ void ConfigLoad(const wchar_t* path)
             continue;
         }
         if (!strcmp(key,"weapon_holster_location"))
-        { const int location=atoi(val);g_config.weapon_holster_location=location==1||location==2?location:0;continue; }
+        { const int location=atoi(val);g_config.weapon_holster_location=location>=1&&location<=3?location:0;continue; }
+        float* holsterCustom=!strcmp(key,"weapon_holster_custom_x_m")?&g_config.weapon_holster_custom_x_m:
+            !strcmp(key,"weapon_holster_custom_y_m")?&g_config.weapon_holster_custom_y_m:
+            !strcmp(key,"weapon_holster_custom_z_m")?&g_config.weapon_holster_custom_z_m:nullptr;
+        if(holsterCustom)
+        {
+            const float fallback=*holsterCustom;
+            ParseFloatSetting(key,val,*holsterCustom);
+            *holsterCustom=std::isfinite(*holsterCustom)?std::clamp(*holsterCustom,-.80f,.80f):fallback;
+            continue;
+        }
         if (!strcmp(key, "dpad_head_radius"))
         {
             ParseFloatSetting(key, val, g_config.dpad_head_radius);
@@ -2931,7 +2941,12 @@ void ConfigSave()
         g_config.weapon_pouch_down_m,g_config.weapon_body_zone_radius_m);
     fprintf(f, "# Holster location: 0 = weapon-side shoulder, 1 = weapon-side hip, 2 = over the weapon-side\n");
     fprintf(f, "# shoulder (higher and further back: the Campaign Evolved mod's weapon-switch spot).\n");
+    fprintf(f, "# 3 = your own spot, the three values below: metres from your head to the weapon side, up, and\n");
+    fprintf(f, "# forward. Set it by hand: F1 > Reload & Holsters > Set the holster spot with my hand, then\n");
+    fprintf(f, "# squeeze the weapon grip where the holster should be.\n");
     fprintf(f, "weapon_holster_location = %d\n",g_config.weapon_holster_location);
+    fprintf(f, "weapon_holster_custom_x_m = %.3f\nweapon_holster_custom_y_m = %.3f\nweapon_holster_custom_z_m = %.3f\n",
+        g_config.weapon_holster_custom_x_m,g_config.weapon_holster_custom_y_m,g_config.weapon_holster_custom_z_m);
     fprintf(f,"weapon_pouch_location = %d\nweapon_pouch_offset_x_m = %.3f\nweapon_pouch_offset_y_m = %.3f\nweapon_pouch_offset_z_m = %.3f\n",
         g_config.weapon_pouch_location,g_config.weapon_pouch_offset_x_m,g_config.weapon_pouch_offset_y_m,g_config.weapon_pouch_offset_z_m);
     fprintf(f, "# Independent grab/insert radii. Click uses a fresh weapon grip in the holster.\n");
