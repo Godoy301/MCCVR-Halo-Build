@@ -378,10 +378,31 @@ struct Config
     // deliberately tiny previous-frame blend (0.03 shipped default, 10% hard maximum)
     // so users may remove micro-jitter without turning head motion into a laggy camera.
     // Aim stabilization affects only the floating VR crosshair; weapon aim and
-    // bullets continue to use the current raw controller pose.
+    // bullets continue to use the current controller pose (the steadied one when
+    // hand_smoothing is on).
     float haptic_intensity = 0.86f;
     float headset_smoothing = 0.03f;
     float aim_stabilization = 0.48f;
+    // HAND SMOOTHING (hand_smoothing.h; ported from the Halo: Campaign Evolved VR mod with its defaults). A 1 Euro
+    // filter on the tracked controllers where their poses enter the mod, so aim and shots, the arms, two-handed
+    // holds, holsters, reload and the menu pointer all read the same steadied hands. A still hand is held
+    // steady; a fast move passes through with little lag. Swing melee and arm-swing running read the raw
+    // controller velocities, as before. The headset is not touched (headset_smoothing is its own).
+    //   hand_smoothing            1 = on, 0 = the hands exactly as the headset tracks them.
+    //   hand_smoothing_hands      0 both, 1 only the hand that aims, 2 only the other hand.
+    //   ..._pos_min_hz / ..._rot_min_hz   steadiness while still: lower is steadier and slower to follow a slow
+    //                             move. 0 = that half is not smoothed.
+    //   ..._pos_beta / ..._rot_beta       how quickly the smoothing lets go as the hand moves (per m/s) or
+    //                             turns (per rad/s) faster.
+    //   ..._speed_cutoff_hz       smoothing of the speed estimate itself; rarely needs changing.
+    // All read live.
+    bool hand_smoothing = true;
+    int hand_smoothing_hands = 0;
+    float hand_smoothing_pos_min_hz = 1.0f;
+    float hand_smoothing_pos_beta = 500.0f;
+    float hand_smoothing_rot_min_hz = 1.0f;
+    float hand_smoothing_rot_beta = 5.0f;
+    float hand_smoothing_speed_cutoff_hz = 10.0f;
 
     float screen_width_m = 4.0f;    // width of the virtual screen, in meters
     float screen_distance_m = 2.4f; // how far away the screen floats, in meters

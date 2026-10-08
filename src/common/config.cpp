@@ -316,6 +316,12 @@ static void Clamp()
     g_config.dpad_head_radius = std::clamp(g_config.dpad_head_radius, 0.10f, 0.50f);
     g_config.headset_smoothing = std::clamp(g_config.headset_smoothing, 0.0f, 0.10f);
     g_config.aim_stabilization = std::clamp(g_config.aim_stabilization, 0.0f, 0.95f);
+    g_config.hand_smoothing_hands = std::clamp(g_config.hand_smoothing_hands, 0, 2);
+    g_config.hand_smoothing_pos_min_hz = std::clamp(g_config.hand_smoothing_pos_min_hz, 0.0f, 30.0f);
+    g_config.hand_smoothing_pos_beta = std::clamp(g_config.hand_smoothing_pos_beta, 0.0f, 100000.0f);
+    g_config.hand_smoothing_rot_min_hz = std::clamp(g_config.hand_smoothing_rot_min_hz, 0.0f, 30.0f);
+    g_config.hand_smoothing_rot_beta = std::clamp(g_config.hand_smoothing_rot_beta, 0.0f, 1000.0f);
+    g_config.hand_smoothing_speed_cutoff_hz = std::clamp(g_config.hand_smoothing_speed_cutoff_hz, 0.1f, 100.0f);
     g_config.screen_width_m = std::clamp(g_config.screen_width_m, 0.5f, 20.0f);
     g_config.screen_distance_m = std::clamp(g_config.screen_distance_m, 0.3f, 20.0f);
     g_config.cutscene_theater_depth = std::clamp(
@@ -1393,6 +1399,17 @@ void ConfigLoad(const wchar_t* path)
         if (!strcmp(key, "tracker_follows_head")) { g_config.tracker_follows_head = atoi(val) != 0; continue; }
         if (!strcmp(key, "audio_follows_head")) { g_config.audio_follows_head = atoi(val) != 0; continue; }
         if (!strcmp(key, "title_unload_wait")) { g_config.title_unload_wait = atoi(val) != 0; continue; }
+        // Hand smoothing (hand_smoothing.h). Outside the chain below: it is at the compiler's nesting limit.
+        if (!strncmp(key, "hand_smoothing", 14))
+        {
+            if (!strcmp(key, "hand_smoothing")) { ParseBoolSetting(key, val, g_config.hand_smoothing); continue; }
+            if (!strcmp(key, "hand_smoothing_hands")) { ParseIntSetting(key, val, 0, 2, g_config.hand_smoothing_hands); continue; }
+            if (!strcmp(key, "hand_smoothing_pos_min_hz")) { ParseFloatSetting(key, val, g_config.hand_smoothing_pos_min_hz); continue; }
+            if (!strcmp(key, "hand_smoothing_pos_beta")) { ParseFloatSetting(key, val, g_config.hand_smoothing_pos_beta); continue; }
+            if (!strcmp(key, "hand_smoothing_rot_min_hz")) { ParseFloatSetting(key, val, g_config.hand_smoothing_rot_min_hz); continue; }
+            if (!strcmp(key, "hand_smoothing_rot_beta")) { ParseFloatSetting(key, val, g_config.hand_smoothing_rot_beta); continue; }
+            if (!strcmp(key, "hand_smoothing_speed_cutoff_hz")) { ParseFloatSetting(key, val, g_config.hand_smoothing_speed_cutoff_hz); continue; }
+        }
         if (!strcmp(key, "tracker_blips_follow_hud_height"))
         {
             g_config.tracker_blips_follow_hud_height = atoi(val) != 0;
@@ -2233,6 +2250,29 @@ void ConfigSave()
     fprintf(f, "# Floating VR-crosshair smoothing only; bullets stay raw.\n");
     fprintf(f, "# (default %.2f, range 0 to 0.95)\n", d.aim_stabilization);
     fprintf(f, "aim_stabilization = %.2f\n\n", g_config.aim_stabilization);
+    fprintf(f, "# Hand smoothing. Steadies your tracked hands before anything reads them, so aim, the arms,\n");
+    fprintf(f, "# two-handed holds and reload all see the same steadied hands. A still hand is held steady; a\n");
+    fprintf(f, "# fast move passes through with little lag. Swing melee and arm-swing running read your raw\n");
+    fprintf(f, "# motion. Your headset is not smoothed. Live in F1 > Comfort > Hand motion.\n");
+    fprintf(f, "# 1 = on, 0 = your hands exactly as the headset tracks them. (default %d)\n", d.hand_smoothing ? 1 : 0);
+    fprintf(f, "hand_smoothing = %d\n", g_config.hand_smoothing ? 1 : 0);
+    fprintf(f, "# Which hands: 0 both, 1 only the hand you aim with, 2 only your other hand. (default %d)\n",
+        d.hand_smoothing_hands);
+    fprintf(f, "hand_smoothing_hands = %d\n", g_config.hand_smoothing_hands);
+    fprintf(f, "# Steadiness while still, in Hz, for position and for rotation: lower is steadier but slower\n");
+    fprintf(f, "# to follow a slow move. 0 turns that half off. (defaults %.1f and %.1f, range 0 to 30)\n",
+        d.hand_smoothing_pos_min_hz, d.hand_smoothing_rot_min_hz);
+    fprintf(f, "hand_smoothing_pos_min_hz = %.2f\n", g_config.hand_smoothing_pos_min_hz);
+    fprintf(f, "hand_smoothing_rot_min_hz = %.2f\n", g_config.hand_smoothing_rot_min_hz);
+    fprintf(f, "# Follow speed: how quickly smoothing lets go as the hand moves faster (per metre a second)\n");
+    fprintf(f, "# or the wrist turns faster (per radian a second). Raise it if slow moves feel laggy, lower\n");
+    fprintf(f, "# it if a moving hand still shakes. (defaults %.0f and %.1f)\n",
+        d.hand_smoothing_pos_beta, d.hand_smoothing_rot_beta);
+    fprintf(f, "hand_smoothing_pos_beta = %.1f\n", g_config.hand_smoothing_pos_beta);
+    fprintf(f, "hand_smoothing_rot_beta = %.2f\n", g_config.hand_smoothing_rot_beta);
+    fprintf(f, "# Speed estimate smoothing, in Hz. Rarely needs changing. (default %.0f, range 0.1 to 100)\n",
+        d.hand_smoothing_speed_cutoff_hz);
+    fprintf(f, "hand_smoothing_speed_cutoff_hz = %.1f\n\n", g_config.hand_smoothing_speed_cutoff_hz);
     fprintf(f, "# Aim crosshair in stereo: a floating reticle where the weapon actually\n");
     fprintf(f, "# shoots (the game's own reticle follows your head, not your hand).\n");
     fprintf(f, "# (default %d)\n", d.crosshair ? 1 : 0);
