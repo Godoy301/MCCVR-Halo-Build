@@ -527,6 +527,8 @@ if(BUILD_TESTING)
     add_executable(halomccvr_title_image_guard_tests tests/title_image_guard_tests.cpp src/dll/title_image_guard.cpp)
     target_compile_definitions(halomccvr_title_image_guard_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
     add_test(NAME halomccvr_title_image_guard_tests COMMAND halomccvr_title_image_guard_tests)
+    add_executable(halomccvr_host_unload_gate_tests tests/host_unload_gate_tests.cpp)
+    add_test(NAME halomccvr_host_unload_gate_tests COMMAND halomccvr_host_unload_gate_tests)
     # Packaging runs this tiny program against a nonexistent path to generate
     # the current source tree's exact default config. It is intentionally not
     # installed by CMake: package-candidate stages and hashes its output while
