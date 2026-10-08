@@ -24367,15 +24367,21 @@ bool VR_FollowStandingHeight(GameTitle title,float headY,float& referenceY,VrSta
 {
     // The switches first: with the physical crouch off this is two loads and no lock.
     VrPhysicalCrouchSample sample{};
-    const bool eligible=g_config.view_follows_standing_height&&g_config.physical_crouch&&
-        !Game_TitleSeated(title)&&VR_GetPhysicalCrouchSample(sample)&&sample.confirmed;
-    const float below=sample.baseline-sample.height;
+    const bool wanted=g_config.view_follows_standing_height&&g_config.physical_crouch;
+    const bool fresh=wanted&&VR_GetPhysicalCrouchSample(sample);
+    const bool eligible=fresh&&sample.confirmed&&!Game_TitleSeated(title);
+    // No fresh sample: not a number, so the follow neither learns from it nor moves.
+    const float none=std::numeric_limits<float>::quiet_NaN();
+    const float baseline=fresh?sample.baseline:none,height=fresh?sample.height:none;
+    const float below=baseline-height;
     bool started=false;
-    const float step=standing_follow::Step(state,eligible,headY,below,referenceY,GetTickCount64(),&started);
+    const float step=standing_follow::Step(state,eligible,headY,baseline,height,referenceY,GetTickCount64(),
+        &started);
     if(started)
         LOG("VIEW HEIGHT title=%d: the view's neutral height was %.0f mm below your standing height (a recenter "
-            "caught you low, or came before the height was known); raising it to the standing height at %.0f mm "
-            "a second (view_follows_standing_height; standing height %s)",static_cast<int>(title),
+            "caught you low, or came before the height was known); you have now stood at that height for 20 s, so "
+            "it is raised to it at %.0f mm a second (view_follows_standing_height; standing height %s)",
+            static_cast<int>(title),
             (headY+below-referenceY)*1000.0f,standing_follow::kRateMps*1000.0f,
             sample.calibrated?"calibrated":"learned");
     if(!(step>0.0f)) return false;

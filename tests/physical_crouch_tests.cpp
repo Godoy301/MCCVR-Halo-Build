@@ -364,22 +364,44 @@ int main()
     {
         // THE VIEW'S NEUTRAL HEIGHT FOLLOWS THE CONFIRMED STANDING HEIGHT UP (standing_height_follow.h).
         using standing_follow::State; using standing_follow::Step;
+        // The caller's frame is 1.0 m above the crouch's own (any constant): head 1.70 there is height 0.70 here.
+        constexpr float kFrame=1.0f;
         uint64_t now=1000;
-        // A recenter caught the player 30 cm low: reference 1.40, standing 1.70; the head is at 1.55 now, so
-        // the crouch's own frame says it is 15 cm below standing.
-        State s{}; float reference=1.40f; bool started=true;
-        Check(Step(s,false,1.55f,.15f,reference,now,&started)==0&&!s.active&&!started,
-            "no standing height confirmed: the reference stays where the recenter put it");
-        now+=11;
-        Check(Step(s,true,1.55f,.15f,reference,now,&started)>0&&s.active&&started,
-            "confirmed and 30 cm low: the glide starts, and says so once");
-        float raised=0; unsigned starts=0; uint64_t began=now;
-        for(int i=0;i<400&&s.active;++i)
+        // One camera frame, 11 ms after the last: the head at `head` (caller's frame), the standing height at
+        // `standing` (caller's frame too, for reading; the crouch's frame is kFrame lower).
+        const auto frame=[&](State& s,bool eligible,float head,float standing,float reference,bool* started=nullptr)
         {
             now+=11;
-            // The player bobs and crouches meanwhile: head and deficit move together, the standing height does not.
+            return Step(s,eligible,head,standing-kFrame,head-kFrame,reference,now,started);
+        };
+        // Stand at `standing` for `ms`, the reference untouched: what the player does before anything may move.
+        const auto stand=[&](State& s,bool eligible,float standing,float reference,uint64_t ms)
+        {
+            float moved=0;
+            for(uint64_t t=0;t<ms;t+=11) moved+=frame(s,eligible,standing,standing,reference);
+            return moved;
+        };
+        // A recenter caught the player 30 cm low: reference 1.40, standing 1.70.
+        State s{}; float reference=1.40f; bool started=true;
+        Check(stand(s,false,1.70f,reference,25000)==0&&!s.active,
+            "no standing height confirmed: the reference stays where the recenter put it");
+        State fresh{};
+        Check(stand(fresh,true,1.70f,reference,15000)==0&&!fresh.active,
+            "confirmed, but stood at for 15 s only: nothing moves yet");
+        Check(frame(fresh,true,1.55f,1.70f,reference)==0&&stand(fresh,true,1.70f,reference,4000)==0,
+            "time spent crouched does not count, and 19 s is not 20");
+        float raised=stand(fresh,true,1.70f,reference,1500);
+        Check(raised>0&&fresh.active,"after 20 s at the standing height the glide starts");
+        // The glide itself, on a state that has earned it (s: 25 s of standing, then confirmed).
+        // (s was last called 20 s of test time ago: its first frame now starts the glide and has no interval to move by.)
+        Check(frame(s,true,1.55f,1.70f,reference,&started)==0&&s.active&&started,
+            "confirmed, stood at and 30 cm low: the glide starts, and says so once");
+        unsigned starts=0; uint64_t began=now; raised=0;
+        for(int i=0;i<400&&s.active;++i)
+        {
+            // The player bobs and crouches meanwhile: the head moves, the standing height does not.
             const float dip=.10f*float(i%20)/20.f;
-            const float step=Step(s,true,1.55f-dip,.15f+dip,reference,now,&started);
+            const float step=frame(s,true,1.55f-dip,1.70f,reference,&started);
             Check(step>=0&&step<=standing_follow::kRateMps*.011f+1e-6f,"a step is never faster than the glide's rate");
             reference+=step;raised+=step;starts+=started?1u:0u;
         }
@@ -387,28 +409,42 @@ int main()
             "the glide ends on the standing height and never above it");
         Check(starts==0,"one glide says so once");
         Check(now-began>900&&now-began<1200,"30 cm takes about a second");
-        now+=11;
-        Check(Step(s,true,1.73f,0.f,reference,now,&started)==0&&!s.active,
-            "3 cm under standing is within the tolerance: nothing moves");
-        now+=11;
-        Check(Step(s,true,1.80f,-.10f,reference,now,&started)==0&&!s.active,
+        Check(frame(s,true,1.73f,1.73f,reference,&started)==0&&!s.active,
+            "a standing height that has just moved 3 cm has to be stood at again");
+        State t{}; float low=1.60f;
+        (void)stand(t,true,1.70f,low,21000);
+        Check(t.active,"(a second glide under way)");
+        Check(frame(t,true,1.80f,1.80f,low)==0&&!t.active&&t.dwellMs==0,
+            "the standing height jumping 10 cm mid-glide stops the glide: the new height has earned nothing");
+        Check(stand(t,true,1.80f,low,6000)==0,"six seconds at the higher posture latch nothing");
+        State j{}; float at=1.70f;
+        (void)stand(j,true,1.70f,at,21000);
+        Check(frame(j,true,1.80f,1.70f,at)==0&&!j.active,
             "a head above the standing height (a jump, tiptoe) does not raise the reference");
-        float high=1.90f; now+=11;
-        Check(Step(s,true,1.70f,0.f,high,now,&started)==0&&!s.active,"a reference above standing is never lowered");
+        float high=1.90f;
+        Check(frame(j,true,1.70f,1.70f,high)==0&&!j.active,"a reference above standing is never lowered");
         // A break in the calls (a cutscene, a seat) is not one long step.
-        State b{}; float low=1.20f; now+=11;
-        (void)Step(b,true,1.70f,0.f,low,now); now+=11;
-        const float first=Step(b,true,1.70f,0.f,low,now); low+=first;
+        State b{}; float ref=1.20f;
+        (void)stand(b,true,1.70f,ref,21000);
+        const float first=frame(b,true,1.70f,1.70f,ref);
         Check(first>0&&first<.01f,"a glide moves by the time since the last call");
         now+=5000;
-        Check(Step(b,true,1.70f,0.f,low,now)==0&&b.active,"five seconds without a call move nothing on the next");
+        Check(Step(b,true,1.70f,1.70f-kFrame,1.70f-kFrame,ref,now)==0&&b.active,
+            "five seconds without a call move nothing on the next");
+        Check(frame(b,true,1.70f,1.70f,ref)>0,"and the glide goes on from there");
+        Check(frame(b,false,1.70f,1.70f,ref)==0&&!b.active,"a seat (or the switch) stops a glide where it is");
+        Check(frame(b,true,1.70f,1.70f,ref)>0,"and it goes on when the seat is left: the standing was already earned");
+        State c{}; float r=1.20f;
+        (void)stand(c,true,1.70f,r,21000);
+        const float nan=std::numeric_limits<float>::quiet_NaN();
         now+=11;
-        Check(Step(b,true,1.70f,0.f,low,now)>0,"and the glide goes on from there");
+        Check(Step(c,true,1.70f,nan,nan,r,now)==0&&!c.active,"no fresh sample moves nothing");
         now+=11;
-        Check(Step(b,false,1.70f,0.f,low,now)==0&&!b.active,"a seat (or the switch) stops a glide where it is");
-        State c{}; float r=1.20f; now+=11;
-        Check(Step(c,true,1.70f,1.5f,r,now)==0&&!c.active,"a deficit past a metre is not a standing person's sample");
-        Check(Step(c,true,std::numeric_limits<float>::quiet_NaN(),0.f,r,now+11)==0&&!c.active,"a head height that is not a number moves nothing");
+        Check(Step(c,true,1.70f,1.70f-kFrame,-1.0f-kFrame,r,now)==0&&!c.active,
+            "a deficit past a metre is not a standing person's sample");
+        now+=11;
+        Check(Step(c,true,nan,1.70f-kFrame,1.70f-kFrame,r,now)==0&&!c.active,
+            "a head height that is not a number moves nothing");
     }
     std::printf("Physical crouch: %u checks passed\n",checks);
 }
