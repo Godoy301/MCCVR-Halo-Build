@@ -8,6 +8,7 @@
 
 #include "../common/coop_probe_logic.h"
 #include "../common/host_unload_gate_logic.h"
+#include "../common/title_build_identity.h"
 #include "../common/log.h"
 #include "d3d11_hook.h"
 #include "halo2_adapter.h"
@@ -494,12 +495,70 @@ void TitleAdapter_NoteImageUnloading(uintptr_t base) noexcept
             g_imageUnloads[slot].fetch_add(1, std::memory_order_acq_rel);
 }
 
+// A loaded image's PE timestamp and size. Guarded: the DLL can be unloaded under the read.
+static bool ReadTitleImageIdentity(HMODULE module, uint32_t& stamp, uint32_t& size) noexcept
+{
+    __try
+    {
+        const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(module);
+        if (dos->e_magic != IMAGE_DOS_SIGNATURE || dos->e_lfanew <= 0 || dos->e_lfanew > 0x1000)
+            return false;
+        const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS64*>(
+            reinterpret_cast<const uint8_t*>(module) + dos->e_lfanew);
+        if (nt->Signature != IMAGE_NT_SIGNATURE)
+            return false;
+        stamp = nt->FileHeader.TimeDateStamp;
+        size = nt->OptionalHeader.SizeOfImage;
+        return true;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return false;
+    }
+}
+
 const TitleDescriptor* TitleAdapter_PollLoaded(uint64_t observedAtMs)
 {
     size_t count = 0;
     const TitleDescriptor* titles = TitleRegistry_All(count);
     TitleRuntimeModuleSet modules{};
     const TitleDescriptor* detected = nullptr;
+    // BUILD CHECK (title_build_identity.h): once per title and per build seen this session, whether its DLL is
+    // the build this mod was made for. Worker thread; the header read is guarded (the DLL can unload under it).
+    static uint32_t reportedStamp[kTitleRuntimeSlotCount]{}, reportedSize[kTitleRuntimeSlotCount]{};
+    const auto reportBuild = [](const TitleDescriptor& title, HMODULE module, size_t slot) noexcept
+    {
+        uint32_t stamp = 0, size = 0;
+        if (!ReadTitleImageIdentity(module, stamp, size))
+            return;
+        if (!stamp || (reportedStamp[slot] == stamp && reportedSize[slot] == size))
+            return;
+        reportedStamp[slot] = stamp;
+        reportedSize[slot] = size;
+        const title_build::Identity* const known = title_build::Known(title.title);
+        switch (title_build::Compare(title.title, stamp, size))
+        {
+        case title_build::Match::Known:
+            LOG("BUILD CHECK %s: %ls is the build this mod was made for (PE timestamp 0x%08X, image size 0x%X; MCC "
+                "%s; the same on Steam and the Microsoft Store)",
+                title.displayName, title.moduleName, stamp, size, title_build::kKnownMccBuild);
+            break;
+        case title_build::Match::Different:
+            LOG("BUILD CHECK %s: %ls is NOT the build this mod was made for: PE timestamp 0x%08X, image size 0x%X "
+                "(made for 0x%08X, 0x%X; MCC %s). MCC has been updated, or this is a build nobody has looked at. %s "
+                "THE MOD NEEDS AN UPDATE FOR THIS BUILD; send this line with any report",
+                title.displayName, title.moduleName, stamp, size, known ? known->peTimestamp : 0,
+                known ? known->sizeOfImage : 0, title_build::kKnownMccBuild,
+                title_build::CoreIsBuildGated(title.title)
+                    ? "This game's VR core installs only on that build, so it will stay off here and the game "
+                      "plays flat (look for StockFallback, FAIL or WITHHELD lines)."
+                    : "This game's VR core looks its functions up by signature and may still install; features "
+                      "that do not find theirs say StockFallback.");
+            break;
+        default:
+            break;
+        }
+    };
     size_t detectedCount = 0;
     for (size_t i = 0; i < count; ++i)
     {
@@ -511,6 +570,7 @@ const TitleDescriptor* TitleAdapter_PollLoaded(uint64_t observedAtMs)
             continue;
         modules.availabilityMask |= uint32_t{1} << slot;
         modules.moduleBases[slot] = reinterpret_cast<uintptr_t>(module);
+        reportBuild(titles[i], module, slot);
         if (!detected)
             detected = &titles[i];
         ++detectedCount;

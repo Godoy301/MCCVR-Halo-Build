@@ -17149,17 +17149,53 @@ namespace
             // Both compositor callers and the allocator use the engine TLS
             // index global at halo3.dll+0xA39F9C. Resolve it through the proven
             // first-person update signature instead of baking that RVA.
-            uintptr_t fp=sig::Find(base,size,
-                "48 8B C4 44 88 40 18 89 50 10 89 48 08 55 53 56 57 41 54 41 55 41 56 41 57");
-            if (fp)
+            // TWO POINTERS DECODED FROM THE IMAGE, each proven before it is kept (2026-10-08; they were taken
+            // on trust: the update's prologue at its FIRST match, and two displacements read at fixed
+            // offsets past the ends of their patterns with no look at the instruction they belong to. On
+            // this build that is right. On a build where the prologues still match and the bodies moved,
+            // the result was a wild pointer used on the first first-person frame.) Now: the prologue must
+            // match exactly once; the three bytes ahead of each displacement must be the instruction the
+            // comment names; each target must lie inside the image; and the TLS index it points at must be
+            // an index. Anything else leaves both null, and the hooks below are not made.
+            // ADDR-HYGIENE: resolved + guarded (fp+0x5F: 44 8B 0D = mov r9d, [rip+disp]; composeHit+0x50:
+            // 48 8B 05 = mov rax, [rip+disp]; the offsets are this build's and are checked by those bytes).
+            const char* const kFpUpdateSig =
+                "48 8B C4 44 88 40 18 89 50 10 89 48 08 55 53 56 57 41 54 41 55 41 56 41 57";
+            const auto insideImage = [base, size](uintptr_t address, size_t bytes) {
+                return address >= base && bytes <= size && address - base <= size - bytes;
+            };
+            uintptr_t fp=sig::Find(base,size,kFpUpdateSig);
+            const char* fpWhy = nullptr;
+            if (!fp || sig::Find(fp+1,base+size-fp-1,kFpUpdateSig))
+                fpWhy = "the first-person update's prologue is missing or ambiguous";
+            else if (!insideImage(fp+0x5F,7) || memcmp(reinterpret_cast<const void*>(fp+0x5F),"\x44\x8B\x0D",3)!=0)
+                fpWhy = "the first-person update does not load the engine TLS index where this build does";
+            else if (!insideImage(composeHit+0x50,7) ||
+                     memcmp(reinterpret_cast<const void*>(composeHit+0x50),"\x48\x8B\x05",3)!=0)
+                fpWhy = "the bone composer does not load the tag data base where this build does";
+            else
             {
-                const int32_t tlsDisp=*reinterpret_cast<const int32_t*>(fp+0x62);
-                g_engineTlsIndex=reinterpret_cast<uint32_t*>(fp+0x66+tlsDisp);
+                const uintptr_t tlsIndex=fp+0x66+*reinterpret_cast<const int32_t*>(fp+0x62);
+                const uintptr_t tagData=composeHit+0x57+*reinterpret_cast<const int32_t*>(composeHit+0x53);
+                // 1088 = the 64 static TLS slots plus the 1024 expansion slots: the largest index there is.
+                if (!insideImage(tlsIndex,sizeof(uint32_t)) || !insideImage(tagData,sizeof(void*)))
+                    fpWhy = "a decoded global lies outside the image";
+                else if (*reinterpret_cast<const uint32_t*>(tlsIndex) >= 1088)
+                    fpWhy = "the decoded engine TLS index is not an index";
+                else
+                {
+                    g_engineTlsIndex=reinterpret_cast<uint32_t*>(tlsIndex);
+                    g_animationTagData=reinterpret_cast<unsigned char**>(tagData);
+                }
             }
-            // composeHit+0x50 is mov rax,[rip+tag-data-base]; its displacement
-            // resolves the node-record storage used for names and parents.
-            const int32_t tagDataDisp=*reinterpret_cast<const int32_t*>(composeHit+0x53);
-            g_animationTagData=reinterpret_cast<unsigned char**>(composeHit+0x57+tagDataDisp);
+            if (fpWhy)
+            {
+                // Not left pointing into an image they were not proven on.
+                g_engineTlsIndex = nullptr;
+                g_animationTagData = nullptr;
+                LOG("M3: StockFallback: %s; the first-person hand/weapon matrix hooks are not installed "
+                    "(this is not the halo3.dll they were made for)", fpWhy);
+            }
             if (g_engineTlsIndex && g_animationTagData &&
                 MH_CreateHook(reinterpret_cast<void*>(composeHit),reinterpret_cast<void*>(&GuardedComposeBonesHook),
                               reinterpret_cast<void**>(&g_origComposeBones)) == MH_OK &&
@@ -17781,9 +17817,20 @@ namespace
             LOG("M2: render-frame signature missing or ambiguous; raw stereo unavailable");
             return true;
         }
-        if (!prepareHit || !viewportHit || !matricesHit)
+        // These three are CALLED by the stereo path. Each must be the one function its signature names: missing
+        // or matched twice, there is no stereo (they were taken at their first match; only the render entry
+        // was checked for a second one).
+        const auto ambiguous = [base, size](uintptr_t hit, const char* pattern) {
+            return hit && sig::Find(hit + 1, base + size - hit - 1, pattern) != 0;
+        };
+        if (!prepareHit || !viewportHit || !matricesHit || ambiguous(prepareHit, kPrepareViewSig) ||
+            ambiguous(viewportHit, kBuildViewportSig) || ambiguous(matricesHit, kBuildMatricesSig))
         {
-            LOG("M2: derived camera matrix signatures missing; raw stereo unavailable");
+            LOG("M2: StockFallback: derived camera matrix signatures missing or ambiguous (prepare %s, viewport "
+                "%s, matrices %s); raw stereo unavailable",
+                !prepareHit ? "missing" : ambiguous(prepareHit, kPrepareViewSig) ? "ambiguous" : "ok",
+                !viewportHit ? "missing" : ambiguous(viewportHit, kBuildViewportSig) ? "ambiguous" : "ok",
+                !matricesHit ? "missing" : ambiguous(matricesHit, kBuildMatricesSig) ? "ambiguous" : "ok");
             return true;
         }
         g_prepareView = reinterpret_cast<PrepareViewFn>(prepareHit);
@@ -48391,9 +48438,12 @@ namespace
                         break;
                     case GameTitle::HaloReach:
                         activeLevelRunning =
+                            // The image's OWN size, as every other title passes: the gate's scan is the
+                            // first touch of haloreach.dll, ahead of any identity check, and the pinned size
+                            // would read past the end of a smaller (patched) image.
                             g_reachLevelLoadGate.AllowsInstall(
                                 gateGeneration, gateBase,
-                                kReachRetailImageSize,
+                                gateSize,
                                 kReachPlayerViewArray, "Reach");
                         break;
                     case GameTitle::Halo4:
