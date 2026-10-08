@@ -1494,7 +1494,7 @@ namespace
                                 "moves feel laggy; lower it if a moving hand still shakes.");
             changed |= vr_menu::SliderFloat("Speed estimate smoothing (Hz)", &g_config.hand_smoothing_speed_cutoff_hz,
                                           0.1f, 100.0f, "%.1f");
-            if (ImGui::Button("Campaign Evolved defaults##handsmoothing"))
+            if (ImGui::Button("Defaults##handsmoothing"))
             {
                 const Config defaults{};
                 g_config.hand_smoothing_hands = defaults.hand_smoothing_hands;
@@ -1506,7 +1506,8 @@ namespace
                 changed = true;
             }
             ImGui::SameLine();
-            ImGui::TextDisabled("1 Hz, 500, 1 Hz, 5, 10 Hz: the feel of the Campaign Evolved mod.");
+            ImGui::TextDisabled("1.3 Hz, 500, 1.3 Hz, 5, 10 Hz. (The Campaign Evolved mod uses 1.0 Hz for both\n"
+                                "steadiness values: a little steadier, a little slower on a slow aim.)");
         }
         ImGui::Spacing();
         ImGui::Separator();

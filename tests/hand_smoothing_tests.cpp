@@ -41,12 +41,15 @@ float AngleBetween(const float* a, const float* b)
 
 int main()
 {
-    // The defaults are Campaign Evolved's, in the header and in the config.
+    // The defaults: Campaign Evolved's, with both steadiness cutoffs at the 1.3 Hz the first headset session
+    // settled on; the same in the header and in the config.
     {
         const Params params;
-        Check(params.posMinHz == 1.0f && params.posBeta == 500.0f && params.rotMinHz == 1.0f &&
+        Check(params.posMinHz == 1.3f && params.posBeta == 500.0f && params.rotMinHz == 1.3f &&
                   params.rotBeta == 5.0f && params.speedCutoffHz == 10.0f,
-              "the filter's defaults are the Campaign Evolved numbers");
+              "the filter's defaults are the numbers the headset session settled on");
+        Check(kCampaignEvolvedPosMinHz == 1.0f && kCampaignEvolvedRotMinHz == 1.0f,
+              "Campaign Evolved's own steadiness cutoffs are kept for the record");
         const Config config{};
         Check(config.hand_smoothing && config.hand_smoothing_hands == 0 &&
                   config.hand_smoothing_pos_min_hz == kDefaultPosMinHz &&
