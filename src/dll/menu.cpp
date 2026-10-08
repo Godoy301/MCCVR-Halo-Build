@@ -1759,8 +1759,16 @@ namespace
                     g_config.crosshair_opacity = g_config.crosshair_brightness = 1.0f;
                     changed = true;
                 }
+                ImGui::SameLine();
+                if (ImGui::Button("Defaults##crosshairtint"))
+                {
+                    g_config.crosshair_opacity = Config{}.crosshair_opacity;
+                    g_config.crosshair_brightness = Config{}.crosshair_brightness;
+                    changed = true;
+                }
                 ImGui::TextDisabled("100%% is the crosshair as the game draws it. Opacity above 100%% makes a\n"
-                                    "faint crosshair more solid; below, more see-through. Every game. Live.");
+                                    "faint crosshair more solid; below, more see-through. Every game. Live.\n"
+                                    "(defaults 125%% and 125%%)");
             }
             changed |= vr_menu::SliderFloat("Crosshair size (deg)", &g_config.crosshair_size_deg,
                                           0.3f, 20.0f, "%.1f");
@@ -1964,8 +1972,9 @@ namespace
         ImGui::TextDisabled("ON: the arrow for an objective marker or a marked player you are not looking at is\n"
                             "drawn within 30 degrees of where your head faces, in one place for both eyes.\n"
                             "OFF: the game's own ring, far enough out that only one eye sees the arrow.\n"
-                            "Does not touch (yet): name tags, fireteam markers, vehicle and lock-on reticles,\n"
-                            "damage arrows. Halo: Reach only. Takes effect at the next level.");
+                            "Covers objective markers and the markers the HUD puts on objects and players.\n"
+                            "Does not touch vehicle and lock-on reticles or damage arrows.\n"
+                            "Halo: Reach only. Takes effect at the next level.");
         if (g_config.nav_marker_arrow_in_view)
         {
             float ringPercent = g_config.nav_marker_ring * 100.0f;
@@ -1976,7 +1985,8 @@ namespace
                 changed = true;
             }
             ImGui::TextDisabled("How far from the middle of your view the arrows sit, as a share of what both eyes\n"
-                                "see (never more than 30 degrees). Lower it until you can see them. Live.");
+                                "see. Never more than 30 degrees, so the top of the slider may change nothing.\n"
+                                "Lower it until you can see them. Live. (default 75%%)");
         }
         ImGui::Spacing();
         ImGui::Separator();

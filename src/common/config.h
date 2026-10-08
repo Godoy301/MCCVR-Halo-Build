@@ -535,10 +535,12 @@ struct Config
     bool nav_marker_arrow_in_view = true;
     // HOW FAR OUT THE OFF-SCREEN ARROWS SIT: the ring about the head, as a fraction of the field both eyes see
     // (0.6 = the game's own 0.3 of the whole field), never more than 30 degrees. Lower brings the arrows
-    // closer to the centre of the view. A player setting since 2026-10-07 (it was a dev key): the first
-    // headset session found 0.6 a little outside what the player could see. Read live, every projection.
+    // closer to the centre of the view. A player setting since 2026-10-07 (it was a dev key). THE DEFAULT IS
+    // THE TESTER'S, from the first headset session in which the slider acted on the arrows they see (the
+    // object-anchored markers; before that the game's own ring was what sat outside their view): 0.75, which
+    // on their headset is the 30 degree cap (log: "ring 30.0 x 30.0 deg"). Read live, every projection.
     // Acts only with nav_marker_arrow_in_view = 1.
-    float nav_marker_ring = 0.6f;
+    float nav_marker_ring = 0.75f;
     // DEV BUILDS ONLY (parsed and saved there; a player build always has the default).
     // nav_marker_witness: 1 = report the pixel the game puts each marker on against the pixel the eye's own
     // picture shows its target at. Live.
@@ -970,8 +972,10 @@ struct Config
     // Every title's crosshair, the game's own art and the mod's. Where the OpenXR runtime offers layer colour
     // scaling (XR_KHR_composition_layer_color_scale_bias) the compositor applies them; where it does not
     // (SteamVR) the mod applies them to the crosshair's own image. Log: CROSSHAIR TINT. Read live.
-    float crosshair_opacity = 1.0f;
-    float crosshair_brightness = 1.0f;
+    // THE DEFAULTS ARE THE TESTER'S (2026-10-08, after a headset session in Reach with the image route):
+    // 1.25 and 1.25, a little more solid and a little brighter than the game draws it.
+    float crosshair_opacity = 1.25f;
+    float crosshair_brightness = 1.25f;
 
     // EVERY TITLE, while the aim converges (Reach through its own trace, the others through the sight
     // layer -- vr.cpp's traced_reticle_placement): Halo: Campaign Evolved's reticle placement
