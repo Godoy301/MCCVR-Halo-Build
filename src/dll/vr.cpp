@@ -198,6 +198,12 @@ namespace
     // which is a FRACTION of this whenever the runtime reprojects. No rate is
     // ever assumed: 72, 80, 90, 120, 144 all come from these two numbers.
     bool g_refreshRateExtEnabled = false;
+    // XR_KHR_composition_layer_color_scale_bias: lets one layer's colour and alpha be scaled at composition.
+    // The crosshair's opacity and brightness sliders are that scale on the crosshair's own quad: the same
+    // mechanism for every title's crosshair (the game's captured art or the mod's own), no shader of ours
+    // changes and nothing is re-uploaded. -1 = no instance yet, 0 = the runtime does not offer it (the sliders
+    // then do nothing, and the menu says so), 1 = enabled.
+    std::atomic<int> g_layerColorScaleExt{-1};
     std::atomic<float> g_panelRefreshHz{0.0f};
     XrEnvironmentBlendMode g_blendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
     bool g_sessionRunning = false;
@@ -9714,6 +9720,15 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
             hasExtension(XR_FB_DISPLAY_REFRESH_RATE_EXTENSION_NAME);
         if (g_refreshRateExtEnabled)
             enabledExtensions.push_back(XR_FB_DISPLAY_REFRESH_RATE_EXTENSION_NAME);
+        const bool layerColorScale =
+            hasExtension(XR_KHR_COMPOSITION_LAYER_COLOR_SCALE_BIAS_EXTENSION_NAME);
+        if (layerColorScale)
+            enabledExtensions.push_back(XR_KHR_COMPOSITION_LAYER_COLOR_SCALE_BIAS_EXTENSION_NAME);
+        g_layerColorScaleExt.store(layerColorScale ? 1 : 0, std::memory_order_release);
+        LOG("CROSSHAIR TINT: the OpenXR runtime %s layer colour scaling (%s); crosshair_opacity and "
+            "crosshair_brightness %s",
+            layerColorScale ? "offers" : "does NOT offer", XR_KHR_COMPOSITION_LAYER_COLOR_SCALE_BIAS_EXTENSION_NAME,
+            layerColorScale ? "act on the crosshair's layer" : "do nothing on this runtime: the crosshair is as the game draws it");
 
         XrInstanceCreateInfo ici{XR_TYPE_INSTANCE_CREATE_INFO};
         strcpy_s(ici.applicationInfo.applicationName, "HaloMCCVR");
@@ -16627,6 +16642,9 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         }
 
         XrCompositionLayerQuad screenQuad, menuQuad, reticleQuad, secondaryReticleQuad, scopeQuad, fadeQuad, nativeCursorQuad, nativeSubtitleQuad;
+        // The crosshair layer's colour scale (crosshair_opacity / crosshair_brightness). It lives as long as the
+        // quads above: the layer points at it until xrEndFrame has returned.
+        XrCompositionLayerColorScaleBiasKHR reticleTint{XR_TYPE_COMPOSITION_LAYER_COLOR_SCALE_BIAS_KHR};
 #if HALOMCCVR_DEV_DIAGNOSTICS
         // [assess-only begin]
         XrCompositionLayerQuad assessMarkerQuad{XR_TYPE_COMPOSITION_LAYER_QUAD};   // outlives `layers` this frame
@@ -18528,6 +18546,21 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                                     quadRight.y * shift.right + quadUp.y * shift.up;
                                 reticleQuad.pose.position.z +=
                                     quadRight.z * shift.right + quadUp.z * shift.up;
+                            }
+                            {
+                                // The layer is straight alpha (UNPREMULTIPLIED above), so brightness scales the
+                                // colour and opacity the alpha, each on its own. 1 and 1 chain nothing: the
+                                // layer is then exactly what it always was.
+                                const float opacity = std::clamp(g_config.crosshair_opacity, 0.0f, 2.0f);
+                                const float brightness = std::clamp(g_config.crosshair_brightness, 0.0f, 2.0f);
+                                if (g_layerColorScaleExt.load(std::memory_order_acquire) == 1 &&
+                                    std::isfinite(opacity) && std::isfinite(brightness) &&
+                                    (opacity != 1.0f || brightness != 1.0f))
+                                {
+                                    reticleTint.colorScale = {brightness, brightness, brightness, opacity};
+                                    reticleTint.colorBias = {0.0f, 0.0f, 0.0f, 0.0f};
+                                    reticleQuad.next = &reticleTint;
+                                }
                             }
                             layers.push_back(
                                 reinterpret_cast<XrCompositionLayerBaseHeader*>(&reticleQuad));
@@ -21159,6 +21192,11 @@ void VR_ToggleStereo()
         LOG("M2 alternate-eye stereo %s%s", on ? "ON" : "OFF",
             on && !Game_IsHeadTracking()
                 ? " (enable head tracking with F2)" : "");
+}
+
+int VR_CrosshairTintSupport() noexcept
+{
+    return g_layerColorScaleExt.load(std::memory_order_acquire);
 }
 
 bool VR_IsStereoEnabled()
