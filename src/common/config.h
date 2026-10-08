@@ -532,12 +532,16 @@ struct Config
     // Default 1 since 2026-10-07: run headless with one marker (the King of the Hill hill), not yet seen in a
     // headset.
     bool nav_marker_arrow_in_view = true;
-    // DEV BUILDS ONLY (parsed and saved there; a player build always has these defaults).
-    // nav_marker_witness: 1 = report the pixel the game puts each marker on against the pixel the eye's own
-    // picture shows its target at. nav_marker_ring: the off-screen ring about the head, as a fraction of the
-    // field both eyes see (0.6 = the game's own 0.3 of the whole field); 0 = the game's own ring. Both live.
-    int nav_marker_witness = 0;
+    // HOW FAR OUT THE OFF-SCREEN ARROWS SIT: the ring about the head, as a fraction of the field both eyes see
+    // (0.6 = the game's own 0.3 of the whole field), never more than 30 degrees. Lower brings the arrows
+    // closer to the centre of the view. A player setting since 2026-10-07 (it was a dev key): the first
+    // headset session found 0.6 a little outside what the player could see. Read live, every projection.
+    // Acts only with nav_marker_arrow_in_view = 1.
     float nav_marker_ring = 0.6f;
+    // DEV BUILDS ONLY (parsed and saved there; a player build always has the default).
+    // nav_marker_witness: 1 = report the pixel the game puts each marker on against the pixel the eye's own
+    // picture shows its target at. Live.
+    int nav_marker_witness = 0;
     // Live safety values for the tracker's yaw correction. Parsed and saved in DEV BUILDS ONLY; every build
     // runs with them, so a player build always has these defaults. sign: 1, or -1 if a title's seam turns
     // out mirrored. offset: degrees added after the sign.
