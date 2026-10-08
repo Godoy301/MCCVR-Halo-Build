@@ -2959,52 +2959,71 @@ namespace
     // WHAT THIS HOOK DID, for the one part of the HUD it cannot reach: the height it last lowered a basis by on
     // this thread since the motion tracker's blips were drawn (0 = it lowered none). The blips are not HUD widgets
     // and read their centre elsewhere, so the blip draw has to be told (halo3_tracker_hud_height.inl consumes
-    // this). NOTE the hook runs for NESTED calls too: anchor 12, "my parent", makes the game call this function
-    // again for the parent widget's own anchor, so an element of a HUD widget is moved by twice the setting and a
-    // directly anchored one by once. halo3_tracker_hud_height_logic.h (kArtLevels) depends on exactly that:
-    // change the two together.
+    // this).
     thread_local float t_halo3HudHeightLowered = 0.0f;
+    // ONCE PER ELEMENT. Anchor 12, "my parent", makes the game call this function again for the parent widget's
+    // own anchor and compose the two. Until 2026-10-07 the hook lowered the basis at both levels, so an element
+    // of a HUD widget (most of the HUD: the tracker, the shield bar, the ammunition) moved by TWICE the setting
+    // and anything anchored directly (the message text) by once: +16 was 32 for most of the HUD, the parts
+    // drifted against each other as the setting changed, and the tracker's blips had to assume which kind the
+    // tracker was. Now only the outermost call's finished basis is moved, as Reach's hook always has
+    // (reach_hud_height.inl): every element moves by the setting, whatever it is anchored to.
+    thread_local uint32_t t_halo3HudAnchorDepth = 0;
 #if HALOMCCVR_DEV_DIAGNOSTICS
-    // How often the height reached one outermost basis (dev): once, twice, more. The tracker's blips are moved
-    // by twice; "more" would mean a HUD nests deeper than the code read says it can.
-    thread_local uint32_t t_halo3HudAnchorDepth = 0, t_halo3HudAnchorLevels = 0;
+    // What the moved bases were made of (dev): anchored directly, through one parent, or deeper than the code
+    // read says a HUD can nest. Each was moved once.
+    thread_local uint32_t t_halo3HudAnchorDeepest = 0;
     std::atomic<uint32_t> g_halo3HudAnchorChains[3]{};
 #endif
 
     bool __fastcall HudAnchorBasisHook(int userIndex, void* drawWidgetData,
                                        int anchorType, void* basis)
     {
+        const bool outermost = t_halo3HudAnchorDepth++ == 0;
 #if HALOMCCVR_DEV_DIAGNOSTICS
-        ++t_halo3HudAnchorDepth;
+        if (t_halo3HudAnchorDepth > t_halo3HudAnchorDeepest)
+            t_halo3HudAnchorDeepest = t_halo3HudAnchorDepth;
+        bool moved = false;
 #endif
-        const bool result = g_realHudAnchorBasis(
-            userIndex, drawWidgetData, anchorType, basis);
-        if (result && basis && !g_authoredReticleCaptureStarted &&
-            g_enabled.load(std::memory_order_relaxed) && VR_IsStereoEnabled())
+        bool result = false;
+        // The depth must come back down if the game's own function faults: a count left up would make every
+        // later call on this thread look nested, and the HUD height would silently stop.
+        __try
         {
-            const float height = g_config.hud_vertical_offset;
-            if (isfinite(height) && height >= kHudHeightMin && height <= kHudHeightMax)
+            result = g_realHudAnchorBasis(
+                userIndex, drawWidgetData, anchorType, basis);
+            if (outermost && result && basis && !g_authoredReticleCaptureStarted &&
+                g_enabled.load(std::memory_order_relaxed) && VR_IsStereoEnabled())
             {
-                // Halo screen Y grows downward. The user-facing setting follows
-                // normal height semantics: positive raises, negative lowers.
-                reinterpret_cast<float*>(basis)[0x2C / sizeof(float)] -= height;
-                if (height != 0.0f)
+                const float height = g_config.hud_vertical_offset;
+                if (isfinite(height) && height >= kHudHeightMin && height <= kHudHeightMax)
                 {
-                    t_halo3HudHeightLowered = height;
+                    // Halo screen Y grows downward. The user-facing setting follows
+                    // normal height semantics: positive raises, negative lowers.
+                    reinterpret_cast<float*>(basis)[0x2C / sizeof(float)] -= height;
+                    if (height != 0.0f)
+                    {
+                        t_halo3HudHeightLowered = height;
 #if HALOMCCVR_DEV_DIAGNOSTICS
-                    ++t_halo3HudAnchorLevels;
+                        moved = true;
 #endif
+                    }
                 }
             }
         }
-#if HALOMCCVR_DEV_DIAGNOSTICS
-        if (--t_halo3HudAnchorDepth == 0 && t_halo3HudAnchorLevels)
+        __finally
         {
-            g_halo3HudAnchorChains[t_halo3HudAnchorLevels > 2 ? 2 : t_halo3HudAnchorLevels - 1].fetch_add(
-                1, std::memory_order_relaxed);
-            t_halo3HudAnchorLevels = 0;
-        }
+            --t_halo3HudAnchorDepth;
+#if HALOMCCVR_DEV_DIAGNOSTICS
+            if (outermost)
+            {
+                if (moved)
+                    g_halo3HudAnchorChains[t_halo3HudAnchorDeepest > 2 ? 2 : t_halo3HudAnchorDeepest - 1].fetch_add(
+                        1, std::memory_order_relaxed);
+                t_halo3HudAnchorDeepest = 0;
+            }
 #endif
+        }
         return result;
     }
 

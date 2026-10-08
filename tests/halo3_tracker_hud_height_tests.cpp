@@ -240,21 +240,20 @@ void TestDecode()
 void TestMove()
 {
     const float nan = std::numeric_limits<float>::quiet_NaN(), inf = std::numeric_limits<float>::infinity();
-    Check(kArtLevels == 2, "the tracker's art is reached twice: its own basis and its widget's");
-    // The picture: +16 raised the tracker's disc by 2 x 16 HUD units (34.5 pixels in a mirror where the message
-    // text, reached once, moved half of that); the blips must make the same move.
-    Check(ArtShiftY(16.0f) == -32.0f && ArtShiftY(-24.0f) == 48.0f && ArtShiftY(0.0f) == 0.0f,
-          "the art's move is twice the height, up for a positive height (y grows downward)");
+    // The HUD height hook moves every element's finished basis once (it moved an element of a HUD widget twice
+    // until fix/halo3-hud-height-once); the blips must make the same move.
+    Check(ArtShiftY(16.0f) == -16.0f && ArtShiftY(-24.0f) == 24.0f && ArtShiftY(0.0f) == 0.0f,
+          "the art's move is the height, up for a positive height (y grows downward)");
 
     float y = 0.0f;
-    Check(LoweredOriginY(true, 16.0f, 600.0f, y) == Use::Lowered && y == 568.0f,
-          "the default height puts the centre 32 units higher");
-    Check(LoweredOriginY(true, -24.0f, 600.0f, y) == Use::Lowered && y == 648.0f,
+    Check(LoweredOriginY(true, 16.0f, 600.0f, y) == Use::Lowered && y == 584.0f,
+          "the default height puts the centre 16 units higher");
+    Check(LoweredOriginY(true, -24.0f, 600.0f, y) == Use::Lowered && y == 624.0f,
           "a negative height puts it lower");
-    Check(LoweredOriginY(true, 300.0f, 600.0f, y) == Use::Lowered && y == 0.0f &&
-              LoweredOriginY(true, -300.0f, 600.0f, y) == Use::Lowered && y == 1200.0f,
+    Check(LoweredOriginY(true, 300.0f, 600.0f, y) == Use::Lowered && y == 300.0f &&
+              LoweredOriginY(true, -300.0f, 600.0f, y) == Use::Lowered && y == 900.0f,
           "the slider's whole range is followed: nothing is refused for its size");
-    Check(LoweredOriginY(true, 300.0f, 100.0f, y) == Use::Lowered && y == -500.0f,
+    Check(LoweredOriginY(true, 300.0f, 100.0f, y) == Use::Lowered && y == -200.0f,
           "a centre the HUD height takes off the screen goes there with the art");
 
     // Every refusal leaves the game's own y.
