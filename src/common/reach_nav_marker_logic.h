@@ -282,6 +282,22 @@ inline constexpr const char* kNavpointCallPattern =
     "88 54 24 20 45 33 C9 48 8B CE 8B 93 ?? ?? ?? ?? 40 84 FF 75 03 45 33 C0 E8 ?? ?? ?? ??";
 inline constexpr size_t kNavpointCallBytes = 29;
 inline constexpr size_t kNavpointCall = 24, kNavpointReturn = 29;
+// THE OBJECT MARKERS' CALL (retail +0x2DAECE in the wrapper +0x2DAE98, which the HUD's anchor producer +0x2DB54C
+// calls for a widget anchored on an object: by the anchors' HREK names, 16 tracking object, 25 player, 26
+// scripted object, 40-49 fireteam and objective objects). The wrapper builds a record from the object's point
+// and calls the projection with no "behind", pitch in the camera's own frame (the fifth argument is the
+// constant 0) and the ring when the widget asks for it:
+//   mov rcx, r10 / xor r9d, r9d / mov byte [rsp + 0x20], 0 / test r8b, r8b / je +5 / mov r8b, 1 / jmp +3 /
+//   xor r8d, r8d / call PROJECTION
+// SEEN IN A HEADSET (2026-10-07): in the first session with the stand-in on, the off-screen arrows the player
+// saw came through THIS call (about 120 ring projections a second, none from the navpoint list), stayed on the
+// game's own ring, outside what the player could see, and the ring slider did nothing. The same geometry as
+// the navpoint list's (world pitch 0), so the stand-in acts for it too. Optional: if this pattern is missing
+// or ambiguous the navpoint list keeps its stand-in and these keep the game's ring.
+inline constexpr const char* kObjectMarkerCallPattern =
+    "49 8B CA 45 33 C9 C6 44 24 20 00 45 84 C0 74 05 41 B0 01 EB 03 45 33 C0 E8 ?? ?? ?? ??";
+inline constexpr size_t kObjectMarkerCallBytes = 29;
+inline constexpr size_t kObjectMarkerCall = 24, kObjectMarkerReturn = 29;
 
 // The game's own numbers for the ring: 0.3 of the vertical field of view, and the floor of "outside".
 inline constexpr float kRingFraction = 0.3f;
@@ -427,6 +443,21 @@ inline ProjectionBind CheckProjectionConstants(const uint8_t* fraction, const ui
                    std::fabs(ReadF32(floor) - kOffscreenFloor) <= 1.0e-9f
                ? ProjectionBind::Bound
                : ProjectionBind::ConstantMismatch;
+}
+// The object markers' call: the bytes at its pattern's unique match (null = missing or ambiguous), where they
+// are, and the beginning of the function they lie in (-1 = none). The place its call of the projection returns
+// to, as an offset from the image; 0 = it is not a call that lands on the projection bound in `sites` from
+// another function (nothing is acted for then).
+inline int64_t DecodeObjectMarkerCall(const uint8_t* call, int64_t callRva, int64_t callFunctionRva,
+                                      const ProjectionSites& sites)
+{
+    if (!call || callRva <= 0)
+        return 0;
+    const int64_t returnRva = callRva + static_cast<int64_t>(kObjectMarkerReturn);
+    if (call[kObjectMarkerCall] != 0xE8 || sites.headRva <= 0 || callFunctionRva < 0 ||
+        callFunctionRva == sites.headRva || returnRva + ReadI32(call + kObjectMarkerCall + 1) != sites.headRva)
+        return 0;
+    return returnRva;
 }
 // The navpoint list's call: the bytes at its pattern's unique match (null = missing or ambiguous), where they are,
 // and the beginning of the function they lie in (-1 = none). Fills sites.navpointReturnRva, and only when the
@@ -581,7 +612,8 @@ inline const char* WitnessName(Witness what)
 // the game's own (larger) ring, so the game draws it on that point and the two eyes agree; when the game returns
 // the record's point is put back and its off-screen value is set by the game's own formula, so the widget still
 // shows its arrow. The game still draws its own art, text and colour. Nothing else is written. Only for the
-// navpoint list's call (kNavpointCallPattern), and only when that call measures pitch in the camera's own frame.
+// navpoint list's call (kNavpointCallPattern) and the object-anchored markers' call (kObjectMarkerCallPattern),
+// and only when the call measures pitch in the camera's own frame.
 //
 // THE HEAD'S RING is the game's own rule applied to the field BOTH eyes see: the game's ring is six tenths of the
 // half field of view (0.3 of the whole), so the head's is six tenths of the half-angles, about the head's axis,
@@ -715,7 +747,7 @@ enum class Ring : uint8_t
     Moved,         // outside the head's ring: the game was handed the stand-in on it
     OnTarget,      // inside the head's ring: the game draws the marker on the point itself
     Plain,         // the caller did not ask for a ring: the point is projected as it is
-    OtherCaller,   // a ring was asked for, but not by the navpoint list's call: the game's own ring
+    OtherCaller,   // a ring was asked for, but not by the navpoint list's or an object marker's call: the game's own
     WorldPitch,    // the call measures pitch against the world: the stand-in's geometry is not that
     SwitchOff,     // the player's switch is off
     NoEyeScope,    // not inside an eye's own render
@@ -734,7 +766,7 @@ inline const char* RingName(Ring what)
     case Ring::Moved: return "brought onto the head's ring";
     case Ring::OnTarget: return "on its target";
     case Ring::Plain: return "no ring asked for";
-    case Ring::OtherCaller: return "not the navpoint list's call";
+    case Ring::OtherCaller: return "not the navpoint list's or an object marker's call";
     case Ring::WorldPitch: return "a world-pitch ring";
     case Ring::SwitchOff: return "switch off";
     case Ring::NoEyeScope: return "not inside an eye's render";
@@ -766,7 +798,8 @@ inline bool HeadUsable(const Camera& head)
 // The verdict for one projection. `head`: the head's own camera for this frame (position, forward, up), the one
 // both eyes were built from. `ring`: the head's ring. Moved fills `out`; anything else leaves it untouched and
 // the game projects the point as it is. Identity only: no point is declined for being near, far or far off axis.
-// `fromNavpoints`: the game's call came from the navpoint list (the one caller the stand-in acts for).
+// `fromNavpoints`: the game's call came from a caller the stand-in acts for: the navpoint list, or the
+// object-anchored markers' wrapper.
 // `worldPitch`: the call's fifth argument (the navpoint list passes 0; the damage indicators pass 1).
 inline Ring RingPoint(bool switchOn, bool eyeScope, int user, bool valid, bool wantsRing, bool fromNavpoints,
                       bool worldPitch, const Camera& head, bool haveField, const RingField& ring,

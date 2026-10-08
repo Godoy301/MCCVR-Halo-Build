@@ -42,6 +42,9 @@ struct ReachNavProjectionRuntime
     // Where the navpoint list's call of the projection returns: decoded at install (never a constant), before
     // the hook is enabled. The stand-in acts for that caller alone.
     uintptr_t navpointReturn = 0;
+    // Where the object markers' call of the projection returns (the anchor producer's wrapper); 0 = not found
+    // on this image, and those markers keep the game's own ring. Decoded at install, before the hook is enabled.
+    uintptr_t objectMarkerReturn = 0;
     std::atomic<bool> enabled{false};
     std::atomic<uint32_t> callbacks{0};
     // The window the report drains: every projection lands in exactly one of these. The render thread.
@@ -415,7 +418,10 @@ __declspec(noinline) void __fastcall ReachNavProjectionDetour(void* record, int 
 #if HALOMCCVR_DEV_DIAGNOSTICS
             ReachNavNoteCaller(caller, ring != 0);
 #endif
-            (void)ReachNavRingBefore(record, user, ring, worldPitch, caller == feature.navpointReturn, call);
+            (void)ReachNavRingBefore(record, user, ring, worldPitch,
+                                     caller == feature.navpointReturn ||
+                                         (feature.objectMarkerReturn && caller == feature.objectMarkerReturn),
+                                     call);
         }
         bool completed = false;
         __try
@@ -558,6 +564,26 @@ bool InstallReachNavProjection(uintptr_t base, size_t size, uint32_t generation)
     feature.generation = generation;
     feature.sites = sites;
     feature.navpointReturn = base + static_cast<uintptr_t>(sites.navpointReturnRva);
+    {
+        // The object markers' call: optional, its own pattern, the same proof (it lands on the bound projection
+        // from another function).
+        const uintptr_t objectCall = ReachHeadRelativeUnique(base, size, kObjectMarkerCallPattern);
+        uint8_t objectBytes[kObjectMarkerCallBytes]{};
+        const bool objectRead = ReachHeadRelativeRead(base, size, objectCall, objectBytes, kObjectMarkerCallBytes);
+        const int64_t objectReturnRva = DecodeObjectMarkerCall(
+            objectRead ? objectBytes : nullptr, static_cast<int64_t>(objectCall - base),
+            objectRead ? ReachHeadRelativeFunctionRva(base, objectCall) : -1, sites);
+        feature.objectMarkerReturn = objectReturnRva > 0 ? base + static_cast<uintptr_t>(objectReturnRva) : 0;
+        if (feature.objectMarkerReturn)
+            LOG("NAV MARKERS Reach (the off-screen ring): the HUD's object-anchored markers (objective and "
+                "fireteam objects, tracked objects, players) get the stand-in too: their call of the projection "
+                "returns to haloreach.dll+0x%llX", static_cast<unsigned long long>(objectReturnRva));
+        else
+            LOG("NAV MARKERS Reach (the off-screen ring): StockFallback for the HUD's object-anchored markers "
+                "only: their call of the projection was %s on this image, so their arrows keep the game's own "
+                "ring; the navpoint list's stand-in is unaffected",
+                objectCall ? "not a call that lands on the projection" : "not found or ambiguous");
+    }
     feature.reportedFirstMove = false;
     for (auto& count : feature.ring)
         count.store(0, std::memory_order_relaxed);
@@ -612,12 +638,15 @@ bool InstallReachNavProjection(uintptr_t base, size_t size, uint32_t generation)
         "+0x%llX; its ring reads the camera's vertical field of view at +0x%X; the record's point is at +0x%X, its "
         "pixel at +0x%X, its off-screen value at +0x%X; with the arrow switch on, a point outside %.2f of the field "
         "both eyes see (30 deg at most) is brought onto that ring about the head for the one call, for the "
-        "navpoint list's call alone (it returns to +0x%llX; every other caller keeps the game's own ring); arrow "
-        "switch=%d, field-of-view switch=%d",
+        "navpoint list's call (it returns to +0x%llX) and the object-anchored markers' call (%s%llX); every other "
+        "caller keeps the game's own ring; arrow switch=%d, field-of-view switch=%d",
         static_cast<unsigned long long>(sites.headRva), static_cast<unsigned long long>(sites.converterReturnRva),
         static_cast<unsigned long long>(sites.converterRva), sites.cameraFovOffset, sites.recordPoint,
         sites.recordPixel, sites.recordOffscreen, g_config.nav_marker_ring,
-        static_cast<unsigned long long>(sites.navpointReturnRva), g_config.nav_marker_arrow_in_view ? 1 : 0,
+        static_cast<unsigned long long>(sites.navpointReturnRva),
+        feature.objectMarkerReturn ? "it returns to +0x" : "NOT FOUND on this image: 0x",
+        static_cast<unsigned long long>(feature.objectMarkerReturn ? feature.objectMarkerReturn - base : 0),
+        g_config.nav_marker_arrow_in_view ? 1 : 0,
         g_config.nav_markers_on_target ? 1 : 0);
     return true;
 }
@@ -694,7 +723,8 @@ void ReportReachNavProjection()
             callers + callersLength, sizeof(callers) - callersLength, _TRUNCATE, "%s%s+0x%llX%s: ring %u, no ring %u",
             callersLength ? "; " : "", known ? "returning to haloreach.dll" : "another caller ",
             static_cast<unsigned long long>(known ? returns - feature.base : 0),
-            known && returns == feature.navpointReturn ? " (the navpoint list)" : "", asked, plain);
+            known && returns == feature.navpointReturn ? " (the navpoint list)"
+                : known && returns == feature.objectMarkerReturn ? " (object markers)" : "", asked, plain);
         if (wrote > 0)
             callersLength += wrote;
     }

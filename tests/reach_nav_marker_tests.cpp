@@ -370,7 +370,8 @@ void PutI32(std::vector<uint8_t>& bytes, size_t at, int32_t value) { std::memcpy
 constexpr int64_t kHeadRva = 0x2E1430, kCameraRva = 0x2E14FC, kPixelRva = 0x2E15BC, kRingRva = 0x2E172B,
                   kOffscreenRva = 0x2E1817, kConverterRva = 0x287DFC, kChudReturnRva = 0x2E1525,
                   kFractionRva = 0xA8ACB4, kPiRva = 0xA8B22C, kFloorRva = 0xA8A9B8,
-                  kNavpointCallRva = 0x2E3D39, kNavpointFunctionRva = 0x2E3BAC, kNavpointReturnRva = 0x2E3D56;
+                  kNavpointCallRva = 0x2E3D39, kNavpointFunctionRva = 0x2E3BAC, kNavpointReturnRva = 0x2E3D56,
+                  kObjectCallRva = 0x2DAEB6, kObjectFunctionRva = 0x2DAE98, kObjectReturnRva = 0x2DAED3;
 struct Image
 {
     std::vector<uint8_t> head, camera, ring, offscreen, pixel;
@@ -574,6 +575,42 @@ void Sites()
               ProjectionBind::NavpointCallMismatch,
           "without a bound projection there is nothing for the call to land on");
     Check(refused.navpointReturnRva == 0 && unbound.navpointReturnRva == 0, "a refusal fills nothing");
+    // THE OBJECT MARKERS' CALL: the second caller the stand-in acts for (the arrows a player saw in a headset).
+    Check(PatternBytes(kObjectMarkerCallPattern).size() == kObjectMarkerCallBytes &&
+              kObjectMarkerReturn == kObjectMarkerCallBytes && kObjectMarkerCall + 5 == kObjectMarkerReturn,
+          "the object markers' call's length is its pattern's, and the call is its last instruction");
+    Check(std::strcmp(kObjectMarkerCallPattern, kNavpointCallPattern) != 0, "it is its own pattern");
+    std::vector<uint8_t> objectCall = PatternBytes(kObjectMarkerCallPattern);
+    PutI32(objectCall, kObjectMarkerCall + 1,
+           static_cast<int32_t>(kHeadRva - (kObjectCallRva + static_cast<int64_t>(kObjectMarkerReturn))));
+    Check(DecodeObjectMarkerCall(objectCall.data(), kObjectCallRva, kObjectFunctionRva, bound) == kObjectReturnRva &&
+              kObjectReturnRva == 0x2DAED3,
+          "retail's object-marker call lands on the projection and returns to +0x2DAED3");
+    Check(bound.navpointReturnRva == kNavpointReturnRva, "decoding it leaves the navpoint list's return as it was");
+    Check(DecodeObjectMarkerCall(nullptr, kObjectCallRva, kObjectFunctionRva, bound) == 0 &&
+              DecodeObjectMarkerCall(objectCall.data(), 0, kObjectFunctionRva, bound) == 0,
+          "a missing or ambiguous object-marker call gives no caller");
+    {
+        std::vector<uint8_t> wrong = objectCall;
+        wrong[kObjectMarkerCall] = 0xE9;
+        Check(DecodeObjectMarkerCall(wrong.data(), kObjectCallRva, kObjectFunctionRva, bound) == 0,
+              "an object-marker site that jumps instead of calling gives no caller");
+        for (int32_t off : {-5, -1, 1, 0x10})
+        {
+            wrong = objectCall;
+            PutI32(wrong, kObjectMarkerCall + 1,
+                   static_cast<int32_t>(kHeadRva + off - (kObjectCallRva + static_cast<int64_t>(kObjectMarkerReturn))));
+            Check(DecodeObjectMarkerCall(wrong.data(), kObjectCallRva, kObjectFunctionRva, bound) == 0,
+                  "an object-marker call that lands anywhere but the projection's head gives no caller");
+        }
+    }
+    Check(DecodeObjectMarkerCall(objectCall.data(), kObjectCallRva + 1, kObjectFunctionRva, bound) == 0,
+          "the same bytes one byte further on do not land on the projection: no caller");
+    Check(DecodeObjectMarkerCall(objectCall.data(), kObjectCallRva, -1, bound) == 0 &&
+              DecodeObjectMarkerCall(objectCall.data(), kObjectCallRva, kHeadRva, bound) == 0,
+          "an object-marker call in no function, or inside the projection itself, gives no caller");
+    Check(DecodeObjectMarkerCall(objectCall.data(), kObjectCallRva, kObjectFunctionRva, ProjectionSites{}) == 0,
+          "without a bound projection there is nothing for the object-marker call to land on");
     for (int why = 0; why < static_cast<int>(ProjectionBind::Count); ++why)
         Check(ProjectionBindName(static_cast<ProjectionBind>(why))[0] != '?', "every refusal has a name for the log");
     Check(kRingFraction == 0.3f && kOffscreenFloor == 0.0001f, "the game's own ring numbers");
@@ -811,7 +848,8 @@ void RingVerdicts()
     Check(RingPoint(true, true, 0, true, false, true, false, head, true, ring, outside, untouched) == Ring::Plain &&
               RingPoint(true, true, 0, true, false, false, true, head, true, ring, outside, untouched) == Ring::Plain,
           "a caller that asked for no ring gets its point as it is, however far off");
-    // WHOSE CALL. Only the navpoint list's, and only with pitch in the camera's own frame.
+    // WHOSE CALL. Only the navpoint list's and the object-anchored markers' (the detour passes true for either),
+    // and only with pitch in the camera's own frame.
     Check(RingPoint(true, true, 0, true, true, false, false, head, true, ring, outside, untouched) ==
               Ring::OtherCaller,
           "a ring asked for by any other caller (an aim point, a name tag) is the game's own");
