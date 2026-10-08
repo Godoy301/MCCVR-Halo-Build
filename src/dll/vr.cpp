@@ -64,6 +64,7 @@
 #include "../common/haloce_pause_logic.h"
 #include "../common/haloce_reticle_logic.h"
 #include "../common/vr_blit_shader.h"
+#include "../common/reticle_tint_shader.h"
 #include "haloce_controls.h"
 #include "haloce_first_person.h"
 #include "haloce_hud.h"
@@ -201,8 +202,8 @@ namespace
     // XR_KHR_composition_layer_color_scale_bias: lets one layer's colour and alpha be scaled at composition.
     // The crosshair's opacity and brightness sliders are that scale on the crosshair's own quad: the same
     // mechanism for every title's crosshair (the game's captured art or the mod's own), no shader of ours
-    // changes and nothing is re-uploaded. -1 = no instance yet, 0 = the runtime does not offer it (the sliders
-    // then do nothing, and the menu says so), 1 = enabled.
+    // changes and nothing is re-uploaded. -1 = no instance yet, 0 = the runtime does not offer it (the mod then
+    // scales the crosshair's image itself: FinishReticleImage), 1 = enabled.
     std::atomic<int> g_layerColorScaleExt{-1};
     std::atomic<float> g_panelRefreshHz{0.0f};
     XrEnvironmentBlendMode g_blendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
@@ -8603,6 +8604,226 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         return px;
     }
 
+    // ---------------------------------------- crosshair opacity and brightness, in the crosshair's own image
+    // crosshair_opacity / crosshair_brightness on a runtime that does NOT offer layer colour scaling
+    // (g_layerColorScaleExt != 1). SEEN IN A HEADSET (2026-10-07): "SteamVR/OpenXR in Meta compatibility mode
+    // 2.17.10" does not offer XR_KHR_composition_layer_color_scale_bias, and both sliders did nothing at 200%.
+    // The same scale, applied by the mod to the image instead of by the compositor to the layer:
+    //   * every image published into the crosshair's chain (the mod's own art, PaintReticle; the game's captured
+    //     art, UploadAuthoredReticle) is first copied, as published, into a MASTER texture of ours;
+    //   * if the sliders are not both 1 the acquired image is then redrawn from the master through a shader that
+    //     scales colour and alpha (the layer is straight alpha), before it is released;
+    //   * when a slider moves and nothing new is published, RetintReticleIfChanged acquires one image and redraws
+    //     it from the master: the game's art is uploaded only when it changes, so waiting for the next upload
+    //     would leave the sliders dead until the next weapon swap.
+    // One mechanism for every title and both kinds of art. Nothing per frame while the sliders are still (two
+    // float compares). With both at 1 the published image is byte for byte what it always was. A failure leaves
+    // the image as published (untinted), latches, and is logged once: the crosshair is never lost to this.
+    // Where the runtime does offer the extension the compositor does it and none of this runs.
+    // The shader is kReticleTintShader (src/common/reticle_tint_shader.h; tests/reticle_tint_pixels_tests.cpp).
+    ID3D11Texture2D* g_reticleMaster = nullptr;
+    ID3D11ShaderResourceView* g_reticleMasterSrv = nullptr;
+    ID3D11PixelShader* g_reticleTintPs = nullptr;
+    ID3D11Buffer* g_reticleTintCb = nullptr;
+    bool g_reticleMasterValid = false;
+    bool g_reticleTintFailed = false;
+    float g_reticleTintApplied[2]{1.0f, 1.0f};  // opacity, brightness of the image the compositor now holds
+    uint64_t g_reticleTintNextMs = 0;
+    uint64_t g_reticleTintDraws = 0;
+    float g_dualReticleTint[2]{1.0f, 1.0f};
+
+    // The scale the image itself must carry: the sliders, or 1 and 1 when the compositor scales the layer.
+    void ReticleTintWanted(float out[2])
+    {
+        out[0] = out[1] = 1.0f;
+        if (g_layerColorScaleExt.load(std::memory_order_acquire) == 1)
+            return;
+        const float opacity = g_config.crosshair_opacity, brightness = g_config.crosshair_brightness;
+        if (std::isfinite(opacity))
+            out[0] = std::clamp(opacity, 0.0f, 2.0f);
+        if (std::isfinite(brightness))
+            out[1] = std::clamp(brightness, 0.0f, 2.0f);
+    }
+    void ReticleTintFail(const char* why)
+    {
+        if (!g_reticleTintFailed)
+            LOG("CROSSHAIR TINT: StockFallback: %s; crosshair_opacity and crosshair_brightness do nothing for the "
+                "rest of this session and the crosshair is as the game draws it", why);
+        g_reticleTintFailed = true;
+    }
+    // The master: one texture like the chain's images, readable by a shader in the negotiated format.
+    bool EnsureReticleMaster(ID3D11Texture2D* image)
+    {
+        if (g_reticleTintFailed)
+            return false;
+        if (g_reticleMaster && g_reticleMasterSrv)
+            return true;
+        if (!g_device || !image)
+            return false;
+        D3D11_TEXTURE2D_DESC desc{};
+        image->GetDesc(&desc);
+        desc.Usage = D3D11_USAGE_DEFAULT;
+        desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+        desc.CPUAccessFlags = 0;
+        desc.MiscFlags = 0;
+        if (!g_reticleMaster && FAILED(g_device->CreateTexture2D(&desc, nullptr, &g_reticleMaster)))
+        {
+            g_reticleMaster = nullptr;
+            ReticleTintFail("the crosshair's master copy could not be created");
+            return false;
+        }
+        // A TYPELESS image has no default view (SteamVR can hand one out): name the negotiated format first.
+        D3D11_SHADER_RESOURCE_VIEW_DESC view{};
+        view.Format = static_cast<DXGI_FORMAT>(g_xrFormat);
+        view.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+        view.Texture2D.MipLevels = 1;
+        if (FAILED(g_device->CreateShaderResourceView(g_reticleMaster, &view, &g_reticleMasterSrv)) &&
+            FAILED(g_device->CreateShaderResourceView(g_reticleMaster, nullptr, &g_reticleMasterSrv)))
+        {
+            g_reticleMasterSrv = nullptr;
+            ReticleTintFail("the crosshair's master copy has no shader view");
+            return false;
+        }
+        return true;
+    }
+    bool EnsureReticleTintPipeline()
+    {
+        if (g_reticleTintFailed)
+            return false;
+        if (g_reticleTintPs && g_reticleTintCb)
+            return true;
+        if (!g_device || !EnsureBlitPipeline())
+            return false;
+        if (!g_reticleTintPs)
+        {
+            ID3DBlob* blob = nullptr;
+            ID3DBlob* errors = nullptr;
+            const HRESULT compiled = D3DCompile(kReticleTintShader, strlen(kReticleTintShader), nullptr, nullptr,
+                                                nullptr, "ps_tint", "ps_5_0", 0, 0, &blob, &errors);
+            if (errors)
+                errors->Release();
+            const bool made = SUCCEEDED(compiled) && blob &&
+                SUCCEEDED(g_device->CreatePixelShader(blob->GetBufferPointer(), blob->GetBufferSize(), nullptr,
+                                                      &g_reticleTintPs));
+            if (blob)
+                blob->Release();
+            if (!made)
+            {
+                g_reticleTintPs = nullptr;
+                ReticleTintFail("the tint shader could not be made");
+                return false;
+            }
+        }
+        if (!g_reticleTintCb)
+        {
+            D3D11_BUFFER_DESC desc{};
+            desc.ByteWidth = 16;
+            desc.Usage = D3D11_USAGE_DEFAULT;
+            desc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+            if (FAILED(g_device->CreateBuffer(&desc, nullptr, &g_reticleTintCb)))
+            {
+                g_reticleTintCb = nullptr;
+                ReticleTintFail("the tint constants could not be made");
+                return false;
+            }
+        }
+        return true;
+    }
+    // The acquired image `index`, redrawn from the master with colour times tint[1] and alpha times tint[0].
+    bool DrawReticleTint(uint32_t index, const float tint[2])
+    {
+        if (!g_context || !g_reticleMasterSrv || !EnsureReticleTintPipeline())
+            return false;
+        ID3D11RenderTargetView* rtv = GetRtv(g_reticleImages, g_reticleRtvs, index, true);
+        if (!rtv)
+        {
+            ReticleTintFail("the crosshair's image has no render-target view");
+            return false;
+        }
+        const float scale[4]{tint[1], tint[1], tint[1], tint[0]};
+        g_context->UpdateSubresource(g_reticleTintCb, 0, nullptr, scale, 0, 0);
+        D3DStateBackup backup;
+        backup.Capture(g_context);
+        ID3D11Buffer* savedConstants = nullptr;   // D3DStateBackup does not carry the pixel shader's constants
+        g_context->PSGetConstantBuffers(0, 1, &savedConstants);
+        g_context->OMSetRenderTargets(1, &rtv, nullptr);
+        D3D11_VIEWPORT vp{0, 0, static_cast<float>(kReticleSize), static_cast<float>(kReticleSize), 0, 1};
+        g_context->RSSetViewports(1, &vp);
+        g_context->RSSetState(g_blitRasterizer);
+        g_context->OMSetBlendState(nullptr, nullptr, 0xFFFFFFFF);
+        g_context->OMSetDepthStencilState(g_blitDepthOff, 0);
+        g_context->IASetInputLayout(nullptr);
+        g_context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        g_context->VSSetShader(g_blitVs, nullptr, 0);
+        g_context->GSSetShader(nullptr, nullptr, 0);
+        g_context->PSSetShader(g_reticleTintPs, nullptr, 0);
+        g_context->PSSetShaderResources(0, 1, &g_reticleMasterSrv);
+        g_context->PSSetConstantBuffers(0, 1, &g_reticleTintCb);
+        g_context->Draw(3, 0);
+        g_context->PSSetConstantBuffers(0, 1, &savedConstants);
+        if (savedConstants)
+            savedConstants->Release();
+        backup.Restore(g_context);
+        ++g_reticleTintDraws;
+        return true;
+    }
+    // After the acquired image `index` has been written and before it is released: keep it as the master, and
+    // put the sliders' scale on it.
+    void FinishReticleImage(uint32_t index)
+    {
+        if (g_layerColorScaleExt.load(std::memory_order_acquire) == 1)
+            return;
+        g_reticleTintApplied[0] = g_reticleTintApplied[1] = 1.0f;
+        if (!g_context || index >= g_reticleImages.size() || !EnsureReticleMaster(g_reticleImages[index]))
+            return;
+        g_context->CopyResource(g_reticleMaster, g_reticleImages[index]);
+        g_reticleMasterValid = true;
+        float want[2];
+        ReticleTintWanted(want);
+        if ((want[0] != 1.0f || want[1] != 1.0f) && DrawReticleTint(index, want))
+        {
+            g_reticleTintApplied[0] = want[0];
+            g_reticleTintApplied[1] = want[1];
+        }
+    }
+    // Once a frame: a slider moved and no new image was published. At most twenty times a second while one is
+    // being dragged (each is a swapchain acquire, wait and release).
+    void RetintReticleIfChanged()
+    {
+        float want[2];
+        ReticleTintWanted(want);
+        if (want[0] == g_reticleTintApplied[0] && want[1] == g_reticleTintApplied[1])
+            return;
+        if (!g_reticleMasterValid || g_reticleTintFailed || !g_context || g_reticleChain == XR_NULL_HANDLE)
+            return;
+        const uint64_t now = GetTickCount64();
+        if (now < g_reticleTintNextMs)
+            return;
+        g_reticleTintNextMs = now + 50;
+        uint32_t index = 0;
+        XrSwapchainImageAcquireInfo acquire{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
+        XrSwapchainImageWaitInfo wait{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
+        wait.timeout = 1000000000;
+        XrSwapchainImageReleaseInfo release{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
+        if (xrAcquireSwapchainImage(g_reticleChain, &acquire, &index) != XR_SUCCESS)
+            return;
+        bool tinted = false;
+        if (xrWaitSwapchainImage(g_reticleChain, &wait) == XR_SUCCESS && index < g_reticleImages.size())
+        {
+            const bool plain = want[0] == 1.0f && want[1] == 1.0f;
+            tinted = !plain && DrawReticleTint(index, want);
+            // Never release an image nobody wrote: without the tint it is the master as it was published.
+            if (!tinted)
+                g_context->CopyResource(g_reticleImages[index], g_reticleMaster);
+            tinted = tinted || plain;
+        }
+        if (XR_SUCCEEDED(xrReleaseSwapchainImage(g_reticleChain, &release)) && tinted)
+        {
+            g_reticleTintApplied[0] = want[0];
+            g_reticleTintApplied[1] = want[1];
+        }
+    }
+
     bool PaintReticle(float cr, float cg, float cb, float opacity)
     {
         const auto px=BuildReticlePixels(cr,cg,cb,opacity);
@@ -8616,6 +8837,7 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
             return false;
         g_context->UpdateSubresource(g_reticleImages[idx], 0, nullptr, px.data(),
                                      kReticleSize * 4, 0);
+        FinishReticleImage(idx);
         xrReleaseSwapchainImage(g_reticleChain, &ri);
         return true;
     }
@@ -8634,8 +8856,13 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                 g_dualReticleImages,g_dualReticleRtvs,"independent dual-weapon reticles")) return false;
         }
         const float color[3]{g_config.reticle_r,g_config.reticle_g,g_config.reticle_b};
+        // The dual-wield crosshairs are the mod's own art in their own chain: the sliders' scale goes into the
+        // pixels as they are painted (on the stored, encoded values: close to the single crosshair's, not equal).
+        float tint[2];
+        ReticleTintWanted(tint);
         const bool dirty=!g_dualReticleReady || color[0]!=g_dualReticleColor[0] ||
-            color[1]!=g_dualReticleColor[1] || color[2]!=g_dualReticleColor[2];
+            color[1]!=g_dualReticleColor[1] || color[2]!=g_dualReticleColor[2] ||
+            tint[0]!=g_dualReticleTint[0] || tint[1]!=g_dualReticleTint[1];
         if(!dirty&&!g_dualReticleAcquired) return true;
         XrSwapchainImageAcquireInfo acquire{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
         XrSwapchainImageWaitInfo wait{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
@@ -8654,7 +8881,16 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         }
         const bool valid=g_dualReticleIndex<g_dualReticleImages.size();
         if(valid) {
-            const auto pixels=BuildReticlePixels(bgra?color[2]:color[0],color[1],bgra?color[0]:color[2],1.f);
+            auto pixels=BuildReticlePixels(bgra?color[2]:color[0],color[1],bgra?color[0]:color[2],1.f);
+            if(tint[0]!=1.f || tint[1]!=1.f)
+                for(uint32_t& p:pixels) {
+                    uint32_t out=0;
+                    for(int channel=0;channel<4;++channel) {
+                        const float v=static_cast<float>((p>>(channel*8))&0xFF)*(channel==3?tint[0]:tint[1]);
+                        out|=static_cast<uint32_t>(v>255.f?255.f:v+0.5f)<<(channel*8);
+                    }
+                    p=out;
+                }
             g_context->UpdateSubresource(g_dualReticleImages[g_dualReticleIndex],0,nullptr,pixels.data(),kReticleSize*4,0);
         }
         const XrResult released=xrReleaseSwapchainImage(g_dualReticleChain,&release);
@@ -8665,6 +8901,8 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
             return false;
         }
         std::copy(std::begin(color),std::end(color),g_dualReticleColor);
+        g_dualReticleTint[0]=tint[0];
+        g_dualReticleTint[1]=tint[1];
         g_dualReticleReady=true;
         return true;
     }
@@ -9429,6 +9667,9 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                     "fainter than flat at partial opacity) - copied=%d",
                     copied ? 1 : 0);
         }
+        // The crosshair's opacity and brightness, on a runtime that cannot scale the layer.
+        if (copied)
+            FinishReticleImage(index);
         const XrResult releaseResult =
             xrReleaseSwapchainImage(g_reticleChain, &release);
         const bool released = requireSuccessfulRelease
@@ -9728,7 +9969,8 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         LOG("CROSSHAIR TINT: the OpenXR runtime %s layer colour scaling (%s); crosshair_opacity and "
             "crosshair_brightness %s",
             layerColorScale ? "offers" : "does NOT offer", XR_KHR_COMPOSITION_LAYER_COLOR_SCALE_BIAS_EXTENSION_NAME,
-            layerColorScale ? "act on the crosshair's layer" : "do nothing on this runtime: the crosshair is as the game draws it");
+            layerColorScale ? "act on the crosshair's layer"
+                            : "are applied by the mod to the crosshair's own image instead");
 
         XrInstanceCreateInfo ici{XR_TYPE_INSTANCE_CREATE_INFO};
         strcpy_s(ici.applicationInfo.applicationName, "HaloMCCVR");
@@ -17855,6 +18097,9 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                                     "reticle is showing its procedural art "
                                     "this frame instead of the game's widget");
                         }
+                        // A crosshair slider moved and nothing new was published this frame.
+                        if (reticleUploadAdmitted)
+                            RetintReticleIfChanged();
                         // Halo 3 reports the same counters as Reach: a headset
                         // report about the animated crosshair is only
                         // actionable next to the rate it actually published at.
