@@ -272,6 +272,33 @@ void TestSites()
     for (int i = 0; i < static_cast<int>(TrackerUse::Count); ++i)
         named = named && TrackerUseName(static_cast<TrackerUse>(i))[0] != '?';
     Check(named, "every refusal has a name for the log");
+    // THE PRIVATE COPY the sampler is handed.
+    Check(ShadowBytes(0xB8, 0x38) == kShadowBytes, "retail's record has 0x80 bytes behind the yaw: the whole copy");
+    Check(ShadowBytes(0x40, 0x38) == 8 && ShadowBytes(0x38, 0x38) == 8 && ShadowBytes(0, 0x38) == 8,
+          "never less than the pair itself");
+    Check(ShadowBytes(0x4E, 0x38) == 20, "otherwise what lies inside the record, in whole floats");
+    {
+        float record[10]{1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f, 8.0f, 9.0f, 10.0f};
+        float shadow[8]{}, handed[8]{};
+        FillShadow(shadow, handed, record, kShadowBytes, 0.25f);
+        bool same = shadow[0] == 0.25f;
+        for (int i = 1; i < 8; ++i)
+            same = same && shadow[i] == record[i];
+        Check(same, "the copy is the record's bytes with only the yaw replaced: a read past the pair is true");
+        Check(record[0] == 1.0f, "the record itself is not written");
+        Check(!ShadowWritten(shadow, handed, kShadowBytes), "untouched, it is what was handed");
+        shadow[5] = 6.5f;
+        Check(ShadowWritten(shadow, handed, kShadowBytes), "a write anywhere in it is noticed");
+        Check(!ShadowWritten(shadow, handed, 8), "only as far as the copy that was handed reaches");
+        shadow[5] = 6.0f;
+        shadow[0] = 0.5f;
+        Check(ShadowWritten(shadow, handed, 8), "a write to the yaw itself is noticed");
+        float nan[8]{}, nanHanded[8]{};
+        record[1] = std::numeric_limits<float>::quiet_NaN();
+        FillShadow(nan, nanHanded, record, kShadowBytes, 0.25f);
+        Check(!ShadowWritten(nan, nanHanded, kShadowBytes), "a NaN in the record is not mistaken for a write");
+        Check(!ShadowWritten(shadow, handed, 0), "nothing handed: nothing to compare");
+    }
 }
 
 // ---- the proof ----------------------------------------------------------------------------------------------------

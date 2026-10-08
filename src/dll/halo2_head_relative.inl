@@ -75,6 +75,11 @@ struct Halo2TrackerHeadRuntime
     // counted (TrackerUse::Overlapped). It is tried, never waited for. `proven`, `provenCount` and
     // `withdrawnCount` are for the report.
     std::atomic<bool> inside{false};
+    // The game wrote through the private copy (halo2_head_relative_logic.h, THE PRIVATE COPY): latched for this
+    // install; `shadowWrites` counts the calls that found it.
+    std::atomic<bool> shadowWritten{false};
+    std::atomic<uint32_t> shadowWrites{0};
+    size_t shadowBytes = 8;   // the worker, at install; read by the detour
     halo2_head_relative::ArgumentProof proof;  // under `inside`
     std::atomic<bool> proven{false};
     std::atomic<uint32_t> provenCount{0}, withdrawnCount{0};
@@ -86,9 +91,12 @@ struct Halo2TrackerHeadRuntime
     bool reportedFirstUse = false, reportedFirstRefusal = false;
 } g_halo2TrackerHead;
 
-// The pair the sampler reads in place of the record's: {the head's yaw, the record's own pitch}. Per thread: the
-// sampler reads it at once, on the thread that asked.
-thread_local float t_halo2TrackerAngles[2]{};
+// What the sampler reads in place of the record: {the head's yaw, the record's own pitch, and the record's next
+// bytes as they are}. Per thread: the sampler reads it at once, on the thread that asked. `Handed` is what was
+// put there, to notice a write through the pointer at the next call.
+thread_local float t_halo2TrackerAngles[halo2_head_relative::kShadowBytes / sizeof(float)]{};
+thread_local float t_halo2TrackerHanded[halo2_head_relative::kShadowBytes / sizeof(float)]{};
+thread_local size_t t_halo2TrackerHandedBytes = 0;
 
 // THE PROOF'S REFERENCE: the yaw this mod's direct drive last WROTE into player control, on foot. Only while the
 // drive is armed on its own validated record and that write is fresh: then the mod itself put this yaw where the
@@ -126,7 +134,17 @@ __declspec(noinline) float* Halo2TrackerAnglesFor(float* native, int32_t user) n
     volatile bool holding = false;  // this call is user 0's and holds `inside` (the handler reads it too)
     __try
     {
-        const float nativeYaw = native[0], nativePitch = native[1];
+        const float nativeYaw = native[0];
+        // Did the game write through the copy it was handed at this thread's last call? Then never again.
+        if (t_halo2TrackerHandedBytes)
+        {
+            if (ShadowWritten(t_halo2TrackerAngles, t_halo2TrackerHanded, t_halo2TrackerHandedBytes))
+            {
+                feature.shadowWrites.fetch_add(1, std::memory_order_relaxed);
+                feature.shadowWritten.store(true, std::memory_order_release);
+            }
+            t_halo2TrackerHandedBytes = 0;
+        }
         TrackerRequest request;
         request.user = user;
         head_relative::HeadSample sample;
@@ -187,10 +205,13 @@ __declspec(noinline) float* Halo2TrackerAnglesFor(float* native, int32_t user) n
             request.generation = generation == feature.generation ? generation : 0;
             float replaced = nativeYaw, headYaw = 0.0f;
             use = TrackerYaw(request, sample, feature.hold, nativeYaw, replaced, &headYaw);
+            if (use == TrackerUse::Used && feature.shadowWritten.load(std::memory_order_acquire))
+                use = TrackerUse::WrittenThrough;
             if (use == TrackerUse::Used)
             {
-                t_halo2TrackerAngles[0] = replaced;
-                t_halo2TrackerAngles[1] = nativePitch;
+                const size_t bytes = feature.shadowBytes;
+                FillShadow(t_halo2TrackerAngles, t_halo2TrackerHanded, native, bytes, replaced);
+                t_halo2TrackerHandedBytes = bytes;
                 handed = t_halo2TrackerAngles;
                 feature.lastHeadDeg.store(headYaw * head_relative::kRadToDeg, std::memory_order_relaxed);
             }
@@ -482,6 +503,9 @@ bool InstallHalo2HeadRelative(uintptr_t base, size_t size, uint32_t generation)
     feature.recordSlot = base + static_cast<uintptr_t>(sites.recordSlotRva);
     feature.recordStride = sites.recordStride;
     feature.yawOffset = sites.yawOffset;
+    feature.shadowBytes = ShadowBytes(sites.recordStride, sites.yawOffset);
+    feature.shadowWritten.store(false, std::memory_order_release);
+    feature.shadowWrites.store(0, std::memory_order_relaxed);
     feature.inside.store(false, std::memory_order_release);   // nothing can be inside: the hook is not created yet
     feature.proof = ArgumentProof{};
     feature.proven.store(false, std::memory_order_release);
