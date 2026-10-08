@@ -296,7 +296,7 @@ namespace
         if(msg==WM_SIZE&&g_liveResizeBatch.SuppressesSize(hwnd)) return 0;
         if (NativeMenuPointer_Message(msg)) return 0;
         // MCC is closing: nothing may hold its shutdown back (host_unload_gate.cpp).
-        if (msg == WM_CLOSE || msg == WM_DESTROY) HostUnloadGate_HostClosing();
+        if (msg == WM_CLOSE || msg == WM_DESTROY) HostUnloadGate_HostClosing(msg == WM_DESTROY);
         if(msg==kLiveResizeMsg)
         {
             unsigned width=0,height=0;

@@ -16,10 +16,14 @@
 // by then, and the load maps a fresh one. (The reload follows the unload within a millisecond and lands on the
 // same base, so the module poll cannot see it: TitleAdapter_NoteImageUnloading tells the adapter.)
 //
-//   * WHO WAITS: whoever loads that DLL by name while the core's teardown is under way. A teardown always ends,
-//     so the wait does: when the core lets go, when it says it cannot (HostUnloadGate_Abandon), or after kWaitMs.
-//     Then the load goes on exactly as it always did. Nothing waits during play or a pause: no teardown is under
-//     way then.
+//   * WHO WAITS: whoever loads that DLL by name while the core's teardown is under way, OR after the title has
+//     drawn nothing for kStillMs. In the second case the gate asks for the teardown itself: the core's own
+//     heartbeat asks 1 s after the last frame, or up to 3 s after an unpause, and MCC's reload was measured
+//     2.2 to 3.1 s after the last frame, so a game ended soon after an unpause could be reloaded before the
+//     core had been told. A load of a game's DLL by name while that game has stopped drawing IS the game's
+//     end. A teardown always ends, so the wait does: when the core lets go, when it says it cannot
+//     (HostUnloadGate_Abandon), or after kWaitMs. Then the load goes on exactly as it always did. Nothing
+//     waits while the title is drawing.
 //   * WHAT IT COSTS: MCC's loading thread stands still for the rest of the teardown, once per game end (1.7 s
 //     measured). Every other DLL load in the process pays one pointer compare per registered core.
 //   * IT CANNOT MAKE THINGS WORSE THAN BEFORE: a load it lets through unwaited, or after a time-out, gets the old
@@ -35,6 +39,8 @@
 //     with a first-chance access violation in MCC's own code (MCC-Win64-Shipping.exe+0x8AD697 reading
 //     0x540, on one of MCC's task threads). So the game window's WM_CLOSE / WM_DESTROY ends every wait and
 //     prevents new ones (HostUnloadGate_HostClosing): at a close everything is as it was before this file.
+//     A WM_CLOSE only counts for kClosingMs: if MCC is still running after that it was not closing (a quit
+//     that was cancelled, a stray message), and the gate works again. WM_DESTROY is for good.
 //   * title_unload_wait = 0: no wait, the behaviour before this file.
 //   * No logging and no allocation in the hook; the cold worker reports each game end once.
 #include "host_unload_gate.h"
@@ -48,6 +54,8 @@
 namespace
 {
 constexpr uint32_t kWaitMs = 6000;   // a teardown takes 3.5 s (measured); past this the old behaviour is kinder
+constexpr uint64_t kStillMs = 500;   // no frame of the title for this long, and its DLL is loaded by name: the game ended
+constexpr uint64_t kClosingMs = 30000;   // how long a WM_CLOSE means "MCC is closing"
 constexpr int kPins = 4;             // one per title core that holds its DLL
 constexpr int kNameChars = 40;
 
@@ -61,7 +69,7 @@ using LdrLoadDllFn = LONG(NTAPI*)(PWSTR, PULONG, LoaderString*, PVOID*);
 struct Pin
 {
     std::atomic<HMODULE> module{nullptr};
-    std::atomic<const std::atomic<bool>*> tearingDown{nullptr};
+    std::atomic<std::atomic<bool>*> tearingDown{nullptr};   // the core's own "teardown requested"
     std::atomic<const std::atomic<uint64_t>*> lastFrameMs{nullptr};   // GetTickCount64 of the title's last frame
     std::atomic<uint32_t> abandoned{0};   // counts the core's "I cannot let go" notices
     std::atomic<const char*> title{""};
@@ -77,10 +85,21 @@ struct Gate
     // Since the last report. A game end is one wait; the counters exist so nothing is lost if two come close.
     std::atomic<uint32_t> released{0}, releasedStillLoaded{0}, timedOut{0}, abandoned{0}, switchedOff{0};
     std::atomic<uint32_t> hostClosed{0};
-    std::atomic<bool> hostClosing{false};
+    std::atomic<uint32_t> asked{0};   // waits in which the gate asked for the teardown itself
+    std::atomic<bool> hostDestroyed{false};
+    std::atomic<uint64_t> hostCloseMs{0};   // GetTickCount64 of the last WM_CLOSE
     std::atomic<uint32_t> longestMs{0}, arrivedMs{0}, waiting{0};
     std::atomic<const char*> lastTitle{""};
 } g_gate;
+
+// MCC itself is closing: its window was destroyed, or was asked to close a moment ago.
+bool HostClosing(const Gate& gate, uint64_t now) noexcept
+{
+    if (gate.hostDestroyed.load(std::memory_order_acquire))
+        return true;
+    const uint64_t closed = gate.hostCloseMs.load(std::memory_order_acquire);
+    return closed && now >= closed && now - closed <= kClosingMs;
+}
 
 uint64_t FrameAge(const Pin& pin, uint64_t now) noexcept
 {
@@ -110,7 +129,7 @@ bool NamesPin(const Pin& pin, const LoaderString& name) noexcept
 }
 
 // Someone loads a game DLL whose core is tearing down: the game has ended and MCC wants the DLL again.
-__declspec(noinline) void LoadWaits(Pin& pin, HMODULE module) noexcept
+__declspec(noinline) void LoadWaits(Pin& pin, HMODULE module, std::atomic<bool>* askTeardown) noexcept
 {
     Gate& gate = g_gate;
     gate.lastTitle.store(pin.title.load(std::memory_order_relaxed), std::memory_order_relaxed);
@@ -121,10 +140,17 @@ __declspec(noinline) void LoadWaits(Pin& pin, HMODULE module) noexcept
         gate.switchedOff.fetch_add(1, std::memory_order_relaxed);
         return;
     }
-    if (gate.hostClosing.load(std::memory_order_acquire))
+    if (HostClosing(gate, start))
     {
         gate.hostClosed.fetch_add(1, std::memory_order_relaxed);
         return;
+    }
+    if (askTeardown)
+    {
+        // The title has stopped drawing and its DLL is being loaded again: the game has ended, and the core's
+        // heartbeat has not said so yet. Say it (the same flag the heartbeat sets; the worker does the rest).
+        askTeardown->store(true, std::memory_order_release);
+        gate.asked.fetch_add(1, std::memory_order_relaxed);
     }
     const uint32_t abandonedAtEntry = pin.abandoned.load(std::memory_order_acquire);
     gate.waiting.fetch_add(1, std::memory_order_acq_rel);
@@ -147,7 +173,7 @@ __declspec(noinline) void LoadWaits(Pin& pin, HMODULE module) noexcept
             outcome = &gate.abandoned;
             break;
         }
-        if (gate.hostClosing.load(std::memory_order_acquire))
+        if (HostClosing(gate, GetTickCount64()))
         {
             outcome = &gate.hostClosed;
             break;
@@ -172,12 +198,14 @@ LONG NTAPI LdrLoadDllDetour(PWSTR path, PULONG flags, LoaderString* name, PVOID*
             const HMODULE module = pin.module.load(std::memory_order_acquire);
             if (!module)
                 continue;
-            const std::atomic<bool>* const tearingDown = pin.tearingDown.load(std::memory_order_acquire);
-            if (tearingDown && tearingDown->load(std::memory_order_acquire) && NamesPin(pin, *name))
-            {
-                LoadWaits(pin, module);
-                break;
-            }
+            std::atomic<bool>* const tearingDown = pin.tearingDown.load(std::memory_order_acquire);
+            if (!tearingDown || !NamesPin(pin, *name))
+                continue;
+            if (tearingDown->load(std::memory_order_acquire))
+                LoadWaits(pin, module, nullptr);
+            else if (FrameAge(pin, GetTickCount64()) >= kStillMs)
+                LoadWaits(pin, module, tearingDown);   // a frame has been drawn, and none for kStillMs
+            break;
         }
     return gate.original(path, flags, name, handle);
 }
@@ -188,7 +216,6 @@ LONG NTAPI LdrLoadDllDetour(PWSTR path, PULONG flags, LoaderString* name, PVOID*
 // outside the system's own loader modules and Steam's overlay (which relays everyone's FreeLibrary), with the
 // stack it came by. Calls with a frame of this mod in them (its own scoped references) are left out.
 using LdrUnloadDllFn = LONG(NTAPI*)(PVOID);
-constexpr uint64_t kStillMs = 250;
 constexpr int kCensusRows = 8, kCensusFrames = 10, kCensusSkipped = 4;
 struct CensusRow
 {
@@ -370,7 +397,7 @@ bool HostUnloadGate_Install()
     return true;
 }
 
-void HostUnloadGate_Pin(HMODULE module, const std::atomic<bool>* tearingDown,
+void HostUnloadGate_Pin(HMODULE module, std::atomic<bool>* tearingDown,
                         const std::atomic<uint64_t>* lastFrameMs, const char* title)
 {
     if (!module || !tearingDown)
@@ -427,9 +454,12 @@ void HostUnloadGate_Abandon(HMODULE module)
             pin.abandoned.fetch_add(1, std::memory_order_acq_rel);
 }
 
-void HostUnloadGate_HostClosing() noexcept
+void HostUnloadGate_HostClosing(bool destroyed) noexcept
 {
-    g_gate.hostClosing.store(true, std::memory_order_release);
+    if (destroyed)
+        g_gate.hostDestroyed.store(true, std::memory_order_release);
+    else
+        g_gate.hostCloseMs.store(GetTickCount64(), std::memory_order_release);
 }
 
 void HostUnloadGate_Report()
@@ -446,6 +476,7 @@ void HostUnloadGate_Report()
     const uint32_t abandoned = gate.abandoned.exchange(0, std::memory_order_relaxed);
     const uint32_t switchedOff = gate.switchedOff.exchange(0, std::memory_order_relaxed);
     const uint32_t hostClosed = gate.hostClosed.exchange(0, std::memory_order_relaxed);
+    const uint32_t asked = gate.asked.exchange(0, std::memory_order_relaxed);
     if (!released && !stillLoaded && !timedOut && !abandoned && !switchedOff && !hostClosed)
         return;
     const uint32_t longest = gate.longestMs.exchange(0, std::memory_order_relaxed);
@@ -456,7 +487,9 @@ void HostUnloadGate_Report()
     if (released)
         LOG("UNLOAD GATE %s: the game ended; MCC's reload of the game DLL came %u ms after the last frame and waited "
             "%u ms for this mod's teardown. The old image had unloaded by then, so the next game starts in a fresh "
-            "one (%u load%s waited)", title, arrived, longest, released, released == 1 ? "" : "s");
+            "one (%u load%s waited%s)", title, arrived, longest, released, released == 1 ? "" : "s",
+            asked ? "; the reload came before the core's heartbeat had asked for the teardown, so the gate asked"
+                  : "");
     if (stillLoaded)
         LOG("UNLOAD GATE %s: the game ended; MCC's reload of the game DLL came %u ms after the last frame and waited "
             "%u ms for this mod's teardown, but the old image was STILL LOADED when the mod had let go (someone else "
