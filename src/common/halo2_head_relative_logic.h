@@ -479,6 +479,7 @@ enum class TrackerUse : uint8_t
     Stale,              // older than the age limit
     NoHeading,          // non-finite, or the head never had a heading
     Overlapped,         // user 0's call arrived while another call for user 0 was inside (the runtime's flag)
+    WrittenThrough,     // the game once WROTE through the private copy it was handed: never handed again
     Count
 };
 inline const char* TrackerUseName(TrackerUse use)
@@ -496,8 +497,38 @@ inline const char* TrackerUseName(TrackerUse use)
     case TrackerUse::Stale: return "stale head sample";
     case TrackerUse::NoHeading: return "no heading";
     case TrackerUse::Overlapped: return "an overlapping call";
+    case TrackerUse::WrittenThrough: return "the game wrote through the private copy (withdrawn)";
     default: return "?";
     }
+}
+// THE PRIVATE COPY the sampler is handed in place of the pointer into the player's own record. The static read
+// says the sampler reads the yaw and the pitch through it, at once, and nothing else. Nothing at run time
+// checked that, and a pair of floats of ours had the mod's own memory behind it. So the copy is the record's
+// pair AND what follows it in the record (as much as lies inside the user's record, at most
+// kShadowBytes), copied at each call, with only the yaw replaced: a read past the pair finds what the record
+// holds. And the copy is compared with what was handed when the next call arrives on that thread: if it
+// differs the game WROTE through the pointer, a write the record never got, and the substitution ends for
+// this install (TrackerUse::WrittenThrough; the game's own pointer from then on).
+inline constexpr size_t kShadowBytes = 32;
+// How much of the record lies behind the yaw, up to kShadowBytes; never less than the pair itself.
+inline size_t ShadowBytes(uint32_t recordStride, uint32_t yawOffset) noexcept
+{
+    const size_t behind = recordStride > yawOffset ? recordStride - yawOffset : 0;
+    const size_t bytes = behind < kShadowBytes ? behind & ~size_t{3} : kShadowBytes;
+    return bytes < 8 ? 8 : bytes;
+}
+// Fill the copy from the record (`bytes` of it) with the yaw replaced, and keep what was handed.
+inline void FillShadow(float* shadow, float* handed, const float* record, size_t bytes, float yaw) noexcept
+{
+    std::memcpy(shadow, record, bytes);
+    shadow[0] = yaw;
+    std::memcpy(handed, shadow, bytes);
+}
+// The copy no longer holds what was handed: something wrote through the pointer. (Bytes, not floats: a NaN
+// that was copied in compares equal to itself here.)
+inline bool ShadowWritten(const float* shadow, const float* handed, size_t bytes) noexcept
+{
+    return bytes != 0 && std::memcmp(shadow, handed, bytes) != 0;
 }
 // The game runs the users' control update once per pass of its main-loop body, ahead of that pass's ticks (the
 // sampler runs inside a tick), and skips the call this mod stamps while the director holds the player (a
