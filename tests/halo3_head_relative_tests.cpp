@@ -664,15 +664,26 @@ void TestOwnBlip()
     using namespace halo3_head_relative;
     const float origin[3]{10.0f, -4.0f, 2.0f};
     const float other[3]{12.0f, -1.0f, 2.0f};
-    Check(OwnBlipPoint(true, 0, nullptr, origin) == origin, "own unit (slot 0, no point), switch on: the origin is the point");
-    Check(OwnBlipPoint(false, 0, nullptr, origin) == nullptr, "switch off or not the local user: the game's own placement");
-    Check(OwnBlipPoint(true, 0, other, origin) == other, "slot 0 with a point of its own keeps it");
-    Check(OwnBlipPoint(true, -1, other, origin) == other, "another object (slot -1 with its point) is untouched");
-    Check(OwnBlipPoint(true, -1, nullptr, origin) == nullptr, "slot -1 with no point is untouched");
-    Check(OwnBlipPoint(true, 3, nullptr, origin) == nullptr, "any other tracked slot is untouched");
-    Check(OwnBlipPoint(true, 0, nullptr, nullptr) == nullptr, "no origin: nothing to hand over");
+    // WHICH contact is the player's own: the tracked entry that holds the player's unit, in whatever slot.
+    const int32_t me = 0x1234ABCD, enemy = 0x00550077;
+    Check(SlotIsOwnUnit(0, me, me) && SlotIsOwnUnit(7, me, me) && SlotIsOwnUnit(kTrackedEntries - 1, me, me),
+          "the player's own unit is its own in any of the twenty slots");
+    Check(!SlotIsOwnUnit(0, enemy, me),
+          "ANOTHER unit in slot 0 is not the player (the enemy dot a player saw at the centre of the tracker)");
+    Check(!SlotIsOwnUnit(3, enemy, me), "nor in any other slot");
+    Check(!SlotIsOwnUnit(-1, me, me) && !SlotIsOwnUnit(kTrackedEntries, me, me), "outside the twenty entries: never");
+    Check(!SlotIsOwnUnit(0, -1, -1) && !SlotIsOwnUnit(0, -1, me) && !SlotIsOwnUnit(0, me, -1),
+          "an empty entry, or a player with no unit, is nobody");
+    Check(kTrackedEntryBytes == 12 && kTrackedEntries == 20 && sizeof(kObjectSlotEntryBytes) == 17,
+          "the tracked entries as the builder indexes them");
+    Check(OwnBlipPoint(true, true, nullptr, origin) == origin, "own unit, no point, switch on: the origin is the point");
+    Check(OwnBlipPoint(false, true, nullptr, origin) == nullptr, "switch off or not the local user: the game's own placement");
+    Check(OwnBlipPoint(true, true, other, origin) == other, "an own contact with a point of its own keeps it");
+    Check(OwnBlipPoint(true, false, other, origin) == other, "another object with its point is untouched");
+    Check(OwnBlipPoint(true, false, nullptr, origin) == nullptr, "another unit with no point is untouched, slot 0 included");
+    Check(OwnBlipPoint(true, true, nullptr, nullptr) == nullptr, "no origin: nothing to hand over");
     // What the builder then computes: point - origin = 0, so the blip is at the centre for every heading pair.
-    const float* point = OwnBlipPoint(true, 0, nullptr, origin);
+    const float* point = OwnBlipPoint(true, true, nullptr, origin);
     for (float yaw = -3.0f; yaw < 3.1f; yaw += 0.7f)
     {
         float out[2]{9.0f, 9.0f};

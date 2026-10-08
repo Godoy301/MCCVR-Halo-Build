@@ -145,11 +145,35 @@ inline void Place(float dx, float dy, float sinA, float cosA, float invRange, fl
 //
 // The builder takes its contact's position from `point` when one is given (0x32D74B), so handing it the
 // ORIGIN as the point makes that one contact's offset exactly zero. Whether the blip is shown at all, and its
-// type, still come from the unit (slot 0 keeps its tracked entry). No other contact is touched.
+// type, still come from the unit (the slot keeps its tracked entry). No other contact is touched.
 // Applies when the head-relative tracker is on for the local player; otherwise the game's own placement.
-inline const float* OwnBlipPoint(bool localSwitchedOn, int slot, const float* point, const float* origin) noexcept
+//
+// WHICH CONTACT IS THE PLAYER'S OWN. NOT "slot 0". The update's loop (0x32DBED .. 0x32DCAF) hands the object
+// builder each of the tracker state's TWENTY tracked entries in turn, slot 0 to 19, every one with no point;
+// an entry is whatever unit began to move while that slot was free. Alone in Forge the player is the only
+// mover and sits in slot 0, which is where the first version of this rule was measured and why it tested
+// "slot == 0". In a game with other players the player's own entry lapses whenever they stand still, and the
+// next unit to move takes slot 0: THAT unit was then drawn exactly at the centre. A player reported it
+// (2026-10-08): "an enemy marker right at my position at the center of the motion reticle when there may
+// have not been one". The own contact is the entry whose object handle IS the output user's unit: the handle
+// is the entry's first dword (the builder: lea rsi, [rcx + slot * 12]; cmp dword [rsi], -1), and the unit is
+// what the update itself asks the output-user unit getter for (0x32DACC). With no proven getter, or an entry
+// layout that does not prove, no contact is centred: the game's own placement, the dot 0.4 m off.
+inline constexpr int kTrackedEntries = 20;
+inline constexpr size_t kTrackedEntryBytes = 12;
+// The object builder's instructions right after its entry pattern, which fix that layout: lea r10, [r12 +
+// r12 * 2]; lea rsi, [rcx + r10 * 4]; cmove rsi, rbx; je +9; cmp dword [rsi], -1. Identical in halo3.dll and
+// halo3odst.dll. ADDR-HYGIENE: guarded -- compared at install; a mismatch only switches the own-blip rule off.
+inline constexpr uint8_t kObjectSlotEntryBytes[17]{0x4F, 0x8D, 0x14, 0x64, 0x4A, 0x8D, 0x34, 0x91, 0x48,
+                                                  0x0F, 0x44, 0xF3, 0x74, 0x09, 0x83, 0x3E, 0xFF};
+inline bool SlotIsOwnUnit(int slot, int32_t entryHandle, int32_t ownUnit) noexcept
 {
-    return localSwitchedOn && slot == 0 && !point && origin ? origin : point;
+    return slot >= 0 && slot < kTrackedEntries && entryHandle != -1 && entryHandle == ownUnit;
+}
+inline const float* OwnBlipPoint(bool localSwitchedOn, bool slotIsOwnUnit, const float* point,
+                                 const float* origin) noexcept
+{
+    return localSwitchedOn && slotIsOwnUnit && !point && origin ? origin : point;
 }
 
 // ---- the substitution ----

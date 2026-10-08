@@ -71,6 +71,12 @@ struct Halo3HeadRelativeLane
     std::atomic<uint32_t> callbacks{0};
     std::atomic<bool> ready{false};
     int32_t userOffset = 0;   // the output user index in the tracker state, decoded at install
+    // THE PLAYER'S OWN CONTACT (halo3_head_relative_logic.h, WHICH CONTACT IS THE PLAYER'S OWN): the title's
+    // output-user unit getter (the lane's owner points this at its global; null there = not bound), and whether
+    // the install proved both that the update calls that very getter and the tracked entry's layout. Without
+    // the proof no contact is centred.
+    int (__fastcall* const* unitGetter)(int) = nullptr;
+    bool ownUnitProven = false;
     HeadRelativePublication head;
     // Verdicts, counted where the builders run; the cold worker reads and clears them.
     std::atomic<uint32_t> uses[static_cast<size_t>(head_relative::Use::Count)]{};
@@ -203,6 +209,31 @@ bool Halo3TrackerPair(Halo3HeadRelativeLane& lane, halo3_head_relative::Hold& ho
 }
 } // namespace
 
+// Is the tracked entry in `slot` the output user's own unit? Guarded: the entry is the game's own state, and the
+// getter is the game's own function (the one the update called for this user a moment ago, on this thread).
+// ADDR-HYGIENE: guarded -- the entry's stride and handle offset are the builder's own bytes, compared at install
+// (kObjectSlotEntryBytes); the getter is the bound one only if the update's unit call lands on it.
+__declspec(noinline) bool Halo3TrackerSlotIsOwn(Halo3HeadRelativeLane& lane, const void* self, int slot) noexcept
+{
+    using namespace halo3_head_relative;
+    if (!lane.ownUnitProven || !lane.unitGetter || !self || slot < 0 || slot >= kTrackedEntries)
+        return false;
+    __try
+    {
+        const auto getter = *lane.unitGetter;
+        if (!getter)
+            return false;
+        const int32_t entry = *reinterpret_cast<const int32_t*>(static_cast<const uint8_t*>(self) +
+                                                              static_cast<size_t>(slot) * kTrackedEntryBytes);
+        return entry != -1 && SlotIsOwnUnit(slot, entry, getter(0));
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        lane.faults.fetch_add(1, std::memory_order_relaxed);
+        return false;
+    }
+}
+
 #if HALOMCCVR_DEV_DIAGNOSTICS
 // ADDR-HYGIENE: dev-only (a diagnostic read, never a write, guarded). The blip's x / y are its first two
 // floats (the point builder's own stores at +0x32DA6C / +0x32DA85) and the range is the float both builders
@@ -258,12 +289,14 @@ __declspec(noinline) bool __fastcall Halo3TrackerObjectDetour(void* self, int sl
     {
         const bool own = Halo3TrackerPair(lane, t_halo3TrackerHold, self, sinA, cosA);
         // The player's own blip goes AT the centre (halo3_head_relative_logic.h, OwnBlipPoint): the game measures it
-        // from the unit's head marker to the body, 0.4 m and more off the centre.
-        const float* placedPoint = halo3_head_relative::OwnBlipPoint(own, slot, point, origin);
+        // from the unit's head marker to the body, 0.4 m and more off the centre. Own = the tracked entry that
+        // holds the player's unit, whichever of the twenty slots that is; never another unit that sits in slot 0.
+        const bool ownSlot = own && !point && Halo3TrackerSlotIsOwn(lane, self, slot);
+        const float* placedPoint = halo3_head_relative::OwnBlipPoint(own, ownSlot, point, origin);
         if (lane.objectOriginal)
             placed = CallNativeWithSpareSlots(lane.objectOriginal, self, slot, blip, origin, placedPoint, sinA, cosA);
 #if HALOMCCVR_DEV_DIAGNOSTICS
-        if (placed && slot == 0 && !point)
+        if (placed && ownSlot)
             Halo3TrackerNoteOwnBlip(lane, self, blip);
 #endif
     }
@@ -326,6 +359,7 @@ struct Halo3TrackerProof
     uintptr_t update = 0, point = 0, object = 0;
     int32_t userOffset = 0;
     bool unitGetterAgrees = false;   // the update's unit call is the getter the vehicle lane bound
+    bool slotEntryAgrees = false;    // the object builder indexes its tracked entry as kObjectSlotEntryBytes says
     const char* trig = "";           // how sinf / cosf were proven
 };
 
@@ -454,6 +488,14 @@ const char* Halo3TrackerProve(uintptr_t base, size_t size, uintptr_t unitGetter,
     if (unitGetter && unitCall != unitGetter)
         return "the update's unit call is not the output-user unit getter";
     out.unitGetterAgrees = unitGetter != 0;
+    // The tracked entry's layout, from the builder's own next instructions. Not a condition of the install: a
+    // builder that indexes its entries differently only loses the own-blip rule.
+    {
+        const uintptr_t after = object + (sizeof(t::kObjectEntryPattern) / 3);
+        out.slotEntryAgrees = inside(after, sizeof(t::kObjectSlotEntryBytes)) &&
+            memcmp(reinterpret_cast<const void*>(after), t::kObjectSlotEntryBytes,
+                   sizeof(t::kObjectSlotEntryBytes)) == 0;
+    }
     out.update = update;
     out.point = point;
     out.object = object;
@@ -500,6 +542,7 @@ bool InstallHeadRelativeTracker(Halo3HeadRelativeLane& lane, uintptr_t base, siz
         return false;
     }
     lane.objectTarget = object;
+    lane.ownUnitProven = proof.unitGetterAgrees && proof.slotEntryAgrees && lane.unitGetter != nullptr;
     lane.ready.store(true, std::memory_order_release);
     if (MH_EnableHook(point) != MH_OK || MH_EnableHook(object) != MH_OK)
     {
@@ -511,12 +554,17 @@ bool InstallHeadRelativeTracker(Halo3HeadRelativeLane& lane, uintptr_t base, siz
         "sinf / cosf of -(yaw + pi/2) and hands the pair to its contact builders +0x%llX (world points) and +0x%llX "
         "(objects), which nothing else calls; both are hooked and get the pair of the HEAD's heading for output user "
         "0 (tracker state +0x%X). Proven: nine unique signatures, both targets at the update's call operands and "
-        "at their own entries, pi/2 and the sign mask, %s, the unit call %s. Nothing in the game is written. "
-        "tracker_follows_head is %s",
+        "at their own entries, pi/2 and the sign mask, %s, the unit call %s. The player's own dot is %s. Nothing in "
+        "the game is written. tracker_follows_head is %s",
         lane.title, generation, static_cast<unsigned long long>(proof.update - base),
         static_cast<unsigned long long>(proof.point - base), static_cast<unsigned long long>(proof.object - base),
         static_cast<unsigned>(proof.userOffset), proof.trig,
         proof.unitGetterAgrees ? "is the bound output-user unit getter" : "unchecked (no unit getter bound)",
+        lane.ownUnitProven ? "centred: it is the tracked entry (of twenty, 12 bytes each, the object's handle "
+                             "first) that holds that getter's unit"
+                           : proof.slotEntryAgrees ? "left where the game puts it (no unit getter to know it by)"
+                                                   : "left where the game puts it (the builder indexes its "
+                                                     "tracked entries differently on this image)",
         g_config.tracker_follows_head ? "on" : "off");
     lane.reportedSwitch = g_config.tracker_follows_head ? 1 : 0;
     return true;
@@ -835,6 +883,7 @@ bool InstallHalo3HeadRelative(uintptr_t base, size_t size, uint32_t generation)
     auto& lane = g_halo3HeadRelative;
     lane.title = "Halo 3";
     lane.runtimeGeneration = &g_halo3RuntimeGeneration;
+    lane.unitGetter = &g_halo3PlayerUnitGetter;
     const bool tracker = InstallHeadRelativeTracker(lane, base, size, generation,
                                                     reinterpret_cast<uintptr_t>(g_halo3PlayerUnitGetter),
                                                     reinterpret_cast<void*>(&Halo3TrackerPointDetour),
@@ -1072,12 +1121,14 @@ __declspec(noinline) bool __fastcall OdstTrackerObjectDetour(void* self, int slo
         // The player's own blip at the centre, as in Halo 3. ODST's update +0x3655A0 is Halo 3's +0x32DA98
         // instruction for instruction but for where player control keeps the heading (read 2026-10-07, retail
         // file): the origin from the unit's head marker (+0x399C38), then the same first object call (+0x365759)
-        // with a null point. Not seen in a game: ODST has not been run.
-        const float* placedPoint = halo3_head_relative::OwnBlipPoint(own, slot, point, origin);
+        // with a null point. Not seen in a game: ODST has not been run. As in Halo 3, own = the tracked entry
+        // that holds the player's unit, in whichever of the twenty slots; never another unit that sits in slot 0.
+        const bool ownSlot = own && !point && Halo3TrackerSlotIsOwn(lane, self, slot);
+        const float* placedPoint = halo3_head_relative::OwnBlipPoint(own, ownSlot, point, origin);
         if (lane.objectOriginal)
             placed = CallNativeWithSpareSlots(lane.objectOriginal, self, slot, blip, origin, placedPoint, sinA, cosA);
 #if HALOMCCVR_DEV_DIAGNOSTICS
-        if (placed && slot == 0 && !point)
+        if (placed && ownSlot)
             Halo3TrackerNoteOwnBlip(lane, self, blip);
 #endif
     }
@@ -1120,6 +1171,7 @@ bool InstallOdstHeadRelative(uintptr_t base, size_t size, uint32_t generation)
     auto& lane = g_odstHeadRelative;
     lane.title = "ODST";
     lane.runtimeGeneration = &g_odstRuntimeGeneration;
+    lane.unitGetter = &g_odstPlayerUnitGetter;
     const bool tracker = InstallHeadRelativeTracker(lane, base, size, generation,
                                                     reinterpret_cast<uintptr_t>(g_odstPlayerUnitGetter),
                                                     reinterpret_cast<void*>(&OdstTrackerPointDetour),
