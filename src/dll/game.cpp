@@ -19535,7 +19535,11 @@ namespace
         HMODULE retiredModuleReference = g_odstCamera.moduleReference;
         ClearOdstCameraPointers();
         if (retiredModuleReference)
+        {
             FreeLibrary(retiredModuleReference);
+            // After the release: a reload of halo3odst.dll that waited for this teardown may go on.
+            HostUnloadGate_Unpin(retiredModuleReference);
+        }
     }
 
     bool DiscardCreatedOdstHooks()
@@ -19630,6 +19634,10 @@ namespace
         g_odstCamera.moduleBase = base;
         g_odstCamera.moduleSize = size;
         g_odstCamera.moduleReference = ownedModuleReference;
+        // MCC's reload of halo3odst.dll waits for this core's teardown once it is under way (wait-only: the
+        // gate never starts ODST's teardown; its game end has not been measured). host_unload_gate.cpp.
+        HostUnloadGate_Pin(ownedModuleReference, &g_odstCamera.teardownRequested, &g_odstLastCamCopyMs, "ODST",
+                           false);
         g_odstCamera.prepareView =
             reinterpret_cast<PrepareViewFn>(resolved.prepareView);
         g_odstCamera.buildViewport =
@@ -35309,7 +35317,7 @@ namespace
                 g_reachCamera.generation=generation;
                 g_reachCamera.moduleReference=moduleReference;
                 moduleReferenceGuard.transferred = true;
-                HostUnloadGate_Pin(moduleReference, &g_reachCamera.teardownRequested, &g_reachLastCamCopyMs, "Reach");
+                HostUnloadGate_Pin(moduleReference, &g_reachCamera.teardownRequested, &g_reachLastCamCopyMs, "Reach", true);
                 g_reachCamera.innerTarget=innerRetained?inner:nullptr;
                 g_reachCamera.outerTarget=outerRetained?outer:nullptr;
                 g_reachCamera.fpInterpolateTarget=
@@ -35364,7 +35372,7 @@ namespace
         // From here MCC's reload of haloreach.dll after a game waits for this core's teardown
         // (host_unload_gate.cpp): without that the reference kept the old image loaded, the reload took it, and
         // the next game started in it.
-        HostUnloadGate_Pin(moduleReference, &g_reachCamera.teardownRequested, &g_reachLastCamCopyMs, "Reach");
+        HostUnloadGate_Pin(moduleReference, &g_reachCamera.teardownRequested, &g_reachLastCamCopyMs, "Reach", true);
         g_reachCamera.innerTarget = inner;
         g_reachCamera.outerTarget = outer;
         g_reachCamera.fpInterpolateTarget = fpInterpolate;

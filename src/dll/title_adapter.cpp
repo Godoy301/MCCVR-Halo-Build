@@ -7,6 +7,7 @@
 #include <windows.h>
 
 #include "../common/coop_probe_logic.h"
+#include "../common/host_unload_gate_logic.h"
 #include "../common/log.h"
 #include "d3d11_hook.h"
 #include "halo2_adapter.h"
@@ -526,8 +527,8 @@ const TitleDescriptor* TitleAdapter_PollLoaded(uint64_t observedAtMs)
         const uint32_t unloads = g_imageUnloads[slot].load(std::memory_order_acquire);
         const bool unloaded = unloads != g_imageUnloadsPolled[slot];
         g_imageUnloadsPolled[slot] = unloads;
-        if (unloaded && modules.moduleBases[slot] &&
-            modules.moduleBases[slot] == g_polledBases[slot].load(std::memory_order_relaxed))
+        if (host_unload_gate::ReloadedUnseen(unloaded, modules.moduleBases[slot],
+                                             g_polledBases[slot].load(std::memory_order_relaxed)))
         {
             reloadedMask |= uint32_t{1} << slot;
             gap.availabilityMask &= ~(uint32_t{1} << slot);

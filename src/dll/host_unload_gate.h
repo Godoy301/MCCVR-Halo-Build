@@ -15,8 +15,10 @@ bool HostUnloadGate_Install();
 // a load of that DLL waits while it is set, and the gate SETS it when the DLL is loaded by name after the title
 // has drawn nothing for half a second (the game has ended and the heartbeat has not said so yet). `lastFrameMs`
 // is the GetTickCount64 of the title's last frame (0 = none yet). `title` is a string literal for the log.
+// `mayAsk` false: a WAIT-ONLY reference. A load waits only while the core's own teardown is already under way;
+// the gate never sets `tearingDown` (for a core whose game end has not been measured: ODST).
 void HostUnloadGate_Pin(HMODULE module, std::atomic<bool>* tearingDown,
-                        const std::atomic<uint64_t>* lastFrameMs, const char* title);
+                        const std::atomic<uint64_t>* lastFrameMs, const char* title, bool mayAsk);
 // Worker, AFTER the core's own FreeLibrary of that reference: a waiting load may go on.
 void HostUnloadGate_Unpin(HMODULE module);
 // Worker: the core cannot let go without the title's own thread (a restore that only that thread can make), so a
