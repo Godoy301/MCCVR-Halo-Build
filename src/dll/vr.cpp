@@ -1,4 +1,5 @@
 #include "../common/vr_interaction_refinement_logic.h"
+#include "../common/hand_smoothing.h"
 #include "../common/support_grip_logic.h"
 #include "../common/support_grab_logic.h"
 #include "../common/hud_reveal_logic.h"
@@ -14010,6 +14011,118 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         return true;
     }
 
+    // HAND SMOOTHING (hand_smoothing.h): the 1 Euro filter on both controllers, at the one place their poses
+    // enter the mod. The OpenXR frame thread only, once per frame, on the frame's own sample time. Index 0 is
+    // the physical left controller, 1 the physical right (before the handedness swap).
+    struct HandSmoothingRuntime
+    {
+        hand_smoothing::State state[2];
+        bool gripSignal[2]{};   // the position that is filtered is the grip's (else the aim pose's own)
+        int reportedOn = -1, reportedHands = -1;
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        uint32_t steps = 0, frames = 0;
+        float maxMm = 0.0f, maxDeg = 0.0f;
+        uint64_t windowMs = 0;
+#endif
+    } g_handSmoothing;
+
+    // `aim[h]` is the hand's located aim pose and `grip[h]` its grip position, both raw; on return they are the
+    // steadied pair, rigidly related as they were. The grip's position is the one filtered when it was located
+    // (as in Campaign Evolved, so turning the wrist in place does not drag the hand), the aim pose's own
+    // otherwise; the other takes the same shift. An invalid or unwanted hand restarts its filter.
+    void SmoothControllerPoses(XrTime time, XrPosef* const aim[2], const bool aimValid[2], XrVector3f grip[2],
+                               const bool gripValid[2])
+    {
+        auto& runtime = g_handSmoothing;
+        const bool on = g_config.hand_smoothing;
+        const int hands = std::clamp(g_config.hand_smoothing_hands, 0, 2);
+        if (runtime.reportedOn != (on ? 1 : 0) || runtime.reportedHands != hands)
+        {
+            runtime.reportedOn = on ? 1 : 0;
+            runtime.reportedHands = hands;
+            if (on)
+                LOG("HAND SMOOTHING: on (%s): the tracked controllers are steadied where their poses enter the mod, "
+                    "so aim, the arms, two-handed holds and reload read the same hands; swing melee and arm-swing "
+                    "running keep the raw velocities. Position %.2f Hz + %.0f per m/s, rotation %.2f Hz + %.1f per "
+                    "rad/s, speed cutoff %.1f Hz",
+                    hands == 0 ? "both hands" : hands == 1 ? "the aiming hand only" : "the other hand only",
+                    g_config.hand_smoothing_pos_min_hz, g_config.hand_smoothing_pos_beta,
+                    g_config.hand_smoothing_rot_min_hz, g_config.hand_smoothing_rot_beta,
+                    g_config.hand_smoothing_speed_cutoff_hz);
+            else
+                LOG("HAND SMOOTHING: off: the hands are exactly as the headset tracks them");
+        }
+        hand_smoothing::Params params;
+        params.posMinHz = hand_smoothing::Clamp(g_config.hand_smoothing_pos_min_hz, 0.0f, hand_smoothing::kMinHzMax);
+        params.posBeta = hand_smoothing::Clamp(g_config.hand_smoothing_pos_beta, 0.0f, hand_smoothing::kPosBetaMax);
+        params.rotMinHz = hand_smoothing::Clamp(g_config.hand_smoothing_rot_min_hz, 0.0f, hand_smoothing::kMinHzMax);
+        params.rotBeta = hand_smoothing::Clamp(g_config.hand_smoothing_rot_beta, 0.0f, hand_smoothing::kRotBetaMax);
+        params.speedCutoffHz = g_config.hand_smoothing_speed_cutoff_hz;
+        for (int hand = 0; hand < 2; ++hand)
+        {
+            hand_smoothing::State& state = runtime.state[hand];
+            const bool isAimHand = (hand == 0) == g_config.left_handed;
+            if (!on || !aimValid[hand] || !hand_smoothing::HandWanted(hands, isAimHand))
+            {
+                state.have = false;
+                continue;
+            }
+            XrPosef& pose = *aim[hand];
+            const bool useGrip = gripValid[hand];
+            if (useGrip != runtime.gripSignal[hand])
+                state.have = false;   // the filtered position changed its origin: restart, do not differentiate it
+            runtime.gripSignal[hand] = useGrip;
+            const XrVector3f& signal = useGrip ? grip[hand] : pose.position;
+            const float rawPos[3]{signal.x, signal.y, signal.z};
+            const float rawRot[4]{pose.orientation.x, pose.orientation.y, pose.orientation.z, pose.orientation.w};
+            if (!hand_smoothing::Finite3(rawPos) || !hand_smoothing::FiniteUnit(rawRot))
+            {
+                state.have = false;
+                continue;
+            }
+            const bool stepped = hand_smoothing::Step(state, rawPos, rawRot, static_cast<int64_t>(time), params);
+            const float shift[3]{state.pos[0] - rawPos[0], state.pos[1] - rawPos[1], state.pos[2] - rawPos[2]};
+            pose.position.x += shift[0];
+            pose.position.y += shift[1];
+            pose.position.z += shift[2];
+            if (useGrip)
+                grip[hand] = {state.pos[0], state.pos[1], state.pos[2]};
+            pose.orientation = {state.rot[0], state.rot[1], state.rot[2], state.rot[3]};
+#if HALOMCCVR_DEV_DIAGNOSTICS
+            if (stepped)
+                ++runtime.steps;
+            float inverse[4], correction[4], turned[3];
+            hand_smoothing::QuatConj(rawRot, inverse);
+            hand_smoothing::QuatMul(state.rot, inverse, correction);
+            hand_smoothing::QuatLog(correction, turned);
+            runtime.maxMm = (std::max)(runtime.maxMm, 1000.0f * hand_smoothing::Length3(shift));
+            runtime.maxDeg = (std::max)(runtime.maxDeg, 57.29578f * hand_smoothing::Length3(turned));
+#else
+            (void)stepped;
+#endif
+        }
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        // Dev: what the filter did in the last five seconds (how far the steadied hand stood from the tracked one).
+        ++runtime.frames;
+        const uint64_t nowMs = GetTickCount64();
+        if (!runtime.windowMs)
+            runtime.windowMs = nowMs;
+        if (nowMs - runtime.windowMs >= 5000)
+        {
+            if (on && runtime.steps)
+                LOG("HAND SMOOTHING (dev): %u frames, %u filter steps in %.1f s; the steadied hand stood at most %.1f mm "
+                    "and %.2f deg from the tracked one (left %s, right %s; position signal: left %s, right %s)",
+                    runtime.frames, runtime.steps, static_cast<float>(nowMs - runtime.windowMs) / 1000.0f,
+                    runtime.maxMm, runtime.maxDeg, runtime.state[0].have ? "steadied" : "raw",
+                    runtime.state[1].have ? "steadied" : "raw", runtime.gripSignal[0] ? "grip" : "aim",
+                    runtime.gripSignal[1] ? "grip" : "aim");
+            runtime.steps = runtime.frames = 0;
+            runtime.maxMm = runtime.maxDeg = 0.0f;
+            runtime.windowMs = nowMs;
+        }
+#endif
+    }
+
     bool CaptureRightControllerPose(XrTime time)
     {
         g_controllerFingerSample={};
@@ -14138,6 +14251,14 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         selectVelocity(0,leftValid,leftLocation.pose,leftVelocity,
             selectedLeftVelocity,selectedLeftVelocityValid,
             leftUsedPoseDerived);
+
+        // HAND SMOOTHING: after the velocities above (swing melee and arm-swing running stay on raw motion),
+        // before anything stores or reads a controller pose of this frame.
+        {
+            XrPosef* const aimPoses[2]{&leftLocation.pose, &location.pose};
+            const bool aimValid[2]{leftValid, valid};
+            SmoothControllerPoses(time, aimPoses, aimValid, physicalGripPosition, physicalGripValid);
+        }
 
         const bool leftHanded = g_config.left_handed;
         const bool handChanged = leftHanded !=

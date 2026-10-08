@@ -673,6 +673,46 @@ namespace
         ImGui::TextDisabled("Raw by default. Try 5%% only for micro-jitter; capped at 10%% for comfort.");
         ImGui::Spacing();
         ImGui::Separator();
+        ImGui::Text("Hand motion");
+        changed |= ImGui::Checkbox("Hand smoothing", &g_config.hand_smoothing);
+        ImGui::TextDisabled("Steadies your tracked hands before anything reads them: aim and shots, the arms,\n"
+                            "two-handed holds, reload and this pointer. A still hand is held steady; a fast move\n"
+                            "passes through. Swing melee and arm-swing running still read your raw motion. Live.");
+        if (g_config.hand_smoothing)
+        {
+            changed |= ImGui::Combo("Hands##handsmoothing", &g_config.hand_smoothing_hands,
+                                    "Both hands\0Only the hand I aim with\0Only my other hand\0");
+            ImGui::TextDisabled("\"Only my other hand\" steadies two-handed holds and the arms with no lag on your aim.");
+            changed |= vr_menu::SliderFloat("Position steadiness (Hz)", &g_config.hand_smoothing_pos_min_hz,
+                                          0.0f, 10.0f, "%.2f");
+            changed |= vr_menu::SliderFloat("Rotation steadiness (Hz)", &g_config.hand_smoothing_rot_min_hz,
+                                          0.0f, 10.0f, "%.2f");
+            ImGui::TextDisabled("While the hand is still. Lower is steadier but slower to follow a slow move or a\n"
+                                "slow aim. 0 turns that half off.");
+            changed |= vr_menu::SliderFloat("Position follow speed", &g_config.hand_smoothing_pos_beta,
+                                          0.0f, 2000.0f, "%.0f");
+            changed |= vr_menu::SliderFloat("Rotation follow speed", &g_config.hand_smoothing_rot_beta,
+                                          0.0f, 50.0f, "%.1f");
+            ImGui::TextDisabled("How quickly smoothing lets go as the hand moves or turns faster. Raise it if slow\n"
+                                "moves feel laggy; lower it if a moving hand still shakes.");
+            changed |= vr_menu::SliderFloat("Speed estimate smoothing (Hz)", &g_config.hand_smoothing_speed_cutoff_hz,
+                                          0.1f, 100.0f, "%.1f");
+            if (ImGui::Button("Campaign Evolved defaults##handsmoothing"))
+            {
+                const Config defaults{};
+                g_config.hand_smoothing_hands = defaults.hand_smoothing_hands;
+                g_config.hand_smoothing_pos_min_hz = defaults.hand_smoothing_pos_min_hz;
+                g_config.hand_smoothing_pos_beta = defaults.hand_smoothing_pos_beta;
+                g_config.hand_smoothing_rot_min_hz = defaults.hand_smoothing_rot_min_hz;
+                g_config.hand_smoothing_rot_beta = defaults.hand_smoothing_rot_beta;
+                g_config.hand_smoothing_speed_cutoff_hz = defaults.hand_smoothing_speed_cutoff_hz;
+                changed = true;
+            }
+            ImGui::SameLine();
+            ImGui::TextDisabled("1 Hz, 500, 1 Hz, 5, 10 Hz: the feel of the Campaign Evolved mod.");
+        }
+        ImGui::Spacing();
+        ImGui::Separator();
         ImGui::Text("Sound");
         changed |= ImGui::Checkbox("Sound follows your head", &g_config.audio_follows_head);
         ImGui::TextDisabled("ON: you hear the world from the way your head faces.\n"
