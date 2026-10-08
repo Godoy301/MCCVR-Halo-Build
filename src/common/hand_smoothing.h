@@ -1,7 +1,8 @@
 #pragma once
 // HAND SMOOTHING: a 1 Euro filter on the tracked controllers, where their poses enter the mod.
 //
-// Ported from the Halo: Campaign Evolved VR mod's core/HandSmooth (same filter, same defaults, same units), which
+// Ported from the Halo: Campaign Evolved VR mod's core/HandSmooth (same filter, same units; its defaults except
+// the two steadiness cutoffs, below), which
 // took it from Casiez, Roussel & Vogel's 1 Euro filter (CHI 2012); VRExpansionPlugin runs the same family on its
 // grip controllers. A still hand is held steady (a low cutoff), and the cutoff rises with the hand's speed, so a
 // fast move passes through with little lag.
@@ -26,10 +27,14 @@
 
 namespace hand_smoothing
 {
-// The Campaign Evolved defaults: what "hand smoothing on" has felt like there.
-inline constexpr float kDefaultPosMinHz = 1.0f;     // a still hand's position cutoff
+// THE DEFAULTS. Campaign Evolved's numbers, except the two steadiness cutoffs: 1.3 Hz here, 1.0 Hz there. The
+// tester played a headset session with Campaign Evolved's numbers (2026-10-07), raised both
+// cutoffs to 1.3 and left the rest: a little less steadying of a still hand for a little less lag on a slow
+// aim. kCampaignEvolved* keep that mod's pair for the record.
+inline constexpr float kCampaignEvolvedPosMinHz = 1.0f, kCampaignEvolvedRotMinHz = 1.0f;
+inline constexpr float kDefaultPosMinHz = 1.3f;     // a still hand's position cutoff
 inline constexpr float kDefaultPosBeta = 500.0f;    // Hz of cutoff per metre a second
-inline constexpr float kDefaultRotMinHz = 1.0f;     // a still hand's rotation cutoff
+inline constexpr float kDefaultRotMinHz = 1.3f;     // a still hand's rotation cutoff
 inline constexpr float kDefaultRotBeta = 5.0f;      // Hz of cutoff per radian a second
 inline constexpr float kDefaultSpeedCutoffHz = 10.0f;
 // The config's ranges (the same as Campaign Evolved's keys accept).

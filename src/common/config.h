@@ -383,7 +383,8 @@ struct Config
     float haptic_intensity = 0.86f;
     float headset_smoothing = 0.03f;
     float aim_stabilization = 0.48f;
-    // HAND SMOOTHING (hand_smoothing.h; ported from the Halo: Campaign Evolved VR mod with its defaults). A 1 Euro
+    // HAND SMOOTHING (hand_smoothing.h; ported from the Halo: Campaign Evolved VR mod; its defaults but for the
+    // two steadiness cutoffs, 1.3 Hz here after the first headset session, 1.0 Hz there). A 1 Euro
     // filter on the tracked controllers where their poses enter the mod, so aim and shots, the arms, two-handed
     // holds, holsters, reload and the menu pointer all read the same steadied hands. A still hand is held
     // steady; a fast move passes through with little lag. Swing melee and arm-swing running read the raw
@@ -398,9 +399,9 @@ struct Config
     // All read live.
     bool hand_smoothing = true;
     int hand_smoothing_hands = 0;
-    float hand_smoothing_pos_min_hz = 1.0f;
+    float hand_smoothing_pos_min_hz = 1.3f;
     float hand_smoothing_pos_beta = 500.0f;
-    float hand_smoothing_rot_min_hz = 1.0f;
+    float hand_smoothing_rot_min_hz = 1.3f;
     float hand_smoothing_rot_beta = 5.0f;
     float hand_smoothing_speed_cutoff_hz = 10.0f;
 
