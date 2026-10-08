@@ -489,6 +489,24 @@ void TestAgreement()
     up[0] = 0.0f;
     const Build alongY = GameBuild(forward, up, position, velocity);
     Check(CheckRecord(alongY.record, alongY.nine) == RecordState::Agrees, "a zero x agrees with its mirror");
+    // The camera's own float drift: the band the stereo transaction admits for this record, and no more.
+    Camera(123.0f, -9.0f, 0.0f, forward, up);
+    float drifted[3]{forward[0] * 1.01f, forward[1] * 1.01f, forward[2] * 1.01f};
+    const Build drift = GameBuild(drifted, up, position, velocity);
+    ListenerResult out;
+    const float head[3]{45.6f, 12.3f, -2.8f};
+    Check(CheckRecord(drift.record, drift.nine) == RecordState::Agrees &&
+              DecideListener(Request(), Frame(10.0f, 0.0f, 0.0f, head, forward, position), drift.nine, drift.record,
+                             RecordState::Agrees, out) == ListenerUse::Used,
+          "a camera basis one percent off unit length is still the game's");
+    drifted[0] = forward[0] * 1.03f;
+    drifted[1] = forward[1] * 1.03f;
+    drifted[2] = forward[2] * 1.03f;
+    const Build skewed = GameBuild(drifted, up, position, velocity);
+    Check(CheckRecord(skewed.record, skewed.nine) == RecordState::UnexpectedBasis &&
+              DecideListener(Request(), Frame(10.0f, 0.0f, 0.0f, head, forward, position), skewed.nine,
+                             skewed.record, RecordState::Agrees, out) == ListenerUse::UnexpectedHandOff,
+          "a basis outside the band the stereo transaction admits is not");
     bool named = true;
     for (int state = 0; state < static_cast<int>(RecordState::Count); ++state)
         named = named && std::strcmp(RecordStateName(static_cast<RecordState>(state)), "?") != 0;

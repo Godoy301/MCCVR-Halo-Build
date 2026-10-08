@@ -365,15 +365,19 @@ inline bool HeadBasis(const float headForward[3], const float headUp[3], Listene
     LeftOf(out.forward, out.up, out.left);
     return true;
 }
-// Is this a forward and an up as the game hands them on: finite, unit length, perpendicular?
+// Is this a forward and an up as the game hands them on: finite, unit length, perpendicular? The band is the one
+// this mod's stereo transaction already admits for the very camera they are copied from
+// (Halo4ValidateCameraBasis, halo4_render_logic.h: 0.05 on each squared length and on the dot product), so a
+// camera the eyes are rendered from is never refused here for float drift. The identity of the record does not
+// rest on this band: it rests on the signatures, on left = up x forward and on the nine floats' exact agreement.
+inline constexpr float kCameraBasisBand = 0.05f;
 inline bool PairAsBuilt(const float forward[3], const float up[3])
 {
     using namespace head_relative;
-    constexpr float tolerance = 2.0e-3f;
-    return Finite3(forward) && Finite3(up) && std::fabs(Length(forward) - 1.0f) <= tolerance &&
-           std::fabs(Length(up) - 1.0f) <= tolerance && std::fabs(Dot(forward, up)) <= tolerance;
+    return Finite3(forward) && Finite3(up) && std::fabs(Dot(forward, forward) - 1.0f) < kCameraBasisBand &&
+           std::fabs(Dot(up, up) - 1.0f) < kCameraBasisBand && std::fabs(Dot(forward, up)) < kCameraBasisBand;
 }
-// Is this what the game's builder writes: scale 1, unit perpendicular forward and up, left = up x forward?
+// Is this what the game's builder writes: scale 1, a forward and an up as above, left = up x forward?
 inline bool BasisAsBuilt(float scale, const ListenerBasis& basis)
 {
     constexpr float tolerance = 2.0e-3f;
