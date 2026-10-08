@@ -32934,12 +32934,16 @@ namespace
 
     bool WaitForReachDetourQuiescence()
     {
+        // Counted over the whole wait, so the line at the end states what was seen how often.
+        unsigned looks = 0, cameraLooks = 0, collisionLooks = 0, scans = 0, ingressScans = 0, lateScans = 0;
         for (unsigned waited = 0; waited < 2000; ++waited)
         {
-            if (g_reachCamera.activeCallbacks.load(
-                    std::memory_order_acquire) == 0 &&
-                g_reachWorldCollision.callbacks.load(
-                    std::memory_order_acquire) == 0)
+            ++looks;
+            const bool cameraBusy = g_reachCamera.activeCallbacks.load(std::memory_order_acquire) != 0;
+            const bool collisionBusy = g_reachWorldCollision.callbacks.load(std::memory_order_acquire) != 0;
+            cameraLooks += cameraBusy ? 1u : 0u;
+            collisionLooks += collisionBusy ? 1u : 0u;
+            if (!cameraBusy && !collisionBusy)
             {
                 bool ingressBusy = false;
                 if (!ScanForReachDetourIngress(ingressBusy))
@@ -32948,21 +32952,24 @@ namespace
                         g_reachIngressScanWhy);
                     return false;
                 }
-                if (!ingressBusy &&
-                    g_reachCamera.activeCallbacks.load(
-                        std::memory_order_acquire) == 0 &&
-                    g_reachWorldCollision.callbacks.load(
-                        std::memory_order_acquire) == 0)
+                ++scans;
+                const bool late =
+                    g_reachCamera.activeCallbacks.load(std::memory_order_acquire) != 0 ||
+                    g_reachWorldCollision.callbacks.load(std::memory_order_acquire) != 0;
+                ingressScans += ingressBusy ? 1u : 0u;
+                lateScans += late ? 1u : 0u;
+                if (!ingressBusy && !late)
                     return true;
             }
             Sleep(1);
         }
-        LOG("Reach camera cleanup: callbacks did not reach verified quiescence in 2 s: %s",
-            g_reachCamera.activeCallbacks.load(std::memory_order_acquire) != 0
-                ? "a camera callback is still counted as running"
-                : g_reachWorldCollision.callbacks.load(std::memory_order_acquire) != 0
-                    ? "a world-collision callback is still counted as running"
-                    : "a thread stood in a detour or its trampoline at the last scan");
+        LOG("Reach camera cleanup: callbacks did not reach verified quiescence in 2 s. Of %u looks, a camera "
+            "callback was counted as running at %u and a world-collision callback at %u; the threads were "
+            "scanned %u times: a thread stood in a detour or its trampoline in %u of those, and a callback had "
+            "started again by the end of %u. Now: camera %u, world collision %u",
+            looks, cameraLooks, collisionLooks, scans, ingressScans, lateScans,
+            static_cast<unsigned>(g_reachCamera.activeCallbacks.load(std::memory_order_acquire)),
+            static_cast<unsigned>(g_reachWorldCollision.callbacks.load(std::memory_order_acquire)));
         return false;
     }
 
@@ -56364,10 +56371,14 @@ bool WaitForNativeDetourQuiescence(const void* const* functions,
     for(size_t i=0;i<count;++i)
         if(!functions[i] || !ResolveReachDetourCodeRange(functions[i],ranges[i]))
             return notVerified("a detour's own code range could not be resolved, so no thread could be checked against it");
-    bool counterBusy=false,threadInDetour=false;
+    // What each look found, counted over the whole wait: the line at the end states these numbers and nothing
+    // about "every" look (the last look alone used to be reported as if it had held for the 2 s).
+    unsigned looks=0,counterLooks=0,scans=0,threadScans=0,counterAfterScans=0;
     for(unsigned waited=0;waited<2000;++waited)
     {
-        counterBusy=callbacks.load(std::memory_order_acquire)!=0;
+        ++looks;
+        const bool counterBusy=callbacks.load(std::memory_order_acquire)!=0;
+        if(counterBusy) ++counterLooks;
         if(!counterBusy)
         {
             ReachThreadFreeze frozen;
@@ -56391,9 +56402,11 @@ bool WaitForNativeDetourQuiescence(const void* const* functions,
                         (trampoline && context.Rip>=trampoline && context.Rip<trampoline+64);
                 }
             }
-            threadInDetour=busy;
-            counterBusy=callbacks.load(std::memory_order_acquire)!=0;
-            busy |= counterBusy;
+            ++scans;
+            if(busy) ++threadScans;
+            const bool counterAfter=callbacks.load(std::memory_order_acquire)!=0;
+            if(counterAfter) ++counterAfterScans;
+            busy |= counterAfter;
             const bool resumed=frozen.Release();
             if(!resumed) return notVerified("the frozen threads could not all be resumed");
             if(!scanOk) return notVerified("a live thread's position could not be read (nothing was found busy)");
@@ -56401,10 +56414,12 @@ bool WaitForNativeDetourQuiescence(const void* const* functions,
         }
         Sleep(1);
     }
-    return notVerified(counterBusy
-        ? "for 2 s the callback counter never returned to zero: a callback is running, or one never came back"
-        : threadInDetour ? "for 2 s a thread stood in a detour or its trampoline at every scan"
-                         : "for 2 s the callback counter and the scan took turns being busy");
+    LOG("detour quiescence not verified for %zu hook%s: never quiet in 2 s. Of %u looks, the callback counter was "
+        "not zero at %u (a callback running, or one that never came back if that is all of them); the threads "
+        "were frozen and scanned %u times: a thread stood in a detour or its trampoline in %u of those, and the "
+        "counter had become non-zero again by the end of %u (the cleanup line that follows names the hooks)",
+        count,count==1?"":"s",looks,counterLooks,scans,threadScans,counterAfterScans);
+    return false;
 }
 
 #if HALOMCCVR_DEV_DIAGNOSTICS
