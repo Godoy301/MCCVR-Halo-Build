@@ -3578,6 +3578,14 @@ namespace
         uint32_t generation = 0;
     };
     DrawDistanceControl g_drawDistance;
+    // A LOAD OF A TITLE THAT DID NOT RESOLVE. The name scan walks the whole image a byte at a time. "Retry on
+    // a later tick" meant every tick: twenty whole-image scans a second for as long as the name was not there
+    // (a patched game), on the worker, with nothing in the log. Now one try every five seconds (a value that
+    // is not sane yet may become so), and one line at the second miss.
+    uintptr_t g_drawDistanceMissBase = 0;
+    uint32_t g_drawDistanceMissGeneration = 0;
+    uint64_t g_drawDistanceMissMs = 0;
+    uint32_t g_drawDistanceMisses = 0;
 
     void Game_ApplyDrawDistance(
         uintptr_t base, size_t size, uint32_t generation)
@@ -3590,12 +3598,29 @@ namespace
             // Module changed: re-resolve exactly once. This whole-module name
             // scan does NOT run every tick -- only on a title/instance change.
             g_drawDistance = {};
+            const uint64_t nowMs = GetTickCount64();
+            if (g_drawDistanceMissBase == base && g_drawDistanceMissGeneration == generation)
+            {
+                if (nowMs - g_drawDistanceMissMs < 5000)
+                    return;
+            }
+            else
+                g_drawDistanceMisses = 0;
             float* slot =
                 FindDebugVarFloat(base, size, "render_far_clip_distance");
             float stock = 0.0f;
             if (!slot || !SafeReadFloat(slot, &stock) ||
                 !(stock > 1.0f) || !isfinite(stock))
-                return; // leave unresolved; retry on a later tick
+            {
+                g_drawDistanceMissBase = base;
+                g_drawDistanceMissGeneration = generation;
+                g_drawDistanceMissMs = nowMs;
+                if (++g_drawDistanceMisses == 2)
+                    LOG("draw distance: StockFallback: render_far_clip_distance %s in this title image (two tries, "
+                        "five seconds apart); the draw_distance setting does nothing until it is (tried every five seconds)",
+                        slot ? "has no sane value" : "was not found");
+                return;
+            }
             g_drawDistance.slot = slot;
             g_drawDistance.stock = stock;
             g_drawDistance.base = base;
@@ -34323,6 +34348,9 @@ namespace
                                  uint32_t generation, bool soleReachTitle)
     {
         static uint32_t attemptedGeneration = 0;
+        // A load whose image does not have the decode signature: said once, and not scanned for again (it was
+        // two whole-image scans at every 50 ms poll, silently, and this runs ahead of Reach's build gate).
+        static uint32_t missedGeneration = 0;
         if (!soleReachTitle || !base || !generation)
         {
             g_reachMuzzlePatchCount = 0;
@@ -34344,18 +34372,21 @@ namespace
         }
         if (!g_reachMuzzleDecodeResolved)
         {
+            if (missedGeneration == generation)
+                return;
             const uintptr_t hit =
                 sig::Find(base, size, kReachEffectDecodeSig);
-            if (!hit || sig::Find(hit + 1, base + size - hit - 1,
-                                  kReachEffectDecodeSig))
-            {
-                return;   // silent; retried next tick, logged via REACHFX
-            }
-            const uintptr_t tableSlot = sig::RipTarget(hit + 3, hit + 7);
-            const uintptr_t poolTable = sig::RipTarget(hit + 10, hit + 14);
-            if (tableSlot < base || tableSlot >= base + size ||
+            const bool ambiguous = hit && sig::Find(hit + 1, base + size - hit - 1, kReachEffectDecodeSig);
+            const uintptr_t tableSlot = hit && !ambiguous ? sig::RipTarget(hit + 3, hit + 7) : 0;
+            const uintptr_t poolTable = hit && !ambiguous ? sig::RipTarget(hit + 10, hit + 14) : 0;
+            if (!hit || ambiguous || tableSlot < base || tableSlot >= base + size ||
                 poolTable < base || poolTable >= base + size)
             {
+                missedGeneration = generation;
+                LOG("Reach muzzle: StockFallback: the effect tag decode %s in this haloreach.dll; the muzzle "
+                    "retarget is off for this load",
+                    !hit ? "signature was not found" : ambiguous ? "signature is ambiguous"
+                                                                 : "operands point outside the image");
                 return;
             }
             __try
