@@ -48356,9 +48356,12 @@ namespace
                         break;
                     case GameTitle::HaloReach:
                         activeLevelRunning =
+                            // The image's OWN size, as every other title passes: the gate's scan is the
+                            // first touch of haloreach.dll, ahead of any identity check, and the pinned size
+                            // would read past the end of a smaller (patched) image.
                             g_reachLevelLoadGate.AllowsInstall(
                                 gateGeneration, gateBase,
-                                kReachRetailImageSize,
+                                gateSize,
                                 kReachPlayerViewArray, "Reach");
                         break;
                     case GameTitle::Halo4:

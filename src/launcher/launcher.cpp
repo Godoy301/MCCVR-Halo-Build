@@ -295,6 +295,20 @@ static DWORD WaitForProcess(const wchar_t* exeName, DWORD timeoutMs)
     }
 }
 
+// A Store game the launcher did not start itself may have been started WITH anti-cheat: the Xbox app's default
+// "Halo: The Master Chief Collection" entry runs mcclauncher.exe and EasyAntiCheat, and its game process has
+// the same name as the anti-cheat-disabled entry's. This mod never touches a protected session. The name of
+// the first anti-cheat process found, or null. (A process list, read only; nothing is opened.)
+static const wchar_t* AntiCheatProcessRunning()
+{
+    static const wchar_t* const kNames[]{L"mcclauncher.exe", L"EasyAntiCheat_EOS.exe", L"EasyAntiCheat.exe",
+                                         L"start_protected_game.exe"};
+    for (const wchar_t* name : kNames)
+        if (FindProcessId(name))
+            return name;
+    return nullptr;
+}
+
 static bool ModuleLoadedIn(DWORD pid, const wchar_t* moduleName)
 {
     HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, pid);
@@ -722,6 +736,18 @@ static int LaunchInstalledMod(const std::wstring& dir)
             return 1;
         }
         LauncherLog("game process appeared, pid %lu", gamePid);
+        if (const wchar_t* const antiCheat = AntiCheatProcessRunning())
+        {
+            // Never into a protected session: say so and leave the game alone.
+            if (coOwned)
+                CoUninitialize();
+            LauncherLog("REFUSED: %ls is running, so this game was started WITH anti-cheat; the mod is not loaded "
+                        "into it", antiCheat);
+            ErrorBox(L"This Halo: MCC session was started with anti-cheat, so the VR mod was not loaded.\n\n"
+                     L"Close the game, then start it with this launcher, or from the Xbox app with the\n"
+                     L"\"Halo: MCC Anti-Cheat Disabled (Mods and Limited Services)\" entry.");
+            return 1;
+        }
 
         // The process exists but its loader may not have populated the module
         // list yet. Injecting into that window is what makes CreateRemoteThread
