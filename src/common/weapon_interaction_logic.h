@@ -48,6 +48,11 @@ inline bool Near(Vec a, Vec b, float r) noexcept { const Vec d=a-b; return Dot(d
 inline float Setting(float v,float low,float high,float fallback) noexcept
 { return std::isfinite(v)?std::clamp(v,low,high):fallback; }
 
+// The Campaign Evolved mod's over-the-shoulder weapon switch: where its slot is (metres from the head: to the
+// weapon side, down, back) and how close the hand has to come.
+inline constexpr float kOverShoulderSide=0.20f,kOverShoulderDown=0.10f,kOverShoulderBack=0.22f;
+inline constexpr float kOverShoulderRadius=0.16f;
+
 struct Settings
 {
     bool reload{}, holsters{}, leftHanded{};
@@ -59,7 +64,9 @@ struct Settings
     bool needleShake{};
     bool genericVisual{true};
     float shakeTravel{0.10f};
-    // 0 shoulder, 1 hip. A single reserve slot exchanges the two native guns.
+    // 0 shoulder, 1 hip, 2 over the shoulder (the Halo: Campaign Evolved VR mod's weapon-switch spot: higher
+    // and further back, where the hand goes when it reaches over the shoulder). A single reserve slot exchanges
+    // the two native guns.
     int holsterLocation{};
     uint32_t reloadButton{0x4000}, swapButton{0x8000};
 };
@@ -124,9 +131,13 @@ inline bool Zones(const Sample& s,const Settings& c,Vec& pouch,Vec& holster) noe
         Vec{0,shoulder?-0.20f:-Setting(c.pouchDown,0.25f,0.85f,0.50f),0};
     pouch=pouch+right*(side*Setting(c.pouchOffset.x,-.40f,.40f,0))+
         Vec{0,Setting(c.pouchOffset.y,-.40f,.40f,0),0}+forward*Setting(c.pouchOffset.z,-.40f,.40f,0);
+    // Over the shoulder: Campaign Evolved's right-shoulder slot, 0.20 m to the weapon side, 0.10 m below the
+    // head and 0.22 m behind it (its holsterrs default).
     holster=c.holsterLocation==1
         ?s.head+right*(side*0.27f)+Vec{0,-Setting(c.pouchDown,0.25f,0.85f,0.50f),0}
-        :s.head+right*(side*0.22f)+forward*(-0.13f)+Vec{0,-0.20f,0};
+        :c.holsterLocation==2
+            ?s.head+right*(side*kOverShoulderSide)+forward*(-kOverShoulderBack)+Vec{0,-kOverShoulderDown,0}
+            :s.head+right*(side*0.22f)+forward*(-0.13f)+Vec{0,-0.20f,0};
     return true;
 }
 

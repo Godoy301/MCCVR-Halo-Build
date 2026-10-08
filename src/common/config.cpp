@@ -1248,7 +1248,7 @@ void ConfigLoad(const wchar_t* path)
             continue;
         }
         if (!strcmp(key,"weapon_holster_location"))
-        { g_config.weapon_holster_location=atoi(val)==1?1:0;continue; }
+        { const int location=atoi(val);g_config.weapon_holster_location=location==1||location==2?location:0;continue; }
         if (!strcmp(key, "dpad_head_radius"))
         {
             ParseFloatSetting(key, val, g_config.dpad_head_radius);
@@ -2915,7 +2915,8 @@ void ConfigSave()
     fprintf(f, "manual_reload_shortened_animation = %d\n",g_config.manual_reload_shortened_animation?1:0);
     fprintf(f, "weapon_pouch_down_m = %.3f\nweapon_body_zone_radius_m = %.3f\n",
         g_config.weapon_pouch_down_m,g_config.weapon_body_zone_radius_m);
-    fprintf(f, "# Holster location: 0 = weapon-side shoulder, 1 = weapon-side hip.\n");
+    fprintf(f, "# Holster location: 0 = weapon-side shoulder, 1 = weapon-side hip, 2 = over the weapon-side\n");
+    fprintf(f, "# shoulder (higher and further back: the Campaign Evolved mod's weapon-switch spot).\n");
     fprintf(f, "weapon_holster_location = %d\n",g_config.weapon_holster_location);
     fprintf(f,"weapon_pouch_location = %d\nweapon_pouch_offset_x_m = %.3f\nweapon_pouch_offset_y_m = %.3f\nweapon_pouch_offset_z_m = %.3f\n",
         g_config.weapon_pouch_location,g_config.weapon_pouch_offset_x_m,g_config.weapon_pouch_offset_y_m,g_config.weapon_pouch_offset_z_m);

@@ -1271,7 +1271,7 @@ struct Config
     bool weapon_needler_shake = false;
     bool weapon_unknown_reload_visual = true;
     float weapon_shake_travel_m = 0.10f;
-    int weapon_holster_location = 0; // 0 shoulder, 1 hip
+    int weapon_holster_location = 0; // 0 shoulder, 1 hip, 2 over the shoulder (Campaign Evolved's spot)
     // X, RB, LB, B, Y, A, LT, RT. H3, ODST, Reach, H4, CE, H2.
     int weapon_reload_button[6]{0,0,0,0,0,0};
     int weapon_switch_button[6]{4,4,4,4,4,4};
