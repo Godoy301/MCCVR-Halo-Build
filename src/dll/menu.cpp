@@ -1399,10 +1399,23 @@ namespace
             }
         }
         changed |= ImGui::Checkbox("Weapon Holsters", &g_config.weapon_holsters);
+        if (ImGui::Button("Over-the-shoulder weapon switch (Campaign Evolved)"))
+        {
+            // That mod's gesture: reach over the weapon-side shoulder and squeeze the grip.
+            g_config.weapon_holsters = true;
+            g_config.weapon_holster_location = 2;
+            g_config.weapon_holster_click = true;
+            g_config.weapon_holster_slide = false;
+            g_config.weapon_holster_radius_m = weapon_interaction::kOverShoulderRadius;
+            changed = true;
+        }
+        ImGui::TextDisabled("One press sets the holster up like the Campaign Evolved mod: reach over your\n"
+                            "weapon-side shoulder and squeeze the weapon grip to switch weapons. Every game.\n"
+                            "Your switch-weapon button still works.");
         if (g_config.weapon_holsters)
         {
             changed |= ImGui::Combo("Holster location", &g_config.weapon_holster_location,
-                "Weapon-side shoulder\0Weapon-side hip\0");
+                "Weapon-side shoulder\0Weapon-side hip\0Over the weapon-side shoulder\0");
             changed |= ImGui::Checkbox("Holster slide / draw gesture", &g_config.weapon_holster_slide);
             changed |= ImGui::Checkbox("Holster click gesture", &g_config.weapon_holster_click);
             changed |= vr_menu::SliderFloat("Holster grab radius (m)",

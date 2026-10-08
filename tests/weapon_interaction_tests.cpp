@@ -37,6 +37,29 @@ struct Rig
 
 int main()
 {
+    for(bool left:{false,true})
+    {
+        // Over the shoulder (location 2): Campaign Evolved's spot, mirrored with the weapon hand.
+        Rig shoulder(GameTitle::HaloReach,left,0),over(GameTitle::HaloReach,left,2);
+        const float side=left?-1.f:1.f;
+        Check(Near(over.holster,over.s.head+Vec{side*.20f,-.10f,.22f},.0001f),
+            "over the shoulder is 20 cm to the weapon side, 10 cm below the head and 22 cm behind it");
+        Check(over.holster.y>shoulder.holster.y+.09f&&over.holster.z>shoulder.holster.z+.08f,
+            "which is higher and further back than the shoulder holster");
+        // The gesture there: a fresh squeeze of the weapon grip inside the zone switches once.
+        over.c.holsterClick=true;over.c.holsterSlide=false;over.c.holsterRadius=kOverShoulderRadius;
+        over.c.swapButton=0x8000;over.s.primaryGrip=0;over.s.supportGrip=0;over.Step();
+        over.s.primary=over.holster+Vec{.05f,.05f,-.05f};over.Step();
+        over.s.primaryGrip=1;const Output squeezed=over.Step();
+        Check(squeezed.swapRequested&&squeezed.grabbedHolster,"a squeeze over the shoulder switches weapons");
+        const Output held=over.Step();
+        Check(!held.swapRequested,"holding the grip there does not switch again");
+        Rig miss(GameTitle::Halo3,left,2);
+        miss.c.holsterClick=true;miss.c.holsterSlide=false;miss.c.holsterRadius=kOverShoulderRadius;
+        miss.c.swapButton=0x8000;miss.s.primaryGrip=0;miss.s.supportGrip=0;miss.Step();
+        miss.s.primary=shoulder.s.primary;miss.Step();miss.s.primaryGrip=1;
+        Check(!miss.Step().swapRequested,"a squeeze with the gun held in front does not");
+    }
     for(int title=1;title<=6;++title) for(bool left:{false,true}) for(int location:{0,1})
     {
         Rig rig(static_cast<GameTitle>(title),left);
