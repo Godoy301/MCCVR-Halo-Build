@@ -12,6 +12,9 @@
 #include "../common/halo2_vehicle_view.h"
 #include "../common/halo2_foot_view.h"
 #include "../common/halo2_head_relative_logic.h"
+#if HALOMCCVR_DEV_DIAGNOSTICS
+#include "../common/halo2_sound_listener_logic.h"   // the dev sound listener witness (halo2_sound_listener_witness.inl)
+#endif
 #include "../common/director_camera_logic.h"
 #include "../common/aim_write_logic.h"
 #include "../common/seat_drive_policy.h"
@@ -5057,6 +5060,9 @@ namespace
 
     bool RemoveHalo2Drive() noexcept;   // halo2_direct_drive.inl; the live RemoveCore retires it
     bool RemoveHalo2HeadRelative() noexcept;   // halo2_head_relative.inl; the live RemoveCore retires it
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    void RetireHalo2ListenerWitness() noexcept;   // halo2_sound_listener_witness.inl; reads only, nothing to drain
+#endif
     #include "halo2_observer_cleanup.inl"
 
     // Preserved old counter-only retirement for evidence; no callers.
@@ -5105,8 +5111,16 @@ namespace
 
     #include "halo2_direct_drive.inl"
     #include "halo2_director_perspective.inl"
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    // Dev: the sound listener witness samples from the tracker's accessor detour (one call, once a game tick).
+    void Halo2ListenerWitnessTick(int32_t user) noexcept;
+#endif
     // The motion tracker follows the head instead of the aim (retail-derived lead, proves itself at run time).
     #include "halo2_head_relative.inl"
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    // Dev only: is Halo 2's sound listener oriented by the head, by the aim or by something else? Reads only.
+    #include "halo2_sound_listener_witness.inl"
+#endif
 
     bool RemoveCoreLegacy(const char* reason) noexcept
     {
@@ -5334,6 +5348,9 @@ namespace
         if (!RemoveHalo2Drive())
             return false;
         RetireHalo2DirectorPerspective();   // a read-only binding: nothing to drain
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        RetireHalo2ListenerWitness();
+#endif
         g_footViewEngagedMs.store(0, std::memory_order_release);
         g_seatViewEngagedMs.store(0, std::memory_order_release);
         if (g_nativeAimTarget)
@@ -5467,6 +5484,9 @@ namespace
         // A binding from an earlier module instance never outlives an install attempt (it is rebound below once
         // the core is in; its reads are also tied to the installed module's base).
         RetireHalo2DirectorPerspective();
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        RetireHalo2ListenerWitness();
+#endif
 
         HMODULE module = nullptr;
         if (!GetModuleHandleExW(
@@ -6165,6 +6185,11 @@ namespace
         // refusal leaves the game's own tracker and nothing else changes. After the drive: it holds its record
         // against the one the drive bound, and the drive's written yaw is its run-time reference.
         (void)InstallHalo2HeadRelative(base, size, generation);
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        // Dev: the sound listener witness (halo2_sound_listener_witness.inl). Reads only; a refusal measures
+        // nothing and changes nothing. After the tracker: its accessor detour is the witness's sampling point.
+        (void)BindHalo2ListenerWitness(base, size, generation, observerResultArray);
+#endif
         LOG("Halo 2 vehicle view reference: %s (parent/seat matches=%u); native aim feedback retained separately",
             frameVerified?"verified":"stock fallback",parentMatches);
         LOG("Halo 2 vehicle controller steering: %s (native seat predicate matches=%u); "
@@ -6873,6 +6898,9 @@ bool Halo2Observer6Dof_Poll(
         TitleAdapter_GetActiveTitle() == GameTitle::Halo2)
         Game_PublishSupportGripOwnerEvidence(GameTitle::Halo2);
     ReportHalo2HeadRelative();   // its own 2 s clock (the telemetry below runs every 5 s)
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    ReportHalo2ListenerWitness();   // dev: its own 2 s clock
+#endif
     ReportTelemetry();
     return true;
 }
