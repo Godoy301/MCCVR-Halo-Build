@@ -10428,6 +10428,12 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
     HybridDiagnosticOverrideState g_hybridDiagnosticOverride;
     VirtualStockTestProfileState g_virtualStockTestProfile;
     weapon_interaction::State g_weaponInteraction;
+    // Setting the holster spot with a hand. The machine belongs to the input poll; the menu only asks
+    // (request: 1 arm, 2 cancel) and reads the two counters and the armed flag.
+    weapon_interaction::HolsterCapture g_holsterCapture;
+    std::atomic<int> g_holsterCaptureRequest{0};
+    std::atomic<bool> g_holsterCaptureArmed{false};
+    std::atomic<uint32_t> g_holsterCaptureCount{0}, g_holsterCaptureTimedOut{0};
     weapon_model::Observations g_weaponModels;
     weapon_interaction::ReloadTargets g_reloadTargets;
     WeaponAccessoryRenderer g_weaponAccessoryRenderer;
@@ -14776,7 +14782,8 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         if(f1Chord) pad.clickL=pad.clickR=true;
         const float rawSupportGrip=pad.gripL;
         weapon_interaction::Output weaponGesture{};
-        if(g_config.manual_reload || g_config.weapon_holsters || g_weaponInteraction.HasClaimedGrip())
+        if(g_config.manual_reload || g_config.weapon_holsters || g_weaponInteraction.HasClaimedGrip() ||
+           g_holsterCapture.ConsumesGrip() || g_holsterCaptureRequest.load(std::memory_order_acquire))
         {
             // Use the same predicted-time head and controller space. This
             // optional extra locate does not change the late camera sample.
@@ -14811,6 +14818,40 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                 sample.primaryGrip=sample.supportGrip=std::numeric_limits<float>::quiet_NaN();
             sample.otherAction=pad.trigL>0.15f||pad.trigR>0.15f||pad.menu||pad.a||pad.b||pad.x||pad.y||
                 pad.clickL||pad.clickR||pad.thumbrestDpad;
+            {
+                // The holster spot set by hand: armed in the menu, taken from the first fresh squeeze of the
+                // weapon grip once the menu is closed (in the menu that hand is the pointer). Any game.
+                const int request=g_holsterCaptureRequest.exchange(0,std::memory_order_acq_rel);
+                if(request==1) g_holsterCapture.Arm(inputNow);
+                else if(request==2) g_holsterCapture.Cancel();
+                weapon_interaction::Vec spot{};
+                const bool menuOpen=Menu_IsOpen();
+                if(menuOpen) g_holsterCapture.Defer(inputNow);
+                const bool handTracked=!menuOpen&&headValid&&valid&&primaryGripActive&&
+                    (location.locationFlags&tracked)==tracked;
+                const auto captured=g_holsterCapture.Update(inputNow,handTracked,sample.head,
+                    sample.headRotation,sample.primary,pad.gripR,leftHanded,spot);
+                if(captured==weapon_interaction::HolsterCapture::Result::Captured)
+                {
+                    g_config.weapon_holster_custom_x_m=spot.x;
+                    g_config.weapon_holster_custom_y_m=spot.y;
+                    g_config.weapon_holster_custom_z_m=spot.z;
+                    g_config.weapon_holster_location=3;
+                    g_config.weapon_holsters=true;
+                    if(!g_config.weapon_holster_slide&&!g_config.weapon_holster_click)
+                        g_config.weapon_holster_click=true;
+                    ConfigSave();
+                    VR_PulseContactHaptics(false,0.6f);
+                    g_holsterCaptureCount.fetch_add(1,std::memory_order_relaxed);
+                    LOG("HOLSTER SPOT set by hand: %.0f cm to the weapon side, %.0f cm %s the head, %.0f cm %s it "
+                        "(weapon_holster_location = 3; %s-handed)",
+                        spot.x*100.0f,std::fabs(spot.y)*100.0f,spot.y<0?"below":"above",
+                        std::fabs(spot.z)*100.0f,spot.z<0?"behind":"in front of",leftHanded?"left":"right");
+                }
+                else if(captured==weapon_interaction::HolsterCapture::Result::TimedOut)
+                    g_holsterCaptureTimedOut.fetch_add(1,std::memory_order_relaxed);
+                g_holsterCaptureArmed.store(g_holsterCapture.Armed(),std::memory_order_release);
+            }
             weapon_interaction::Settings settings{};
             settings.reload=g_config.manual_reload;settings.holsters=g_config.weapon_holsters;
             settings.leftHanded=leftHanded;settings.pouchDown=g_config.weapon_pouch_down_m;
@@ -14826,6 +14867,8 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
             settings.genericVisual=g_config.weapon_unknown_reload_visual;
             settings.shakeTravel=g_config.weapon_shake_travel_m;
             settings.holsterLocation=g_config.weapon_holster_location;
+            settings.holsterCustom={g_config.weapon_holster_custom_x_m,g_config.weapon_holster_custom_y_m,
+                g_config.weapon_holster_custom_z_m};
             const int index=weapon_interaction::TitleIndex(sample.title);
             settings.reloadButton=WeaponGestureBinding(sample.title,vr_mapping::Reload,inputNow);
             settings.swapButton=WeaponGestureBinding(sample.title,vr_mapping::SwitchWeapon,inputNow);
@@ -14845,7 +14888,8 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
             pad.weaponConsumeSupport=weaponGesture.consumeSupport;
             // Consume before publishing to ALL native/title consumers. A
             // cancelled/stale command must not resurrect its original bumper.
-            if(pad.weaponConsumePrimary) pad.gripR=0;
+            // The squeeze that sets the holster spot is not a grip for the game (a grenade, a grab).
+            if(pad.weaponConsumePrimary||g_holsterCapture.ConsumesGrip()) pad.gripR=0;
             if(pad.weaponConsumeSupport) pad.gripL=0;
             if(weaponGesture.primaryHaptic>0) VR_PulseContactHaptics(false,weaponGesture.primaryHaptic);
             if(weaponGesture.supportHaptic>0) VR_PulseContactHaptics(true,weaponGesture.supportHaptic);
@@ -21438,6 +21482,16 @@ void VR_ToggleStereo()
             on && !Game_IsHeadTracking()
                 ? " (enable head tracking with F2)" : "");
 }
+
+void VR_HolsterCaptureArm(bool arm) noexcept
+{
+    g_holsterCaptureRequest.store(arm ? 1 : 2, std::memory_order_release);
+    // Shown at once; the input poll owns the truth and corrects it on its next pass.
+    g_holsterCaptureArmed.store(arm, std::memory_order_release);
+}
+bool VR_HolsterCaptureArmed() noexcept { return g_holsterCaptureArmed.load(std::memory_order_acquire); }
+uint32_t VR_HolsterCaptureCount() noexcept { return g_holsterCaptureCount.load(std::memory_order_relaxed); }
+uint32_t VR_HolsterCaptureTimedOut() noexcept { return g_holsterCaptureTimedOut.load(std::memory_order_relaxed); }
 
 int VR_CrosshairTintSupport() noexcept
 {

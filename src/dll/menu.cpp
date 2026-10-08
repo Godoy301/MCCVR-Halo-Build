@@ -1372,10 +1372,64 @@ namespace
         ImGui::TextDisabled("One press sets the holster up like the Campaign Evolved mod: reach over your\n"
                             "weapon-side shoulder and squeeze the weapon grip to switch weapons. Every game.\n"
                             "Your switch-weapon button still works.");
+        {
+            // The holster where the player's own hand goes: arm here, then squeeze the weapon grip there.
+            static uint32_t shownCount = VR_HolsterCaptureCount();
+            static uint32_t shownTimedOut = VR_HolsterCaptureTimedOut();
+            static int lastOutcome = 0;  // 1 set, 2 lapsed
+            if (VR_HolsterCaptureCount() != shownCount)
+            {
+                shownCount = VR_HolsterCaptureCount();
+                lastOutcome = 1;
+            }
+            if (VR_HolsterCaptureTimedOut() != shownTimedOut)
+            {
+                shownTimedOut = VR_HolsterCaptureTimedOut();
+                lastOutcome = 2;
+            }
+            const bool armed = VR_HolsterCaptureArmed();
+            // One button; its label says when it is armed (the ### keeps its identity through the change).
+            if (ImGui::Button(armed ? "Calibrate Holster Location (Armed)###holstercapture"
+                                    : "Calibrate Holster Location###holstercapture"))
+            {
+                VR_HolsterCaptureArm(!armed);
+                lastOutcome = 0;
+            }
+            const char* hand = g_config.left_handed ? "left" : "right";
+            if (armed)
+                ImGui::TextDisabled("Armed. Close this menu. The next time you squeeze the grip of your %s (weapon)\n"
+                                    "controller in game, the holster is set where that hand is, measured from your\n"
+                                    "head. Let go of the grip first if you are holding it. Press the button again\n"
+                                    "to cancel; it also lapses 30 seconds after the menu closes.", hand);
+            else if (lastOutcome == 1)
+                ImGui::TextColored(ImVec4(0.4f, 0.9f, 0.4f, 1.0f),
+                                   "Set: %.0f cm to the weapon side, %.0f cm %s your head, %.0f cm %s it.",
+                                   g_config.weapon_holster_custom_x_m * 100.0f,
+                                   fabsf(g_config.weapon_holster_custom_y_m) * 100.0f,
+                                   g_config.weapon_holster_custom_y_m < 0 ? "below" : "above",
+                                   fabsf(g_config.weapon_holster_custom_z_m) * 100.0f,
+                                   g_config.weapon_holster_custom_z_m < 0 ? "behind" : "in front of");
+            else if (lastOutcome == 2)
+                ImGui::TextDisabled("No grip came within 30 seconds of closing the menu: nothing was changed.");
+            else
+                ImGui::TextDisabled("Puts the holster where your own hand goes. Press it, close this menu, then squeeze\n"
+                                    "the grip of your %s (weapon) controller where the holster should be. Turns\n"
+                                    "holsters on. Every game.", hand);
+        }
         if (g_config.weapon_holsters)
         {
             changed |= ImGui::Combo("Holster location", &g_config.weapon_holster_location,
-                "Weapon-side shoulder\0Weapon-side hip\0Over the weapon-side shoulder\0");
+                "Weapon-side shoulder\0Weapon-side hip\0Over the weapon-side shoulder\0"
+                "Custom (set with your hand)\0");
+            if (g_config.weapon_holster_location == 3)
+            {
+                changed |= vr_menu::SliderFloat("Custom spot: to the weapon side (m)",
+                    &g_config.weapon_holster_custom_x_m, -0.80f, 0.80f, "%.2f");
+                changed |= vr_menu::SliderFloat("Custom spot: up from the head (m)",
+                    &g_config.weapon_holster_custom_y_m, -0.80f, 0.80f, "%.2f");
+                changed |= vr_menu::SliderFloat("Custom spot: forward of the head (m)",
+                    &g_config.weapon_holster_custom_z_m, -0.80f, 0.80f, "%.2f");
+            }
             changed |= ImGui::Checkbox("Holster slide / draw gesture", &g_config.weapon_holster_slide);
             changed |= ImGui::Checkbox("Holster click gesture", &g_config.weapon_holster_click);
             changed |= vr_menu::SliderFloat("Holster grab radius (m)",

@@ -1284,7 +1284,15 @@ struct Config
     bool weapon_needler_shake = false;
     bool weapon_unknown_reload_visual = true;
     float weapon_shake_travel_m = 0.10f;
-    int weapon_holster_location = 0; // 0 shoulder, 1 hip, 2 over the shoulder (Campaign Evolved's spot)
+    // 0 shoulder, 1 hip, 2 over the shoulder (Campaign Evolved's spot), 3 custom (the three values below).
+    int weapon_holster_location = 0;
+    // THE CUSTOM HOLSTER SPOT (location 3): metres from the head, to the weapon side, up, forward, in the level
+    // frame of the way the head faces. Set by hand: F1 > Reload & Holsters > "Set the holster spot with my
+    // hand" arms it, and the next squeeze of the weapon grip records where that hand is. Until then it is the
+    // over-the-shoulder spot. Each within 0.80.
+    float weapon_holster_custom_x_m = 0.20f;
+    float weapon_holster_custom_y_m = -0.10f;
+    float weapon_holster_custom_z_m = -0.22f;
     // X, RB, LB, B, Y, A, LT, RT. H3, ODST, Reach, H4, CE, H2.
     int weapon_reload_button[6]{0,0,0,0,0,0};
     int weapon_switch_button[6]{4,4,4,4,4,4};
