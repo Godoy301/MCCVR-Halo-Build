@@ -1939,8 +1939,19 @@ namespace
                             "drawn within 30 degrees of where your head faces, in one place for both eyes.\n"
                             "OFF: the game's own ring, far enough out that only one eye sees the arrow.\n"
                             "Does not touch (yet): name tags, fireteam markers, vehicle and lock-on reticles,\n"
-                            "damage arrows. Halo: Reach only. Takes effect at the next level.\n"
-                            "Not yet seen in a headset.");
+                            "damage arrows. Halo: Reach only. Takes effect at the next level.");
+        if (g_config.nav_marker_arrow_in_view)
+        {
+            float ringPercent = g_config.nav_marker_ring * 100.0f;
+            if (vr_menu::SliderFloat("Off-screen arrow distance from centre", &ringPercent,
+                                   15.0f, 100.0f, "%.0f%%", ImGuiSliderFlags_None))
+            {
+                g_config.nav_marker_ring = ringPercent / 100.0f;
+                changed = true;
+            }
+            ImGui::TextDisabled("How far from the middle of your view the arrows sit, as a share of what both eyes\n"
+                                "see (never more than 30 degrees). Lower it until you can see them. Live.");
+        }
         ImGui::Spacing();
         ImGui::Separator();
         ImGui::Text("HUD layout");
