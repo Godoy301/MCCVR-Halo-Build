@@ -19478,7 +19478,6 @@ namespace
     bool DisableAndRemoveOdstHooks()
     {
         if(!RemoveOdstWeaponHaptics())return false;
-        if(!RemoveOdstHeadRelative())return false;
         if(!RemoveOdstMuzzle())return false;
         if(!LegacyDriveRemove(GameTitle::Halo3ODST)) return false;
         // The seat aim rebase skip is retired further down, after the
@@ -19540,6 +19539,11 @@ namespace
         OdstRestoreNativeSeatPatch();
         if (!SeatAimFrameRemove(GameTitle::Halo3ODST))
             return false;
+        // The tracker and the sound listener by the head are retired HERE, where Halo 3 retires its own (after
+        // the core's disable and quiescence), not ahead of them: an optional lane whose detours cannot be proven
+        // quiet must not leave the stereo hooks enabled and the title DLL held while it is retried. By now the
+        // camera hook that publishes the head for them is off, so both lanes only forward.
+        if(!RemoveOdstHeadRelative())return false;
 
         bool removedAll = true;
         for (size_t i = g_odstCamera.hookTargetCount; i > 0; --i)
