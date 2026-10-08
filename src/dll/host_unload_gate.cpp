@@ -503,25 +503,28 @@ void HostUnloadGate_Report()
     const char* const title = gate.lastTitle.load(std::memory_order_relaxed);
     const char* const stays = "the load takes the old image as before and the next game of this title may bounce to "
                               "the lobby once";
+    // A teardown this gate started is named in whichever line reports the wait (AGENTS.md: a path that disarms
+    // a core says so, naming itself). The core's own heartbeat line is not printed on that path.
+    const char* const askedNote = asked ? " THE UNLOAD GATE ASKED FOR THIS TEARDOWN: the title had drawn nothing "
+                                          "for half a second when its DLL was loaded by name, and the core's own "
+                                          "heartbeat had not asked yet." : "";
     if (released)
         LOG("UNLOAD GATE %s: the game ended; MCC's reload of the game DLL came %u ms after the last frame and waited "
             "%u ms for this mod's teardown. The old image had unloaded by then, so the next game starts in a fresh "
-            "one (%u load%s waited%s)", title, arrived, longest, released, released == 1 ? "" : "s",
-            asked ? "; the reload came before the core's heartbeat had asked for the teardown, so the gate asked"
-                  : "");
+            "one (%u load%s waited).%s", title, arrived, longest, released, released == 1 ? "" : "s", askedNote);
     if (stillLoaded)
         LOG("UNLOAD GATE %s: the game ended; MCC's reload of the game DLL came %u ms after the last frame and waited "
             "%u ms for this mod's teardown, but the old image was STILL LOADED when the mod had let go (someone else "
-            "holds it): %s", title, arrived, longest, stays);
+            "holds it): %s.%s", title, arrived, longest, stays, askedNote);
     if (timedOut)
         LOG("UNLOAD GATE %s: the game ended; MCC's reload of the game DLL came %u ms after the last frame, waited the "
             "whole %u ms and this mod's teardown had not finished: %s. No further reload waits for it until the "
-            "teardown has finished", title, arrived, longest, stays);
+            "teardown has finished.%s", title, arrived, longest, stays, askedNote);
     if (abandoned)
         LOG("UNLOAD GATE %s: the game ended; MCC's reload of the game DLL came %u ms after the last frame and stopped "
             "waiting after %u ms because this mod's teardown cannot finish without the game's own thread: %s. No "
-            "further reload waits for it until the teardown has finished",
-            title, arrived, longest, stays);
+            "further reload waits for it until the teardown has finished.%s",
+            title, arrived, longest, stays, askedNote);
     if (hostClosed)
         LOG("UNLOAD GATE %s: MCC is closing; its reload of the game DLL came %u ms after the last frame and was not "
             "held back (waited %u ms)", title, arrived, longest);
