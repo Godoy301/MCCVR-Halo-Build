@@ -11,6 +11,10 @@ using Halo3ChaseCameraFn = void(__fastcall*)(uint32_t,float*,float*);
 struct Halo3DualRuntime
 {
     std::atomic<Halo3ChaseCameraFn> chaseCamera{nullptr};
+    // The chase path is bound and asked whether or not this lane's hooks are in (BindHalo3ChaseCamera): it has its
+    // own generation, and its own fault latch -- one fault ends the asking for the generation.
+    std::atomic<uint32_t> chaseGeneration{0};
+    std::atomic<bool> chaseFaulted{false};
     uintptr_t base = 0;
     uint32_t generation = 0;
     uint64_t installedAtMs = 0;

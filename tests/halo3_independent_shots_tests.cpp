@@ -12,6 +12,7 @@
 #include "../src/common/native_shot_target_lease.h"
 #include "../src/common/exclusive_input.h"
 #include "../src/common/weapon_muzzle.h"
+#include "../src/common/seat_view_logic.h"
 
 static unsigned checks{};
 static void Check(bool value,const char* name)
@@ -69,6 +70,8 @@ using Halo3ChaseCameraFn=void(__fastcall*)(uint32_t,float*,float*);
 static struct
 {
     std::atomic<Halo3ChaseCameraFn> chaseCamera{nullptr};
+    std::atomic<uint32_t> chaseGeneration{0};
+    std::atomic<bool> chaseFaulted{false};
     uintptr_t base=imageBase;uint32_t generation=7;uint64_t installedAtMs=1;
     Fire fireOriginal{};Aim aimOriginal{};Query queryOriginal{};Camera cameraOriginal{};
     void* fireTarget{},*aimTarget{},*queryTarget{},*cameraTarget{};
@@ -128,10 +131,15 @@ static int missingBinding=-1,ambiguousBinding=-1,failCreate=-1,failEnable=-1,
 static bool ingress=false,quiesced=false;
 static bool hookExists[4]{},hookEnabled[4]{};
 static constexpr uint32_t hookRvas[]{0x3683A0,0x3524B0,0x13B08C,0x212198};
+// The chase path's body scan (BindHalo3ChaseCamera): the first scan's hit and the second's (0 = unique).
+static bool chaseScan=false;
+static unsigned chaseScans{};
+static uintptr_t chaseFirst{},chaseSecond{};
 namespace sig
 {
 uintptr_t Find(uintptr_t base,size_t,const char*)
 {
+    if(chaseScan)return chaseScans++==0?chaseFirst:chaseSecond;
     constexpr uint32_t bindings[]{0x3683A0,0x3524B0,0x13B08C,0x212198,0x13BAD0};
     const unsigned number=bindingScan++/2;
     Check(number<5,"bounded cold binding inventory");
@@ -247,7 +255,78 @@ static void LifecycleTests()
     reset();image[0x368AE5]^=1;Check(!InstallHalo3DualAim(lifecycleBase,size,7)&&createCalls==0,"changed controlling-parent field blocks only feature");
     image[0x368AE5]^=1;reset();image[0x13BC08]^=1;
     Check(!InstallHalo3DualAim(lifecycleBase,size,7)&&createCalls==0,"changed downstream consumer blocks only feature");
+    image[0x13BC08]^=1;
+
+    // THE CHASE PATH: bound from the evaluator's body, with no hook of this lane installed.
+    reset();
+    const uint32_t chaseRva=0x2144C0;
+    const unsigned char branch[]{0x85,0xC0,0x75,0x07,0xE8,0,0,0,0,0xEB,0x05,0xE8};
+    std::memcpy(image+0x2121C7,branch,sizeof(branch));
+    *reinterpret_cast<int32_t*>(image+0x2121C7+12)=int32_t(chaseRva-0x2121D7);
+    edge(seat_view::kHalo3EvaluatorCallRva,seat_view::kHalo3ThirdPersonRva);
+    const auto bind=[&](uintptr_t first,uintptr_t second,uint32_t generation)
+    {
+        chaseScan=true;chaseScans=0;chaseFirst=first;chaseSecond=second;
+        BindHalo3ChaseCamera(lifecycleBase,size,generation);
+        chaseScan=false;
+        return g_halo3Dual.chaseCamera.load()!=nullptr;
+    };
+    const uintptr_t chaseAt=lifecycleBase+chaseRva;
+    Check(bind(chaseAt,0,7)&&g_halo3Dual.chaseGeneration==7&&
+        reinterpret_cast<uintptr_t>(g_halo3Dual.chaseCamera.load())==chaseAt&&createCalls==0,
+        "the chase path binds from the evaluator's body with no hook installed");
+    Check(!bind(chaseAt,0,0)&&g_halo3Dual.chaseGeneration==0,"no generation: unbound");
+    Check(!bind(chaseAt,chaseAt+0x40,7),"an ambiguous body: unbound");
+    Check(!bind(chaseAt+0x10,0,7),"a body found elsewhere: unbound");
+    Check(!bind(0,0,7),"no body: unbound");
+    image[0x2121C7+2]^=1;
+    Check(!bind(chaseAt,0,7),"a changed branch: unbound");
+    image[0x2121C7+2]^=1;
+    edge(seat_view::kHalo3EvaluatorCallRva,0x1326F0);
+    Check(!bind(chaseAt,0,7),"an evaluator that no longer calls the seat's third-person test: unbound");
+    edge(seat_view::kHalo3EvaluatorCallRva,seat_view::kHalo3ThirdPersonRva);
+    Check(bind(chaseAt,0,7),"bound again");
+    // Its retirement: unbound at once; with no hook to wait on, an ask still inside holds it.
+    g_halo3Dual.callbacks=1;
+    Check(!RemoveHalo3DualAim()&&!g_halo3Dual.chaseCamera.load()&&g_halo3Dual.chaseGeneration==0,
+        "retirement unbinds the chase path, and waits for an ask in flight though no hook is installed");
+    g_halo3Dual.callbacks=0;
+    Check(RemoveHalo3DualAim(),"...and completes once it has left");
     Check(VirtualFree(image,0,MEM_RELEASE)!=0,"private lifecycle image released");
+}
+
+// The chase path asked (Halo3AskChaseCamera): its own generation and fault latch, none of the lane's hooks.
+static unsigned chaseCalls{};
+static bool chaseFaults=false;
+static void __fastcall NativeChase(uint32_t unit,float* position,float* direction)
+{
+    ++chaseCalls;
+    if(chaseFaults)RaiseException(0xE0123458,0,0,nullptr);
+    position[0]=float(unit);position[1]=2;position[2]=3;
+    direction[0]=0;direction[1]=1;direction[2]=0;
+}
+static void ChaseAskTests()
+{
+    float position[3]{},direction[3]{};
+    g_halo3Dual.callbacks=0;g_halo3Dual.enabled=false;g_halo3Dual.faulted=true;
+    g_halo3Dual.chaseCamera=&NativeChase;g_halo3Dual.chaseGeneration=7;g_halo3Dual.chaseFaulted=false;
+    g_halo3RuntimeGeneration=7;chaseCalls=0;chaseFaults=false;
+    Check(Halo3AskChaseCamera(5,position,direction)&&chaseCalls==1&&position[0]==5.0f&&direction[1]==1.0f&&
+        !g_halo3Dual.callbacks.load(),"the chase path answers with the lane's hooks out and the lane off");
+    Check(!Halo3AskChaseCamera(-1,position,direction)&&chaseCalls==1,"no unit: not asked");
+    g_halo3RuntimeGeneration=8;
+    Check(!Halo3AskChaseCamera(5,position,direction)&&chaseCalls==1,"another generation: not asked");
+    g_halo3RuntimeGeneration=7;
+    g_halo3Dual.chaseGeneration=0;
+    Check(!Halo3AskChaseCamera(5,position,direction)&&chaseCalls==1,"unbound generation: not asked");
+    g_halo3Dual.chaseGeneration=7;
+    chaseFaults=true;position[0]=-1;
+    Check(!Halo3AskChaseCamera(5,position,direction)&&chaseCalls==2&&position[0]==-1.0f&&
+        g_halo3Dual.chaseFaulted.load()&&!g_halo3Dual.callbacks.load(),"a fault answers nothing and is latched");
+    chaseFaults=false;
+    Check(!Halo3AskChaseCamera(5,position,direction)&&chaseCalls==2,"...and the path is not asked again");
+    g_halo3Dual.chaseCamera=nullptr;g_halo3Dual.chaseGeneration=0;g_halo3Dual.chaseFaulted=false;
+    g_halo3Dual.faulted=false;
 }
 
 static unsigned queryCalls{},fireCalls{},cameraCalls{},aimCalls{};
@@ -410,5 +489,6 @@ int main()
     MuzzleTests();
     MuzzleLifecycleTests();
     LifecycleTests();
+    ChaseAskTests();
     std::printf("PASS: %u production H3 independent shot checks (native services stubbed)\n",checks);
 }

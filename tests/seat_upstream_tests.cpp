@@ -308,6 +308,120 @@ void TestStockLineWindow()
           "the dev line carries the unmodded host's chase line and the unreproducible count");
 }
 
+// A stock seat's line start (section 4b): the choice, the carried query start, the ask's agreement with the game,
+// and the claim the solve rests on -- solved each step against the camera the last record produced, the error
+// shrinks by R / (L + R).
+void TestStockStart()
+{
+    using seat_upstream::StockStart;
+    seat_upstream::StockStartInput in{};
+    Check(seat_upstream::ChooseStockStart(in).source == StockStart::None, "nothing in hand: no start");
+
+    in.query = true;
+    in.queryPos[0] = 10.0f * kWuPerM;
+    in.queryAgeUs = 100000;
+    auto c = seat_upstream::ChooseStockStart(in);
+    Check(c.source == StockStart::Query && !c.velValid && c.pos[0] == in.queryPos[0],
+          "a query start with no seat velocity is used where it was");
+    in.seatVelValid = true;
+    in.seatVel[1] = 10.0f * kWuPerM;
+    c = seat_upstream::ChooseStockStart(in);
+    Check(c.source == StockStart::Query && c.velValid && std::fabs(c.pos[1] - 1.0f * kWuPerM) < 1.0e-4f &&
+              c.vel[1] == in.seatVel[1],
+          "a 100 ms old query start in a seat moving 10 m/s is carried 1 m");
+    in.queryAgeUs = seat_upstream::kStockQueryMaxAgeUs + 1;
+    Check(seat_upstream::ChooseStockStart(in).source == StockStart::None, "a query start past its age is refused");
+    in.queryAgeUs = 100000;
+    in.queryPos[2] = std::nanf("");
+    Check(seat_upstream::ChooseStockStart(in).source == StockStart::None, "a non-finite query start is refused");
+    in.queryPos[2] = 0.0f;
+
+    in.asked = true;
+    in.askedPos[0] = 20.0f * kWuPerM;
+    c = seat_upstream::ChooseStockStart(in);
+    Check(c.source == StockStart::Asked && c.pos[0] == in.askedPos[0] && !c.velValid,
+          "the asked camera comes before the query's start");
+    in.askedVelValid = true;
+    in.askedVel[0] = std::nanf("");
+    Check(!seat_upstream::ChooseStockStart(in).velValid, "a non-finite velocity is no velocity");
+    in.askedVel[0] = 3.0f;
+    Check(seat_upstream::ChooseStockStart(in).velValid, "...and a finite one is carried");
+
+    in.evaluator = true;
+    in.evaluatorPos[0] = 30.0f * kWuPerM;
+    in.evaluatorVelValid = true;
+    c = seat_upstream::ChooseStockStart(in);
+    Check(c.source == StockStart::Evaluator && c.pos[0] == in.evaluatorPos[0] && c.velValid,
+          "this pass's own camera comes first");
+    in.evaluatorPos[1] = std::nanf("");
+    Check(seat_upstream::ChooseStockStart(in).source == StockStart::Asked, "a non-finite one falls through");
+
+    // The ask against the game's own query start.
+    seat_upstream::AskAgreement agreement;
+    Check(agreement.Usable(), "never compared: the ask is used");
+    const float asked[3]{0.0f, 0.0f, 0.0f};
+    const float closeBy[3]{0.4f * kWuPerM, 0.0f, 0.0f}, farOff[3]{5.0f * kWuPerM, 0.0f, 0.0f};
+    float apart = agreement.Note(asked, farOff);
+    Check(agreement.Usable() && std::fabs(apart - 5.0f * kWuPerM) < 1.0e-4f &&
+              !seat_upstream::AskAgreement::Agrees(apart),
+          "one comparison apart proves nothing, and says how far");
+    agreement.Note(asked, farOff);
+    Check(!agreement.Usable(), "two in a row: the ask is not the game's camera");
+    apart = agreement.Note(asked, closeBy);
+    Check(agreement.Usable() && seat_upstream::AskAgreement::Agrees(apart), "the first one that agrees brings it back");
+    agreement.Note(asked, farOff);
+    agreement.Note(asked, closeBy);
+    agreement.Note(asked, farOff);
+    Check(agreement.Usable(), "disagreements that are not in a row do not refuse it");
+    agreement.Note(asked, farOff);
+    Check(!agreement.Usable(), "...until two are");
+    const float bad[3]{std::nanf(""), 0.0f, 0.0f};
+    apart = agreement.Note(asked, bad);
+    Check(apart < 0.0f && !agreement.Usable() && !seat_upstream::AskAgreement::Agrees(apart),
+          "a non-finite position is no comparison and changes nothing");
+    agreement.Reset();
+    Check(agreement.Usable(), "a new occupant starts unjudged");
+
+    // The fixed point. A chase camera R behind a pivot along the record; the point L from the pivot.
+    const float R = 2.0f * kWuPerM, L = 30.0f * kWuPerM;
+    const float pivot[3]{1.0f * kWuPerM, -2.0f * kWuPerM, 0.5f * kWuPerM};
+    float exact[3]{0.8f, 0.6f, 0.0f};
+    const float point[3]{pivot[0] + exact[0] * L, pivot[1] + exact[1] * L, pivot[2] + exact[2] * L};
+    seat_upstream::SeatRecomposeInput step = HornetInput();
+    step.gain = 0.0f;
+    step.cameraVelValid = false;
+    std::memcpy(step.point, point, sizeof(point));
+    // The published setpoint (what the solve from the render eye asked for): 10 degrees off the exact line.
+    float setYaw = 0.0f, setPitch = 0.0f;
+    Check(seat_upstream::AnglesFromDir(exact, setYaw, setPitch), "the exact line has angles");
+    setYaw += 10.0f / shot_lag::kRadToDeg;
+    step.setYaw = step.intent.solvedYaw = setYaw;
+    step.setPitch = step.intent.solvedPitch = setPitch;
+    float record[3]{};
+    seat_upstream::DirFromAngles(setYaw, setPitch, record);
+    float error = seat_upstream::AngleDeg(record, exact), firstRatio = 0.0f;
+    bool everyStep = true;
+    for (int k = 0; k < 4; ++k)
+    {
+        // The camera the record in effect produces; the next record is solved from it.
+        for (int axis = 0; axis < 3; ++axis)
+            step.camera[axis] = pivot[axis] - record[axis] * R;
+        float yaw = 0.0f, pitch = 0.0f, bend = 0.0f;
+        everyStep = everyStep &&
+            seat_upstream::RecomposeSeat(step, yaw, pitch, bend) == seat_upstream::SeatRecompose::Recomposed;
+        seat_upstream::DirFromAngles(yaw, pitch, record);
+        const float next = seat_upstream::AngleDeg(record, exact);
+        if (k == 0)
+            firstRatio = next / error;
+        error = next;
+    }
+    Check(everyStep, "every step of the fixed point recomposes");
+    Check(std::fabs(firstRatio - R / (L + R)) < 0.01f, "one step shrinks the error by R / (L + R)");
+    // From the camera the last record produces, its own line passes within a few millimetres of the point.
+    const float camera[3]{pivot[0] - record[0] * R, pivot[1] - record[1] * R, pivot[2] - record[2] * R};
+    Check(LineMissWu(camera, record, point) * shot_lag::kMmPerWu < 5.0f, "four steps on, the stock line hits the point");
+}
+
 void TestStockCamera()
 {
     using seat_upstream::StockCamera;
@@ -327,6 +441,7 @@ int main()
     TestWriteRing();
     TestRecomposeSeat();
     TestStockLineWindow();
+    TestStockStart();
     TestStockCamera();
     std::printf("%u checks, %u failures\n", checks, failures);
     return failures ? 1 : 0;

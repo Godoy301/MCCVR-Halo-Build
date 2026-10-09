@@ -2622,6 +2622,7 @@ namespace
     void EndHalo3AvatarPair();
     void ObserveHalo3AvatarFp(uint16_t tag,const BoneMatrix* destination);
     bool InstallHalo3DualAim(uintptr_t base, size_t size, uint32_t generation);
+    void BindHalo3ChaseCamera(uintptr_t base, size_t size, uint32_t generation);
     bool RemoveHalo3DualAim();
     void PublishHalo3DualAim();
     void ReportHalo3DualAim();
@@ -17849,6 +17850,9 @@ namespace
         // path owns acquisition and downstream assist together, with its own
         // default-off setting and feature-only failure isolation.
         (void)InstallHalo3DualAim(base,size,runtimeGeneration);
+        // The evaluator's chase path, the start of a stock seat's crosshair line (seat_upstream_logic.h 4b): no hook,
+        // so it is bound whether or not the lane above installed.
+        BindHalo3ChaseCamera(base,size,runtimeGeneration);
         // The record recomposition's first-person eye identity (shot_lag_logic.h 4d): two sites, no hook.
         (void)BindHalo3DirectorCamera(base,size,runtimeGeneration,g_engineTlsIndex);
         // Roomscale's Forge Monitor check (roomscale_admission_logic.h): two sites, two reader calls, no hook.

@@ -789,11 +789,12 @@ int8_t LegacyFireTag(GameTitle title)
     return title == GameTitle::Halo3 ? t_halo3Fire : title == GameTitle::Halo3ODST ? t_odstFire : shot_lag::kFireNone;
 }
 
-// THE STOCK LINE'S START (Halo 3 seats, 2026-10-09). With the seat's tag as loaded the game queries a third-person
-// seat's crosshair from its chase camera -- on this machine, on a lockstep peer and on an unmodded host alike. That
-// query's START, as the game built it for the local player's seat, is published here from the crosshair site and
-// read at the stick call (LegacyDriveRecomposeSeated), which aims the record from it through the seat's point.
-// It needs no hook on the unit camera evaluator, so it works in a host that hooks the evaluator itself.
+// THE STOCK LINE'S START, AS THE GAME BUILT IT (Halo 3 seats; seat_upstream_logic.h 4b). With the seat's tag as
+// loaded the game queries a third-person seat's crosshair from its chase camera -- on this machine, on a lockstep
+// peer and on an unmodded host alike. That query's START for the local player's seat is published here from the
+// crosshair site and read at the stick call (LegacyDriveRecomposeSeated). The game runs the query when the gun
+// fires, so this is not the camera at every pass: it is the last of the stick call's sources, and the reference its
+// asked chase camera is checked against. It needs no hook on the unit camera evaluator.
 struct LegacySeatStockLine
 {
     SRWLOCK lock = SRWLOCK_INIT;
@@ -932,8 +933,9 @@ bool LegacySightReaimCrosshairQuery(GameTitle title, uint64_t flags, const float
 #endif
     // A STOCK SEAT'S QUERY IS LEFT AS THE GAME BUILT IT. Bending it here is a change only this machine makes: a
     // host fires its own line whatever this machine predicted, and a lockstep peer computes another shot. The
-    // record was aimed along this very line upstream instead (LegacyDriveRecomposeSeated), so the line already
-    // passes through the point as closely as that solve got; the dev SHOT UPSTREAM line below says how closely.
+    // record was aimed along this very line upstream instead, at every control pass (LegacyDriveRecomposeSeated),
+    // so the line already passes through the point as closely as that solve got. SHOT RECORD Halo 3 seated counts
+    // the passes it could not solve, and the dev SHOT UPSTREAM line below measures what is left.
     const bool reaimed = !stockSeat &&
         Sight_ReaimThroughPoint(title, SightShotSite::CrosshairAssist, start, out, point, seated);
 #if HALOMCCVR_DEV_DIAGNOSTICS

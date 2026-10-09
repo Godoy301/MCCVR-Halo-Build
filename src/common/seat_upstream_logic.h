@@ -5,8 +5,10 @@
 // fires the authoritative shot with the stock game from that record. Every correction at the FIRE SITE (re-aiming the
 // firing assist's crosshair query through P, Sight_ReaimThroughPoint) changes only this machine's prediction. So the
 // record itself is chosen here so that the STOCK game's own crosshair query at the fire tick already passes through
-// P; the fire-site re-aim stays as the local backstop, and how often it still has to act is the multiplayer residual
-// (the SHOT REAIM line's seated count; the dev SHOT UPSTREAM line measures it in mm and degrees).
+// P. A seat whose tag this machine writes (the dev A/B) keeps the fire-site re-aim as its local backstop. A seat
+// whose tag is as loaded is never re-aimed at the fire site: there the record is all there is, so its line's start
+// has to be in hand at every control pass (section 4b). The dev SHOT UPSTREAM line measures what is left, in mm and
+// degrees.
 //
 // THE STOCK QUERY, read from the pinned halo3.dll (B209D845...EFB63, offline):
 //   * the firing assist 0x13BAD0 takes its line from the camera evaluator 0x212198 (called at 0x13BC08): the line
@@ -362,6 +364,126 @@ inline SeatRecompose RecomposeSeat(const SeatRecomposeInput& in, float& yaw, flo
     pitch = pt;
     bendDeg = AngleDeg(set, record);
     return SeatRecompose::Recomposed;
+}
+
+// ---- 4b. where a stock seat's crosshair line starts -------------------------------------------------------------
+// A seat whose loaded tag keeps `third person camera` is queried from the game's chase camera, on every machine.
+// The record is solved from that camera (RecomposeSeat), so the camera's position is needed at every control pass,
+// firing or not. Three sources, best first:
+//   Evaluator  this pass's own acquisition camera: the evaluator's chase-path answer for our unit, where the
+//              evaluator is hooked. Fresh, with a measured velocity.
+//   Asked      the evaluator's chase path asked directly at the stick call, once a simulation tick. As fresh; its
+//              velocity comes from its own track. Used unless it is known to disagree with the game (AskAgreement).
+//   Query      the start of the game's last crosshair query for the seat. The game runs that query when the gun
+//              fires, so between bursts there is none and inside one it can be old: it is carried forward by the
+//              seat's own velocity for its age, and refused past kStockQueryMaxAgeUs.
+// The chase camera follows the record, so each record is solved against the camera the last one produced. With the
+// camera R behind its pivot and the point L from the pivot the angle error shrinks by R / (L + R) a step, from any
+// start (unit-tested). A step is one simulation tick for the first two sources and the time between queries for
+// the third, which is why they come first.
+enum class StockStart : uint8_t { None = 0, Evaluator, Asked, Query, Count };
+inline const char* StockStartName(StockStart source)
+{
+    switch (source)
+    {
+    case StockStart::Evaluator: return "this pass's own camera";
+    case StockStart::Asked: return "the chase camera asked at the stick call";
+    case StockStart::Query: return "the last crosshair query's start";
+    default: return "none";
+    }
+}
+inline constexpr uint64_t kStockQueryMaxAgeUs = 250000;
+// The chase camera changes once a simulation tick; without a tick count it is asked again after this long.
+inline constexpr uint64_t kStockAskRefreshUs = 50000;
+
+// IS THE ASKED CAMERA THE ONE THE GAME'S QUERY STARTS FROM? The chase path is asked outside the evaluator, so a host
+// that replaces the evaluator's answer (a camera mode of its own) would leave the ask describing a camera the game
+// no longer uses. Whenever a fresh query start is in hand the two are compared. Not yet compared is not
+// disagreement: the ask is used until two comparisons in a row put it more than kAgreeWu from the query's start,
+// and again from the first one that agrees.
+struct AskAgreement
+{
+    static constexpr float kAgreeWu = 1.0f * shot_lag::kWuPerMetre;
+    static constexpr uint64_t kCompareMaxAgeUs = 60000;   // a query start older than this is not compared
+    static constexpr uint32_t kDisagreeToRefuse = 2;
+    bool refused = false;
+    uint32_t streak = 0;
+
+    void Reset() { *this = AskAgreement{}; }
+    static bool Agrees(float apartWu) { return apartWu >= 0.0f && apartWu <= kAgreeWu; }
+    // One comparison: the asked camera against a query start already carried to the instant of the ask. Returns
+    // how far apart they are (wu), or a negative value when the two cannot be compared (nothing changes then).
+    float Note(const float asked[3], const float queryStart[3])
+    {
+        if (!shot_lag::Finite3(asked) || !shot_lag::Finite3(queryStart))
+            return -1.0f;
+        const float d[3]{asked[0] - queryStart[0], asked[1] - queryStart[1], asked[2] - queryStart[2]};
+        const float apart = shot_lag::Length(d);
+        if (!std::isfinite(apart))
+            return -1.0f;
+        if (Agrees(apart))
+        {
+            streak = 0;
+            refused = false;
+        }
+        else if (++streak >= kDisagreeToRefuse)
+            refused = true;
+        return apart;
+    }
+    bool Usable() const { return !refused; }
+};
+
+struct StockStartInput
+{
+    bool evaluator = false;
+    float evaluatorPos[3]{}, evaluatorVel[3]{};
+    bool evaluatorVelValid = false;
+    bool asked = false;            // asked this tick, and not refused by AskAgreement
+    float askedPos[3]{}, askedVel[3]{};
+    bool askedVelValid = false;
+    bool query = false;
+    float queryPos[3]{};
+    uint64_t queryAgeUs = 0;
+    float seatVel[3]{};            // the seat's own velocity, wu/s: what carries an old query start forward
+    bool seatVelValid = false;
+};
+struct StockStartChoice
+{
+    StockStart source = StockStart::None;
+    float pos[3]{}, vel[3]{};
+    bool velValid = false;
+};
+// A query start carried to now by the seat's velocity. False (out untouched): too old, or not finite.
+inline bool CarryQueryStart(const float queryPos[3], uint64_t ageUs, const float seatVel[3], bool seatVelValid,
+                            float out[3])
+{
+    if (!shot_lag::Finite3(queryPos) || ageUs > kStockQueryMaxAgeUs)
+        return false;
+    const float zero[3]{};
+    const float* vel = seatVelValid && shot_lag::Finite3(seatVel) ? seatVel : zero;
+    return shot_lag::ExtrapolateEye(queryPos, vel, float(ageUs) * 1.0e-6f, float(kStockQueryMaxAgeUs) * 1.0e-6f, out);
+}
+inline StockStartChoice ChooseStockStart(const StockStartInput& in)
+{
+    StockStartChoice c{};
+    const auto take = [&c](StockStart source, const float pos[3], const float vel[3], bool velValid) {
+        const bool usable = velValid && shot_lag::Finite3(vel);
+        c.source = source;
+        for (int axis = 0; axis < 3; ++axis)
+        {
+            c.pos[axis] = pos[axis];
+            c.vel[axis] = usable ? vel[axis] : 0.0f;
+        }
+        c.velValid = usable;
+    };
+    float carried[3]{};
+    if (in.evaluator && shot_lag::Finite3(in.evaluatorPos))
+        take(StockStart::Evaluator, in.evaluatorPos, in.evaluatorVel, in.evaluatorVelValid);
+    else if (in.asked && shot_lag::Finite3(in.askedPos))
+        take(StockStart::Asked, in.askedPos, in.askedVel, in.askedVelValid);
+    else if (in.query && CarryQueryStart(in.queryPos, in.queryAgeUs, in.seatVel, in.seatVelValid, carried))
+        take(StockStart::Query, carried, in.seatVel, in.seatVelValid);
+    return c;
 }
 
 // ---- 5. the multiplayer residual: the stock query against P, before any re-aim -----------------------------------
