@@ -138,7 +138,7 @@
     // THE FIRST-PERSON SEAT. For as long as the VR vehicle camera owns the view, Halo is to treat the occupant as
     // first person, so it stops drawing the player's character model in the space the headset is looking out of.
     //
-    // THE DEFAULT (2026-10-09): the loaded tag is NOT written. The seat record is found and checked exactly as
+    // THE DEFAULT: the loaded tag is NOT written. The seat record is found and checked exactly as
     // before, its flags are kept for the readers that want them, and the occupant is armed for the camera
     // director's relay (halo3_seat_view.inl), which answers the director alone. The simulation reads a stock seat:
     // the same on every machine of a lockstep game, and the same as an unmodded host's.
@@ -147,7 +147,7 @@
     // `third person camera` bit. Halo re-reads the bit from the loaded tag every camera frame (halo3+0x1326E8 ->
     // +0x212198), so the effect is immediate and the restore below is complete -- and so does the simulation
     // (the unit camera evaluator for the firing assist and the acquisition, and the seated camera evaluator
-    // +0x3555EC for 28 callers), which is what put a co-op campaign client out of step with its host.
+    // +0x3555EC for 28 callers), which is what puts a co-op campaign client out of step with its host.
     //
     // This is NOT C17. C17 additionally zeroed the seat's camera-track count
     // and then made the resulting native camera the motion parent; that was

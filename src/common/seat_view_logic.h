@@ -2,9 +2,9 @@
 // A FIRST-PERSON SEAT FOR THE CAMERA DIRECTOR ONLY (Halo 3).
 //
 // Halo 3 has no first-person vehicle view of its own: every stock player seat carries the seat flag `third person
-// camera` (bit 4). Until now the mod cleared that bit in the LOADED vehicle definition while the player sat in the
-// seat (C20, halo3_native_seat_patch.inl), which made the game hide the player's own character and draw the
-// first-person arms. But the bit is read in two different kinds of place:
+// camera` (bit 4). Clearing that bit in the LOADED vehicle definition while the player sits in the seat (C20,
+// halo3_native_seat_patch.inl, kept behind a dev key) makes the game hide the player's own character and draw
+// the first-person arms. But the bit is read in two different kinds of place:
 //
 //   1. the camera DIRECTOR, which decides what this machine draws. It asks the function at halo3+0x1326E8
 //      ("is this unit's seat third person?") from three call sites: +0x212074, +0x2127EF, +0x212DCB;
@@ -13,9 +13,9 @@
 //      evaluator +0x3555EC reads the flags word itself for 28 callers, the fire routine and the control
 //      accumulator among them.
 //
-// A write to the tag reaches both. In a host-authoritative match that made this machine predict a shot from
-// another line than the host fires; in a lockstep game (co-op campaign) it is two different simulations: a client
-// went out of step with its host within seconds of mounting a turret, five times out of five (2026-10-08).
+// A write to the tag reaches both. In a host-authoritative match it makes this machine predict a shot from
+// another line than the host fires; in a lockstep game (co-op campaign) it is two different simulations, and a
+// client goes out of step with its host within seconds of mounting a turret.
 //
 // So the tag is left alone and only the director is answered: the three director call sites are redirected to a
 // relay that calls the game's own function and then, for the one occupant whose seat view the mod owns, turns the

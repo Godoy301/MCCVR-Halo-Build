@@ -55180,9 +55180,9 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
                         seatFacts.identified = id != Halo3VehicleId::Unknown;
                         // THE VIEW IS THE MOD'S OWN whenever its seat camera has the seat's authored point: the
                         // rendered eye is then that point, whatever camera the game's director runs, so a
-                        // hand-aimed record cannot swing it. (Until 2026-10-09 this waited for the seat's tag
-                        // flag to be written. The seat's aim does not depend on how the body is hidden.) With
-                        // the tag written (the dev A/B) the earlier rule stands.
+                        // hand-aimed record cannot swing it. The seat's aim does not depend on how the body
+                        // is hidden. With the tag written (the dev A/B) the view is owned only while the native
+                        // seat patch is Active: the game's own first-person seat camera is then the view.
                         seatFacts.view_owned = Halo3SeatViewWritesTag()
                             ? g_halo3NativeSeatState.load(std::memory_order_acquire) ==
                                   static_cast<uint32_t>(Halo3NativeSeatState::Active)
