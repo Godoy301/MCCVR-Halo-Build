@@ -61,7 +61,7 @@ bool Owner(uint32_t unit,HaloCELocalPlayerState& state,RenderContext& context) n
 // Trace-and-reaim (sight_layer.h): the aiming direction through the point the eye-anchored intent ray
 // hits, as seen from CE's engine eye -- the record CE replicates and integrates into the unit's aim, so the
 // engine's own crosshair trace lands where the controller points. nullptr without a fresh trace result:
-// the controller's own forward is written then, as before.
+// the controller's own forward is written then.
 std::atomic<uint64_t> convergedPackets{};
 const Vec3* ConvergedAim(const RenderContext& context,Vec3& storage) noexcept
 {

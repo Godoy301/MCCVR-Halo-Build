@@ -6,7 +6,7 @@
 // and it needs the game to accept stick input at all. Here the aim is written where the game keeps it.
 //
 // Each title has Reach's per-user control update -- the ACCUMULATOR of player_control.desired_angles
-// (desired += stick delta, then wrap and clamp) -- found 2026-09-29 by structure in each retail module
+// (desired += stick delta, then wrap and clamp) -- identified by structure in each retail module
 // and matched field for field against Reach's 0x6375C:
 //
 //      title    control update   TLS slot   per-user stride   desired yaw / pitch
@@ -30,8 +30,8 @@
 // updates, and only while every later update resolves the same record. A different record disarms it.
 //
 // SEATS (seat_direct_drive). Every seat of these titles keeps its aim in this same record, updated by this
-// same accumulator from the same call site as on foot, with the seat's limits applied inside it (mapped
-// 2026-10-01; the one exception, Halo 4's type-13 driver, runs a different controller and never reaches
+// same accumulator from the same call site as on foot, with the seat's limits applied inside it (the one
+// exception, Halo 4's type-13 driver, runs a different controller and never reaches
 // the hook, so it stays on the servo). The input thread publishes a seat's setpoint flagged `seated`, with
 // the AXES the hand owns there (seat_drive::Decide: a passenger, gunner or turret both; a look-steered
 // driver both at reach_vehicle_aim 2, the pitch only while the stick or wheel steers, none at 1; Halo 4 seats
@@ -45,7 +45,7 @@
 // LOOK-STEERED driver, whose pitch the accumulator levels as the vehicle moves. A seat may also ARM the hook,
 // on yaw agreement alone: a checkpoint that loads in a vehicle.
 //
-// THE SEAT'S FRAME (2026-10-01; seat_frame_reader.h, docs/ALL-TITLES-AIM-2026-09-29.md "Seats aim in world
+// THE SEAT'S FRAME (seat_frame_reader.h, docs/ALL-TITLES-AIM-2026-09-29.md "Seats aim in world
 // angles"). The record is NOT always in world angles: each title's rebase (Halo 3 0x355E20, ODST 0x39A600, Halo 4
 // 0x5F97DC) rotates it by the vehicle's up frame R(u) unless the seat's live flags carry bit 4. So each seated
 // update first reads, on this thread and from the unit the rebase itself will rotate, what the rebase will do this
@@ -66,30 +66,30 @@
 // unwind info and its prologue). Only the stick call counts updates, checks seats, steps the arm gate and
 // feeds the latch. An extra call (impulse, sway, kick, or any caller the map does not know, once the stick is
 // proven) has the last stick write put back over what it added; Halo 4's no-unit call ends the update
-// (nothing was written: the latch and the seat stint are over). Halo 3's and ODST's every non-stick call keeps
-// the put-back it always had -- this frame's write, the same record, no context or plausibility test -- and
-// one thing changed, the window: a KICK (it runs in this frame's ticks, after the stick call) is put back while
-// no stick call has run since, under the 250 ms QPC cap, where it was 50 ms of GetTickCount64 (a catch-up burst
-// of ticks after a hitch outlasted that and left the kick for the seat latch); the NO-UNIT call runs with no
-// stick call at all while the player is dead, so it keeps the 50 ms window, now on QPC
-// (kLegacyDrivePutBackNoStickMs), as does any caller the map does not know (the no-unit call reads that way if
-// its own proof fails). An unproven stick site leaves every call counting as the update, as before.
+// (nothing was written: the latch and the seat stint are over). Halo 3's and ODST's every non-stick call is
+// put back on a lighter test -- this frame's write, the same record, no context or plausibility test -- and
+// the window depends on the caller: a KICK (it runs in this frame's ticks, after the stick call) is put back while
+// no stick call has run since, under the 250 ms QPC cap (a catch-up burst of ticks after a hitch outlasts a
+// 50 ms window and leaves the kick for the seat latch); the NO-UNIT call runs with no
+// stick call at all while the player is dead, so its window is 50 ms of QPC
+// (kLegacyDrivePutBackNoStickMs), as is that of any caller the map does not know (the no-unit call reads that way
+// if its own proof fails). An unproven stick site leaves every call counting as the update.
 // "Updates" are therefore stick calls, and the control pass runs once per MAIN-LOOP ITERATION -- a rendered
 // frame -- ahead of that frame's 0..N sim ticks: ~120 per second at 120 fps, not the sim's 60 Hz.
 //
-// GUN-SLAVED SEATS (Halo 3 / ODST seat flag bit 7, gun_slaved_seat_logic.h; 2026-10-02). In a seat whose first-
+// GUN-SLAVED SEATS (Halo 3 / ODST seat flag bit 7, gun_slaved_seat_logic.h). In a seat whose first-
 // person camera is the GUN -- the Warthog turret's gunner -- the game's aim the input thread publishes is the gun's
-// marker, and the gun slews toward the record at its own rate. Proving the record against it proved it against a
-// quantity that lags by design: every turret entry spent 1-2 s unwritten, short ones never wrote, a pause restarted
-// the wait, and a pitch left on the stick servo nodded. So such a seat ALSO proves its record against the
+// marker, and the gun slews toward the record at its own rate. Proving the record against it alone proves it against
+// a quantity that lags by design: every turret entry spends 1-2 s unwritten, short ones never write, a pause restarts
+// the wait, and a pitch left on the stick servo nods. So such a seat ALSO proves its record against the
 // OCCUPANT's own aim vector -- the field the camera reads in every other seat and on foot, and the one the control
 // update re-derives the record from (both found by signature at install, LegacyDriveBindUnitAim). A second
 // StintCheck (stintOccupant) runs beside the camera's; an axis is proven when EITHER passes it
-// (seat_drive::CombineStints), so the seat is never slower than before and fails closed to the camera check when
+// (seat_drive::CombineStints), so the seat is never slower than the camera check and fails closed to it when
 // the vector is unbound or disagrees. The arm gate takes either reference on yaw. The occupant's aim (world
 // angles, with how long it has agreed with the record per axis) is published for the input thread, whose stick
 // servo closes on it instead of the slewing gun once it is trusted (gun_slaved::ServoFeedback). The writes are
-// unchanged: world angles, case (a), both axes. The gun stays the outcome -- for the witnesses, and for one guard:
+// any other seat's: world angles, case (a), both axes. The gun stays the outcome -- for the witnesses, and for one guard:
 // an axis written on the occupant's proof alone loses it for the stint if the gun comes to REST more than 3 deg off
 // the record (gun_slaved::OffsetWatch: lag ends when the gun stops, a real marker offset does not).
 
@@ -120,7 +120,7 @@ struct LegacyDriveSite
     uint32_t angles;
     // The `call entry` (E8 rel32) of the stick update (Halo 3, ODST), or of the dispatcher that every Halo 4
     // caller goes through (its one call site). ADDR-HYGIENE: guarded (the rel32 must land on entryRva, and it
-    // is the first rung of the caller map below; otherwise every caller counts, as before).
+    // is the first rung of the caller map below; otherwise every caller counts as the update).
     uint32_t primaryCallRva;
 };
 
@@ -156,9 +156,9 @@ constexpr LegacyDriveSite kLegacyDriveSites[3] = {
 // also needs the accumulator's one call site (accCallPat: its E8 is primaryCallRva and lands on the entry),
 // the dispatcher's prologue (unique) and its frame, proven from its .pdata/unwind info and its prologue
 // (AimCallerProveDispatcher). ADDR-HYGIENE: guarded. The PROOF LADDER: the stick site (Halo 3 / ODST: the
-// primaryCallRva check above, as before) is rung 1, and without it every call counts as the update; each
+// primaryCallRva check above) is rung 1, and without it every call counts as the update; each
 // other site is its own proof, and one that fails is simply absent (its calls read "unknown", put back).
-// Measured 2026-10-01 on the retail Steam modules; the Store modules are byte-identical (MCC-EDITIONS-EVIDENCE).
+// Measured on the retail Steam modules; the Store modules are byte-identical (MCC-EDITIONS-EVIDENCE).
 struct LegacyCallerSite
 {
     uint32_t patRva;
@@ -181,7 +181,7 @@ struct LegacyCallerAnchors
 constexpr LegacyCallerAnchors kLegacyCallerAnchors[3] = {
     // Halo 3: the stick update in the dispatcher 0xF66AC; the no-unit path (exclusive with it, 0xF6938);
     // a weapon's pitch kick from 0x366858 during the tick. Only the census and the counters read the last two:
-    // every caller that is not the stick is put back, exactly as before.
+    // every caller that is not the stick is put back.
     {0, nullptr, 0, 0, nullptr,
      {{0xF6D00, "F3 0F 10 54 24 5C 0F 28 DE F3 0F 10 4C 24 58 8B CB E8 ?? ?? ?? ??", 0x11, aim_caller::Caller::Stick},
       {0xF6F59, "F3 0F 10 54 24 5C 0F 28 DE F3 0F 10 4C 24 58 41 8B CF E8 ?? ?? ?? ??", 0x12,
@@ -246,11 +246,11 @@ constexpr const char* kHalo4RecordUnitLoad = "8B 8C 1F 20 01 00 00";
 //   * the control update's reset of the record from the same vector (Halo 3 0xF7075 in 0xF66AC, ODST 0x112C50 in
 //     0x112184): `movsd xmm0,[unit+X]; ...; mov eax,[unit+X+8]`, atan2/asin, `movss [record+0xD8]` (pitch) and
 //     `movss [record+0xD4]` (yaw).
-// Measured 2026-10-02 on the retail Steam modules (Halo 3 X = 0x1AC, ODST X = 0x1A4; the Store modules are byte-
+// Measured on the retail Steam modules (Halo 3 X = 0x1AC, ODST X = 0x1A4; the Store modules are byte-
 // identical, MCC-EDITIONS-EVIDENCE). ADDR-HYGIENE: resolved (unique signatures, decoded and cross-checked:
 // gun_slaved::ResolveUnitAimOffset), then guarded per seat stint by the occupant's own ValueAgreement -- the
 // record must agree with e(vector) for 30 judged samples per axis before that check proves anything, and the
-// vector must read as a unit normal. Not bound: every gun-slaved seat proves against the camera, as before.
+// vector must read as a unit normal. Not bound: every gun-slaved seat proves against the camera alone.
 struct LegacyUnitAimSite
 {
     const char* camera;
@@ -285,16 +285,16 @@ constexpr int32_t kLegacyUnitAimSeatStride[2] = {static_cast<int32_t>(kHalo3Vehi
 // The occupant's aim, published to the input thread, is current for this long (the servo's feedback otherwise).
 constexpr uint64_t kLegacyOccupantAimFreshMs = 100;
 
-// THE RECORD'S EASED PITCH LIMITS, Halo 3 and ODST (seat_limit::ResolvePitchLimits; 2026-10-03). The accumulator eases
+// THE RECORD'S EASED PITCH LIMITS, Halo 3 and ODST (seat_limit::ResolvePitchLimits). The accumulator eases
 // two record fields toward the seat's pitch range every update and clamps the pitch to them; read after the update,
 // they are a look-steered driver's pitch stops (that driver's pitch is never latched: the accumulator levels it).
 // Each site is the clamp's exact bytes -- the eased low's store, the eased high's load and store, the pitch's
 // add/max/store -- UNIQUE in the module and matched at its RVA; the six offsets are DECODED from it (`?? ?? 00 00`)
-// and must agree (ResolvePitchLimits). Measured 2026-10-03 on the retail Steam modules (Halo 3 +0x190/+0x194 at
+// and must agree (ResolvePitchLimits). Measured on the retail Steam modules (Halo 3 +0x190/+0x194 at
 // 0xF86F1, ODST +0x344/+0x348 at 0x114381; the Store modules are byte-identical, MCC-EDITIONS-EVIDENCE).
 // ADDR-HYGIENE: resolved (a unique pinned signature, offsets decoded and cross-checked) and guarded per read (finite,
 // ordered, inside the pole: seat_limit::RecordPitchInterval). Not bound: a look-steered driver's reticle is never
-// clamped in pitch, as before; logged once.
+// clamped in pitch; logged once.
 struct LegacyPitchLimitSite
 {
     uint32_t rva;
@@ -320,7 +320,7 @@ struct LegacyDriveState
     uintptr_t base = 0;
     uintptr_t tlsIndexAddress = 0;
     // Which caller ran the accumulator (aim_caller_logic.h): written at install before the hook is enabled,
-    // rewritten only after LegacyDriveRemove's quiescence. Not proven = every caller counts, as before.
+    // rewritten only after LegacyDriveRemove's quiescence. Not proven = every caller counts as the update.
     aim_caller::CallerMap callers{};
     std::atomic<uint8_t> callerMode{0};      // for the cold worker: 0 not proven, 1 by return, 2 by dispatcher
     bool halo4RecordUnit = false;           // Halo 4: the record's unit load is proven (seats may be written)
@@ -347,7 +347,7 @@ struct LegacyDriveState
     uint32_t axisTicks[2]{};                 // per axis: consecutive seat writes of it (capped at the prime)
     seat_drive::StintCheck stint{};
     // Gun-slaved seats: the same check against the occupant's own aim vector (see the header). `unitAimOffset` is
-    // the vector's offset in the unit, bound at install (0: not bound -- the camera check alone, as before).
+    // the vector's offset in the unit, bound at install (0: not bound -- the camera check alone).
     seat_drive::StintCheck stintOccupant{};
     bool stintOccupantActive = false;
     uint32_t unitAimOffset = 0;
@@ -387,7 +387,7 @@ struct LegacyDriveState
     SeatStopsPublication stops{};
     // The last stick call's write (sim thread), put back over what a later extra call adds (aim_caller::
     // PutBack: no stick call since, same record, a QPC cap; Halo 4 also the same publication context and a
-    // plausible record; Halo 3 / ODST same_frame, as they always were).
+    // plausible record; Halo 3 / ODST same_frame).
     aim_caller::PutBack putBack{};
     uint64_t putBackNoStickCap = 0;          // Halo 3 / ODST no-unit and unknown callers: 50 ms in QPC counts
     uint32_t stickSeq = 0;                   // sim thread: steps on every stick call
@@ -398,9 +398,9 @@ struct LegacyDriveState
     std::atomic<uint32_t> byRole[aim_caller::kCallerCount]{};   // every call, by caller
     std::atomic<uint32_t> restores{0}, restoresRefused{0};
     // Writes whose branch-matched yaw fell outside [0, 2*pi) and were wrapped back into it
-    // (aim_write::wrap_0_2pi). Before 2026-10-01 each of those reached the game's action packer unwrapped: in
-    // Halo 3 / ODST it overflowed the 13-bit yaw into the button field and read as an action-button press
-    // (seat exits); in Halo 4 the packer clamped it to 0 or 2*pi (a one-update aim nudge).
+    // (aim_write::wrap_0_2pi). The wrap is required: an unwrapped yaw reaches the game's action packer, where in
+    // Halo 3 / ODST it overflows the 13-bit yaw into the button field and reads as an action-button press
+    // (seat exits); in Halo 4 the packer clamps it to 0 or 2*pi (a one-update aim nudge).
     std::atomic<uint32_t> yawWrapped{0};
     std::atomic<uintptr_t> lastUnknownRet{0};                   // Halo 4: the dispatcher's return
 #if HALOMCCVR_DEV_DIAGNOSTICS
@@ -417,8 +417,8 @@ struct LegacyDriveState
     uint32_t stintStaleUpdates = 0;          // consecutive updates of this stint with no fresh publication
     bool stintTitleSeated = false;           // Halo 3 / ODST: unit_in_vehicle said seated when the stint began
                                              // (a walk-up turret reads on foot: its word decides nothing then)
-    // The last two seat writes (seqlock), for the input thread's dev outcome witness (it switched the reticle
-    // to the gun until 2026-10-01): the game's aim lags the latest write by up to a tick, so the witness
+    // The last two seat writes (seqlock), for the input thread's dev outcome witness: the game's aim lags
+    // the latest write by up to a tick, so the witness
     // measures it against whichever of the two is nearer.
     std::atomic<uint32_t> wroteSeq{0};
     std::atomic<float> wroteYaw[2]{}, wrotePitch[2]{};
@@ -458,7 +458,7 @@ constexpr uint32_t kLegacyDriveStintStaleUpdates = 120;
 constexpr uint32_t kLegacyDriveAxisYaw = 1u, kLegacyDriveAxisPitch = 2u;
 // Halo 3 / ODST: the put-back window of a call that runs with NO stick call since the write -- the no-unit path
 // while the player is dead, and any caller the map does not know (the no-unit path reads that way if its own
-// proof fails). "No stick call since" never ends those, so only this window does: the 50 ms it always was,
+// proof fails). "No stick call since" never ends those, so only this window does: 50 ms,
 // which closes long before the servo takes the aim back (LegacyDriveLive, 150 ms) and so never erases the
 // death camera's stick input. A kick keeps the shared cap (kAimCallerPutBackCapMs): "no stick call since"
 // scopes it to this frame's ticks.
@@ -731,7 +731,7 @@ uint32_t LegacyDriveBindPitchLimits(int slot, uintptr_t base, size_t size, const
 }
 
 // Builds the title's caller map (kLegacyCallerAnchors) and logs what it proved. Returns rung 1: the stick
-// site is proven. Otherwise the map stays empty and every caller counts as the update (as before).
+// site is proven. Otherwise the map stays empty and every caller counts as the update.
 bool LegacyDriveBuildCallerMap(int slot, uintptr_t base, size_t size, aim_caller::CallerMap& map)
 {
     const auto& site = kLegacyDriveSites[slot];
@@ -766,7 +766,7 @@ bool LegacyDriveBuildCallerMap(int slot, uintptr_t base, size_t size, aim_caller
     }
     else
     {
-        // DIRECT MODE: rung 1 is the stick update's own call (primaryCallRva), as before the caller map.
+        // DIRECT MODE: rung 1 is the stick update's own call (primaryCallRva).
         const uintptr_t primary = AimCallerCallReturn(base, size, site.primaryCallRva, site.entryRva);
         if (primary)
             map.add(primary, aim_caller::Caller::Stick);
@@ -975,7 +975,7 @@ bool LegacyDriveRemove(GameTitle title)
 
 // Input thread: the servo's target (the converged aim when it resolves) and the game's own aim. `seated`:
 // the local player is in a seat; `axes` (seat_drive::Decide) are the axes the hand owns there -- none keeps
-// the seat on the servo, exactly as before; `pitchLatch`: the seat-limit latch may read pitch limits;
+// the seat on the servo; `pitchLatch`: the seat-limit latch may read pitch limits;
 // `seatKey`: which seat, so a check passed in one seat never carries into the next. `gunSlaved`: the seat's
 // first-person camera is its gun (seat flag bit 7), so `aim` is the gun and the stint also proves the record against
 // the occupant's own aim.
@@ -1073,7 +1073,7 @@ bool LegacyDriveSeatLimited(GameTitle title)
 // Input thread, a gun-slaved seat (Halo 3 / ODST): the occupant's own aim in WORLD angles, as the hook last read it
 // for seat `seatKey`, and how many judged samples in a row it has agreed with the record per axis ([0] yaw, [1]
 // pitch). False when unbound, torn, stale (kLegacyOccupantAimFreshMs) or another seat's: the servo then closes on the
-// camera's forward, as before.
+// camera's forward.
 bool LegacyDriveOccupantAim(GameTitle title, uint32_t seatKey, float& yaw, float& pitch, unsigned agreeing[2])
 {
     const int slot = LegacyDriveSlot(title);
@@ -1252,13 +1252,13 @@ void LegacyDriveRefused(LegacyDriveState& st, aim_caller::Refusal why)
 // Sim thread, an EXTRA call (aim_caller::Action::RestoreOnly -- Halo 4's effect impulse and weapon sway, Halo 3
 // / ODST's weapon kick and no-unit path, any caller the map does not know): put the last stick write back over
 // what this call accumulated, on the axes that write wrote, so the next stick call reads the record it left --
-// no count, no seat check, no arm-gate step, no latch. On foot this keeps what the hook did before (it rewrote
-// the setpoint on every call, cancelling the kick); a seat no longer reads an impulse or a sway as a limit.
+// no count, no seat check, no arm-gate step, no latch. On foot this cancels the kick, exactly as rewriting
+// the setpoint on every call would; in a seat it keeps an impulse or a sway from being read as a limit.
 // Halo 4's extra calls PRECEDE the stick call, so the slot holds the previous frame's write: it is honoured
 // only while no stick call has run since, on the same record, under the same publication context, and while
 // the record sits within an impulse of it (aim_caller::PutBack::check). Halo 3's / ODST's extra calls FOLLOW
 // the stick call (same_frame): this frame's write, on the same record, with no publication, context or
-// plausibility test, as before -- only the window is per caller (kLegacyDrivePutBackNoStickMs).
+// plausibility test -- only the window is per caller (kLegacyDrivePutBackNoStickMs).
 void LegacyDrivePutBack(LegacyDriveState& st, const LegacyDriveSite& site, int user, aim_caller::Caller caller)
 {
     if (!g_config.legacy_direct_drive || !st.installed.load(std::memory_order_acquire) ||
@@ -1363,7 +1363,7 @@ bool LegacyDriveRecordSnapshot(GameTitle title, float& nativeYaw, float& nativeP
     return st.installed.load(std::memory_order_acquire) && std::isfinite(nativeYaw) && std::isfinite(setYaw);
 }
 
-// THE RECORD THROUGH THE INTENT POINT (Halo 3 on foot; shot_lag_logic.h, 2026-10-02). The shot itself is re-aimed
+// THE RECORD THROUGH THE INTENT POINT (Halo 3 on foot; shot_lag_logic.h). The shot itself is re-aimed
 // at the firing assist's crosshair query (legacy_sight_trace.inl). The RECORD -- the angles the HUD, autoaim, melee
 // and the network read -- was solved on the input thread from the render-time eye, so it still points the line
 // from the tick's eye beside the point by the eye's travel. At the stick call it is recomposed as the angles of
@@ -1371,9 +1371,9 @@ bool LegacyDriveRecordSnapshot(GameTitle title, float& nativeYaw, float& nativeP
 // camera evaluator for it (the acquisition, 0x13B08C at 0xF4CC8, in the same pass and just before this stick call
 // at 0xF6D11: both inside 0xF66AC, read from the pinned module) -- carried one measured simulation tick ahead,
 // because the record written now is first consumed by the next tick. Never P rebuilt from the current eye: that
-// would recreate the error. ONLY FROM OUR UNIT'S FIRST-PERSON EYE (shot_lag_logic.h 4d, 2026-10-03): our unit on
+// would recreate the error. ONLY FROM OUR UNIT'S FIRST-PERSON EYE (shot_lag_logic.h 4d): our unit on
 // foot in control and the director's camera for output user 0 the first-person camera -- in Forge the Monitor's
-// own and orbit cameras bent the record by up to 88 deg and flung the held object. Kept as published (fail closed)
+// own and orbit cameras would bend the record by up to 88 deg and fling the held object. Kept as published (fail closed)
 // when the setpoint is not the solve that built P (the fixed-distance steer, a seat author), the point is stale,
 // seated or held at the pitch rail, the eye is not a first-person eye, the game's eye is not from this tick (Halo
 // 3's dual-aim hooks absent, or none published since the previous stick call), or P is within 30 cm of that eye or
@@ -1555,7 +1555,7 @@ LegacyRecomposeWhy LegacyDriveRecomposeOnFoot(int slot, const LegacyDrivePublica
     return LegacyRecomposeWhy::Recomposed;
 }
 
-// THE SEATED RECORD UPSTREAM OF REPLICATION (Halo 3; src/common/seat_upstream_logic.h, 2026-10-03). In online play
+// THE SEATED RECORD UPSTREAM OF REPLICATION (Halo 3; src/common/seat_upstream_logic.h). In online play
 // the record is what the host fires from -- with the stock game, if it runs no mod -- so a correction made only at
 // the fire site (the crosshair query re-aimed through P, legacy_sight_trace.inl) is this machine's prediction and
 // nothing more. Here, at the stick call, a seat's setpoint is replaced by the record whose STOCK crosshair line at the
@@ -1564,7 +1564,7 @@ LegacyRecomposeWhy LegacyDriveRecomposeOnFoot(int slot, const LegacyDrivePublica
 // query runs along normalize(R - g v), g learned from the same evaluator's directions against the record that drove
 // them). Kept as published, counted by reason, whenever any input is missing (seat_upstream::SeatRecompose); no
 // magnitude limit. Gun-slaved seats are not modelled (their line is the gun's marker; GunOffsetStep owns them).
-// THE HOST CAVEAT (read from the module, not testable here): the evaluator chooses the chase-camera path for a seat
+// THE HOST CAVEAT (read from the module; not confirmed in game): the evaluator chooses the chase-camera path for a seat
 // whose LOADED tag flags carry bit 4 (0x1326E8 -> 0x2121D2). C20 clears that bit on this machine; an unmodded host
 // keeps it, so in a stock third-person seat its query starts at its chase camera and runs parallel to ours. The dev
 // SHOT UPSTREAM line names such seats ("stock chase camera").
@@ -1721,7 +1721,7 @@ extern "C" void LegacyPcApplyForUser(int slot, int user, uintptr_t ret, const ui
     const auto& site = kLegacyDriveSites[slot];
     st.callbacks.fetch_add(1, std::memory_order_acq_rel);
     // WHICH CALLER (aim_caller_logic.h). The stick call is the update; until the stick site is proven every
-    // call is, as before.
+    // call is.
     uintptr_t dispatcherRet = 0;
     const aim_caller::Caller caller = LegacyDriveClassify(st, ret, entryRsp, dispatcherRet);
     const aim_caller::Action action = aim_caller::ActionFor(st.callers, caller);
@@ -1893,7 +1893,7 @@ extern "C" void LegacyPcApplyForUser(int slot, int user, uintptr_t ret, const ui
                 seatConfirmed = false;
 #endif
             // A seat is written only on the axes the input thread says the hand owns there; a seat with none
-            // keeps the servo, exactly as before.
+            // keeps the servo.
             const uint32_t wantAxes =
                 (!onFoot && seatConfirmed && g_config.seat_direct_drive && fresh) ? axesBits : 0u;
             const bool seatWrite = wantAxes != 0;
@@ -2165,7 +2165,7 @@ extern "C" void LegacyPcApplyForUser(int slot, int user, uintptr_t ret, const ui
                 // to half a turn past the seam, so it is wrapped into that range (aim_write::wrap_0_2pi).
                 // Halo 3 / ODST: the quantizer neither clamps nor masks, and the overflow bits press the action
                 // button (exit seat in a vehicle). Halo 4: its quantizer clamps (halo4 0x517BEC), so the
-                // overflow was a one-update aim nudge to 0 or 2*pi instead.
+                // overflow is a one-update aim nudge to 0 or 2*pi instead.
                 if (std::isfinite(y) && !(y >= 0.0f && y < aim_write::kTwoPi))
                 {
                     y = aim_write::wrap_0_2pi(y);

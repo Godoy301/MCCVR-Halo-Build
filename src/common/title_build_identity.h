@@ -4,18 +4,18 @@
 // Most of this mod's cores install only on the exact build of each game DLL they were made for (a PE timestamp
 // and an image size, checked in each title's own gate). That is deliberate: a hook placed by a rule made for
 // another build is a wrong write. But when the build is NOT that one, the gates differ in how they say so, and
-// two of them said nothing at all (Reach returned without a line when the image size differed; CE printed
-// "cold install waiting" every two seconds for ever). A player whose game had been updated then had a log that
-// read as healthy and a game with no VR, and someone had to work out from which lines were MISSING what had
-// happened.
+// a gate may say nothing useful at all (return without a line when the image size differs, or print
+// "cold install waiting" every two seconds for ever). A player whose game was updated then has a log that
+// reads as healthy and a game with no VR, and what happened can only be worked out from which lines are
+// MISSING.
 //
 // So the title adapter states it once, where it first sees a title's DLL: this is the build the mod was made
 // for, or it is not (and what it found and expected). Nothing is decided here: every gate still makes its own
 // decision. A table of this build's values beside those gates' own constants; tests/title_build_identity_tests.cpp
 // holds the two together.
 //
-// The Steam and the Microsoft Store / Game Pass copies of these DLLs are ONE build: on 2026-10-08, MCC
-// 2025.08.16.178512.1-Release, all seven were identical in every section (only the Authenticode certificate
+// The Steam and the Microsoft Store / Game Pass copies of these DLLs are ONE build: in MCC
+// 2025.08.16.178512.1-Release all seven are identical in every section (only the Authenticode certificate
 // table and the PE checksum differ; tools/compare-store-build.py). The timestamp and the size are the same on
 // both, so this check and every gate behave the same on both.
 #include "runtime_types.h"
@@ -49,7 +49,7 @@ inline const Identity* Known(GameTitle title) noexcept
 enum class Match : uint8_t
 {
     Known,      // the build this mod was made for
-    Different,  // another build: MCC was updated, or this is a build nobody has looked at
+    Different,  // another build: MCC was updated, or this is a build the mod has no record of
     NoRecord,   // a title with no recorded build
 };
 inline Match Compare(GameTitle title, uint32_t peTimestamp, uint32_t sizeOfImage) noexcept

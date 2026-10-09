@@ -1,7 +1,7 @@
 // Halo 2: the motion tracker follows the head (src/common/halo2_head_relative_logic.h). RETAIL-DERIVED LEAD, NOT
 // H2EK-VERIFIED: these tests cover the decode of the four sites and its refusals, the proof the hook takes at run
 // time before it changes anything (agree, disagree, a reference that did not move, a half turn, withdrawal), the game's own
-// placement arithmetic as read from retail halo2.dll, and the player's two headset checks on it.
+// placement arithmetic as read from retail halo2.dll, and the acceptance checks on it (TestAcceptance).
 #include "halo2_head_relative_logic.h"
 
 #include <cmath>
@@ -76,7 +76,7 @@ void PutRip(std::vector<uint8_t>& bytes, size_t disp, size_t next, int64_t fromR
     std::memcpy(bytes.data() + disp, &rel, 4);
 }
 
-// The image as retail halo2.dll lays it out (the offsets from the module base measured 2026-10-07).
+// The image as retail halo2.dll lays it out (offsets from the module base).
 constexpr int64_t kAccessorRva = 0x6C3940, kRecordSlotRva = 0x15E40D0, kSamplerRva = 0x82FE80,
                   kPlacementRva = 0x83000A, kLoopRva = 0x830C61, kHalfPiRva = 0xC328A4, kMaskRva = 0xC33400,
                   kDataSlotRva = 0x187E3F8, kHudSlotRva = 0x187C5D8, kSinRva = 0x9ED76F, kCosRva = 0x9ED769,
@@ -333,8 +333,9 @@ void TestProof()
     Check(Feed(proof, 1, 51.0f, 0.0f, 0.5f) == ProofStep::Proven,
           "... and the first agreeing sample 11 deg away completes it");
 
-    // A HALF TURN IS NOT MOVEMENT. The simulator's controller starts exactly half a turn from the head, and the
-    // first pose step is that half turn in one jump: no sample lies in between.
+    // A HALF TURN IS NOT MOVEMENT. A reference can jump exactly half a turn in one step (a simulated runtime's
+    // untouched controller starts half a turn from the head, and its first pose is that jump): no sample lies
+    // in between.
     proof = ArgumentProof{};
     Check(Feed(proof, 200, 30.0f, 0.0f, 0.0f) == ProofStep::Agreed && Feed(proof, 200, 210.0f, 0.0f, 0.0f) == ProofStep::Agreed &&
               !proof.proven && proof.agreed == 400 && !proof.moved,
@@ -539,7 +540,7 @@ void TestPlacement()
     const float corner[3]{-5.6f, 5.6f, 0.0f};
     Check(TrackerBlip(corner, 0.0f, kRange, blip) && blip[0] >= 19 && blip[0] <= 20 && blip[1] >= 108 && blip[1] <= 109,
           "behind and to the left: left of the centre and below it");
-    // The owner's question for the Halo 3 family, on Halo 2's numbers: how far a 0.5 m offset between the point the
+    // On Halo 2's numbers (the Halo 3 family has the same question): how far a 0.5 m offset between the point the
     // tracker measures from and the body shows. 0.5 m is 0.164 world units; at the retail range of 8 that is 1.3
     // of the 64 units from the centre to the rim.
     const float half[3]{-0.5f / 3.048f, 0.0f, 0.0f};
@@ -587,7 +588,7 @@ void TestAcceptance()
     Check(Near(WrapPi(Drawn(contact, 0.0f, 20.0f, true, 1, 30.0f) - Drawn(contact, 0.0f, 20.0f)), -30.0f * kDegToRad,
                1.0e-3f),
           "an offset of +30 deg turns the tracker's heading 30 deg further left");
-    // The simulator's untouched controller points exactly half a turn from the head. That is a size, not a fault:
+    // A simulated runtime's untouched controller points exactly half a turn from the head. That is a size, not a fault:
     // the head's heading is handed whichever way round the half turn is taken, and just either side of it.
     bool opposite = true;
     for (float headYaw : {-69.7f, 0.0f, 135.0f})

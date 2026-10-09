@@ -1,6 +1,6 @@
 // Gun-slaved seats (src/common/gun_slaved_seat_logic.h): the seat flag, the occupant-aim binding's agreement rules,
 // the servo's feedback choice, the pacer that stops a servo closing on a slewing gun from nodding, the gun-settle
-// gate of the crosshair witness, the slew rate and the nod witness; and (2026-10-03) the gun camera's own offset from the
+// gate of the crosshair witness, the slew rate and the nod witness; and the gun camera's own offset from the
 // occupant's aim -- its measurement in the turret frame, the stillness gate, the learner, the per-definition book, the
 // feed-forward shift. The offset half is MUTATION-CHECKED by tools/mutate_vehicle_gun_aim.py (15 of 15 caught).
 #include "gun_slaved_seat_logic.h"
@@ -315,7 +315,7 @@ void TestNodWitness()
     Check(rev == 0, "a steady climb is no reversal");
 }
 
-// ---- the gun's own offset (2026-10-03) ----------------------------------------------------------------------
+// ---- the gun's own offset -----------------------------------------------------------------------------------
 constexpr float kD = 0.017453292519943295f;
 
 // A turret frame tilted 15 deg nose-up and 10 deg to the side (a Warthog on a slope), yawed 40 deg.
@@ -439,7 +439,7 @@ void TestOffsetLearner()
     for (int i = 0; i < 400; ++i)
         noisy.step(0.0f, (i % 2) ? 0.042f : 0.036f);
     Check(std::fabs(noisy.pitch - 0.039f) < 4e-4f, "alternating samples average to their mean, not the last one");
-    // Refused by identity only, never by size (2026-10-03: the "over 5 deg" refusal is gone).
+    // Refused by identity only, never by size (there is no "over 5 deg" refusal).
     const unsigned samples = l.samples;
     Check(!l.step(0.0f, 0.02f, OffsetRefusal::HeldAtStop) && l.refused == 1 &&
               l.refusedBy[static_cast<unsigned>(OffsetRefusal::HeldAtStop)] == 1 && l.samples == samples &&

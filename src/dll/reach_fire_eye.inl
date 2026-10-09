@@ -1,6 +1,6 @@
 // Included in game.cpp (anonymous namespace) after reach_sight_trace.inl.
 //
-// FLAT PARITY, Halo Reach on foot (sight_layer.h SightFireEyeFn; shot_lag_logic.h 4f; 2026-10-03). Reach's on-foot
+// FLAT PARITY, Halo Reach on foot (sight_layer.h SightFireEyeFn; shot_lag_logic.h 4f). Reach's on-foot
 // shot sites aim through the provider's actuated WORLD point P: the unit-adjust re-aim and the muzzle shot from their
 // own origins, the firing assist's crosshair query from its own start. Stock flat Halo fires along the crosshair
 // direction from the eye AFTER the fire tick's move, so a site that aims through a fixed P trails a strafe by
@@ -17,7 +17,7 @@
 // construction, it must agree with E_P within 5 cm for a streak of 30 samples. The samples come from the trace tick
 // (ReachSightTraceTick: the per-unit update the aim trace already runs in, ~30 ms, our unit, on foot), so no shot is
 // needed to prove it. Until proven -- or if disproven, or the evaluator is not installed on this build -- the shot
-// keeps P (SightPointSample::measuredOnly): never carried a tick, never extrapolated (the user's call: leave Reach
+// keeps P (SightPointSample::measuredOnly): never carried a tick, never extrapolated (the rule: leave Reach
 // unshifted rather than carry blindly). If Reach does fire from the render's eye, the measured shift reads ~0 on the
 // dev SHOT LAG transport lines, and the transport is a no-op.
 //
@@ -30,7 +30,7 @@ inline constexpr int32_t kReachFireEyePath = 0;
 
 #if HALOMCCVR_DEV_DIAGNOSTICS
 // Why a proof sample did or did not count, and the fire measured both ways (dev, per report window; under the lock).
-// THE INTERPOLATED CAMERA (static analysis of the pinned haloreach.dll, 2026-10-04; as_seen_logic.h section 8): the
+// THE INTERPOLATED CAMERA (static analysis of the pinned haloreach.dll; as_seen_logic.h section 8): the
 // unit camera position 0x48A1C0 -> 0x4A2D50 reads the unit's origin back as lerp(previous tick, newest tick, factor)
 // outside a tick (0x4719C8; factor = clamp(game_time + 0x14, 0, 1), written at 0x344A5 after the frame's ticks, right
 // before the director update 0xC4458 that builds the first-person camera 0x1DCADC -> 0x48A4B4 -> 0x48A1C0) and its

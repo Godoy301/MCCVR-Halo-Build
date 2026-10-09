@@ -1,8 +1,8 @@
 // HALO CE: THE MOTION TRACKER FOLLOWS THE HEAD -- the runtime half. The sites, the pure logic and the reasoning
 // are in src/common/haloce_head_relative_logic.h; the write-up is docs/HALOCE-HEAD-RELATIVE-2026-10-07.md.
 //
-// EVIDENCE CLASS: RETAIL-DERIVED LEAD, NOT HCEEK-VERIFIED. No Halo CE editing kit was installed when this was
-// written: every binding was read from retail halo1.dll alone, and the names are ours. The lane therefore
+// EVIDENCE CLASS: RETAIL-DERIVED LEAD, NOT HCEEK-VERIFIED. Every binding is read from retail halo1.dll alone
+// (no editing-kit symbols), and the names are ours. The lane therefore
 //   (a) binds nothing unless every static link holds on the loaded image (nine unique signatures that agree);
 //   (b) at every use requires the float it would replace to be bit-identical to the control yaw plus pi/2, the
 //       sum the game's store has just computed; and
@@ -106,8 +106,8 @@ struct Feature
     float halfPi = 0.0f;                      // the constant the store adds, as the image holds it
     std::atomic<uint32_t> generation{0}, callbacks{0};
     std::atomic<bool> active{false}, ready{false}, retiring{false};
-    // The proof and the held heading belong to local player 0's draw. Which thread draws CE's HUD is not known
-    // without a run (Halo 4's tracker turned out to be built on the game's job threads), so "one at a time" is
+    // The proof and the held heading belong to local player 0's draw. Which thread draws CE's HUD is not
+    // established (Halo 4's tracker is built on the game's job threads), so "one at a time" is
     // made a fact here instead of an assumption: a draw of player 0 that arrives while another is inside is
     // forwarded untouched and counted (TrackerUse::Overlapped). The flag is tried, never waited for.
     std::atomic<bool> inside{false};
@@ -736,8 +736,8 @@ void Report() noexcept
     const float nativeDeg = f.lastNativeDeg.load(std::memory_order_relaxed);
     const float headDeg = f.lastHeadDeg.load(std::memory_order_relaxed);
     const uint32_t stage = f.stage.load(std::memory_order_relaxed);
-    // "head minus game" is a reading for whoever checks the run, never a verdict: before a simulator's poses are
-    // set it can be anything (half a turn included), and nothing here counts it.
+    // "head minus game" is a diagnostic reading, never a verdict: under a simulated runtime whose poses are not
+    // yet set it can be anything (half a turn included), and nothing here counts it.
     LOG("TRACKER HEAD Halo CE (dev): substituted %u; the game's heading %.1f deg, the view frame's %.1f deg, the "
         "head's %.1f deg, head minus game %+.1f deg (last; the head was read in %u draws); proof %s: agreed %u, "
         "lagging %u, disagreed %u, restarted %u, no reference %u; refused %u: %s; faults %u, mixed sample reads "

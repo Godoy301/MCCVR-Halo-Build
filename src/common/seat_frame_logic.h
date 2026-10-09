@@ -281,7 +281,7 @@ inline Case Classify(bool readable, bool gateSeated, bool flagsKnown, bool flags
     return frameUsable ? Case::Rebased : Case::Unknown;
 }
 
-// THE YAW-ONLY WRITE (review round 1, finding 4). A seat that writes only the record's YAW (Halo 4 always; Halo 3 /
+// THE YAW-ONLY WRITE. A seat that writes only the record's YAW (Halo 4 always; Halo 3 /
 // ODST / Halo 2 while the pitch stays on the servo) keeps the game's own record pitch. RecordFromWorld(hand yaw,
 // hand pitch) would aim R^-1 of the hand's whole direction and keep only its yaw, which is right only once the
 // record's pitch has converged on the hand's: under a tilted hull the yaw of R^-1 d depends on d's pitch (30 deg of

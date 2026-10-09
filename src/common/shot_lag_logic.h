@@ -67,21 +67,20 @@ inline const char* ReaimName(Reaim why)
     }
 }
 
-// NO MAGNITUDE LIMIT (user's decision, 2026-10-03). A size limit cannot tell a correct big correction from a wrong
-// one, so all it does is hide problems -- and it hid one: the rail was `offset <= 3 m and bend <= 30 deg`, and an
-// absolute metres rail turns a constant ANGLE into a range-and-speed cliff. The Halo 3 Hornet's crosshair query
-// leaves the record by an angle that grows with sideways speed (5.65 deg at a 15-18 m/s strafe; it fits
-// atan(v_sideways / ~200 m/s), mechanism unproven), 3.5-4 m at 50 m, so from ~8 m/s sideways half or more of the
-// queries were refused and the shots landed 2-6 m behind along travel ("accurate until a certain strafe speed, then
-// suddenly a good bit off horizontally", user, 2026-10-03).
+// NO MAGNITUDE LIMIT. A size limit cannot tell a correct big correction from a wrong one, so all it does is hide
+// problems, and an absolute metres rail turns a constant ANGLE into a range-and-speed cliff. The Halo 3 Hornet's
+// crosshair query leaves the record by an angle that grows with sideways speed (5.65 deg at a 15-18 m/s strafe; it
+// fits atan(v_sideways / ~200 m/s), mechanism unproven), 3.5-4 m at 50 m. Under a rail of `offset <= 3 m and bend
+// <= 30 deg`, from ~8 m/s sideways half or more of the queries are refused and the shots land 2-6 m behind along
+// travel: accurate up to a certain strafe speed, then suddenly well off horizontally.
 //
 // Whether P is meaningful for THIS query is decided by identity and freshness, never by how far it is: the local
 // player's fire (FireMark) and query (QueryIsLocal: his unit, or his vehicle's seat chain), P this generation and
 // under 150 ms old with the converged aim live and no natural hold (ShouldUseIntent). What is left here is geometry:
 // behind the start or within minRangeWu of it no forward line through P exists. Every refusal is counted by reason
 // (Sight_ReaimThroughPoint, the SHOT REAIM line). A query that already passes within minOffsetWu of P is LEFT ALONE
-// (AlreadyThrough): where the game's line is already coherent -- Halo 3 campaign vehicles, user-confirmed
-// 2026-10-02 -- the re-aim must not move it by the noise in P.
+// (AlreadyThrough): where the game's line is already coherent (Halo 3 campaign vehicles) the re-aim must not move
+// it by the noise in P.
 struct ReaimRails
 {
     float minOffsetWu = 0.010f * kWuPerMetre;
@@ -213,8 +212,8 @@ inline int8_t FireMark(int8_t current, bool shooterIsLocal)
     return current == kFireNone ? kFireNone : (shooterIsLocal ? kFireLocal : kFireOther);
 }
 
-// Every verdict but NotSite is counted by the caller (QueryGateSkip -> the SHOT REAIM line): a refusal nobody can see
-// is how the Halo 3 Banshee's queries went unre-aimed for a whole stint (2026-10-03).
+// Every verdict but NotSite is counted by the caller (QueryGateSkip -> the SHOT REAIM line): an uncounted refusal
+// can leave a whole stint of queries un-re-aimed with nothing in the log to show it.
 enum class QueryGate : uint8_t
 {
     Try = 0,       // consult the intent (ShouldUseIntent)
@@ -436,12 +435,12 @@ inline bool ExtrapolateEye(const float eye[3], const float velocity[3], float dt
     return true;
 }
 
-// ---- 4a. P transported with the eye (dev key shot_point_transport, 2026-10-03) ---------------------------------
-// A/B for "my shots trail my strafe a little, compared with flat Halo". Flat Halo fires through its crosshair from the
-// game's eye AT THE FIRE TICK: a crosshair held still relative to the body moves with the body. P is a WORLD point
-// fixed at the camera sample it was built from, a tick or so older than the fire (the Halo 3 impact witness, impact1:
-// P's camera ~15.6 ms old at the fire, its hand ~10 ms), so with a body-fixed aim a strafing shot lands v * age (10-20
-// cm) behind where flat's would. Transported, P moves with the eye's own motion since that sample:
+// ---- 4a. P transported with the eye (dev key shot_point_transport) ---------------------------------------------
+// An A/B for shots that trail a strafe a little, compared with flat Halo. Flat Halo fires through its crosshair from
+// the game's eye AT THE FIRE TICK: a crosshair held still relative to the body moves with the body. P is a WORLD point
+// fixed at the camera sample it was built from, a tick or so older than the fire (measured in Halo 3: P's camera
+// ~15.6 ms old at the fire, its hand ~10 ms), so with a body-fixed aim a strafing shot lands v * age (10-20 cm)
+// behind where flat's would. Transported, P moves with the eye's own motion since that sample:
 //
 //      P' = P + (E_fire - E_P)
 //
@@ -450,9 +449,9 @@ inline bool ExtrapolateEye(const float eye[3], const float velocity[3], float dt
 // what flat Halo would fire. E_fire MEASURED wherever the title has it (Halo 3 on foot, from the unit's camera
 // evaluator that EyeProof proves to be the engine eye: the crosshair query's own start, the evaluator asked at a
 // muzzle shot, else this tick's published eye -- FireEyeGate); otherwise EXTRAPOLATED from E_P's velocity over its age
-// at the fire (E_P + v * age). Which was used is counted. No magnitude limit (the user's standing rule): a
-// transport is refused only for identity or freshness -- an unknown camera sample, no eye and no velocity, an E_P from
-// the future or older than maxAgeUs.
+// at the fire (E_P + v * age). Which was used is counted. No magnitude limit (see ReaimRails): a transport is
+// refused only for identity or freshness -- an unknown camera sample, no eye and no velocity, an E_P from the
+// future or older than maxAgeUs.
 enum class Transport : uint8_t
 {
     Measured = 0,   // E_fire is the game's own eye at the fire tick
@@ -547,13 +546,13 @@ enum class FireEye : uint8_t
     Faulted,        // asked the evaluator: it faulted or answered a non-finite eye
     CarriedTick,    // usable: this tick's published eye carried one measured tick ahead (CarryTickEye), because the
                     // evaluator could not be asked at the fire -- the acquisition's eye is the eye BEFORE the tick
-                    // moves the unit, one tick behind the eye the shot leaves from (flat probe, 2026-10-03)
+                    // moves the unit, one tick behind the eye the shot leaves from
     Count
 };
 // A fire-eye verdict whose eye is E_fire.
 inline bool FireEyeUsable(FireEye f) { return f == FireEye::Measured || f == FireEye::CarriedTick; }
 
-// THE FIRE EYE IS AFTER THE TICK'S MOVE (Halo 3, the flat probe and the VR transport line, 2026-10-03). Within a
+// THE FIRE EYE IS AFTER THE TICK'S MOVE (Halo 3; measured in the unmodified flat game and in VR). Within a
 // simulation tick the control pass runs the aim acquisition FIRST -- its camera evaluator answers the eye the last
 // render showed (E_P: the muzzle transport measured 0 mm between them on every moving shot) -- then the unit moves, then
 // its weapon fires: the shot leaves from, and the firing assist traces from, the eye one tick of travel AHEAD (stock
@@ -648,7 +647,7 @@ struct EvaluatorEyeProof
     }
 };
 
-// How far to carry E_P when no fire eye is measured (seconds): the flat probe's model (Halo 3, 2026-10-03) -- the
+// How far to carry E_P when no fire eye is measured (seconds): the model measured in flat Halo 3 (above) -- the
 // shot leaves from the eye ONE TICK of travel past the eye the render showed (the firing tick is the first to run
 // after that render) -- or the sample's own age when that is longer (renders stalled; the eye moved on regardless).
 // NOT the age alone: a sample from the newest render (Halo 2's observer publication, CE's gameplay context, Halo 4's
@@ -697,11 +696,11 @@ inline uint32_t SmoothTickPeriod(uint32_t prior, uint64_t gapUs)
                  : static_cast<uint32_t>(period);
 }
 
-// ---- 4f. MEASURED OR NOTHING (Halo Reach on foot, 2026-10-03) ---------------------------------------------------
+// ---- 4f. MEASURED OR NOTHING (Halo Reach on foot) ---------------------------------------------------------------
 // Reach's on-foot shot sites -- the unit-adjust re-aim, the crosshair-query re-aim and the muzzle shot -- aim through
 // the provider's WORLD point P, so by the rule above they trail a strafe by E_fire - E_P unless Reach fires from the
-// eye the render showed. Whether it does was never settled in the headset (the player reported no lag; the old dev
-// shot witness measured the native shot line 93 mm mean off the solve's eye while moving), so E_fire is MEASURED here
+// eye the render showed. Whether it does is not settled (no lag is visible in play, yet the native shot line measures
+// 93 mm mean off the solve's eye while moving), so E_fire is MEASURED here
 // or the shot keeps P: never carried a tick, never extrapolated. Its source is the stock unit camera-position evaluator
 // (HREK 0xD76E60, retail 0x48A1C0) -- the camera the unit-adjust itself builds the native origin on (R-V12: origin :=
 // camera + forward * dot(origin - camera, forward)) -- asked once per native fire, inside it, for our unit, after the
@@ -913,11 +912,11 @@ struct TransportWindow
 // The crosshair query's own evidence that it is the local player's (with GateCrosshairQuery's fire tag): BY IDENTITY.
 // On foot its first ignore is the local unit itself. Seated it is the vehicle's root (the published seat chain's top:
 // `seatC`, else `seatB`) or the seat's parent (`seatB`). Another occupant's query names those too; the fire tag is
-// what tells his fire from ours (an AI gunner's or a co-op player's fire is never kFireLocal), exactly as Reach has
-// always gated it. There was a distance check here too -- the query must start within 1.5 m of our eye, carried
-// forward at most 100 ms -- and it was a size limit posing as identity: a Halo 3 Banshee stint (2026-10-03) started
-// its queries 2.3-2.4 m from the solve's eye, ahead along its travel, while they ran along our own record (within
-// 0.05 deg); carried forward that sat on the 1.5 m edge, and none of that stint's queries was re-aimed or counted.
+// what tells his fire from ours (an AI gunner's or a co-op player's fire is never kFireLocal), as in Reach's gate.
+// Do NOT add a distance check (e.g. "the query must start within 1.5 m of our eye, carried forward at most 100 ms"):
+// that is a size limit posing as identity. A Halo 3 Banshee starts its queries 2.3-2.4 m from the solve's eye, ahead
+// along its travel, while they run along our own record (within 0.05 deg); carried forward that sits on a 1.5 m
+// edge, and such a check leaves a whole stint's queries neither re-aimed nor counted.
 // Where a seat's camera sits relative to our eye is the seat's geometry and timing, not whose query it is.
 inline bool QueryIsLocal(bool seated, int32_t ignoredA, int32_t localUnit, int32_t seatB, int32_t seatC)
 {
@@ -971,10 +970,10 @@ inline bool SameAngles(float yawA, float pitchA, float yawB, float pitchB, float
 // normalize(P - E'): P the published intent point, E' the game's own eye at the stick call carried one simulation
 // tick ahead (the record written now is first consumed by the next tick). Never P rebuilt from the current eye. Kept
 // as published (fail closed) for every reason below, in this order; `yaw`/`pitch`/`bendDeg` are written only on
-// Recomposed. No magnitude limit (user's decision, 2026-10-03; see ReaimRails): under the old fixed 30 deg cap from
-// the setpoint (Halo 3 Forge, 2026-10-03) 25.7 deg was applied and 43 writes refused, every one at a seat entry --
-// the game's eye flies metres toward the seat while the record is still the on-foot one, so the bend grows as P
-// comes close -- or at the mission's end. Plain on-foot windows bent at most 6.8 deg.
+// Recomposed. No magnitude limit (see ReaimRails): the bend is legitimately large at a seat entry -- the game's eye
+// flies metres toward the seat while the record is still the on-foot one, so the bend grows as P comes close -- and
+// at a mission's end. Measured in Halo 3 Forge under a fixed 30 deg cap from the setpoint: 25.7 deg applied and 43
+// writes refused, every one at such a moment. Plain on-foot windows bend at most 6.8 deg.
 enum class Recompose : uint8_t
 {
     Recomposed = 0,
@@ -1083,9 +1082,9 @@ inline Recompose RecomposeRecord(const RecomposeInput& in, float& yaw, float& pi
 //     current weapon (0x356388 on unit +0x262 at 0x13C58B; -1 jumps to its false return 0x13C8ED). An unarmed unit
 //     -- Forge's Monitor -- never reaches it: the game itself does not aim it, so its eye is NOT asked for
 //     (GameDeclined).
-//     The Forge log of 2026-10-03 (impact2): every miss, ~18 of 122 stick calls per 2 s across the Monitor stretches,
-//     was this kind; asked directly anyway (66289be), each answer stood for up to 100 ms (the freshness window) and
-//     the record was bent from it by up to 88 deg while the Monitor held and spawned objects.
+//     Measured as Forge's Monitor: ~18 of 122 stick calls per 2 s miss this way. Do not ask the evaluator directly
+//     for such a unit: each answer would stand for up to 100 ms (the freshness window) and bend the record by up to
+//     88 deg while the Monitor holds and spawns objects.
 // Read from the pinned module B209D845...EFB63, offline. When the game skipped the acquisition and the eye is
 // otherwise wanted, it is asked of the same evaluator directly at the stick call -- only for a first-person eye (4d).
 // The evaluator returns its camera path: 0 = the first-person update 0x17DAEC, else the following (chase) camera
@@ -1126,7 +1125,7 @@ inline TickEyeAcquisition ClassifyTickEyeAcquisition(uint64_t lastAcquisitionUs,
                : TickEyeAcquisition::Skipped;
 }
 // The record is recomposed from THIS tick's eye only: one published since the previous stick call. A held-over eye
-// (the 100 ms freshness window alone let one stand for six ticks) is off by everything the eye did since.
+// (a 100 ms freshness window alone would let one stand for six ticks) is off by everything the eye did since.
 inline bool TickEyeFromThisTick(bool read, uint64_t stampUs, uint64_t previousStickUs)
 {
     return read && stampUs && stampUs > previousStickUs;
@@ -1157,9 +1156,9 @@ inline bool EvaluatorTookFirstPersonPath(int32_t evaluatorResult) { return evalu
 
 // ---- 4d. is the eye our unit's FIRST-PERSON eye? (Halo 3; the identity the record and the direct ask require) ----
 // The recompose bends the record through P from the game's eye; that is only right when the eye is the camera P was
-// solved from: our unit's first-person eye. As Forge's Monitor the record was bent by up to 88 deg (impact2 log,
-// 2026-10-03) while the user spawned and held objects: "my position starts going crazy, and I get flung when I let
-// go" -- the Monitor's aim carries what it holds. The identity is the game's own, read where the game keeps it:
+// solved from: our unit's first-person eye. Without this identity the record of Forge's Monitor is bent by up to
+// 88 deg while it spawns and holds objects, and since the Monitor's aim carries what it holds, the held object and
+// the player's position are thrown about. The identity is the game's own, read where the game keeps it:
 //
 //   THE DIRECTOR'S CAMERA for the output user. set_camera_mode (0x131B40) stores, every time a director changes
 //   camera, the camera's PERSPECTIVE (c_director::get_perspective 0x131A00; 0 = first person, 1 third, 2 scripted,
@@ -1171,7 +1170,7 @@ inline bool EvaluatorTookFirstPersonPath(int32_t evaluatorResult) { return evalu
 //   is a constant 0 (first person); 0, 1 and 4 return 1 (third), 5 returns 3 (neutral), 6 and 7 decide at run
 //   time. Directors do switch to the orbit: one (0x2121F0, 0x212491..0x21259B) turns its flying camera into mode 1
 //   around the biped it looks at. Which mode Forge's Monitor and its spawn camera use is not read offline; the
-//   SHOT RECORD first-person line counts the director's mode at every refusal, so the next log names it. The
+//   SHOT RECORD first-person line counts the director's mode at every refusal, so a log names it. The
 //   engine's own first-person gate is this same field: the first-person model cache (0x28ADDC) builds the view
 //   model and names our unit the first-person camera object only when +0x604 is 0 (0x28AE31).
 //   ADDR-HYGIENE: resolved. Nothing is assumed: the TLS index, the block offset, both field offsets and the user

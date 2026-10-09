@@ -1,7 +1,7 @@
 #pragma once
 
-// THE GUN BAND of a look-steered land driver (Halo 3: the Chopper, the Ghost; 2026-10-03, the user's rule: "respect
-// the natural rotational limits of land vehicles ... air vehicles never clamp").
+// THE GUN BAND of a look-steered land driver (Halo 3: the Chopper, the Ghost). The rule it serves: respect
+// the natural rotational limits of land vehicles; air vehicles never clamp.
 //
 // What the game does (static RE of retail halo3.dll, docs/HALO3-VEHICLE-EVIDENCE.md "Vehicle guns"). A vehicle gun
 // with a gunner fires along its BARREL marker's forward (the fire routine 0x3683A0 -> the shot line 0x3524B0 at

@@ -129,8 +129,8 @@ void Halo4ContactTick(uint32_t unit,void* instance)
     g_halo4Contact.processing.store(false,std::memory_order_release);
 }
 
-// THE SHOT'S OWN QUERY. A census of Halo 4's PhysicsRayCast callers on the fire tick (dev
-// sight_ray_census, 2026-09-29, Forge) found a shot's aim-assist query: caller +0x1DC6FA (function
+// THE SHOT'S OWN QUERY. Among Halo 4's PhysicsRayCast callers on the fire tick (the dev
+// sight_ray_census lists them) is a shot's aim-assist query: caller +0x1DC6FA (function
 // 0x1DC2F4), profile 0x1A, 128 wu from the engine eye along the aim, flags 0x...44D409. It builds them
 // the way Reach and Halo 3 build their crosshair query (global | 0x202000 there):
 //      mov rax,[rip+global]; mov ecx,0x404400; mov edi,eax; ...; or edi,ecx; shr rax,32; ... call PhysicsRayCast
@@ -138,7 +138,7 @@ void Halo4ContactTick(uint32_t unit,void* instance)
 // the hooked PhysicsRayCast within 0x200 bytes; all must name one global inside the module, and the global
 // must hold the melee query's flags (ValueAgreement with the global the contact install pinned: the same
 // engine default). Then the trace uses global | 0x404400, the shot's flags. Any doubt: 0, and the trace
-// keeps the melee query's flags, as before.
+// keeps the melee query's flags.
 // ADDR-HYGIENE: resolved + guarded (anchor + load + call edge + value agreement; no address is assumed).
 std::atomic<uint64_t> g_halo4SightShotFlags{0};
 

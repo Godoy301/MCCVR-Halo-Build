@@ -2,9 +2,9 @@
 // GEOMETRY ON A MODEL, not the game: the header's own model of the projection, as read from the pinned module.
 // These checks say what follows IF the game projects as the model does: with the eye's field of view the marker
 // is on its point's pixel for each eye, turning the head leaves it there, sweeping the gun moves nothing; and
-// how far off the stock placement is. What a game run showed is in docs/REACH-NAV-MARKERS-2026-10-07.md.
-// On this branch also the off-screen ring about the head (part 2): its field, its verdicts and the stand-in
-// point, again on the model only. Nothing of the ring has run in a game.
+// how far off the stock placement is. The in-game results are in docs/REACH-NAV-MARKERS-2026-10-07.md.
+// Also the off-screen ring about the head (part 2): its field, its verdicts and the stand-in
+// point, again on the model only (the ring is not confirmed in game).
 #include "reach_nav_marker_logic.h"
 
 #include <cmath>
@@ -31,7 +31,7 @@ bool Near(float a, float b, float tol = 1.0e-4f) { return std::fabs(a - b) <= to
 
 using namespace reach_nav_markers;
 
-// The raster of the player session this lane was diagnosed from: 5242 x 3780, the eye's symmetric cover
+// A real headset's raster, as the reference case: 5242 x 3780, the eye's symmetric cover
 // 63.2 / 55.0 degrees (so a vertical field of view of 110 degrees), the game's own about 61 degrees.
 constexpr float kWidth = 5242.0f, kHeight = 3780.0f;
 const float kEyeFov = 110.0f * kDegToRad;
@@ -161,12 +161,12 @@ void Magnified()
     const float k = Magnification(kGameFov, kEyeFov);
     Check(Near(k, std::tan(55.0f * kDegToRad) / std::tan(30.6f * kDegToRad), 1.0e-4f),
           "the magnification is the ratio of the half-angles' tangents");
-    Check(k > 2.3f && k < 2.5f, "about 2.4 times at the session's angles");
+    Check(k > 2.3f && k < 2.5f, "about 2.4 times at the measured angles");
     Check(Magnification(kEyeFov, kEyeFov) == 1.0f, "the same field of view magnifies nothing");
     Check(Magnification(std::numeric_limits<float>::quiet_NaN(), kEyeFov) == 1.0f &&
               Magnification(kGameFov, 0.0f) == 1.0f,
           "no magnification is claimed from an unusable angle");
-    // Ten degrees off the eye's axis was seen at twenty-three; on the axis nothing moves.
+    // Ten degrees off the eye's axis is drawn at twenty-three by the stock placement; on the axis nothing moves.
     Check(Near(StockSeenOffAxis(10.0f * kDegToRad, kGameFov, kEyeFov) * kRadToDeg, 23.06f, 0.05f),
           "ten degrees off axis was drawn twenty-three degrees off");
     Check(StockSeenOffAxis(0.0f, kGameFov, kEyeFov) == 0.0f, "on the eye's axis the stock marker was right");
@@ -201,7 +201,7 @@ void Projection()
     Check(ProjectToRaster(camera, point, kWidth, kHeight, pixel) && Near(pixel[1], 0.0f, 0.05f),
           "the vertical half-angle is the raster's top edge");
     const float halfHorizontal = std::atan(std::tan(55.0f * kDegToRad) * kWidth / kHeight) * kRadToDeg;
-    Check(Near(halfHorizontal, 63.2f, 0.1f), "the session's horizontal cover follows from the vertical and the aspect");
+    Check(Near(halfHorizontal, 63.2f, 0.1f), "the measured horizontal cover follows from the vertical and the aspect");
     PointAt(camera, halfHorizontal, 0.0f, 10.0f, point);
     Check(ProjectToRaster(camera, point, kWidth, kHeight, pixel) && Near(pixel[0], kWidth, 0.05f),
           "the horizontal half-angle is the raster's right edge");
@@ -366,7 +366,7 @@ std::vector<uint8_t> PatternBytes(const char* pattern)
 }
 void PutI32(std::vector<uint8_t>& bytes, size_t at, int32_t value) { std::memcpy(bytes.data() + at, &value, 4); }
 
-// The function as retail haloreach.dll lays it out (offsets from the module base measured 2026-10-07).
+// The function as retail haloreach.dll lays it out (offsets from the module base).
 constexpr int64_t kHeadRva = 0x2E1430, kCameraRva = 0x2E14FC, kPixelRva = 0x2E15BC, kRingRva = 0x2E172B,
                   kOffscreenRva = 0x2E1817, kConverterRva = 0x287DFC, kChudReturnRva = 0x2E1525,
                   kFractionRva = 0xA8ACB4, kPiRva = 0xA8B22C, kFloorRva = 0xA8A9B8,
@@ -575,7 +575,7 @@ void Sites()
               ProjectionBind::NavpointCallMismatch,
           "without a bound projection there is nothing for the call to land on");
     Check(refused.navpointReturnRva == 0 && unbound.navpointReturnRva == 0, "a refusal fills nothing");
-    // THE OBJECT MARKERS' CALL: the second caller the stand-in acts for (the arrows a player saw in a headset).
+    // THE OBJECT MARKERS' CALL: the second caller the stand-in acts for (the off-screen arrows of ordinary play).
     Check(PatternBytes(kObjectMarkerCallPattern).size() == kObjectMarkerCallBytes &&
               kObjectMarkerReturn == kObjectMarkerCallBytes && kObjectMarkerCall + 5 == kObjectMarkerReturn,
           "the object markers' call's length is its pattern's, and the call is its last instruction");
@@ -726,7 +726,7 @@ void ArrowDirections()
 }
 
 // ---- part 2: the off-screen ring -----------------------------------------------------------------------------------
-// The owner's headset as the session's log gave it: each eye 54 degrees outward, 40 inward, 44 up, 55 down.
+// A real headset's eye fields, as the reference case: each eye 54 degrees outward, 40 inward, 44 up, 55 down.
 void SessionEyes(EyeField eyes[2], float cantDeg = 0.0f)
 {
     for (int eye = 0; eye < 2; ++eye)
@@ -901,7 +901,7 @@ void RingGeometry()
     for (float cant : {0.0f, 5.0f})
     {
         SessionEyes(eyes, cant);
-        Check(SharedField(eyes, shared), "the session's eyes share a field");
+        Check(SharedField(eyes, shared), "the measured eyes share a field");
         const RingField ring = HeadRing(shared);
         const RingField gameRing = GameRing(kEyeFov, 920.0f / 690.0f);
         for (float headYaw : {0.0f, 130.0f})

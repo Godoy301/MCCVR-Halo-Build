@@ -262,9 +262,9 @@ inline uint64_t ResolveAuthoredAnimationGapFrames(int configuredFrames)
 // WHERE THE ART SITS IN ITS TEXTURE. The reticle quad is centred on the aim
 // point, so the art's own centre has to be the texture's centre, or the player
 // aims with one edge of it. Halo 4's capture framing is fitted per HUD layout,
-// and on the 2026-09-30 layout (baseY 647.256) it left the art wholly above the
-// centre: the magnum's bottom edge sat on the aim point, about 0.18 of the
-// texture high (1.3 deg at the 6 m cap). The centre is measured instead: the
+// and a layout can leave the art wholly above the centre (measured with baseY
+// 647.256: the magnum's bottom edge sits on the aim point, about 0.18 of the
+// texture high, 1.3 deg at the 6 m cap). The centre is measured instead: the
 // ink-weighted centroid of a downsampled copy of the capture. Reticles are
 // symmetric about their aim point, so the centroid is that point.
 struct AuthoredReticleArtCentre
@@ -368,12 +368,12 @@ inline AuthoredReticleQuadShift AuthoredReticleArtCentreShift(
 //
 // The aim quad is submitted with XR_COMPOSITION_LAYER_UNPREMULTIPLIED_ALPHA_BIT,
 // so the runtime multiplies colour by alpha AGAIN. Copying the capture
-// straight in therefore applied the game's fade twice (C x A instead of C),
-// and the sRGB decode of the already-darkened bytes dimmed it further: Reach's
-// DMR, whose crosshair idles well below full opacity, read as far fainter in
-// the headset than on the monitor.
+// straight in would therefore apply the game's fade twice (C x A instead of C),
+// and the sRGB decode of the already-darkened bytes dims it further: Reach's
+// DMR, whose crosshair idles well below full opacity, then reads as far fainter
+// in the headset than on the monitor.
 //
-// The fix converts to straight alpha before upload, in the shared blit shader's
+// So it is converted to straight alpha before upload, in the shared blit shader's
 // `fix()` (src/common/vr_blit_shader.h), which this function mirrors exactly:
 // alpha = max(A, max(R,G,B)), colour = C / alpha. Straight-alpha compositing
 // then adds alpha x C/alpha = C - precisely the colour the flat game adds,
@@ -416,9 +416,9 @@ inline float CompositePremultipliedChannel(
     return colour + background * (1.0f - alpha);
 }
 
-// Development evidence for the fix above: what the capture held, what the
-// flat game adds, what the headset was shown before the straight-alpha
-// conversion and what it is shown now. Values are 0..255 and come from the
+// Development evidence for the conversion above: what the capture holds, what
+// the flat game adds, what the headset would be shown without the straight-alpha
+// conversion and what it is shown with it. Values are 0..255 and come from the
 // coverage probe's small mip level, so they are box-filtered MEANS of the art
 // (a 1-texel line reads fainter there than it is); compare them with each
 // other, not with a screenshot.
@@ -433,9 +433,9 @@ struct AuthoredReticleAlphaSummary
     uint32_t capturedAlphaMean = 0;
     // Brightest colour channel = the colour the flat game ADDS to the scene.
     uint32_t addedColourPeak = 0;
-    // What the headset added before the fix: colour x alpha a second time.
+    // What the headset would add unconverted: colour x alpha a second time.
     uint32_t legacyAddedColourPeak = 0;
-    // Alpha the compositor is given now (straight), and the colour it adds.
+    // Alpha the compositor is given (straight), and the colour it adds.
     uint32_t drawnAlphaPeak = 0;
     uint32_t drawnAlphaMean = 0;
     uint32_t drawnAddedColourPeak = 0;

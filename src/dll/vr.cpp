@@ -8497,8 +8497,8 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         g_stockAimFresh.store(stockControllersFresh, std::memory_order_release);
         LeaveCriticalSection(&g_headCs);
 
-        // test_accept_untracked_head is for the headless lane only: the Meta XR Simulator reports an
-        // Operator-overridden head VALID but not TRACKED. The valid bits were already required above.
+        // test_accept_untracked_head is for automated tests only: a simulated runtime can report a
+        // scripted head pose VALID but not TRACKED. The valid bits were already required above.
         // It widens ONLY roomscale and the physical crouch (what dllmain's DEV TEST OVERRIDE line
         // announces); the virtual-stock neutral capture above keeps the strict physicallyTracked bit.
         bool bodyHeadTracked = physicallyTracked;
@@ -8631,8 +8631,8 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
 
     // ---------------------------------------- crosshair opacity and brightness, in the crosshair's own image
     // crosshair_opacity / crosshair_brightness on a runtime that does NOT offer layer colour scaling
-    // (g_layerColorScaleExt != 1). SEEN IN A HEADSET (2026-10-07): "SteamVR/OpenXR in Meta compatibility mode
-    // 2.17.10" does not offer XR_KHR_composition_layer_color_scale_bias, and both sliders did nothing at 200%.
+    // (g_layerColorScaleExt != 1). The runtime "SteamVR/OpenXR in Meta compatibility mode 2.17.10" is one: it
+    // does not offer XR_KHR_composition_layer_color_scale_bias, so layer scaling would leave both sliders inert.
     // The same scale, applied by the mod to the image instead of by the compositor to the layer:
     //   * every image published into the crosshair's chain (the mod's own art, PaintReticle; the game's captured
     //     art, UploadAuthoredReticle) is first copied, as published, into a MASTER texture of ours;
@@ -9709,7 +9709,7 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         if (!copied && uploadTitle == GameTitle::HaloReach)
         {
             // Failure isolation: if the conversion cannot run (no view, no
-            // shader pipeline), publish the art the way Reach did before it -
+            // shader pipeline), publish the art by a plain copy instead -
             // too faint at partial opacity, but never no crosshair at all.
             copied = Blit(source, sourceDesc, g_reticleImages[index],
                           kReticleSize, kReticleSize, nullptr, false);
@@ -14009,7 +14009,7 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         }
 #endif
         {
-            // The gate's own edges, so a headset log shows each leave and each
+            // The gate's own edges, so the log shows each leave and each
             // return even with no hold engaged (and a title whose signal never
             // reads first person shows up as an exit that never ends). At most
             // one line a second; the rest are counted into the next.
@@ -18865,7 +18865,7 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
 #if HALOMCCVR_DEV_DIAGNOSTICS && HALOMCCVR_EXPERIMENTAL_REACH_RENDER_CANDIDATE
                             // Dev SHOT RETICLE (game.cpp halo3_impact_witness.inl): the traced reticle as drawn --
                             // this frame, this eye, this direction, the range it was drawn for -- against each shot's P.
-                            // Reach and Halo 4 too (2026-10-04): their AS SEEN witnesses judge impacts against it.
+                            // Reach and Halo 4 too: their AS SEEN witnesses judge impacts against it.
                             if (tracedReticle && !limitFromEye)
                             {
                                 const float drawnFrom[3]{reticleOrigin.x, reticleOrigin.y, reticleOrigin.z};
@@ -18945,10 +18945,10 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                             // [assess-only begin]
                             // DEV ASSESSMENT MARKER (honest_reticle_assess): where the game's shot REALLY lands, as a
                             // SECOND marker -- a small magenta ring and dot (assess_reticle::MarkerPixel) -- beside
-                            // the player's reticle, which stays exactly where it is (2026-10-02). Until then the
-                            // assessment REPLACED the reticle, so the player aimed WITH it and the test measured
-                            // itself: in Reach on foot the DMR's shots seemed to land "where the reticle is at the
-                            // height of recoil", because the mark came from the kicking camera while the shots did not.
+                            // the player's reticle, which stays exactly where it is. It must never REPLACE the
+                            // reticle: the player would then aim WITH it and the test would measure itself (in Reach
+                            // on foot the DMR's shots would seem to land where the reticle is at the height of
+                            // recoil, because the mark comes from the kicking camera while the shots do not).
                             // The poll publishes the ray from the rendered eye through the point the game's shot
                             // reaches (from its own shot origin along its aim, to the first surface) and its distance;
                             // it is drawn from this frame's stereo centre eye, on the surface, at its depth, its width

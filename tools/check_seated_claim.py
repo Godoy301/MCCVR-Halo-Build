@@ -1,6 +1,6 @@
-"""Guard the seated converged claim's call site in game.cpp (2026-10-01 decision).
+"""Guard the seated converged claim's call site in game.cpp.
 
-The user's decision: convergence is never switched off for a NATURAL, in-game
+The rule: convergence is never switched off for a NATURAL, in-game
 cause (a seat's stop, a turret's rate cap, a stall, an aim the game is still
 turning toward the hand). The decision itself is a pure function,
 ``converge::SeatedClaimDecide`` (src/common/converge_policy.h), whose facts

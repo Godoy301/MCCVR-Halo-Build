@@ -1,9 +1,9 @@
 // HALO 4: THE MOTION TRACKER FOLLOWS THE HEAD, the pure half (no game, engine or OpenXR includes).
 //
-// EVIDENCE CLASS: RETAIL-DERIVED LEAD, NOT H4EK-VERIFIED. No Halo 4 editing kit is installed on the machine this
-// was written on, and docs/EDITING-KIT-EVIDENCE.md's Halo 4 rule lets halo4.dll only match and verify what the
-// kit explains. Everything below was read from retail halo4.dll (SHA-256 7C53E7D5...FA84) alone, so every name is
-// ours and nothing here is a kit fact. Two things stand in for the kit until it is there:
+// EVIDENCE CLASS: RETAIL-DERIVED LEAD, NOT H4EK-VERIFIED. This binding was made without the Halo 4 editing kit
+// (no editing-kit symbols), and docs/EDITING-KIT-EVIDENCE.md's Halo 4 rule lets halo4.dll only match and verify what
+// the kit explains. Everything below was read from retail halo4.dll (SHA-256 7C53E7D5...FA84) alone, so every name
+// is ours and nothing here is a kit fact. Two things stand in for the kit:
 //   * the hook proves the one doubtful fact at RUN TIME before it changes anything (ArgumentProof, below);
 //   * docs/HALO4-HEAD-RELATIVE-2026-10-06.md lists, per binding, the kit artefact that would settle it.
 // Other titles' lanes are a lead for where to look and are not evidence for anything here.

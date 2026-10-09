@@ -212,7 +212,7 @@ int main()
         Check(step(r.Baseline()-depth*1.1f),"a real crouch below the learned line still works");
     }
     // ...and the cap follows the depth slider: a half-rise learned at 40 cm, then the depth lowered to 22 cm --
-    // sitting is still not a crouch (the slider no longer re-samples the reference).
+    // sitting is still not a crouch (the slider does not re-sample the reference).
     {
         PhysicalCrouchReference r;PhysicalCrouch g;uint64_t now=5000;const float seated=1.2f;float depth=.40f;
         uint32_t calibration=1;
@@ -338,7 +338,7 @@ int main()
         c.Update(-.3f,2'000'000'000);
         Check(c.Breaks()==1,"the first sample after a break starts the new frame");
     }
-    // End to end, the Halo 4 log of 2026-09-30: sampled bent over, then standing at 0.5 m in the old space;
+    // End to end, a case measured in Halo 4: sampled bent over, then standing at 0.5 m in the old space;
     // a runtime recenter puts the head at 0.0 and the player ducks straight away. The reference must stay
     // at standing, and the duck must crouch at the activation depth.
     {

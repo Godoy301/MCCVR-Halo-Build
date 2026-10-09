@@ -13,12 +13,12 @@
 //  - PhysicalCrouchReference (the OpenXR frame thread) learns the player's standing height in that frame;
 //  - PhysicalCrouch (each input thread) is the gesture: the hysteresis between that reference and now.
 //
-// The reference used to be re-sampled from the current head at every recenter -- including the automatic
-// ones after a cutscene, an unpause and a level load -- and on every title or level change, by each input
-// thread separately. Whatever posture the player was in at that instant became "standing", and the upward
-// learning that should have healed a low sample was capped at 13 cm. A runtime recenter caught mid-duck
-// left Halo 4 needing the player to lie on the floor (log, 2026-09-30: the reference re-sampled at
-// -0.85 m with the player's standing head at 0.0 m). Now nothing re-samples it but the menu's Calibrate
+// The reference is deliberately NOT re-sampled from the current head at a recenter -- the automatic ones
+// after a cutscene, an unpause and a level load included -- nor on a title or level change, nor by each
+// input thread separately. Whatever posture the player is in at that instant would become "standing", and
+// a capped upward learning cannot heal a low sample: a runtime recenter caught mid-duck (measured in
+// Halo 4: a reference sampled at -0.85 m with the player's standing head at 0.0 m) leaves the player
+// having to lie on the floor to crouch. Nothing re-samples it but the menu's Calibrate
 // button and a tracking space the runtime replaced without saying where it went.
 
 // Height continuity. The crouch compares heights across minutes, but the LOCAL space can move under the

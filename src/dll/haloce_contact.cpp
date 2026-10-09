@@ -392,12 +392,12 @@ void ContactTick(uint32_t unit)
 // faces, ignore invisible, and objects of every type), ignoring the player's unit. It is the query and the
 // thread the physical-melee backend above already uses. The aim path bends its aim through the point.
 //
-// WHAT THE FLAGS HIT (sight_hit_class_logic.h; static read of halo1.dll, 2026-10-05): bits 0, 3, 5, 6, 7, 20 =
+// WHAT THE FLAGS HIT (sight_hit_class_logic.h; static read of halo1.dll): bits 0, 3, 5, 6, 7, 20 =
 // front faces, ignore invisible, structure, media, OBJECTS, try-to-keep-location-valid. The objects bit with no
 // type bit is widened to all 12 object types by the collision function itself (0xB91854), so bipeds, vehicles,
 // scenery and machines all stop the ray; the ignored unit is skipped WITH its children (its held weapon). Seven
 // retail call sites pass this same immediate to the collision function -- one of them the seated crosshair test
-// itself (0xB67DA2). On foot and, since 2026-10-06, in a seat (SightTick below).
+// itself (0xB67DA2). Used on foot and in a seat (SightTick below).
 // ADDR-HYGIENE: structural (an engine enum value, HCEEK-named, not an address; decoded and unit-tested in
 // sight_hit_class_logic.h, and the install line states what it hits).
 constexpr uint32_t kSightProjectileFlags=0x1000e9;
@@ -428,7 +428,7 @@ int SightObjectType(uint32_t handle) noexcept
     return -1;
 }
 #endif
-// IN A SEAT (seat_converge_logic.h; 2026-10-06) the same trace runs for the seat's intent ray -- the seat view's
+// IN A SEAT (seat_converge_logic.h) the same trace runs for the seat's intent ray -- the seat view's
 // rendered eye along the aiming hand, as the seated packet path admits it (HaloCEUnitControl_SeatSight) -- with the
 // vehicle hierarchy's ULTIMATE PARENT in the ignore slot: what CE's own crosshair test passes there (0xB38BA8 at
 // 0xB67D92), and CE skips an ignored object with everything attached to it (the occupants, their weapons, a

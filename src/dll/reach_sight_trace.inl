@@ -2,14 +2,14 @@
 //
 // TRACE-AND-REAIM for Halo Reach, on foot and seated -- the Halo: Campaign Evolved aim.
 //
-// SEATED (2026-09-28): the same solve with the engine eye E moved. In a vehicle Reach does not fire from
+// SEATED: the same solve with the engine eye E moved. In a vehicle Reach does not fire from
 // the character's eye: its aim_assist (HREK 0x4E32A0, after the unit-adjust hook) traces the crosshair
 // from its OWN camera along that camera's forward -- the chase camera in a third-person seat (HREK
 // 0x4E5B60 -> the following camera), the unit camera in a first-person one -- and turns the barrel's shot
 // at whatever the trace hits. So E is a point of that camera line (the one nearest the seat, which stays
 // put as the chase camera orbits), the intent ray still starts at the rendered eye, and the trace ignores
 // the player's own vehicle. The seat's limits clamp the record before our write; the hook keeps its write
-// inside them (aim_write::LimitLatch) and STILL claims the converged aim (2026-10-01): a seat's stop is the
+// inside them (aim_write::LimitLatch) and STILL claims the converged aim: a seat's stop is the
 // game's own, and the barrel fires along it as in flat Reach. Only the muzzle redirect stands down there.
 //
 // The player points along the intent ray: from their rendered EYE, along the controller's direction --
@@ -31,8 +31,8 @@
 // leaves from exactly where the game fires it.
 //
 // THIS IS THE AIM PATH, not one option among several: it converges whenever it can resolve -- on a
-// hit, on a miss (the far end of a 1 km trace), at any bend. The older on-foot hand shot ray -- which
-// MOVED the projectile's origin to the hand, local-only and refused beyond 1.5 m -- is only the
+// hit, on a miss (the far end of a 1 km trace), at any bend. The on-foot hand shot ray -- which
+// MOVES the projectile's origin to the hand, local-only and refused beyond 1.5 m -- is only the
 // worst-case fallback for when it cannot: the trace is off, faulted or has no result within
 // kReachSightFreshMs, the geometry is degenerate, or the aim is steeper than the control record
 // accepts. While a converged setpoint is live, that fallback stands down.
@@ -68,10 +68,10 @@ struct ReachSightTracePublication
 #define REACH_SIGHT_DEV_COUNT(counter) ((void)0)
 #endif
 
-// The intent ray is traced 1 km out, like Halo: Campaign Evolved's vehicle intent ray (the user's call,
-// 2026-09-28). A miss therefore means the target is at least 1 km away, and the aim converges on the
-// ray's far end, where the eye-to-hand offset is a small fraction of a degree. (It was 60 wu, ~180 m,
-// and a miss went to the fallback.) Cost measured in FA: docs/REACH-AIM-CONVERGENCE-2026-09-28.md.
+// The intent ray is traced 1 km out, like Halo: Campaign Evolved's vehicle intent ray. A miss therefore
+// means the target is at least 1 km away, and the aim converges on the ray's far end, where the
+// eye-to-hand offset is a small fraction of a degree. (A short trace -- 60 wu, ~180 m -- would send every
+// miss to the fallback.) The cost is measured in docs/REACH-AIM-CONVERGENCE-2026-09-28.md.
 inline constexpr float kReachSightTraceLengthWu = 1000.0f * kReachWorldUnitsPerMeter;
 // A trace result older than this is not used: the trace runs every ~30 ms, so no fresh result means
 // the simulation stalled or the trace is off, and the shot genuinely cannot be resolved (the
@@ -212,12 +212,12 @@ struct ReachSightActuatedPublication
     std::atomic<uint32_t> sequence{0};
     std::atomic<uint64_t> atMs{0};
     std::atomic<float> ox{0}, oy{0}, oz{0}, dx{0}, dy{0}, dz{0}, ex{0}, ey{0}, ez{0}, hx{0}, hy{0}, hz{0}, rangeWu{0};
-    // The shot-lag fix (shot_lag_logic.h): when it was actuated on the sight clock (Sight_NowUs), and the engine
+    // Shot-lag correction (shot_lag_logic.h): when it was actuated on the sight clock (Sight_NowUs), and the engine
     // eye's velocity (wu/s) over ~100 ms on the provider's thread.
     std::atomic<uint64_t> atUs{0};
     std::atomic<float> vx{0}, vy{0}, vz{0};
     std::atomic<bool> velValid{false};
-    // Flat parity (2026-10-03): the camera sample's stamp -- when the engine eye e was published (the local shot ray's
+    // Flat parity: the camera sample's stamp -- when the engine eye e was published (the local shot ray's
     // publish, on the sight clock); 0 unknown. The intent point's E_P is e at this stamp (shot_lag_logic.h 4f).
     std::atomic<uint64_t> eyeStampUs{0};
 } g_reachSightActuated;
@@ -1129,8 +1129,8 @@ struct ReachEngineTraceRing
     std::atomic<uint32_t> written{0};
     ReachEngineTraceRecord records[kReachEngineTraceRingSize];
     uint32_t printed = 0;   // cold worker only
-    // Crosshair traces skipped while a seat held the write at its stop: the converged claim stays on there
-    // (2026-10-01), but Reach's line is off the point by design, so they are not misses of the solve.
+    // Crosshair traces skipped while a seat held the write at its stop: the converged claim stays on there,
+    // but Reach's line is off the point by design, so they are not misses of the solve.
     std::atomic<uint32_t> heldSkips{0};
 } g_reachEngineTraceRing;
 #endif

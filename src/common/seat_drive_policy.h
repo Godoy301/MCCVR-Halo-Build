@@ -4,7 +4,7 @@
 // leave to the stick servo (or to the steering author, for a driver whose stick or wheel steers).
 //
 // Every MCC title keeps a seat's aim in the same player_control record, updated by the same accumulator
-// as on foot; the seat's limits are applied inside that accumulator (mapped 2026-10-01 for Halo 3, ODST,
+// as on foot; the seat's limits are applied inside that accumulator (mapped for Halo 3, ODST,
 // Halo 4, Halo 2 and Reach). So a seat can be written exactly like on foot, axis by axis, once the policy
 // below says the hand owns that axis. Reach's per-seat rules (Game_ReachDirectDriveAimWhy) are the model:
 //   * a passenger, a gunner, a turret, or a driver whose vehicle does NOT steer by the look (a tank: the
@@ -85,9 +85,9 @@ inline unsigned SeatKey(int parent_handle, int seat_index, bool mounted)
 //     big hit), the sample is no evidence: it neither counts nor resets.
 // A record that really holds another aim -- a Halo 3 driver+gunner's pitch ~13 deg off the gun -- disagrees
 // at rest and in motion alike (13 deg is far past tol + 3 * any per-sample motion under max_motion), so it
-// never passes. Until 2026-10-01 (late) only SETTLED samples (under 0.1 deg of motion) were evidence: that kept
-// natural motion from resetting the check, but a flying Banshee is never settled, so the check barely ever
-// passed and the seat stayed on the stick servo -- natural motion switching direct drive off by another route.
+// never passes. Do NOT restrict evidence to SETTLED samples (under 0.1 deg of motion): that keeps natural
+// motion from resetting the check, but a flying Banshee is never settled, so the check would barely ever
+// pass and the seat would stay on the stick servo -- natural motion switching direct drive off by another route.
 //   * Yaw passes on `needed` agreeing samples with no disagreement between them.
 //   * Pitch passes the same way, never before yaw. Its BUDGET counts evidence time after yaw passed
 //     (`budget_ms`); when it runs out the pitch stays on the servo, and the check RETRIES `retry_ms` of
@@ -189,11 +189,11 @@ struct StintCheck {
 };
 
 // TWO REFERENCES, ONE STINT (gun-slaved seats, gun_slaved_seat_logic.h). In a seat whose first-person camera is
-// the gun (seat flag bit 7), the camera's forward -- `camera`, the reference every seat used until 2026-10-02 --
+// the gun (seat flag bit 7), the camera's forward -- `camera`, the reference every seat is checked against --
 // is a gun that slews toward the record at its own rate, so it agrees with the record only once the gun has caught
 // up. `occupant` runs the same check against the occupant's own aim vector, which the record drives directly; it is
 // active only in such a seat with that vector bound. An axis passes when EITHER check passes it, so a seat is never
-// slower to prove than before (fail closed to the camera check, which runs exactly as it always has), and a
+// slower to prove than by the camera check alone (fail closed to it: it runs unchanged), and a
 // gun-slaved seat proves as soon as the record agrees with what it drives. Each check keeps its own counts and
 // budget; the pitch is on the servo until its retry only when every active check has failed it. An axis whose
 // occupant proof the outcome guard REVOKED (gun_slaved::OffsetWatch: the gun came to rest off the record) is the
@@ -219,12 +219,12 @@ inline StintVerdict CombineStints(const StintCheck& camera, const StintCheck& oc
     return v;
 }
 
-// OUTCOME WITNESS (dev lines only since 2026-10-01). A written seat's aim can still fall short downstream of
+// OUTCOME WITNESS (dev lines only). A written seat's aim can still fall short downstream of
 // the record (a gun's rate cap, an aiming clip), where the seat-limit latch cannot see it. While the game's
 // aim misses the written target by more than `enter` for `hold_ms` the gate reads `honest` (a latch hold at
-// once), and it clears once the miss is under `exit`. Until 2026-10-01 that put the reticle on the game's aim
-// and withheld the converged claim; both were natural limits, and the user's decision is that they never
-// switch convergence off (converge_policy.h). Game_ComputeAimStick now feeds it only to COUNT the miss for the
+// once), and it clears once the miss is under `exit`. It must not move the reticle onto the game's aim or
+// withhold the converged claim: those misses are natural limits, and natural limits never
+// switch convergence off (converge_policy.h). Game_ComputeAimStick feeds it only to COUNT the miss for the
 // dev witness (outcomeMiss, yawShortH4); no decision reads it.
 struct OutcomeGate {
     float enter = 0.035f;       // 2 deg

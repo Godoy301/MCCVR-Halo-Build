@@ -13,8 +13,8 @@
 // ADDR-HYGIENE: resolved -- the record's address, stride and both field offsets and the update function's address
 // are decoded from director_get_perspective itself and from an independent writer of the same record, each matched
 // uniquely in the module, which must agree (director_camera::DecodeHalo2DirectorSites; offline:
-// tools/verify-halo2-director-camera.py). Unbound = no camera rung = the first-person palette packet rung, as
-// before, said once.
+// tools/verify-halo2-director-camera.py). Unbound = no camera rung = the first-person palette packet rung
+// alone, said once.
 struct Halo2DirectorPerspectiveBinding
 {
     std::atomic<bool> bound{false};

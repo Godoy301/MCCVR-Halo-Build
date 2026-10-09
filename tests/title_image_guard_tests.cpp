@@ -1,9 +1,9 @@
 // A PER-FRAME READER OF A TITLE'S IMAGE STOPS AT THE TITLE'S UNLOAD (src/dll/title_image_guard.h).
 //
-// Halo 3's pause reader read halo3.dll+0xA3CA9A once after MCC had freed the title at exit: the worker's module
-// poll is tens of milliseconds behind the loader, the render thread reads every frame. This test runs the
-// production guard against a REAL DLL of this machine that is loaded and freed here (a small system DLL; nothing
-// of MCC is touched): the address a reader keeps inside the image is retired by the loader's notification
+// The fault: Halo 3's pause reader can read halo3.dll+0xA3CA9A after MCC has freed the title at exit, because the
+// worker's module poll is tens of milliseconds behind the loader and the render thread reads every frame. This test
+// runs the production guard against a REAL DLL of this machine that is loaded and freed here (a small system DLL;
+// nothing of MCC is touched): the address a reader keeps inside the image is retired by the loader's notification
 // BEFORE the image is unmapped, and a reader thread hammering the address through the guard never faults.
 #include <windows.h>
 #include <atomic>

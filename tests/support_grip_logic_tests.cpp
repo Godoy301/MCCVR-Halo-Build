@@ -1824,7 +1824,7 @@ struct SeatedLatchRig
 
 void TestSeatedTwoHandGate(TestContext& test)
 {
-    // Hold mode, the reported case: sprinting two-handed, then boarding.
+    // Hold mode: sprinting two-handed, then boarding.
     SeatedLatchRig hold;
     test.Check(hold.Frame(false, true, true) && !hold.lastDrop,
         "seat: on foot, a grip in the zone engages two-handed aim");

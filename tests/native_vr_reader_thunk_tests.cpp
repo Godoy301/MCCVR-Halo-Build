@@ -1,7 +1,7 @@
 // The VR action bridge's reader thunks (src/dll/native_vr_reader_thunks.asm) must preserve every volatile
 // register but rax across the C++ hook: the hooked native readers are leaves whose LTCG callers keep
-// volatile registers live across the call, and a clobbered r10/r11 crashed Halo 3 at every level load
-// (2026-10-01). An asm probe plays that caller; the hook is the worst case, clobbering everything.
+// volatile registers live across the call, and a clobbered r10/r11 crashes Halo 3 at every level load.
+// An asm probe plays that caller; the hook is the worst case, clobbering everything.
 #include <cstdio>
 #include <cstdint>
 

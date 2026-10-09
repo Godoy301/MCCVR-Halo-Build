@@ -446,8 +446,8 @@ bool Sight_ConvergedDirection(GameTitle title, uint32_t generation, const float 
                                        aim_solve::Vec3{dir[0], dir[1], dir[2]}, trace.convergeRangeWu,
                                        kSightCmPerWorldUnit, rails, bent, railHold))
     {
-        // The geometry did not resolve: a point inside the range floor, or a degenerate ray. (A steep bend no
-        // longer declines: Halo 3 / ODST / Halo 4 hold it at the rail and stay converged.)
+        // The geometry did not resolve: a point inside the range floor, or a degenerate ray. (A steep bend does
+        // not decline: Halo 3 / ODST / Halo 4 hold it at the rail and stay converged.)
         g_stats[Slot(title)].declined.fetch_add(1, std::memory_order_relaxed);
         return decline(ConvergeOff::NoRange);
     }
@@ -686,7 +686,7 @@ void Sight_SetFireEyeSource(GameTitle title, SightFireEyeFn source)
 
 bool Sight_TransportWanted(GameTitle title, bool seated)
 {
-    // Every build (flat parity, 2026-10-03): the keys are dev-only, so a player build keeps their defaults -- on foot
+    // Every build (flat parity): the keys are dev-only, so a player build keeps their defaults -- on foot
     // transported (shot_point_transport 1), seats not (shot_point_transport_seated 0). Every title whose local shots
     // aim through a world point; Reach on foot only (its seats are not covered by either key: sight_layer.h).
     if (title != GameTitle::Halo3 && title != GameTitle::Halo3ODST && title != GameTitle::Halo2 &&
@@ -817,7 +817,7 @@ bool Sight_LastShotPoint(SightLastShotPoint& out)
 const float* Sight_ShotPoint(GameTitle title, SightTransportSite site, const SightIntent& intent, bool seated,
                              const float* reference, float storage[3], const float* siteEye)
 {
-    // Every build (flat parity, 2026-10-03; the dev key shot_point_transport, default 1, is the A/B).
+    // Every build (flat parity; the dev key shot_point_transport, default 1, is the A/B).
     if (!reference || !storage || !Sight_TransportWanted(title, seated))
         return reference;
     return Sight_ShotPointSample(title, site, SampleFromIntent(intent, seated), seated, reference, storage, siteEye);
@@ -933,9 +933,9 @@ bool Sight_AimMuzzleShot(GameTitle title, uint32_t generation, const float befor
         Sight_NoteMuzzleShotUnconverged(title);
         return false;
     }
-    // THE INTENT POINT FIRST (2026-10-02): the point built from one frame-coherent hand/camera pair, through which
+    // THE INTENT POINT FIRST: the point built from one frame-coherent hand/camera pair, through which
     // the shot flies from this muzzle -- the ray's own head may be a camera a frame older than its hand. Without a
-    // usable intent, the ray's point as before (Sight_AimMuzzleShotFromRay keeps every gate and count).
+    // usable intent, the ray's point (Sight_AimMuzzleShotFromRay keeps every gate and count).
     SightIntent intent{};
     const shot_lag::IntentUse use = Sight_IntentForShot(title, kSightIntentShotMaxAgeMs, false, intent);
     Sight_NoteReaimSkipped(title, SightShotSite::Muzzle, use);
@@ -1969,8 +1969,8 @@ void PublishAuxRay(AuxRayPublication& p, const SightAuxRay& ray)
 {
     p.sequence.fetch_add(1, std::memory_order_acq_rel);
     p.generation.store(ray.generation, std::memory_order_relaxed);
-    // Stamped HERE on the sight clock ReadAuxRay ages it against. The seat limit ray was stamped by its caller with
-    // GetTickCount64 and read against QPC: 36 ms of clock offset (and drifting) ate its 100 ms window, so it could
+    // Stamped HERE on the sight clock ReadAuxRay ages it against. A caller's GetTickCount64 stamp read against QPC
+    // does not work: the clocks' offset (36 ms measured, and drifting) eats the 100 ms window, so the ray can
     // read never fresh.
     p.sampleMs.store(Sight_NowMs(), std::memory_order_relaxed);
     for (int i = 0; i < 3; ++i)

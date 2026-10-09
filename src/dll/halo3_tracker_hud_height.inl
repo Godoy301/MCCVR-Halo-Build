@@ -6,8 +6,9 @@
 //
 // The HUD height hook (game.cpp, HudAnchorBasisHook) lowers the tracker's ART (once, like every HUD element), and
 // cannot reach its BLIPS: the blip draw (halo3 +0x2F3904) places them around a centre it reads from the HUD's frame
-// globals. A player saw every dot, their own included, below the tracker. One detour on that draw lowers the
-// centre's y by what the art was lowered in this HUD pass, calls the game's own draw and puts the game's y back.
+// globals. Left alone, every dot (the player's own included) is drawn below the tracker. One detour on that draw
+// lowers the centre's y by what the art was lowered in this HUD pass, calls the game's own draw and puts the game's
+// y back.
 //
 //   * WHAT IT CANNOT TOUCH. One float of the HUD's frame globals, for the length of one draw call, restored
 //     before the detour returns (also when the game's draw faults). The HUD frame setup rewrites it at the start

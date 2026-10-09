@@ -14,7 +14,7 @@ never shows a dialog: every message, including what a dialog would have said,
 goes to `HaloMCCVRLauncher.log`, and the exit code reports the result: 0 = the
 game is running after 12 s, 2 = Steam edition and no `steam.exe` process, 1 =
 any other failure. It never offers VR recovery for a running game, and on the
-Store edition it does not wait for a manual start if activation fails. The FA
+Store edition it does not wait for a manual start if activation fails. The test
 harness (`tools/Enter-Reach-FA.ps1`) uses it so an unattended run cannot leave a
 modal box on someone's desktop. Because this launcher's manifest asks for
 administrator rights, the harness starts it unelevated with

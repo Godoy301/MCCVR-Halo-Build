@@ -1,7 +1,7 @@
 // HEAD-RELATIVE MOTION TRACKER, Halo 3 (and ODST, which carries the same code): the pure half of
 // src/dll/halo3_head_relative.inl. No game, engine or OpenXR includes.
 //
-// WHAT THE GAME DOES (retail halo3.dll 1.3528, read offline 2026-10-06; no editing kit on this machine, so every
+// WHAT THE GAME DOES (retail halo3.dll 1.3528, read from the retail binary only, no editing-kit symbols, so every
 // name below is ours; tools/verify-halo3-motion-tracker.py re-derives the addresses from the patterns here).
 //
 //   The HUD update (0x2CF7F8) calls the motion tracker's per-user update (0x32DA98) with the user's tracker state
@@ -138,10 +138,10 @@ inline void Place(float dx, float dy, float sinA, float cosA, float invRange, fl
 // marker 0x9F), and its first object contact, slot 0 handed over with no point, is the player's own unit,
 // measured from the object's own position (0x32D722: object +0x1C / +0x20 minus the origin). So the dot that
 // stands for the player is drawn where the body is relative to the animated head, not at the centre.
-// MEASURED (2026-10-07, Halo 3 Forge, a 25 m tracker, walking): 0.40 m behind the centre with the gun level,
+// MEASURED (Halo 3, a 25 m tracker, walking): 0.40 m behind the centre with the gun level,
 // 0.53 m with it pitched 50 degrees down, and the offset turns with whatever heading the tracker is given
-// (0.21 m right / 0.33 m below with the head 60 degrees right). A player saw it as "the green dot that
-// represents me is sitting below center".
+// (0.21 m right / 0.33 m below with the head 60 degrees right). On screen the player's own dot sits below
+// the centre.
 //
 // The builder takes its contact's position from `point` when one is given (0x32D74B), so handing it the
 // ORIGIN as the point makes that one contact's offset exactly zero. Whether the blip is shown at all, and its
@@ -150,12 +150,12 @@ inline void Place(float dx, float dy, float sinA, float cosA, float invRange, fl
 //
 // WHICH CONTACT IS THE PLAYER'S OWN. NOT "slot 0". The update's loop (0x32DBED .. 0x32DCAF) hands the object
 // builder each of the tracker state's TWENTY tracked entries in turn, slot 0 to 19, every one with no point;
-// an entry is whatever unit began to move while that slot was free. Alone in Forge the player is the only
-// mover and sits in slot 0, which is where the first version of this rule was measured and why it tested
-// "slot == 0". In a game with other players the player's own entry lapses whenever they stand still, and the
-// next unit to move takes slot 0: THAT unit was then drawn exactly at the centre. A player reported it
-// (2026-10-08): "an enemy marker right at my position at the center of the motion reticle when there may
-// have not been one". The own contact is the entry whose object handle IS the output user's unit: the handle
+// an entry is whatever unit began to move while that slot was free. A player alone in a game is the only
+// mover and sits in slot 0, so a "slot == 0" test looks right there and is wrong.
+// In a game with other players the player's own entry lapses whenever they stand still, and the
+// next unit to move takes slot 0: a "slot == 0" rule draws THAT unit exactly at the centre (an enemy marker
+// on the player's own position where there is no enemy).
+// The own contact is the entry whose object handle IS the output user's unit: the handle
 // is the entry's first dword (the builder: lea rsi, [rcx + slot * 12]; cmp dword [rsi], -1), and the unit is
 // what the update itself asks the output-user unit getter for (0x32DACC). With no proven getter, or an entry
 // layout that does not prove, no contact is centred: the game's own placement, the dot 0.4 m off.
@@ -251,7 +251,7 @@ inline head_relative::Use Substitute(const Request& in, Hold& hold, float& sinA,
 // ====================================================================================================
 // THE SOUND LISTENER BY THE HEAD'S ORIENTATION, Halo 3 (and ODST, which carries the same code).
 //
-// WHAT THE GAME DOES (retail halo3.dll 1.3528, read offline 2026-10-06; names ours;
+// WHAT THE GAME DOES (retail halo3.dll 1.3528, read from the retail binary only; names ours;
 // tools/verify-halo3-sound-listener.py re-derives it).
 //
 //   The sound manager keeps four listeners, one per output user, in its globals (a static pointer, halo3

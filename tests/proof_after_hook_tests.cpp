@@ -1,8 +1,9 @@
 // A BYTE-PATTERN PROOF READS THE GAME'S CODE, NOT OUR JUMPS.
 //
-// Two muzzle lanes were refused for every player because their proof of a function's head ran after another lane
-// of this mod had hooked that function: Halo 4's (+0x3B1B4C, fixed in fa4f90d) and Reach's (+0x484F24). MinHook
-// rewrites the first five bytes of a hooked function, so the pattern read `E9 <rel32>` and "did not match".
+// A lane whose proof of a function's head runs after another lane of this mod has hooked that function is refused
+// for every player if it compares live bytes (the muzzle lanes' functions are shared this way: Halo 4 +0x3B1B4C,
+// Reach +0x484F24). MinHook rewrites the first five bytes of a hooked function, so a live-bytes pattern reads
+// `E9 <rel32>` and does not match.
 //
 // This test runs the production scanner (src/dll/sigscan.cpp) and the production MinHook extension
 // (src/common/minhook_lifecycle.c, MCCVR_CopyEnabledHookPatches) against REAL MinHook hooks on synthetic code in
@@ -112,7 +113,7 @@ int main()
     Check(MH_EnableHook(image + kA) == MH_OK && callA() == 41 && originalA() == 7, "A is hooked and live");
     Check(image[kA] == 0xE9, "the head of a hooked function reads our jump (what the lanes used to compare)");
 
-    // CONTROL: the scanner as it was (no patch source) reads the jump and refuses the lane. This is the defect.
+    // CONTROL: a scanner with no patch source reads the jump and refuses the lane. This is the defect guarded against.
     sig::SetHookPatchSource(nullptr);
     Check(sig::Find(base, kSize, headA) == 0, "control: a live-bytes scan no longer finds a hooked head");
     Check(!ProvenUniqueAt(base, kSize, base + kA, headA), "control: the lane's proof fails after the hook");

@@ -31,8 +31,8 @@ thread_local ReachMuzzleShotScope g_reachBarrelShot;
 thread_local ReachMuzzleRequest g_reachBarrelRequest;
 __declspec(noinline) void MarkReachMuzzleFault(){g_reachBarrel.faulted.store(true,std::memory_order_release);}
 
-// WHY A BARREL SHOT WAS REFUSED (dev builds; ReportReachMuzzle prints the window). The lane installed for the first
-// time on 2026-10-06 (reach_muzzle_lifecycle.inl): until then no refusal had ever been counted, let alone explained.
+// WHY A BARREL SHOT WAS REFUSED (dev builds; ReportReachMuzzle prints the window). The lane is installed by
+// reach_muzzle_lifecycle.inl; every refusal is counted by reason here, so a lane that never applies explains itself.
 // A refusal leaves the shot exactly as the game and the unit-adjust hook built it.
 enum ReachMuzzleWhy : int
 {
@@ -256,7 +256,7 @@ bool ReachApplyBarrelAim(int32_t unit,float* origin,float* direction,const float
     std::memcpy(origin,shot.position,12);std::memcpy(direction,shot.direction,12);
     g_origReachUnitAdjust(unit,origin,direction,velocity,nullptr,nullptr,0,0,collision,simulation);
     if(std::isfinite(origin[0])&&std::isfinite(origin[1])&&std::isfinite(origin[2]))std::memcpy(shot.position,origin,12);
-    // The shot witness (dev): a barrel shot used to skip it, so a muzzle shot's landing went unmeasured.
+    // The shot witness (dev) measures a barrel shot too: without this call a muzzle shot's landing goes unmeasured.
     ReachSightMeasureShot(unit,origin,direction,nullptr,0,0);
     return true;
 }

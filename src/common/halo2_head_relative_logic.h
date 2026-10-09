@@ -2,8 +2,8 @@
 // half (no game, engine or OpenXR includes).
 //
 // EVIDENCE CLASS: RETAIL-DERIVED LEAD, NOT H2EK-VERIFIED. docs/EDITING-KIT-EVIDENCE.md's Halo 2 rule begins every
-// new binding with the official kit; no H2EK is installed on the machine this was written on (the owner knows and
-// said to continue). Everything below was read from retail halo2.dll (SHA-256 DE65B4F4...CF171946) alone, so every
+// new binding with the official kit; this one was made without it (no editing-kit symbols were available).
+// Everything below was read from retail halo2.dll (SHA-256 DE65B4F4...CF171946) alone, so every
 // name is ours and nothing here is a kit fact. No other title's finding is used as evidence: where the shape
 // resembles another title's that is a lead for where to look, nothing more. Two things stand in for the kit:
 //   * the hook proves the one doubtful fact at RUN TIME before it changes anything (ArgumentProof, below);
@@ -385,13 +385,13 @@ inline float TrackerPointBearing(const float point[2])
 // MOVED among them: one agreeing sample whose reference lies between kProofSpreadRad and half a turn less
 // kProofSpreadRad from the first one's. A constant agrees only within the tolerance of ONE heading, so it has no
 // such sample. A MIRRORED yaw (2c - yaw) agrees within the tolerance of TWO headings, exactly half a turn apart,
-// so it has none either: that is why a half turn does not count as movement. It matters on a first run under the
-// simulator, where the controller starts exactly half a turn from the head and the first pose step is that half
-// turn, made in one jump: no sample lies between the two headings to disagree, as one would in a hand's sweep. A
+// so it has none either: that is why a half turn does not count as movement. It matters when the reference makes
+// exactly that half turn in one jump (a simulated runtime whose controller starts half a turn from the head does so
+// on its first pose step): no sample lies between the two headings to disagree, as one would in a hand's sweep. A
 // miss between the tolerance and the disagreement bound counts for nothing either way. Once proven, kProofWithdrawRun
 // disagreements in a row withdraw it. A pass also settles the SIGN: the float is then the aim's yaw in the
 // convention the drive writes, and the head's yaw is measured the same way (atan2(y, x) of a world forward).
-// The sampler runs once a game tick: at the 60 ticks a second this repository has measured for Halo 2 (E-H2-28)
+// The sampler runs once a game tick: at the 60 ticks a second measured for Halo 2 (E-H2-28)
 // thirty samples are half a second of play, and the withdrawal run a whole one.
 // (These five are thresholds of the proof, not addresses or offsets: nothing here locates anything in the game.)
 inline constexpr uint32_t kProofSamples = 30;
@@ -503,7 +503,7 @@ inline const char* TrackerUseName(TrackerUse use)
 }
 // THE PRIVATE COPY the sampler is handed in place of the pointer into the player's own record. The static read
 // says the sampler reads the yaw and the pitch through it, at once, and nothing else. Nothing at run time
-// checked that, and a pair of floats of ours had the mod's own memory behind it. So the copy is the record's
+// checks that, and a bare pair of floats would have the mod's own memory behind it. So the copy is the record's
 // pair AND what follows it in the record (as much as lies inside the user's record, at most
 // kShadowBytes), copied at each call, with only the yaw replaced: a read past the pair finds what the record
 // holds. And the copy is compared with what was handed when the next call arrives on that thread: if it

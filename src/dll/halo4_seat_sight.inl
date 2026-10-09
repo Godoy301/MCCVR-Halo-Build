@@ -24,11 +24,11 @@
 //   the marker query 0x5D5B74 are the muzzle lane's own proven bindings; without that lane nothing here runs.
 //
 //   THE SIMULATION SAMPLE (Halo4SeatSightNoteAimCamera, from the muzzle's view detour on the per-tick
-//   targeting calls 0x1DB9A6 / 0x1DBDB6, never on the mod's own query or a barrel shot -- verifier item 6):
-//   the game's own aim camera for the local unit, the exact first-person witness (item 7), the seat flags,
-//   the controlled unit (item 15), the vehicle's up, whether the aiming unit carries the player (item 12),
-//   the barrel's forward and its offset from the eye, and the SHOT LINE the native assist will turn (item 11:
-//   the barrel's forward or the aiming unit's aim, whichever the last fire of this weapon was handed).
+//   targeting calls 0x1DB9A6 / 0x1DBDB6, never on the mod's own query or a barrel shot):
+//   the game's own aim camera for the local unit, the exact first-person witness, the seat flags,
+//   the controlled unit, the vehicle's up, whether the aiming unit carries the player,
+//   the barrel's forward and its offset from the eye, and the SHOT LINE the native assist will turn (the
+//   barrel's forward or the aiming unit's aim, whichever the last fire of this weapon was handed).
 //   Seqlock, published every tick.
 //
 //   THE SHOT FORM (Halo4SeatSightNoteFiringAim, the muzzle's aim detour on the fire routine's call 0x617E90):
@@ -41,13 +41,13 @@
 //   origin in the same frame as the rendered head, never a simulation-time world position.
 //
 //   THE SEATED TRACE (Halo4SightTraceSeated, the contact lane's per-unit update): the published seated intent
-//   ray, a cheap pre-gate before the rate limit (item 10), identity from this thread's own seat read, the
+//   ray, a cheap pre-gate before the rate limit, identity from this thread's own seat read, the
 //   vehicle's root, the occupant, the seat's parent and the controlled unit ignored, our own vehicle looked
 //   past (three passes; exhaustion is a MISS). Stage 0 keeps the result to itself (the shot witness measures
 //   against it); stage 1 publishes it to the sight layer.
 //
-//   THE SHOT WITNESS (Halo4SeatAssistDetour, 0x1DCB8C filtered to the fire routine's return 0x618108 --
-//   item 9): the shot's direction before and after the native seated assist, against the converged point.
+//   THE SHOT WITNESS (Halo4SeatAssistDetour, 0x1DCB8C filtered to the fire routine's return 0x618108):
+//   the shot's direction before and after the native seated assist, against the converged point.
 #if HALOMCCVR_DEV_DIAGNOSTICS
 
 using Halo4SeatFlagFn = uint8_t(__fastcall*)(uint32_t, int16_t, uint32_t);       // 0x5FB2D4(vehicle, seat, bit)
@@ -100,7 +100,7 @@ struct Halo4SeatAimSample
     bool aimUnitKnown = false, assisted = false;   // the aiming unit is this unit and carries its player
     bool barrelKnown = false;
     float barrelForward[3]{}, barrelOffset[3]{};   // the barrel marker's forward, and its origin minus `camera`
-    // The line the native assist will turn (verifier item 11): the barrel's forward, or the aiming unit's aim
+    // The line the native assist will turn: the barrel's forward, or the aiming unit's aim
     // vector when the last fire of this weapon/owner/aiming unit was handed the unit-aim flag.
     halo4_seat_aim::ShotLine shotLine = halo4_seat_aim::ShotLine::Unknown;
     bool shotSimulationVector = false;            // the unit-aim line is +0x4E0 (a simulation-1 fire)
@@ -426,7 +426,7 @@ bool Halo4SeatSightBuildSample(uint32_t unit, const Halo4VehicleInputState& seat
         }
         if ((ready & kH4SeatShotLine) && s.aimUnitKnown && s.barrelKnown)
         {
-            // THE SHOT LINE (verifier item 11): what the native seated assist will turn. The barrel's forward,
+            // THE SHOT LINE: what the native seated assist will turn. The barrel's forward,
             // unless the last fire of this weapon, owner and aiming unit was handed the unit-aim flag: then
             // 0x5F3510 replaced it with the aiming unit's aim vector, read here exactly as it reads it. Before
             // that fire (or for another weapon) the line is unknown: the assist witness cannot judge the shot.
@@ -467,7 +467,7 @@ bool Halo4SeatSightBuildSample(uint32_t unit, const Halo4VehicleInputState& seat
 }
 
 // The muzzle's view detour, before the native call: arm the first-person witness for a per-tick targeting
-// call that is neither the mod's own query nor a barrel shot (verifier item 6).
+// call that is neither the mod's own query nor a barrel shot.
 bool Halo4SeatSightArmAimCamera(uintptr_t caller)
 {
     const auto& f = g_h4SeatSight;
@@ -664,7 +664,7 @@ bool Halo4SeatGuardedRayCast(Halo4PhysicsRayCastInput* input, Halo4PhysicsRayCas
 }
 
 // Whether this update is the local occupant's own, read on THIS thread (never the stamp's or the first-person
-// body's), and the unit it controls (0x5F9694, item 15). Guarded.
+// body's), and the unit it controls (0x5F9694). Guarded.
 bool Halo4SeatSightLocalSeated(uint32_t unit, void* instance, Halo4VehicleInputState& seat, uint32_t& controlled)
 {
     controlled = UINT32_MAX;
@@ -694,7 +694,7 @@ void Halo4SightTraceSeated(uint32_t unit, void* instance)
     if (!LegacySight(kTitle).flags.load(std::memory_order_acquire) || !g_halo4Contact.flags ||
         !g_halo4WorldCollision.originalRayCast || TitleAdapter_GetActiveTitle() != kTitle)
         return;
-    // CHEAP PRE-GATE FIRST (verifier item 10): this runs for every unit's update. Only the unit the camera
+    // CHEAP PRE-GATE FIRST: this runs for every unit's update. Only the unit the camera
     // hook's stamp names as seated goes on; the rate limit is taken only by it, so another unit never uses up
     // the 30 ms slot, and the two native calls of this thread's own seat read run at most once per trace.
     if (g_halo4SeatStamp.unit.load(std::memory_order_relaxed) != unit)
@@ -927,7 +927,7 @@ uint32_t Halo4SeatSightFireOwner(uint32_t weapon)
     }
 }
 
-// THE SHOT FORM (verifier item 11). The fire routine's aim call, after the native aim, for a fire the local seat
+// THE SHOT FORM. The fire routine's aim call, after the native aim, for a fire the local seat
 // aims (the occupant, or our own vehicle) from barrel 0 -- the barrel the sample reads: record the unit-aim flag
 // the native was handed, and (dev) measure the sample's predicted line against the direction it really left.
 void Halo4SeatSightRecordShotForm(uint32_t unit, const float direction[3], bool unitAim, uint32_t simulation,
@@ -997,7 +997,7 @@ void Halo4SeatSightNoteFiringAim(uint32_t unit, const Halo4VehicleInputState& se
     if (seat.parent == unit)
     {
         // The aiming unit is our own vehicle: no player on it, so the native assist is skipped and the shot
-        // flies along its shot line (verifier item 12) -- the barrel's, or the vehicle's own aim under the
+        // flies along its shot line -- the barrel's, or the vehicle's own aim under the
         // unit-aim flag (a vehicle nobody controls is its own aiming unit).
         AcquireSRWLockExclusive(&g_halo4SeatShots.lock);
         ++g_halo4SeatShots.unassisted;
@@ -1188,7 +1188,7 @@ struct Halo4SeatSightPoll
     float head[3]{}, eye[3]{};          // H (the rendered centre eye) and the ray's eye (E when it is known)
     bool eyeKnown = false;
     bool assistKnown = false, assisted = false;   // the shot's aiming unit carries the player (the native assist)
-    bool shotKnown = false;                       // the line the assist turns (item 11) and the barrel are known
+    bool shotKnown = false;                       // the line the assist turns and the barrel are known
     float shotForward[3]{}, barrelOrigin[3]{};    // that line, and the barrel at E + the sample's offset
     uint32_t weapon = UINT32_MAX;                 // the shot's weapon (its observed cap)
     unsigned why = ~0u;   // Halo4SeatSightWhy: the first proof that failed (~0u: Prepare did not judge a seat)
@@ -1221,8 +1221,8 @@ inline converge::ConvergeOff Halo4SeatSightOffReason(unsigned why)
     }
 }
 
-// The native assist's verdict on a converged seat aim (Game_ComputeAimStick, stage 1): a WITNESS only since
-// 2026-10-01 -- the claim no longer waits on it (a gun the assist cannot bring onto the point fires where it can,
+// The native assist's verdict on a converged seat aim (Game_ComputeAimStick, stage 1): a WITNESS only --
+// the claim does not wait on it (a gun the assist cannot bring onto the point fires where it can,
 // as in flat Halo).
 enum Halo4SeatClaimWhy : unsigned
 {
@@ -1369,9 +1369,9 @@ bool Halo4SeatSightPrepare(Halo4SeatSightPoll& out, const float observerForward[
             }
         }
     }
-    // No sample is no evidence (2026-10-01): the proof is neither aged out nor renewed. Until then it counted as a
-    // disagreement, so a weapon switch -- the view call that carries the sample runs behind the same weapon test as
-    // the shot's assist -- unproved the eye and switched the seat's convergence off for a natural cause.
+    // No sample is no evidence: the proof is neither aged out nor renewed. Were it counted as a
+    // disagreement, a weapon switch -- the view call that carries the sample runs behind the same weapon test as
+    // the shot's assist -- would unprove the eye and switch the seat's convergence off for a natural cause.
     if (sameSeat)
     {
         s_state.seatSample = sample;
@@ -1433,7 +1433,7 @@ bool Halo4SeatSightPrepare(Halo4SeatSightPoll& out, const float observerForward[
     if (out.solve && recordTilted)
         w.solvedTilted.fetch_add(1, std::memory_order_relaxed);
     // A slaved turret's aim camera IS its barrel's line (0x124DE6): the servo parks it as a turret, whatever the
-    // eye proofs say (its pitch is on the servo; verifier item 14). The class is LATCHED for the stint:
+    // eye proofs say (its pitch is on the servo). The class is LATCHED for the stint:
     // set by a fresh sample of this seat that says bit 7, released only by a fresh sample of this seat with
     // another known class (or a new stint) -- never because this poll's sample was stale or its read collided,
     // which would flip the servo's turret mode (resetting its measured quantum and logging armed/released). Nor
@@ -1459,11 +1459,11 @@ bool Halo4SeatSightPrepare(Halo4SeatSightPoll& out, const float observerForward[
 }
 
 // Stage 1, Game_ComputeAimStick, after the aim was bent through `point` (the intent ray at the converged range):
-// WITNESS ONLY (verifier items 11 and 12) -- would the native seated assist bring the shot onto the point? It
+// WITNESS ONLY -- would the native seated assist bring the shot onto the point? It
 // turns the shot from its shot line (the barrel's forward, or the aiming unit's aim under the unit-aim flag)
 // toward the crosshair point by at most max(21 deg, the weapon's own angle), and only while the shot's aiming
 // unit carries the player; "on the point" with 2 deg to spare inside 21 deg or the widest turn seen for the
-// weapon. Until 2026-10-01 this withheld the converged claim and drew an honest reticle; now it is counted for
+// weapon. It must not withhold the converged claim or move the reticle: it is counted for
 // the dev line and decides nothing (a capped or unassisted gun fires where it can, as in flat Halo).
 void Halo4SeatSightClaimWitness(const Halo4SeatSightPoll& seat, const float point[3])
 {
@@ -1499,7 +1499,7 @@ void Halo4SeatSightClaimWitness(const Halo4SeatSightPoll& seat, const float poin
 
 // [assess-only begin]
 // Stage 1, DEV ASSESSMENT ONLY (honest_reticle_assess = 2): where the shot really goes for a seat whose proofs all
-// hold (verifier item 11). The game's aim is not the shot's line: the native assist's crosshair trace runs from
+// hold. The game's aim is not the shot's line: the native assist's crosshair trace runs from
 // the game's eye E along the unit's actual aim, and the shot turns from its own line (the barrel's, or the aiming
 // unit's aim) toward that point by at most the cap -- or not at all, unassisted. The point is taken on the actual
 // aim at the converged point's range (the native trace's own range is not known; the range only moves the
@@ -1589,7 +1589,7 @@ void Halo4SeatSightReport()
             snprintf(upText, sizeof(upText), "%.4f", double(upZ) / 10000.0 - 1.0);
         else
             snprintf(upText, sizeof(upText), "unknown");
-        // The shot line the assist will turn (item 11), as the last sample named it.
+        // The shot line the assist will turn, as the last sample named it.
         const uint32_t shotLine = f.lastShotLine.load(std::memory_order_relaxed);
         char shotText[64];
         snprintf(shotText, sizeof(shotText), "%s%s%s",
@@ -1871,7 +1871,7 @@ void InstallHalo4SeatSight(uintptr_t base, size_t size, uint32_t generation)
     else
         LOG("SIGHT Halo 4 seats: the seated assist (0x1DCB8C, the fire routine's call 0x618103) did not prove; no "
             "SHOT Halo 4 seated line");
-    // THE SHOT LINE (verifier item 11). 0x5F3510 under its unit-aim flag (argument 8, [rbp+0x77]) copies the
+    // THE SHOT LINE. 0x5F3510 under its unit-aim flag (argument 8, [rbp+0x77]) copies the
     // unit's +0x4EC -- +0x4E0 when argument 9 ([rbp+0x7F]) is 1 -- into its direction argument (r8 -> rdi), and
     // the fire routine hands that call and the seated assist's argument 8 the SAME buffer, [rbp+0x30] (nothing
     // between 0x617E95 and 0x618103 writes it). The body signature starts at 0x5F351B, past the bytes the muzzle

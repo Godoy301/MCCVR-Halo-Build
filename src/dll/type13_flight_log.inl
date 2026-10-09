@@ -6,7 +6,7 @@
 // (Reach 0x6350C, Halo 4 0xA8828) calls a dedicated attitude controller for a type-13 pilot -- Reach
 // haloreach+0x64828, Halo 4 halo4+0xAA524 -- and jumps past the desired-angles accumulator the direct-drive
 // hook sits on, so the pilot is never driven and stays on the stick servo. Before anything is written
-// there, the running game has to answer what static analysis could not: whether the record the controller
+// there, the running game has to answer what static analysis cannot: whether the record the controller
 // writes is what the hull/physics steers by (the LINK), how fast the stick can turn the craft (the RATE, for
 // a slew cap), the forced-steer/redirect windows, the roll mode, the time arguments, the tag limits, Halo
 // 4's biped physics mode and runtime type override, and which dispatcher callers run in a tick.
@@ -29,7 +29,7 @@
 // also unique in the whole module), the dispatcher's type-13 call (rel32) lands on the entry, the TLS index,
 // tag pages and tag instances globals agree across independent sites, and the caller-attribution frame is
 // derived from the dispatcher prologue the table pins. Any miss: no hook, one log line naming what failed,
-// the pilot stays exactly as today. The anchors were generated from the retail DLLs, and
+// the pilot stays on the stick servo. The anchors are generated from the retail DLLs, and
 // tools/verify_type13_anchors.py re-proves every one of them (and the install's other checks) offline, reading
 // the tables straight out of this file: run it after any edit here and on any new game build.
 
@@ -843,7 +843,7 @@ constexpr const T13Anchor kT13Halo4Anchors[] = {
     {"RECUNIT", 0xA8C15, false, "8B 8C 1F 20 01 00 00"},
 };
 // Dispatcher callers (labels): the action/kit consumer 0xA2670; 0xA6BA8's aim-SWAY call (0xA5B90 computes
-// sinf of tag-driven phases; not recoil: verifier 2026-10-01), its main stick update and its no-unit path.
+// sinf of tag-driven phases; not recoil), its main stick update and its no-unit path.
 constexpr uint32_t kT13Halo4CallerRvas[4] = {0xA349E, 0xA7751, 0xA7774, 0xA7A01};
 constexpr const char* kT13Halo4CallerNames[4] = {"alt+A34A3", "sway+A7756", "main+A7779", "nounit+A7A06"};
 

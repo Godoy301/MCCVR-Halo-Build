@@ -48,8 +48,7 @@ constexpr bool kCeIntegratedBaseVrEnabled=false;
 // with Classic source/bootstrap and isolated HUD/mirror corrections retained.
 // Pinned native refresh/admission and production fixtures pass; headset pending.
 constexpr bool kCeSceneVisibilityBaseVrEnabled=true;
-// CE's body following (roomscale). Held out of the core VR candidate on September 15 (user priority);
-// enabled 2026-09-29 at the user's request that every title have roomscale. It is still gated at run time
+// CE's body following (roomscale), enabled so that every title has roomscale. It is gated at run time
 // by roomscale_movement (the rig's roomscaleEnabled) exactly like the other titles, and by
 // physical_running (the rig's physicalRunningEnabled) for physical running.
 // CE uses the same guarded native walking feedback as H3. Both renderers

@@ -72,7 +72,7 @@ bool Owner(const void* source,HaloCELocalPlayerState& player,RenderContext& fram
 }
 #if HALOMCCVR_DEV_DIAGNOSTICS
 // DEV: the frames an outgoing action's direction passes through, four times a second in a seat and every two
-// seconds on foot. Written to answer one question (FA, 2026-10-06, a Warthog gunner whose view turned by itself):
+// seconds on foot. It answers one question (the symptom is a Warthog gunner whose view turns by itself):
 // is the frame the hand is mapped through (the native camera's heading) one that follows the aim we write? If the
 // camera's yaw tracks the unit's or the vehicle's aiming vector instead of the player's own control yaw (the stock
 // action's direction), the hand's offset from "forward" is a turn RATE, not an aim.

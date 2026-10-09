@@ -37,12 +37,11 @@ bool RemoveHalo4Muzzle()
 //
 // The proof is a set of byte patterns at fixed places, and one of them is the HEAD of the first-person packet
 // producer (+0x3B1B4C). The avatar lane hooks that producer (InstallHalo4Vrik: "exact local first-person packet
-// producer hooked"), so once it had run the head read E9 <jump> instead of the game's own bytes, the pattern no
-// longer matched and this lane logged "StockFallback: missing/ambiguous binding +3B1B4C" at every Halo 4 level:
-// no shots from the muzzle, no fire re-aim, no seat sight and no seated convergence in Halo 4, in every build
-// since the producer hook arrived (Alpha 0.7.0's avatars; found by the FA pass of 2026-10-06, whose Halo 4 shots
-// all read "not ours" and "FIRES 0"). "Installed" on 09-30, before the merge; "StockFallback" in every Halo 4 log
-// since. A signature is a statement about the GAME's code: it has to be read before we rewrite that code.
+// producer hooked"), so once it has run the head reads E9 <jump> instead of the game's own bytes and the pattern
+// does not match. A proof taken after that hook logs "StockFallback: missing/ambiguous binding +3B1B4C" at every
+// Halo 4 level and costs Halo 4 its shots from the muzzle, its fire re-aim, its seat sight and its seated
+// convergence (every shot then reads "not ours", "FIRES 0").
+// A signature is a statement about the GAME's code: it has to be read before we rewrite that code.
 struct Halo4MuzzleImageProof
 {
     uintptr_t base=0;

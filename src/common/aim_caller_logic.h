@@ -11,7 +11,7 @@
 //     -> the stick update, or [impulse] -> the no-unit path. Every call returns to the same place, so the
 //     hook's return address names nothing; the DISPATCHER's return address does. Both dispatchers keep a
 //     fixed 0xF8-byte frame with no frame register (their UNWIND_INFO), so it sits at accumulator entry rsp +
-//     0x100 (measured 2026-10-01, static RE of the retail Steam modules).
+//     0x100 (measured by static analysis of the retail Steam modules).
 // The control pass runs once per MAIN-LOOP ITERATION (a rendered frame), ahead of that iteration's 0..N sim
 // ticks, so "per tick" is the wrong key for anything: at 120 fps over a 60 Hz sim there are two legitimate
 // stick updates per tick, and a frame with no tick still updates. The right key is the caller:
@@ -20,7 +20,7 @@
 //     the last stick write on the axes it wrote, so the next stick call reads an unchanged record -- the seat
 //     latch never takes an impulse for a seat limit, and the stint check is never judged on a kicked value;
 //   * the NO-UNIT call ends the update: nothing was written, so the latch and the seat stint are over.
-// Every proof that fails falls back to the title's behaviour before this split. Only an unproven STICK site
+// Every proof that fails falls back to the title's behaviour without this split. Only an unproven STICK site
 // means "every call is the update"; a missing extra site just reads as an unrecognised caller.
 //
 // Zero engine dependencies; unit-tested in tests/aim_caller_tests.cpp.
@@ -309,10 +309,10 @@ inline bool ProveDispatcherFrame(const uint8_t* image, size_t size, uint32_t dis
 //     never reverted);
 //   * a safety cap on a MONOTONIC clock (the owner's unit, e.g. QPC counts): Halo 4 can run the impulse with
 //     no stick call in the pass, and a pass with no stick at all must not hold an old write for long.
-// Halo 3 / ODST (same_frame) keep the meaning they always had: their extra calls run AFTER the stick call that
-// wrote the slot (a kick in that frame's ticks), so the slot is this frame's write, and the filter is the one
-// they always had -- the same record, inside the window -- with no context or plausibility test. Only the window
-// is the owner's to choose per caller (check()'s `cap`).
+// Halo 3 / ODST (same_frame) differ: their extra calls run AFTER the stick call that wrote the slot (a kick in
+// that frame's ticks), so the slot is this frame's write, and the filter is only the same record, inside the
+// window -- with no context or plausibility test. Only the window is the owner's to choose per caller
+// (check()'s `cap`).
 struct Context {
     bool seated = false;
     uint32_t seat_key = 0;

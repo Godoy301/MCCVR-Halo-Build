@@ -67,8 +67,8 @@ namespace
 #if HALOMCCVR_DEV_DIAGNOSTICS
     // MCC's crouch-lock (toggle crouch) preference as saved in GameUserSettings.ini
     // (CrouchLockEnabled[0..6] / MKCrouchLockEnabled[0..6]), bitmasks (bit n = slot n), -1 = not read.
-    // LOGGED ONLY, never acted on: FA 2026-09-28, Reach kept HOLD behaviour for the crouch press with
-    // slot 6, slot 5, and finally every slot of both arrays set, so the file cannot predict how Reach
+    // LOGGED ONLY, never acted on: Reach keeps HOLD behaviour for the crouch press with slot 6, slot 5,
+    // and even every slot of both arrays set (measured), so the file cannot predict how Reach
     // treats the button and a stand-down keyed on it would disable a crouch that works. If a toggle
     // ever does invert physical crouch, the CROUCH line shows it directly: active=0 pressed=0x0 with
     // unitCrouched=1 persisting after standing. Dev builds only; written by the cold worker.
@@ -915,7 +915,7 @@ namespace
             *state = {};
             r = ERROR_SUCCESS;
         }
-        // DEV BUILD ONLY (dev_synthetic_pad): the headless harness's synthetic controller, merged here the
+        // DEV BUILD ONLY (dev_synthetic_pad): a synthetic controller for automated tests, merged here the
         // way a physical pad's state arrives, before any gate, so it reaches menus as well as gameplay. A
         // player build compiles this to nothing.
         DevPad_Apply(state->Gamepad);

@@ -1,8 +1,8 @@
 #pragma once
 
-// WHAT THE INTENT RAY CAN HIT (2026-10-05). The convergence range is only as good as the trace that measures
+// WHAT THE INTENT RAY CAN HIT. The convergence range is only as good as the trace that measures
 // it: a query whose flags leave out bipeds or vehicles still returns plausible ranges off the wall BEHIND the
-// target, and the aim then converges far while the enemy stands at 5 m (Reach's most frequent caller was AI
+// target, and the aim then converges far while the enemy stands at 5 m (Reach's most frequent caller is AI
 // line of sight, whose object mask omits bipeds). This header is the pure half of the answer:
 //
 //   * each title's collision-flag LAYOUT, decoded from that title's own collision code, so a flags value can be
@@ -15,8 +15,8 @@
 // Nothing here chooses what a title traces with: the flags stay each title's own resolved value. The layouts
 // are read-only descriptions for logs and tests, so a wrong one mislabels a line and never moves an aim.
 //
-// THE LAYOUTS, and where each was read (static disassembly of the retail modules, 2026-10-05; the RVAs are only
-// where the code sat in that build, recorded for the next reader -- nothing dereferences them):
+// THE LAYOUTS, and where each is read (static disassembly of the retail modules; the RVAs are only
+// where the code sits in that build, recorded for the next reader -- nothing dereferences them):
 //
 //   Halo CE (halo1.dll collision test 0xB913FC, its object test 0xB9105C; the names are HCEEK's collisions.h):
 //     one dword. bit 5 structure, bit 7 objects, bits 8-19 the 12 object types (bit = type + 8). No type bit set
@@ -42,8 +42,8 @@
 //                      one other type each; 5 skips children.
 //       Halo 4:        6, 7, 8, 19, 21, 22, 27 (object flags); 9 and 10 a biped; 28 a vehicle; 11 and 20 one
 //                      other type each.
-//       Reach:         its object predicate was not decoded (the collision code is laid out differently);
-//                      the flags are HREK's and a marine was hit 65/65 (REACH-AIM-CONVERGENCE-2026-09-28.md).
+//       Reach:         its object predicate is not decoded (the collision code is laid out differently);
+//                      the flags are HREK's and hit a marine 65/65 (REACH-AIM-CONVERGENCE-2026-09-28.md).
 //     THE IGNORED OBJECTS (Halo 3, ODST, Halo 4; all three slots / every list entry are compared alike): an
 //     object whose parent chain reaches an ignored object is skipped too -- the held weapon, an attached
 //     turret, the other occupants -- EXCEPT a biped, vehicle or giant sitting in a seat of its parent whose

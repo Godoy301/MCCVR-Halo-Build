@@ -107,8 +107,8 @@ bool Logged(const char* text) { return g_log.find(text) != std::string::npos; }
 
 constexpr size_t kModuleSize = 0x500000;   // covers every title's RVAs (Reach's skip label is 0x48AF72)
 
-// The site's anchor bytes (its pattern up to the jne), and the strict form that also required the jne's `0F 85`
-// (how the Halo 3 / ODST anchor read before 2026-10-01).
+// The site's anchor bytes (its pattern up to the jne), and the strict form that also requires the jne's `0F 85`
+// (a form the production anchor must not take: it cannot find a site our own jump already patched).
 std::vector<uint8_t> AnchorBytes(const seat_aim_frame::Site& site)
 {
     std::vector<uint8_t> out;

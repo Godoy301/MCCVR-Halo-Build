@@ -72,7 +72,7 @@ void PutRip(std::vector<uint8_t>& bytes, size_t disp, size_t next, int64_t fromR
     std::memcpy(bytes.data() + disp, &rel, 4);
 }
 
-// The image as retail halo4.dll lays it out (the offsets from the module base measured 2026-10-08).
+// The image as retail halo4.dll lays it out (offsets from the module base).
 constexpr int64_t kUpdateRva = 0x59B00, kSiteRva = 0x59F6E, kHandOffRva = 0x9B8250, kBuilderRva = 0x11BFAC,
                   kTransformRva = 0x11D368, kGlobalsRva = 0x107BE08, kSignMaskRva = 0xD29740;
 

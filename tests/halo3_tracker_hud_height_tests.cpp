@@ -71,7 +71,7 @@ void PutRip(std::vector<uint8_t>& bytes, size_t disp, int64_t fromRva, int64_t t
     std::memcpy(bytes.data() + disp, &rel, 4);
 }
 
-// The image as retail halo3.dll lays it out (offsets from the module base, measured 2026-10-07).
+// The image as retail halo3.dll lays it out (measured offsets from the module base).
 constexpr int64_t kEntryRva = 0x2F3904, kCallRva = 0x2D2A5C, kDrawReadRva = 0x2F3A70, kObjectReadRva = 0x2F3708,
                   kSetupWriteRva = 0x2ED1FC, kOriginRva = 0xAD3160, kImageSize = 0x4A00000;
 
@@ -240,8 +240,8 @@ void TestDecode()
 void TestMove()
 {
     const float nan = std::numeric_limits<float>::quiet_NaN(), inf = std::numeric_limits<float>::infinity();
-    // The HUD height hook moves every element's finished basis once (it moved an element of a HUD widget twice
-    // until fix/halo3-hud-height-once); the blips must make the same move.
+    // The HUD height hook moves every element's finished basis exactly once (an element of a HUD widget
+    // included, never twice); the blips must make the same move.
     Check(ArtShiftY(16.0f) == -16.0f && ArtShiftY(-24.0f) == 24.0f && ArtShiftY(0.0f) == 0.0f,
           "the art's move is the height, up for a positive height (y grows downward)");
 

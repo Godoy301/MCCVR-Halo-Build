@@ -21,9 +21,9 @@ void Check(bool ok, const char* what)
 
 using namespace converge;
 
-// THE REGRESSION GUARD for the 2026-10-01 decision. The seated claim is decided on SeatedClaimFacts alone, whose
-// fields are all our own code's -- solved, a finite point, our control mode owning the heading, a readable aim
-// feedback -- so no natural cause can be
+// THE REGRESSION GUARD: no natural in-game cause withholds the seated claim. It is decided on SeatedClaimFacts
+// alone, whose fields are all our own code's -- solved, a finite point, our control mode owning the heading, a
+// readable aim feedback -- so no natural cause can be
 // handed to it. Adding a field (a latch, a stall, a turret, an outcome miss) fails these compile-time checks
 // before it can fail a player; the call site in game.cpp is pinned by tools/check_seated_claim.py.
 static_assert(std::is_same_v<decltype(&SeatedClaimDecide), SeatedClaim (*)(const SeatedClaimFacts&)>,
@@ -44,7 +44,7 @@ bool Claims(bool solved, bool pointFinite, bool aimFeedbackFinite, bool handOwns
 
 void TestClaimIgnoresNaturalCauses()
 {
-    // Every combination of the natural causes that used to switch a seat's convergence off, witnessed as they
+    // Every combination of the natural causes that must not switch a seat's convergence off, witnessed as they
     // are in the game; the claim is the same as with none of them.
     NaturalWitness witness;
     unsigned combinations = 0, changed = 0;
@@ -176,7 +176,7 @@ void TestReachStamps()
             Check(!free.heldAtLimit, "Reach: not limited, not held");
             Check(held.heldAtLimit == (wrote != 0), "Reach: held only when this update wrote");
         }
-    Check(changed == 0, "Reach: a seat limit does not change the converged claim (2026-10-01)");
+    Check(changed == 0, "Reach: a seat limit does not change the converged claim");
     Check(ReachStampUpdate(true, true, true).converged, "Reach: held at a seat's stop and still converged");
     Check(!ReachStampUpdate(false, true, true).converged, "Reach: nothing written, nothing claimed");
 
@@ -197,7 +197,7 @@ void TestSeatMuzzleRefusal()
     Check(Claims(true, true, true), "the claim stands whatever the muzzle guard decides");
 }
 
-// ---- the crosshair-assist re-aim in a seat (converge::SeatAssistReaimRefuses; 2026-10-03) ----------------------
+// ---- the crosshair-assist re-aim in a seat (converge::SeatAssistReaimRefuses) ----------------------------------
 float Deg(float rad) { return rad * 57.2957795f; }
 void Fwd(float yawDeg, float pitchDeg, float out[3])
 {
@@ -257,10 +257,10 @@ void TestSeatAssistReaim()
     // The muzzle redirect keeps refusing a turret: that is an identity guard (the muzzle is not the turret's gun).
     Check(SeatMuzzleRefuses(false, true) == SeatMuzzleRefusal::Turret, "the muzzle redirect still refuses a turret");
 
-    // THE GAUSS TURRET (impact2.log, 2026-10-03, 12:48:22): the record runs through the point P at 87.8 m from the
+    // THE GAUSS TURRET (a measured shot): the record runs through the point P at 87.8 m from the
     // gun's camera (the solve's eye); at the fire the camera -- the line the assist traces -- sits +0.5 deg yaw and
     // +1.1 deg pitch off it, and the barrel, 208 mm behind, 64 mm across and 58 mm below the camera, is already on the
-    // camera's crosshair (the assist turned it 0.01-0.06 deg). Unit vectors in world units, x along the record.
+    // camera's crosshair (the assist turns it 0.01-0.06 deg). Unit vectors in world units, x along the record.
     const float cap = 21.0f;
     const float start[3]{0.0f, 0.0f, 0.0f};
     const float range = 87.8f * shot_lag::kWuPerMetre;

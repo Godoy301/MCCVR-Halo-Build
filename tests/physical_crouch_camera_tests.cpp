@@ -59,8 +59,8 @@ int main()
     }
     for(const auto& layout:{physical_crouch_cached::reach,physical_crouch_cached::halo4})
     {
-        // The live Halo 4 layout (Forge biped, 2026-09-29): physics {256 bytes at 0x6628}, animation
-        // {6320 bytes at 0x4B98}. A fixture with both blocks under 16 KB hid a 0x4000 cap that refused
+        // The live Halo 4 layout (measured on a Forge biped): physics {256 bytes at 0x6628}, animation
+        // {6320 bytes at 0x4B98}. A fixture with both blocks under 16 KB hides a 0x4000 cap that refuses
         // every real biped in Reach and Halo 4.
         constexpr unsigned kPhysicsAt=0x6628,kAnimationAt=0x4B98;
         std::array<uint8_t,0x6800> bytes{};
@@ -109,8 +109,8 @@ int main()
         Check(read()&&Near(amount,.3f),"native encoded page high bits select bank and preserve full address arithmetic");
         pages[1]=0;Check(!read(),"unloaded tag page refused");
     }
-    // The live layout (a Forge biped, 2026-09-29): the physics block is {240 bytes, at 0x2310} in a
-    // 0x2540-byte object. A fixture with the block under 4 KB hid a reader that refused every real biped.
+    // The live layout (measured on a Forge biped): the physics block is {240 bytes, at 0x2310} in a
+    // 0x2540-byte object. A fixture with the block under 4 KB hides a reader that refuses every real biped.
     std::array<uint8_t,0x2540> unit{};
     std::array<uint8_t,0x400> tag{};
     constexpr int16_t kPhysics=0x2310;

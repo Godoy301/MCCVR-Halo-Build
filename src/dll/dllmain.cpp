@@ -113,8 +113,8 @@ static void ProofReadThroughOurHook(uintptr_t match, size_t length, uintptr_t pa
     }
     const uintptr_t base = reinterpret_cast<uintptr_t>(module);
     LOG("PROOF AFTER HOOK: a %zu-byte pattern at %ls+0x%llX reads this mod's own enabled hook at +0x%llX. It was "
-        "matched against the bytes the hook replaced, so the lane that asked is not refused; before 2026-10-06 "
-        "this proof read the jump and failed. Take the proof before that hook is enabled.",
+        "matched against the bytes the hook replaced, so the lane that asked is not refused. "
+        "Take the proof before that hook is enabled.",
         length, name, static_cast<unsigned long long>(match - base),
         static_cast<unsigned long long>(patch - base));
 }

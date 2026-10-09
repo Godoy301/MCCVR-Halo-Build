@@ -3,18 +3,18 @@
 // CONVERGENCE POLICY -- when the converged aim (the traced reticle, the converged mark, the scope's
 // convergence and the muzzle redirect that rides on it) is switched OFF, and what is only WITNESSED.
 //
-// The user's decision (2026-10-01): convergence and direct drive are never switched off for a NATURAL,
+// THE RULE: convergence and direct drive are never switched off for a NATURAL,
 // in-game cause. A seat stop, a turret's rate cap, an aim the game is still integrating toward the hand --
 // in flat Halo those already send a shot somewhere the reticle is not (a stuck vehicle's shots do), and the
-// game shows it the way it always has: tracers and impacts. We get close enough to the game's own behaviour
-// that a second, VR-only signal (the old "honest reticle" jumping onto the gun) is not wanted.
+// game shows it the way it always has: tracers and impacts. That is close enough to the game's own behaviour
+// that a second, VR-only signal (an "honest reticle" jumping onto the gun) is not wanted.
 //
 // What still switches convergence off is a failure of OUR code or a state the converged aim does not apply
 // to: an address that did not resolve, a trace that faulted or went stale, a seat we have not implemented, an
 // aim feedback we cannot read. Those are the ConvergeOff reasons below.
 //
-// The natural causes are still COUNTED (NaturalWitness, dev lines only) so a headset session can prove they
-// now leave convergence on. They are never an input to a decision: SeatedClaimDecide's facts hold no natural
+// The natural causes are still COUNTED (NaturalWitness, dev lines only) as the evidence that they
+// leave convergence on. They are never an input to a decision: SeatedClaimDecide's facts hold no natural
 // cause by construction (tests/converge_policy_tests.cpp pins their layout, tools/check_seated_claim.py the
 // call site in game.cpp).
 //
@@ -36,7 +36,7 @@ enum class ConvergeOff : uint8_t {
     TraceStale,          // no fresh trace (a hitch, a load, a pause)
     RayStale,            // no fresh intent ray
     NoRange,             // no usable range: no hit yet since the traces restarted, or a point inside the range floor
-    PitchRail,           // Reach only: the bent pitch would pass its rail (R13r; Halo 3/ODST/Halo 4 clamp at the
+    PitchRail,           // Reach only: the bent pitch would pass its rail (Halo 3/ODST/Halo 4 clamp at the
                          // rail and stay converged, aim_solve::converge_direction)
     SeatUnnamed,         // a seat whose vehicle the sampler could not name (the trace cannot look past it)
     SeatViewNotOwned,    // a seat whose first-person view is not ours (a chase camera)
@@ -153,21 +153,21 @@ inline SeatMuzzleRefusal SeatMuzzleRefuses(bool heldAtLimit, bool turretSeat)
     return SeatMuzzleRefusal::None;
 }
 
-// THE CROSSHAIR-ASSIST RE-AIM in a seat (Halo 3 / ODST; 2026-10-03) -- a different decision from the muzzle redirect
+// THE CROSSHAIR-ASSIST RE-AIM in a seat (Halo 3 / ODST) -- a different decision from the muzzle redirect
 // above. The re-aim moves only the firing assist's own crosshair query (Halo 3 0x13BAD0 from the fire routine,
 // ODST 0x1610D4) through the point; the GAME then turns the shot from its barrel toward that query's hit, in a seat by
 // at most max(21 deg, the weapon's own angle) -- its own cap, on every seated shot. So a turret needs no refusal here:
 //   * a gun-slaved turret's camera -- the line the assist traces -- sits off the record the drive writes, and moves
-//     again at the fire (the Warthog gauss turret 0x069C, 2026-10-03: its query ~0.5 deg yaw and ~1.1 deg pitch off
-//     the record at every fire, against ~0.8 deg at rest; its slugs landed 1.7-2.1 m beside the reticle at 87-89 m
-//     while the chaingun's stayed within 0.2 m). Re-aimed, the assist carries the shot onto the point whatever the
-//     camera's offset at the fire;
+//     again at the fire (measured on the Warthog gauss turret 0x069C: its query ~0.5 deg yaw and ~1.1 deg pitch off
+//     the record at every fire, against ~0.8 deg at rest; without the re-aim its slugs land 1.7-2.1 m beside the
+//     reticle at 87-89 m while the chaingun's stay within 0.2 m). Re-aimed, the assist carries the shot onto the
+//     point whatever the camera's offset at the fire;
 //   * while the gun catches up under its rate cap the game bends the shot toward the point by no more than it bends
-//     any seated shot -- turn-rate catch-up is not a limit (the user, 2026-10-02), as for a look-steered driver's
+//     any seated shot -- turn-rate catch-up is not a limit, as for a look-steered driver's
 //     hull-fixed guns, whose catch-up shots this re-aim already turns.
 // Only a seat HELD at its natural stop refuses: the reticle is clamped there and the shot leaves along the clamped
-// aim, through the clamped mark. Reach's crosshair re-aim never refused a turret (reach_sight_trace.inl); Halo 3 and
-// ODST now match it. `turretSeat` is taken so the decision is explicit and tested: it never refuses by itself.
+// aim, through the clamped mark. Reach's crosshair re-aim never refuses a turret either (reach_sight_trace.inl).
+// `turretSeat` is taken so the decision is explicit and tested: it never refuses by itself.
 inline SeatMuzzleRefusal SeatAssistReaimRefuses(bool heldAtLimit, bool turretSeat)
 {
     (void)turretSeat;
@@ -324,19 +324,20 @@ inline bool ReachConvergeOffReason(const ReachConvergePoll& p, ConvergeOff& why)
     if (!p.flagsResolved) { why = ConvergeOff::NoTraceFlags; return true; }
     if (p.traceFaulted) { why = ConvergeOff::TraceFaulted; return true; }
     if (!p.sightSample) { why = ConvergeOff::TraceStale; return true; }
-    // A fresh trace and still no converged setpoint: no range yet, or the bend passed Reach's rail (R13r).
+    // A fresh trace and still no converged setpoint: no range yet, or the bend passed Reach's rail.
     why = p.rangeKnown ? ConvergeOff::PitchRail : ConvergeOff::NoRange;
     return true;
 }
 
 // ---- natural causes: witnessed, never decided on -------------------------------------------------------
 
-// What happened this poll that USED to switch convergence off (or put the reticle on the gun).
+// The natural causes seen this poll: each can hold the game's aim off the converged point, and none of them may
+// switch convergence off (or move the reticle onto the gun).
 struct NaturalEvents {
     bool latchHeld = false;     // the seat-limit latch held a written axis at the game's clamp
-    bool outcomeMiss = false;   // the game's aim stayed off the written target (OutcomeGate's old trigger)
-    bool stall = false;         // the servo's error stalled past the old 250 ms stall check
-    bool turretSlew = false;    // a rate-capped turret seat (its reticle used to ride the barrel)
+    bool outcomeMiss = false;   // the game's aim stayed off the written target (seat_drive::OutcomeGate's trigger)
+    bool stall = false;         // the servo's error stalled past the 250 ms stall check (StallWitness)
+    bool turretSlew = false;    // a rate-capped turret seat
     bool reachLimited = false;  // Reach's seat latch held the write at a limit
     bool yawShortH4 = false;    // a yaw-only seat whose game yaw stayed off the writes (Halo 4's slope frame)
 };
@@ -383,8 +384,8 @@ struct NaturalWitness {
     }
 };
 
-// The old servo stall check, kept as a witness: the error is "stalled" when it is at least `stall_rad`, not
-// shrinking by more than `converging_rad` a poll, and has stayed so for `hold_ms` while seated.
+// The servo stall check, a witness only (nothing decides on it): the error is "stalled" when it is at least
+// `stall_rad`, not shrinking by more than `converging_rad` a poll, and has stayed so for `hold_ms` while seated.
 struct StallWitness {
     float stall_rad = 0.12f;          // ~7 deg, far beyond the loop's ordinary lag
     float converging_rad = 0.005f;

@@ -26,8 +26,9 @@
 //     control update not running (the game's own sign that the director holds the player: a cinematic), no /
 //     stale / foreign sample, no heading, an overlapping call. Identity and freshness only.
 //   * THE PROOF AND THE HELD HEADING ARE ONE CALL'S AT A TIME (`inside`, tried and never waited for). By the call
-//     chain the sampler runs on the one thread that runs the game's ticks; no run has shown it. Halo 4's first
-//     run found its tracker build on three job threads, so this lane does not rest on the reading.
+//     chain the sampler runs on the one thread that runs the game's ticks; that is inferred from the retail
+//     binary, not confirmed in game. Halo 4's tracker build runs on three job threads, so this lane does not
+//     rest on the reading.
 //   * LTCG: `py -3 tools/audit_caller_area.py halo2.dll 6C3940:8:i` is clean (a leaf with no unwind entry that
 //     touches no stack; four native callers, none keeps a volatile register across the call), so a plain C++
 //     detour forwards through CallNativeWithSpareSlots.
@@ -69,8 +70,8 @@ struct Halo2TrackerHeadRuntime
     std::atomic<uint32_t> seenHead{0}, sampleAgeMs{0}, controlLive{0}, lastThread{0}, threadChanges{0}, otherCalls{0};
 #endif
     // The proof and the held heading belong to user 0's call of the sampler. By the call chain that is one thread,
-    // the one that runs the game's ticks, one call at a time; that has not been seen in a game (Halo 4's tracker
-    // build turned out to run on job threads in its first run). `inside` makes "one at a time" a fact instead of a
+    // the one that runs the game's ticks, one call at a time; that is inferred, not confirmed in game (Halo 4's
+    // tracker build runs on job threads). `inside` makes "one at a time" a fact instead of a
     // reading of the bytes: a call for user 0 that arrives while another is inside is forwarded untouched and
     // counted (TrackerUse::Overlapped). It is tried, never waited for. `proven`, `provenCount` and
     // `withdrawnCount` are for the report.
@@ -217,8 +218,8 @@ __declspec(noinline) float* Halo2TrackerAnglesFor(float* native, int32_t user) n
             }
 #if HALOMCCVR_DEV_DIAGNOSTICS
             // Dev: the head's heading beside the game's on every call that had a usable sample, substituted or not
-            // (the first-run check reads the two side by side before the proof has passed), and the age of the
-            // last sample of this generation that was read, usable or stale (a slow headless run refuses on age
+            // (so the two can be read side by side before the proof has passed), and the age of the
+            // last sample of this generation that was read, usable or stale (a slow frame rate refuses on age
             // alone, and then the age is the thing to see).
             if (holding)
             {
@@ -657,7 +658,7 @@ void ReportHalo2HeadRelative() noexcept
             faults && length ? ", and faults" : "");
     }
 #if HALOMCCVR_DEV_DIAGNOSTICS
-    // THE FIRST-RUN CHECK: the game's heading beside the head's, and their difference. `seen` counts the calls of
+    // THE SIDE-BY-SIDE CHECK: the game's heading beside the head's, and their difference. `seen` counts the calls of
     // this window in which a usable head sample was read, and `control` those that found the control update
     // running, substituted or not.
     const uint32_t seen = feature.seenHead.exchange(0, std::memory_order_relaxed);

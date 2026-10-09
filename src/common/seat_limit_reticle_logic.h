@@ -1,6 +1,6 @@
 #pragma once
 
-// SEAT LIMIT RETICLE (2026-10-02, the user's call) -- the reticle stops where the gun stops.
+// SEAT LIMIT RETICLE -- the reticle stops where the gun stops.
 //
 // A land vehicle's seat has natural ROTATIONAL limits: a passenger's yaw cone and pitch stops, a turret's pitch
 // stops, a tank gun's limits. Every MCC title applies them inside the player-control accumulator, in the RECORD's
@@ -82,7 +82,7 @@ inline void AddInterval(Stops& s, int axis, float lo, float hi)
     s.axis[axis].max = hi;
 }
 
-// THE RECORD'S OWN EASED PITCH LIMITS, Halo 3 and ODST (2026-10-03). The accumulator (Halo 3 0xF7DF0, ODST 0x113AB8)
+// THE RECORD'S OWN EASED PITCH LIMITS, Halo 3 and ODST. The accumulator (Halo 3 0xF7DF0, ODST 0x113AB8)
 // eases two record fields toward the seat's pitch range every update and clamps the record's pitch to them -- in Halo
 // 3 at 0xF86F1..0xF8747: `movss [rec+LO], xmm1` (the eased low), `movss xmm1, [rec+HI]` ... `movss [rec+HI], xmm1`,
 // then `addss xmm2, [rec+PITCH]` (pitch + this update's delta), `maxss xmm2, [rec+LO]`, the min against HI, and
