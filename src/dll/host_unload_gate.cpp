@@ -1,16 +1,16 @@
 // MCC'S RELOAD OF A GAME DLL WAITS FOR OUR TEARDOWN.
 //
-// WHAT WAS WRONG (2026-10-07; docs/REACH-SECOND-GAME-2026-10-07.md). A second Halo: Reach game in one MCC session
-// bounced back to the lobby at the first try and started at the next. Every game is meant to start in a fresh
-// image of its DLL. When a game ends, everyone lets go of the DLL (measured, in ms after the last frame: a CRT
-// worker of the game at 530, MCC's own FreeLibrary between 1080 and 1800, the game's main thread with
-// FreeLibraryAndExitThread at 1750), it unloads, and MCC then loads all six game DLLs again for its menus (2840). Reach's camera core keeps a loader
-// reference on haloreach.dll for as long as MinHook owns addresses inside it, and lets go when its teardown has
-// finished, 4.4 s after the last frame. MCC's reload came before that: it found the old image still there, took
-// it, and the next game started in a module whose own shutdown had already run. Halo 3's core holds no such
-// reference: its DLL unloads and its second game starts.
+// THE PROBLEM (docs/REACH-SECOND-GAME-2026-10-07.md). Without this gate a second Halo: Reach game in one MCC
+// session bounces back to the lobby at the first try and starts at the next. Every game is meant to start in a
+// fresh image of its DLL. When a game ends, everyone lets go of the DLL (measured, in ms after the last frame: a
+// CRT worker of the game at 530, MCC's own FreeLibrary between 1080 and 1800, the game's main thread with
+// FreeLibraryAndExitThread at 1750), it unloads, and MCC then loads all six game DLLs again for its menus (2840).
+// Reach's camera core keeps a loader reference on haloreach.dll for as long as MinHook owns addresses inside it,
+// and lets go when its teardown has finished, 4.4 s after the last frame. MCC's reload comes before that: it
+// finds the old image still there, takes it, and the next game starts in a module whose own shutdown has already
+// run. Halo 3's core holds no such reference: its DLL unloads and its second game starts.
 //
-// THE FIX keeps the reference (the hooks still need the image mapped while they are removed) and makes the reload
+// THE GATE keeps the reference (the hooks still need the image mapped while they are removed) and makes the reload
 // wait for it: one hook on ntdll's LdrLoadDll, where every way of loading a DLL arrives. A load of a DLL that a
 // core has registered, while that core is tearing down, waits until the core has let go. The old image is gone
 // by then, and the load maps a fresh one. (The reload follows the unload within a millisecond and lands on the
@@ -18,42 +18,42 @@
 //
 //   * WHO WAITS: whoever loads that DLL by name while the core's teardown is under way, OR after the title has
 //     drawn nothing for kStillMs. In the second case the gate asks for the teardown itself: the core's own
-//     heartbeat asks 1 s after the last frame, or up to 3 s after an unpause, and MCC's reload was measured
-//     2.2 to 3.1 s after the last frame, so a game ended soon after an unpause could be reloaded before the
-//     core had been told. A load of a game's DLL by name while that game has stopped drawing IS the game's
-//     end. A teardown always ends, so the wait does: when the core lets go, when it says it cannot
-//     (HostUnloadGate_Abandon), or after kWaitMs. Then the load goes on exactly as it always did. Nothing
+//     heartbeat asks 1 s after the last frame, or up to 3 s after an unpause, and MCC's reload comes
+//     2.2 to 3.1 s after the last frame (measured), so a game ended soon after an unpause can be reloaded
+//     before the core has been told. A load of a game's DLL by name while that game has stopped drawing IS the
+//     game's end. A teardown always ends, so the wait does: when the core lets go, when it says it cannot
+//     (HostUnloadGate_Abandon), or after kWaitMs. Then the load goes on unchanged. Nothing
 //     waits while the title is drawing.
 //   * WHAT IT COSTS: MCC's loading thread stands still for the rest of the teardown, once per game end (1.7 s
 //     measured). Every other DLL load in the process pays one pointer compare per registered core.
-//   * IT CANNOT MAKE THINGS WORSE THAN BEFORE: a load it lets through unwaited, or after a time-out, gets the old
-//     image, which is what every load got before this file.
-//   * TWO THINGS TRIED FIRST, AND WHY THEY WERE WRONG. (1) A hook on FreeLibrary that made "any caller that is not
+//   * IT CANNOT MAKE THINGS WORSE THAN NO GATE: a load it lets through unwaited, or after a time-out, gets the
+//     old image, which is what every load gets without the gate.
+//   * TWO ALTERNATIVES THAT DO NOT WORK. (1) A hook on FreeLibrary that makes "any caller that is not
 //     this mod" wait: FreeLibrary on a game DLL is called a thousand times a minute during play by this mod's
 //     own scoped references, and they arrive through Steam's overlay (gameoverlayrenderer64.dll hooks
-//     FreeLibrary), so the caller was never this mod's address; the first run tore the core down seconds into a
-//     level. (2) Making the game's main thread wait before it leaves the DLL: it waited, left last, and the image
-//     still stayed, because MCC's reload had already taken it. The dev census below is what showed each.
+//     FreeLibrary), so the caller is never this mod's address, and the core is torn down seconds into a
+//     level. (2) Making the game's main thread wait before it leaves the DLL: it waits, leaves last, and the
+//     image still stays, because MCC's reload has already taken it. The dev census below shows both.
 //   * NOT WHILE MCC CLOSES. Closing MCC from inside a game ends the game the same way, reload and all, while
-//     the rest of MCC shuts down around it. A reload held back there coincided, in the one run that did it,
+//     the rest of MCC shuts down around it. A reload held back there has coincided (observed once)
 //     with a first-chance access violation in MCC's own code (MCC-Win64-Shipping.exe+0x8AD697 reading
 //     0x540, on one of MCC's task threads). So the game window's WM_CLOSE / WM_DESTROY ends every wait and
-//     prevents new ones (HostUnloadGate_HostClosing): at a close everything is as it was before this file.
+//     prevents new ones (HostUnloadGate_HostClosing): at a close the gate does nothing.
 //     A WM_CLOSE only counts for kClosingMs: if MCC is still running after that it was not closing (a quit
 //     that was cancelled, a stray message), and the gate works again. WM_DESTROY is for good.
 //   * A STUCK TEARDOWN COSTS ONE WAIT, NOT ONE PER RELOAD. MCC loads all six game DLLs at every return to its
 //     menus. If a core's teardown cannot finish (a step that keeps returning "try again"), each of those loads
-//     used to stand still for the whole kWaitMs. Now the first wait that runs out, or that the core ends with
+//     would stand still for the whole kWaitMs. So the first wait that runs out, or that the core ends with
 //     "I cannot let go", marks the reference: no further load waits for it until the core has let go and
 //     taken a new one (Pin::gaveUp; the report says so).
-//   * OTHER CORES. Reach's game end was measured and its core may be ASKED to tear down (the rule above).
+//   * OTHER CORES. Reach's game end is measured and its core may be ASKED to tear down (the rule above).
 //     ODST's core holds halo3odst.dll the same way and registers a WAIT-ONLY reference: a load waits only
 //     while that core's own teardown is already under way, and the gate never starts one. ODST's second
-//     game has not been run. Halo 3's and Halo 4's cores hold no owning reference. Halo CE's eleven feature
-//     lanes each hold one and are not registered: whether CE's second game bounces has not been measured.
+//     game is not confirmed in game. Halo 3's and Halo 4's cores hold no owning reference. Halo CE's eleven
+//     feature lanes each hold one and are not registered: whether CE's second game bounces is not measured.
 //   * The decisions are host_unload_gate_logic.h (tests/host_unload_gate_tests.cpp); this file is the loader,
 //     the clock and the hook around them.
-//   * title_unload_wait = 0: no wait, the behaviour before this file.
+//   * title_unload_wait = 0: no wait; every load takes whatever image is there.
 //   * No logging and no allocation in the hook; the cold worker reports each game end once.
 #include "host_unload_gate.h"
 #include "../common/host_unload_gate_logic.h"

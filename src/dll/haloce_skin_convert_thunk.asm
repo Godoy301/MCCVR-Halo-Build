@@ -3,7 +3,7 @@
 ; The native writes only eax, xmm0-xmm5 and the flags (xmm6-xmm11 it saves), and halo1.dll is an LTCG
 ; build, so its callers may keep rcx, rdx and r8-r11 live across the call: 0xABCCA3 holds a global in r10
 ; and r10+0x138 in r11, passes r11 to the next call and stores through r10 afterwards
-; (tools/audit_caller_area.py, 2026-09-30). A compiled detour may use any of those, so this thunk saves
+; (tools/audit_caller_area.py). A compiled detour may use any of those, so this thunk saves
 ; all six around it. It also passes the NATIVE return address, which the hook compares with the skin
 ; conversion's call site: _ReturnAddress() in the C++ function would see this thunk.
 ; PROC FRAME + .allocstack give it the .pdata entry that exception unwinding and the teardown's native

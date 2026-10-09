@@ -6,8 +6,8 @@
 // one whatever the head was doing. That lift exists only once the standing height is CONFIRMED (calibrated, or a
 // minute of standing near it): an unconfirmed one may still fall back, and the lift would outlive it. So every
 // recenter in the first minute of a session, the automatic one at a level's start among them, takes the head as
-// it is. A player who was crouched, bent over the desk or still sitting down at that moment kept a neutral height
-// that low, and then stood that much above their character, until the next manual recenter.
+// it is. A player who is crouched, bent over the desk or still sitting down at that moment keeps a neutral height
+// that low, and then stands that much above their character, until the next manual recenter.
 //
 // This is the same rule applied late: once the standing height is confirmed AND the player has stood at it
 // (kDwellMs, below), a neutral height more than kStartM below it glides up to it. Up only. A neutral height above the standing one (a recenter on tiptoe, a reference
@@ -44,7 +44,8 @@ constexpr uint64_t kMaxGapMs = 250;    // calls further apart than this are not 
 // So a height is followed only once the head has spent kDwellMs within kNearM of it since it last moved by more
 // than kSameM: the player stands there, they did not just pass through. A real standing height earns this in
 // twenty seconds of ordinary play; it also means the glide is one move to the settled height, not a chase of a
-// height that is still climbing (the first run chased 5 cm, stopped, and finished a minute later).
+// height that is still climbing (such a chase closes part of the gap, stops, and finishes a minute later; 5 cm
+// measured).
 constexpr float kNearM = 0.03f;
 constexpr float kSameM = 0.01f;
 constexpr uint64_t kDwellMs = 20'000;

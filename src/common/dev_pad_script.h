@@ -1,10 +1,10 @@
 #pragma once
-// DEV BUILD ONLY (headless tests): the command language of the synthetic gamepad in src/dll/dev_pad.cpp.
+// DEV BUILD ONLY (automated tests): the command language of the synthetic gamepad in src/dll/dev_pad.cpp.
 //
 // The harness (tools/Send-MccPad.ps1) drops a script into the mod folder; the DLL runs it and the pad it
 // describes is merged into MCC's own XInput poll as if a physical controller had pressed it. That puts
-// menus, Forge and vehicles within reach of a headless run without the Meta XR Operator, whose calls take
-// minutes when other sessions hold proxies to it. Pure parsing only: no Windows headers, so it is testable.
+// menus, Forge and vehicles within reach of an automated run with no controller hardware and no VR runtime
+// input injection. Pure parsing only: no Windows headers, so it is testable.
 //
 // One command per line; '#' starts a comment; words are case-insensitive. The pad keeps its state until
 // a command changes it:
@@ -17,7 +17,7 @@
 //   clear                       centre the sticks, zero the triggers, let go of every button
 //   seq <n>                     report n in the status file when the script reaches it
 //   set <setting> <int>         change a live setting exactly as F1 does (the DLL names which ones), so a
-//                               headless test can flip the A/B switches mid-session
+//                               automated test can flip the A/B switches mid-session
 // Buttons: a b x y lb rb up down left right start back ls rs, several joined by '+' (e.g. "lb+rb").
 
 #include <cctype>

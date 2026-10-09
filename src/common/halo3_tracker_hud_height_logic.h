@@ -1,40 +1,39 @@
 // THE MOTION TRACKER'S BLIPS MOVE WITH THE HUD HEIGHT, Halo 3: the pure half of
 // src/dll/halo3_tracker_hud_height.inl. No game, engine or OpenXR includes.
 //
-// EVIDENCE CLASS: RETAIL-DERIVED AND RUN. Read from retail halo3.dll by disassembly (no Halo 3 editing kit on this
-// machine, so every name below is ours; tools/verify-halo3-tracker-hud-height.py re-derives every address from the
+// EVIDENCE CLASS: RETAIL-DERIVED AND RUN. Read from retail halo3.dll by disassembly (no editing-kit symbols,
+// so every name below is ours; tools/verify-halo3-tracker-hud-height.py re-derives every address from the
 // patterns here), then measured in the game's own picture (docs/HALO3-TRACKER-HUD-HEIGHT-2026-10-07.md has the
 // heights and the numbers).
 //
-// WHAT WAS WRONG. A player reported the tracker's dots sitting below the tracker, the dot that stands for them
-// included (2026-10-07). The cause is the HUD HEIGHT setting, not the tracker:
+// THE PROBLEM. With a HUD height set, the tracker's dots sit below the tracker, the player's own dot
+// included. The cause is the HUD HEIGHT setting, not the tracker:
 //
 //   * The HUD height hook (game.cpp, HudAnchorBasisHook) lowers the y of the basis the HUD's anchor function
 //     (0x2EE234) returns, by hud_vertical_offset.
 //   * That function resolves anchor 12, "my parent", by calling ITSELF for the parent HUD widget's own anchor
-//     (through 0x2EDFF4, which has no other caller and resolves exactly one level). The hook ran at both levels
-//     then, so an element of a HUD widget was moved by TWICE the setting and something anchored directly (the
-//     message text) by once. Measured in the desktop mirror, 2771 pixels wide: +16 moved the tracker's disc
-//     34.5 pixels and the message text half of that. SINCE fix/halo3-hud-height-once (2026-10-07) the hook
+//     (through 0x2EDFF4, which has no other caller and resolves exactly one level). A hook that acts at both
+//     levels moves an element of a HUD widget by TWICE the setting and something anchored directly (the
+//     message text) by once: in the desktop mirror, 2771 pixels wide, +16 then moves the tracker's disc
+//     34.5 pixels and the message text half of that. So the hook
 //     moves the outermost call's finished basis only: every element moves by the setting, ONCE.
 //   * The tracker's BLIPS are not HUD widgets. The blip draw (0x2F3904; one caller, the per-user HUD draw
 //     0x2D289C, after its widget loop) places each quad at  blip * scale + origin,  and reads origin and scale
 //     from four floats the HUD frame setup (0x2ED0D4) copies out of the current HUD-resolution record (+0x18 ..
 //     +0x24) before any widget is drawn. Same units as an anchor basis: the screen corners the anchors use are the
-//     same record's width and height. Nothing moved that origin, so the blips stayed where the tracker was
-//     authored while its art went up: every dot 2 x 16 = 32 HUD units low at the default height then, half the
-//     tracker's radius (16 units, a quarter of it, with the height applied once). Measured then: the player's
+//     same record's width and height. Nothing in the game moves that origin, so the blips stay where the tracker
+//     is authored while its art goes up: every dot 16 HUD units low at the default height, a quarter of the
+//     tracker's radius. (Measured with the height applied twice, 2 x 16 = 32 units, half the radius: the player's
 //     own dot 32.5 pixels below the disc's centre at +16 and within 2 pixels of it at 0, the disc having moved
-//     34.5 and the dot not at all.
+//     34.5 and the dot not at all.)
 //
 // THE SEAM: for the duration of the blip draw the origin's y is lowered by what the hook lowered the tracker's art
 // in this HUD pass, and put back. The frame setup rewrites all four floats at the start of every pass.
 //
 //   * HOW MUCH: the height the anchor hook applied in this pass on this thread, which that hook itself
 //     publishes (so a hook that is not installed, a height of 0 or a flat session all mean: nothing). The hook
-//     moves every element once, however it is anchored, so this no longer rests on HOW the tracker's art is
-//     anchored (it used to assume "an element of a HUD widget", twice the height, which was measured on the
-//     Spartan's HUD only).
+//     moves every element once, however it is anchored, so this does not rest on HOW the tracker's art is
+//     anchored.
 //   * WHAT IT CANNOT TOUCH: one float of the HUD's own frame globals, for the length of one draw call. Not the
 //     tracker's contacts (what is drawn is what the update stored), nothing the simulation, the aim or the
 //     network reads.

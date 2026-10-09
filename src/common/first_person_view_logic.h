@@ -5,7 +5,7 @@
 // Two-handed aim builds the aim from the line between the two hands on the gun. That only means something while
 // the game shows the player's own first-person view: in a third-person camera (a vehicle seat, a stationary or
 // vehicle turret, a carried turret, a chase or orbit camera, the death / spectator camera, Forge's Monitor, a
-// cinematic) the hands are not on the gun the player sees, and the user reported the result as confusing aim. So
+// cinematic) the hands are not on the gun the player sees, and the resulting aim is confusing. So
 // two-handed aim holds only while every signal a title has says "first person", and leaves at the first one that
 // says otherwise. One-hand aim (the primary controller, the configured aim hand) is always safe; two-hand aim is
 // a convenience. Every doubt therefore resolves toward one hand.
@@ -18,7 +18,7 @@
 //                 was drawn within its window (Halo 3 / ODST / Reach / Halo 4), or Halo 2's on-foot unit sample.
 // plus two vetoes that need no ladder: a CINEMATIC owning the view, and NO UNIT (dead, respawning, spectating).
 //
-// Reach, Halo 4 and Halo 2 have a camera rung too (2026-10-06, director_camera_logic.h): Reach's and Halo 4's
+// Reach, Halo 4 and Halo 2 have a camera rung too (director_camera_logic.h): Reach's and Halo 4's
 // director record (mode 3 = c_first_person_camera, perspective 0), Halo 2's director_get_perspective inputs.
 //
 // FORGE'S MONITOR shares the first-person camera while it holds nothing (Halo 3, Reach, Halo 4: the game director

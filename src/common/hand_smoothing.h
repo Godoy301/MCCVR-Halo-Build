@@ -27,10 +27,9 @@
 
 namespace hand_smoothing
 {
-// THE DEFAULTS. Campaign Evolved's numbers, except the two steadiness cutoffs: 1.3 Hz here, 1.0 Hz there. The
-// tester played a headset session with Campaign Evolved's numbers (2026-10-07), raised both
-// cutoffs to 1.3 and left the rest: a little less steadying of a still hand for a little less lag on a slow
-// aim. kCampaignEvolved* keep that mod's pair for the record.
+// THE DEFAULTS. Campaign Evolved's numbers, except the two steadiness cutoffs: 1.3 Hz here, 1.0 Hz there
+// (tuned by play in a headset): a little less steadying of a still hand for a little less lag on a slow
+// aim. kCampaignEvolved* keep that mod's pair for reference.
 inline constexpr float kCampaignEvolvedPosMinHz = 1.0f, kCampaignEvolvedRotMinHz = 1.0f;
 inline constexpr float kDefaultPosMinHz = 1.3f;     // a still hand's position cutoff
 inline constexpr float kDefaultPosBeta = 500.0f;    // Hz of cutoff per metre a second
@@ -46,8 +45,8 @@ inline constexpr int64_t kStaleNs = 100'000'000;
 // The same raw sample again for no longer than this is a frame that outran the tracker: the filter waits for
 // the next real sample. Longer, and the hand is being reported exactly still (a controller at rest whose
 // runtime repeats its pose, a simulator): the filter then goes on settling onto that pose. Campaign Evolved
-// always waits; there a hand that stopped dead stayed wherever the filter had got to (measured headless,
-// 2026-10-07: 2 degrees short of a pose the simulator jumped to and then held).
+// always waits; there a hand that stops dead stays wherever the filter has got to (measured: 2 degrees
+// short of a pose a simulated controller jumped to and then held).
 inline constexpr int64_t kRepeatHoldNs = 25'000'000;
 
 struct Params

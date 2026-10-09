@@ -40,7 +40,7 @@ int RunRoomscaleAdmissionTests()
     Check(ClassifyTitle(ce())==Refusal::None, "CE, first person (it has no view-model witness): admitted");
     Check(ClassifyTitle(witnessOnly())==Refusal::None, "Reach / Halo 4 / Halo 2, view model drawn: admitted");
 
-    // ---- UNARMED first person: the user's Halo 3 log (the start of Sierra 117) ----------------------
+    // ---- UNARMED first person (Halo 3: the start of Sierra 117) -------------------------------------
     {
         // The director says first-person camera, first-person perspective; no view model is drawn (no weapon);
         // the game says the player is not Forge's Monitor (a campaign has no game engine at all).
@@ -62,7 +62,7 @@ int RunRoomscaleAdmissionTests()
         // ... and an armed player is not affected by a missing Monitor check.
         e.viewModel=Signal::Yes;
         Check(ClassifyTitle(e)==Refusal::None, "Halo 3 armed with the Monitor check unbound: admitted");
-        // A build with neither the Monitor check nor the optional witness hook admits as it always did.
+        // A build with neither the Monitor check nor the optional witness hook admits.
         e.viewModel=Signal::Unavailable;
         Check(ClassifyTitle(e)==Refusal::None, "Halo 3 with no witness hook and no Monitor check: admitted as before");
     }
@@ -180,7 +180,7 @@ int RunRoomscaleAdmissionTests()
         Check(!Verdict{}.Admitted(), "a default verdict is a refusal");
     }
 
-    // ---- A title switch inside one MCC session (ODST -> Halo 3, the user's 22:25-22:27) -------------------
+    // ---- A title switch inside one MCC session (ODST -> Halo 3) -------------------------------------------
     {
         // The callback of the title that is no longer active is refused outright...
         Presentation old{}; old.titleActive=false; old.enabled=true; old.mode=RuntimeMode::Gameplay;
@@ -212,7 +212,7 @@ int RunRoomscaleAdmissionTests()
             "the rungs print as words");
     }
     {
-        // The report's tail for the user's two seconds before the fix: 121 frames, all for want of a view model.
+        // The report's tail for a two-second window of refusals: 121 frames, all for want of a view model.
         uint64_t counts[size_t(Refusal::Count)]{};
         counts[size_t(Refusal::NoFirstPersonModel)]=121;
         char line[512];

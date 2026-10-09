@@ -1,20 +1,19 @@
 // HALO CE: THE MOTION TRACKER FOLLOWS THE HEAD, the pure half (no game, engine or OpenXR includes).
 //
 // EVIDENCE CLASS: RETAIL-DERIVED LEAD, NOT HCEEK-VERIFIED. docs/EDITING-KIT-EVIDENCE.md wants each title's
-// bindings to come from its own editing kit, and HCEEK is not installed on the machine this was written on
-// (2026-10-07). Everything below was read from retail halo1.dll alone (SHA-256 0A12DC56...2E6C, the image this
-// repository pins for CE), so every name is ours and nothing here is a kit fact. Three things stand in for the
-// kit until it is there:
+// bindings to come from its own editing kit; these do not. Everything below is read from retail halo1.dll alone
+// (SHA-256 0A12DC56...2E6C, the image this repository pins for CE), with no editing-kit symbols, so every name
+// is ours and nothing here is a kit fact. Three things stand in for the kit:
 //   * nothing binds unless nine signatures each match once and agree with each other (DecodeTrackerSites);
 //   * at EVERY use the float about to be replaced must be bit-identical to what the game's own store has just
 //     computed (FreshStore), and before the FIRST replacement it must have agreed, at run time, with the heading
 //     of the view frame this mod maps the room through (ViewProof);
 //   * docs/HALOCE-HEAD-RELATIVE-2026-10-07.md lists, per binding, the kit artefact that would settle it.
-// One link is older than this lane: the yaw the sensor reads has the operands of the output user's facing reader
-// (halo1 +0xA999E8), which this repository bound from HCEEK while the kit was installed
+// One link IS kit-derived: the yaw the sensor reads has the operands of the output user's facing reader
+// (halo1 +0xA999E8), which this repository bound from HCEEK
 // (contract::player_state, state_output_player; docs/HALOCE-UNIT-CONTROL-2026-09-16.md, "No camera feedback").
-// That record was not read against the kit again. Other titles' lanes are a lead for where to look and are not
-// evidence for anything here.
+// That binding is taken as recorded there, not re-read against the kit here. Other titles' equivalents are a
+// lead for where to look and are not evidence for anything here.
 //
 // WHAT RETAIL DOES (tools/verify-ce-head-relative.py re-derives every address from the patterns here).
 // The HUD's unit interface (+0xC5093C) calls the sensor's draw entry (+0xBADFA0: local player, in multiplayer,

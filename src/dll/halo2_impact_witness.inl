@@ -3,8 +3,8 @@
 // and the observer publication; it is fed by the collision detour (Halo2CollisionVectorDetour), both stereo cores
 // (Halo2Observer6Dof_DevNoteAsSeenFrame) and the compositor (Game_DevNoteTracedReticle).
 //
-// AS SEEN, Halo 2 in VR (dev builds only; 2026-10-04). After flat parity landed for Halo 2 (P' = P + (E_fire - E_P),
-// halo2_fire_eye.inl) the user, in Halo 2 Anniversary: "I am not feeling it" -- shots still seem to trail the strafe.
+// AS SEEN, Halo 2 in VR (dev builds only). With flat parity on for Halo 2 (P' = P + (E_fire - E_P),
+// halo2_fire_eye.inl), shots in Halo 2 Anniversary can still seem to trail a strafe.
 // The SHOT LAG transport line proves the shift is applied (+110..+140 mm on every shot); it cannot say what the player
 // SEES. This witness measures that, with the same code as the flat probe (src/common/as_seen_logic.h), so the VR and
 // flat numbers compare bin for bin and renderer for renderer:

@@ -1,10 +1,10 @@
-"""Guard the dev assessment marker's isolation (honest_reticle_assess, 2026-10-02).
+"""Guard the dev assessment marker's isolation (honest_reticle_assess).
 
 The dev key ``honest_reticle_assess`` draws a SECOND marker where the game's shot
-lands, beside the player's reticle. Until 2026-10-02 it REPLACED the reticle
-(vr.cpp overwrote aimDir and switched the traced placement off), so the player
-aimed WITH the assessment and every test of the aim measured the assessment
-itself. The rule this script keeps: the assessment READS the game and the
+lands, beside the player's reticle. It must never REPLACE the reticle (vr.cpp
+overwriting aimDir or switching the traced placement off): the player would
+then aim WITH the assessment, and every test of the aim would measure the
+assessment. The rule this script keeps: the assessment READS the game and the
 frame, and writes nothing but its own publication and its own quad. Nothing
 but the VR drawing code reads what it publishes -- no mark, shot, aim write,
 drive mode, scope or reticle, and no trace but the assessment's own.

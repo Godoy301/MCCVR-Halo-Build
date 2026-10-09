@@ -420,8 +420,8 @@ namespace
         if (sysKeyDown && wp == VK_F4)
             LOG("Alt+F4 received; passing it to the game (close request)");
         // A mod hotkey is a BARE key (hotkey_logic.h). One that arrives with Ctrl, Alt or a Windows key held is
-        // another tool's chord and goes on to the game untouched: Ctrl+F9, a replay-capture hotkey, once added two
-        // degrees of pitch trim per saved clip (2026-10-07).
+        // another tool's chord and goes on to the game untouched: otherwise Ctrl+F9, a replay-capture hotkey, adds
+        // two degrees of pitch trim per saved clip.
         hotkey::Modifiers mods;
         if (msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN)
         {

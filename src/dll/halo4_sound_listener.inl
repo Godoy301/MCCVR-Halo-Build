@@ -1,8 +1,8 @@
 // HALO 4: THE SOUND LISTENER FOLLOWS THE HEAD -- the runtime half. The sites, the pure logic and the reasoning are
 // in src/common/halo4_sound_listener_logic.h; the write-up is docs/HALO4-HEAD-RELATIVE-2026-10-06.md ("Sound").
 //
-// EVIDENCE CLASS: RETAIL-DERIVED LEAD, NOT H4EK-VERIFIED. No Halo 4 editing kit was available: every binding
-// here was read from retail halo4.dll alone, and the names are ours (the hooked function's is the one the image
+// EVIDENCE CLASS: RETAIL-DERIVED LEAD, NOT H4EK-VERIFIED. Every binding here is read from retail halo4.dll
+// alone (no editing-kit symbols), and the names are ours (the hooked function's is the one the image
 // itself exports it under). The lane therefore (a) binds nothing unless
 // every static link holds on the loaded image, and (b) changes nothing until the nine floats it means to replace
 // have agreed, at run time and value for value, with the listener record it found by another route
@@ -60,7 +60,8 @@ struct Halo4ListenerHeadRuntime
 } g_halo4ListenerHead;
 
 #if HALOMCCVR_DEV_DIAGNOSTICS
-// THE MEASUREMENT (dev). Does Halo 4's sound follow the aim today, and did the lane turn it to the head? For
+// THE MEASUREMENT (dev). Does Halo 4's sound follow the aim as the game builds it, and does the lane turn it to
+// the head? For
 // every build of user 0's listener that has a usable head sample: the angle between the listener's forward and
 // the head's, between it and the aim's (the game's own camera of the frame the head was published from), and
 // the distance from the listener to the head -- once as the game built it and once as this lane left the copy

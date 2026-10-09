@@ -701,7 +701,7 @@ int main(int argc, char** argv)
           "retired before the report ran: the proof's line is still said, and the reinstall does NOT keep a provisional proof");
     Check(Draw(140.0f, -20.0f) == GameField(140.0f), "... so the first draw after it is the game's own again");
 
-    // ---- the simulator before its poses are set: the head half a turn from everything -----------------------------
+    // ---- a runtime whose poses are not set yet: the head half a turn from everything ------------------------------
     NewLoad();
     (void)Poll();
     DrawToProvisional(20.0f, 180.0f);

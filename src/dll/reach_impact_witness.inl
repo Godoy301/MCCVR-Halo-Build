@@ -1,7 +1,7 @@
 // Included in game.cpp (anonymous namespace) after reach_muzzle_lifecycle.inl. Dev builds only (the body compiles to
 // nothing otherwise).
 //
-// AS SEEN, Halo Reach in VR (dev; 2026-10-04). Flat parity for Reach on foot (reach_fire_eye.inl) moves the shot point
+// AS SEEN, Halo Reach in VR (dev). Flat parity for Reach on foot (reach_fire_eye.inl) moves the shot point
 // with a MEASURED fire eye; whether that matches what the player sees -- and whether Reach's presented camera trails the
 // simulation the way Halo 2's does -- is measured here with the same code as the flat probe (as_seen_logic.h sections
 // 4-7 and the VR witness core, section 10), so the VR and flat numbers compare bin for bin:
@@ -271,10 +271,10 @@ bool InstallReachImpactWitness(uintptr_t base, size_t size)
     constexpr Binding bindings[]{
         {0x46D6E0, "40 53 55 56 57 41 54 41 55 41 56 41 57 48 81 EC A8 00 00 00 8B 41 18 49 83 CC FF 45 33 C0 C1 E8 04"},
         // object_new copies FIVE placement vectors with the same eighteen bytes each (position, forward, up,
-        // velocity, angular velocity). The first version of this pattern held four of them, so it also matched one
-        // copy later (+0x46D9B8) and its own uniqueness re-scan called it ambiguous on the image as shipped: the
-        // witness logged "StockFallback: binding +0x46D9A6 missing or ambiguous" at every Reach level from the day
-        // it was written (2026-10-04). All five copies match once, here.
+        // velocity, angular velocity). The pattern must hold all FIVE: one that holds four also matches one
+        // copy later (+0x46D9B8), so its own uniqueness re-scan calls it ambiguous on the retail image and the
+        // witness logs "StockFallback: binding +0x46D9A6 missing or ambiguous" at every Reach level.
+        // All five copies match once, here.
         {0x46D9A6, "F2 41 0F 10 46 ?? F2 0F 11 47 ?? 41 8B 46 ?? 89 47 ?? F2 41 0F 10 46 ?? F2 0F 11 47 ?? 41 8B 46 ?? 89 "
                    "47 ?? F2 41 0F 10 46 ?? F2 0F 11 47 ?? 41 8B 46 ?? 89 47 ?? F2 41 0F 10 46 ?? F2 0F 11 47 ?? 41 8B "
                    "46 ?? 89 47 ?? F2 41 0F 10 46 ?? F2 0F 11 47 ?? 41 8B 46 ?? 89 47"},

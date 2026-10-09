@@ -177,7 +177,7 @@ def check_build(path: Path, commit: str) -> dict:
                 "Separate launcher identity does not match candidate manifest")
         require(re.search(rb"requestedExecutionLevel\b[^>]*level\s*=\s*[\"']requireAdministrator[\"']", launcher),
                 "Launcher does not embed the required administrator manifest")
-        # The FA harness's unattended launch (--headless, no menu and no dialogs) is a dev-only test hook.
+        # The launcher's unattended launch (--headless, no menu and no dialogs) is a dev-only test hook.
         require("--headless".encode("utf-16-le") not in launcher,
                 "Packaged launcher contains the dev-only --headless hook (HALOMCCVR_DEV_DIAGNOSTICS must be OFF)")
         # The flat probe's launch (--flat-probe, HaloMCCFlatProbe.dll alone, MCC flat) is a dev-only measurement hook.

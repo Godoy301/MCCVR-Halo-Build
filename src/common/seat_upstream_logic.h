@@ -1,6 +1,6 @@
 #pragma once
 
-// SEATED AIM UPSTREAM OF REPLICATION (Halo 3; 2026-10-03). In MCC online play a client sends its control record --
+// SEATED AIM UPSTREAM OF REPLICATION (Halo 3). In MCC online play a client sends its control record --
 // the per-user desired yaw/pitch the direct drive writes, plus buttons -- to the host, which may run NO mod and
 // fires the authoritative shot with the stock game from that record. Every correction at the FIRE SITE (re-aiming the
 // firing assist's crosshair query through P, Sight_ReaimThroughPoint) changes only this machine's prediction. So the
@@ -23,8 +23,8 @@
 //     0x13B1D7, return 0x13B1DC) in the control pass that runs just before the stick call -- for a seated unit too:
 //     the aiming unit 0x355CD4 is then the vehicle (seat flags bit 0 or 3), which carries the gun 0x13C518 checks.
 //
-// THE VELOCITY TERM (a fit, the place it is applied not found in the module). The 333 Hornet-capture queries of the
-// 2026-10-03 sessions (shotlag2 + impact2 logs) put the stock query along normalize(R - g * v), R the record's unit
+// THE VELOCITY TERM (a fit, the place it is applied not found in the module). 333 captured Hornet queries
+// put the stock query along normalize(R - g * v), R the record's unit
 // vector, v the camera's velocity: the deviation from R points against v's part across R (cosine median 0.999, p10
 // 0.997 over 102 moving queries in one Hornet stint), with a gain g that is steady within a stint over 4..20 m/s
 // (1/g ~ 190 m/s there; ~440 m/s and ~150 m/s in two other stints; ~880 m/s in a Banshee-like one). So g is LEARNED

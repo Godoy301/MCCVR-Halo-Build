@@ -7,8 +7,8 @@
 // character's eye, looking where the body's control yaw looks. What turns it to the head is a HOOK: the
 // "headset audio orientation" transaction (haloce_orientation.cpp, AudioHook) replaces the packet's forward and
 // up, and only those, on its way into the sound backend, for listener 0, while the on-foot gameplay receipt
-// admits. That hook was proved by executing the pinned producer and backend offline; it had not been measured
-// in a running game. The witness measures it there, in the hook's own call:
+// admits. That hook's proof is offline (the pinned producer and backend, executed out of the game); the witness
+// measures it in a running game, in the hook's own call:
 //   * what the GAME built (the packet's matrix rows) against the head, the hand's aim and the stock camera;
 //   * what was HANDED to the backend (the private head packet, or the game's own when the hook did not admit);
 //   * how far the listener's position is from the head's -- the position is never changed, so with roomscale

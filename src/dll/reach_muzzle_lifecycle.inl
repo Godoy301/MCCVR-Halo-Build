@@ -36,14 +36,13 @@ bool RemoveReachMuzzle()
 // install, ahead of the "Reach vehicle shot line" hook).
 //
 // One of the fourteen patterns is the HEAD of the unit-adjust (+0x484F24). This lane runs on that function's
-// trampoline, so it installs only AFTER the core has hooked it -- and by then the head read `E9 <jump>`, the
-// pattern did not match, and the lane logged "StockFallback: missing/ambiguous binding +484F24" at every Reach
-// level: no committed first-person barrel, no "shots leave the visible muzzle", and no fire scope (the fire
-// detour is where a fire's shooter mark and fire eye begin) in Reach, in every build since the lane was written
-// (2026-09-18; every Reach log on record from 09-26 on says StockFallback, none says Installed). The pattern is
-// unique at +0x484F24 on the image as shipped. Same defect, same cure as Halo 4's (halo4_muzzle_lifecycle.inl):
+// trampoline, so it installs only AFTER the core has hooked it -- and by then the head reads `E9 <jump>`. A
+// proof taken that late does not match, and the lane logs "StockFallback: missing/ambiguous binding +484F24" at
+// every Reach level: no committed first-person barrel, no "shots leave the visible muzzle", and no fire scope
+// (the fire detour is where a fire's shooter mark and fire eye begin). The pattern is
+// unique at +0x484F24 on the image as shipped. Same rule as Halo 4's (halo4_muzzle_lifecycle.inl):
 // a signature is a statement about the GAME's code, so it is read before we rewrite that code. sig::Find also
-// reads our own enabled hooks as the bytes they replaced now (sigscan.h), which is the net under this order.
+// reads our own enabled hooks as the bytes they replaced (sigscan.h), which is the net under this order.
 struct ReachMuzzleImageProof
 {
     uintptr_t base=0;

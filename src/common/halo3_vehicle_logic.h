@@ -1273,8 +1273,8 @@ inline bool Halo3ComposeRollStableFollowBasis(
     return true;
 }
 
-// Algebraic inverse of the follow basis, from the pre-package Reach reticle
-// draft. Reach's reticle deliberately does not use it: it projects world aim
+// Algebraic inverse of the follow basis.
+// Reach's reticle deliberately does not use it: it projects world aim
 // through the final completed compact-camera basis, which already includes
 // pitch trim, View Follow, roll and headset smoothing. The Halo 3 / ODST
 // dev assessment reticle does (Halo3SeatAimToVrReticle, below).
@@ -1344,8 +1344,7 @@ inline bool Halo3InverseRollStableFollowForward(
     return true;
 }
 
-// The DEV ASSESSMENT reticle in a seat (honest_reticle_assess = 2; until
-// 2026-10-01 also the player's reticle at a seat's limit): the
+// The DEV ASSESSMENT reticle in a seat (honest_reticle_assess = 2): the
 // game's aim (world forward, game axes) expressed back in VR space through the
 // mapping the seat's target came through, as the yaw/pitch the reticle is
 // drawn along. The forward mapping is

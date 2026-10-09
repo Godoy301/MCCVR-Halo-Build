@@ -3,7 +3,7 @@
 ; The native is a LEAF that writes only rax, rcx, rdx, r8 and r9, and haloreach.dll is an LTCG build, so
 ; its callers keep other volatile registers live across the call: 0x2B349F holds the TLS block in r10 and
 ; a float in xmm1 and uses both afterwards; 0x2C3B1D holds the user index in r10 and indexes a per-player
-; array with it (tools/audit_caller_area.py, 2026-09-30). A compiled detour may use any volatile register,
+; array with it (tools/audit_caller_area.py). A compiled detour may use any volatile register,
 ; so this thunk saves r10, r11 and xmm0-xmm5 around it. It also passes the NATIVE return address, which
 ; the hook compares with the render call site: _ReturnAddress() in the C++ function would see this thunk.
 ; PROC FRAME + .pushreg/.allocstack give it the .pdata entry that exception unwinding and the Reach

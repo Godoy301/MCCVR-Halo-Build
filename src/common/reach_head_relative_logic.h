@@ -304,7 +304,7 @@ inline head_relative::Use TrackerField(const TrackerRequest& request, const head
 // which one the mix uses cannot change the result. NOT established statically: the thread each call runs on
 // (the tick's and the sound manager's may differ), their order within a frame, and whether anything reads the
 // ROWS between a flag-clear build and the sound manager's own. Dev builds count the builds by call site and
-// thread, so the first run answers it.
+// thread, which answers it at run time.
 //
 // ADDR-HYGIENE: resolved + guarded. No address and no offset ships: the update's head (the hook), the store
 // site inside it and the game's own signature writer are each matched uniquely; the globals pointer is read from

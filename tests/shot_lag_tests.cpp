@@ -138,7 +138,7 @@ int main()
 
     {
         // FAR POINTS: "already through" must hold at range. distance^2 - ahead^2 in float cancels to noise beyond
-        // ~20 m (48 mm at 100 m, ~0.5 m at 1 km), so a query exactly through P read as off it and was bent. Oblique
+        // ~20 m (48 mm at 100 m, ~0.5 m at 1 km), so a query exactly through P would read as off it and be bent. Oblique
         // directions from a start at map-sized coordinates, a few of them so no lucky rounding hides the noise.
         const float start[3]{123.456f, -78.9f, 12.3f};
         const float dirs[4][3]{{0.6f, 0.7f, 0.3f}, {-0.31f, 0.88f, -0.12f}, {0.577f, -0.577f, 0.577f},
@@ -188,8 +188,8 @@ int main()
     }
 
     {
-        // THE HORNET (Halo 3 Forge, 2026-10-03): the seat's crosshair query left the record by an ANGLE, ~4-5 deg at
-        // a fast strafe. The old 3 m rail refused it from ~40 m out, so the shots missed P by metres. A constant
+        // THE HORNET (Halo 3): the seat's crosshair query leaves the record by an ANGLE, ~4-5 deg at
+        // a fast strafe. A fixed 3 m rail refuses it from ~40 m out, so the shots miss P by metres. A constant
         // angle must be corrected at every range, from an oblique start at map coordinates.
         const float start[3]{30.5f, 23.4f, -15.9f};
         const float raw[3]{0.34f, -0.91f, -0.29f};
@@ -217,7 +217,7 @@ int main()
             Check(ok && LineMiss(start, out, p) * kMmPerWu < 2.0f && Near(bend, 4.5f, 1.0e-2f), what);
         }
         {
-            // The logged case: 3757 mm off the game's line at 53.28 m (4.03 deg), refused before.
+            // A measured case: 3757 mm off the game's line at 53.28 m (4.03 deg), which a 3 m rail refuses.
             float p[3]{}, out[3]{};
             pointAt(53.28f, std::atan2(3.757f, 53.28f) * kRadToDeg, 0.0f, p);
             Check(ReaimThroughPoint(start, vector, p, ReaimRails{}, out) == Reaim::Applied,
@@ -708,8 +708,8 @@ int main()
                   FireEyeGate(true, true, 42, 42, 0, 1000, 33333) == FireEye::NotThisTick,
               "an eye from the future or unstamped");
 
-        // FLAT PARITY (2026-10-03): the acquisition's eye is the eye BEFORE the tick's move -- the eye the last render
-        // showed, E_P -- so used as E_fire it moved P by nothing (the muzzle transport's 0 mm on every moving shot).
+        // FLAT PARITY: the acquisition's eye is the eye BEFORE the tick's move -- the eye the last render
+        // showed, E_P -- so used as E_fire it moves P by nothing (the muzzle transport reads 0 mm on every moving shot).
         // The usable fire eyes, and the acquisition's eye carried one tick.
         Check(FireEyeUsable(FireEye::Measured) && FireEyeUsable(FireEye::CarriedTick) &&
                   !FireEyeUsable(FireEye::NotThisTick) && !FireEyeUsable(FireEye::NoSource) &&
@@ -1093,7 +1093,7 @@ int main()
               "a short buffer truncates safely");
     }
 
-    // ---- flat parity in the other titles (2026-10-03, fix/flat-parity-other-titles) --------------------------------
+    // ---- flat parity in the other titles ---------------------------------------------------------------------------
     {
         // THE RULE THAT MAKES A CONSUMER IMMUNE: a DIRECTION solved from E_P, applied at the fire's own eye, already is
         // flat parity -- its line passes through P' = P + (E_fire - E_P), the transported point. A WORLD point aimed

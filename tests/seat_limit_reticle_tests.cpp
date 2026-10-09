@@ -2,7 +2,7 @@
 // per-axis clamp of a world aim in the record's frame and back, the hysteresis and hold that keep the reticle from
 // flickering at the edge, and the direction-only turn.
 //
-// MUTATION-CHECKED (2026-10-02, tools/mutate_seat_limit_reticle.py, each mutation applied to a copy of the header
+// MUTATION-CHECKED (tools/mutate_seat_limit_reticle.py, each mutation applied to a copy of the header
 // and compiled against this file): AddLatch's side test inverted; the yaw wrap dropped (plain difference); the
 // nearer-stop choice inverted; Clamp skipping the frame (R^-1 / R) in case b; the no-clamp path forced through the
 // round trip; the gate's release test made the engage test (no hysteresis); the gate engaging at >= 0; the hold kept

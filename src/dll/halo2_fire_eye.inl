@@ -1,4 +1,4 @@
-// FLAT PARITY, Halo 2 on foot (sight_layer.h SightFireEyeFn; shot_lag_logic.h 4e; 2026-10-03). A muzzle shot flies
+// FLAT PARITY, Halo 2 on foot (sight_layer.h SightFireEyeFn; shot_lag_logic.h 4e). A muzzle shot flies
 // through P' = P + (E_fire - E_P): E_P the engine eye of the observer publication P was built from, E_fire the eye
 // the round leaves from in flat -- the eye AFTER this tick's move, one tick of travel (or more) ahead of the newest
 // render. Its source here is the firing assist's own camera evaluator, 0x6D4730 (H2EK 489E10, "with native
@@ -9,12 +9,12 @@
 // Its answer counts as E_fire only once PROVEN (shot_lag::EvaluatorEyeProof): at rest it must agree with the
 // publication's engine eye within 5 cm for a streak of samples, and only on the perspective it answered while
 // agreeing. Samples come from every firing-assist call for our unit (the game's own call: no extra native work), from
-// the muzzle shot's own ask, and -- since 2026-10-04 -- from the unit's own tick while it stands still
+// the muzzle shot's own ask, and from the unit's own tick while it stands still
 // (Halo2NoteFireEyeTick). Until then -- and on any other perspective -- E_fire is E_P carried one measured tick
 // (shot_lag::ChooseSampleFireEye), the flat probe's model. Every verdict is counted on the dev SHOT LAG transport
 // line. Fire thread (the simulation thread) only.
 //
-// WHY THE ONE-TICK CARRY IS SHORT IN HALO 2 (static analysis of the pinned halo2.dll, 2026-10-04; the flat probe and
+// WHY THE ONE-TICK CARRY IS SHORT IN HALO 2 (static analysis of the pinned halo2.dll; the flat probe and
 // the AS SEEN witness measure it). The unit camera position 0x927170 -- the evaluator's first-person path,
 // 0x6D4730 -> 0x77C700 -> 0x8F9190 -> 0x927170 -- RECORDS the tick's camera into MCC's frame interpolator while a tick
 // runs (0x7231C0; flag 0x164B304, set by the tick begin 0x723520) and, outside a tick, READS BACK
@@ -28,8 +28,8 @@
 // per-tick record of that camera (players update 0x6A2D80 -> 0x6D4730, after objects update) comes later in the same
 // tick than any call of ours, so asking the evaluator never changes what the renderer interpolates.
 //
-// The proof never latched in the 2026-10-04 Halo 2 Anniversary session (no PROVEN line; "fire eye: measured 0" on
-// every transport line): its only samples came from fires, and the player was strafing whenever he fired. The tick
+// Samples from fires alone can leave the proof unlatched for a whole game (no PROVEN line; "fire eye: measured 0" on
+// every transport line): a player who strafes whenever he fires never gives it a sample at rest. The tick
 // feed asks the evaluator while our unit stands still, so the proof can latch before the first strafing shot; the dev
 // HALO 2 FIRE EYE line counts every sample and every reason one did not count, and measures the evaluator's answer
 // and the carried eye against E_P on every muzzle shot (proven or not), with the interpolator factor's prediction.
@@ -235,7 +235,7 @@ bool Halo2CallFireEyeEvaluator(uint32_t unit, float position[3], int32_t& path)
     return called;
 }
 
-// THE TICK FEED (every build where the transport is wanted; 2026-10-04): our owned on-foot unit's own tick (the
+// THE TICK FEED (every build where the transport is wanted): our owned on-foot unit's own tick (the
 // native aim update, simulation thread, the controller owning its aim), while its eye stands still: one proof sample
 // from the evaluator, so the proof can latch before any shot. Moving, nothing is asked (a moving sample is no
 // evidence). At rest the evaluator's tick-time answer and the publication's interpolated eye are the same point by
@@ -390,7 +390,7 @@ shot_lag::FireEye Halo2FireEyeForShot(const float* siteEye, bool askEvaluator, c
     const uint64_t nowUs = Sight_NowUs();
     const float carryS = shot_lag::SampleCarrySeconds(sample.camera.stampUs, nowUs, tickS, kSightTransportMaxAgeUs);
     // The dev A/B (halo2_measured_fire_eye, a player build always 1): 0 sets a measured eye aside, so the shot carries
-    // the publication's eye one tick as before the proof could latch.
+    // the publication's eye one tick, as it does while the proof is unlatched.
     const shot_lag::FireEye admitted =
         asked == shot_lag::FireEye::Measured && !g_config.halo2_measured_fire_eye ? shot_lag::FireEye::Unproven : asked;
     const shot_lag::FireEye verdict = shot_lag::ChooseSampleFireEye(

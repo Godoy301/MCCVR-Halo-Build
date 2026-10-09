@@ -1,7 +1,7 @@
 // Included in game.cpp (inside its anonymous namespace) right after halo3_dual_wield_runtime.inl: it reads the firing
 // weapon (g_halo3FiringWeapon, Halo3WeaponOwner) that lane keeps, and the gun band's summary (halo3_vehicle_gun_band.inl).
 //
-// THE FIRING ASSIST WITNESS, Halo 3 (dev builds only; 2026-10-03). The firing assist 0x13BAD0, called once per shot by
+// THE FIRING ASSIST WITNESS, Halo 3 (dev builds only). The firing assist 0x13BAD0, called once per shot by
 // the fire routine at 0x368DFE (return 0x368E03), turns the shot's direction (argument 7, in place) from the barrel's
 // line toward the point the seat camera's crosshair trace hits -- in a seat by at most max(21 deg, Q) (the gun band's
 // cap). This hook records the direction before and after the native for every shot of a SEATED local player (its own

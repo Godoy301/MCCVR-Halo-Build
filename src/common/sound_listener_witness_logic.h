@@ -2,8 +2,8 @@
 // that includes this sits inside #if HALOMCCVR_DEV_DIAGNOSTICS, and nothing here changes anything a game reads.
 //
 // In this mod the player aims with the hand and looks with the head. The game's sound listener should be
-// oriented by the HEAD and sit at the head. For Halo 2 and Halo CE that had been claimed from reading the code
-// and never measured (docs/HALO2-HEAD-RELATIVE-2026-10-07.md and docs/HALOCE-HEAD-RELATIVE-2026-10-07.md, their
+// oriented by the HEAD and sit at the head. For Halo 2 and Halo CE that is a claim from reading the code, not a
+// measurement (docs/HALO2-HEAD-RELATIVE-2026-10-07.md and docs/HALOCE-HEAD-RELATIVE-2026-10-07.md, their
 // sound sections). The witness is the measurement: every ~2 s one log line that says, from numbers alone,
 // whether the listener the game built is oriented by the head, by the aim or by something else, and where it is.
 //

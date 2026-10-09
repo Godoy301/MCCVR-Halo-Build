@@ -3,8 +3,8 @@
 // hooks nothing and writes nothing a game reads.
 //
 // EVIDENCE CLASS: RETAIL-DERIVED LEAD, NOT H2EK-VERIFIED. docs/EDITING-KIT-EVIDENCE.md's Halo 2 rule begins every
-// new binding with the official kit; no H2EK is installed on the machine this was written on. Everything below
-// was read from retail halo2.dll (SHA-256 DE65B4F4...CF171946) alone, so every name is ours and nothing here is a
+// new binding with the official kit; this one does not (no editing-kit symbols were available). Everything below
+// is read from retail halo2.dll (SHA-256 DE65B4F4...CF171946) alone, so every name is ours and nothing here is a
 // kit fact. A witness is the right thing to build on a lead: it changes nothing, and what it prints is a
 // measurement of the running game, which is the evidence the lead lacks.
 //

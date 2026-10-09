@@ -3,7 +3,7 @@
 // (Halo3MeleeSelectionObject), and is fed from halo3_independent_shots.inl, halo3_collision_dispatch.inl,
 // legacy_sight_trace.inl, the compositor (Game_DevNoteTracedReticle) and the XInput hook (Game_DevNoteFireTrigger).
 //
-// THE SHOT IMPACT WITNESS, Halo 3 on foot (dev builds only; 2026-10-03). The SHOT LAG [muzzle] line is circular: a
+// THE SHOT IMPACT WITNESS, Halo 3 on foot (dev builds only). The SHOT LAG [muzzle] line is circular: a
 // muzzle shot's direction is BUILT as normalize(P - muzzle), so it passes through P by construction. This witness
 // asks the game's own objects where each local infantry round went (shot_impact_logic.h):
 //
@@ -118,8 +118,8 @@ struct Halo3ImpactReticle
 };
 Halo3ImpactReticle g_halo3ImpactReticle;
 
-// AS SEEN (as_seen_logic.h; 2026-10-03, the user's strafe report: "in flat the impact marks happen at the reticle
-// when strafing, in VR they are offset by practically half the reticle behind"). SHOT IMPACT proved the round lands on
+// AS SEEN (as_seen_logic.h). The symptom it measures: while strafing, flat shows the impact marks at the reticle,
+// and VR shows them trailing it by about half the reticle. SHOT IMPACT proves the round lands on
 // P; the player judges it against the reticle on screen WHEN THE IMPACT APPEARS. So, per tracked round that hits:
 //   * at the spawn: P's line (its rendered eye H_P along u), its camera sample (the engine eye E_P, its stamp, the
 //     prepared frame it rendered in and that frame's sim tick), the fire's stamp and tick;

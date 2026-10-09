@@ -6,8 +6,8 @@
 // +0x160/+0x162 is one of the object's {int16 size, int16 offset} block references: the block holding
 // the physics mode lives INSIDE the object, after its fixed fields, and retail reads it unchecked. On a
 // live Forge biped it is {240, 0x2310} in a 0x2540-byte object, so the block is judged by its own
-// reference, never by a guessed ceiling: a 0x1000 cap here refused every real biped and kept this whole
-// correction dark in Halo 3 (measured 2026-09-29).
+// reference, never by a guessed ceiling: a 0x1000 cap here refuses every real biped and keeps this whole
+// correction dark in Halo 3.
 bool Halo3PhysicalCrouchReduction(const uint8_t* unit,const uint8_t* definition,
     float& reduction,uint32_t* why=nullptr) noexcept
 {

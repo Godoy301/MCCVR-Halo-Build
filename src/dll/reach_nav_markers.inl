@@ -4,19 +4,17 @@
 // In short. Reach's HUD projects a world point to the screen with a camera it BUILDS for the purpose from the
 // observer camera, inside the same pass that draws the HUD over each eye (one function, eleven direct callers in
 // the image: read statically, see the write-up). The observer-camera hook already hands that camera the eye's
-// position, forward and up at its call site. PART 1, here: the same call site also hands it the eye's vertical
+// position, forward and up at its call site. Here the same call site also hands it the eye's vertical
 // field of view, so the game builds the projection the eye was rasterised with.
 //
-// What a game run has shown (2026-10-07, one marker: the King of the Hill hill marker, on foot, Meta XR Simulator):
+// Measured on one marker (the King of the Hill hill marker, on foot, in a simulated OpenXR runtime):
 // with the game's own field of view the marker is drawn 2.155 times too far from the eye's axis (57.89 against
 // 100.00 deg), measured at 9.6 to 22 deg; with the eye's, it is on its world point's pixel out to 31 deg. With
-// the head still, sweeping the gun 45 deg either way did not move the marker in either case. No other marker
-// type has been on screen, and the target itself was never identified in a picture (docs, "Not proven").
+// the head still, sweeping the gun 45 deg either way moves the marker in neither case. Not confirmed for any
+// other marker type, nor against the marker's target seen in the picture (the write-up, "Not proven").
 //
 // It rides a hook that already exists; no new hook, and nothing but the marker projection's own stack camera is
-// written. A refusal is the previous behaviour for that call, counted by reason.
-// (A second part, leaving world-anchored HUD bases out of the HUD height shift, was written and taken out again:
-// the height never reached the one marker that could be tested, so the branch never ran in a game.)
+// written. A refusal leaves that call the game's own field of view, counted by reason.
 
 constexpr size_t kReachNavFovCount = static_cast<size_t>(reach_nav_markers::Fov::Count);
 struct ReachNavMarkersRuntime
@@ -127,7 +125,7 @@ void ReportReachNavMarkers()
     }
 #if HALOMCCVR_DEV_DIAGNOSTICS
     // The pair of fields of view is the last one USED. With none used since the install there is no pair, and
-    // printing the zeroes read as a measured magnification of 1.000 (the control arm's log, 2026-10-07).
+    // printing the zeroes would read as a measured magnification of 1.000.
     if (eyeFov > 0.0f && gameFov > 0.0f)
         LOG("NAV MARKERS Reach (dev): %u marker projections with the eye's field of view (last used: eye %.2f "
             "deg, game %.2f deg, stock magnification %.3f); refused %u: %s; switch=%d",

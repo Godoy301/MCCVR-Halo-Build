@@ -1,6 +1,6 @@
 #pragma once
 
-// SHOT IMPACT -- where a round ACTUALLY goes, against the point P the player meant (dev witness, 2026-10-03).
+// SHOT IMPACT -- where a round ACTUALLY goes, against the point P the player meant (dev witness).
 //
 // The SHOT LAG witness (shot_lag_logic.h section 6) measures the shot LINE we hand the game. With shots from the
 // muzzle that line is built as normalize(P - M), so it passes through P by construction: its 0 mm is circular. This

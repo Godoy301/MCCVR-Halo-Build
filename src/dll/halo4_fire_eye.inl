@@ -1,11 +1,11 @@
 // Included in game.cpp (anonymous namespace) after halo4_muzzle_lifecycle.inl.
 //
-// FLAT PARITY, Halo 4 on foot (sight_layer.h SightFireEyeFn; shot_lag_logic.h 4e; MEASURED since 2026-10-04). Halo 4's
+// FLAT PARITY, Halo 4 on foot (sight_layer.h SightFireEyeFn; shot_lag_logic.h 4e; the fire eye is MEASURED). Halo 4's
 // muzzle shot aims through the intent point P (Sight_AimMuzzleShot), a world point fixed at the controller root the
 // solve read: E_P, the stock observer camera the render showed (the frame before the HMD pose is composed onto it). A
 // stock shot leaves from the eye AFTER its tick's move, so the shot flies through P' = P + (E_fire - E_P).
 //
-// WHY A ONE-TICK CARRY IS SHORT IN HALO 4 (static analysis of the pinned halo4.dll, 2026-10-04; as_seen_logic.h section
+// WHY A ONE-TICK CARRY IS SHORT IN HALO 4 (static analysis of the pinned halo4.dll; as_seen_logic.h section
 // 8). Halo 4 runs MCC's frame interpolator exactly as Halo Reach does: the tick loop 0x9A380 sets the interpolator's
 // in-tick byte (state +3) before every tick; after the frame's ticks the frame function writes the blend factor
 // clamp(game_time + 0x14, 0, 1) (0xA0458) into state +4 at 0x61172, and only then runs the director update 0x10A448,
@@ -13,21 +13,21 @@
 // the unit's origin read back as lerp(previous tick, newest tick, factor) (0x6320D0 -> 0x5D7E08) plus its interpolated
 // camera height (0x1343E4); inside a tick it is that tick's raw eye (and records the height, 0x134330). So E_P is
 // (1 - factor) of a tick behind the newest tick's eye, and a fire after its tick's move leaves from (2 - factor) ticks
-// of travel past it: the old one-tick carry fell short by (1 - factor) of a tick -- about half a tick on average,
-// ~50 mm at 6 m/s -- exactly Halo 2's finding (shot-placement.md section 3).
+// of travel past it: a one-tick carry falls short by (1 - factor) of a tick -- about half a tick on average,
+// ~50 mm at 6 m/s -- exactly as in Halo 2 (shot-placement.md section 3).
 //
 // THE FIX, as Halo 2's: E_fire is MEASURED. The fire routine 0x6176B8 itself asks the unit camera position 0x5F8A1C for
 // its shooter (its call at 0x617FBF), inside the tick, after the unit's move; asked by us for our unit inside the same
 // fire, it answers the eye the round leaves from. Its answer counts only once PROVEN (shot_lag::EvaluatorEyeProof): at
 // rest -- where it and E_P are the same point by construction -- it must agree with E_P within 5 cm for a streak of 30
 // samples. The samples come from the unit's own tick while it stands still (Halo4NoteFireEyeTick, from the per-unit
-// update the contact lane hooks), NOT only from fires: a proof fed only at fires starved in Halo 2 because the player
-// strafes whenever he fires. Until proven (or if disproven, or the evaluator did not resolve) the shot keeps the old
-// model, E_P carried one measured tick (shot_lag::ChooseSampleFireEye). Every verdict is counted on the dev SHOT LAG
-// transport line; the dev HALO 4 FIRE EYE line counts every proof sample and measures each fire both ways against the
-// interpolator's (2 - factor) prediction. Dev A/B: halo4_measured_fire_eye (a player build always 1).
+// update the contact lane hooks), NOT only from fires: a proof fed only at fires starves, because the player
+// strafes whenever he fires. Until proven (or if disproven, or the evaluator did not resolve) the shot keeps the
+// fallback model, E_P carried one measured tick (shot_lag::ChooseSampleFireEye). Every verdict is counted on the dev
+// SHOT LAG transport line; the dev HALO 4 FIRE EYE line counts every proof sample and measures each fire both ways
+// against the interpolator's (2 - factor) prediction. Dev A/B: halo4_measured_fire_eye (a player build always 1).
 //
-// SAFE TO ASK (2026-10-04): `py -3 tools/audit_caller_area.py halo4.dll 5F8A1C:2:v` -- no caller-area slot touched, 42
+// SAFE TO ASK: `py -3 tools/audit_caller_area.py halo4.dll 5F8A1C:2:v` -- no caller-area slot touched, 42
 // native callers, none relies on a volatile register. Inside a tick it writes only its user's camera-height slot of the
 // current interpolator bank (0x134330), the same value the game's own per-tick aim camera call writes later in the same
 // tick (the game tick 0x9A51C runs the objects update and the fire before its aim-camera calls at 0x9AA33 / 0x9AA47), so
@@ -283,7 +283,7 @@ shot_lag::FireEye Halo4FireEyeForShot(const float* siteEye, bool askEvaluator, c
     const uint64_t nowUs = Sight_NowUs();
     const float carryS = shot_lag::SampleCarrySeconds(sample.camera.stampUs, nowUs, tickS, kSightTransportMaxAgeUs);
     // The dev A/B (halo4_measured_fire_eye, a player build always 1): 0 sets a measured eye aside, so the shot carries
-    // the controller root's eye one tick as before this fix.
+    // the controller root's eye one tick (the fallback model).
     const shot_lag::FireEye admitted =
         asked == shot_lag::FireEye::Measured && !g_config.halo4_measured_fire_eye ? shot_lag::FireEye::Unproven : asked;
     const shot_lag::FireEye verdict = shot_lag::ChooseSampleFireEye(

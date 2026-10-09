@@ -1,8 +1,8 @@
 // HALO 4: THE MOTION TRACKER FOLLOWS THE HEAD -- the runtime half. The sites, the pure logic and the reasoning are
 // in src/common/halo4_head_relative_logic.h; the write-up is docs/HALO4-HEAD-RELATIVE-2026-10-06.md.
 //
-// EVIDENCE CLASS: RETAIL-DERIVED LEAD, NOT H4EK-VERIFIED. No Halo 4 editing kit was available: every binding
-// here was read from retail halo4.dll alone, and the names are ours. The lane therefore (a) binds nothing unless
+// EVIDENCE CLASS: RETAIL-DERIVED LEAD, NOT H4EK-VERIFIED. Every binding here is read from retail halo4.dll
+// alone (no editing-kit symbols), and the names are ours. The lane therefore (a) binds nothing unless
 // every static link holds on the loaded image, and (b) changes nothing until the argument it means to replace has
 // agreed, at run time, with the aim yaw this mod's own direct drive is writing into the game (ArgumentProof;
 // the reference is Halo4TrackerAimReference in game.cpp). Until then every call is forwarded untouched and
@@ -148,7 +148,7 @@ struct Halo4TrackerHeadRuntime
     std::atomic<uint32_t> lastThread{0};
     std::atomic<uintptr_t> otherReturn{0};  // where the last call that was NOT the player-centred build's returns
     // The proof and the held heading belong to user 0's player-centred build. The game runs that build on its job
-    // threads (three thread ids in the first run, 2026-10-07) and, as far as that run showed, one at a time.
+    // threads (three thread ids observed) and, as far as observed, one at a time.
     // `inside` makes "one at a time" a fact instead of an observation: a build of user 0 that arrives while
     // another is inside is forwarded untouched and counted (TrackerUse::Overlapped). `proven`, `provenCount` and
     // `withdrawnCount` are for the report.

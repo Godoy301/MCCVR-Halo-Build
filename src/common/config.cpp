@@ -1020,7 +1020,7 @@ void ConfigLoad(const wchar_t* path)
             g_config.physical_running_sensitivity=std::clamp(g_config.physical_running_sensitivity,.25f,3.f);continue;
         }
         if(!strcmp(key,"physical_crouch")) {g_config.physical_crouch=atoi(val)!=0;continue;}
-#if HALOMCCVR_DEV_DIAGNOSTICS   // headless-test hook: a player build never reads it
+#if HALOMCCVR_DEV_DIAGNOSTICS   // test hook for a simulated runtime: a player build never reads it
         if(!strcmp(key,"test_accept_untracked_head")) {g_config.test_accept_untracked_head=atoi(val)!=0;continue;}
 #endif
         if(!strcmp(key,"head_leash_below_eye_m")) {g_config.head_leash_below_eye_m=static_cast<float>(atof(val));continue;}
@@ -1353,9 +1353,9 @@ void ConfigLoad(const wchar_t* path)
         }
         if (!strcmp(key, "honest_reticle_onfoot"))
         {
-            // Retired 2026-10-01: the player-facing honest reticle is gone (the crosshair stays on the converged
-            // point; the game's own tracers show where a held or slewing gun really fires). Dev builds have the
-            // assessment key honest_reticle_assess instead. Logged once a session when a cfg still sets it.
+            // A retired key, read and ignored: there is no player-facing honest reticle (the crosshair stays on the
+            // converged point; the game's own tracers show where a held or slewing gun really fires). Dev builds have
+            // the assessment key honest_reticle_assess instead. Logged once a session when a cfg still sets it.
             static bool s_loggedHonestOnFoot = false;
             if (atoi(val) != 0 && !s_loggedHonestOnFoot)
             {

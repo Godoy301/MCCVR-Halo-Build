@@ -2,16 +2,16 @@
 // state and the accessors the observer reads (Halo2DriveState, g_halo2Drive, the record offsets) are
 // declared earlier in that file.
 //
-// HALO 2 DIRECT DRIVE (aim_direct_drive, F1 > Weapon & Aim). Halo 2 aimed by writing the UNIT's aiming
-// vectors (Halo2NativeAimUpdateDetour, +0x8FDF50), downstream of player control. Two things followed. The
-// body's facing and the walk frame, which the game builds from player control's desired angles, stayed
-// wherever the thumbstick had left them: legs up to 180 deg off the aim, and walking forward played the
-// backpedal (the user, 2026-09-30). And nothing the game NETWORKS carried the aim, because player control's
-// angles are what goes into the player_action the simulation submits. So the aim now goes where Reach,
+// HALO 2 DIRECT DRIVE (aim_direct_drive, F1 > Weapon & Aim). Writing only the UNIT's aiming
+// vectors (Halo2NativeAimUpdateDetour, +0x8FDF50) is downstream of player control, and falls short twice. The
+// body's facing and the walk frame, which the game builds from player control's desired angles, stay
+// wherever the thumbstick left them: legs up to 180 deg off the aim, and walking forward plays the
+// backpedal. And nothing the game NETWORKS carries the aim, because player control's
+// angles are what goes into the player_action the simulation submits. So the aim goes where Reach,
 // Halo 3, ODST and Halo 4 put it: into player control's desired angles, right after the native accumulator.
 // The unit-aim write stays as well, so the shot keeps following the hand without the unit's own easing.
 //
-// The accumulator (retail halo2.dll, found 2026-09-30 by structure: the Halo 1 decomp's
+// The accumulator (retail halo2.dll, identified by structure: the Halo 1 decomp's
 // player_control_modify_desired_angles, E-H2-80's player_control.cpp attribution of +0x6C0DF0, and the
 // "player control globals" allocation):
 //   +0x6C3DF0  void (int user /*ecx*/, float dyaw /*xmm1*/, float dpitch /*xmm2*/): desired += delta, yaw
@@ -36,11 +36,11 @@
 // camera's direction (the game builds that camera from the record) within 1.7 deg for 30 updates -- both
 // axes on foot, yaw in a seat -- and only while each later update resolves the same record. On foot it
 // writes only while the observer publishes the view at its own heading (halo2_foot_view.h): written before
-// that, the stock camera would turn the view with the hand, which the headset rejected as C-H2-41. SEATED
-// (2026-10-01) it writes, axis by axis, only while the seat's own view is up and the seat's own record has
+// that, the stock camera would turn the view with the hand, which is unacceptable in a headset (C-H2-41). SEATED
+// it writes, axis by axis, only while the seat's own view is up and the seat's own record has
 // passed its checks (the seated branch below).
 //
-// THE SEAT'S FRAME (2026-10-01; seat_frame_reader.h, docs/ALL-TITLES-AIM-2026-09-29.md "Seats aim in world angles").
+// THE SEAT'S FRAME (seat_frame_reader.h, docs/ALL-TITLES-AIM-2026-09-29.md "Seats aim in world angles").
 // The per-player update hands the action's angles to 0x8F0D20 (from 0x6A40CD), which rotates them by the vehicle's
 // up frame R(u) unless the occupied seat's live flags carry bit 4. No patch of ours clears that flag in Halo 2, so a
 // seat without it lacks it in its own data, and every peer -- the host included -- applies R(u) to the angles we
@@ -214,7 +214,7 @@ void Halo2DriveForgetSeat(Halo2DriveState& st) noexcept
 }
 
 // An air vehicle (Halo 2's own identity of the seat's vehicle): no rotational limit there, so its seats never clamp
-// the reticle (the user, 2026-10-02). Unknown identity: not an aircraft (a stop it never shows clamps nothing).
+// the reticle. Unknown identity: not an aircraft (a stop it never shows clamps nothing).
 bool Halo2SeatIsAircraft(uint32_t parent) noexcept
 {
     const char* name = halo2_vehicle_identity::Name(ReadHalo2VehicleIdentity(parent));
@@ -283,8 +283,8 @@ void Halo2DriveApply(int user, uint64_t returnAddress) noexcept
             }
             if (occupancy != 0)
             {
-                // SEATED. Every seat aims from this same record, written after this same call (mapped
-                // 2026-10-01; the seat's limits are applied inside the accumulator). The hand owns the seat as
+                // SEATED. Every seat aims from this same record, written after this same call (the
+                // seat's limits are applied inside the accumulator). The hand owns the seat as
                 // seat_drive::Decide says -- Halo 2's roles are not mapped, so every seat is taken as a driver
                 // whose look steers: both axes at reach_vehicle_aim 2, the servo at 1. Never while the view
                 // follows the vehicle: the hand's frame would turn with the hull it steers. And only while the
@@ -307,7 +307,7 @@ void Halo2DriveApply(int user, uint64_t returnAddress) noexcept
                 // flags word carries the role too (seat_converge_logic.h: bit 2 driver, bit 3 gunner -- the engine's
                 // own sibling predicates 0x8FC99C / 0x8FCA5C and its aiming-unit test 0x8F8C00). A seat that does NOT
                 // drive (a gunner, a passenger) is the hand's at "Drivers aim with the hand" OFF as well; a driver, or
-                // a seat whose flags did not read, keeps the earlier rule (a driver whose look steers).
+                // a seat whose flags did not read, is taken as a driver whose look steers.
                 seat_frame_rt::Live seatFrame =
                     seat_frame_rt::Read(g_halo2SeatFrame, &Halo2ObjectFromIndex, Halo2OwnedUnit());
                 const seat_converge::Role seatRole = seat_converge::RoleFromSeatFlags(
@@ -320,14 +320,14 @@ void Halo2DriveApply(int user, uint64_t returnAddress) noexcept
                 // write says why -- our reasons only).
                 const uint32_t stance = seat_converge::StanceKey(seatParent, seatIndex);
                 const bool seatKnown = occupancy > 0;
-                // THE GAME'S AIM IN A SEAT IS THE UNIT'S OWN AIMING VECTOR (seat_converge::SeatAimReference; found by
-                // the first headless run of a Halo 2 seat, 2026-10-06). The observer camera's forward -- the reference
-                // until then, right on foot -- sits a constant ~5.1 deg of pitch above the unit's aim in a seat (Ghost,
-                // Warthog passenger; every heading and pitch tried), so the pitch proof below never passed, the pitch
-                // stayed on the stick servo and no seat ever wrote both axes. The unit's aiming vector is the line the
+                // THE GAME'S AIM IN A SEAT IS THE UNIT'S OWN AIMING VECTOR (seat_converge::SeatAimReference). The
+                // observer camera's forward -- the right reference on foot -- sits a constant ~5.1 deg of pitch above
+                // the unit's aim in a seat (measured in the Ghost and as a Warthog passenger, at every heading and
+                // pitch), so against it the pitch proof below never passes, the pitch stays on the stick servo and no
+                // seat ever writes both axes. The unit's aiming vector is the line the
                 // engine fires along and equals the record to 0.02 deg; it is read here, on the sim thread, from the
                 // same unit the occupancy read above (one tick behind the record: the proof's motion term covers it).
-                // A vector that does not read as one leaves the camera as before.
+                // A vector that does not read as one leaves the camera's forward as the reference.
                 float unitAim[3]{};
                 bool unitAimRead = false;
                 if (occupancy > 0)
@@ -408,7 +408,7 @@ void Halo2DriveApply(int user, uint64_t returnAddress) noexcept
                 const bool yawWas = st.stint.yaw_ok, pitchWas = st.stint.pitch_ok;
                 // The unit's aiming vector is read fresh in this very update (every one is a sample of its own; a
                 // record that moved since the unit last ticked is motion the proof allows for). The camera is a
-                // publication: a repeated one is no evidence, as before.
+                // publication: a repeated one is no evidence.
                 const bool newSample = seatAim.fromUnit || !havePublication || publication.index != st.stintSample;
                 st.stintSample = havePublication ? publication.index : 0;
                 st.stint.step(seatAim.valid, nativeYaw, nativePitch, recordAimYaw, recordAimPitch, now, newSample);
@@ -447,11 +447,11 @@ void Halo2DriveApply(int user, uint64_t returnAddress) noexcept
                     Halo2NoteSeat(seatKnown, stance, seatRole, seat_converge::Why::NotWritten);
                     break;
                 }
-                // The hand's aim. TRACE-AND-REAIM IN THE SEAT (seat_converge_logic.h; 2026-10-06): the direction
+                // The hand's aim. TRACE-AND-REAIM IN THE SEAT (seat_converge_logic.h): the direction
                 // from Halo 2's own deterministic camera for this biped -- the origin of its crosshair test at the
                 // fire (0x6D4730 from 0x7597B8) -- through the point the hand's ray hits, as this seat's own trace
                 // found it (the stance check inside: never a range measured on foot, nor in another seat). Any of
-                // our own reasons leaves the earlier steer: the stock camera's line through the hand ray at the
+                // our own reasons falls back to the plain steer: the stock camera's line through the hand ray at the
                 // reticle distance.
                 float direction[3]{};
                 float yaw = 0.0f, pitch = 0.0f, handWorldYaw = 0.0f, handWorldPitch = 0.0f;

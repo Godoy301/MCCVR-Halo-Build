@@ -69,7 +69,7 @@ void PutRip(std::vector<uint8_t>& bytes, size_t disp, size_t next, int64_t fromR
     std::memcpy(bytes.data() + disp, &rel, 4);
 }
 
-// The image as retail halo1.dll lays it out (the offsets from the module base measured 2026-10-07).
+// The image as retail halo1.dll lays it out (measured offsets from the module base).
 constexpr int64_t kDrawRva = 0xBADFA0, kUpdateRva = 0xBAE530, kStoreRva = 0xBAE726, kRenderRva = 0xBAE890,
                   kDatumRva = 0xBAE94A, kUnitCallRva = 0xBAEA13, kPointCallRva = 0xBAEAC2, kPlacerRva = 0xBADD90,
                   kFacingRva = 0xA999F4, kGlobalsRva = 0x2EA8740, kControlRva = 0x2D8FE70, kHalfPiRva = 0x194F5D8,
@@ -1054,7 +1054,7 @@ void TestDecision()
 
 // THE HEAD IS NEVER HELD AGAINST THE GAME. The proof compares the control yaw with the VIEW FRAME; the head may
 // face anywhere, and the hand is not an input at all (no field of a TrackerFrame carries it). A simulator whose
-// poses are not set yet can report the head half a turn from everything else (the other titles' first runs logged
+// poses are not set yet can report the head half a turn from everything else (the other titles' logs read
 // "head minus aim = 180.0" there): that must cost nothing here, neither a disagreement nor a refusal, and the
 // contacts are simply placed by where that head faces.
 void TestHeadFarFromTheGame()

@@ -1,12 +1,12 @@
-// HaloMCCFlatProbe.dll -- THE FLAT CONTROL ARM for the AS SEEN measurement (dev tooling, 2026-10-03; never packaged).
+// HaloMCCFlatProbe.dll -- THE FLAT CONTROL ARM for the AS SEEN measurement (dev tooling; never packaged).
 //
-// The user strafes with the assault rifle in Halo 3: "in flat I see the impact marks happen at the reticle; in VR
-// they are offset by practically half the reticle behind". The VR dev build measures what the headset shows
+// THE QUESTION: strafing with the assault rifle in Halo 3, the impact marks land at the reticle in flat; in VR they
+// can trail it by about half the reticle. The VR dev build measures what the headset shows
 // (halo3_impact_witness.inl, AS SEEN). This DLL measures the SAME thing in stock flat Halo 3, with the same code
 // (src/common/as_seen_logic.h), so the two numbers can be compared bin for bin.
 //
-// HALO 2 (2026-10-04): after flat parity landed for Halo 2 the user said of Halo 2 Anniversary "I am not feeling it" --
-// shots still seem to trail the strafe. The probe now measures stock flat Halo 2 too, in BOTH renderers (MCC switches
+// HALO 2: the same question for Halo 2 (shots that seem to trail a strafe in Halo 2 Anniversary, flat parity on).
+// The probe measures stock flat Halo 2 too, in BOTH renderers (MCC switches
 // with Tab / the pad's Back), each frame tagged by the renderer that drew it, with the simulation's own tick counter
 // and the camera's interpolation fraction, so the time decomposition is in ticks as well as milliseconds.
 //
@@ -49,17 +49,17 @@
 // forward (no object read is needed). Its first presented frame is the first Present whose frame's camera was taken
 // after the hit.
 //
-// HALO 2's camera (static analysis of the pinned halo2.dll, 2026-10-04): the unit camera position 0x927170 RECORDS the
+// HALO 2's camera (static analysis of the pinned halo2.dll): the unit camera position 0x927170 RECORDS the
 // tick's camera into MCC's frame interpolator while a tick runs (0x7231C0, flag 0x164B304 set by the tick begin
 // 0x723520) and, outside a tick, READS BACK lerp(previous tick, newest tick, factor 0x164B300) (0x7227A0 -> 0x6FDC80);
 // the factor is clamp(game_time+0x10, 0, 1), written after the frame's ticks (0x67A220+0x618) just before the observer
 // update (+0x628). So every camera either renderer draws is up to a tick BEHIND the simulation's newest eye, and the
 // probe's census measures exactly that (ticks per frame, did the eye move on tick-less frames, the mean factor).
 //
-// HALO REACH and HALO 4 (2026-10-04): both run MCC's frame interpolator the way Halo 2 does (static analysis of the
+// HALO REACH and HALO 4: both run MCC's frame interpolator the way Halo 2 does (static analysis of the
 // pinned modules: as_seen_logic.h section 8) -- the first-person camera is built after the frame's ticks from the unit's
-// origin read back as lerp(previous tick, newest tick, factor) -- so flat parity for them was never measured against
-// stock flat, and Halo 4's fire eye was a one-tick carry that the interpolation makes short. The probe now measures stock
+// origin read back as lerp(previous tick, newest tick, factor) -- so their flat parity has to be measured against
+// stock flat, and a one-tick carry for Halo 4's fire eye is short by that interpolation. The probe measures stock
 // flat Reach and Halo 4 the same way, with MCC's frame clock (the tick counter and the blend factor, mcc_frame_clock.h,
 // decoded from the engine's own code) on every camera, spawn and hit:
 //   Reach (haloreach.dll; each anchor unique and decoded):

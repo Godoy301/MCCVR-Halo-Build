@@ -1,6 +1,6 @@
 ; Reach direct-drive: entry detour for the per-user control update (retail haloreach+0x6375C).
-; Located 2026-09-25 by the value-scan + write watchpoint (reach_dd_watchpoint=3) and proven by a
-; one-shot write (reach_direct_drive=4): it is the ACCUMULATOR of player_control.desired_angles
+; The dev value-scan + write watchpoint (reach_dd_watchpoint=3) locates it and the dev one-shot
+; write (reach_direct_drive=4) proves it: it is the ACCUMULATOR of player_control.desired_angles
 ; (desired += stick delta, then clamps). Signature (from its caller 0x6350C): ecx = user index,
 ; xmm1..xmm3 = floats, no stack arguments. It reaches player_control through its own TLS
 ; (*(TLS + 0xD8) + user*0x180), so the pointer is NOT an argument: the detour saves the user index

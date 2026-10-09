@@ -1,7 +1,7 @@
 // Included in game.cpp (anonymous namespace) after halo4_fire_eye.inl. Dev builds only (the body compiles to nothing
 // otherwise).
 //
-// AS SEEN, Halo 4 in VR (dev; 2026-10-04): the same measurement as Reach's (reach_impact_witness.inl) and the flat probe,
+// AS SEEN, Halo 4 in VR (dev): the same measurement as Reach's (reach_impact_witness.inl) and the flat probe,
 // with the shared VR witness core (as_seen_logic.h section 10):
 //
 //   * at the fire: the round the fire routine 0x6176B8 creates (object_new 0x5D2034, only its two calls from that

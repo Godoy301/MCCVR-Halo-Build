@@ -2,7 +2,7 @@
 
 // HALO 4 SEATED AIM -- the engine-free half of Halo 4's seated trace-and-reaim (stages 0 and 1).
 //
-// What the game does in a seat (static RE of the retail module, 2026-10-01): the fire routine 0x6176B8
+// What the game does in a seat (static RE of the retail module): the fire routine 0x6176B8
 // turns a seated shot onto the CROSSHAIR point. Its assist 0x1DCB8C traces 128 wu from the player's aim
 // camera 0x2061A8 (the first-person eye 0x5F8A1C, or the slaved turret's marker for seat flag bit 7) along
 // the unit's aim and turns the projectile from its SHOT LINE toward what that ray hits -- by at most
@@ -19,11 +19,11 @@
 //   * the seated trace's IGNORE list and its LOOK-PAST of our own vehicle (three own-vehicle passes = a MISS);
 //   * the SHOT LINE the native assist turns: the one the last fire of this weapon and aiming unit was handed;
 //   * the BARREL VERDICT: whether the shot line reaches the point inside its cap (minus a margin), and the line
-//     the capped shot really flies. Since 2026-10-01 a WITNESS only: the converged claim no longer waits on it
+//     the capped shot really flies. A WITNESS only: the converged claim does not wait on it
 //     (a gun that cannot reach the point fires where it can, as in flat Halo); the line is drawn only by the
 //     dev assessment reticle (honest_reticle_assess);
 //   * the RECORD-FRAME GATE: the seat's flags read and, without flag bit 4, the vehicle's frame anchor (its up)
-//     readable. A TILT is natural and never refuses (SeatRecordIsWorld counts it; R11, 2026-10-01). The 0x5F97DC
+//     readable. A TILT is natural and never refuses (SeatRecordIsWorld counts it). The 0x5F97DC
 //     rebase itself is the seat drive's: it writes R^-1 of the aim in a seat without bit 4 (seat_frame_reader.h).
 //
 // Zero engine dependencies.
@@ -94,14 +94,13 @@ inline SeatClass ClassifySeat(bool flagsKnown, uint32_t flags, Controlled contro
 // sample's age plus a tick and a half -- while WHICH eye the game aims from is the exact first-person
 // witness's job: a sample the selector proves was the chase camera unproves at once.
 //
-// NATURAL MOTION IS NO EVIDENCE (the user's rule, 2026-10-01: convergence never switches off for an in-game
-// cause; only our code failing may turn it off). Until then a fast turn, a boost past 40 m/s, a hitch or a
-// weapon switch (no aim-camera sample while the weapon test fails) aged the proof out in 250 ms and switched
-// the seat's convergence off. Now:
+// NATURAL MOTION IS NO EVIDENCE: convergence never switches off for an in-game cause; only our code failing
+// may turn it off. A fast turn, a boost past 40 m/s, a hitch or a weapon switch (no aim-camera sample while
+// the weapon test fails) must therefore never age the proof out and switch the seat's convergence off. So:
 //   * the rail's window grows with the sample's measured AGE, so a sample read late is judged at its age;
 //   * a camera faster than kEyeMaxSpeedMps is no evidence either way (the rail there could not tell a lagging
-//     eye from a wrong one), where it used to be judged on a rail capped at 40 m/s and fail;
-//   * no sample at all is no evidence (the caller does not step the proof), where it used to count as a
+//     eye from a wrong one; judged on a rail capped at 40 m/s it would simply fail);
+//   * no sample at all is no evidence (the caller does not step the proof): it must not count as a
 //     disagreement;
 //   * a proof drops only after `drop_ms` of disagreement over at least `drop_samples` judged samples, so two
 //     samples either side of a hitch cannot drop it.
@@ -291,7 +290,7 @@ SeatTraceResult TraceLookingPast(float lengthWu, float skipWu, float stepWu, int
     return r;
 }
 
-// ---- the shot line (verifier item 11) ---------------------------------------------------------------------
+// ---- the shot line ----------------------------------------------------------------------------------------
 // The direction the native seated assist turns (0x1DCB8C's argument 8) is the buffer the fire routine's aim
 // call 0x5F3510 (at 0x617E90) leaves: the barrel marker's forward (record +0x3C, read at 0x6179B2) -- UNLESS
 // the fire routine hands that call its unit-aim flag (argument 8: the weapon's owner is its own aiming unit,
@@ -364,7 +363,7 @@ inline bool Normalize(Vec3 a, Vec3& out)
 // reaches at least that far), but for the dev assessment line beyond it, a line turned 21 deg is only a lower
 // bound of the real turn: a weapon with a wider angle turns its shot further toward the point than that shows.
 inline constexpr float kSeatAssistCapRad = 0.36651915f;
-// The witness counts "reaches" only this far inside the cap (the converged claim no longer waits on it).
+// The witness counts "reaches" only this far inside the cap (the converged claim does not wait on it).
 inline constexpr float kSeatClaimMarginRad = 2.0f * 0.017453293f;
 
 // The cap to judge a weapon against: 21 deg, widened to the widest turn the native assist has been SEEN to make
@@ -439,9 +438,9 @@ inline bool ShotReticleDirection(Vec3 head, Vec3 barrelOrigin, Vec3 shot, Vec3 p
 // u the vehicle's up): world angles only while u is +Z. SeatRecordIsWorld says whether it is now (bit 4, or the
 // vehicle level within 2 deg; u.z, not |u.z|: an upturned vehicle's R is a half turn, not the identity).
 //
-// THE GATE is SeatRecordSolvable, not that. Until 2026-10-01 a tilted seat refused the solve; but the unbent
-// steer it fell back to is written into the same rotated record and carries the same frame error, so the
-// refusal bought nothing except convergence switching off on every slope -- a natural cause. The gate keeps only
+// THE GATE is SeatRecordSolvable, not that. A tilted seat must not refuse the solve: the unbent
+// steer it would fall back to is written into the same rotated record and carries the same frame error, so a
+// refusal buys nothing except convergence switching off on every slope -- a natural cause. The gate keeps only
 // what our code must prove: the seat's flags read, and for a seat without bit 4 the vehicle's frame anchor
 // readable (a finite, non-zero up). The 0x5F97DC rebase is handled where the record is written: the seat drive
 // takes the aim into the record's frame (src/dll/seat_frame_reader.h, case b); SeatRecordIsWorld stays as the

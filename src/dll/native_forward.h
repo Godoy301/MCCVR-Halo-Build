@@ -10,8 +10,8 @@
 // arguments, LTCG may let the function use that stack as scratch. ODST's damage event 3B68A8 takes six
 // arguments and keeps a bool at entry+0x38, the slot a seventh would use. A C++ detour that forwards exactly
 // the declared arguments reserves exactly those, so the native writes into the detour's own frame: in ODST that
-// byte landed on the detour's saved r15, which went back to the native caller one byte off and crashed a
-// different function, the unit-action updater (2026-09-29; docs/ALL-TITLES-AIM-2026-09-29.md, "FIXED: the ODST
+// byte lands on the detour's saved r15, which goes back to the native caller one byte off and crashes a
+// different function, the unit-action updater (docs/ALL-TITLES-AIM-2026-09-29.md, "FIXED: the ODST
 // crashes"). Nothing at build or review time shows it: the crash is in another function, much later.
 //
 // CallNativeWithSpareSlots calls `original` with the declared arguments followed by zeroed spare slots: enough

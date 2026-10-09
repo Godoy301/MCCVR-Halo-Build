@@ -3,14 +3,13 @@
 // DEV ASSESSMENT MARKER (honest_reticle_assess; dev builds only consume it).
 //
 // The assessment marker shows where the game's shot really goes, so the game's lag behind the hand can be
-// judged by eye. It is a SECOND marker (2026-10-02): the player's own reticle stays exactly where it is, and the
+// judged by eye. It is a SECOND marker: the player's own reticle stays exactly where it is, and the
 // player aims with it; the marker only shows where that aim's shot lands. A shot does not leave the controller:
 // the game fires it from its OWN shot origin E (on foot
 // the engine eye, the camera before head look) along its aim a, and it lands on the first surface that ray
-// meets. Drawing the game's aim from the controller at a fixed distance put the mark parallel to the shot
+// meets. Drawing the game's aim from the controller at a fixed distance would put the mark parallel to the shot
 // line, off by the eye-to-hand offset -- above the reticle in Halo 3 on foot, the sniper entirely above it
-// when zoomed, below it in the Scorpion (user report 2026-10-02: "only honest in motion, but not in aim
-// representation").
+// when zoomed, below it in the Scorpion.
 //
 // So the mark is the WORLD POINT P = E + a * r, where r is the first hit along the game's aim (a trace of
 // that ray) or a fallback, and it is drawn on the ray from the rendered centre eye H through P, at |P - H|:
@@ -27,7 +26,7 @@
 namespace assess_reticle
 {
 
-// The shot-point geometry (shot_point_logic.h), under the names the assessment code has always used.
+// The shot-point geometry (shot_point_logic.h), under this namespace's names.
 using shot_point::RangeSource;
 using shot_point::RangeSourceName;
 using shot_point::RangeChoice;
@@ -44,9 +43,9 @@ using shot_point::Place;
 // The mark must show the direction the game's SHOT leaves along, never a camera. Most titles' aim feedback is
 // that direction. Reach on foot is the exception: its feedback is the compact camera's forward, which carries
 // the camera's kick and shake, while the projectile is built along the unit's aiming vector (unit +0x214, HREK
-// weapons.cpp; R-V12/R-V18) -- which carries neither. Drawn from the camera, the mark rode the DMR's recoil
-// while the shots did not (2026-10-02: REACHSIGHT measured 68 shots 27 mm mean from the hand's traced point,
-// while the mark sat where the reticle is at the height of recoil). So Reach on foot uses the unit's aiming
+// weapons.cpp; R-V12/R-V18) -- which carries neither. Drawn from the camera, the mark rides the DMR's recoil
+// while the shots do not (measured: 68 shots land 27 mm mean from the hand's traced point,
+// while the mark sits where the reticle is at the height of recoil). So Reach on foot uses the unit's aiming
 // vector, and with no fresh one draws NOTHING rather than fall back to the camera.
 enum class GameAimSource : uint8_t
 {

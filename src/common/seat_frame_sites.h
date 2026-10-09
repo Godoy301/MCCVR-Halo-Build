@@ -13,7 +13,7 @@
 // each title's rebase (and its getter) over a synthetic world built from these fields, comparing the result with a
 // twin of SeatFrameRead + seat_frame::BuildFrame / Apply.
 //
-// ADDR-HYGIENE: guarded. Measured 2026-10-01 on the retail Steam modules (the Store modules are byte-identical,
+// ADDR-HYGIENE: guarded. Measured on the retail Steam modules (the Store modules are byte-identical,
 // MCC-EDITIONS-EVIDENCE). Install refuses (and every seated write of that title stands down) unless both patterns
 // are unique at their RVAs, the rebase's call to the getter lands on it, and every decoded global lies inside the
 // module. At runtime every read is salt-checked or bounded and SEH-guarded, and the forward / up the getter logic
@@ -78,7 +78,7 @@ inline constexpr uint32_t kObjectEntryData = 0x10;            // ...data pointer
 inline constexpr uint32_t kNodeMatrixStride = 0x34;           // scale, forward, left, up, position
 inline constexpr uint32_t kNodeForward = 0x04, kNodeLeft = 0x10, kNodeUp = 0x1C;
 
-// ADDR-HYGIENE: guarded (see the header). Measured 2026-10-01, retail Steam.
+// ADDR-HYGIENE: guarded (see the header). Measured on retail Steam.
 inline constexpr ReaderSite kHalo3Reader{
     .name = "Halo 3",
     .rebaseRva = 0x355E20,

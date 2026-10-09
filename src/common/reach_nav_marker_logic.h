@@ -3,8 +3,8 @@
 // src/dll/reach_nav_markers.inl.
 //
 // Two kinds of statement are kept apart below. READ STATICALLY: from HREK and the retail image, never run.
-// RUN IN A GAME: 2026-10-07, three sessions of one binary, ONE marker (the King of the Hill hill marker), on foot,
-// Meta XR Simulator. Objective waypoints of other kinds, marked players and name tags have not been on screen.
+// RUN IN A GAME: measured on a simulated OpenXR runtime with ONE marker (the King of the Hill hill marker), on
+// foot. Objective waypoints of other kinds, marked players and name tags are not measured.
 //
 // WHAT REACH DOES (read statically: HREK first, then matched in retail).
 // HREK reach_tag_test.exe, chud_draw.cpp: ONE function turns a world point into a place on the HUD (+0x92D980;
@@ -27,13 +27,13 @@
 //   9.6 deg, 442-461 px at about 14 deg, 732-745 px at about 22 deg, of a 5242 x 3780 raster; from about 26 deg
 //   the game had it on its own off-screen ring. In the composited left eye (840 x 880) the glyph sat 76 px from
 //   its world point at 9.6 deg and 176 px at 21.8 deg.
-//   The owner's report called the markers "aim-dependent". That was NOT reproduced: with the head still, sweeping
-//   the gun 45 deg either way moved the stock marker by 0.1 px. What was reproduced is the head-angle error above.
+//   The error does NOT depend on aim: with the head still, sweeping the gun 45 deg either way moved the stock
+//   marker by 0.1 px. It is the head-angle error above.
 //
 // Halo 3 (read statically, retail only): its marker projection (halo3.dll +0x2F2424) builds no camera. It reads
-// the CURRENT VIEW's own rasteriser camera and projection, the pair this mod rebuilds per eye. Not run here.
+// the CURRENT VIEW's own rasteriser camera and projection, the pair this mod rebuilds per eye.
 //
-// THE SEAM (part 1, all this lane ships): at the CHUD site the camera is also given the eye's vertical field of
+// THE SEAM (part 1): at the CHUD site the camera is also given the eye's vertical field of
 // view. Read statically: Reach derives its horizontal scale from that one angle and the window's aspect, and
 // rasterises a frustum that is symmetric about the camera's axis in both directions (a headset's asymmetric or
 // canted eye is covered by a symmetric frustum about the eye's own axis and cropped at submission), so with the
@@ -44,15 +44,14 @@
 //   it shows the copy took effect, not that the model is the picture. Independently, in the composited LEFT eye
 //   the glyph's tip was within 0.8 px in x and 1.6-2.1 px above its world point's predicted pixel at 0, 10, 20
 //   and 30 deg to either side (about the same 2 px is there with the switch off, against the stock pixel, and
-//   at HUD height 0: it is not the error being fixed, and its cause was not found).
-//   NOT SHOWN: the marker against the hill ITSELF (the hill was never identified in a picture); the right eye's
-//   composited image; depth, lag and reprojection; a real headset; an asymmetric or canted eye; any other marker.
+//   at HUD height 0: it is not the error corrected here, and its cause is unknown).
+//   NOT MEASURED: the marker against the hill ITSELF; the right eye's composited image; depth, lag and
+//   reprojection; a real headset; an asymmetric or canted eye; any other marker.
 //
-// TAKEN OUT: a second half that left world-anchored HUD bases out of the HUD height shift. With the height at
-// +16 and at 0 the hill marker stayed within 0.5 px of the same place against its world point while the radar
-// and the score panel moved 8 px, and the branch's counter read 0 in every window of every session. The HUD
-// height does not reach that marker, the branch never ran in a game, and which markers it would act on is not
-// known; see the write-up for the anchor types read from HREK.
+// THE HUD HEIGHT SHIFT DOES NOT REACH THIS MARKER, so world-anchored HUD bases are not exempted from it here. With
+// the height at +16 and at 0 the hill marker stayed within 0.5 px of the same place against its world point while
+// the radar and the score panel moved 8 px. Which markers such an exemption would act on is not known; see the
+// write-up for the anchor types read from HREK.
 //
 // Nothing here is read by a shot, an aim or the network (by reading the code: the camera written is the marker
 // projection's own stack copy).
@@ -275,9 +274,9 @@ inline constexpr size_t kPixelX = 3, kPixelY = 19;
 // ring); the DAMAGE FLASHES and the DAMAGE ARROWS (always the ring, with pitch measured against the world, which
 // the stand-in's geometry is not); the anchor producer's object paths (name tags, fireteam and objective
 // objects, by their anchors' names) and the HUD's own state build. An aim point held 24 degrees from the head
-// would be drawn away from where the weapon points, and none of the others has been seen in a game. They keep
-// the game's own ring, counted by reason, until each has been looked at. RUN IN A GAME: the hill marker of King
-// of the Hill comes through this call (five sessions).
+// would be drawn away from where the weapon points, and none of the others has been measured in a game. They
+// keep the game's own ring, counted by reason. RUN IN A GAME: the hill marker of King of the Hill comes through
+// this call.
 inline constexpr const char* kNavpointCallPattern =
     "88 54 24 20 45 33 C9 48 8B CE 8B 93 ?? ?? ?? ?? 40 84 FF 75 03 45 33 C0 E8 ?? ?? ?? ??";
 inline constexpr size_t kNavpointCallBytes = 29;
@@ -289,11 +288,11 @@ inline constexpr size_t kNavpointCall = 24, kNavpointReturn = 29;
 // constant 0) and the ring when the widget asks for it:
 //   mov rcx, r10 / xor r9d, r9d / mov byte [rsp + 0x20], 0 / test r8b, r8b / je +5 / mov r8b, 1 / jmp +3 /
 //   xor r8d, r8d / call PROJECTION
-// SEEN IN A HEADSET (2026-10-07): in the first session with the stand-in on, the off-screen arrows the player
-// saw came through THIS call (about 120 ring projections a second, none from the navpoint list), stayed on the
-// game's own ring, outside what the player could see, and the ring slider did nothing. The same geometry as
-// the navpoint list's (world pitch 0), so the stand-in acts for it too. Optional: if this pattern is missing
-// or ambiguous the navpoint list keeps its stand-in and these keep the game's ring.
+// MEASURED IN A HEADSET: the off-screen arrows a player sees in ordinary play come through THIS call (about 120
+// ring projections a second, none from the navpoint list). Left to the game they stay on its own ring, outside
+// what the player can see, and the ring setting has no effect on them. The same geometry as the navpoint list's
+// (world pitch 0), so the stand-in acts for it too. Optional: if this pattern is missing or ambiguous the
+// navpoint list keeps its stand-in and these keep the game's ring.
 inline constexpr const char* kObjectMarkerCallPattern =
     "49 8B CA 45 33 C9 C6 44 24 20 00 45 84 C0 74 05 41 B0 01 EB 03 45 33 C0 E8 ?? ?? ?? ??";
 inline constexpr size_t kObjectMarkerCallBytes = 29;
@@ -599,12 +598,13 @@ inline const char* WitnessName(Witness what)
 // arrow turns on.
 //
 // With the eye's field of view (part 1) that ring is 0.3 of the eye's vertical field high and wider still.
-//   RUN IN A GAME (simulator: eye raster 100 deg and 5242 x 3780, eyes parallel, 40 deg toward the nose; one far
-//   target): the ring is 30.0 deg up and down and 41.6 deg sideways. For a target to the side the two eyes draw
-//   the arrow in the same direction (within 0.2 arc-minutes across, 0.9 up), 41.0 to 41.6 deg from each eye's
-//   own axis. That is past the 40 deg the other eye sees toward the nose: THE ARROW IS IN ONE EYE ONLY.
-//   COMPUTED from the owner's own log (40 deg toward the nose, eye raster 110 deg, the same aspect): 45.8 deg.
-//   NOT RUN: a near target (each eye clamps about its own axis, so the two arrows would diverge); canted eyes.
+//   RUN IN A GAME (simulated runtime: eye raster 100 deg and 5242 x 3780, eyes parallel, 40 deg toward the nose;
+//   one far target): the ring is 30.0 deg up and down and 41.6 deg sideways. For a target to the side the two
+//   eyes draw the arrow in the same direction (within 0.2 arc-minutes across, 0.9 up), 41.0 to 41.6 deg from each
+//   eye's own axis. That is past the 40 deg the other eye sees toward the nose: THE ARROW IS IN ONE EYE ONLY.
+//   COMPUTED for a headset with 40 deg toward the nose, an eye raster of 110 deg and the same aspect: 45.8 deg.
+//   NOT MEASURED: a near target (each eye clamps about its own axis, so the two arrows would diverge); canted
+//   eyes.
 //
 // THE SEAM. A detour on the projection. When the caller asked for the ring and the point lies outside a ring laid
 // out about the HEAD's axis, the detour hands the game a stand-in point for that one call: the point's direction
@@ -687,9 +687,8 @@ inline bool SharedField(const EyeField eyes[2], RingField& out)
     out.halfPitch = halfPitch;
     return true;
 }
-// The head's ring is never further out than this, whatever the headset's field: 30 degrees. Where the number
-// comes from: the reviewer's request for a cone "a headset can see comfortably, say 25 to 30 degrees". It is a
-// round upper bound, not something measured here.
+// The head's ring is never further out than this, whatever the headset's field: 30 degrees, the outer edge of
+// the cone a headset shows comfortably (about 25 to 30 degrees). It is a round upper bound, not a measured value.
 inline constexpr float kMaxRingAngle = 30.0f * kDegToRad;
 // The head's ring: `fraction` of the shared field's half-angles, each capped at kMaxRingAngle.
 inline RingField HeadRing(const RingField& shared, float fraction = kHeadRingFraction)

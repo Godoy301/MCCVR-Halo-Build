@@ -7,7 +7,7 @@ void PhysicalCrouchCamera_Invalidate() noexcept;
 bool PhysicalCrouchCamera_Read(PhysicalCrouchCameraRequest& request) noexcept;
 
 // DEV BUILD ONLY: the game's OWN crouch camera drop for a title (world units), as that title's camera
-// correction just read it from the unit, so a headless test judges a physical duck by the game's state
+// correction just read it from the unit, so an automated test judges a physical duck by the game's state
 // (the CROUCH line's nativeDrop/unitCrouched). A player build compiles both to nothing.
 // When a title's reader cannot read it, NoteNativeMiss records why (bits, per title: 0x40 = no crouch
 // request published by the input side, 0x80 = the unit/crouch read failed; lower bits are the title's

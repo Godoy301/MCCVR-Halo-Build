@@ -86,8 +86,8 @@ int RunRoomscaleInputTests()
         check(!Roomscale_Move(x,y),"physical input cancels already-published follow immediately");
         Roomscale_Input(eligible,0,0); testNow+=16; camera();
         x=y=0;
-        // Since 2026-09-28 the step owed from before the stick survives it (RoomscaleFollow::Rebase):
-        // the camera derives a fresh demand for it, in the new epoch, rather than replaying the old one.
+        // The step owed from before the stick survives it (RoomscaleFollow::Rebase): the camera
+        // derives a fresh demand for it, in the new epoch, rather than replaying the old one.
         check(Roomscale_Move(x,y) && y>0,
             "after the physical stick the owed step is followed again, as a fresh demand");
         testNow+=16; head[2]-=0.2f; camera();
@@ -300,9 +300,9 @@ int RunRoomscaleInputTests()
                 std::fabs(body[0]-allManualDistance+ref[2])<.0001f;
         }
         check(repeatedDebt,"repeated manual/physical cycles preserve accumulated physical travel without baseline drift");
-        // Tracking loss keeps what is owed (changed 2026-09-28; it used to drop it, which left the
-        // body wherever the player had walked away from it -- "they are not under me"). When the
-        // headset is fresh again the body walks the physical step it still owes.
+        // Tracking loss keeps what is owed (dropping it would leave the body wherever the player
+        // had walked away from it, no longer under him). When the headset is fresh again the body
+        // walks the physical step it still owes.
         testNow+=16;Roomscale_Input(true,0,.75f);head[2]-=.2f;camera();
         testTracking=false;Roomscale_Input(true,0,0);camera();
         testTracking=true;Roomscale_Input(true,0,0);camera();
@@ -461,8 +461,7 @@ int RunRoomscaleInputTests()
     for (GameTitle title : {GameTitle::None,GameTitle::Unknown})
         check(!RoomscaleGameplayEligible(title,RuntimeMode::Gameplay),
             "roomscale cannot acquire an unsupported title");
-    // Every title has roomscale now (2026-09-29, the user's call): CE's body following, held back from
-    // the basic VR bring-up on September 15, follows the same saved setting as the others.
+    // Every title has roomscale: CE's body following follows the same saved setting as the others.
     check(RoomscaleGameplayEligible(GameTitle::HaloCE,RuntimeMode::Gameplay),"CE is eligible for roomscale");
     {
         testTitle=GameTitle::HaloCE; ++testGeneration; testNow+=1000;
@@ -558,7 +557,7 @@ int RunRoomscaleInputTests()
 
     // THE ADMISSION VERDICT (roomscale_admission_logic.h). A refusal stops the follow whatever its reason and is
     // counted under that reason; the first admitted frame of the next title re-arms it with nothing carried over
-    // (several titles in one MCC session: ODST -> Halo 3 in the user's log).
+    // (several titles in one MCC session, e.g. ODST -> Halo 3).
     {
         using roomscale_admission::Refusal;
         const bool savedRoomscale=g_config.roomscale_movement;
@@ -578,7 +577,7 @@ int RunRoomscaleInputTests()
         float x=0,y=0;
         check(walk(GameTitle::Halo3ODST,Roomscale_Refuse(Refusal::None),0.2f,x,y) && y>0,
             "an admitted verdict walks the body (ODST)");
-        // The unarmed Halo 3 player before the fix: the title refused for want of a view model.
+        // A title that refuses for want of a view model (an unarmed Halo 3 player with no camera rung).
         check(!walk(GameTitle::Halo3,Roomscale_Refuse(Refusal::NoFirstPersonModel),0.2f,x,y),
             "a refused verdict issues no follow command");
         check(admissionRefused[size_t(Refusal::NoFirstPersonModel)].load()==2 &&

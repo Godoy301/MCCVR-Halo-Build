@@ -169,12 +169,12 @@ struct Reference
     // native camera can take its direction from the unit's or the vehicle's AIM instead (a Warthog gunner's camera
     // is the gun; a seat's first-person camera runs along the biped's aiming vector) -- and that aim is what the
     // hand writes. Mapping the hand through a frame that follows the hand's own output turns its offset from
-    // "forward" into a turn RATE: measured in Halo CE's Warthog gunner seat (FA, 2026-10-06), a hand held 10 deg to
-    // one side turned the gun, the camera and the whole VR view at ~80 deg/s for as long as it was held, and only
-    // a hand held exactly along the frame's forward stood still. So in a seat the frame's heading is the player's
-    // control yaw itself, read from the control record the game's look update owns (HaloCEControls_SeatHeading):
-    // the turn stick and "view follows the vehicle" still move it, the aim does not. Invalid = on foot, or not
-    // readable: the native camera's heading, as before.
+    // "forward" into a turn RATE: measured in Halo CE's Warthog gunner seat, a hand held 10 deg to one side turns
+    // the gun, the camera and the whole VR view at ~80 deg/s for as long as it is held, and only a hand held
+    // exactly along the frame's forward stands still. So in a seat the frame's heading is the player's control
+    // yaw itself, read from the control record the game's look update owns (HaloCEControls_SeatHeading): the turn
+    // stick and "view follows the vehicle" still move it, the aim does not. Invalid = on foot, or not readable:
+    // the native camera's heading is used.
     Vec3 seatHeading{};
     bool seatHeadingValid{};
 };
