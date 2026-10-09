@@ -250,8 +250,29 @@ void Halo2ImpactNoteSpawn(const float spawn[3], const float fwd[3], const float*
     {
         ours = false;
     }
+    // A gun of the vehicle our unit aims is ours too (a seat's round): P's line is then the seat's intent ray.
+    bool seatGun = false;
+    if (!ours && request.weapon != UINT32_MAX && owned != UINT32_MAX)
+    {
+        uint32_t seatParent = UINT32_MAX;
+        int16_t seatIndex = -1;
+        seatGun = Halo2SeatBarrelSeatedGun(owned, request.weapon, seatParent, seatIndex);
+    }
     Halo2AsSeenAim aim{};
-    if (ours)
+    if (seatGun)
+    {
+        Halo2ObserverPosePublication publication{};
+        aim.valid = Halo2SeatIntentRay(aim.head, aim.dir);
+        memcpy(aim.eye, aim.head, sizeof(aim.eye));
+        if (aim.valid && Halo2Observer6Dof_ReadPublishedPose(publication))
+        {
+            aim.camUs = publication.publishedUs;
+            aim.camTick = publication.gameTick;
+            aim.camFactor = publication.interpFactor;
+        }
+        ours = true;
+    }
+    else if (ours)
     {
         // P's line: the newest publication's sight geometry (the line Halo2AimMuzzleShot aims through at this fire).
         const uint32_t generation = g_generation.load(std::memory_order_acquire);
@@ -360,6 +381,7 @@ __declspec(noinline) int32_t __fastcall Halo2ImpactObjectNewDetour(void* placeme
 // ---- the hit: the round's own collision query (Halo2CollisionVectorDetour, after the native) ----------------------
 void Halo2ImpactNoteQuery(const float* start, const float* vector, const Halo2CollisionResult* result, uint8_t hit)
 {
+    Halo2SeatBarrelNoteQuery(start, vector);   // a seat's round: its first step (halo2_direct_drive.inl)
     auto& w = g_halo2Impact;
     if (!w.ready.load(std::memory_order_acquire) || !w.live.load(std::memory_order_acquire) || !start || !vector)
         return;

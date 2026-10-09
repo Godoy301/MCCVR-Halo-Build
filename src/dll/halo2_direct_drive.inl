@@ -158,11 +158,19 @@ struct Halo2SeatBarrelState
     {
         float rangeWu = 0, residualRightDeg = 0, residualUpDeg = 0, pushRightDeg = 0, pushUpDeg = 0;
         float aimCallVsRoundDeg = -1, roundFromEyeWu = 0, aimCallFromEyeWu = 0, roundFromAimCallWu = 0, speedWu = 0;
+        // The round's first collision step: the way it really flies, against where it was placed to point and
+        // against the aim call's direction (-1: no step seen).
+        float stepVsForwardDeg = -1, stepVsAimCallDeg = -1, stepStartWu = -1, stepLengthWu = 0;
         uint32_t steady = 0, modelFires = 0;
         int16_t barrel = -1;
         uint8_t taught = 0;       // 1: the pointing learned from it; 2: not steady; 3: no barrel write before it;
     } notes[8];                   // 4: residual past the limit or no frame
     uint32_t noteCount = 0, noteReported = 0;
+    // The round waiting for its first collision step.
+    std::atomic<bool> awaitingStep{false};
+    uint32_t stepNote = 0;
+    uint64_t stepRoundUs = 0;
+    float stepSpawn[3]{}, stepForward[3]{}, stepAimCall[3]{};
 #endif
 } g_halo2SeatBarrel;
 // The aim counts as steady when it turned less than this between two control updates, for this many in a row
@@ -236,8 +244,8 @@ void Halo2SeatBarrelLearn(uint32_t weapon, int16_t barrel, const float* origin, 
     int16_t seat = -1;
     float forward[3]{}, up[3]{};
     seat_barrel::Frame hull{};
-    const bool usable = g_config.seat_aim_through_barrel && unit != UINT32_MAX && weapon != UINT32_MAX && origin &&
-        direction && Halo2SeatBarrelSeatedGun(unit, weapon, parent, seat);
+    const bool usable = unit != UINT32_MAX && weapon != UINT32_MAX && origin && direction &&
+        Halo2SeatBarrelSeatedGun(unit, weapon, parent, seat);
     const bool framed = usable &&
         seat_frame_rt::ReadVehicleFrame(g_halo2SeatFrame, &Halo2ObjectFromIndex, unit, forward, up) &&
         seat_barrel::MakeFrame(forward, up, hull);
@@ -289,7 +297,7 @@ void Halo2SeatBarrelLearn(uint32_t weapon, int16_t barrel, const float* origin, 
 void Halo2SeatBarrelNoteRound(const float spawn[3], const float forward[3], const float* velocity) noexcept
 {
     auto& s = g_halo2SeatBarrel;
-    if (!g_config.seat_aim_through_barrel || !spawn || !forward || !seat_barrel::Finite3(spawn))
+    if (!spawn || !forward || !seat_barrel::Finite3(spawn))
         return;
     float launch[3]{forward[0], forward[1], forward[2]};
     float speed = 0.0f;
@@ -351,6 +359,12 @@ void Halo2SeatBarrelNoteRound(const float spawn[3], const float forward[3], cons
             note.roundFromEyeWu = distance(spawn, p.eye);
             note.aimCallFromEyeWu = distance(p.aimOrigin, p.eye);
             note.roundFromAimCallWu = distance(spawn, p.aimOrigin);
+            s.stepNote = s.noteCount % 8;
+            s.stepRoundUs = Sight_NowUs();
+            std::memcpy(s.stepSpawn, spawn, sizeof(s.stepSpawn));
+            std::memcpy(s.stepForward, launch, sizeof(s.stepForward));
+            std::memcpy(s.stepAimCall, p.aimDirection, sizeof(s.stepAimCall));
+            s.awaitingStep.store(true, std::memory_order_release);
             ++s.noteCount;
         }
 #endif
@@ -362,6 +376,60 @@ void Halo2SeatBarrelNoteRound(const float spawn[3], const float forward[3], cons
     }
     s.busy.clear(std::memory_order_release);
 }
+
+#if HALOMCCVR_DEV_DIAGNOSTICS
+// Three floats from the engine's memory, guarded.
+bool Halo2SeatBarrelCopy3(const float* from, float to[3]) noexcept
+{
+    __try
+    {
+        std::memcpy(to, from, 3 * sizeof(float));
+        return true;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return false;
+    }
+}
+
+// Any thread that runs a collision query (dev): the first step of the round just created -- a query that starts at
+// the round's spawn point and runs roughly the round's way -- says which way the round really flies.
+void Halo2SeatBarrelNoteQuery(const float* start, const float* vector) noexcept
+{
+    auto& s = g_halo2SeatBarrel;
+    if (!s.awaitingStep.load(std::memory_order_acquire) || !start || !vector)
+        return;
+    float a[3]{}, v[3]{};
+    if (!Halo2SeatBarrelCopy3(start, a) || !Halo2SeatBarrelCopy3(vector, v))
+        return;
+    const float length = std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+    if (!seat_barrel::Finite3(a) || !std::isfinite(length) || !(length > 0.01f) ||
+        s.busy.test_and_set(std::memory_order_acquire))
+        return;
+    if (s.awaitingStep.load(std::memory_order_relaxed))
+    {
+        const float d[3]{a[0] - s.stepSpawn[0], a[1] - s.stepSpawn[1], a[2] - s.stepSpawn[2]};
+        const float from = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+        const auto angle = [&](const float w[3]) {
+            const float dot = (v[0] * w[0] + v[1] * w[1] + v[2] * w[2]) / length;
+            return std::acos(std::clamp(dot, -1.0f, 1.0f)) * 57.29578f;
+        };
+        const float vsForward = angle(s.stepForward), vsAimCall = angle(s.stepAimCall);
+        if (Sight_NowUs() - s.stepRoundUs > 300000)
+            s.awaitingStep.store(false, std::memory_order_release);   // no step came: the note keeps its -1
+        else if (from <= 0.6f && (vsForward <= 25.0f || vsAimCall <= 25.0f))
+        {
+            auto& note = s.notes[s.stepNote];
+            note.stepVsForwardDeg = vsForward;
+            note.stepVsAimCallDeg = vsAimCall;
+            note.stepStartWu = from;
+            note.stepLengthWu = length;
+            s.awaitingStep.store(false, std::memory_order_release);
+        }
+    }
+    s.busy.clear(std::memory_order_release);
+}
+#endif
 
 // Sim thread: `bent` (the aim from the seat's camera through `point`) becomes the aim for which the barrel's line
 // runs through `point`, when a gun of this seat has fired and the model answers. Otherwise it is left as it is.
@@ -1133,6 +1201,8 @@ void ReportHalo2Drive() noexcept
         if (!barrel.busy.test_and_set(std::memory_order_acquire))
         {
             count = barrel.noteCount;
+            if (count && barrel.awaitingStep.load(std::memory_order_acquire))
+                --count;   // the newest round still waits for its first step: next report
             reported = barrel.noteReported;
             std::memcpy(notes, barrel.notes, sizeof(notes));
             barrel.noteReported = count;
@@ -1146,10 +1216,13 @@ void ReportHalo2Drive() noexcept
             LOG("Halo 2 DRIVE seats (dev) gun round %u: barrel %d, point at %.1f wu; the round against the point: right "
                 "%+.2f up %+.2f deg (%s; steady %u updates); the push is now right %+.2f up %+.2f deg; the round "
                 "starts %.2f wu from the seat's eye and %.2f wu from the aim call's origin (itself %.2f wu from the "
-                "eye), flies %.2f deg off the aim call's direction at %.1f wu/s; %u rounds in the place model",
+                "eye), placed pointing %.2f deg off the aim call's direction; ITS FIRST STEP (how it really flies; "
+                "-1 = none seen) runs %.2f deg off where it was placed to point and %.2f deg off the aim call's "
+                "direction, starting %.2f wu from the spawn point, %.2f wu long; %u rounds in the place model",
                 i + 1, n.barrel, n.rangeWu, n.residualRightDeg, n.residualUpDeg, kTaught[n.taught < 5 ? n.taught : 0],
                 n.steady, n.pushRightDeg, n.pushUpDeg, n.roundFromEyeWu, n.roundFromAimCallWu, n.aimCallFromEyeWu,
-                n.aimCallVsRoundDeg, n.speedWu, n.modelFires);
+                n.aimCallVsRoundDeg, n.stepVsForwardDeg, n.stepVsAimCallDeg, n.stepStartWu, n.stepLengthWu,
+                n.modelFires);
         }
     }
 #endif
