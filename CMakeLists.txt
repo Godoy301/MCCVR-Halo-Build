@@ -103,9 +103,8 @@ option(HALOMCCVR_HALO2_ANNIVERSARY_STEREO
     "Enable Halo 2 Anniversary per-eye stereo (C-H2-10)" ON)
 option(HALOMCCVR_HALO2_RENDER_PROBE
     "Enable the Halo 2 read-only render-topology census (D-H2-1, diagnostic)" OFF)
-# Development diagnostics and headless-test hooks (the Halo: Campaign Evolved rule: a config flag is
-# not a sufficient guard, so anything that answers a question rather than playing the game is compiled
-# out of a player build). OFF = shipping; the "dev" preset turns it on; package-candidate.ps1 refuses it.
+# Development diagnostics and headless-test hooks. A config flag is not a sufficient guard, so anything
+# that answers a question rather than playing the game is compiled out of a player build. OFF = shipping; the "dev" preset turns it on; package-candidate.ps1 refuses it.
 option(HALOMCCVR_DEV_DIAGNOSTICS
     "Compile in development diagnostics and headless-test hooks (never packaged)" OFF)
 if(HALOMCCVR_EXPERIMENTAL_HALO2_TEMPORAL_STEREO AND
@@ -390,7 +389,7 @@ set_target_properties(halo3xr_launcher PROPERTIES
     OUTPUT_NAME "HaloMCCVRLauncher")
 target_compile_definitions(halo3xr_launcher PRIVATE
     UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN
-    # --headless, the FA harness's unattended launch, is a headless-test hook: dev builds only.
+    # --headless, the unattended launch, is a headless-test hook: dev builds only.
     HALOMCCVR_DEV_DIAGNOSTICS=$<BOOL:${HALOMCCVR_DEV_DIAGNOSTICS}>)
 # IApplicationActivationManager: the Microsoft Store edition is a packaged app
 # and can only be started through packaged activation.
@@ -1041,7 +1040,7 @@ if(BUILD_TESTING)
     add_executable(halomccvr_seat_limit_reticle_tests tests/seat_limit_reticle_tests.cpp)
     target_include_directories(halomccvr_seat_limit_reticle_tests PRIVATE src/common)
     add_test(NAME halomccvr_seat_limit_reticle_tests COMMAND halomccvr_seat_limit_reticle_tests)
-    # A look-steered land driver's gun band (src/common/vehicle_gun_band_logic.h, 2026-10-03): the barrels learned in
+    # A look-steered land driver's gun band (src/common/vehicle_gun_band_logic.h): the barrels learned in
     # the hull frame (animated barrels refused), the firing assist's cap, and the clamp of the shot's elevation.
     add_executable(halomccvr_vehicle_gun_band_tests tests/vehicle_gun_band_tests.cpp)
     target_include_directories(halomccvr_vehicle_gun_band_tests PRIVATE src/common)
@@ -1052,25 +1051,25 @@ if(BUILD_TESTING)
     add_executable(halomccvr_shot_lag_tests tests/shot_lag_tests.cpp)
     target_include_directories(halomccvr_shot_lag_tests PRIVATE src/common)
     add_test(NAME halomccvr_shot_lag_tests COMMAND halomccvr_shot_lag_tests)
-    # The seated record upstream of replication (src/common/seat_upstream_logic.h, 2026-10-03): the stock query model
+    # The seated record upstream of replication (src/common/seat_upstream_logic.h): the stock query model
     # and its exact inverse, the learned velocity gain, the write in effect at a tick, the seated recomposition's
     # fail-closed rules and the stock-line witness.
     add_executable(halomccvr_seat_upstream_tests tests/seat_upstream_tests.cpp)
     target_include_directories(halomccvr_seat_upstream_tests PRIVATE src/common)
     add_test(NAME halomccvr_seat_upstream_tests COMMAND halomccvr_seat_upstream_tests)
-    # The shot impact witness (src/common/shot_impact_logic.h, dev, 2026-10-03): where a round actually goes -- the
+    # The shot impact witness (src/common/shot_impact_logic.h, dev): where a round actually goes -- the
     # spawned object's proof, the native's turn, inherited velocity, the round's line and impact against P, the
     # reticle's map to the world, the trigger latch and the report lines.
     add_executable(halomccvr_shot_impact_tests tests/shot_impact_tests.cpp)
     target_include_directories(halomccvr_shot_impact_tests PRIVATE src/common)
     add_test(NAME halomccvr_shot_impact_tests COMMAND halomccvr_shot_impact_tests)
-    # As seen (src/common/as_seen_logic.h, dev, 2026-10-03): an impact against the crosshair drawn in the first frame
+    # As seen (src/common/as_seen_logic.h, dev): an impact against the crosshair drawn in the first frame
     # that shows it, binned by strafe speed and range, with the clocks between -- shared by the VR witness and the flat
     # probe (HaloMCCFlatProbe.dll), so both hosts compute it identically.
     add_executable(halomccvr_as_seen_tests tests/as_seen_tests.cpp)
     target_include_directories(halomccvr_as_seen_tests PRIVATE src/common)
     add_test(NAME halomccvr_as_seen_tests COMMAND halomccvr_as_seen_tests)
-    # Source-consistency guard for the seated converged claim (2026-10-01): game.cpp assigns the claim from
+    # Source-consistency guard for the seated converged claim: game.cpp assigns the claim from
     # converge::SeatedClaimDecide and nothing else, never clears sightSeatedConverged, and reads no natural-cause
     # symbol into the claim's facts. No behavioural test compiles game.cpp, so a natural-cause switch-off added
     # at the call site would otherwise pass every test. Python stdlib only; --self-test checks the checker.
@@ -1078,7 +1077,7 @@ if(BUILD_TESTING)
         COMMAND "${Python3_EXECUTABLE}" -O
             "${CMAKE_CURRENT_SOURCE_DIR}/tools/check_seated_claim.py"
             --self-test)
-    # The sight layer's one clock (2026-10-03): sight_layer.cpp reads only Sight_NowMs()/Sight_NowUs(), its ray
+    # The sight layer's one clock: sight_layer.cpp reads only Sight_NowMs()/Sight_NowUs(), its ray
     # publications stamp themselves (never a caller's sampleMs), and every trace driver passes Sight_NowMs() to
     # Sight_TraceDue. A GetTickCount64 stamp aged against QPC lost its window to the clocks' offset (the seat limit
     # ray). Python stdlib only; --self-test checks the checker.
@@ -1086,7 +1085,7 @@ if(BUILD_TESTING)
         COMMAND "${Python3_EXECUTABLE}" -O
             "${CMAKE_CURRENT_SOURCE_DIR}/tools/check_sight_clock.py"
             --self-test)
-    # Isolation guard for the dev assessment marker (honest_reticle_assess, 2026-10-02): it is a SECOND marker,
+    # Isolation guard for the dev assessment marker (honest_reticle_assess): it is a SECOND marker,
     # never the player's reticle. Its code sits in [assess-only] regions inside #if HALOMCCVR_DEV_DIAGNOSTICS;
     # nothing outside them reads the key, Game_GetClampedAimDirection or the publication, and nothing inside them
     # writes the reticle, a mark, a shot, the aim or the drive. --self-test proves each rule fails on a misuse.
@@ -1094,7 +1093,7 @@ if(BUILD_TESTING)
         COMMAND "${Python3_EXECUTABLE}" -O
             "${CMAKE_CURRENT_SOURCE_DIR}/tools/check_assess_isolation.py"
             --self-test)
-    # Every LOG(...) passes as many arguments as its format converts (2026-10-06). Logf is a plain variadic, so
+    # Every LOG(...) passes as many arguments as its format converts. Logf is a plain variadic, so
     # nothing else checks it, and no test runs game.cpp's install path: a LOG one argument short handed "%s" a
     # TLS offset and killed MCC at every Reach and Halo 4 level load. Counts only (not types). Python stdlib.
     add_test(NAME halomccvr_log_format_guard
@@ -1116,7 +1115,7 @@ if(BUILD_TESTING)
     add_executable(halomccvr_sight_range_tests tests/sight_range_tests.cpp)
     target_include_directories(halomccvr_sight_range_tests PRIVATE src/common)
     add_test(NAME halomccvr_sight_range_tests COMMAND halomccvr_sight_range_tests)
-    # What the intent ray can hit (2026-10-05): each title's trace flags decoded with that title's own bit layout
+    # What the intent ray can hit: each title's trace flags decoded with that title's own bit layout
     # must include bipeds and vehicles (and each engine's line-of-sight flags must be seen to leave bipeds out);
     # the class of a trace result; the seated look-past keeps a boarder; Halo 2's projectile-flags agreement.
     add_executable(halomccvr_sight_hit_class_tests tests/sight_hit_class_tests.cpp)
