@@ -11368,15 +11368,23 @@ namespace
                         Halo3SeatFiresPersonalWeapon(seatFlags) ? 1 : 0,
                         g_halo3SeatAimReOrigins.load(std::memory_order_relaxed));
                 else
-                    LOG("H3 first-person seat: Active (%s, seat %d); the camera director "
+                {
+                    // Named from the seat snapshot; a vehicle this build has no entry for reads "unidentified".
+                    Halo3SeatSnapshot occupied;
+                    char seatName[64] = "seat not read yet";
+                    if (Halo3ReadSeatSnapshot(occupied))
+                        std::snprintf(seatName, sizeof(seatName), "%s, seat %d%s",
+                                      Halo3VehicleIdName(occupied.identity), occupied.seatIndex,
+                                      occupied.mounted ? " mounted" : "");
+                    LOG("H3 first-person seat: Active (%s); the camera director "
                         "is told the occupied seat is first person, so Halo stops drawing "
                         "the player's own character model. The seat's data is as "
-                        "loaded (flags %08X, allows-weapons=%d): its shots follow the "
-                        "game's own crosshair line, and the seat's aim is solved "
-                        "along that line. Camera anchor unchanged",
-                        Halo3VehicleIdName(g_halo3VehicleProbe.vehicleId.load(std::memory_order_relaxed)),
-                        g_halo3VehicleProbe.seatIndex.load(std::memory_order_relaxed),
-                        seatFlags, Halo3SeatFiresPersonalWeapon(seatFlags) ? 1 : 0);
+                        "loaded (flags %08X, allows-weapons=%d, third-person camera=%d): its "
+                        "shots follow the game's own crosshair line, and the seat's aim is "
+                        "solved along that line. Camera anchor unchanged",
+                        seatName, seatFlags, Halo3SeatFiresPersonalWeapon(seatFlags) ? 1 : 0,
+                        (seatFlags & seat_upstream::kSeatThirdPersonBit) ? 1 : 0);
+                }
             }
             else if (nativeState == Halo3NativeSeatState::StockFallback)
                 LOG("H3 first-person seat: StockFallback; the loaded seat layout "
