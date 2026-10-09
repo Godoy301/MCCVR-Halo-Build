@@ -966,15 +966,21 @@ struct Config
     // F1 > Vehicles > Aim in seats > "Direct drive in seats". (default 1)
     int seat_direct_drive = 1;
     // A SEAT'S GUN IS AIMED THROUGH THE POINT BY ITS BARREL (Halo 2; seat_barrel_logic.h). A vehicle gun's shot
-    // leaves along its barrel, so a seat aimed from its camera through the point fires parallel to that line,
-    // beside the point by the barrel's distance from the camera (metres for a tank). 1 = once a gun of the seat
-    // has fired, the aim written for the seat is the one for which the barrel's line runs through the point;
-    // the barrel's place is learned from the seat's own fires. 0 = the camera's line always. Only the written
-    // aim changes (what the title replicates). Needs seat_direct_drive and converged_aim. Read live.
-    // OFF by default: in a Scorpion the engine already places the round at the muzzle pointed at the point,
-    // and aiming the barrel as well changed nothing a player could see. Kept while the seat's rounds are
-    // being measured (the dev lines are printed whatever this says).
-    bool seat_aim_through_barrel = false;
+    // leaves its muzzle and the engine turns it at the crosshair's point only inside the weapon's deviation angle
+    // about the barrel, so a seat aimed from its camera through the point lands its shots beside a NEAR point, by
+    // the barrel's distance from the camera (a Scorpion's barrel is two metres above its driver: under some 25 m).
+    // 1 = the aim written for the seat is the one for which the barrel's line runs through the point; the
+    // barrel's place is learned from the seat's own fires and remembered for that kind of vehicle (a Scorpion's is
+    // known beforehand). 0 = the camera's line always. Only the written aim changes (what the title replicates).
+    // Needs seat_direct_drive and converged_aim. Read live.
+    bool seat_aim_through_barrel = true;
+    // A SEATED FIRE'S CROSSHAIR TEST RUNS ALONG THE PLAYER'S LINE (Halo 2; halo2_seat_fire.inl). The engine traces
+    // the crosshair from the seat's own camera, which is not where a player's eye is (a head anywhere in the room
+    // but at the seat's camera): aiming over a low obstacle, the seat camera's line can hit the obstacle, and the
+    // engine then turns the shot at it. 1 = at a local seated fire that test starts at the rendered eye the
+    // crosshair's point was traced from and runs through that point. 0 = from the seat's camera through the
+    // point. Local to the fire (as the re-aim it replaces is). Needs converged_aim. Read live.
+    bool seat_fire_from_eye = true;
 
     // rendering. The game's own HUD reticle sits at head-center and is wrong
     // whenever hand aim is on; this one is the truth.

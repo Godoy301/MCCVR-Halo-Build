@@ -1290,6 +1290,7 @@ void ConfigLoad(const wchar_t* path)
         if (!strcmp(key, "scope_converge")) { g_config.scope_converge = atoi(val) != 0 ? 1 : 0; continue; }
         if (!strcmp(key, "seat_direct_drive")) { g_config.seat_direct_drive = atoi(val) != 0 ? 1 : 0; continue; }
         if (!strcmp(key, "seat_aim_through_barrel")) { g_config.seat_aim_through_barrel = atoi(val) != 0; continue; }
+        if (!strcmp(key, "seat_fire_from_eye")) { g_config.seat_fire_from_eye = atoi(val) != 0; continue; }
         if (!strcmp(key, "aim_direct_drive"))
         { g_config.aim_direct_drive = atoi(val) != 0 ? 1 : 0; aimDirectDriveSeen = true; continue; }
         if (!strcmp(key, "reach_direct_drive"))
@@ -2477,11 +2478,18 @@ void ConfigSave()
             d.seat_direct_drive);
     fprintf(f, "seat_direct_drive = %d\n\n", g_config.seat_direct_drive);
     fprintf(f, "# Halo 2. 1 = a vehicle gun you aim (a tank's cannon, a turret) is aimed so that its BARREL points\n");
-    fprintf(f, "# at the crosshair's point, so the shot lands on it; the barrel's place is learned from your own\n");
-    fprintf(f, "# shots, so the first shot after sitting down still flies beside the point. 0 = the seat is aimed\n");
-    fprintf(f, "# from its camera only: shots fly parallel to the crosshair's line. Needs seat_direct_drive and\n");
-    fprintf(f, "# converged_aim. Live. (default %d)\n", d.seat_aim_through_barrel ? 1 : 0);
+    fprintf(f, "# at the crosshair's point, so the shot lands on it at any range. A Scorpion's barrel is known; any\n");
+    fprintf(f, "# other gun's place is learned from your own shots and remembered for that kind of vehicle while the\n");
+    fprintf(f, "# game runs, so only the first shot from a gun new to it can still land beside a near point.\n");
+    fprintf(f, "# 0 = the seat is aimed from its camera only: shots at near targets land beside the crosshair, by\n");
+    fprintf(f, "# about the distance from your view to the barrel. Needs seat_direct_drive and converged_aim.\n");
+    fprintf(f, "# Live. (default %d)\n", d.seat_aim_through_barrel ? 1 : 0);
     fprintf(f, "seat_aim_through_barrel = %d\n\n", g_config.seat_aim_through_barrel ? 1 : 0);
+    fprintf(f, "# Halo 2. 1 = when you fire a vehicle's gun the game checks what is under the crosshair along YOUR\n");
+    fprintf(f, "# line of sight. 0 = along the line from the seat's own camera, as the game does: a shot aimed over\n");
+    fprintf(f, "# something low and near can then be pulled down onto it. Needs converged_aim. Live.\n");
+    fprintf(f, "# (default %d)\n", d.seat_fire_from_eye ? 1 : 0);
+    fprintf(f, "seat_fire_from_eye = %d\n\n", g_config.seat_fire_from_eye ? 1 : 0);
     fprintf(f, "# Reach, Halo 3, ODST and Halo 4 (switch it live in F1 > Weapon & aim). 1 = DIRECT DRIVE: your\n");
     fprintf(f, "# aim writes the game's own aim instead of steering the right stick (which can only turn at the\n");
     fprintf(f, "# game's turn rate). It arms itself a moment after it is switched on, once the aim it found\n");
