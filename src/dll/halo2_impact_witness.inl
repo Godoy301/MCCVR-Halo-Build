@@ -235,7 +235,7 @@ bool Halo2AsSeenFrameShows(const Halo2AsSeenFrame& frame, const Halo2AsSeenPendi
 // ---- the spawn: object_new from the fire routine --------------------------------------------------------------------
 void Halo2ImpactNoteSpawn(const float spawn[3], const float fwd[3], const float* velocity)
 {
-    // A seated fire's round is the barrel as it is (halo2_direct_drive.inl): where it starts, which way it flies.
+    // A seated fire's round against the barrel it left (halo2_direct_drive.inl).
     Halo2SeatBarrelNoteRound(spawn, fwd, velocity);
     auto& w = g_halo2Impact;
     const auto request = g_halo2MuzzleRequest;
@@ -250,14 +250,9 @@ void Halo2ImpactNoteSpawn(const float spawn[3], const float fwd[3], const float*
     {
         ours = false;
     }
-    // A gun of the vehicle our unit aims is ours too (a seat's round): P's line is then the seat's intent ray.
-    bool seatGun = false;
-    if (!ours && request.weapon != UINT32_MAX && owned != UINT32_MAX)
-    {
-        uint32_t seatParent = UINT32_MAX;
-        int16_t seatIndex = -1;
-        seatGun = Halo2SeatBarrelSeatedGun(owned, request.weapon, seatParent, seatIndex);
-    }
+    // A gun our seat fires is ours too (a seat's round): P's line is then the seat's intent ray. Another
+    // occupant's weapon is not: only a gun the seat's own fire has shown (this fire's aim call came first).
+    const bool seatGun = !ours && owned != UINT32_MAX && Halo2SeatBarrelKnownGun(request.weapon);
     Halo2AsSeenAim aim{};
     if (seatGun)
     {
@@ -381,7 +376,6 @@ __declspec(noinline) int32_t __fastcall Halo2ImpactObjectNewDetour(void* placeme
 // ---- the hit: the round's own collision query (Halo2CollisionVectorDetour, after the native) ----------------------
 void Halo2ImpactNoteQuery(const float* start, const float* vector, const Halo2CollisionResult* result, uint8_t hit)
 {
-    Halo2SeatBarrelNoteQuery(start, vector);   // a seat's round: its first step (halo2_direct_drive.inl)
     auto& w = g_halo2Impact;
     if (!w.ready.load(std::memory_order_acquire) || !w.live.load(std::memory_order_acquire) || !start || !vector)
         return;

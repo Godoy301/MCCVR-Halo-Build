@@ -295,16 +295,17 @@ __declspec(noinline) void __fastcall Halo2IndependentAimDetour(uint32_t unit,
                 false,false);
             __leave;
         }
-        // The direction the fire came in with (the barrel, or the unit's aim), before the engine turns it.
-        float entryDirection[3]{};
-        const bool entryKnown=firingCall&&direction&&shot_lag::Finite3(direction);
-        if(entryKnown)std::memcpy(entryDirection,direction,sizeof(entryDirection));
+        // Where the fire starts as the caller filled it (the barrel's marker), before the native projects or
+        // obstruction-clamps it.
+        float entryOrigin[3]{};
+        const bool entryKnown=firingCall&&origin&&shot_lag::Finite3(origin);
+        if(entryKnown)std::memcpy(entryOrigin,origin,sizeof(entryOrigin));
         feature.aimOriginal(unit,origin,direction,marker,offset,projectOrigin,useUnitAim,collisionAdjust);
         if(!firingCall || !origin || !direction)__leave;
         // A local seat's shot stays exactly as the engine built it here (the barrel, or the unit's own aim: its
         // natural limits live in this direction); the dev witness only measures it against the traced point.
-        Halo2SeatNoteFireLine(unit,g_halo2MuzzleRequest.weapon,g_halo2MuzzleRequest.barrel,origin,direction,
-            entryKnown?entryDirection:nullptr);
+        Halo2SeatNoteFireLine(unit,g_halo2MuzzleRequest.weapon,g_halo2MuzzleRequest.barrel,
+            entryKnown?entryOrigin:nullptr,origin,direction);
         const bool owned=shot.active && !shot.query && unit==shot.unit;
         bool substituted=false;
         if(owned)

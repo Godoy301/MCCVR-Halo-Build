@@ -2,14 +2,18 @@
 
 // AIM A SEAT'S GUN THROUGH THE POINT -- the pure half (Halo 2; halo2_direct_drive.inl has the seat's write).
 //
-// A vehicle gun's shot leaves along its BARREL (seat_converge_logic.h): the fire turns it toward the point the
-// crosshair test hit only inside the weapon's deviation cone, and a tank cannon's cone is narrow. A seat's aim bent
-// to run from the seat's CAMERA through the point therefore leaves the barrel PARALLEL to that line, beside the
-// point by however far the barrel sits from the camera (metres, for a tank's driver). To land the shot on the point
-// the aim must be the direction for which the BARREL's line runs through it.
+// A vehicle gun's shot leaves its MUZZLE. The fire turns it at the point the crosshair test hit, but in a seat only
+// inside the weapon's deviation angle about the barrel (seat_converge_logic.h; six degrees for a Halo 2 Scorpion's
+// cannon). A seat's aim bent to run from the seat's CAMERA through the point leaves the barrel PARALLEL to that
+// line, beside the point by however far the barrel sits from the camera (metres, for a tank's driver). Where that
+// gap fits inside the angle the engine closes it and the shot lands on the point; nearer, the shot is held at the
+// cone's edge and lands beside the point. So the aim written for the seat is the direction for which the BARREL's
+// line runs through the point: the engine's turn is then next to nothing at any range, and what this model gets
+// wrong the engine still closes, up to the weapon's angle.
 //
-// The barrel is not read from the engine between fires. Each local fire shows its line (the fire's own origin and
-// direction), and the gun's geometry is learned from those lines:
+// The barrel is not read from the engine between fires. Each local fire shows its line -- the muzzle and the
+// direction the fire was given, BEFORE the engine turns the shot: the axis of the engine's cone -- and the gun's
+// geometry is learned from those lines:
 //
 //     a point of the barrel's line for an aim d  =  eye + H c + r(d) o_r + u(d) o_u
 //
@@ -18,12 +22,12 @@
 // beside and above its pivot. Each fire measures the line's offset from the eye across its own direction: two
 // numbers, linear in the five unknowns. A recursive least-squares fit starts from "no offset", is exact for the
 // direction of the first fire, and separates the pivot from the barrel's own offset as fires at other headings
-// arrive. Nothing here knows the vehicle: a fixed gun, a turret on the hull and a child turret all fit.
+// arrive. Nothing here knows the vehicle: a fixed gun, a turret on the hull and a child turret all fit, and so
+// does a seat's eye that is set off from the occupant's head along the head's own axes.
 //
 // The aim is then solved by a few fixed-point steps (the anchor turns with the aim). The model says nothing about
 // whether the gun can REACH the aim: a turret still turning, or a gun at its stop, fires where it points, which is
-// the seat's natural limit and is left to the engine. A barrel that settles a little off the aim it was given is
-// another matter, and has its own correction (Pointing, below).
+// the seat's natural limit and is left to the engine.
 //
 // Only the aim's direction comes out of this, and the caller writes it into the record the title replicates.
 //
@@ -38,12 +42,13 @@ namespace seat_barrel
 // Lengths are the title's world units (Halo 2: one is about three metres).
 // A barrel further than this from the seat's eye is not a gun of this seat's vehicle (a bad read).
 inline constexpr double kMaxOffsetWu = 4.0;
-// The point must be at least this many times the barrel's offset away, and at least kMinRangeWu, or the aim is
-// left to the eye's line: nearer than that the two lines differ by tens of degrees and the model's error with them.
+// The point the barrel is aimed through is never taken nearer than this many times the barrel's offset from the
+// eye, nor nearer than kMinRangeWu: a nearer point is served as if it stood that far out on the eye's own line.
+// Nearer than that the two lines differ by tens of degrees and the model's error with them, and holding the range
+// (and not handing the aim back to the eye's line) keeps the aim continuous while a point crosses it. The solved
+// aim so never leaves the eye's line by more than asin(1 / kMinRangeFactor), 19.5 degrees.
 inline constexpr double kMinRangeFactor = 3.0;
 inline constexpr double kMinRangeWu = 0.5;
-// The solved aim never leaves the eye's line by more than this.
-inline constexpr double kMaxTurnDeg = 25.0;
 // The fit's priors (world units) and its measurement noise: the pivot may be metres from the eye, the barrel sits
 // close to its pivot, and a fire's line is exact to millimetres.
 inline constexpr double kPivotPriorWu = 1.5;
@@ -166,8 +171,9 @@ public:
         return true;
     }
 
-    // The aim for which the barrel's line runs through `point`. False (the caller keeps the eye's line): no fire
-    // yet, the point too near, or an aim more than kMaxTurnDeg off the eye's line.
+    // The aim for which the barrel's line runs through `point` (or through the eye's line at the nearest range
+    // served, for a nearer point). False (the caller keeps the eye's line, `direction` untouched): no fire yet, a
+    // value that is not a number, or a barrel the fit puts further from the eye than a gun can be.
     bool Aim(const Frame& hull, const float eye[3], const float point[3], float direction[3]) const
     {
         if (!fires_ || !Finite3(eye) || !Finite3(point))
@@ -184,22 +190,24 @@ public:
                 return false;
             const double offset[3]{anchor[0] - eye[0], anchor[1] - eye[1], anchor[2] - eye[2]};
             const double offsetLength = std::sqrt(Dot(offset, offset));
-            if (!(offsetLength <= kMaxOffsetWu) || !(range >= kMinRangeWu) ||
-                !(range >= kMinRangeFactor * offsetLength))
+            if (!(offsetLength <= kMaxOffsetWu))
                 return false;
-            double next[3]{double(point[0]) - anchor[0], double(point[1]) - anchor[1], double(point[2]) - anchor[2]};
+            const double reach = std::fmax(range, std::fmax(kMinRangeWu, kMinRangeFactor * offsetLength));
+            double next[3]{eye[0] + fromEye[0] * reach - anchor[0], eye[1] + fromEye[1] * reach - anchor[1],
+                           eye[2] + fromEye[2] * reach - anchor[2]};
             if (!Normalize(next))
                 return false;
             d[0] = next[0];
             d[1] = next[1];
             d[2] = next[2];
         }
-        const double cosTurn = Dot(d, fromEye);
-        if (!(cosTurn >= std::cos(kMaxTurnDeg * 0.017453292519943295)))
+        const float out[3]{static_cast<float>(d[0]), static_cast<float>(d[1]), static_cast<float>(d[2])};
+        if (!Finite3(out))
             return false;
-        for (int i = 0; i < 3; ++i)
-            direction[i] = static_cast<float>(d[i]);
-        return std::isfinite(direction[0]) && std::isfinite(direction[1]) && std::isfinite(direction[2]);
+        direction[0] = out[0];
+        direction[1] = out[1];
+        direction[2] = out[2];
+        return true;
     }
 
 private:
@@ -232,85 +240,6 @@ private:
     double x_[5]{};       // pivot from the eye in the vehicle's frame (f, l, u), then the barrel's right and up
     double p_[5][5]{};
     uint32_t fires_ = 0;
-};
-
-// THE BARREL'S POINTING ERROR. A turret does not point exactly along the aim it is given: its pose is blended from
-// authored aiming poses and comes out a fraction of a degree to a degree off, differently at each heading, and the
-// engine's turn toward the crosshair's point (inside the weapon's deviation cone) takes up only part of that. Seen
-// in a Halo 2 Scorpion: with the barrel's place corrected the shells still left 0.8 to 0.9 degrees off the point at
-// every range. What a fire shows is the result: the shot's own line against the point it was aimed at. The written
-// aim is pushed by that residual (an integral step per fire), so the next shot at that heading leaves through the
-// point, or inside the cone that the engine then closes itself. Only a fire whose aim had been steady is used: a
-// turret still turning toward a moving aim is the seat's natural limit, not an error to learn.
-inline constexpr double kDegToRad = 0.017453292519943295;
-inline constexpr double kPointingGain = 0.8;        // of a fire's residual, taken into the push
-inline constexpr double kMaxResidualDeg = 3.0;      // a fire further off than this was not on the aim: not learned
-inline constexpr double kMaxPointingDeg = 4.0;      // the push never exceeds this
-
-struct Pointing
-{
-    double right = 0.0, up = 0.0;   // radians in the aim's frame: how far the written aim is pushed
-    uint32_t fires = 0;
-
-    void Reset()
-    {
-        right = up = 0.0;
-        fires = 0;
-    }
-
-    // Where the shot should have gone minus where it went, in the aim's frame of the direction from the shot's
-    // origin to the point (radians; small angles). False: a value that is not a number, or no frame.
-    static bool Residual(const Frame& hull, const float origin[3], const float shot[3], const float point[3],
-                         double& outRight, double& outUp)
-    {
-        if (!Finite3(origin) || !Finite3(shot) || !Finite3(point))
-            return false;
-        double wanted[3]{double(point[0]) - origin[0], double(point[1]) - origin[1], double(point[2]) - origin[2]};
-        double went[3]{shot[0], shot[1], shot[2]};
-        double right[3]{}, up[3]{};
-        if (!Normalize(wanted) || !Normalize(went) || !AimAxes(hull, wanted, right, up))
-            return false;
-        const double e[3]{wanted[0] - went[0], wanted[1] - went[1], wanted[2] - went[2]};
-        outRight = Dot(e, right);
-        outUp = Dot(e, up);
-        return std::isfinite(outRight) && std::isfinite(outUp);
-    }
-
-    // One steady fire. False (nothing learned): no residual, or one larger than kMaxResidualDeg.
-    bool Learn(const Frame& hull, const float origin[3], const float shot[3], const float point[3])
-    {
-        double r = 0.0, u = 0.0;
-        if (!Residual(hull, origin, shot, point, r, u) || !(std::sqrt(r * r + u * u) <= kMaxResidualDeg * kDegToRad))
-            return false;
-        right += kPointingGain * r;
-        up += kPointingGain * u;
-        const double size = std::sqrt(right * right + up * up), cap = kMaxPointingDeg * kDegToRad;
-        if (size > cap)
-        {
-            right *= cap / size;
-            up *= cap / size;
-        }
-        if (fires < UINT32_MAX)
-            ++fires;
-        return true;
-    }
-
-    // `direction` in: where the barrel should point. Out: the aim to write for it. False (direction untouched): no
-    // frame for that direction.
-    bool Apply(const Frame& hull, float direction[3]) const
-    {
-        if (!fires || (right == 0.0 && up == 0.0))
-            return true;
-        double g[3]{direction[0], direction[1], direction[2]}, r[3]{}, u[3]{};
-        if (!Finite3(direction) || !Normalize(g) || !AimAxes(hull, g, r, u))
-            return false;
-        double d[3]{g[0] + right * r[0] + up * u[0], g[1] + right * r[1] + up * u[1], g[2] + right * r[2] + up * u[2]};
-        if (!Normalize(d))
-            return false;
-        for (int i = 0; i < 3; ++i)
-            direction[i] = static_cast<float>(d[i]);
-        return true;
-    }
 };
 
 // How far a line passes from a point (world units): the dev witness's measure, and the tests'.

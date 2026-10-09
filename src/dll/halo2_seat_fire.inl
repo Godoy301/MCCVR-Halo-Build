@@ -10,9 +10,9 @@
 // own line was off the point is counted (SHOT REAIM's seated part: what an unmodded host, tracing along the
 // record's aim alone, would miss by). Only our seated unit, only while the seat's last write converged.
 //
-// The aim call's line is not the round's path: a tank's shell starts metres from it. The fire hands this call's
-// line and the seat's eye to the barrel's lane (halo2_direct_drive.inl), which keeps them for the round the fire
-// then creates and learns the barrel from THAT (seat_barrel_logic.h).
+// The fire's own line -- the muzzle as it came into the aim call, along the direction the call answered -- is the
+// barrel, and is handed to the barrel's lane (halo2_direct_drive.inl), which learns the gun from it
+// (seat_barrel_logic.h).
 std::atomic<uint64_t> g_halo2SeatFireApplied{0},g_halo2SeatFireThrough{0},g_halo2SeatFireSkipped{0};
 // Our unit's seat and its converged point, while its aim is converged (fire thread; guarded reads).
 bool Halo2SeatShotPoint(uint32_t unit,float point[3])
@@ -42,7 +42,6 @@ bool Halo2OwnedUnitSeated()
 void Halo2SeatFireReaim(uint32_t unit,float* position,float* direction)
 {
     if(unit!=Halo2OwnedUnit()||!Halo2OwnedUnitSeated())return;
-    Halo2SeatBarrelNoteEye(position);   // the seat's eye at this fire, for the barrel's model
     float point[3]{};
     if(!Halo2SeatShotPoint(unit,point)||!shot_lag::Finite3(position)||!shot_lag::Finite3(direction))
     {g_halo2SeatFireSkipped.fetch_add(1,std::memory_order_relaxed);return;}
@@ -55,26 +54,20 @@ void Halo2SeatFireReaim(uint32_t unit,float* position,float* direction)
     g_halo2SeatFireApplied.fetch_add(1,std::memory_order_relaxed);
 }
 // The shot as the fire took it for our seat -- the barrel marker for a vehicle gun (its owner is the vehicle or a
-// turret on it), the unit's aim for a passenger's own weapon. Nothing of the shot is changed: this line is the
-// centre of the cone the engine pins the seated shot to. A vehicle gun's call is handed to the barrel's lane;
-// the line against the traced point is the dev witness.
-void Halo2SeatNoteFireLine(uint32_t owner,uint32_t weapon,int16_t barrel,const float* origin,
-    const float* direction,const float* entryDirection)
+// turret on it), the unit's aim for a passenger's own weapon. Nothing of the shot is changed: `direction` is the
+// centre of the cone the engine pins the seated shot to. `muzzle` is the fire's start as it came into the aim call
+// (null: unknown), `origin` as the call left it. A vehicle gun's line is handed to the barrel's lane; the line
+// against the traced point is the dev witness.
+void Halo2SeatNoteFireLine(uint32_t firer,uint32_t weapon,int16_t barrel,const float* muzzle,const float* origin,
+    const float* direction)
 {
     const uint32_t unit=Halo2OwnedUnit();
     if(unit==UINT32_MAX||!Halo2OwnedUnitSeated()||!shot_lag::Finite3(origin)||!shot_lag::Finite3(direction))return;
-    Halo2SeatBarrelLearn(weapon,barrel,origin,direction,entryDirection);
+    const float* start=muzzle&&shot_lag::Finite3(muzzle)?muzzle:origin;
+    Halo2SeatBarrelLearn(firer,weapon,barrel,start,direction);
 #if HALOMCCVR_DEV_DIAGNOSTICS
-    bool ours=owner==unit;
-    if(!ours)
-    {
-        __try {ours=Halo2UltimateParent(owner)==Halo2UltimateParent(unit)&&Halo2UltimateParent(unit)!=UINT32_MAX;}
-        __except(EXCEPTION_EXECUTE_HANDLER) {ours=false;}
-    }
     float point[3]{};
-    if(ours&&Halo2SeatShotPoint(unit,point))
-        Sight_NoteSeatShot(GameTitle::Halo2,SightSeatLine::Barrel,origin,direction,point);
-#else
-    (void)owner;
+    if(Halo2SeatBarrelOurFire(firer,unit)&&Halo2SeatShotPoint(unit,point))
+        Sight_NoteSeatShot(GameTitle::Halo2,SightSeatLine::Barrel,start,direction,point);
 #endif
 }
