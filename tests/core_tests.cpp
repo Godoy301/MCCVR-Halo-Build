@@ -15512,8 +15512,10 @@ int main()
               g_config.cutscene_theater_distance_m == 4.0f,
         "legacy configs inherit the enabled cutscene-theatre defaults");
     Check(!g_config.roomscale_movement, "legacy config leaves roomscale off");
-    Check(!g_config.roomscale_recenter_jump && !g_config.roomscale_recenter_move_start &&
-          !g_config.roomscale_recenter_moving, "legacy config leaves every roomscale view recenter option off");
+    Check(g_config.roomscale_recenter_jump && g_config.roomscale_recenter_move_start &&
+          g_config.roomscale_recenter_moving && g_config.roomscale_recenter_moving_speed == 0.25f,
+          "legacy config inherits the roomscale view recenter options (on; they act only with roomscale on)");
+    Check(g_config.shots_from_muzzle, "legacy config inherits shots from the muzzle");
     Check(!g_config.experimental_hand_alignment, "legacy config preserves released hand positioning");
     Check(!g_config.manual_reload&&!g_config.weapon_holsters,"legacy config leaves both weapon gestures off");
     Check(!g_config.game_menu_pointer, "legacy config leaves native menu pointing off");

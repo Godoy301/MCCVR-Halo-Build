@@ -464,14 +464,14 @@ struct Config
     // character, the body cannot be walked under the head, so the view sits away from the game's own
     // camera -- the eye the shot is solved from. Each option slides the play area (position only,
     // horizontal: never a turn, never the height) so the view comes back over the character while that
-    // motion hides it; what is left afterwards the body follow walks as before. All off by default.
+    // motion hides it; what is left afterwards the body follow walks as before. All on by default.
     // They need roomscale_movement.
-    bool roomscale_recenter_jump = false;          // a quick linear blend when a jump leaves the ground
+    bool roomscale_recenter_jump = true;           // a quick linear blend when a jump leaves the ground
     float roomscale_recenter_jump_s = 0.20f;       // its duration, seconds (0.05 to 1.0)
-    bool roomscale_recenter_move_start = false;    // the same blend when the movement stick is first pushed
+    bool roomscale_recenter_move_start = true;     // the same blend when the movement stick is first pushed
     float roomscale_recenter_move_start_s = 0.20f; // its duration, seconds (0.05 to 1.0)
-    bool roomscale_recenter_moving = false;        // while the stick is held: close the offset at a constant speed
-    float roomscale_recenter_moving_speed = 0.50f; // metres of offset closed per second (0.1 to 3.0)
+    bool roomscale_recenter_moving = true;         // while the stick is held: close the offset at a constant speed
+    float roomscale_recenter_moving_speed = 0.25f; // metres of offset closed per second (0.1 to 3.0)
     bool physical_running = false;
     float physical_running_speed = 1.0f; // fraction of native maximum locomotion
     float physical_running_sensitivity = 1.0f;
@@ -725,13 +725,13 @@ struct Config
     // Optional per-controller firing for an owned native dual-wield pair.
     bool independent_dual_aim = false;
     bool gun_barrel_aim = false;
-    // SHOTS FROM THE MUZZLE (default off, live): each on-foot barrel shot leaves the visible muzzle, as the
+    // SHOTS FROM THE MUZZLE (default on, live): each on-foot barrel shot leaves the visible muzzle, as the
     // barrel aim's does, but flies through the point the converged aim is bent through (the reticle's
     // point) instead of along the barrel: it lands where the shot from the eye would have, and its tracer
     // and projectile come out of the gun. Only while the converged aim is in effect; a muzzle the game's
     // own obstruction check pulls back (the gun through a wall the eye sees past) and every other refusal
     // leave from the eye as before. gun_barrel_aim, when on, wins. sight_layer.h: Sight_AimMuzzleShot.
-    bool shots_from_muzzle = false;
+    bool shots_from_muzzle = true;
 
     // EXPERIMENTAL (dev): route this title's aim through the game-agnostic aim-solve core + per-game
     // provider (src/common/aim_solve_logic.h, aim_provider.h). 0 = off (shipped path untouched).

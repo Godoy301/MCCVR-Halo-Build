@@ -2269,7 +2269,8 @@ void ConfigSave()
     fprintf(f, "# Use verified visible weapon muzzle origin and orientation.\ngun_barrel_aim = %d\n\n", g_config.gun_barrel_aim ? 1 : 0);
     fprintf(f, "# Shots leave the visible muzzle but fly through the converged aim's point (the reticle):\n"
                "# they land where the shot from the eye would have. Needs converged_aim; gun_barrel_aim wins.\n"
-               "shots_from_muzzle = %d\n\n", g_config.shots_from_muzzle ? 1 : 0);
+               "# (default %d)\n"
+               "shots_from_muzzle = %d\n\n", d.shots_from_muzzle ? 1 : 0, g_config.shots_from_muzzle ? 1 : 0);
     fprintf(f, "# Floating VR-crosshair smoothing only; bullets stay raw.\n");
     fprintf(f, "# (default %.2f, range 0 to 0.95)\n", d.aim_stabilization);
     fprintf(f, "aim_stabilization = %.2f\n\n", g_config.aim_stabilization);
