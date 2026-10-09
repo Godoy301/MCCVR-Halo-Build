@@ -1576,10 +1576,12 @@ using LegacySeatRecomposeWhy = seat_upstream::SeatRecompose;
 std::atomic<uint32_t> g_legacySeatRecompose[static_cast<size_t>(LegacySeatRecomposeWhy::Count)]{};
 std::atomic<uint32_t> g_legacySeatRecomposeMilliDeg{0}, g_legacySeatRecomposeMaxMilliDeg{0};
 // A stock seat's records solved from the chase camera, by where its position came from (seat_upstream::StockStart),
-// and the asked camera against the game's own query start (seat_upstream::AskAgreement): comparisons within its
-// tolerance and outside it, the largest distance (mm), and whether the ask is refused for disagreeing.
+// and the asked camera against the game's own query line (seat_upstream::AskAgreement): comparisons that put it on
+// the line and off it, the largest distance aside (mm), the lead in use (mm), and whether the ask is refused for
+// being off the line.
 std::atomic<uint32_t> g_legacySeatStockStart[static_cast<size_t>(seat_upstream::StockStart::Count)]{};
-std::atomic<uint32_t> g_legacySeatAskAgreed{0}, g_legacySeatAskDisagreed{0}, g_legacySeatAskMaxApartMm{0};
+std::atomic<uint32_t> g_legacySeatAskAgreed{0}, g_legacySeatAskDisagreed{0}, g_legacySeatAskMaxAsideMm{0};
+std::atomic<int32_t> g_legacySeatAskLeadMm{0};
 std::atomic<bool> g_legacySeatAskRefused{false};
 // The gain learner's samples since the last report, and its state (sim thread writes; the report reads).
 std::atomic<uint32_t> g_legacySeatGainUsed{0}, g_legacySeatGainSlow{0}, g_legacySeatGainUnpaired{0};
@@ -1600,7 +1602,7 @@ struct LegacySeatUpstream
     uint32_t askTick = 0;
     uint64_t askAtUs = 0, askComparedQueryUs = 0;
     bool askOk = false;
-    float askPos[3]{};
+    float askPos[3]{}, askDir[3]{};
     shot_lag::EyeTrack askTrack;
     seat_upstream::AskAgreement askAgreement;
     void ForgetAsk()
@@ -1687,7 +1689,9 @@ LegacySeatRecomposeWhy LegacyDriveRecomposeSeated(int slot, const LegacyDrivePub
         memcpy(from.evaluatorVel, velocity, sizeof(from.evaluatorVel));
         from.evaluatorVelValid = velocityValid;
         uint64_t queryAtUs = 0;
-        from.query = LegacySeatStockLineRead(generation, seat_upstream::kStockQueryMaxAgeUs, from.queryPos, queryAtUs);
+        float queryDir[3]{};
+        from.query = LegacySeatStockLineRead(generation, seat_upstream::kStockQueryMaxAgeUs, from.queryPos, queryDir,
+                                             queryAtUs);
         from.queryAgeUs = from.query && nowUs >= queryAtUs ? nowUs - queryAtUs : 0;
         // The chase path is the seat's camera only where the simulation takes that path: a seat whose loaded flags
         // keep `third person camera` (the lease holds those flags, and only while it holds the seat). A seat that
@@ -1708,15 +1712,14 @@ LegacySeatRecomposeWhy LegacyDriveRecomposeSeated(int slot, const LegacyDrivePub
             if (!s.askAtUs || tick != s.askTick || nowUs < s.askAtUs ||
                 nowUs - s.askAtUs >= seat_upstream::kStockAskRefreshUs)
             {
-                float askedDirection[3]{};
-                s.askOk = Halo3AskChaseCamera(localUnit, s.askPos, askedDirection);
+                s.askOk = Halo3AskChaseCamera(localUnit, s.askPos, s.askDir);
                 s.askTick = tick;
                 s.askAtUs = nowUs;
                 if (s.askOk)
                     s.askTrack.Push(nowUs, s.askPos);
             }
-            // Against the game's own query start: once per query, one that ran no later than the ask and not long
-            // before it, carried to the ask's instant.
+            // Against the game's own query line: once per query, one that ran no later than the ask and not long
+            // before it, its start carried to the ask's instant.
             float carried[3]{};
             if (s.askOk && from.query && queryAtUs != s.askComparedQueryUs && queryAtUs <= s.askAtUs &&
                 s.askAtUs - queryAtUs <= seat_upstream::AskAgreement::kCompareMaxAgeUs &&
@@ -1724,20 +1727,27 @@ LegacySeatRecomposeWhy LegacyDriveRecomposeSeated(int slot, const LegacyDrivePub
                                                carried))
             {
                 s.askComparedQueryUs = queryAtUs;
-                const float apartWu = s.askAgreement.Note(s.askPos, carried);
-                if (apartWu >= 0.0f)
+                const seat_upstream::AskAgreement::Reading reading =
+                    s.askAgreement.Note(s.askPos, s.askDir, carried, queryDir);
+                if (reading.compared)
                 {
-                    (seat_upstream::AskAgreement::Agrees(apartWu) ? g_legacySeatAskAgreed : g_legacySeatAskDisagreed)
+                    (seat_upstream::AskAgreement::Agrees(reading) ? g_legacySeatAskAgreed : g_legacySeatAskDisagreed)
                         .fetch_add(1, std::memory_order_relaxed);
-                    const uint32_t mm = static_cast<uint32_t>((std::min)(apartWu * shot_lag::kMmPerWu, 4.0e9f));
-                    uint32_t prior = g_legacySeatAskMaxApartMm.load(std::memory_order_relaxed);
-                    while (mm > prior && !g_legacySeatAskMaxApartMm.compare_exchange_weak(prior, mm,
+                    const uint32_t mm = static_cast<uint32_t>((std::min)(reading.asideWu * shot_lag::kMmPerWu, 4.0e9f));
+                    uint32_t prior = g_legacySeatAskMaxAsideMm.load(std::memory_order_relaxed);
+                    while (mm > prior && !g_legacySeatAskMaxAsideMm.compare_exchange_weak(prior, mm,
                                                                                          std::memory_order_relaxed)) {}
                     g_legacySeatAskRefused.store(!s.askAgreement.Usable(), std::memory_order_relaxed);
+                    g_legacySeatAskLeadMm.store(static_cast<int32_t>(s.askAgreement.Lead() * shot_lag::kMmPerWu),
+                                                std::memory_order_relaxed);
                 }
             }
             from.asked = s.askOk && s.askAgreement.Usable();
             memcpy(from.askedPos, s.askPos, sizeof(from.askedPos));
+            memcpy(from.askedDir, s.askDir, sizeof(from.askedDir));
+            from.askedLeadWu = s.askAgreement.Lead();
+            from.pointValid = intentRead;
+            memcpy(from.point, intent.solvePoint, sizeof(from.point));
             from.askedVelValid = from.asked && s.askTrack.Velocity(120000, 30000, from.askedVel);
         }
         stock = seat_upstream::ChooseStockStart(from);
@@ -2522,18 +2532,20 @@ void LegacyDriveReport()
                     stockTotal += (starts[i] = g_legacySeatStockStart[i].exchange(0, std::memory_order_relaxed));
                 const uint32_t askAgreed = g_legacySeatAskAgreed.exchange(0, std::memory_order_relaxed);
                 const uint32_t askDisagreed = g_legacySeatAskDisagreed.exchange(0, std::memory_order_relaxed);
-                const uint32_t askApartMm = g_legacySeatAskMaxApartMm.exchange(0, std::memory_order_relaxed);
+                const uint32_t askAsideMm = g_legacySeatAskMaxAsideMm.exchange(0, std::memory_order_relaxed);
                 if (stockTotal || askAgreed || askDisagreed)
                     LOG("SHOT RECORD Halo 3 seated, stock line (the seat's tag as loaded: the line every machine "
                         "computes): of those, %u solved from %s, %u from %s, %u from %s. The asked camera against the "
-                        "game's own query start: within %.1f m %u times, further %u (at most %.2f m)%s",
+                        "game's own query line: on it (within %.1f m) %u times, off it %u (at most %.2f m aside); the "
+                        "query starts %.2f m ahead of the camera, and the solve starts there%s",
                         starts[static_cast<size_t>(SS::Evaluator)], seat_upstream::StockStartName(SS::Evaluator),
                         starts[static_cast<size_t>(SS::Asked)], seat_upstream::StockStartName(SS::Asked),
                         starts[static_cast<size_t>(SS::Query)], seat_upstream::StockStartName(SS::Query),
                         double(seat_upstream::AskAgreement::kAgreeWu * shot_lag::kMetresPerWu), askAgreed,
-                        askDisagreed, double(askApartMm) / 1000.0,
+                        askDisagreed, double(askAsideMm) / 1000.0,
+                        double(g_legacySeatAskLeadMm.load(std::memory_order_relaxed)) / 1000.0,
                         g_legacySeatAskRefused.load(std::memory_order_relaxed)
-                            ? "; the asked camera is NOT the one the game queries from here and is not used" : "");
+                            ? "; the asked camera is NOT on the line the game queries along here and is not used" : "");
                 // Once per fault: the chase path is no longer asked.
                 static bool s_chaseFaultLogged = false;
                 const bool chaseFaulted = g_halo3Dual.chaseFaulted.load(std::memory_order_acquire);

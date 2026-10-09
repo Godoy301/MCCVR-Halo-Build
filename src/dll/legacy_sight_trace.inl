@@ -792,41 +792,47 @@ int8_t LegacyFireTag(GameTitle title)
 // THE STOCK LINE'S START, AS THE GAME BUILT IT (Halo 3 seats; seat_upstream_logic.h 4b). With the seat's tag as
 // loaded the game queries a third-person seat's crosshair from its chase camera -- on this machine, on a lockstep
 // peer and on an unmodded host alike. That query's START for the local player's seat is published here from the
-// crosshair site and read at the stick call (LegacyDriveRecomposeSeated). The game runs the query when the gun
-// fires, so this is not the camera at every pass: it is the last of the stick call's sources, and the reference its
-// asked chase camera is checked against. It needs no hook on the unit camera evaluator.
+// crosshair site, with its direction, and read at the stick call (LegacyDriveRecomposeSeated). It is a point on the
+// camera's line and not the camera (the query starts at the shot origin's projection on that line), and the game
+// runs the query when the gun fires. So it is the last of the stick call's sources, and the line its asked chase
+// camera is checked against. It needs no hook on the unit camera evaluator.
 struct LegacySeatStockLine
 {
     SRWLOCK lock = SRWLOCK_INIT;
-    float start[3]{};
+    float start[3]{}, dir[3]{};
     uint64_t atUs = 0;
     uint32_t generation = 0;
 };
 LegacySeatStockLine g_legacySeatStockLine;
 
-void LegacySeatStockLinePublish(uint32_t generation, const float start[3])
+// `vector`: the query's own (any length; only its direction is kept).
+void LegacySeatStockLinePublish(uint32_t generation, const float start[3], const float vector[3])
 {
-    if (!generation || !shot_lag::Finite3(start))
+    float dir[3]{vector[0], vector[1], vector[2]};
+    if (!generation || !shot_lag::Finite3(start) || !shot_lag::Finite3(dir) || !seat_upstream::Normalize(dir))
         return;
     auto& line = g_legacySeatStockLine;
     AcquireSRWLockExclusive(&line.lock);
     memcpy(line.start, start, sizeof(line.start));
+    memcpy(line.dir, dir, sizeof(line.dir));
     line.atUs = Sight_NowUs();
     line.generation = generation;
     ReleaseSRWLockExclusive(&line.lock);
 }
-bool LegacySeatStockLineRead(uint32_t generation, uint64_t maxAgeUs, float start[3], uint64_t& atUs)
+bool LegacySeatStockLineRead(uint32_t generation, uint64_t maxAgeUs, float start[3], float dir[3], uint64_t& atUs)
 {
     auto& line = g_legacySeatStockLine;
     AcquireSRWLockShared(&line.lock);
     const bool fresh = generation && line.generation == generation && line.atUs;
     const uint64_t at = line.atUs;
-    float copy[3]{line.start[0], line.start[1], line.start[2]};
+    const float startCopy[3]{line.start[0], line.start[1], line.start[2]};
+    const float dirCopy[3]{line.dir[0], line.dir[1], line.dir[2]};
     ReleaseSRWLockShared(&line.lock);
     const uint64_t now = Sight_NowUs();
     if (!fresh || now < at || now - at > maxAgeUs)
         return false;
-    memcpy(start, copy, sizeof(copy));
+    memcpy(start, startCopy, sizeof(startCopy));
+    memcpy(dir, dirCopy, sizeof(dirCopy));
     atUs = at;
     return true;
 }
@@ -865,9 +871,11 @@ bool LegacySightReaimCrosshairQuery(GameTitle title, uint64_t flags, const float
     // ours.
     const bool localQuery = rayRead && LegacySightQueryIsLocal(title, ignoredA, ray, seated);
     // A Halo 3 seat whose simulation is the stock one (the tag as loaded): publish where the game's own line starts.
+    // Another occupant of the same vehicle names the same objects, so a fire known to be someone else's is left
+    // out; where no fire is tagged (the fire routine is not hooked) the ignore list alone decides.
     const bool stockSeat = title == GameTitle::Halo3 && seated && !Halo3SeatViewWritesTag();
-    if (stockSeat && localQuery)
-        LegacySeatStockLinePublish(generation, start);
+    if (stockSeat && localQuery && LegacyFireTag(title) != shot_lag::kFireOther)
+        LegacySeatStockLinePublish(generation, start, vector);
 #if HALOMCCVR_DEV_DIAGNOSTICS
     // The capture first, from the query as the game built it.
     if (title == GameTitle::Halo3 && seated && use != shot_lag::IntentUse::Missing)
