@@ -18280,6 +18280,30 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                                                 ? "no measured art on the quad yet"
                                                 : "art-centre readback unavailable");
                                 }
+                                // The other titles' quads are centred on the texture: the line says how
+                                // far that leaves the art from the aim point (degrees of the crosshair's
+                                // configured size, which the quad keeps at every distance).
+                                else if (g_authoredReticlePublishedCentre.valid)
+                                    LOG("RETICLE art centre (title %d): %+.3f right, %+.3f down of the "
+                                        "texture centre = %+.2f deg right, %+.2f deg down of the aim point "
+                                        "for a %.2f deg crosshair (ink %llu); the quad is centred on the "
+                                        "texture, not on the art",
+                                        static_cast<int>(reticleTitle),
+                                        g_authoredReticlePublishedCentre.u - 0.5f,
+                                        g_authoredReticlePublishedCentre.v - 0.5f,
+                                        (g_authoredReticlePublishedCentre.u - 0.5f) *
+                                            g_config.crosshair_size_deg,
+                                        (g_authoredReticlePublishedCentre.v - 0.5f) *
+                                            g_config.crosshair_size_deg,
+                                        g_config.crosshair_size_deg,
+                                        static_cast<unsigned long long>(
+                                            g_authoredReticlePublishedCentre.ink));
+                                else
+                                    LOG("RETICLE art centre (title %d): not measured (%s)",
+                                        static_cast<int>(reticleTitle),
+                                        g_authoredReticleCentreStaging
+                                            ? "no measured art on the quad yet"
+                                            : "art-centre readback unavailable");
                                 g_authoredReticleBlankHeld = 0;
                                 s_uploadsDone = 0;
                                 s_uploadsSkipped = 0;
@@ -18877,6 +18901,37 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                                 reticleOrigin.x + aimDir[0] * dist,
                                 reticleOrigin.y + aimDir[1] * dist,
                                 reticleOrigin.z + aimDir[2] * dist};
+#if HALOMCCVR_DEV_DIAGNOSTICS
+                            {
+                                // Dev: how the reticle is placed, once every two seconds. A quad nearer than the
+                                // point it marks sits inward of that point in each eye by the angle printed.
+                                static uint64_t lastDrawnLogMs = 0;
+                                const uint64_t drawnNowMs = GetTickCount64();
+                                if (drawnNowMs - lastDrawnLogMs >= 2000)
+                                {
+                                    lastDrawnLogMs = drawnNowMs;
+                                    float eyesApartM = 0.0f;
+                                    if (projection.viewCount == 2 && projectionViews.size() == 2)
+                                    {
+                                        const XrVector3f& a = projectionViews[0].pose.position;
+                                        const XrVector3f& b = projectionViews[1].pose.position;
+                                        eyesApartM = sqrtf((a.x - b.x) * (a.x - b.x) + (a.y - b.y) * (a.y - b.y) +
+                                                           (a.z - b.z) * (a.z - b.z));
+                                    }
+                                    const bool fromEye = reachNativeAim || tracedReticle || limitFromEye;
+                                    LOG("RETICLE as drawn (dev): %s, from %s, at %.2f m; eyes %.1f mm apart, so each "
+                                        "eye sees it %.2f deg inward of a distant point on the same line",
+                                        primaryBarrel ? "the weapon's barrel line"
+                                            : reachNativeAim ? "the game's own vehicle aim"
+                                            : limitFromEye ? "the seat's stop"
+                                            : tracedReticle ? "the traced eye ray" : "the controller's ray",
+                                        primaryBarrel ? "the barrel" : fromEye ? "the stereo centre eye"
+                                                                                 : "the controller",
+                                        dist, eyesApartM * 1000.0f,
+                                        dist > 0.01f ? atanf(0.5f * eyesApartM / dist) * 57.29578f : 0.0f);
+                                }
+                            }
+#endif
                             const float w = tracedReticle
                                 ? tracedPlacement.width_m
                                 : limitFromEye ? limitPlacement.width_m
