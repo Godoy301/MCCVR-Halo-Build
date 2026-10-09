@@ -10,9 +10,9 @@
 // own line was off the point is counted (SHOT REAIM's seated part: what an unmodded host, tracing along the
 // record's aim alone, would miss by). Only our seated unit, only while the seat's last write converged.
 //
-// A vehicle gun's cone is narrow, so its shot is in effect the barrel's line: the fire also hands that line, and
-// the seat's eye of the same fire, to the barrel's model (seat_barrel_logic.h), from which the seat drive aims the
-// BARREL through the point. With that, the crosshair line above runs beside the point by the barrel's offset.
+// The aim call's line is not the round's path: a tank's shell starts metres from it. The fire hands this call's
+// line and the seat's eye to the barrel's lane (halo2_direct_drive.inl), which keeps them for the round the fire
+// then creates and learns the barrel from THAT (seat_barrel_logic.h).
 std::atomic<uint64_t> g_halo2SeatFireApplied{0},g_halo2SeatFireThrough{0},g_halo2SeatFireSkipped{0};
 // Our unit's seat and its converged point, while its aim is converged (fire thread; guarded reads).
 bool Halo2SeatShotPoint(uint32_t unit,float point[3])
@@ -56,8 +56,8 @@ void Halo2SeatFireReaim(uint32_t unit,float* position,float* direction)
 }
 // The shot as the fire took it for our seat -- the barrel marker for a vehicle gun (its owner is the vehicle or a
 // turret on it), the unit's aim for a passenger's own weapon. Nothing of the shot is changed: this line is the
-// centre of the cone the engine pins the seated shot to. A vehicle gun's line teaches the barrel's model (every
-// build); the line against the traced point is the dev witness.
+// centre of the cone the engine pins the seated shot to. A vehicle gun's call is handed to the barrel's lane;
+// the line against the traced point is the dev witness.
 void Halo2SeatNoteFireLine(uint32_t owner,uint32_t weapon,int16_t barrel,const float* origin,
     const float* direction,const float* entryDirection)
 {

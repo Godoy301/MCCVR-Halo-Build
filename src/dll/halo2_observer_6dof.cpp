@@ -4038,6 +4038,7 @@ namespace
     void Halo2SeatBarrelLearn(uint32_t weapon, int16_t barrel, const float* origin, const float* direction,
                               const float* entryDirection) noexcept;
     bool Halo2SeatShotPoint(uint32_t unit, float point[3]);   // halo2_seat_fire.inl
+    void Halo2SeatBarrelNoteRound(const float spawn[3], const float forward[3], const float* velocity) noexcept;
 
     // The direction the owned on-foot unit aims along. Trace-and-reaim whenever it can resolve: the line
     // from the stock camera through the point the eye-anchored intent ray hits (`converged`). Without a
