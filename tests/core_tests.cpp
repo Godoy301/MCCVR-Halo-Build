@@ -1781,6 +1781,48 @@ int main()
               "art centre: an unmeasured sample keeps the centre; the first one sets it");
     }
     {
+        // The capture window follows art drawn away from the view's centre (a Halo 2 vehicle's reticle).
+        const auto at = [](float dxTexels, float dyTexels) {
+            AuthoredReticleArtCentre c{};
+            c.u = 0.5f + dxTexels / 512.0f;
+            c.v = 0.5f + dyTexels / 512.0f;
+            c.ink = 1000;
+            c.valid = true;
+            return c;
+        };
+        const auto step = [](ReticleCaptureFollow& f, const AuthoredReticleArtCentre& c, uint64_t capture,
+                             uint64_t now) { return f.Step(c, capture, now, 512.0f, 32.0f, 6.0f, 768.0f, 3); };
+        ReticleCaptureFollow follow{};
+        Check(!step(follow, at(10.0f, -20.0f), 5, 6) && follow.x == 0.0f && follow.y == 0.0f,
+              "capture follow: art near the middle is left where the capture puts it");
+        // A reticle drawn 236 px low, its lower half cut by the texture: the first centre is of what shows.
+        Check(step(follow, at(0.0f, 200.0f), 6, 7) && follow.y == 200.0f && follow.movedSerial == 7,
+              "capture follow: art far from the middle moves the window");
+        Check(!step(follow, at(0.0f, 200.0f), 7, 8) && follow.y == 200.0f,
+              "capture follow: a capture cut with the old window does not move the new one");
+        Check(step(follow, at(0.0f, 36.0f), 8, 9) && follow.y == 236.0f,
+              "capture follow: the whole art, now in view, takes the window the rest of the way");
+        Check(!step(follow, at(2.0f, -4.0f), 10, 11) && follow.y == 236.0f,
+              "capture follow: a moved window holds inside its deadband");
+        Check(step(follow, at(0.0f, 9.0f), 11, 12) && follow.y == 245.0f,
+              "capture follow: a moved window tracks past its deadband");
+        // Back on foot: the crosshair is in the middle of the view again, so far above the window.
+        Check(step(follow, at(0.0f, -240.0f), 13, 14) && follow.x == 0.0f && follow.y == 0.0f,
+              "capture follow: art back near the middle puts the window in the middle outright");
+        // Artless captures while away send the window home; in the middle they change nothing.
+        ReticleCaptureFollow away{};
+        (void)step(away, at(0.0f, 300.0f), 1, 2);
+        Check(!step(away, {}, 3, 4) && !step(away, {}, 4, 5) && step(away, {}, 5, 6) && away.y == 0.0f,
+              "capture follow: a window that finds no art goes back to the middle");
+        Check(!step(away, {}, 7, 8) && !step(away, {}, 8, 9) && !step(away, {}, 9, 10) && away.moves == 2,
+              "capture follow: no art in the middle is nothing to follow");
+        ReticleCaptureFollow outward{};
+        Check(step(outward, at(0.0f, 240.0f), 1, 2) && step(outward, at(0.0f, 240.0f), 3, 4) &&
+                  step(outward, at(0.0f, 240.0f), 5, 6) && step(outward, at(0.0f, 240.0f), 7, 8) &&
+                  outward.y == 768.0f && !step(outward, at(0.0f, 240.0f), 9, 10),
+              "capture follow: the window stops at its limit");
+    }
+    {
         AuthoredReticleRefreshState state{};
         Check(!ShouldUploadAuthoredReticle(
                   AuthoredReticleRefreshPolicy::IdentityAndColorState,
