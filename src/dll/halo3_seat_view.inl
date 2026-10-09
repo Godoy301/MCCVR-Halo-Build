@@ -13,10 +13,16 @@
 // uses). The relay runs on whichever thread the director runs on; it reads one atomic (the armed unit), which the
 // camera thread writes from the seat sampler (halo3_native_seat_patch.inl).
 //
-// LIFETIME. The relay holds the module's address, so it is built per module generation and retired with it: the
-// sites are restored first; the relay's memory is released only when its own count of threads inside it is zero
-// and no suspended thread's instruction pointer lies in it. Until then removal reports "not yet" and is retried,
-// like the other Halo 3 teardown steps.
+// LIFETIME. The relay holds the module's address, so it is built per module generation and retired with it. Two
+// rules hold on every path, teardown and a changed generation alike:
+//   * a site that still holds this relay's redirect is put back before anything is released or forgotten. Such a
+//     site is in the mapping it was patched in, whatever the generation says; a site whose bytes are not ours (the
+//     module is gone, or someone else wrote there) is left alone;
+//   * the relay's memory is released only when no site calls it, its own count of threads inside it is zero, and no
+//     suspended thread's instruction pointer lies in it.
+// Removal reports "not yet" and is retried, like the other Halo 3 teardown steps. If it cannot finish in its time
+// the teardown goes on, and the state is KEPT, marked retired: the relay then answers the game's own answer (no
+// unit is armed), and every poll goes on putting the sites back and releases the relay when it can.
 
 namespace
 {
@@ -36,29 +42,44 @@ struct Halo3SeatViewState
     bool unwindRegistered = false;
     Halo3SeatViewSite sites[seat_view::kDirectorSiteCount];
     bool standDown = false;              // a site turned out not to be ours: nothing more is redirected here
+    bool retired = false;                // torn down but not yet released: sites are only ever put back
     bool pendingLogged = false;
     uint32_t removeFailures = 0;
+};
+// An install that had to wait for another generation's relay to be retired: taken up again by the poll.
+struct Halo3SeatViewRetry
+{
+    uintptr_t base = 0;
+    size_t size = 0;
+    uint32_t generation = 0;
 };
 constexpr size_t kHalo3SeatViewRelayAllocation = 0x1000;
 constexpr size_t kHalo3SeatViewUnwindInfoOffset = 0x100;
 constexpr size_t kHalo3SeatViewUnwindEntryOffset = 0x140;
 
 Halo3SeatViewState g_halo3SeatView;                     // WaitThread only
+Halo3SeatViewRetry g_halo3SeatViewRetry;                // WaitThread only
 std::atomic<bool> g_halo3SeatViewRedirected{false};     // every director site calls the relay
 std::atomic<int32_t> g_halo3SeatViewUnit{-1};           // the occupant the director is told is first person
 volatile LONG g_halo3SeatViewInside = 0;                // threads inside the relay or below it (the relay counts)
-std::atomic<uint32_t> g_halo3SeatViewAsked{0}, g_halo3SeatViewAnswered{0};
+#if HALOMCCVR_DEV_DIAGNOSTICS
+std::atomic<uint32_t> g_halo3SeatViewAsked{0}, g_halo3SeatViewAnswered{0};   // the dev SEAT VIEW line
+#endif
 
 // The relay's second call, on the director's thread. Reads one atomic and the director's own local.
 int Halo3SeatViewAdjust(int unit, const int* state, int result) noexcept
 {
+#if HALOMCCVR_DEV_DIAGNOSTICS
     g_halo3SeatViewAsked.fetch_add(1, std::memory_order_relaxed);
+#endif
     if (result != seat_view::kThirdPerson || !state)
         return result;
     const int answer =
         seat_view::Decide(result, *state, unit, g_halo3SeatViewUnit.load(std::memory_order_acquire));
+#if HALOMCCVR_DEV_DIAGNOSTICS
     if (answer != result)
         g_halo3SeatViewAnswered.fetch_add(1, std::memory_order_relaxed);
+#endif
     return answer;
 }
 
@@ -242,6 +263,37 @@ bool Halo3SeatViewWanted()
     return g_config.vehicle_first_person && g_config.vehicle_hide_body && !Halo3SeatViewWritesTag();
 }
 
+// Put every site that still holds this relay's redirect back to the game's own call. A site whose bytes are no
+// longer the redirect (the module is gone, or someone else wrote there) is forgotten without a write, and `foreign`
+// says so. True: a site could not be put back yet (no thread freeze, or a thread inside the bytes) and still
+// calls the relay.
+bool Halo3SeatViewRestoreSites(Halo3SeatViewState& s, bool& foreign)
+{
+    bool busy = false;
+    for (Halo3SeatViewSite& site : s.sites)
+    {
+        if (!site.patched || !site.call)
+            continue;
+        const Halo3SeatViewSwap swap = Halo3SeatViewSwapBytes(site.call, site.redirect, site.stock);
+        if (swap == Halo3SeatViewSwap::Busy)
+            busy = true;
+        else
+        {
+            site.patched = false;
+            foreign = foreign || swap == Halo3SeatViewSwap::Foreign;
+        }
+    }
+    return busy;
+}
+
+void Halo3SeatViewNotePending(Halo3SeatViewState& s, const char* what)
+{
+    if (!s.pendingLogged)
+        LOG("Halo 3 seat view: %s is pending (thread snapshot unavailable or a thread inside the bytes); retrying",
+            what);
+    s.pendingLogged = true;
+}
+
 // WaitThread: bring the three sites in line with the setting. Cheap when nothing changes.
 void Halo3SeatViewApply(Halo3SeatViewState& s)
 {
@@ -249,18 +301,26 @@ void Halo3SeatViewApply(Halo3SeatViewState& s)
         return;
     if (TitleAdapter_GetGeneration(GameTitle::Halo3) != s.generation)
     {
-        // The module these sites were resolved in is gone or replaced: its bytes are not ours to touch. The relay
-        // is released only if nothing can still be inside it; otherwise it is left (4 KiB) rather than risked.
+        // Another generation: the module these sites were resolved in is gone, replaced, or still mapped and
+        // running under a new generation. Whichever it is, a site that still holds the redirect is put back first
+        // (LIFETIME above); only then is the relay released, and only if nothing can still be inside it. Otherwise
+        // it is left (4 KiB) rather than risked.
         g_halo3SeatViewRedirected.store(false, std::memory_order_release);
+        bool foreign = false;
+        if (Halo3SeatViewRestoreSites(s, foreign))
+        {
+            Halo3SeatViewNotePending(s, "the title generation changed; putting the director's call sites back");
+            return;
+        }
         const bool quiet = Halo3SeatViewRelayQuiet(s);
-        LOG("Halo 3 seat view: the title generation changed; forgetting the director's call sites without "
-            "writing%s", quiet ? "" : " (the relay is left in place: a thread is inside it)");
+        LOG("Halo 3 seat view: the title generation changed; no call site of the director goes through the relay "
+            "any more%s", quiet ? ", and it is released" : " (the relay is left in place: a thread is inside it)");
         if (quiet)
             Halo3SeatViewReleaseRelay(s);
         s = {};
         return;
     }
-    const bool want = !s.standDown && Halo3SeatViewWanted();
+    const bool want = !s.standDown && !s.retired && Halo3SeatViewWanted();
     bool all = true, any = false;
     for (const Halo3SeatViewSite& site : s.sites)
     {
@@ -268,17 +328,54 @@ void Halo3SeatViewApply(Halo3SeatViewState& s)
         any = any || site.patched;
     }
     if (want ? all : !any)
+    {
+        // Every site calls the relay (also a module taken up again after a teardown that could not finish).
+        if (want)
+            g_halo3SeatViewRedirected.store(true, std::memory_order_release);
+        // A teardown that ran out of time is finished here: every site is back, so the relay goes as soon as
+        // nothing is inside it.
+        if (s.retired && Halo3SeatViewRelayQuiet(s))
+        {
+            Halo3SeatViewReleaseRelay(s);
+            LOG("Halo 3 seat view: the director's calls are restored and the relay released");
+            s = {};
+        }
         return;
+    }
     if (!want)
+    {
         g_halo3SeatViewRedirected.store(false, std::memory_order_release);
+        bool foreign = false;
+        const bool busy = Halo3SeatViewRestoreSites(s, foreign);
+        if (foreign && !s.standDown && !s.retired)
+        {
+            // Someone else's bytes now: that site is not ours to write either way. Nothing more is redirected in
+            // this module.
+            LOG("Halo 3 seat view: a call site of the director is no longer the redirect this mod wrote; it is "
+                "left as it is, and seats keep the game's third-person view in this module");
+            s.standDown = true;
+        }
+        if (busy)
+        {
+            Halo3SeatViewNotePending(s, "putting the director's call sites back");
+            return;
+        }
+        s.pendingLogged = false;
+        if (!s.retired)
+            LOG("Halo 3 seat view: the director's calls are back to the game's own (%s)",
+                s.standDown ? "a call site is no longer this mod's"
+                : !g_config.vehicle_first_person || !g_config.vehicle_hide_body
+                    ? "vehicle_first_person / vehicle_hide_body off"
+                    : "seat_view_tag_write = 1: the seat's tag flag is written instead (dev A/B)");
+        return;
+    }
     bool busy = false;
     for (size_t i = 0; i < seat_view::kDirectorSiteCount; ++i)
     {
         Halo3SeatViewSite& site = s.sites[i];
-        if (site.patched == want)
+        if (site.patched)
             continue;
-        const Halo3SeatViewSwap swap = want ? Halo3SeatViewSwapBytes(site.call, site.stock, site.redirect)
-                                            : Halo3SeatViewSwapBytes(site.call, site.redirect, site.stock);
+        const Halo3SeatViewSwap swap = Halo3SeatViewSwapBytes(site.call, site.stock, site.redirect);
         if (swap == Halo3SeatViewSwap::Busy)
         {
             busy = true;
@@ -286,42 +383,30 @@ void Halo3SeatViewApply(Halo3SeatViewState& s)
         }
         if (swap == Halo3SeatViewSwap::Foreign)
         {
-            // Someone else's bytes now: this site is not ours to write either way. Stand down for this module;
-            // the next polls put back the sites that are still ours. The relay stays: a site may still call it.
+            // Someone else's bytes now: this site is not ours to write. Stand down for this module; the next
+            // polls put back the sites that are still ours. The relay stays: a site may still call it.
             LOG("Halo 3 seat view: the call at +0x%X (%s) is no longer the one verified at install; the director "
                 "keeps the game's own answer and seats keep the game's third-person view",
                 seat_view::kHalo3DirectorSites[i].anchorRva + seat_view::kHalo3DirectorSites[i].callOffset,
                 seat_view::kHalo3DirectorSites[i].what);
             g_halo3SeatViewRedirected.store(false, std::memory_order_release);
-            site.patched = false;
             s.standDown = true;
             return;
         }
-        site.patched = want;
+        site.patched = true;
     }
     if (busy)
     {
-        if (!s.pendingLogged)
-            LOG("Halo 3 seat view: redirecting the director's calls is pending (thread snapshot unavailable or a "
-                "thread inside the bytes); retrying");
-        s.pendingLogged = true;
+        Halo3SeatViewNotePending(s, "redirecting the director's calls");
         return;
     }
     s.pendingLogged = false;
-    if (want)
-    {
-        g_halo3SeatViewRedirected.store(true, std::memory_order_release);
-        LOG("Halo 3 seat view: the camera director is answered first person for the seat the mod's camera owns "
-            "(its three calls at +0x212074, +0x2127EF and +0x212DCB go through a relay at %p). The vehicle's data, "
-            "the game's own function and the simulation's call at +0x%X are untouched: shots, AI and every other "
-            "player's game see a stock seat",
-            static_cast<void*>(s.relay), seat_view::kHalo3EvaluatorCallRva);
-    }
-    else
-        LOG("Halo 3 seat view: the director's calls are back to the game's own (%s)",
-            !g_config.vehicle_first_person || !g_config.vehicle_hide_body
-                ? "vehicle_first_person / vehicle_hide_body off"
-                : "seat_view_tag_write = 1: the seat's tag flag is written instead (dev A/B)");
+    g_halo3SeatViewRedirected.store(true, std::memory_order_release);
+    LOG("Halo 3 seat view: the camera director is answered first person for the seat the mod's camera owns "
+        "(its three calls at +0x212074, +0x2127EF and +0x212DCB go through a relay at %p). The vehicle's data, "
+        "the game's own function and the simulation's call at +0x%X are untouched: shots, AI and every other "
+        "player's game see a stock seat",
+        static_cast<void*>(s.relay), seat_view::kHalo3EvaluatorCallRva);
 }
 } // namespace
 
@@ -354,15 +439,23 @@ bool Halo3SeatViewWritesTag()
 bool Halo3SeatViewInstall(uintptr_t base, size_t size, uint32_t generation)
 {
     Halo3SeatViewState& s = g_halo3SeatView;
+    g_halo3SeatViewRetry = {};
     if (s.relay && s.base == base && s.generation == generation)
     {
+        // The same module again (a teardown that could not finish, then a new install): the relay is taken up.
+        s.retired = false;
+        s.removeFailures = 0;
         Halo3SeatViewApply(s);
         return true;
     }
     if (s.relay)
-        Halo3SeatViewApply(s);   // another generation's: forgotten there
+        Halo3SeatViewApply(s);   // another generation's: its sites are put back and it is forgotten there
     if (s.relay)
-        return false;            // still held by a thread inside it; tried again on the next install
+    {
+        // Still held (a site not yet put back, or a thread inside it). The poll takes this install up again.
+        g_halo3SeatViewRetry = {base, size, generation};
+        return false;
+    }
     s = {};
     const char* why = nullptr;
     const seat_view::DirectorSite* failed = nullptr;
@@ -451,43 +544,39 @@ bool Halo3SeatViewInstall(uintptr_t base, size_t size, uint32_t generation)
 }
 
 // WaitThread, at title teardown: the sites go back to the game's own calls (only over our own bytes), then the
-// relay is released once nothing is inside it. False = try again.
+// relay is released once nothing is inside it. False = try again. After kHalo3SeatViewRemoveTries the teardown is
+// let through with the state kept and marked retired (LIFETIME above): nothing a site may still call is released,
+// and nothing that names a patched site is forgotten.
+constexpr uint32_t kHalo3SeatViewRemoveTries = 40;
 bool Halo3SeatViewRemove()
 {
     Halo3SeatViewState& s = g_halo3SeatView;
     Halo3SeatViewDisarm();
     g_halo3SeatViewRedirected.store(false, std::memory_order_release);
+    g_halo3SeatViewRetry = {};
     if (!s.relay)
     {
         s = {};
         return true;
     }
-    bool busy = false;
-    for (size_t i = 0; i < seat_view::kDirectorSiteCount; ++i)
+    if (s.retired)
+        return true;   // already let through once; the poll is finishing it
+    bool foreign = false;
+    const bool busy = Halo3SeatViewRestoreSites(s, foreign);
+    if (!busy && Halo3SeatViewRelayQuiet(s))
     {
-        Halo3SeatViewSite& site = s.sites[i];
-        if (!site.patched || !site.call)
-            continue;
-        const Halo3SeatViewSwap swap = Halo3SeatViewSwapBytes(site.call, site.redirect, site.stock);
-        if (swap == Halo3SeatViewSwap::Busy)
-            busy = true;
-        else
-            site.patched = false;   // restored, or no longer ours
-    }
-    const bool quiet = !busy && Halo3SeatViewRelayQuiet(s);
-    if (!quiet && ++s.removeFailures < 40)
-        return false;
-    if (!quiet)
-    {
-        // Never release memory a thread may return into: the relay (4 KiB) outlives the module instead.
-        LOG("Halo 3 seat view: the relay could not be retired at teardown (%s); left in place",
-            busy ? "a call site could not be restored" : "a thread is still inside it");
+        Halo3SeatViewReleaseRelay(s);
+        LOG("Halo 3 seat view: the director's calls are restored and the relay released at teardown");
         s = {};
         return true;
     }
-    Halo3SeatViewReleaseRelay(s);
-    LOG("Halo 3 seat view: the director's calls are restored and the relay released at teardown");
-    s = {};
+    if (++s.removeFailures < kHalo3SeatViewRemoveTries)
+        return false;
+    LOG("Halo 3 seat view: the relay could not be retired at teardown (%s). It is left in place and answers the "
+        "game's own answer; every poll goes on putting the director's calls back, and releases it when it can",
+        busy ? "a call site could not be put back" : "a thread is still inside it");
+    s.retired = true;
+    s.removeFailures = 0;
     return true;
 }
 
@@ -495,6 +584,14 @@ bool Halo3SeatViewRemove()
 void Halo3SeatViewSync()
 {
     Halo3SeatViewApply(g_halo3SeatView);
+    // An install that waited for another generation's relay: taken up once that relay is gone, for the generation
+    // it was asked for and no other.
+    if (!g_halo3SeatView.relay && g_halo3SeatViewRetry.generation &&
+        g_halo3SeatViewRetry.generation == TitleAdapter_GetGeneration(GameTitle::Halo3))
+    {
+        const Halo3SeatViewRetry retry = g_halo3SeatViewRetry;
+        (void)Halo3SeatViewInstall(retry.base, retry.size, retry.generation);
+    }
 #if HALOMCCVR_DEV_DIAGNOSTICS
     static uint64_t s_lastMs = 0;
     static uint32_t s_asked = 0, s_answered = 0;
