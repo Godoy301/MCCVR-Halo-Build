@@ -971,7 +971,10 @@ struct Config
     // has fired, the aim written for the seat is the one for which the barrel's line runs through the point;
     // the barrel's place is learned from the seat's own fires. 0 = the camera's line always. Only the written
     // aim changes (what the title replicates). Needs seat_direct_drive and converged_aim. Read live.
-    bool seat_aim_through_barrel = true;
+    // OFF by default: in a Scorpion the engine already places the round at the muzzle pointed at the point,
+    // and aiming the barrel as well changed nothing a player could see. Kept while the seat's rounds are
+    // being measured (the dev lines are printed whatever this says).
+    bool seat_aim_through_barrel = false;
 
     // rendering. The game's own HUD reticle sits at head-center and is wrong
     // whenever hand aim is on; this one is the truth.
