@@ -235,6 +235,8 @@ bool Halo2AsSeenFrameShows(const Halo2AsSeenFrame& frame, const Halo2AsSeenPendi
 // ---- the spawn: object_new from the fire routine --------------------------------------------------------------------
 void Halo2ImpactNoteSpawn(const float spawn[3], const float fwd[3], const float* velocity)
 {
+    // A seated fire's round is the barrel as it is (halo2_direct_drive.inl): where it starts, which way it flies.
+    Halo2SeatBarrelNoteRound(spawn, fwd, velocity);
     auto& w = g_halo2Impact;
     const auto request = g_halo2MuzzleRequest;
     const uint32_t owned = Halo2OwnedUnit();
