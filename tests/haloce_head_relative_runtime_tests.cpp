@@ -524,7 +524,7 @@ int main(int argc, char** argv)
                      "unproven=24; faults 0, mixed sample reads 0; draws while the frame was Anniversary's 1, "
                      "Classic's 24; ", afterRest) &&
                   Logged(threads, afterRest),
-              "the dev line (the first run's acceptance check): the three headings, their difference, the proof's "
+              "the dev line (the acceptance check): the three headings, their difference, the proof's "
               "counts, the refusals, the graphics mode of each draw and both threads");
         // The reading is there before anything is substituted: the first window, all of it unproven.
         Check(Logged("TRACKER HEAD Halo CE (dev): substituted 0; the game's heading 20.0 deg, the view frame's 20.0 "

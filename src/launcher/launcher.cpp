@@ -887,8 +887,7 @@ int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int showCommand)
         return 0;
     }
     // --headless (dev builds): launch THIS folder's mod. The menu's Launch always targets <game>\Halo_MCC_VR,
-    // so a side-by-side install in another folder is only ever launched from its own folder
-    // this way.
+    // so a side-by-side install in another folder is only ever launched from its own folder this way.
 #if HALOMCCVR_DEV_DIAGNOSTICS
     const bool headless = args && count == 2 && !wcscmp(args[1], L"--headless");
     g_headless = headless;

@@ -30343,7 +30343,7 @@ namespace
                                 plaus ? "(radians-plausible)" : "(zero/out-of-range)");
                         }
                         s_pcIdx = firstPlaus >= 0 ? firstPlaus : 0;
-                        LOG("REACHWP: player_control base=haloreach+0xC026F0 stride=0xB8 (REFUTED 2026-09-25 -- "
+                        LOG("REACHWP: player_control base=haloreach+0xC026F0 stride=0xB8 (REFUTED -- "
                             "use mode 3); watching slot %d desired_angles.yaw (+0x94)%s", s_pcIdx,
                             firstPlaus < 0 ? "  [NO plausible slot -- base is wrong]" : "");
                     }

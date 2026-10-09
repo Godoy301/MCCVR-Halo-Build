@@ -176,7 +176,7 @@ void TestReachStamps()
             Check(!free.heldAtLimit, "Reach: not limited, not held");
             Check(held.heldAtLimit == (wrote != 0), "Reach: held only when this update wrote");
         }
-    Check(changed == 0, "Reach: a seat limit does not change the converged claim (2026-10-01)");
+    Check(changed == 0, "Reach: a seat limit does not change the converged claim");
     Check(ReachStampUpdate(true, true, true).converged, "Reach: held at a seat's stop and still converged");
     Check(!ReachStampUpdate(false, true, true).converged, "Reach: nothing written, nothing claimed");
 

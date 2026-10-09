@@ -161,7 +161,7 @@ void Magnified()
     const float k = Magnification(kGameFov, kEyeFov);
     Check(Near(k, std::tan(55.0f * kDegToRad) / std::tan(30.6f * kDegToRad), 1.0e-4f),
           "the magnification is the ratio of the half-angles' tangents");
-    Check(k > 2.3f && k < 2.5f, "about 2.4 times at the session's angles");
+    Check(k > 2.3f && k < 2.5f, "about 2.4 times at the measured angles");
     Check(Magnification(kEyeFov, kEyeFov) == 1.0f, "the same field of view magnifies nothing");
     Check(Magnification(std::numeric_limits<float>::quiet_NaN(), kEyeFov) == 1.0f &&
               Magnification(kGameFov, 0.0f) == 1.0f,
@@ -201,7 +201,7 @@ void Projection()
     Check(ProjectToRaster(camera, point, kWidth, kHeight, pixel) && Near(pixel[1], 0.0f, 0.05f),
           "the vertical half-angle is the raster's top edge");
     const float halfHorizontal = std::atan(std::tan(55.0f * kDegToRad) * kWidth / kHeight) * kRadToDeg;
-    Check(Near(halfHorizontal, 63.2f, 0.1f), "the session's horizontal cover follows from the vertical and the aspect");
+    Check(Near(halfHorizontal, 63.2f, 0.1f), "the measured horizontal cover follows from the vertical and the aspect");
     PointAt(camera, halfHorizontal, 0.0f, 10.0f, point);
     Check(ProjectToRaster(camera, point, kWidth, kHeight, pixel) && Near(pixel[0], kWidth, 0.05f),
           "the horizontal half-angle is the raster's right edge");
@@ -901,7 +901,7 @@ void RingGeometry()
     for (float cant : {0.0f, 5.0f})
     {
         SessionEyes(eyes, cant);
-        Check(SharedField(eyes, shared), "the session's eyes share a field");
+        Check(SharedField(eyes, shared), "the measured eyes share a field");
         const RingField ring = HeadRing(shared);
         const RingField gameRing = GameRing(kEyeFov, 920.0f / 690.0f);
         for (float headYaw : {0.0f, 130.0f})

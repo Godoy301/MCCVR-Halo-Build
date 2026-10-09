@@ -47,7 +47,7 @@ int main()
         const Params params;
         Check(params.posMinHz == 1.3f && params.posBeta == 500.0f && params.rotMinHz == 1.3f &&
                   params.rotBeta == 5.0f && params.speedCutoffHz == 10.0f,
-              "the filter's defaults are the numbers the headset session settled on");
+              "the filter's defaults");
         Check(kCampaignEvolvedPosMinHz == 1.0f && kCampaignEvolvedRotMinHz == 1.0f,
               "Campaign Evolved's own steadiness cutoffs are kept for the record");
         const Config config{};
