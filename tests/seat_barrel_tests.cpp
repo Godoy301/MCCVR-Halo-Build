@@ -1,5 +1,6 @@
 // Aiming a seat's gun through the point (src/common/seat_barrel_logic.h): the barrel's geometry learned from the
-// lines of the seat's own fires, and the aim for which the barrel's line runs through a point. The fixture is a
+// lines of the seat's own fires, the aim for which the barrel's line runs through a point, and the push that
+// takes up a barrel settling a little off the aim it is given. The fixture is a
 // synthetic vehicle: a seat's eye fixed in the hull, a turret pivot elsewhere in the hull, a barrel beside and
 // above its pivot, turning with the aim.
 #include "seat_barrel_logic.h"
@@ -279,6 +280,135 @@ void TestBadFireDoesNotLock()
     const double miss = v.MissAt(model, point);
     Check(miss >= 0.0 && miss < 0.03, "and the fit recovers after the good fires that follow");
 }
+
+// A turret whose barrel settles a fixed step off the aim it is given (right and up, radians), and an engine that
+// turns the shot toward the point inside a cone about the barrel (0: the shot is the barrel).
+struct Turret
+{
+    Vehicle v{};
+    double errorRight = 0.0, errorUp = 0.0, cone = 0.0;
+
+    // The fire for a written aim: the barrel's own direction, then the engine's turn toward the point.
+    void Fire(const float aim[3], const float point[3], float origin[3], float shot[3]) const
+    {
+        double d[3]{aim[0], aim[1], aim[2]}, right[3]{}, up[3]{};
+        Normalize(d);
+        AimAxes(v.hull, d, right, up);
+        double barrel[3]{d[0] + errorRight * right[0] + errorUp * up[0], d[1] + errorRight * right[1] + errorUp * up[1],
+                         d[2] + errorRight * right[2] + errorUp * up[2]};
+        Normalize(barrel);
+        float direction[3]{};
+        v.Barrel(barrel, origin, direction);
+        double wanted[3]{double(point[0]) - origin[0], double(point[1]) - origin[1], double(point[2]) - origin[2]};
+        Normalize(wanted);
+        const double angle = std::acos(std::fmin(1.0, Dot(barrel, wanted)));
+        double out[3]{barrel[0], barrel[1], barrel[2]};
+        if (angle > 1e-12)
+        {
+            const double t = std::fmin(1.0, cone / angle);
+            for (int i = 0; i < 3; ++i)
+                out[i] = barrel[i] + (wanted[i] - barrel[i]) * t;
+            Normalize(out);
+        }
+        for (int i = 0; i < 3; ++i)
+            shot[i] = static_cast<float>(out[i]);
+    }
+    // Fires `rounds` at the point, learning from each, and returns the last shot's miss at the point.
+    double Shoot(Model& model, Pointing& pointing, const float point[3], int rounds) const
+    {
+        double miss = -1.0;
+        for (int round = 0; round < rounds; ++round)
+        {
+            float aim[3]{float(point[0] - v.eye[0]), float(point[1] - v.eye[1]), float(point[2] - v.eye[2])};
+            const bool hadModel = model.fires() != 0;
+            if (hadModel && model.Aim(v.hull, v.eye, point, aim))
+                pointing.Apply(v.hull, aim);
+            float origin[3]{}, shot[3]{};
+            Fire(aim, point, origin, shot);
+            const double o[3]{origin[0], origin[1], origin[2]}, s[3]{shot[0], shot[1], shot[2]},
+                p[3]{point[0], point[1], point[2]};
+            miss = LineMiss(o, s, p);
+            model.Learn(v.hull, v.eye, origin, shot);
+            if (hadModel)
+                pointing.Learn(v.hull, origin, shot, point);
+        }
+        return miss;
+    }
+};
+
+void TestPointing()
+{
+    // The barrel settles 0.9 degrees right and 0.3 up of the aim; the engine does not turn the shot at all.
+    Turret t{};
+    t.v = Tank();
+    t.errorRight = 0.9 * kDegToRad;
+    t.errorUp = 0.3 * kDegToRad;
+    float point[3]{};
+    PointAlong(t.v, 15.0, 4.0, 60.0, point);
+    {
+        Model model;
+        Pointing pointing;
+        const double first = t.Shoot(model, pointing, point, 1);
+        Check(first > 0.5, "fixture: the first shot misses a point 60 wu away by more than half a world unit");
+        const double second = t.Shoot(model, pointing, point, 1);
+        Check(second > 0.5, "the second shot has the barrel's place and still misses: the barrel points off the aim");
+        const double third = t.Shoot(model, pointing, point, 1);
+        Check(third < 0.3 * second, "the third shot is pushed by the second's residual and lands much nearer");
+        const double later = t.Shoot(model, pointing, point, 4);
+        Check(later < 0.02, "a few shots on, the shot's line runs through the point");
+        Check(pointing.fires >= 5, "each of those fires was learned");
+        // Another range on the same heading needs no new learning: the push is an angle.
+        float far[3]{};
+        PointAlong(t.v, 15.0, 4.0, 240.0, far);
+        Check(t.Shoot(model, pointing, far, 1) < 0.08, "the same push serves another range on that heading");
+    }
+    {
+        // The engine turns the shot toward the point inside half a degree: the push stops growing once the barrel
+        // is inside the cone, and the shot is then exact.
+        t.cone = 0.5 * kDegToRad;
+        Model model;
+        Pointing pointing;
+        const double later = t.Shoot(model, pointing, point, 6);
+        Check(later < 0.01, "with a cone the engine closes the last of it and the shot is on the point");
+        const double pushDeg = std::sqrt(pointing.right * pointing.right + pointing.up * pointing.up) / kDegToRad;
+        Check(pushDeg > 0.3 && pushDeg < 1.2, "and the push is no more than the barrel's own error");
+        t.cone = 0.0;
+    }
+    {
+        // A fire far off the aim (the turret was still turning) teaches nothing.
+        Pointing pointing;
+        float origin[3]{}, shot[3]{};
+        float aim[3]{float(point[0] - t.v.eye[0]), float(point[1] - t.v.eye[1]), float(point[2] - t.v.eye[2])};
+        Turret lagging = t;
+        lagging.errorRight = 6.0 * kDegToRad;
+        lagging.Fire(aim, point, origin, shot);
+        Check(!pointing.Learn(t.v.hull, origin, shot, point) && pointing.fires == 0,
+              "a residual past the limit is the turret not being on the aim: not learned");
+        float direction[3]{aim[0], aim[1], aim[2]};
+        Check(pointing.Apply(t.v.hull, direction) && direction[0] == aim[0], "and an unlearned push changes nothing");
+    }
+    {
+        // The push is capped.
+        Pointing pointing;
+        Turret wild = t;
+        wild.errorRight = 2.5 * kDegToRad;
+        Model model;
+        for (int round = 0; round < 12; ++round)
+        {
+            float aim[3]{float(point[0] - t.v.eye[0]), float(point[1] - t.v.eye[1]), float(point[2] - t.v.eye[2])};
+            float origin[3]{}, shot[3]{};
+            wild.Fire(aim, point, origin, shot);   // the aim is never pushed here: the residual keeps coming
+            pointing.Learn(t.v.hull, origin, shot, point);
+        }
+        const double pushDeg = std::sqrt(pointing.right * pointing.right + pointing.up * pointing.up) / kDegToRad;
+        Check(pushDeg <= kMaxPointingDeg + 1e-9 && pushDeg > kMaxPointingDeg - 0.01, "the push stops at its cap");
+        const float nan = std::numeric_limits<float>::quiet_NaN();
+        float bad[3]{nan, 0.0f, 0.0f}, origin[3]{}, shot[3]{1.0f, 0.0f, 0.0f};
+        double r = 0.0, u = 0.0;
+        Check(!Pointing::Residual(t.v.hull, origin, shot, bad, r, u) && !Pointing::Residual(t.v.hull, origin, bad, point, r, u),
+              "a residual of values that are not numbers is none");
+    }
+}
 }   // namespace
 
 int main()
@@ -290,6 +420,7 @@ int main()
     TestChildTurret();
     TestRefusals();
     TestBadFireDoesNotLock();
+    TestPointing();
     std::printf("seat_barrel_tests: %u checks, %u failures\n", checks, failures);
     return failures ? 1 : 0;
 }

@@ -132,12 +132,32 @@ struct Halo2SeatBarrelState
         uint32_t weapon = UINT32_MAX;
         int16_t barrel = -1;
         seat_barrel::Model model;
+        seat_barrel::Pointing pointing;   // the barrel settling a little off the aim: taken up from steady fires
     } guns[2];
     int active = -1;              // the gun fired last: the one the aim is solved for
     float fireEye[3]{};
     bool fireEyeKnown = false;    // this fire's camera answer was our seat's (taken by the fire's line, or dropped)
-    std::atomic<uint32_t> learned{0}, aimed{0}, byEye{0}, declined{0}, noFrame{0};
+    float lastCameraAim[3]{};     // the last update's aim along the camera's line, and for how many updates in a
+    uint32_t steady = 0;          // row it has kept still: only a fire of a steady aim teaches the pointing
+    bool lastSolved = false;      // the last update's write was the barrel's (the residual is then the barrel's own)
+    std::atomic<uint32_t> learned{0}, pointed{0}, unsteady{0}, aimed{0}, byEye{0}, declined{0}, noFrame{0};
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    // The last fires, for the cold report (dev): what each showed.
+    struct FireNote
+    {
+        float rangeWu = 0, residualRightDeg = 0, residualUpDeg = 0, pushRightDeg = 0, pushUpDeg = 0;
+        float entryVsResultDeg = -1, barrelFromEyeWu = 0;
+        uint32_t steady = 0, modelFires = 0;
+        int16_t barrel = -1;
+        uint8_t taught = 0;       // 1: the pointing learned from it; 2: not steady; 3: no barrel write before it;
+    } notes[8];                   // 4: residual past the limit or no frame
+    uint32_t noteCount = 0, noteReported = 0;
+#endif
 } g_halo2SeatBarrel;
+// The aim counts as steady when it turned less than this between two control updates, for this many in a row
+// (about half a second): long enough for a turret to have settled on it.
+constexpr float kHalo2SeatBarrelSteadyCos = 0.99999391f;   // cos(0.2 deg)
+constexpr uint32_t kHalo2SeatBarrelSteadyUpdates = 24;
 
 // Sim thread, every seated control update: which seat this is and whether it aims the vehicle's gun. Another seat
 // forgets the guns.
@@ -152,6 +172,8 @@ void Halo2SeatBarrelNoteSeat(uint32_t stance, bool gunner) noexcept
             gun = {};
         s.active = -1;
         s.fireEyeKnown = false;
+        s.steady = 0;
+        s.lastSolved = false;
         s.stance = stance;
     }
     s.gunner = gunner;
@@ -191,7 +213,8 @@ bool Halo2SeatBarrelSeatedGun(uint32_t unit, uint32_t weapon, uint32_t& parent, 
 }
 
 // Fire thread: one seated fire's own line. Learned when our seat aims the vehicle's gun and the weapon is one.
-void Halo2SeatBarrelLearn(uint32_t weapon, int16_t barrel, const float* origin, const float* direction) noexcept
+void Halo2SeatBarrelLearn(uint32_t weapon, int16_t barrel, const float* origin, const float* direction,
+                          const float* entryDirection) noexcept
 {
     auto& s = g_halo2SeatBarrel;
     const uint32_t unit = Halo2OwnedUnit();
@@ -206,6 +229,10 @@ void Halo2SeatBarrelLearn(uint32_t weapon, int16_t barrel, const float* origin, 
         seat_barrel::MakeFrame(forward, up, hull);
     if (usable && !framed)
         s.noFrame.fetch_add(1, std::memory_order_relaxed);
+    // The point this fire was aimed at (the seat's converged point now), taken before the lock: it solves the
+    // seat's aim, which takes the lock itself.
+    float point[3]{};
+    const bool pointKnown = framed && Halo2SeatShotPoint(unit, point);
     if (s.busy.test_and_set(std::memory_order_acquire))
         return;
     const bool eyeKnown = s.fireEyeKnown;
@@ -223,7 +250,63 @@ void Halo2SeatBarrelLearn(uint32_t weapon, int16_t barrel, const float* origin, 
             s.guns[slot].weapon = weapon;
             s.guns[slot].barrel = barrel;
         }
-        if (s.guns[slot].model.Learn(hull, s.fireEye, origin, direction))
+        // The pointing first, from the shot as it was aimed: only when this gun's barrel was the write (so the
+        // residual is the barrel's own and not its place, which the model takes below) and the aim had kept
+        // still long enough for the turret to settle.
+        auto& gun = s.guns[slot];
+        const bool barrelWrite = s.active == slot && s.lastSolved && gun.model.fires() != 0;
+        const bool steady = s.steady >= kHalo2SeatBarrelSteadyUpdates;
+        uint8_t taught = 3;
+        if (pointKnown && barrelWrite)
+        {
+            if (!steady)
+            {
+                taught = 2;
+                s.unsteady.fetch_add(1, std::memory_order_relaxed);
+            }
+            else if (gun.pointing.Learn(hull, origin, direction, point))
+            {
+                taught = 1;
+                s.pointed.fetch_add(1, std::memory_order_relaxed);
+            }
+            else
+                taught = 4;
+        }
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        {
+            auto& note = s.notes[s.noteCount % 8];
+            note = {};
+            note.barrel = barrel;
+            note.taught = taught;
+            note.steady = s.steady;
+            note.modelFires = gun.model.fires();
+            double r = 0.0, u = 0.0;
+            if (pointKnown && seat_barrel::Pointing::Residual(hull, origin, direction, point, r, u))
+            {
+                note.residualRightDeg = static_cast<float>(r / seat_barrel::kDegToRad);
+                note.residualUpDeg = static_cast<float>(u / seat_barrel::kDegToRad);
+                const float d[3]{point[0] - origin[0], point[1] - origin[1], point[2] - origin[2]};
+                note.rangeWu = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+            }
+            note.pushRightDeg = static_cast<float>(gun.pointing.right / seat_barrel::kDegToRad);
+            note.pushUpDeg = static_cast<float>(gun.pointing.up / seat_barrel::kDegToRad);
+            if (entryDirection)
+            {
+                const float dot = entryDirection[0] * direction[0] + entryDirection[1] * direction[1] +
+                    entryDirection[2] * direction[2];
+                const float lengthSq = entryDirection[0] * entryDirection[0] + entryDirection[1] * entryDirection[1] +
+                    entryDirection[2] * entryDirection[2];
+                note.entryVsResultDeg = lengthSq > 0.98f && lengthSq < 1.02f
+                    ? std::acos(std::clamp(dot / std::sqrt(lengthSq), -1.0f, 1.0f)) * 57.29578f : -2.0f;
+            }
+            const float e[3]{origin[0] - s.fireEye[0], origin[1] - s.fireEye[1], origin[2] - s.fireEye[2]};
+            note.barrelFromEyeWu = std::sqrt(e[0] * e[0] + e[1] * e[1] + e[2] * e[2]);
+            ++s.noteCount;
+        }
+#else
+        (void)entryDirection;
+#endif
+        if (gun.model.Learn(hull, s.fireEye, origin, direction))
         {
             s.active = slot;
             s.learned.fetch_add(1, std::memory_order_relaxed);
@@ -240,6 +323,10 @@ void Halo2SeatBarrelAim(uint32_t unit, uint32_t stance, const float eye[3], cons
     auto& s = g_halo2SeatBarrel;
     if (!g_config.seat_aim_through_barrel || s.busy.test_and_set(std::memory_order_acquire))
         return;
+    // How long the aim has kept still, judged on the camera's line (what the hand asks for, before any push).
+    const float turn = bent[0] * s.lastCameraAim[0] + bent[1] * s.lastCameraAim[1] + bent[2] * s.lastCameraAim[2];
+    s.steady = turn >= kHalo2SeatBarrelSteadyCos ? s.steady + 1 : 0;
+    std::memcpy(s.lastCameraAim, bent, sizeof(s.lastCameraAim));
     bool solved = false;
     if (s.stance == stance && s.gunner && s.active >= 0 && s.guns[s.active].model.fires())
     {
@@ -252,10 +339,12 @@ void Halo2SeatBarrelAim(uint32_t unit, uint32_t stance, const float eye[3], cons
             s.declined.fetch_add(1, std::memory_order_relaxed);
         else
         {
+            s.guns[s.active].pointing.Apply(hull, aim);   // the barrel's own error at this heading
             std::memcpy(bent, aim, sizeof(aim));
             solved = true;
         }
     }
+    s.lastSolved = solved;
     s.busy.clear(std::memory_order_release);
     (solved ? s.aimed : s.byEye).fetch_add(1, std::memory_order_relaxed);
 }
@@ -979,12 +1068,42 @@ void ReportHalo2Drive() noexcept
                    barrelByEye = barrel.byEye.exchange(0, std::memory_order_relaxed),
                    barrelLearned = barrel.learned.exchange(0, std::memory_order_relaxed),
                    barrelDeclined = barrel.declined.exchange(0, std::memory_order_relaxed),
-                   barrelNoFrame = barrel.noFrame.exchange(0, std::memory_order_relaxed);
+                   barrelNoFrame = barrel.noFrame.exchange(0, std::memory_order_relaxed),
+                   barrelPointed = barrel.pointed.exchange(0, std::memory_order_relaxed),
+                   barrelUnsteady = barrel.unsteady.exchange(0, std::memory_order_relaxed);
     if (barrelAimed || barrelLearned || barrelDeclined || barrelNoFrame)
         LOG("Halo 2 DRIVE seats: the gun's barrel was aimed through the point on %u updates (its place learned from "
-            "%u fires in this window); the seat's camera line was kept on %u (no fire of this seat's gun yet, or: "
-            "the point too near the barrel or too far off the camera's line %u, the vehicle's frame unread %u)",
-            barrelAimed, barrelLearned, barrelByEye, barrelDeclined, barrelNoFrame);
+            "%u fires in this window, its pointing corrected from %u; %u fires came while the aim was moving and "
+            "corrected nothing); the seat's camera line was kept on %u (no fire of this seat's gun yet, or: the "
+            "point too near the barrel or too far off the camera's line %u, the vehicle's frame unread %u)",
+            barrelAimed, barrelLearned, barrelPointed, barrelUnsteady, barrelByEye, barrelDeclined, barrelNoFrame);
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    {
+        // One line per fire since the last report (the newest eight).
+        Halo2SeatBarrelState::FireNote notes[8];
+        uint32_t count = 0, reported = 0;
+        if (!barrel.busy.test_and_set(std::memory_order_acquire))
+        {
+            count = barrel.noteCount;
+            reported = barrel.noteReported;
+            std::memcpy(notes, barrel.notes, sizeof(notes));
+            barrel.noteReported = count;
+            barrel.busy.clear(std::memory_order_release);
+        }
+        static const char* const kTaught[]{"?", "pointing corrected from it", "the aim was moving: not used",
+            "no barrel write before it: its place only", "residual past the limit: not used"};
+        for (uint32_t i = count - reported > 8 ? count - 8 : reported; i < count; ++i)
+        {
+            const auto& n = notes[i % 8];
+            LOG("Halo 2 DRIVE seats (dev) gun fire %u: barrel %d at %.1f wu; the shot against the point: right %+.2f "
+                "up %+.2f deg (%s; steady %u updates); the push is now right %+.2f up %+.2f deg; the direction "
+                "the fire came in with against its result %.2f deg; the shot's origin %.2f wu from the seat's "
+                "eye; %u fires in the place model",
+                i + 1, n.barrel, n.rangeWu, n.residualRightDeg, n.residualUpDeg, kTaught[n.taught < 5 ? n.taught : 0],
+                n.steady, n.pushRightDeg, n.pushUpDeg, n.entryVsResultDeg, n.barrelFromEyeWu, n.modelFires);
+        }
+    }
+#endif
     // What the seat's proof was judged against (seat_converge::SeatAimReference), in every build: the unit's own
     // aiming vector, and how far the observer camera's forward sat off it.
     const uint32_t unitRefs = st.seatUnitAimRefs.exchange(0, std::memory_order_relaxed),

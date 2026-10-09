@@ -22,7 +22,8 @@
 //
 // The aim is then solved by a few fixed-point steps (the anchor turns with the aim). The model says nothing about
 // whether the gun can REACH the aim: a turret still turning, or a gun at its stop, fires where it points, which is
-// the seat's natural limit and is left to the engine.
+// the seat's natural limit and is left to the engine. A barrel that settles a little off the aim it was given is
+// another matter, and has its own correction (Pointing, below).
 //
 // Only the aim's direction comes out of this, and the caller writes it into the record the title replicates.
 //
@@ -231,6 +232,85 @@ private:
     double x_[5]{};       // pivot from the eye in the vehicle's frame (f, l, u), then the barrel's right and up
     double p_[5][5]{};
     uint32_t fires_ = 0;
+};
+
+// THE BARREL'S POINTING ERROR. A turret does not point exactly along the aim it is given: its pose is blended from
+// authored aiming poses and comes out a fraction of a degree to a degree off, differently at each heading, and the
+// engine's turn toward the crosshair's point (inside the weapon's deviation cone) takes up only part of that. Seen
+// in a Halo 2 Scorpion: with the barrel's place corrected the shells still left 0.8 to 0.9 degrees off the point at
+// every range. What a fire shows is the result: the shot's own line against the point it was aimed at. The written
+// aim is pushed by that residual (an integral step per fire), so the next shot at that heading leaves through the
+// point, or inside the cone that the engine then closes itself. Only a fire whose aim had been steady is used: a
+// turret still turning toward a moving aim is the seat's natural limit, not an error to learn.
+inline constexpr double kDegToRad = 0.017453292519943295;
+inline constexpr double kPointingGain = 0.8;        // of a fire's residual, taken into the push
+inline constexpr double kMaxResidualDeg = 3.0;      // a fire further off than this was not on the aim: not learned
+inline constexpr double kMaxPointingDeg = 4.0;      // the push never exceeds this
+
+struct Pointing
+{
+    double right = 0.0, up = 0.0;   // radians in the aim's frame: how far the written aim is pushed
+    uint32_t fires = 0;
+
+    void Reset()
+    {
+        right = up = 0.0;
+        fires = 0;
+    }
+
+    // Where the shot should have gone minus where it went, in the aim's frame of the direction from the shot's
+    // origin to the point (radians; small angles). False: a value that is not a number, or no frame.
+    static bool Residual(const Frame& hull, const float origin[3], const float shot[3], const float point[3],
+                         double& outRight, double& outUp)
+    {
+        if (!Finite3(origin) || !Finite3(shot) || !Finite3(point))
+            return false;
+        double wanted[3]{double(point[0]) - origin[0], double(point[1]) - origin[1], double(point[2]) - origin[2]};
+        double went[3]{shot[0], shot[1], shot[2]};
+        double right[3]{}, up[3]{};
+        if (!Normalize(wanted) || !Normalize(went) || !AimAxes(hull, wanted, right, up))
+            return false;
+        const double e[3]{wanted[0] - went[0], wanted[1] - went[1], wanted[2] - went[2]};
+        outRight = Dot(e, right);
+        outUp = Dot(e, up);
+        return std::isfinite(outRight) && std::isfinite(outUp);
+    }
+
+    // One steady fire. False (nothing learned): no residual, or one larger than kMaxResidualDeg.
+    bool Learn(const Frame& hull, const float origin[3], const float shot[3], const float point[3])
+    {
+        double r = 0.0, u = 0.0;
+        if (!Residual(hull, origin, shot, point, r, u) || !(std::sqrt(r * r + u * u) <= kMaxResidualDeg * kDegToRad))
+            return false;
+        right += kPointingGain * r;
+        up += kPointingGain * u;
+        const double size = std::sqrt(right * right + up * up), cap = kMaxPointingDeg * kDegToRad;
+        if (size > cap)
+        {
+            right *= cap / size;
+            up *= cap / size;
+        }
+        if (fires < UINT32_MAX)
+            ++fires;
+        return true;
+    }
+
+    // `direction` in: where the barrel should point. Out: the aim to write for it. False (direction untouched): no
+    // frame for that direction.
+    bool Apply(const Frame& hull, float direction[3]) const
+    {
+        if (!fires || (right == 0.0 && up == 0.0))
+            return true;
+        double g[3]{direction[0], direction[1], direction[2]}, r[3]{}, u[3]{};
+        if (!Finite3(direction) || !Normalize(g) || !AimAxes(hull, g, r, u))
+            return false;
+        double d[3]{g[0] + right * r[0] + up * u[0], g[1] + right * r[1] + up * u[1], g[2] + right * r[2] + up * u[2]};
+        if (!Normalize(d))
+            return false;
+        for (int i = 0; i < 3; ++i)
+            direction[i] = static_cast<float>(d[i]);
+        return true;
+    }
 };
 
 // How far a line passes from a point (world units): the dev witness's measure, and the tests'.
