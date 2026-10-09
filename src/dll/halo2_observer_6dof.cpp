@@ -4035,8 +4035,9 @@ namespace
     int Halo2DriveOccupancy(uint32_t& parent, int16_t& seat) noexcept;
     // Aiming a seat's gun through the point (seat_barrel_logic.h; halo2_direct_drive.inl): what a fire shows.
     void Halo2SeatBarrelNoteEye(const float* eye) noexcept;
-    void Halo2SeatBarrelLearn(uint32_t weapon, int16_t barrel, const float* origin,
-                              const float* direction) noexcept;
+    void Halo2SeatBarrelLearn(uint32_t weapon, int16_t barrel, const float* origin, const float* direction,
+                              const float* entryDirection) noexcept;
+    bool Halo2SeatShotPoint(uint32_t unit, float point[3]);   // halo2_seat_fire.inl
 
     // The direction the owned on-foot unit aims along. Trace-and-reaim whenever it can resolve: the line
     // from the stock camera through the point the eye-anchored intent ray hits (`converged`). Without a

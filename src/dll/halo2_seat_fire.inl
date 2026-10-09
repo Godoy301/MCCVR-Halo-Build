@@ -59,11 +59,11 @@ void Halo2SeatFireReaim(uint32_t unit,float* position,float* direction)
 // centre of the cone the engine pins the seated shot to. A vehicle gun's line teaches the barrel's model (every
 // build); the line against the traced point is the dev witness.
 void Halo2SeatNoteFireLine(uint32_t owner,uint32_t weapon,int16_t barrel,const float* origin,
-    const float* direction)
+    const float* direction,const float* entryDirection)
 {
     const uint32_t unit=Halo2OwnedUnit();
     if(unit==UINT32_MAX||!Halo2OwnedUnitSeated()||!shot_lag::Finite3(origin)||!shot_lag::Finite3(direction))return;
-    Halo2SeatBarrelLearn(weapon,barrel,origin,direction);
+    Halo2SeatBarrelLearn(weapon,barrel,origin,direction,entryDirection);
 #if HALOMCCVR_DEV_DIAGNOSTICS
     bool ours=owner==unit;
     if(!ours)
