@@ -87,6 +87,11 @@ public:
 };
 
 
+// Halo 3's seat view (halo3_seat_view.inl in the mod): whether the seat's tag is written (the dev A/B key). The
+// checks that predate it run with the tag written, the case the skip exists for.
+static bool g_seatViewWritesTag = true;
+bool Halo3SeatViewWritesTag() { return g_seatViewWritesTag; }
+
 #include "../src/dll/seat_aim_world_frame.inl"
 
 // ---- the fixture ---------------------------------------------------------------------------------------------
@@ -191,6 +196,7 @@ void ResetWorld()
     g_config.vehicle_first_person = true;
     g_config.vehicle_hide_body = true;
     g_config.seat_aim_world_frame = 1;
+    g_seatViewWritesTag = true;
     g_halo3SeatNativeNoThirdPerson = 0;
     g_odstSeatNativeNoThirdPerson = 0;
     g_reachSeatNativeNoThirdPerson = 0;
@@ -257,6 +263,22 @@ void TestInstallPatchRemove(Fixture& f)
     g_config.vehicle_first_person = true;
     SeatAimFrameSync();
     Check(f.Patched(), "...and back");
+
+    // Halo 3 with the seat's tag left as loaded (the mod's default): the game does not rebase such a seat, so
+    // there is nothing to skip and the stock jne stays. ODST and Reach still write their tags.
+    g_log.clear();
+    g_seatViewWritesTag = false;
+    SeatAimFrameSync();
+    if (f.slot == 0)
+    {
+        Check(f.Stock() && !f.State().patched, "Halo 3, tag as loaded: the stock jne is back");
+        Check(Logged("tag flag as loaded"), "...logged with the reason");
+    }
+    else
+        Check(f.Patched(), "ODST / Reach: Halo 3's seat view does not concern them");
+    g_seatViewWritesTag = true;
+    SeatAimFrameSync();
+    Check(f.Patched(), "...and with the tag written again, skipped again");
 
     g_log.clear();
     NativeFlag(f) = 0x80000000u | 0x12u << 8 | 1u;

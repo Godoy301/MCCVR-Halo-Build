@@ -1330,6 +1330,7 @@ void ConfigLoad(const wchar_t* path)
         }
         if (!strcmp(key, "type13_log")) { g_config.type13_log=atoi(val)!=0?1:0; continue; }
         if (!strcmp(key, "seat_aim_world_frame")) { g_config.seat_aim_world_frame=atoi(val)!=0?1:0; continue; }
+        if (!strcmp(key, "seat_view_tag_write")) { g_config.seat_view_tag_write=atoi(val)!=0?1:0; continue; }
         if (!strcmp(key, "dev_synthetic_pad")) { g_config.dev_synthetic_pad=atoi(val)!=0?1:0; continue; }
         if (!strcmp(key, "reach_sight_fault")) { g_config.reach_sight_fault=(int)strtol(val,nullptr,0); continue; }
         if (!strcmp(key, "first_person_rung_fault")) { g_config.first_person_rung_fault=(int)strtol(val,nullptr,0)&0xF; continue; }
@@ -2432,6 +2433,12 @@ void ConfigSave()
     fprintf(f, "# first-person seat patch is on, so seats aim in world angles as in stock. 0 = leave the rebase (A/B for\n");
     fprintf(f, "# the DRIVE seats frame check line). (default %d)\n", d.seat_aim_world_frame);
     fprintf(f, "seat_aim_world_frame = %d\n\n", g_config.seat_aim_world_frame);
+    fprintf(f, "# DEV BUILD ONLY. Halo 3 seats: 0 = the game's camera director alone is told the occupied seat is first\n");
+    fprintf(f, "# person; the vehicle's loaded data stays stock, so shots, AI and every other player's game see a stock\n");
+    fprintf(f, "# seat. 1 = the earlier way (A/B): the seat's third-person flag is cleared in the loaded vehicle data\n");
+    fprintf(f, "# while seated, which the simulation reads too (a co-op campaign client goes out of step). (default %d)\n",
+            d.seat_view_tag_write);
+    fprintf(f, "seat_view_tag_write = %d\n\n", g_config.seat_view_tag_write);
     fprintf(f, "# DEV BUILD ONLY. Headless tests: 1 = a synthetic gamepad driven by halomccvr_pad.txt in the\n");
     fprintf(f, "# mod folder (tools/Send-MccPad.ps1). Read at startup. Leave at 0.\n");
     fprintf(f, "dev_synthetic_pad = %d\n\n", g_config.dev_synthetic_pad);

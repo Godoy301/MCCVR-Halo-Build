@@ -17,6 +17,14 @@ static unsigned char* liveDefinition{};
 static unsigned resolves{},checks{};
 static unsigned char* Halo3LoadedTagDefinition(uint32_t datum)
 {++resolves;return datum==4?liveDefinition:nullptr;}
+// The camera director's side (halo3_seat_view.inl in the mod). The checks below that predate it run in the
+// tag-write mode, which is what they were written for.
+static bool g_writesTag=true,g_viewAvailable=true;
+static int32_t g_armedUnit=-1;
+static bool Halo3SeatViewWritesTag() {return g_writesTag;}
+static bool Halo3SeatViewAvailable() {return g_viewAvailable;}
+static void Halo3SeatViewArm(int32_t unit) {g_armedUnit=unit;}
+static void Halo3SeatViewDisarm() {g_armedUnit=-1;}
 static volatile LONG* raceAddress{};
 static LONG RaceCompareExchange(volatile LONG* address,LONG exchange,LONG expected)
 {
@@ -113,6 +121,45 @@ int main()
     Check(!Halo3EnsureFirstPersonSeatFlag(4,1,generation)&&*word==0x130,"config off restores live seat");
     Check(*reinterpret_cast<int32_t*>(memory+0x1000+kHalo3VehicleSeatStride+kHalo3SeatCameraTracksBlockOffset)==1,
         "native camera tracks preserved");
+    // THE DEFAULT: the tag is left as loaded and the camera director is answered instead.
+    g_halo3NativeSeatPatch={};g_halo3NativeSeatState=0;generation=7;raceAddress=nullptr;
+    g_config.vehicle_hide_body=true;initialize(memory);*word=0x130;
+    g_writesTag=false;g_viewAvailable=true;g_armedUnit=-1;
+    Check(Halo3EnsureFirstPersonSeatFlag(4,1,generation,0x1234)&&*word==0x130,"no tag write: the seat's flags stay as loaded");
+    Check(g_armedUnit==0x1234&&g_halo3NativeSeatState==1,"...the occupant is armed for the director and the seat is Active");
+    Check(Halo3OccupiedSeatFlags()==0x130&&Halo3NativeSeatStillOwned(g_halo3NativeSeatPatch),"...its flags are known and the lease holds");
+    g_armedUnit=-1;
+    Check(Halo3EnsureFirstPersonSeatFlag(4,1,generation,0x1234)&&*word==0x130&&g_armedUnit==0x1234,"...and it is armed again on every frame");
+    *word=0x120;
+    Check(!Halo3NativeSeatStillOwned(g_halo3NativeSeatPatch),"a tag someone else changed is not this lease's");
+    *word=0x130;
+    Halo3RestoreNativeSeatPatch();
+    Check(*word==0x130&&g_armedUnit==-1&&g_halo3NativeSeatState==0,"leaving the seat disarms and writes nothing");
+    g_viewAvailable=false;
+    Check(!Halo3EnsureFirstPersonSeatFlag(4,1,generation,0x1234)&&*word==0x130&&g_armedUnit==-1&&g_halo3NativeSeatState==2,
+        "no relay: stock fallback, nothing armed, nothing written");
+    Check(!Halo3EnsureFirstPersonSeatFlag(4,1,generation,0x1234)&&g_armedUnit==-1,"...and it stays so while the relay is down");
+    g_viewAvailable=true;
+    Check(Halo3EnsureFirstPersonSeatFlag(4,1,generation,0x1234)&&g_armedUnit==0x1234&&*word==0x130,
+        "...and is taken up when the relay comes up");
+    g_viewAvailable=false;
+    Check(!Halo3EnsureFirstPersonSeatFlag(4,1,generation,0x1234)&&g_armedUnit==-1&&g_halo3NativeSeatState==2,
+        "the relay going down mid-seat ends the lease");
+    g_viewAvailable=true;
+    Check(Halo3EnsureFirstPersonSeatFlag(4,1,generation,0x1234),"...until it is back");
+    g_writesTag=true;
+    Check(Halo3EnsureFirstPersonSeatFlag(4,1,generation,0x1234)&&*word==0x120&&g_armedUnit==-1,
+        "switching to the tag write (dev A/B) writes it and disarms the director");
+    g_writesTag=false;
+    Check(Halo3EnsureFirstPersonSeatFlag(4,1,generation,0x1234)&&*word==0x130&&g_armedUnit==0x1234,
+        "...and switching back restores the tag and arms again");
+    g_config.vehicle_hide_body=false;
+    Check(!Halo3EnsureFirstPersonSeatFlag(4,1,generation,0x1234)&&*word==0x130&&g_armedUnit==-1,"config off disarms");
+    g_config.vehicle_hide_body=true;
+    *word=0x120;
+    Check(!Halo3EnsureFirstPersonSeatFlag(4,1,generation,0x1234)&&*word==0x120&&g_armedUnit==-1,
+        "a seat natively lacking bit 4 is refused in this mode too");
+    Halo3RestoreNativeSeatPatch();*word=0x130;g_writesTag=true;
     Check(VirtualFree(memory,0,MEM_RELEASE)!=0,"fixture freed");
     std::printf("PASS: %u production Halo 3 seat lifetime checks\n",checks);
 }
