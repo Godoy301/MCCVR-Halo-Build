@@ -965,6 +965,13 @@ struct Config
     // every seat on the stick.
     // F1 > Vehicles > Aim in seats > "Direct drive in seats". (default 1)
     int seat_direct_drive = 1;
+    // A SEAT'S GUN IS AIMED THROUGH THE POINT BY ITS BARREL (Halo 2; seat_barrel_logic.h). A vehicle gun's shot
+    // leaves along its barrel, so a seat aimed from its camera through the point fires parallel to that line,
+    // beside the point by the barrel's distance from the camera (metres for a tank). 1 = once a gun of the seat
+    // has fired, the aim written for the seat is the one for which the barrel's line runs through the point;
+    // the barrel's place is learned from the seat's own fires. 0 = the camera's line always. Only the written
+    // aim changes (what the title replicates). Needs seat_direct_drive and converged_aim. Read live.
+    bool seat_aim_through_barrel = true;
 
     // rendering. The game's own HUD reticle sits at head-center and is wrong
     // whenever hand aim is on; this one is the truth.

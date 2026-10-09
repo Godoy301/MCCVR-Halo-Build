@@ -112,6 +112,154 @@ int Halo2DriveOccupancy(uint32_t& parent, int16_t& seat) noexcept
 seat_frame_rt::Binding g_halo2SeatFrame;
 seat_frame_rt::Counters g_halo2SeatFrameCounters;
 
+// AIM THE SEAT'S GUN THROUGH THE POINT (seat_barrel_logic.h). A vehicle gun's shot leaves along its barrel, so a seat
+// aimed from its camera through the point fires PARALLEL to that line, beside the point by the barrel's distance
+// from the camera. Each fire of a gun of the vehicle our unit aims shows the barrel's line (the fire's own origin
+// and direction, and the seat's eye from the same fire's camera answer); from those the model learns where the
+// barrel sits in the vehicle, and the seat's write becomes the aim for which the barrel's line runs through the
+// point. Until the seat's first fire, and whenever the model declines, the write is the camera's line.
+// Only the direction written to player control changes -- what the title replicates -- and nothing of the shot is
+// touched, so a host or a peer simulating the seat fires the same barrel at the same point.
+// The fire and the control update both run on the simulation's thread; the try-lock covers the case they do not
+// (the loser of a race keeps the camera's line for that update, or learns nothing from that fire).
+struct Halo2SeatBarrelState
+{
+    std::atomic_flag busy = ATOMIC_FLAG_INIT;
+    uint32_t stance = 0;
+    bool gunner = false;          // this seat aims its vehicle's gun (the control update's read of the seat's flags)
+    struct Gun
+    {
+        uint32_t weapon = UINT32_MAX;
+        int16_t barrel = -1;
+        seat_barrel::Model model;
+    } guns[2];
+    int active = -1;              // the gun fired last: the one the aim is solved for
+    float fireEye[3]{};
+    bool fireEyeKnown = false;    // this fire's camera answer was our seat's (taken by the fire's line, or dropped)
+    std::atomic<uint32_t> learned{0}, aimed{0}, byEye{0}, declined{0}, noFrame{0};
+} g_halo2SeatBarrel;
+
+// Sim thread, every seated control update: which seat this is and whether it aims the vehicle's gun. Another seat
+// forgets the guns.
+void Halo2SeatBarrelNoteSeat(uint32_t stance, bool gunner) noexcept
+{
+    auto& s = g_halo2SeatBarrel;
+    if (s.busy.test_and_set(std::memory_order_acquire))
+        return;
+    if (s.stance != stance)
+    {
+        for (auto& gun : s.guns)
+            gun = {};
+        s.active = -1;
+        s.fireEyeKnown = false;
+        s.stance = stance;
+    }
+    s.gunner = gunner;
+    s.busy.clear(std::memory_order_release);
+}
+
+// Fire thread: the seat's eye as this fire's camera answer gave it (before the re-aim, which turns the line only).
+void Halo2SeatBarrelNoteEye(const float* eye) noexcept
+{
+    auto& s = g_halo2SeatBarrel;
+    if (!eye || !seat_barrel::Finite3(eye) || s.busy.test_and_set(std::memory_order_acquire))
+        return;
+    std::memcpy(s.fireEye, eye, sizeof(s.fireEye));
+    s.fireEyeKnown = true;
+    s.busy.clear(std::memory_order_release);
+}
+
+// Our unit is seated (parent, seat) and the weapon is a gun of that vehicle: held by something other than the unit,
+// under the same root.
+bool Halo2SeatBarrelSeatedGun(uint32_t unit, uint32_t weapon, uint32_t& parent, int16_t& seat) noexcept
+{
+    __try
+    {
+        if (Halo2DriveOccupancy(parent, seat) != 1)
+            return false;
+        const auto* data = static_cast<const uint8_t*>(Halo2ObjectFromIndex(weapon));
+        if (!data)
+            return false;
+        const uint32_t holder = *reinterpret_cast<const uint32_t*>(data + 0x14);
+        const uint32_t root = Halo2UltimateParent(unit);
+        return holder != UINT32_MAX && holder != unit && root != UINT32_MAX && Halo2UltimateParent(weapon) == root;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return false;
+    }
+}
+
+// Fire thread: one seated fire's own line. Learned when our seat aims the vehicle's gun and the weapon is one.
+void Halo2SeatBarrelLearn(uint32_t weapon, int16_t barrel, const float* origin, const float* direction) noexcept
+{
+    auto& s = g_halo2SeatBarrel;
+    const uint32_t unit = Halo2OwnedUnit();
+    uint32_t parent = UINT32_MAX;
+    int16_t seat = -1;
+    float forward[3]{}, up[3]{};
+    seat_barrel::Frame hull{};
+    const bool usable = g_config.seat_aim_through_barrel && unit != UINT32_MAX && weapon != UINT32_MAX && origin &&
+        direction && Halo2SeatBarrelSeatedGun(unit, weapon, parent, seat);
+    const bool framed = usable &&
+        seat_frame_rt::ReadVehicleFrame(g_halo2SeatFrame, &Halo2ObjectFromIndex, unit, forward, up) &&
+        seat_barrel::MakeFrame(forward, up, hull);
+    if (usable && !framed)
+        s.noFrame.fetch_add(1, std::memory_order_relaxed);
+    if (s.busy.test_and_set(std::memory_order_acquire))
+        return;
+    const bool eyeKnown = s.fireEyeKnown;
+    s.fireEyeKnown = false;   // one fire's eye serves one fire's line
+    if (framed && eyeKnown && s.gunner && s.stance == seat_converge::StanceKey(parent, seat))
+    {
+        int slot = -1;
+        for (int i = 0; i < 2; ++i)
+            if (s.guns[i].weapon == weapon && s.guns[i].barrel == barrel)
+                slot = i;
+        if (slot < 0)
+        {
+            slot = s.guns[0].weapon == UINT32_MAX ? 0 : s.guns[1].weapon == UINT32_MAX ? 1 : s.active == 0 ? 1 : 0;
+            s.guns[slot] = {};
+            s.guns[slot].weapon = weapon;
+            s.guns[slot].barrel = barrel;
+        }
+        if (s.guns[slot].model.Learn(hull, s.fireEye, origin, direction))
+        {
+            s.active = slot;
+            s.learned.fetch_add(1, std::memory_order_relaxed);
+        }
+    }
+    s.busy.clear(std::memory_order_release);
+}
+
+// Sim thread: `bent` (the aim from the seat's camera through `point`) becomes the aim for which the barrel's line
+// runs through `point`, when a gun of this seat has fired and the model answers. Otherwise it is left as it is.
+void Halo2SeatBarrelAim(uint32_t unit, uint32_t stance, const float eye[3], const float point[3],
+                        float bent[3]) noexcept
+{
+    auto& s = g_halo2SeatBarrel;
+    if (!g_config.seat_aim_through_barrel || s.busy.test_and_set(std::memory_order_acquire))
+        return;
+    bool solved = false;
+    if (s.stance == stance && s.gunner && s.active >= 0 && s.guns[s.active].model.fires())
+    {
+        float forward[3]{}, up[3]{}, aim[3]{};
+        seat_barrel::Frame hull{};
+        if (!seat_frame_rt::ReadVehicleFrame(g_halo2SeatFrame, &Halo2ObjectFromIndex, unit, forward, up) ||
+            !seat_barrel::MakeFrame(forward, up, hull))
+            s.noFrame.fetch_add(1, std::memory_order_relaxed);
+        else if (!s.guns[s.active].model.Aim(hull, eye, point, aim))
+            s.declined.fetch_add(1, std::memory_order_relaxed);
+        else
+        {
+            std::memcpy(bent, aim, sizeof(aim));
+            solved = true;
+        }
+    }
+    s.busy.clear(std::memory_order_release);
+    (solved ? s.aimed : s.byEye).fetch_add(1, std::memory_order_relaxed);
+}
+
 // SEAT CONVERGENCE (seat_converge_logic.h; docs/H2-CE-SEAT-CONVERGENCE-2026-10-06.md). Halo 2 aims a seated shot as
 // Halo 1 does: the fire (0x8E4940) takes the weapon's barrel marker when the weapon's owner has a gunner, else the
 // unit's aim, and player_aim_projectile (0x7596A0) then traces the crosshair from the DETERMINISTIC camera of the
@@ -120,7 +268,8 @@ seat_frame_rt::Counters g_halo2SeatFrameCounters;
 // aiming unit's ultimate parent (0x8D6A50), and turns the shot at what that hits -- in a seat pinned inside the
 // weapon's deviation cone about the direction it came in with (0x759A89..0x759ADE; on foot it is not pinned). The
 // biped's aiming vector comes from player control's desired angles, which is what this drive writes and what the
-// simulation networks. So the seat's write is the direction from that camera position through the traced point.
+// simulation networks. So the seat's write is the direction from that camera position through the traced point --
+// or, for a vehicle gun that has fired, the direction for which its BARREL runs through that point (above).
 //
 // The eye is asked from the engine's own evaluator in this same update (Halo2CallFireEyeEvaluator: the very call
 // the fire makes, call edge proven by the dual-aim install) and used only on its first-person path
@@ -181,11 +330,13 @@ seat_converge::Why Halo2BuildSeatConvergedAim(uint32_t unit, uint32_t stance, fl
         return off == converge::ConvergeOff::NoRange ? Why::NoRange : Why::NoTrace;
     if (!std::isfinite(range) || !(range > 0.0f))
         return Why::NoRange;
+    const float aimPoint[3]{head[0] + dir[0] * range, head[1] + dir[1] * range, head[2] + dir[2] * range};
+    Halo2SeatBarrelAim(unit, stance, eye, aimPoint, bent);
     for (int axis = 0; axis < 3; ++axis)
     {
         direction[axis] = bent[axis];
         if (point)
-            point[axis] = head[axis] + dir[axis] * range;
+            point[axis] = aimPoint[axis];
     }
     return Why::Converged;
 }
@@ -320,6 +471,7 @@ void Halo2DriveApply(int user, uint64_t returnAddress) noexcept
                 // write says why -- our reasons only).
                 const uint32_t stance = seat_converge::StanceKey(seatParent, seatIndex);
                 const bool seatKnown = occupancy > 0;
+                Halo2SeatBarrelNoteSeat(stance, seatKnown && seatRole.known && seatRole.gunner);
                 // THE GAME'S AIM IN A SEAT IS THE UNIT'S OWN AIMING VECTOR (seat_converge::SeatAimReference). The
                 // observer camera's forward -- the right reference on foot -- sits a constant ~5.1 deg of pitch above
                 // the unit's aim in a seat (measured in the Ghost and as a Warthog passenger, at every heading and
@@ -821,6 +973,18 @@ void ReportHalo2Drive() noexcept
             "or a check %u; %s",
             stints, yawChecks, pitchChecks, pitchFails, seatWrites, st.seatConvergedWrites.exchange(0), held,
             seatWaits, frames[0] ? frames : "frame not read");
+    // The gun's barrel aimed through the point (seat_barrel_logic.h): how often, from how many fires, and why not.
+    auto& barrel = g_halo2SeatBarrel;
+    const uint32_t barrelAimed = barrel.aimed.exchange(0, std::memory_order_relaxed),
+                   barrelByEye = barrel.byEye.exchange(0, std::memory_order_relaxed),
+                   barrelLearned = barrel.learned.exchange(0, std::memory_order_relaxed),
+                   barrelDeclined = barrel.declined.exchange(0, std::memory_order_relaxed),
+                   barrelNoFrame = barrel.noFrame.exchange(0, std::memory_order_relaxed);
+    if (barrelAimed || barrelLearned || barrelDeclined || barrelNoFrame)
+        LOG("Halo 2 DRIVE seats: the gun's barrel was aimed through the point on %u updates (its place learned from "
+            "%u fires in this window); the seat's camera line was kept on %u (no fire of this seat's gun yet, or: "
+            "the point too near the barrel or too far off the camera's line %u, the vehicle's frame unread %u)",
+            barrelAimed, barrelLearned, barrelByEye, barrelDeclined, barrelNoFrame);
     // What the seat's proof was judged against (seat_converge::SeatAimReference), in every build: the unit's own
     // aiming vector, and how far the observer camera's forward sat off it.
     const uint32_t unitRefs = st.seatUnitAimRefs.exchange(0, std::memory_order_relaxed),

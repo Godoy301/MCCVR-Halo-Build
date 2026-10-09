@@ -122,7 +122,7 @@ static void Halo2NoteFireEyeProof(uint32_t unit,const float* position,int32_t pa
 static unsigned seatFireReaims{},seatFireLines{};
 static void Halo2SeatFireReaim(uint32_t,float* position,float* direction)
 {++seatFireReaims;Check(position&&direction,"the seat re-aim sees the evaluator's outputs");}
-static void Halo2SeatNoteFireLine(uint32_t,const float* origin,const float* direction)
+static void Halo2SeatNoteFireLine(uint32_t,uint32_t,int16_t,const float* origin,const float* direction)
 {++seatFireLines;Check(origin&&direction,"the seat witness sees the fire's own line");}
 #include "../src/dll/halo2_independent_shots.inl"
 #undef _ReturnAddress
