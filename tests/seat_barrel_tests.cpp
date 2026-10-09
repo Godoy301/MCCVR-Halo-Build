@@ -190,6 +190,12 @@ void TestManyFires()
                     worstEye = eyeMiss;
             }
     Check(worst < 0.02, "after fires around the hull the barrel's line is within 0.02 wu of every point");
+    // The fit is the vehicle: its pivot is the pivot up to a slide along the barrel (which no line can show), so
+    // what it must reproduce is the barrel's line -- checked above -- and the barrel's own small offset.
+    double state[5]{};
+    model.State(state);
+    Check(std::fabs(state[3] - v.beside) < 0.02 && std::fabs(state[4] - v.above) < 0.02,
+          "and the fit has found how far the barrel sits beside and above its pivot");
     Check(worstEye > 0.8, "fixture: the eye's line misses by most of the pivot's distance somewhere");
 }
 

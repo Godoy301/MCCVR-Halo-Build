@@ -56,13 +56,14 @@ __declspec(noinline) int32_t __fastcall Halo2IndependentCameraDetour(
     {
         if(!feature.cameraOriginal)__leave;
         result=feature.cameraOriginal(unit,position,direction);
-        // A local SEAT's fire: re-aim the engine's own crosshair line through the seat's converged point.
-        if(position&&direction&&reinterpret_cast<uintptr_t>(_ReturnAddress())==feature.base+0x7597BD)
-            Halo2SeatFireReaim(unit,position,direction);
         // Flat parity (halo2_fire_eye.inl): the firing assist's own call for our unit, before anything below
         // replaces its outputs, is a free sample of the evaluator against the publication's engine eye.
         if(position&&reinterpret_cast<uintptr_t>(_ReturnAddress())==feature.base+0x7597BD&&unit==Halo2OwnedUnit())
             Halo2NoteFireEyeProof(unit,shot_lag::Finite3(position)?position:nullptr,result);
+        // A local SEAT's fire: the engine's crosshair line becomes the player's own, through the seat's converged
+        // point (it may replace the position: after the proof sample above).
+        if(position&&direction&&reinterpret_cast<uintptr_t>(_ReturnAddress())==feature.base+0x7597BD)
+            Halo2SeatFireReaim(unit,position,direction);
         const auto& shot=g_halo2IndependentShot;
         if(!shot.active || shot.query || unit!=shot.unit || !position || !direction ||
             reinterpret_cast<uintptr_t>(_ReturnAddress())!=feature.base+0x7597BD)__leave;

@@ -132,6 +132,14 @@ public:
 
     uint32_t fires() const { return fires_; }
 
+    // The fit as it stands (world units): the pivot from the eye in the vehicle's frame (forward, left, up), then
+    // the barrel beside (right) and above (up) its pivot.
+    void State(double out[5]) const
+    {
+        for (int i = 0; i < 5; ++i)
+            out[i] = x_[i];
+    }
+
     // One fire: the seat's eye, the barrel's line as the fire took it, the vehicle's frame. False (nothing learned):
     // a value that is not a number, a direction that is not one, a line further from the eye than a gun can be.
     bool Learn(const Frame& hull, const float eye[3], const float origin[3], const float direction[3])

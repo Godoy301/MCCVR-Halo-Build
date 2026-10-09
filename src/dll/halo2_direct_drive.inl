@@ -136,7 +136,9 @@ struct Halo2SeatBarrelState
         int16_t barrel = -1;
         seat_barrel::Model model;
     } guns[2];
-    int active = -1;              // the gun fired last: the one the aim is solved for
+    int active = -1;              // the gun fired last (the other slot is the one a third gun would take)
+    uint32_t identityStance = 0;  // the seat whose vehicle was last named, and the name's identity (0: unknown)
+    uint64_t identity = 0;
     float eye[3]{};               // the seat's eye as the engine last answered it, and when (0: never)
     uint64_t eyeUs = 0;
     bool lastSolved = false;      // the last update's write was the barrel's
@@ -157,7 +159,7 @@ struct Halo2SeatBarrelState
         float rangeWu = 0, barrelOffDeg = -1, barrelMissWu = 0, turnedDeg = -1, roundOffDeg = -1, roundFromMuzzleWu = 0;
         uint32_t modelFires = 0;
         int16_t barrel = -1;
-        bool barrelWrite = false;
+        bool barrelWrite = false;   // the write before the fire was a barrel's line (any gun of the seat)
     } notes[8];
     uint32_t noteCount = 0, noteReported = 0;
 #endif
@@ -316,8 +318,7 @@ void Halo2SeatBarrelLearn(uint32_t firer, uint32_t weapon, int16_t barrel, const
         p.pointKnown = pointKnown;
         p.barrel = barrel;
         p.modelFires = gun.model.fires();
-        // The write before this fire was this gun's barrel (else the camera's line).
-        p.barrelWrite = g_config.seat_aim_through_barrel && s.active == slot && s.lastSolved;
+        p.barrelWrite = g_config.seat_aim_through_barrel && s.lastSolved;
         std::memcpy(p.point, point, sizeof(p.point));
         std::memcpy(p.muzzle, muzzle, sizeof(p.muzzle));
         std::memcpy(p.direction, direction, sizeof(p.direction));
@@ -326,6 +327,11 @@ void Halo2SeatBarrelLearn(uint32_t firer, uint32_t weapon, int16_t barrel, const
         {
             s.active = slot;
             s.learned.fetch_add(1, std::memory_order_relaxed);
+        }
+        if (s.identityStance != s.stance)
+        {
+            s.identityStance = s.stance;
+            s.identity = ReadHalo2VehicleIdentity(parent);
         }
     }
     s.busy.clear(std::memory_order_release);
@@ -399,19 +405,42 @@ void Halo2SeatBarrelAim(uint32_t unit, uint32_t stance, const float eye[3], cons
     if (!g_config.seat_aim_through_barrel || s.busy.test_and_set(std::memory_order_acquire))
         return;
     bool solved = false;
-    if (s.stance == stance && s.gunner && s.active >= 0 && s.guns[s.active].model.fires())
+    if (s.stance == stance && s.gunner && (s.guns[0].model.fires() || s.guns[1].model.fires()))
     {
-        float forward[3]{}, up[3]{}, aim[3]{};
+        float forward[3]{}, up[3]{};
         seat_barrel::Frame hull{};
         if (!seat_frame_rt::ReadVehicleFrame(g_halo2SeatFrame, &Halo2ObjectFromIndex, unit, forward, up) ||
             !seat_barrel::MakeFrame(forward, up, hull))
             s.noFrame.fetch_add(1, std::memory_order_relaxed);
-        else if (!s.guns[s.active].model.Aim(hull, eye, point, aim))
-            s.declined.fetch_add(1, std::memory_order_relaxed);
         else
         {
-            std::memcpy(bent, aim, sizeof(aim));
-            solved = true;
+            // ONE aim for every gun the seat has fired: the mean of their solutions. Which gun fires next is not
+            // known, a tank's two barrels sit a pace apart, and the engine turns either shot at the point from
+            // inside its cone; an aim for the gun fired last would swing the turret at every change of gun and
+            // leave the other gun's first shot the whole pace off.
+            float sum[3]{};
+            int answered = 0;
+            for (const auto& gun : s.guns)
+            {
+                float aim[3]{};
+                if (gun.model.fires() && gun.model.Aim(hull, eye, point, aim))
+                {
+                    sum[0] += aim[0];
+                    sum[1] += aim[1];
+                    sum[2] += aim[2];
+                    ++answered;
+                }
+            }
+            const float length = std::sqrt(sum[0] * sum[0] + sum[1] * sum[1] + sum[2] * sum[2]);
+            if (!answered || !std::isfinite(length) || !(length > 1.0e-3f))
+                s.declined.fetch_add(1, std::memory_order_relaxed);
+            else
+            {
+                bent[0] = sum[0] / length;
+                bent[1] = sum[1] / length;
+                bent[2] = sum[2] / length;
+                solved = true;
+            }
         }
     }
     s.lastSolved = solved;
@@ -459,9 +488,10 @@ bool Halo2SeatIntentRay(float head[3], float dir[3]) noexcept
 }
 
 // Sim thread. `direction`: the converged aim (world, unit) when the result is Converged; `point` (optional): the
-// point it is bent through. Any other result names our reason and leaves both untouched.
+// point it is bent through; `headOut` (optional): the rendered eye that point was traced from. Any other result
+// names our reason and leaves them untouched.
 seat_converge::Why Halo2BuildSeatConvergedAim(uint32_t unit, uint32_t stance, float direction[3],
-                                              float* point) noexcept
+                                              float* point, float* headOut) noexcept
 {
     using seat_converge::Why;
     if (!Sight_AimEnabled())
@@ -501,6 +531,8 @@ seat_converge::Why Halo2BuildSeatConvergedAim(uint32_t unit, uint32_t stance, fl
         direction[axis] = bent[axis];
         if (point)
             point[axis] = aimPoint[axis];
+        if (headOut)
+            headOut[axis] = head[axis];
     }
     return Why::Converged;
 }
@@ -1158,23 +1190,44 @@ void ReportHalo2Drive() noexcept
         // One line per round since the last report (the newest eight).
         Halo2SeatBarrelState::FireNote notes[8];
         uint32_t count = 0, reported = 0;
+        // The fit of each gun, when a fire has moved it in this window (what a remembered barrel would hold).
+        struct Fit { uint32_t weapon = UINT32_MAX, fires = 0; int16_t barrel = -1; double x[5]{}; } fits[2];
+        uint64_t identity = 0;
         if (!barrel.busy.test_and_set(std::memory_order_acquire))
         {
+            identity = barrel.identity;
+            for (int g = 0; barrelLearned && g < 2; ++g)
+            {
+                fits[g].weapon = barrel.guns[g].weapon;
+                fits[g].barrel = barrel.guns[g].barrel;
+                fits[g].fires = barrel.guns[g].model.fires();
+                barrel.guns[g].model.State(fits[g].x);
+            }
             count = barrel.noteCount;
             reported = barrel.noteReported;
             std::memcpy(notes, barrel.notes, sizeof(notes));
             barrel.noteReported = count;
             barrel.busy.clear(std::memory_order_release);
         }
+        for (const auto& fit : fits)
+            if (fit.fires)
+            {
+                const char* vehicle = halo2_vehicle_identity::Name(identity);
+                LOG("Halo 2 DRIVE seats (dev) gun fit: vehicle %s (identity 0x%llX), weapon 0x%08X barrel %d, %u "
+                    "fires: pivot from the seat's eye forward %.4f left %.4f up %.4f wu; the barrel right %.4f up "
+                    "%.4f wu of its pivot",
+                    vehicle ? vehicle : "unknown", static_cast<unsigned long long>(identity), fit.weapon,
+                    fit.barrel, fit.fires, fit.x[0], fit.x[1], fit.x[2], fit.x[3], fit.x[4]);
+            }
         for (uint32_t i = count - reported > 8 ? count - 8 : reported; i < count; ++i)
         {
             const auto& n = notes[i % 8];
             LOG("Halo 2 DRIVE seats (dev) gun round %u: barrel %d, the write before it was the %s line, %u fires in "
-                "the model; the BARREL (the muzzle along the direction the fire was given) pointed %.2f deg / %.2f wu "
+                "this gun's model; the BARREL (the muzzle along the direction the fire was given) pointed %.2f deg / %.2f wu "
                 "off the point at %.1f wu (-1: no point at this fire); the engine turned the round %.2f deg off the "
                 "barrel (the weapon's deviation angle is the most it can); the ROUND left %.2f deg off the point, "
                 "%.2f wu from the muzzle",
-                i + 1, n.barrel, n.barrelWrite ? "barrel's" : "camera's", n.modelFires, n.barrelOffDeg,
+                i + 1, n.barrel, n.barrelWrite ? "guns' barrel" : "camera's", n.modelFires, n.barrelOffDeg,
                 n.barrelMissWu, n.rangeWu, n.turnedDeg, n.roundOffDeg, n.roundFromMuzzleWu);
         }
     }
