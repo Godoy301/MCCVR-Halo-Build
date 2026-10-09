@@ -2719,6 +2719,9 @@ namespace
     // ...and the shot re-aimed through the intent point at that query (every build), with its dev witness.
     bool LegacySightReaimCrosshairQuery(GameTitle title, uint64_t flags, const float* start, const float* vector,
         int32_t ignoredA, uintptr_t caller, float out[3]);
+    // Where the game's own crosshair query for the local player's stock Halo 3 seat last started (published at the
+    // crosshair site; read at the stick call, which aims the seat's record from it).
+    bool LegacySeatStockLineRead(uint32_t generation, uint64_t maxAgeUs, float start[3], uint64_t& atUs);
     void LegacySightNoteCrosshairQuery(GameTitle title, uint64_t flags, const float* start, const float* vector,
         int32_t ignoredA, uintptr_t caller);
     // True on a fire thread while another gun's own line owns the local fire: Halo 3's independent shot scope (the

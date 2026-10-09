@@ -1571,6 +1571,8 @@ LegacyRecomposeWhy LegacyDriveRecomposeOnFoot(int slot, const LegacyDrivePublica
 using LegacySeatRecomposeWhy = seat_upstream::SeatRecompose;
 std::atomic<uint32_t> g_legacySeatRecompose[static_cast<size_t>(LegacySeatRecomposeWhy::Count)]{};
 std::atomic<uint32_t> g_legacySeatRecomposeMilliDeg{0}, g_legacySeatRecomposeMaxMilliDeg{0};
+// Seat records solved from the start of the game's own crosshair query (a stock seat; LegacySeatStockLineRead).
+std::atomic<uint32_t> g_legacySeatStockLineUsed{0};
 // The gain learner's samples since the last report, and its state (sim thread writes; the report reads).
 std::atomic<uint32_t> g_legacySeatGainUsed{0}, g_legacySeatGainSlow{0}, g_legacySeatGainUnpaired{0};
 std::atomic<uint32_t> g_legacySeatCameraPath[3]{};   // this pass's camera: first person, chase, other/none
@@ -1640,6 +1642,25 @@ LegacySeatRecomposeWhy LegacyDriveRecomposeSeated(int slot, const LegacyDrivePub
     const bool firstPerson = ourUnit && shot_lag::EvaluatorTookFirstPersonPath(path);
     const bool ours = firstPerson;
     g_legacySeatCameraPath[!ourUnit ? 2 : firstPerson ? 0 : 1].fetch_add(1, std::memory_order_relaxed);
+    // THE STOCK LINE (seat_view_logic.h). With the seat's tag as loaded the game queries a third-person seat from
+    // its chase camera, so the evaluator's answer above is the chase path's (refused), or there is no answer at all
+    // in a host that hooks the evaluator itself. The line's START is then the one the game's own crosshair query for
+    // this seat used (legacy_sight_trace.inl publishes it at the crosshair site; the game runs that query a few
+    // times a second, so up to a quarter of a second old). No velocity and no gain. The chase camera follows the
+    // record, so each record is solved against the camera the last one produced: with the camera R behind its pivot
+    // and the point L from it, the error shrinks by R / (L + R) a step, from any start.
+    bool stockLine = false;
+    if (!ours && !Halo3SeatViewWritesTag())
+    {
+        float stockStart[3]{};
+        uint64_t stockAtUs = 0;
+        if (generation && LegacySeatStockLineRead(generation, 250000, stockStart, stockAtUs))
+        {
+            memcpy(camera, stockStart, sizeof(camera));
+            velocityValid = false;
+            stockLine = true;
+        }
+    }
     // THE GAIN: the game's answer (this camera's direction) to the record that drove it.
     if (pub.seatKey != s.fitKey)
     {
@@ -1691,7 +1712,7 @@ LegacySeatRecomposeWhy LegacyDriveRecomposeSeated(int slot, const LegacyDrivePub
     in.generation = generation;
     in.nowUs = nowUs;
     in.maxAgeUs = kSightIntentShotMaxAgeMs * 1000ull;
-    in.cameraRead = ours;
+    in.cameraRead = ours || stockLine;
     memcpy(in.camera, camera, sizeof(in.camera));
     memcpy(in.cameraVel, velocity, sizeof(in.cameraVel));
     in.cameraVelValid = velocityValid;
@@ -1700,6 +1721,8 @@ LegacySeatRecomposeWhy LegacyDriveRecomposeSeated(int slot, const LegacyDrivePub
     float bendDeg = 0.0f;
     const LegacySeatRecomposeWhy why = seat_upstream::RecomposeSeat(in, yaw, pitch, bendDeg);
     g_legacySeatRecompose[static_cast<size_t>(why)].fetch_add(1, std::memory_order_relaxed);
+    if (why == LegacySeatRecomposeWhy::Recomposed && stockLine)
+        g_legacySeatStockLineUsed.fetch_add(1, std::memory_order_relaxed);
     if (why == LegacySeatRecomposeWhy::Recomposed)
     {
         const uint32_t milli = static_cast<uint32_t>((std::min)(bendDeg * 1000.0f, 4.0e9f));
@@ -2405,6 +2428,11 @@ void LegacyDriveReport()
                     g_config.seat_upstream_aim == 2 ? "an unmodded host's" : "this machine's",
                     g_legacySeatStockCamera[0].exchange(0, std::memory_order_relaxed),
                     g_legacySeatStockCamera[1].exchange(0, std::memory_order_relaxed));
+                const uint32_t stockLineUsed = g_legacySeatStockLineUsed.exchange(0, std::memory_order_relaxed);
+                if (stockLineUsed)
+                    LOG("SHOT RECORD Halo 3 seated, stock line: %u of those were solved from the start of the game's "
+                        "own crosshair query for the seat (its tag as loaded: the line every machine computes)",
+                        stockLineUsed);
             }
         }
         {
