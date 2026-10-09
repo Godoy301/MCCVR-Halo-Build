@@ -377,13 +377,21 @@ void TestStockStart()
         Check(reading.compared && !seat_upstream::AskAgreement::Agrees(reading) && agreement.Usable(),
               "one comparison off the line proves nothing");
         agreement.Note(camera, forward, offLine, forward);
-        Check(!agreement.Usable(), "two in a row: the ask is not the game's camera");
+        Check(agreement.Usable(), "nor do two");
+        agreement.Note(camera, forward, offLine, forward);
+        Check(!agreement.Usable(), "three in a row: the ask is not the game's camera");
         agreement.Note(camera, forward, onLine, forward);
         Check(agreement.Usable(), "the first one on the line brings it back");
         agreement.Note(camera, forward, offLine, forward);
+        agreement.Note(camera, forward, offLine, forward);
         agreement.Note(camera, forward, onLine, forward);
         agreement.Note(camera, forward, offLine, forward);
+        agreement.Note(camera, forward, offLine, forward);
         Check(agreement.Usable(), "comparisons off the line that are not in a row do not refuse it");
+        // Another occupant shooting at the same target 40 m off from a seat 3 m aside: his line is 4 deg from ours.
+        const float partner[3]{std::cos(0.07f), std::sin(0.07f), 0.0f};
+        reading = agreement.Note(camera, forward, offLine, partner);
+        Check(!reading.compared, "a query along another aim is not this seat's");
         // The aim turned between the query and the ask: no evidence either way.
         const float turned[3]{std::cos(0.1f), std::sin(0.1f), 0.0f};
         const float before = agreement.Lead();

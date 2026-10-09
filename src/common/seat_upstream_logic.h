@@ -404,8 +404,11 @@ inline constexpr uint64_t kStockAskRefreshUs = 50000;
 // not start at the camera: it starts further along the camera's line, at the shot origin's projection on it (some
 // metres ahead in a chase view), so the distance between the two points says nothing. What must hold is that the
 // asked camera lies ON the query's line: its distance aside from it under kAgreeWu. A comparison made while the
-// aim turned between the two (their directions more than kSameAimDeg apart) is no evidence. Not yet compared is
-// not disagreement: the ask is used until two comparisons in a row put it off the line, and again from the first
+// aim turned between the two (their directions more than kSameAimDeg apart) is no evidence. That bound is tight
+// on purpose: the query and the ask are the same camera a pass apart, while another occupant of the same vehicle
+// (whose query names the same objects, and whose fire is not always tagged) looks along his own aim, which
+// differs by the seats' parallax even when both shoot at one target. Not yet compared is not disagreement: the
+// ask is used until kDisagreeToRefuse comparisons in a row put it off the line, and again from the first
 // that puts it on.
 // THE LEAD. How far along the line the query starts ahead of the camera is kept, smoothed. From the camera itself
 // each step of the solve shrinks the error by R / (L + R) (the camera R behind the pivot it turns about, the point
@@ -422,11 +425,11 @@ inline constexpr uint64_t kStockAskRefreshUs = 50000;
 struct AskAgreement
 {
     static constexpr float kAgreeWu = 1.0f * shot_lag::kWuPerMetre;
-    static constexpr float kSameAimDeg = 2.0f;
+    static constexpr float kSameAimDeg = 0.5f;
     static constexpr float kMaxLeadWu = 40.0f * shot_lag::kWuPerMetre;
     static constexpr float kLeadShare = 0.5f;
     static constexpr uint64_t kCompareMaxAgeUs = 60000;   // a query older than this is not compared
-    static constexpr uint32_t kDisagreeToRefuse = 2;
+    static constexpr uint32_t kDisagreeToRefuse = 3;
     bool refused = false;
     uint32_t streak = 0;
     bool leadKnown = false;
