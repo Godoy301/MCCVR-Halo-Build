@@ -122,6 +122,8 @@ int RunRoomscaleInputTests()
     {
         const int savedLaw=g_config.roomscale_follow_law;
         g_config.roomscale_follow_law=law;
+        // Every option off to start with (they default on); each is switched on in turn below.
+        g_config.roomscale_recenter_jump=g_config.roomscale_recenter_move_start=g_config.roomscale_recenter_moving=false;
         testTitle=title; ++testGeneration; testNow+=1000; testTracking=true;
         const float q[4]{0,0,0,1}, forward[3]{1,0,0};
         const float scale=0.328084f;
@@ -138,7 +140,7 @@ int RunRoomscaleInputTests()
         head[0]=0.3f; head[2]=0; stickY=0.75f;
         for (int i=0;i<30;++i) { body[0]+=0.02f*scale; frame(); }
         check(std::fabs(offset()-0.3f)<1e-5f && ref[1]==1.62f,
-            "recenter off (the default): stick travel leaves the head-to-camera offset alone");
+            "recenter off: stick travel leaves the head-to-camera offset alone");
         // While moving, 0.5 m/s: about 0.1 m in 0.2 s.
         g_config.roomscale_recenter_moving=true; g_config.roomscale_recenter_moving_speed=0.5f;
         const float before=offset();

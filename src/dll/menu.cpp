@@ -799,7 +799,7 @@ namespace
                   "and a distance you walked away during a tracking gap is still caught up."
                 : "Threshold: walks from 1.5 cm and brakes by reversing. Kept as it shipped in Alpha 0.6.0, "
                   "for comparison.");
-            // The view recenter (roomscale_recenter_logic.h): three independent options, all off by default.
+            // The view recenter (roomscale_recenter_logic.h): three independent options, all on by default.
             ImGui::Spacing();
             ImGui::Text("Bring the view back over your character (steadier aim):");
             changed |= ImGui::Checkbox("On a jump", &g_config.roomscale_recenter_jump);

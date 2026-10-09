@@ -99,7 +99,8 @@ bool SetLive(const std::string& name, int value)
     else if (name == "roomscale_recenter_move_start_ms")
         g_config.roomscale_recenter_move_start_s = roomscale_recenter::ClampSeconds(float(value) * 0.001f, 0.2f);
     else if (name == "roomscale_recenter_moving_speed_cm_s")
-        g_config.roomscale_recenter_moving_speed = roomscale_recenter::ClampSpeed(float(value) * 0.01f, 0.5f);
+        g_config.roomscale_recenter_moving_speed =
+            roomscale_recenter::ClampSpeed(float(value) * 0.01f, Config{}.roomscale_recenter_moving_speed);
     else if (name == "physical_crouch") g_config.physical_crouch = value != 0;
     else if (name == "scope_converge") g_config.scope_converge = value ? 1 : 0;
     else if (name == "seat_direct_drive") g_config.seat_direct_drive = value ? 1 : 0;
