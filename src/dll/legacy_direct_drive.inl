@@ -1689,7 +1689,12 @@ LegacySeatRecomposeWhy LegacyDriveRecomposeSeated(int slot, const LegacyDrivePub
         uint64_t queryAtUs = 0;
         from.query = LegacySeatStockLineRead(generation, seat_upstream::kStockQueryMaxAgeUs, from.queryPos, queryAtUs);
         from.queryAgeUs = from.query && nowUs >= queryAtUs ? nowUs - queryAtUs : 0;
-        if (!from.evaluator && localUnit != -1)
+        // The chase path is the seat's camera only where the simulation takes that path: a seat whose loaded flags
+        // keep `third person camera` (the lease holds those flags, and only while it holds the seat). A seat that
+        // is first person by its own tag -- a modded vehicle may have one -- is not asked: its start is the
+        // evaluator's or the query's.
+        const bool chaseSeat = (Halo3OccupiedSeatFlags() & seat_upstream::kSeatThirdPersonBit) != 0;
+        if (!from.evaluator && localUnit != -1 && chaseSeat)
         {
             if (s.askUnit != localUnit)
             {
