@@ -2478,8 +2478,9 @@ void ConfigSave()
             d.seat_direct_drive);
     fprintf(f, "seat_direct_drive = %d\n\n", g_config.seat_direct_drive);
     fprintf(f, "# Halo 2. 1 = a vehicle gun you aim (a tank's cannon, a turret) is aimed so that its BARREL points\n");
-    fprintf(f, "# at the crosshair's point, so the shot lands on it at any range; the barrel's place is learned\n");
-    fprintf(f, "# from your own shots, so the first shot after sitting down can still land beside a near point.\n");
+    fprintf(f, "# at the crosshair's point, so the shot lands on it at any range. A Scorpion's barrel is known; any\n");
+    fprintf(f, "# other gun's place is learned from your own shots and remembered for that kind of vehicle while the\n");
+    fprintf(f, "# game runs, so only the first shot from a gun new to it can still land beside a near point.\n");
     fprintf(f, "# 0 = the seat is aimed from its camera only: shots at near targets land beside the crosshair, by\n");
     fprintf(f, "# about the distance from your view to the barrel. Needs seat_direct_drive and converged_aim.\n");
     fprintf(f, "# Live. (default %d)\n", d.seat_aim_through_barrel ? 1 : 0);

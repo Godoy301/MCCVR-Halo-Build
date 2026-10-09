@@ -25,6 +25,9 @@
 // arrive. Nothing here knows the vehicle: a fixed gun, a turret on the hull and a child turret all fit, and so
 // does a seat's eye that is set off from the occupant's head along the head's own axes.
 //
+// A fit can be handed on (State, Seed): a gun learned once aims its barrel from the first shot of the next seat in
+// that kind of vehicle.
+//
 // The aim is then solved by a few fixed-point steps (the anchor turns with the aim). The model says nothing about
 // whether the gun can REACH the aim: a turret still turning, or a gun at its stop, fires where it points, which is
 // the seat's natural limit and is left to the engine.
@@ -54,6 +57,10 @@ inline constexpr double kMinRangeWu = 0.5;
 inline constexpr double kPivotPriorWu = 1.5;
 inline constexpr double kBarrelPriorWu = 0.15;
 inline constexpr double kMeasureNoiseWu = 0.005;
+// A fit known beforehand (Seed) is held this loosely: right to a hand's width or so (a seat camera set a little
+// differently moves it), and corrected by the seat's first fires.
+inline constexpr double kSeedPivotWu = 0.15;
+inline constexpr double kSeedBarrelWu = 0.05;
 
 struct Frame
 {
@@ -128,9 +135,25 @@ public:
         p_[0][0] = p_[1][1] = p_[2][2] = pivot;
         p_[3][3] = p_[4][4] = barrel;
         fires_ = 0;
+        seeded_ = false;
+    }
+
+    // Start from a fit known beforehand (State of a model that has learned this gun): the model then answers
+    // before its first fire, and its own fires go on correcting it.
+    void Seed(const double fit[5])
+    {
+        Reset();
+        for (int i = 0; i < 5; ++i)
+            x_[i] = fit[i];
+        const double pivot = kSeedPivotWu * kSeedPivotWu, barrel = kSeedBarrelWu * kSeedBarrelWu;
+        p_[0][0] = p_[1][1] = p_[2][2] = pivot;
+        p_[3][3] = p_[4][4] = barrel;
+        seeded_ = true;
     }
 
     uint32_t fires() const { return fires_; }
+    // The model can answer: it has learned from a fire, or was given a fit.
+    bool known() const { return fires_ != 0 || seeded_; }
 
     // The fit as it stands (world units): the pivot from the eye in the vehicle's frame (forward, left, up), then
     // the barrel beside (right) and above (up) its pivot.
@@ -167,11 +190,12 @@ public:
         return true;
     }
 
-    // A point of the barrel's line for an aim along d (unit), by the model. False: no fire yet, or d has no right.
+    // A point of the barrel's line for an aim along d (unit), by the model. False: nothing known of the gun yet, or
+    // d has no right.
     bool Anchor(const Frame& hull, const float eye[3], const double d[3], double anchor[3]) const
     {
         double right[3]{}, up[3]{};
-        if (!fires_ || !AimAxes(hull, d, right, up))
+        if (!known() || !AimAxes(hull, d, right, up))
             return false;
         for (int i = 0; i < 3; ++i)
             anchor[i] = double(eye[i]) + hull.f[i] * x_[0] + hull.l[i] * x_[1] + hull.u[i] * x_[2] +
@@ -180,11 +204,12 @@ public:
     }
 
     // The aim for which the barrel's line runs through `point` (or through the eye's line at the nearest range
-    // served, for a nearer point). False (the caller keeps the eye's line, `direction` untouched): no fire yet, a
-    // value that is not a number, or a barrel the fit puts further from the eye than a gun can be.
+    // served, for a nearer point). False (the caller keeps the eye's line, `direction` untouched): nothing known
+    // of the gun yet, a value that is not a number, or a barrel the fit puts further from the eye than a gun can
+    // be.
     bool Aim(const Frame& hull, const float eye[3], const float point[3], float direction[3]) const
     {
-        if (!fires_ || !Finite3(eye) || !Finite3(point))
+        if (!known() || !Finite3(eye) || !Finite3(point))
             return false;
         double fromEye[3]{double(point[0]) - eye[0], double(point[1]) - eye[1], double(point[2]) - eye[2]};
         const double range = std::sqrt(Dot(fromEye, fromEye));
@@ -248,6 +273,7 @@ private:
     double x_[5]{};       // pivot from the eye in the vehicle's frame (f, l, u), then the barrel's right and up
     double p_[5][5]{};
     uint32_t fires_ = 0;
+    bool seeded_ = false;
 };
 
 // How far a line passes from a point (world units): the dev witness's measure, and the tests'.

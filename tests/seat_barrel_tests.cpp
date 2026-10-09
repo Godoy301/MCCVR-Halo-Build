@@ -285,6 +285,44 @@ void TestBadFireDoesNotLock()
     Check(miss >= 0.0 && miss < 0.03, "and the fit recovers after the good fires that follow");
 }
 
+void TestSeed()
+{
+    // A fit handed on: the model answers before its first fire, as well as the model it was taken from.
+    const Vehicle v = Tank();
+    Model learned;
+    for (double yaw : {-70.0, -30.0, 0.0, 20.0, 55.0, 90.0})
+    {
+        double d[3]{};
+        Heading(v.hull, yaw, yaw * 0.1, d);
+        v.Fire(learned, d);
+    }
+    double fit[5]{};
+    learned.State(fit);
+    Model seeded;
+    Check(!seeded.known(), "a new model knows nothing");
+    seeded.Seed(fit);
+    Check(seeded.known() && seeded.fires() == 0, "a seeded model is known before any fire");
+    float point[3]{};
+    PointAlong(v, 35.0, 3.0, 12.0, point);
+    const double miss = v.MissAt(seeded, point);
+    Check(miss >= 0.0 && miss < 0.02, "and puts the barrel on a point at once");
+    // A seed that is a little wrong (another seat camera) is corrected by the seat's own fires.
+    double off[5]{fit[0] + 0.10, fit[1] - 0.08, fit[2] + 0.06, fit[3], fit[4]};
+    Model wrong;
+    wrong.Seed(off);
+    const double before = v.MissAt(wrong, point);
+    for (double yaw : {-40.0, 10.0, 60.0})
+    {
+        double d[3]{};
+        Heading(v.hull, yaw, 2.0, d);
+        v.Fire(wrong, d);
+    }
+    const double after = v.MissAt(wrong, point);
+    Check(before > 0.05 && after < 0.02, "a seed a hand's width off is put right by three fires");
+    wrong.Reset();
+    Check(!wrong.known(), "and a reset forgets a seed too");
+}
+
 void TestNearPoint()
 {
     // A point nearer than the model serves is aimed at as if it stood at the nearest range served, on the eye's own
@@ -461,6 +499,7 @@ int main()
     TestChildTurret();
     TestRefusals();
     TestBadFireDoesNotLock();
+    TestSeed();
     TestNearPoint();
     TestEngineCone();
     std::printf("seat_barrel_tests: %u checks, %u failures\n", checks, failures);

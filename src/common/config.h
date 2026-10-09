@@ -968,10 +968,11 @@ struct Config
     // A SEAT'S GUN IS AIMED THROUGH THE POINT BY ITS BARREL (Halo 2; seat_barrel_logic.h). A vehicle gun's shot
     // leaves its muzzle and the engine turns it at the crosshair's point only inside the weapon's deviation angle
     // about the barrel, so a seat aimed from its camera through the point lands its shots beside a NEAR point, by
-    // the barrel's distance from the camera (a tank driver's view raised off the hull: under some 25 m). 1 = once
-    // the seat has fired its gun, the aim written for the seat is the one for which the barrel's line runs through
-    // the point; the barrel's place is learned from the seat's own fires. 0 = the camera's line always. Only the
-    // written aim changes (what the title replicates). Needs seat_direct_drive and converged_aim. Read live.
+    // the barrel's distance from the camera (a Scorpion's barrel is two metres above its driver: under some 25 m).
+    // 1 = the aim written for the seat is the one for which the barrel's line runs through the point; the
+    // barrel's place is learned from the seat's own fires and remembered for that kind of vehicle (a Scorpion's is
+    // known beforehand). 0 = the camera's line always. Only the written aim changes (what the title replicates).
+    // Needs seat_direct_drive and converged_aim. Read live.
     bool seat_aim_through_barrel = true;
     // A SEATED FIRE'S CROSSHAIR TEST RUNS ALONG THE PLAYER'S LINE (Halo 2; halo2_seat_fire.inl). The engine traces
     // the crosshair from the seat's own camera, which is not where a player's eye is (a head anywhere in the room

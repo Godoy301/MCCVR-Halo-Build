@@ -119,8 +119,10 @@ seat_frame_rt::Counters g_halo2SeatFrameCounters;
 // than that. Each fire of the vehicle's gun by our seat shows the barrel's line as the fire took it -- the muzzle
 // marker and the direction the fire was given, before the engine's obstruction step and before its turn -- with
 // the seat's eye and the vehicle's frame of the same update; from those the model learns where the barrel sits, and
-// the seat's write becomes the aim for which the barrel's line runs through the point. Until the seat's first fire,
-// and whenever the model declines, the write is the camera's line.
+// the seat's write becomes the aim for which the barrel's line runs through the point. What a seat's fires taught
+// is kept when the seat is left and taken up again by the next seat of that kind of vehicle, and a gun measured
+// beforehand (kHalo2MeasuredGuns) starts from its measured fit; so only the first shot from a gun that is new to
+// both is aimed along the camera's line, as is any update the model declines.
 // Only the direction written to player control changes -- what the title replicates -- and nothing of the shot is
 // touched.
 // The fire and the control update both run on the simulation's thread; the try-lock covers the case they do not
@@ -137,12 +139,22 @@ struct Halo2SeatBarrelState
         seat_barrel::Model model;
     } guns[2];
     int active = -1;              // the gun fired last (the other slot is the one a third gun would take)
-    uint32_t identityStance = 0;  // the seat whose vehicle was last named, and the name's identity (0: unknown)
-    uint64_t identity = 0;
+    uint64_t identity = 0;        // the seat's vehicle (halo2_vehicle_identity; 0: not one it knows) and its seat
+    int16_t seat = -1;
+    // What earlier seats of this session taught, by kind of vehicle and seat (the guns by barrel: a weapon's
+    // handle is another vehicle's next time).
+    struct Kept
+    {
+        uint64_t identity = 0;
+        int16_t seat = -1;
+        Gun guns[2];
+    } kept[6];
+    uint32_t keptNext = 0;
     float eye[3]{};               // the seat's eye as the engine last answered it, and when (0: never)
     uint64_t eyeUs = 0;
     bool lastSolved = false;      // the last update's write was the barrel's
     std::atomic<uint32_t> learned{0}, aimed{0}, byEye{0}, declined{0}, noFrame{0}, staleEye{0}, othersFire{0};
+    std::atomic<uint32_t> recalled{0}, measured{0};
 #if HALOMCCVR_DEV_DIAGNOSTICS
     // The fire in progress, kept for the round it creates (dev).
     struct Pending
@@ -167,21 +179,81 @@ struct Halo2SeatBarrelState
 // A seat's eye older than this is not this fire's (microseconds: a few control updates).
 constexpr uint64_t kHalo2SeatBarrelEyeFreshUs = 100000;
 
-// Sim thread, every seated control update: which seat this is and whether it aims the vehicle's gun. Another seat
-// forgets the guns.
-void Halo2SeatBarrelNoteSeat(uint32_t stance, bool gunner) noexcept
+// Guns measured in the game: the fit a seat's own fires reach (Model::State), with the title's default seat camera.
+// A seat that aims one starts from it. By the vehicle's name (halo2_vehicle_identity) and the weapon's barrel.
+struct Halo2MeasuredGun
+{
+    const char* vehicle;
+    int16_t barrel;
+    double fit[5];
+};
+constexpr Halo2MeasuredGun kHalo2MeasuredGuns[]{
+    // Scorpion: the cannon, and the machine gun 0.54 m to its right. The turret's pivot sits 1.56 m behind and
+    // 1.98 m above the driver's seat camera, on the tank's centreline.
+    {"Scorpion", 0, {-0.5105, 0.0002, 0.6495, 0.0001, 0.0820}},
+    {"Scorpion", 1, {-0.5107, -0.0003, 0.6617, 0.1784, 0.0760}},
+};
+
+// Sim thread, every seated control update: which seat this is (its vehicle and seat index) and whether it aims the
+// vehicle's gun. On another seat the guns are put away under the seat they were learned in, and the new seat takes
+// up what is kept for its kind: this session's, else a measured gun's.
+void Halo2SeatBarrelNoteSeat(uint32_t stance, uint32_t parent, int16_t seat, bool gunner) noexcept
 {
     auto& s = g_halo2SeatBarrel;
     if (s.busy.test_and_set(std::memory_order_acquire))
         return;
     if (s.stance != stance)
     {
+        if (s.identity && (s.guns[0].model.fires() || s.guns[1].model.fires()))
+        {
+            auto* slot = &s.kept[s.keptNext % 6];
+            for (auto& kept : s.kept)
+                if (kept.identity == s.identity && kept.seat == s.seat)
+                    slot = &kept;
+            if (slot == &s.kept[s.keptNext % 6])
+                ++s.keptNext;
+            slot->identity = s.identity;
+            slot->seat = s.seat;
+            for (int i = 0; i < 2; ++i)
+            {
+                slot->guns[i] = s.guns[i];
+                slot->guns[i].weapon = UINT32_MAX;
+            }
+        }
         for (auto& gun : s.guns)
             gun = {};
         s.active = -1;
         s.eyeUs = 0;
         s.lastSolved = false;
         s.stance = stance;
+        s.seat = seat;
+        s.identity = parent != UINT32_MAX && seat >= 0 ? ReadHalo2VehicleIdentity(parent) : 0;
+        if (s.identity)
+        {
+            bool recalled = false;
+            for (const auto& kept : s.kept)
+                if (kept.identity == s.identity && kept.seat == s.seat)
+                {
+                    s.guns[0] = kept.guns[0];
+                    s.guns[1] = kept.guns[1];
+                    recalled = true;
+                }
+            if (recalled)
+                s.recalled.fetch_add(1, std::memory_order_relaxed);
+            else if (const char* name = halo2_vehicle_identity::Name(s.identity))
+            {
+                int slot = 0;
+                for (const auto& gun : kHalo2MeasuredGuns)
+                    if (slot < 2 && std::strcmp(gun.vehicle, name) == 0)
+                    {
+                        s.guns[slot].barrel = gun.barrel;
+                        s.guns[slot].model.Seed(gun.fit);
+                        ++slot;
+                    }
+                if (slot)
+                    s.measured.fetch_add(1, std::memory_order_relaxed);
+            }
+        }
     }
     s.gunner = gunner;
     s.busy.clear(std::memory_order_release);
@@ -304,6 +376,13 @@ void Halo2SeatBarrelLearn(uint32_t firer, uint32_t weapon, int16_t barrel, const
         for (int i = 0; i < 2; ++i)
             if (s.guns[i].weapon == weapon && s.guns[i].barrel == barrel)
                 slot = i;
+        // A gun kept from an earlier seat, or a measured one, has no weapon yet: this barrel's first fire is it.
+        for (int i = 0; slot < 0 && i < 2; ++i)
+            if (s.guns[i].weapon == UINT32_MAX && s.guns[i].barrel == barrel && s.guns[i].model.known())
+            {
+                s.guns[i].weapon = weapon;
+                slot = i;
+            }
         if (slot < 0)
         {
             slot = s.guns[0].weapon == UINT32_MAX ? 0 : s.guns[1].weapon == UINT32_MAX ? 1 : s.active == 0 ? 1 : 0;
@@ -327,11 +406,6 @@ void Halo2SeatBarrelLearn(uint32_t firer, uint32_t weapon, int16_t barrel, const
         {
             s.active = slot;
             s.learned.fetch_add(1, std::memory_order_relaxed);
-        }
-        if (s.identityStance != s.stance)
-        {
-            s.identityStance = s.stance;
-            s.identity = ReadHalo2VehicleIdentity(parent);
         }
     }
     s.busy.clear(std::memory_order_release);
@@ -405,7 +479,7 @@ void Halo2SeatBarrelAim(uint32_t unit, uint32_t stance, const float eye[3], cons
     if (!g_config.seat_aim_through_barrel || s.busy.test_and_set(std::memory_order_acquire))
         return;
     bool solved = false;
-    if (s.stance == stance && s.gunner && (s.guns[0].model.fires() || s.guns[1].model.fires()))
+    if (s.stance == stance && s.gunner && (s.guns[0].model.known() || s.guns[1].model.known()))
     {
         float forward[3]{}, up[3]{};
         seat_barrel::Frame hull{};
@@ -414,7 +488,7 @@ void Halo2SeatBarrelAim(uint32_t unit, uint32_t stance, const float eye[3], cons
             s.noFrame.fetch_add(1, std::memory_order_relaxed);
         else
         {
-            // ONE aim for every gun the seat has fired: the mean of their solutions. Which gun fires next is not
+            // ONE aim for every gun the seat knows: the mean of their solutions. Which gun fires next is not
             // known, a tank's two barrels sit a pace apart, and the engine turns either shot at the point from
             // inside its cone; an aim for the gun fired last would swing the turret at every change of gun and
             // leave the other gun's first shot the whole pace off.
@@ -423,7 +497,7 @@ void Halo2SeatBarrelAim(uint32_t unit, uint32_t stance, const float eye[3], cons
             for (const auto& gun : s.guns)
             {
                 float aim[3]{};
-                if (gun.model.fires() && gun.model.Aim(hull, eye, point, aim))
+                if (gun.model.known() && gun.model.Aim(hull, eye, point, aim))
                 {
                     sum[0] += aim[0];
                     sum[1] += aim[1];
@@ -667,7 +741,8 @@ void Halo2DriveApply(int user, uint64_t returnAddress) noexcept
                 // write says why -- our reasons only).
                 const uint32_t stance = seat_converge::StanceKey(seatParent, seatIndex);
                 const bool seatKnown = occupancy > 0;
-                Halo2SeatBarrelNoteSeat(stance, seatKnown && seatRole.known && seatRole.gunner);
+                Halo2SeatBarrelNoteSeat(stance, seatKnown ? seatParent : UINT32_MAX, seatKnown ? seatIndex : -1,
+                                        seatKnown && seatRole.known && seatRole.gunner);
                 // THE GAME'S AIM IN A SEAT IS THE UNIT'S OWN AIMING VECTOR (seat_converge::SeatAimReference). The
                 // observer camera's forward -- the right reference on foot -- sits a constant ~5.1 deg of pitch above
                 // the unit's aim in a seat (measured in the Ghost and as a Warthog passenger, at every heading and
@@ -1177,14 +1252,18 @@ void ReportHalo2Drive() noexcept
                    barrelDeclined = barrel.declined.exchange(0, std::memory_order_relaxed),
                    barrelNoFrame = barrel.noFrame.exchange(0, std::memory_order_relaxed),
                    barrelStaleEye = barrel.staleEye.exchange(0, std::memory_order_relaxed),
-                   barrelOthers = barrel.othersFire.exchange(0, std::memory_order_relaxed);
-    if (barrelAimed || barrelLearned || barrelDeclined || barrelNoFrame || barrelStaleEye)
+                   barrelOthers = barrel.othersFire.exchange(0, std::memory_order_relaxed),
+                   barrelRecalled = barrel.recalled.exchange(0, std::memory_order_relaxed),
+                   barrelMeasured = barrel.measured.exchange(0, std::memory_order_relaxed);
+    if (barrelAimed || barrelLearned || barrelDeclined || barrelNoFrame || barrelStaleEye || barrelRecalled ||
+        barrelMeasured)
         LOG("Halo 2 DRIVE seats: the gun's barrel was aimed through the point on %u updates (its place learned from "
-            "%u of this seat's fires in this window); the seat's camera line was kept on %u (seat_aim_through_barrel "
-            "off, no fire of this seat's gun yet, or: the model declined %u, the vehicle's frame unread %u); fires "
-            "that taught nothing: %u without a fresh eye; %u fires by other occupants of the vehicle were not this "
-            "seat's",
-            barrelAimed, barrelLearned, barrelByEye, barrelDeclined, barrelNoFrame, barrelStaleEye, barrelOthers);
+            "%u of this seat's fires in this window; seats that took up a gun kept from an earlier seat %u, a "
+            "measured gun %u); the seat's camera line was kept on %u (seat_aim_through_barrel off, nothing known of "
+            "this seat's gun yet, or: the model declined %u, the vehicle's frame unread %u); fires that taught "
+            "nothing: %u without a fresh eye; %u fires by other occupants of the vehicle were not this seat's",
+            barrelAimed, barrelLearned, barrelRecalled, barrelMeasured, barrelByEye, barrelDeclined, barrelNoFrame,
+            barrelStaleEye, barrelOthers);
 #if HALOMCCVR_DEV_DIAGNOSTICS
     {
         // One line per round since the last report (the newest eight).
