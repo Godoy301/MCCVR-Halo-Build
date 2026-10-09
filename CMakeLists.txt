@@ -904,6 +904,11 @@ if(BUILD_TESTING)
     add_executable(halomccvr_seat_converge_tests tests/seat_converge_tests.cpp)
     target_include_directories(halomccvr_seat_converge_tests PRIVATE src/common)
     add_test(NAME halomccvr_seat_converge_tests COMMAND halomccvr_seat_converge_tests)
+    # Aiming a seat's gun through the point (src/common/seat_barrel_logic.h): the barrel's geometry learned from
+    # the lines of the seat's own fires, and the aim for which the barrel's line runs through a point.
+    add_executable(halomccvr_seat_barrel_tests tests/seat_barrel_tests.cpp)
+    target_include_directories(halomccvr_seat_barrel_tests PRIVATE src/common)
+    add_test(NAME halomccvr_seat_barrel_tests COMMAND halomccvr_seat_barrel_tests)
     # Reach's motion tracker follows the head (src/common/reach_head_relative_logic.h): the decode of the game's
     # own heading store and its two readers, and the two headset checks on the game's own placement arithmetic.
     add_executable(halomccvr_reach_head_relative_tests tests/reach_head_relative_tests.cpp)

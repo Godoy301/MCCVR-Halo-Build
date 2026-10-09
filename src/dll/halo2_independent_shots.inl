@@ -299,7 +299,7 @@ __declspec(noinline) void __fastcall Halo2IndependentAimDetour(uint32_t unit,
         if(!firingCall || !origin || !direction)__leave;
         // A local seat's shot stays exactly as the engine built it here (the barrel, or the unit's own aim: its
         // natural limits live in this direction); the dev witness only measures it against the traced point.
-        Halo2SeatNoteFireLine(unit,origin,direction);
+        Halo2SeatNoteFireLine(unit,g_halo2MuzzleRequest.weapon,g_halo2MuzzleRequest.barrel,origin,direction);
         const bool owned=shot.active && !shot.query && unit==shot.unit;
         bool substituted=false;
         if(owned)
