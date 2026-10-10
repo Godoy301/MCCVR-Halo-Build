@@ -55331,6 +55331,11 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
             // THE SEAT LIMIT RETICLE (SeatLimitReticleStep): a written seat of a land vehicle whose aim the game holds
             // at a natural stop draws the reticle where the gun is held. The stops are the seat-limit latch's, from the
             // hook's last seat write of THIS seat; the target is what this poll hands the hook.
+            // A HALO 3 SEAT WHOSE LINE IS THE GAME'S CHASE-CAMERA LINE: the hook writes that target bent toward the
+            // line (a near point below a camera some metres above the seat needs tens of degrees), and it is the
+            // bent record the stop holds. So there the target is the record as the hook last solved it, and the
+            // clamped ray starts where the game's line starts: the reticle is then where the game's crosshair, and
+            // the shot it turns the round toward, really are at the stop.
             if (driveSeated && seatWritten.any() && !seatAircraft)
             {
                 SeatLimitPoll limitPoll{};
@@ -55340,11 +55345,15 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
                 limitPoll.stopsFresh =
                     LegacyDriveSeatStops(driveTitle, limitPoll.stops, publishedKey, limitPoll.recordYaw) &&
                     publishedKey == seatKey;
-                limitPoll.targetYaw = desiredYaw;
-                limitPoll.targetPitch = desiredPitch;
+                float stockStart[3]{}, stockYaw = 0.0f, stockPitch = 0.0f;
+                const bool stockAim = driveTitle == GameTitle::Halo3 &&
+                    LegacySeatStockAimRead(TitleAdapter_GetGeneration(driveTitle), seatKey, 250000, stockStart,
+                                           stockYaw, stockPitch);
+                limitPoll.targetYaw = stockAim ? stockYaw : desiredYaw;
+                limitPoll.targetPitch = stockAim ? stockPitch : desiredPitch;
                 limitPoll.eyes = limitEyes && limitEyesTitle == driveTitle;
                 memcpy(limitPoll.head, limitHead, sizeof(limitPoll.head));
-                memcpy(limitPoll.shotOrigin, limitShotOrigin, sizeof(limitPoll.shotOrigin));
+                memcpy(limitPoll.shotOrigin, stockAim ? stockStart : limitShotOrigin, sizeof(limitPoll.shotOrigin));
                 limitPoll.halo4Map = halo4Aim;
                 limitPoll.followed = followedVehicleFrame;
                 limitPoll.hullYaw = hullYaw;
