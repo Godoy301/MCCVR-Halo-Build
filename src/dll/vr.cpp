@@ -426,6 +426,9 @@ namespace
     // The centre of the art now in the swapchain; invalid while it holds
     // procedural art or art nobody measured.
     AuthoredReticleArtCentre g_authoredReticlePublishedCentre{};
+    // The last capture that could be measured. The centre above only follows a measurement that moves it, so
+    // art that changes shape about the same centre leaves it as it was; the log line's shape comes from here.
+    AuthoredReticleArtCentre g_authoredReticleLatestMeasured{};
     // Set when an upload was deliberately withheld because the capture had no
     // visible art. The caller must tell this apart from a real upload failure,
     // which repaints the chain and would erase the crosshair itself.
@@ -9404,6 +9407,8 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                     centreMapped.RowPitch, kAuthoredReticleCentreProbeSize,
                     colorInk > alphaInk, kAuthoredReticleArtAlphaThreshold);
                 g_context->Unmap(g_authoredReticleCentreStaging, 0);
+                if (g_authoredReticleMeasuredCentre.valid)
+                    g_authoredReticleLatestMeasured = g_authoredReticleMeasuredCentre;
                 // Halo 2: the capture window follows the art it has just been shown.
                 if (TitleAdapter_GetActiveTitle() == GameTitle::Halo2 &&
                     g_halo2ReticleFollow.Step(g_authoredReticleMeasuredCentre, g_authoredReticleCentreSerial,
@@ -9551,6 +9556,7 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         g_reticleEnemyPainted=enemy;
         g_reticleContainsAuthored=false;
         g_authoredReticlePublishedCentre = {};
+        g_authoredReticleLatestMeasured = {};
         if (clearingAuthored)
             LOG("M3: authored crosshair cleared after capture stopped");
         return true;
@@ -18315,8 +18321,8 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                                         "texture centre = %+.2f deg right, %+.2f deg down of the aim point "
                                         "for a %.2f deg crosshair (ink %llu); the capture window follows the "
                                         "art: it sits %+.0f px right, %+.0f px down of the view's centre "
-                                        "after %u moves; the art is %.2f times as wide as it is tall (ink "
-                                        "spread %.3f across, %.3f down)",
+                                        "after %u moves; the latest capture's art is %.2f times as wide as "
+                                        "it is tall (ink %llu, spread %.3f across, %.3f down)",
                                         static_cast<int>(reticleTitle),
                                         g_authoredReticlePublishedCentre.u - 0.5f,
                                         g_authoredReticlePublishedCentre.v - 0.5f,
@@ -18329,16 +18335,17 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                                             g_authoredReticlePublishedCentre.ink),
                                         g_halo2ReticleFollow.x, g_halo2ReticleFollow.y,
                                         g_halo2ReticleFollow.moves,
-                                        AuthoredReticleArtAspect(g_authoredReticlePublishedCentre),
-                                        g_authoredReticlePublishedCentre.spreadU,
-                                        g_authoredReticlePublishedCentre.spreadV);
+                                        AuthoredReticleArtAspect(g_authoredReticleLatestMeasured),
+                                        static_cast<unsigned long long>(g_authoredReticleLatestMeasured.ink),
+                                        g_authoredReticleLatestMeasured.spreadU,
+                                        g_authoredReticleLatestMeasured.spreadV);
                                 else if (g_authoredReticlePublishedCentre.valid)
                                     LOG("RETICLE art centre (title %d): %+.3f right, %+.3f down of the "
                                         "texture centre = %+.2f deg right, %+.2f deg down of the aim point "
                                         "for a %.2f deg crosshair (ink %llu); the quad is centred on the "
-                                        "texture, not on the art; the art is %.2f times as wide as it is tall "
-                                        "(ink spread %.3f across, %.3f down); capture fitted x%.3f across, "
-                                        "x%.3f down for the HUD's own scale",
+                                        "texture, not on the art; the latest capture's art is %.2f times as "
+                                        "wide as it is tall (ink %llu, spread %.3f across, %.3f down); capture "
+                                        "fitted x%.3f across, x%.3f down for the HUD's own scale",
                                         static_cast<int>(reticleTitle),
                                         g_authoredReticlePublishedCentre.u - 0.5f,
                                         g_authoredReticlePublishedCentre.v - 0.5f,
@@ -18349,9 +18356,10 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                                         g_config.crosshair_size_deg,
                                         static_cast<unsigned long long>(
                                             g_authoredReticlePublishedCentre.ink),
-                                        AuthoredReticleArtAspect(g_authoredReticlePublishedCentre),
-                                        g_authoredReticlePublishedCentre.spreadU,
-                                        g_authoredReticlePublishedCentre.spreadV,
+                                        AuthoredReticleArtAspect(g_authoredReticleLatestMeasured),
+                                        static_cast<unsigned long long>(g_authoredReticleLatestMeasured.ink),
+                                        g_authoredReticleLatestMeasured.spreadU,
+                                        g_authoredReticleLatestMeasured.spreadV,
                                         g_authoredReticleFitAcross.load(std::memory_order_relaxed),
                                         g_authoredReticleFitDown.load(std::memory_order_relaxed));
                                 else
@@ -21735,6 +21743,7 @@ void VR_DetachGamePresentation()
     g_authoredReticleUploadedSerial = 0;
     g_reticleContainsAuthored = false;
     g_authoredReticlePublishedCentre = {};
+    g_authoredReticleLatestMeasured = {};
     g_authoredReticleMeasuredCentre = {};
     g_authoredReticleCentreQueued = false;
     g_halo2ReticleFollow = {};
