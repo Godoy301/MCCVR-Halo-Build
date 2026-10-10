@@ -2120,7 +2120,7 @@ void ConfigSave()
     fprintf(f, "# Default off. Native vehicle steering retains its own controls and limits.\n");
     fprintf(f, "vehicle_smooth_turn = %d\n\n", g_config.vehicle_smooth_turn ? 1 : 0);
     fprintf(f, "# Physical horizontal movement drives native walking while on foot.\n");
-    fprintf(f, "# Default off. Controller aiming is preserved; walking stays head-relative.\n");
+    fprintf(f, "# Default on. Controller aiming is preserved; walking stays head-relative.\n");
     fprintf(f, "roomscale_movement = %d\n\n", g_config.roomscale_movement ? 1 : 0);
     fprintf(f, "# Roomscale A/B: 1 = hysteresis (a lean under 3 cm never walks, it brakes by letting\n");
     fprintf(f, "# go of the stick, and a distance walked away during a tracking gap is still caught up),\n");

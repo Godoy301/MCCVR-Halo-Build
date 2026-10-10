@@ -1202,7 +1202,7 @@ try {
         }
         roomscale_candidate = [ordered]@{
             config_key = 'roomscale_movement'
-            default_enabled = $false
+            default_enabled = $true
             implementation = 'native-walking-with-observed-horizontal-camera-reference-consumption'
             title_coverage = 'H2-Classic-Anniversary-H3-ODST-Reach-H4'
             head_relative_walking = $true
