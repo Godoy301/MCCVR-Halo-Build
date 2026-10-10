@@ -55229,6 +55229,11 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
     // camera is the GUN -- the game's aim read above is then the gun's marker, slewing toward the record. The hook
     // proves that seat against the occupant's own aim as well, and the servo below closes on it once it agrees.
     bool gunSlavedSeat = false;
+    // The seat's first-person camera is its gun and the forward read as the game's aim is that camera's: true of a
+    // gun-slaved seat, and of a Halo 3 flag-bit-7 seat in the director-only view (the director runs the game's own
+    // first-person camera for the seat, which takes its forward from the gun, while the simulation aims the seat
+    // from its chase camera).
+    bool gunCameraSeat = false;
     uint32_t gunSlavedKey = 0;
     int32_t gunSlavedParent = -1;   // the turret vehicle (Halo 3; the dev shot witness)
     (void)gunSlavedParent;
@@ -55265,7 +55270,8 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
         const GameTitle driveTitle = TitleAdapter_GetActiveTitle();
         if (driveTitle == GameTitle::Halo3 || driveTitle == GameTitle::Halo3ODST ||
             driveTitle == GameTitle::Halo4)
-            LegacyDrivePublish(driveTitle, 0.0f, 0.0f, 0.0f, 0.0f, false, false, seat_drive::Axes{}, true, 0, false);
+            LegacyDrivePublish(driveTitle, 0.0f, 0.0f, 0.0f, 0.0f, false, false, seat_drive::Axes{}, true, 0, false,
+                               false);
     }
     else if (g_config.legacy_direct_drive)
     {
@@ -55315,8 +55321,9 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
                         // A camera slaved to the gun is the game's own FIRST-PERSON seat camera: the
                         // simulation uses it only where the seat's tag is written. With the tag as loaded the
                         // game queries every stock seat from its chase camera, and the stock line solve covers it.
-                        gunSlavedSeat = Halo3SeatViewWritesTag() && seatFacts.view_owned &&
+                        gunCameraSeat = seatFacts.view_owned &&
                             gun_slaved::CameraSlavedToGun(Halo3OccupiedSeatFlags());
+                        gunSlavedSeat = Halo3SeatViewWritesTag() && gunCameraSeat;
                         gunSlavedKey = seatKey;
                         gunSlavedParent = seat.parentHandle;
                         gunOffsetDefinition = seat.definitionIndex;
@@ -55351,6 +55358,7 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
                         seatKey = seat_drive::SeatKey(seat.parentHandle, seat.seatIndex, seat.mounted);
                         gunSlavedSeat = seatFacts.view_owned &&
                             gun_slaved::CameraSlavedToGun(OdstOccupiedSeatFlags());
+                        gunCameraSeat = gunSlavedSeat;
                         gunSlavedKey = seatKey;
                     }
                 }
@@ -55390,7 +55398,7 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
             if (halo4Aim)
                 seatAxes.pitch = false;
             if (!driveSeated)
-                gunSlavedSeat = false;
+                gunSlavedSeat = gunCameraSeat = false;
             // THE GUN CAMERA'S OWN OFFSET (GunOffsetStep): once learned for this Halo 3 gun-slaved seat, the record is
             // written as the ray through the point minus it, and the gun is read minus it wherever it stands in for the
             // record. Not learned (or no frame): the ray and the gun exactly as before.
@@ -55413,7 +55421,7 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
                 }
             }
             LegacyDrivePublish(driveTitle, desiredYaw, desiredPitch, driveAimYaw, driveAimPitch, true, driveSeated,
-                               seatAxes, seat_drive::PitchLatches(seatFacts), seatKey, gunSlavedSeat);
+                               seatAxes, seat_drive::PitchLatches(seatFacts), seatKey, gunSlavedSeat, gunCameraSeat);
             if (!driveSeated && LegacyDriveLive(driveTitle))
             {
                 // The game's aim IS the written target now. A converged target is then the game's aim itself,
@@ -55507,7 +55515,7 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
                 // (within 1 deg of the nearer of the last two writes for 120 ms), and the engine-crosshair witness
                 // scores it from then on.
                 static gun_slaved::GunSettle s_turretSettle;
-                const bool turretNow = seatWritten.any() && !halo4Aim && (OccupiedTurretSeat() || gunSlavedSeat);
+                const bool turretNow = seatWritten.any() && !halo4Aim && (OccupiedTurretSeat() || gunCameraSeat);
                 bool gunSettled = false;
                 if (turretNow && haveWrites && seatWritten.yaw && seatWritten.pitch)
                 {
@@ -55524,10 +55532,10 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
                     s_turretSettle.reset();
                 }
                 natural.turretSlew = turretNow && !gunSettled;
-                if (gunSlavedSeat && !halo4Aim)
+                if (gunCameraSeat && !halo4Aim)
                 {
                     LegacyDriveTurretWitness(driveTitle, driveAimYaw, driveAimPitch, desiredPitch, s_turretSettle);
-                    if (driveTitle == GameTitle::Halo3)
+                    if (gunSlavedSeat && driveTitle == GameTitle::Halo3)
                         LegacySightPublishTurretSeat(gunSlavedParent, gunSettled);
                 }
                 static seat_drive::OutcomeGate s_seatYawWitness, s_seatOutcomeWitness;
@@ -55596,7 +55604,7 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
                     memcpy(row.hullFwd, traceHullFwd, sizeof(row.hullFwd));
                     memcpy(row.hullUp, traceHullUp, sizeof(row.hullUp));
                     row.rangeWu = limitTargetRangeWu;
-                    row.flags = 2u | 4u | (gunSlavedSeat ? 8u : 0u) | (followedVehicleFrame ? 16u : 0u) |
+                    row.flags = 2u | 4u | (gunCameraSeat ? 8u : 0u) | (followedVehicleFrame ? 16u : 0u) |
                         (freeCamera ? 64u : 0u) | (traceHullRead ? 128u : 0u);
                     aim_trace_dev::Note(row);
                 }
@@ -55624,14 +55632,15 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
         }
     }
 
-    // THE SERVO'S FEEDBACK. The camera's forward, as always -- except in a gun-slaved seat (flag bit 7), where that
-    // forward is the gun, slewing toward what the stick already asked for: closing on it ran the record past the
-    // target and the gun nodded. There each axis closes on the occupant's own aim (the record's twin, read by the
+    // THE SERVO'S FEEDBACK. The camera's forward, as always -- except in a seat whose camera is its gun (flag bit
+    // 7), where that forward is the gun, slewing toward what the stick already asked for and riding the vehicle
+    // over rough ground: closing on it ran the record past the target and the gun nodded. There each axis closes on
+    // the occupant's own aim (the record's twin, read by the
     // hook) once it has agreed with the record for gun_slaved::kServoTrustSamples samples this stint; until then, or
     // with no fresh read, on the gun as before. Either way the gun-slaved servo is paced (gun_slaved::ServoPacer).
     // (A Halo 3 gun-slaved seat with its camera's offset fed forward reads the gun minus it: driveAim*.)
     float servoAimYaw = driveAimYaw, servoAimPitch = driveAimPitch;
-    const bool gunSlavedServo = gunSlavedSeat && !halo4Aim && !freeCamera;
+    const bool gunSlavedServo = gunCameraSeat && !halo4Aim && !freeCamera;
 #if HALOMCCVR_DEV_DIAGNOSTICS
     int servoFeedback[2]{-1, -1};   // per axis: 1 the occupant, 0 the gun, -1 not steered (dev witness)
 #endif

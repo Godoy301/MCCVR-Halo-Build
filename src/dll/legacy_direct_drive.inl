@@ -337,7 +337,8 @@ struct LegacyDriveState
     std::atomic<uint64_t> setMs{0};
     std::atomic<bool> setValid{false};
     std::atomic<bool> setSeated{false};      // the setpoint is a seat's (seat_direct_drive)
-    std::atomic<bool> setGunSlaved{false};   // seated: the seat's first-person camera is the gun (flag bit 7)
+    std::atomic<bool> setGunSlaved{false};   // seated: the simulation aims the seat from its gun camera (flag bit 7)
+    std::atomic<bool> setGunCamera{false};   // seated: the published aim is the seat's gun (its camera is slaved to it)
     std::atomic<uint32_t> setAxes{0};        // seated: bit 0 yaw, bit 1 pitch -- the axes the hand owns there
     std::atomic<bool> setPitchLatch{true};   // seated: the latch may read pitch limits (not a look-steered driver's)
     std::atomic<uint32_t> setSeatKey{0};     // seated: which seat (seat_drive::SeatKey)
@@ -976,11 +977,14 @@ bool LegacyDriveRemove(GameTitle title)
 // Input thread: the servo's target (the converged aim when it resolves) and the game's own aim. `seated`:
 // the local player is in a seat; `axes` (seat_drive::Decide) are the axes the hand owns there -- none keeps
 // the seat on the servo; `pitchLatch`: the seat-limit latch may read pitch limits;
-// `seatKey`: which seat, so a check passed in one seat never carries into the next. `gunSlaved`: the seat's
-// first-person camera is its gun (seat flag bit 7), so `aim` is the gun and the stint also proves the record against
-// the occupant's own aim.
+// `seatKey`: which seat, so a check passed in one seat never carries into the next. `gunCamera`: the seat's
+// first-person camera is its gun (seat flag bit 7) and that camera's forward is what `aim` carries, so `aim` is the
+// gun and the stint also proves the record against the occupant's own aim. `gunSlaved`: the simulation aims the
+// seat from that gun camera too (the seat's tag written first person), so the record is kept as solved for it; a
+// seat the simulation aims from its chase camera has `gunCamera` alone.
 void LegacyDrivePublish(GameTitle title, float yaw, float pitch, float aimYaw, float aimPitch, bool valid,
-                        bool seated, seat_drive::Axes axes, bool pitchLatch, uint32_t seatKey, bool gunSlaved)
+                        bool seated, seat_drive::Axes axes, bool pitchLatch, uint32_t seatKey, bool gunSlaved,
+                        bool gunCamera)
 {
     const int slot = LegacyDriveSlot(title);
     if (slot < 0)
@@ -1000,6 +1004,7 @@ void LegacyDrivePublish(GameTitle title, float yaw, float pitch, float aimYaw, f
     st.setPitchLatch.store(pitchLatch, std::memory_order_relaxed);
     st.setSeatKey.store(seatKey, std::memory_order_relaxed);
     st.setGunSlaved.store(seated && gunSlaved, std::memory_order_relaxed);
+    st.setGunCamera.store(seated && gunCamera, std::memory_order_relaxed);
     st.seq.fetch_add(1, std::memory_order_release);
 }
 
@@ -1192,7 +1197,7 @@ struct LegacyDrivePublication
     float yaw = 0.0f, pitch = 0.0f, aimYaw = 0.0f, aimPitch = 0.0f;
     uint64_t setMs = 0;
     uint32_t axesBits = 0, seatKey = 0;
-    bool valid = false, seated = false, pitchLatch = true, coherent = false, gunSlaved = false;
+    bool valid = false, seated = false, pitchLatch = true, coherent = false, gunSlaved = false, gunCamera = false;
     // What a stick write was made under, for the put-back (aim_caller::Context).
     aim_caller::Context context() const { return {seated, seatKey, axesBits, pitchLatch}; }
 };
@@ -1216,6 +1221,7 @@ LegacyDrivePublication LegacyDriveReadPublication(const LegacyDriveState& st)
         p.pitchLatch = st.setPitchLatch.load(std::memory_order_relaxed);
         p.seatKey = st.setSeatKey.load(std::memory_order_relaxed);
         p.gunSlaved = st.setGunSlaved.load(std::memory_order_relaxed);
+        p.gunCamera = st.setGunCamera.load(std::memory_order_relaxed);
         std::atomic_thread_fence(std::memory_order_acquire);   // the loads above stay before the re-read
         p.coherent = st.seq.load(std::memory_order_relaxed) == before;
     }
@@ -2074,9 +2080,11 @@ extern "C" void LegacyPcApplyForUser(int slot, int user, uintptr_t ret, const ui
                 (!onFoot && seatConfirmed && g_config.seat_direct_drive && fresh) ? axesBits : 0u;
             const bool seatWrite = wantAxes != 0;
             seatKept = seatWrite;
-            // A GUN-SLAVED SEAT (flag bit 7, the header): `aim` is the gun, so the occupant's own aim vector is read
-            // as well, from the same unit the rebase rotates, and proven against the record beside it.
-            const bool occupantActive = seatWrite && pub.gunSlaved && st.unitAimOffset != 0;
+            // A SEAT WHOSE CAMERA IS ITS GUN (flag bit 7, the header): `aim` is the gun, so the occupant's own aim
+            // vector is read as well, from the same unit the rebase rotates, and proven against the record beside it.
+            // Whichever camera the simulation aims the seat from: the gun rides the vehicle and slews, so it trails
+            // the record over rough ground in either, and the record's own twin does not.
+            const bool occupantActive = seatWrite && pub.gunCamera && st.unitAimOffset != 0;
             float occupantYaw = std::numeric_limits<float>::quiet_NaN(), occupantPitch = occupantYaw;
             float occupantWorldYaw = occupantYaw, occupantWorldPitch = occupantYaw;
             bool occupantRead = false;
@@ -2203,8 +2211,14 @@ extern "C" void LegacyPcApplyForUser(int slot, int user, uintptr_t ret, const ui
                 else if (!v.pitch_failed)
                     st.stintPitchFailCounted = false;
                 // THE OUTCOME GUARD: an axis written on the occupant's proof alone is watched for the gun coming to
-                // rest off the record (a real offset, not lag); then the camera's check decides it again.
-                if (occupantActive && fresh && newSample)
+                // rest off the record (a real offset, not lag); then the camera's check decides it again. Only where
+                // the simulation aims the seat from that gun camera: there a gun resting off the record leaves the
+                // shots off the hand. A seat aimed from its chase camera is written for that camera's line and its
+                // gun is a witness only; a gun held at its own stop, which the record's clamp need not share (a
+                // Warthog climbing 17 deg, aimed level over its bonnet: the gun rested 7 deg above the record), is
+                // the game's limit there, not an offset: back on the servo, the axis would close on a gun that
+                // cannot follow.
+                if (occupantActive && pub.gunSlaved && fresh && newSample)
                 {
                     const bool byOccupant[2]{v.yaw_by_occupant, v.pitch_by_occupant};
                     const float record[2]{nativeYaw, nativePitch}, gun[2]{aimYaw, aimPitch};
@@ -2213,7 +2227,10 @@ extern "C" void LegacyPcApplyForUser(int slot, int user, uintptr_t ret, const ui
                         auto& watch = st.occWatch[a];
                         if (watch.revoked)
                             continue;
-                        if (!byOccupant[a])
+                        // Not while the seat-limit latch holds the axis: at a seat's stop the gun rests at its
+                        // own stop, and on a tilted vehicle that is not where the record's clamp leaves the
+                        // record. That is a limit, not an offset; the watch starts again once the stop is left.
+                        if (!byOccupant[a] || st.seatLatch.latched[a])
                         {
                             watch.have = false;
                             watch.count = 0;
