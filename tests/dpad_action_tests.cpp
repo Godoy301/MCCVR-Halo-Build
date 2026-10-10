@@ -320,6 +320,9 @@ int main()
         fixtureTitle=static_cast<GameTitle>(title);
         const int index=title-1;
         g_config.manual_reload=g_config.weapon_holsters=true;
+        // The publication below (options 3) is one made with reload and holsters on, the slide gesture on and the
+        // click gesture off; the click gesture is on by default, so the fixture states both.
+        g_config.weapon_holster_slide=true;g_config.weapon_holster_click=false;
         g_padState.weaponTitle=fixtureTitle;g_padState.weaponGeneration=fixtureGeneration;
         g_padState.weaponSpace=1;g_padState.weaponOptions=3;
         g_padState.weaponSampleMs=fixtureNow;g_padState.weaponPulseUntilMs=fixtureNow+120;

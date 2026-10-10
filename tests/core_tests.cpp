@@ -15654,7 +15654,8 @@ int main()
           "legacy config inherits the roomscale view recenter options (on; they act only with roomscale on)");
     Check(g_config.shots_from_muzzle, "legacy config inherits shots from the muzzle");
     Check(!g_config.experimental_hand_alignment, "legacy config preserves released hand positioning");
-    Check(!g_config.manual_reload&&!g_config.weapon_holsters,"legacy config leaves both weapon gestures off");
+    Check(!g_config.manual_reload&&g_config.weapon_holsters,
+        "legacy config leaves manual reload off and inherits weapon holsters (on)");
     Check(!g_config.game_menu_pointer, "legacy config leaves native menu pointing off");
     g_config.game_menu_pointer = true;
     ConfigSave();
@@ -15745,11 +15746,12 @@ int main()
             file << "weapon_pouch_down_m = nan\nweapon_body_zone_radius_m = 99\n";
         }
         ConfigLoad(primary.c_str());
-        Check(!g_config.manual_reload&&!g_config.weapon_holsters&&g_config.weapon_pouch_down_m==0.50f&&
-            g_config.weapon_body_zone_radius_m==0.40f,"invalid geometry stays finite, bounded and opt-in");
+        Check(!g_config.manual_reload&&g_config.weapon_holsters&&g_config.weapon_pouch_down_m==0.50f&&
+            g_config.weapon_body_zone_radius_m==0.40f,
+            "invalid geometry stays finite and bounded; manual reload stays opt-in");
         Check(g_config.weapon_holster_radius_m==0.40f&&g_config.weapon_holster_slide&&
-            !g_config.weapon_holster_click&&!g_config.weapon_needler_shake&&g_config.weapon_unknown_reload_visual,
-            "old shared radius migrates to both zones while preserving draw and default-off shake");
+            g_config.weapon_holster_click&&!g_config.weapon_needler_shake&&g_config.weapon_unknown_reload_visual,
+            "old shared radius migrates to both zones while preserving the draw and click gestures and default-off shake");
         {
             std::ofstream file(primary);
             file << "weapon_holster_radius_m = 0.33\nweapon_body_zone_radius_m = 0.12\n"
@@ -15769,7 +15771,7 @@ int main()
                 "weapon_holster_draw_m = inf\nweapon_shake_travel_m = 999\n";
         }
         ConfigLoad(primary.c_str());
-        Check(g_config.weapon_holster_radius_m==0.20f&&g_config.weapon_insert_radius_m==0.06f&&
+        Check(g_config.weapon_holster_radius_m==0.30f&&g_config.weapon_insert_radius_m==0.06f&&
             g_config.weapon_holster_draw_m==0.25f&&g_config.weapon_shake_travel_m==0.20f,
             "new interaction geometry rejects nonfinite data and clamps finite bounds");
     }

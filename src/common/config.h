@@ -1302,23 +1302,23 @@ struct Config
     bool manual_reload_disable_auto = false;
     bool manual_reload_skip_animations = false;
     bool manual_reload_shortened_animation = false;
-    bool weapon_holsters = false;
+    bool weapon_holsters = true;
     float weapon_pouch_down_m = 0.50f;
     int weapon_pouch_location = 0; // 0 support-side front hip, 1 behind support shoulder
     float weapon_pouch_offset_x_m = 0.0f;
     float weapon_pouch_offset_y_m = 0.0f;
     float weapon_pouch_offset_z_m = 0.0f;
     float weapon_body_zone_radius_m = 0.20f;
-    float weapon_holster_radius_m = 0.20f;
+    float weapon_holster_radius_m = 0.30f;
     float weapon_insert_radius_m = 0.18f;
     float weapon_holster_draw_m = 0.25f;
     bool weapon_holster_slide = true;
-    bool weapon_holster_click = false;
+    bool weapon_holster_click = true;
     bool weapon_needler_shake = false;
     bool weapon_unknown_reload_visual = true;
     float weapon_shake_travel_m = 0.10f;
     // 0 shoulder, 1 hip, 2 over the shoulder (Campaign Evolved's spot), 3 custom (the three values below).
-    int weapon_holster_location = 0;
+    int weapon_holster_location = 3;
     // THE CUSTOM HOLSTER SPOT (location 3): metres from the head, to the weapon side, up, forward, in the level
     // frame of the way the head faces. Set by hand: F1 > Reload & Holsters > "Calibrate Holster Location"
     // arms it, and the next squeeze of the weapon grip records where that hand is. The default is a spot
