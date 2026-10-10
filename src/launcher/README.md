@@ -16,9 +16,9 @@ game is running after 12 s, 2 = Steam edition and no `steam.exe` process, 1 =
 any other failure. It never offers VR recovery for a running game, and on the
 Store edition it does not wait for a manual start if activation fails. The test
 harness (`tools/Enter-Reach-FA.ps1`) uses it so an unattended run cannot leave a
-modal box on someone's desktop. Because this launcher's manifest asks for
-administrator rights, the harness starts it unelevated with
-`__COMPAT_LAYER=RunAsInvoker` (launching an installed mod needs no elevation);
+modal box on someone's desktop. The harness starts it with
+`__COMPAT_LAYER=RunAsInvoker`, so no UAC prompt can appear whatever the
+launcher's manifest asks for;
 the launcher removes that variable before it starts the game. A player build
 never parses the switch, and `tools/verify-qol-package.py` refuses a packaged
 launcher that contains it.
@@ -66,9 +66,12 @@ fixed-drive XboxGames/XBOX fallback and Browse cover additional libraries.
 Each result must contain one of MCC's actual shipping executable layouts.
 The installer always targets that root's dedicated `Halo_MCC_VR` folder.
 It refuses active MCC processes, path junctions/symbolic links and corrupt
-payload hashes. The launcher requests administrator access by default through
-its embedded Windows application manifest so protected Steam library folders
-can be written without a second manual elevation step. The launcher executable
+payload hashes. The launcher runs with the user's own rights (its manifest is
+`asInvoker`): the game it starts inherits its token, and an elevated game
+ignores an OpenXR runtime chosen with `XR_RUNTIME_JSON`, so VR would not start
+for a player who selects the runtime that way. If Windows refuses the install
+folder, the installer says to run the launcher as administrator for that
+install, and to open it normally afterwards to launch. The launcher executable
 is installed as a separate file beside the mod payload inside `Halo_MCC_VR`;
 it is not part of the source `ModFiles` tree; the separately packaged manual
 archives provide the legacy launch helper for manual users.

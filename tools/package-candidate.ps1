@@ -629,7 +629,7 @@ try {
             path = 'HaloMCCVRLauncher.exe'
             bytes = $launcher.Length
             sha256 = $launcherHash
-            execution_level = 'requireAdministrator'
+            execution_level = 'asInvoker'
             manual_payload_contains_launcher = $false
         }
         accepted_halo4_identity = [ordered]@{

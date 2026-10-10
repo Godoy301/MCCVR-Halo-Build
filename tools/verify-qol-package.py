@@ -175,8 +175,10 @@ def check_build(path: Path, commit: str) -> dict:
         require(launcher_metadata.get("bytes") == len(launcher) and
                 str(launcher_metadata.get("sha256", "")).lower() == sha256(launcher),
                 "Separate launcher identity does not match candidate manifest")
-        require(re.search(rb"requestedExecutionLevel\b[^>]*level\s*=\s*[\"']requireAdministrator[\"']", launcher),
-                "Launcher does not embed the required administrator manifest")
+        # The launcher must not ask for administrator rights: the game inherits its token, and an elevated game
+        # ignores an OpenXR runtime chosen with XR_RUNTIME_JSON.
+        require(re.search(rb"requestedExecutionLevel\b[^>]*level\s*=\s*[\"']asInvoker[\"']", launcher),
+                "Launcher manifest must be asInvoker (it must not ask for administrator rights)")
         # The launcher's unattended launch (--headless, no menu and no dialogs) is a dev-only test hook.
         require("--headless".encode("utf-16-le") not in launcher,
                 "Packaged launcher contains the dev-only --headless hook (HALOMCCVR_DEV_DIAGNOSTICS must be OFF)")

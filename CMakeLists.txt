@@ -394,8 +394,12 @@ target_compile_definitions(halo3xr_launcher PRIVATE
 # IApplicationActivationManager: the Microsoft Store edition is a packaged app
 # and can only be started through packaged activation.
 target_link_libraries(halo3xr_launcher PRIVATE ole32 bcrypt advapi32 winhttp crypt32 shell32 uxtheme)
+# The launcher runs with the user's own rights. The game it starts inherits its token, and in an elevated game
+# the OpenXR loader ignores XR_RUNTIME_JSON: a headset runtime chosen with that variable is replaced by the
+# machine's registered one and VR never starts. An install into a folder the user cannot write to says so and
+# asks for the launcher to be run as administrator for that install (installer.cpp).
 if(MSVC)
-    target_link_options(halo3xr_launcher PRIVATE "/MANIFESTUAC:level='requireAdministrator' uiAccess='false'")
+    target_link_options(halo3xr_launcher PRIVATE "/MANIFESTUAC:level='asInvoker' uiAccess='false'")
 endif()
 
 # THE FLAT PROBE (dev preset only; never packaged -- package-candidate.ps1 refuses a dev cache and copies named
