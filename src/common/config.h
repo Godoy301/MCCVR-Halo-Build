@@ -455,7 +455,7 @@ struct Config
     bool show_welcome = true;
 
     // M3 VR controller turning (right Sense stick).
-    bool roomscale_movement = false; // physical horizontal steps drive native walking
+    bool roomscale_movement = true; // physical horizontal steps drive native walking
     // Roomscale A/B, live from F1: 1 = hysteresis (3 cm start / 1.5 cm stop, brake by release, owed distance
     // kept through interruptions), 0 = threshold (walks from 1.5 cm,
     // brakes by reversing), verbatim as it shipped in Alpha 0.6.0. (default 1)

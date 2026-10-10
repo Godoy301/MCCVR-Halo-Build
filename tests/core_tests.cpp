@@ -15631,7 +15631,7 @@ int main()
               g_config.cutscene_theater_width_m == 6.0f &&
               g_config.cutscene_theater_distance_m == 4.0f,
         "legacy configs inherit the enabled cutscene-theatre defaults");
-    Check(!g_config.roomscale_movement, "legacy config leaves roomscale off");
+    Check(g_config.roomscale_movement, "legacy config inherits roomscale body movement (on)");
     Check(g_config.roomscale_recenter_jump && g_config.roomscale_recenter_move_start &&
           g_config.roomscale_recenter_moving && g_config.roomscale_recenter_moving_speed == 0.25f,
           "legacy config inherits the roomscale view recenter options (on; they act only with roomscale on)");
@@ -20440,7 +20440,7 @@ int main()
         Check(TitleHeartbeatLost(unpaused+kTitlePauseResumeGraceMs+1,lastBeat,false,unpaused,2500),
             "Halo 4: a level quit from the pause menu still retires the core once the grace ends");
     }
-    Check(!Config{}.roomscale_movement, "roomscale is opt-in for existing and new configurations");
+    Check(Config{}.roomscale_movement, "roomscale body movement is on for a new configuration");
 
     {
         ControllerFingerSample sample{9,123,7,false,
