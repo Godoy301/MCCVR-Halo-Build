@@ -26,6 +26,8 @@ bool Game_ReadVehicleCameraOwner(GameTitle title,NativeVehicleCameraOwner& outpu
 {output=owned;return ownedValid&&title==activeTitle;}
 #if HALOMCCVR_DEV_DIAGNOSTICS
 void Game_Halo4CameraOwnerReport() noexcept {}
+void Halo2Observer6Dof_DevGameClock(long long& tick,float& factor) noexcept {tick=-1;factor=0;}
+uint64_t Sight_NowUs() {return 0;}
 #endif
 namespace sig {uintptr_t Find(uintptr_t,size_t,const char*) {return 0;}}
 bool WaitForNativeDetourQuiescence(const void* const* functions,const void* const*,size_t count,
@@ -69,11 +71,21 @@ int16_t __fastcall CeMarker(uint32_t unit,const char* marker,void* output,int16_
 {Check(unit==owned.unit&&std::strcmp(marker,"head")==0&&maximum==1,"CE marker ABI");return FillMarker(output);}
 int16_t __fastcall H2Marker(uint32_t unit,uint32_t marker,void* output,int16_t maximum)
 {Check(unit==owned.unit&&marker==0x4000095&&maximum==1,"H2 marker ABI");return FillMarker(output);}
-int16_t __fastcall H2InterpolatedMarker(uint32_t unit,uint32_t marker,void* output,int16_t maximum,uint8_t direct,uint8_t interpolated)
+// The full query, asked for no marker: the vehicle's root node, as simulated or (interpolated) as drawn an eighth
+// of a unit behind it.
+static int vehicleRootQueries=0;
+// A dev build's frame trace asks for the vehicle's two frames once more per placed camera.
+#if HALOMCCVR_DEV_DIAGNOSTICS
+constexpr int kTraceRootQueries=2;
+#else
+constexpr int kTraceRootQueries=0;
+#endif
+int16_t __fastcall H2InterpolatedMarker(uint32_t object,uint32_t marker,void* output,int16_t maximum,uint8_t direct,uint8_t interpolated)
 {
-    Check(unit==owned.unit&&marker==0x4000095&&maximum==1&&!direct&&interpolated==1,"H2 full marker interpolation ABI");
-    const auto count=FillMarker(output);const float renderX=markerX+.125f;
-    std::memcpy(static_cast<uint8_t*>(output)+96,&renderX,4);return count;
+    Check(object==owned.parent&&marker==0&&maximum==1&&!direct&&interpolated<=1,"H2 vehicle root query ABI");
+    ++vehicleRootQueries;std::memset(output,0,128);
+    const float frame[13]{1, 1,0,0, 0,1,0, 0,0,1, interpolated?99.875f:100.0f,200,300};
+    std::memcpy(static_cast<uint8_t*>(output)+56,frame,sizeof(frame));return 1;
 }
 int16_t __fastcall H4Marker(uint32_t unit,uint32_t marker,void* output,int16_t maximum,uint8_t a,uint8_t b,uint8_t c)
 {Check(unit==owned.unit&&marker==0x122&&maximum==1&&!a&&!b&&c==1,"H4 marker ABI and interpolation");return FillMarker(output);}
@@ -165,10 +177,16 @@ template<unsigned I> void Run()
         "unknown vehicle retains fallback and revokes previous identified menu target");
     if constexpr(I==1) {
         r.markerInterpolated=reinterpret_cast<void*>(&H2InterpolatedMarker);
-        g_config.vehicle_cam_smoothing=true;camera();
-        Check(position[0]==10.125f,"H2 smoothing selects rendered marker position between simulation ticks");
-        g_config.vehicle_cam_smoothing=false;camera();Check(position[0]==10,"H2 smoothing off restores simulation marker wrapper");
-        g_config.vehicle_cam_smoothing=true;r.markerInterpolated=nullptr;
+        g_config.vehicle_cam_smoothing=true;vehicleRootQueries=0;camera();
+        Check(std::fabs(position[0]-9.875f)<.0001f&&vehicleRootQueries==2+kTraceRootQueries,
+            "H2 smoothing carries the camera by the vehicle as drawn between simulation ticks");
+        vehicleRootQueries=0;Check(SelectHook<I>(owned.unit,&mode)==0&&vehicleRootQueries==0,
+            "H2 selector asks only whether the head marker is there");
+        g_config.vehicle_cam_smoothing=false;vehicleRootQueries=0;camera();
+        Check(position[0]==10&&vehicleRootQueries==kTraceRootQueries,
+            "H2 smoothing off leaves the simulation's marker");
+        g_config.vehicle_cam_smoothing=true;r.markerInterpolated=nullptr;camera();
+        Check(position[0]==10,"H2 without the full query leaves the simulation's marker");
     }
     for(int transition:{0,1,3,4,5}) {
         nativeMode=transition;Check(SelectHook<I>(owned.unit,&mode)==1,"transitions and special cameras preserved");

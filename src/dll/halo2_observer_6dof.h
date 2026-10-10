@@ -1,5 +1,9 @@
 #pragma once
 bool Halo2Observer6Dof_OnFootFresh() noexcept;
+#if HALOMCCVR_DEV_DIAGNOSTICS
+// The simulation's clock now: the tick, and the frame interpolator's factor (NaN when unreadable).
+void Halo2Observer6Dof_DevGameClock(long long& tick, float& factor) noexcept;
+#endif
 
 #include <cstddef>
 #include <cstdint>

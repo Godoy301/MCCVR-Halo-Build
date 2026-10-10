@@ -7004,6 +7004,15 @@ void* Halo2Observer6Dof_ReloadWeapon(uint32_t weapon) noexcept
     __except(EXCEPTION_EXECUTE_HANDLER) { return nullptr; }
 }
 
+#if HALOMCCVR_DEV_DIAGNOSTICS
+void Halo2Observer6Dof_DevGameClock(long long& tick, float& factor) noexcept
+{
+    int64_t now = -1;
+    Halo2ReadGameClock(now, factor);
+    tick = now;
+}
+#endif
+
 bool Halo2Observer6Dof_OnFootFresh() noexcept
 {
     const uint64_t sample = g_vehicleSeatSample.load(std::memory_order_acquire);
@@ -7188,7 +7197,7 @@ bool Halo2Observer6Dof_ReadVehicleCameraOwner(NativeVehicleCameraOwner& owner) n
         const auto* object=Halo2ObjectFromIndex(key.unit);
         if (!object||Halo2OwnedUnit()!=key.unit||!Halo2Observer6Dof_Armed()) return false;
         owner={key.generation,key.unit,key.parent,key.seat,reinterpret_cast<uintptr_t>(object),
-            ReadHalo2VehicleIdentity(key.parent)};
+            ReadHalo2VehicleIdentity(key.parent),key.root};
         return true;
     } __except(EXCEPTION_EXECUTE_HANDLER) { return false; }
 }
