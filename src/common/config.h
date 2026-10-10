@@ -993,8 +993,8 @@ struct Config
     // rendering. The game's own HUD reticle sits at head-center and is wrong
     // whenever hand aim is on; this one is the truth.
     bool crosshair = true;
-    float crosshair_distance_m = 41.0f; // how far along the aim ray it floats
-    float crosshair_size_deg = 10.10f;  // apparent (angular) size
+    float crosshair_distance_m = 50.0f; // how far along the aim ray it floats
+    float crosshair_size_deg = 4.00f;   // apparent (angular) size
     // The crosshair's opacity and brightness, as a scale on its own headset layer (1 = as the game draws it).
     // Opacity scales the art's alpha: below 1 it is more see-through, above 1 a faint crosshair becomes more
     // solid. Brightness scales its colour: below 1 dimmer, above 1 brighter (towards white). 0 to 2 each.
