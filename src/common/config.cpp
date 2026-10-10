@@ -2960,8 +2960,8 @@ void ConfigSave()
     fprintf(f, "# Automatically enter VR when a level loads (no F2/F11 needed).\n");
     fprintf(f, "# (default %d)\n", d.auto_vr ? 1 : 0);
     fprintf(f, "auto_vr = %d\n\n", g_config.auto_vr ? 1 : 0);
-    fprintf(f, "# Optional pouch-to-gun reload and shoulder/hip reserve-weapon draw.\n");
-    fprintf(f, "# Off by default; native ammo, reload animation and inventory rules remain.\n");
+    fprintf(f, "# Optional pouch-to-gun reload (off by default) and the holster's reserve-weapon draw (on by\n");
+    fprintf(f, "# default); native ammo, reload animation and inventory rules remain.\n");
     fprintf(f, "manual_reload = %d\nweapon_holsters = %d\n",g_config.manual_reload?1:0,g_config.weapon_holsters?1:0);
     fprintf(f, "manual_reload_disable_auto = %d\nmanual_reload_skip_animations = %d\n",
         g_config.manual_reload_disable_auto?1:0,g_config.manual_reload_skip_animations?1:0);
@@ -2974,6 +2974,7 @@ void ConfigSave()
     fprintf(f, "# 3 = your own spot, the three values below: metres from your head to the weapon side, up, and\n");
     fprintf(f, "# forward. Set it by hand: F1 > Reload & Holsters > Calibrate Holster Location, close the menu,\n");
     fprintf(f, "# then squeeze the weapon grip where the holster should be. (defaults 0.198, 0.085, -0.284)\n");
+    fprintf(f, "# (default location %d)\n", d.weapon_holster_location);
     fprintf(f, "weapon_holster_location = %d\n",g_config.weapon_holster_location);
     fprintf(f, "weapon_holster_custom_x_m = %.3f\nweapon_holster_custom_y_m = %.3f\nweapon_holster_custom_z_m = %.3f\n",
         g_config.weapon_holster_custom_x_m,g_config.weapon_holster_custom_y_m,g_config.weapon_holster_custom_z_m);
@@ -2981,6 +2982,8 @@ void ConfigSave()
         g_config.weapon_pouch_location,g_config.weapon_pouch_offset_x_m,g_config.weapon_pouch_offset_y_m,g_config.weapon_pouch_offset_z_m);
     fprintf(f, "# Independent grab/insert radii. Click uses a fresh weapon grip in the holster.\n");
     fprintf(f, "# Slide preserves the draw gesture. With both on, click completes first.\n");
+    fprintf(f, "# (defaults: holster radius %.2f, slide %d, click %d)\n", d.weapon_holster_radius_m,
+        d.weapon_holster_slide ? 1 : 0, d.weapon_holster_click ? 1 : 0);
     fprintf(f, "weapon_holster_radius_m = %.3f\nweapon_insert_radius_m = %.3f\nweapon_holster_draw_m = %.3f\n",
         g_config.weapon_holster_radius_m,g_config.weapon_insert_radius_m,g_config.weapon_holster_draw_m);
     fprintf(f, "weapon_holster_slide = %d\nweapon_holster_click = %d\n",
