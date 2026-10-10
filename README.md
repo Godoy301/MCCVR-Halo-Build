@@ -50,7 +50,7 @@ To try full-body IK, enable **Tracked full-body IK (experimental)**; it defaults
 - Individual finger identity is implemented; Alyx-style finger contact reactions/hand physics are not. Whole-hand collision does not provide the per-joint contact behavior required.
 - CE localized subtitle handoff/separate VR scope remain unfinished. CE/H2/H4 bloom and generalized auto-exposure coverage remain incomplete.
 - DLSS quality, ghosting, resizing and performance vary by game/GPU and require headset testing; it is not a frame-generation feature or FPS guarantee.
-- Physical crouch requires MCC hold-to-crouch. Simultaneous stick and roomscale body following is incomplete. Reach native weapon recoil haptics remain WIP.
+- Physical crouch is on by default and requires MCC hold-to-crouch; with MCC set to toggle crouch, untick Physical crouch in the VR settings (F1). Simultaneous stick and roomscale body following is incomplete. Reach native weapon recoil haptics remain WIP.
 - CE gun shift after loads, Linux forced sign-in/keyboard, ODST crashes, campaign co-op firing/melee/vehicles, H2 stutter/blackouts, CE Anniversary lighting/arms, Reach foliage/smoke/title-hop slowdown and H4 blackouts/letterbox have no confirmed universal fix in this candidate.
 - Planned, not implemented: dropped-world-weapon pickup and enemy disarm; grabbing/ragdolling/throwing enemies; sustained physical enemy contact; climbing/world grip/wall jumps; mandatory physical weapon grip with dropping/pickup; touch-driven interactibles; optical hand tracking; Provolver SDK support; and per-weapon grip capture.
 

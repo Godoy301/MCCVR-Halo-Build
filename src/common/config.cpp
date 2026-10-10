@@ -3040,6 +3040,10 @@ void ConfigSave()
         fprintf(f,"weapon_switch_button_%s = %d\n",weapon_interaction::kTitleKeys[i],g_config.weapon_switch_button[i]);
     }
     fprintf(f,"\n# VR action bindings: 0=automatic, 1=unbound. Edited in VR Mappings.\n");
+    fprintf(f,"# Physical crouch: lower your head by physical_crouch_depth_m (metres, 0.08 to 0.65) to crouch,\n"
+              "# on foot. It needs MCC's hold-to-crouch setting: toggle crouch is not overridden.\n"
+              "# 0 = crouch with the button only. (default %d, depth %.2f)\n",
+        d.physical_crouch?1:0,d.physical_crouch_depth_m);
     fprintf(f,"physical_crouch = %d\nphysical_crouch_depth_m = %.3f\n",
         g_config.physical_crouch?1:0,g_config.physical_crouch_depth_m);
 #if HALOMCCVR_DEV_DIAGNOSTICS
