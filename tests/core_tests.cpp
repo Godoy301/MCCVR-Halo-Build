@@ -15695,6 +15695,8 @@ int main()
           g_config.roomscale_recenter_moving && g_config.roomscale_recenter_moving_speed == 0.25f,
           "legacy config inherits the roomscale view recenter options (on; they act only with roomscale on)");
     Check(g_config.shots_from_muzzle, "legacy config inherits shots from the muzzle");
+    Check(g_config.physical_crouch && g_config.physical_crouch_depth_m == 0.22f,
+          "legacy config inherits the physical crouch (on) at its default depth");
     Check(!g_config.experimental_hand_alignment, "legacy config preserves released hand positioning");
     Check(!g_config.manual_reload&&g_config.weapon_holsters,
         "legacy config leaves manual reload off and inherits weapon holsters (on)");
@@ -15828,6 +15830,7 @@ int main()
         file << "roomscale_recenter_move_start = 1\nroomscale_recenter_move_start_s = 9\n";
         file << "roomscale_recenter_moving = 1\nroomscale_recenter_moving_speed = 0.01\n";
         file << "physical_running = 1\nphysical_running_speed = 0.6\nphysical_running_sensitivity = 2\n";
+        file << "physical_crouch = 0\n";
         file << "experimental_body_ik = 1\nbody_ik_hide_lower = 1\n";
         file << "physical_melee_swing_speed = 0.10\n";
     }
@@ -15849,6 +15852,7 @@ int main()
     Check(g_config.physical_running&&g_config.physical_running_speed==.6f&&
         g_config.physical_running_sensitivity==2&&g_config.experimental_body_ik&&g_config.body_ik_hide_lower,
         "physical running controls and separate avatar/lower-body toggles survive config save/load");
+    Check(!g_config.physical_crouch, "a config that switched the physical crouch off keeps it off through save/load");
     Check(g_config.left_handed,
         "left-handed main-weapon mode survives a save/load round trip");
     Check(!g_config.experimental_hand_alignment,

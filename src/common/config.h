@@ -475,7 +475,9 @@ struct Config
     bool physical_running = false;
     float physical_running_speed = 1.0f; // fraction of native maximum locomotion
     float physical_running_sensitivity = 1.0f;
-    bool physical_crouch = false;
+    // Lowering the head by the depth crouches, on foot. It holds MCC's crouch while the head is down, so it
+    // needs MCC's hold-to-crouch setting: toggle crouch is not overridden.
+    bool physical_crouch = true;
     float physical_crouch_depth_m = 0.22f;
     // AUTOMATED TESTING ONLY (default 0): let roomscale and physical crouch accept a head pose OpenXR reports
     // VALID but not TRACKED. A simulated runtime can report an overridden head exactly that way, so
