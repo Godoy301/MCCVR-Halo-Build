@@ -337,9 +337,11 @@ inline constexpr int kTitleProfileCount = 7;
 inline constexpr int kTitleProfileReach = 2;
 // Each game draws its own crosshair art, which fills more or less of the crosshair's quad than the next game's
 // (Reach's ring about half as much as Halo 3's), so one size shows it larger in one game than in another. These
-// are each game's starting size and opacity at the shared defaults (TitleTunables: 4 degrees, 1.25), headset-tuned
-// so the games' crosshairs look alike. A profile that names no size or opacity starts from the shared value in
-// the same proportion.
+// are each game's starting size and opacity, headset-tuned so the games' crosshairs look alike; the shared
+// defaults are TitleTunables' (4 degrees, 1.25). A profile that names no size or opacity starts at its game's
+// own start where that differs from the shared default, and from the shared key otherwise: a config written
+// before the games had their own holds one size for every game (10.1 degrees by default in older builds), and
+// no multiple of one size suits them all.
 struct CrosshairStart
 {
     float size_deg;
