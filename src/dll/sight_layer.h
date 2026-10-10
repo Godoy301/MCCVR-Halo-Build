@@ -239,7 +239,7 @@ inline constexpr uint64_t kSightIntentShotMaxAgeMs = 150;
 // on foot, Sight_SetFireEyeSource: the query's own start, or the evaluator asked at a muzzle shot, else this tick's
 // eye carried a tick), else EXTRAPOLATED as E_P + v * age (ODST). Covered: Halo 3 and ODST -- the
 // crosshair-assist query re-aim (LegacySightReaimCrosshairQuery) and the muzzle shot (Sight_AimMuzzleShot), on foot;
-// seats only under the second dev key shot_point_transport_seated (default 0); and Halo 3's on-foot record
+// seats under the second dev key shot_point_transport_seated (default 1); and Halo 3's on-foot record
 // recomposition (shot_lag::RecomposeRecord). Also covered: the other titles'
 // on-foot shots that aim through a WORLD point: Halo 2's and CE's muzzle shots (E_fire their camera evaluator asked at
 // the fire once proven, shot_lag::EvaluatorEyeProof, else E_P carried a tick: Sight_ShotPointSample), CE's player
@@ -284,7 +284,7 @@ using SightFireEyeFn = shot_lag::FireEye (*)(const float* siteEye, bool askEvalu
 void Sight_SetFireEyeSource(GameTitle title, SightFireEyeFn source);
 // The keys' verdict for a shot of this kind: a covered title (Halo 3, ODST, Halo 2, CE, Halo 4, Reach on foot),
 // shot_point_transport on, and seated shots only with shot_point_transport_seated as well (never Reach's seats). A
-// player build: on foot yes, seated no.
+// player build: on foot yes, seated yes.
 bool Sight_TransportWanted(GameTitle title, bool seated);
 // A title's simulation tick, from a per-tick hook (every build; several units per tick are one tick), and its
 // measured period (us), else `fallbackUs` while unmeasured. Also feeds the dev SHOT LAG line's tick.

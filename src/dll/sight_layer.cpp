@@ -686,8 +686,8 @@ void Sight_SetFireEyeSource(GameTitle title, SightFireEyeFn source)
 
 bool Sight_TransportWanted(GameTitle title, bool seated)
 {
-    // Every build (flat parity): the keys are dev-only, so a player build keeps their defaults -- on foot
-    // transported (shot_point_transport 1), seats not (shot_point_transport_seated 0). Every title whose local shots
+    // Every build (flat parity): the keys are dev-only, so a player build keeps their defaults -- transported on
+    // foot (shot_point_transport 1) and in a seat (shot_point_transport_seated 1). Every title whose local shots
     // aim through a world point; Reach on foot only (its seats are not covered by either key: sight_layer.h).
     if (title != GameTitle::Halo3 && title != GameTitle::Halo3ODST && title != GameTitle::Halo2 &&
         title != GameTitle::HaloCE && title != GameTitle::Halo4 && title != GameTitle::HaloReach)

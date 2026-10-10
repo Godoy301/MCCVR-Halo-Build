@@ -886,10 +886,12 @@ struct Config
     // ON the crosshair of the frame that shows them). 0 = through P as published (the A/B: rounds trail a strafe by one
     // tick). The reticle stays on P either way. Live (read per shot). (default 1)
     int shot_point_transport = 1;
-    // DEV BUILD ONLY: with shot_point_transport on, 1 = seated shots too (extrapolated from the eye's velocity; a seat
-    // has no fire-tick eye). 0 = seats keep P (the Halo 3 Hornet lands right that way, and a
-    // seated round also inherits its vehicle's velocity: seated_inherit_compensation). (default 0)
-    int shot_point_transport_seated = 0;
+    // DEV BUILD ONLY (parsed, saved and in the menu only in dev builds; a player build always uses 1): with
+    // shot_point_transport on, 1 = seated shots too (extrapolated from the eye's velocity; a seat has no fire-tick
+    // eye). 0 = seats keep P, the A/B (a seated round also inherits its vehicle's velocity:
+    // seated_inherit_compensation). A Halo 3 seat whose shots follow the game's own crosshair line is not re-aimed at
+    // the fire at all, so the key changes nothing there. (default 1)
+    int shot_point_transport_seated = 1;
     // DEV BUILD ONLY (a player build always uses 1), Halo 2 on foot, with shot_point_transport on: 1 = once the
     // firing assist's camera evaluator is PROVEN to be the engine eye (halo2_fire_eye.inl; its proof is fed at rest
     // from the unit's own tick), a muzzle shot's eye at the fire is that evaluator asked inside the fire --
