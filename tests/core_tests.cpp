@@ -87,6 +87,8 @@ int RunDirectorCameraTests();
 #include "vr.h"
 
 #include <authored_reticle_logic.h>
+#include <seat_camera_ride_logic.h>
+#include <seat_head_trace_logic.h>
 
 namespace
 {
@@ -1821,6 +1823,82 @@ int main()
                   step(outward, at(0.0f, 240.0f), 5, 6) && step(outward, at(0.0f, 240.0f), 7, 8) &&
                   outward.y == 768.0f && !step(outward, at(0.0f, 240.0f), 9, 10),
               "capture follow: the window stops at its limit");
+    }
+    {
+        // A seat camera's point is carried from the vehicle as simulated to the vehicle as drawn.
+        using seat_camera_ride::CarryPoint;
+        const auto frame = [](float x, float y, float z, float yawDeg) {
+            const float a = yawDeg * 3.14159265f / 180.0f;
+            return std::array<float, 13>{1.0f, std::cos(a), std::sin(a), 0.0f, -std::sin(a), std::cos(a), 0.0f,
+                                         0.0f, 0.0f, 1.0f, x, y, z};
+        };
+        const auto near3 = [](const float p[3], float x, float y, float z) {
+            return std::fabs(p[0] - x) < 1.0e-4f && std::fabs(p[1] - y) < 1.0e-4f && std::fabs(p[2] - z) < 1.0e-4f;
+        };
+        const auto simulated = frame(10.0f, 20.0f, 3.0f, 30.0f);
+        float same[3]{10.5f, 20.25f, 3.6f};
+        Check(CarryPoint(simulated.data(), simulated.data(), same) && near3(same, 10.5f, 20.25f, 3.6f),
+              "seat ride: a vehicle drawn where it is simulated leaves the point alone");
+        // Drawn 0.03 of a world unit behind along x (a tick's travel at 5.5 m/s, drawn at the tick before).
+        const auto behind = frame(9.97f, 20.0f, 3.0f, 30.0f);
+        float moved[3]{10.5f, 20.25f, 3.6f};
+        Check(CarryPoint(simulated.data(), behind.data(), moved) && near3(moved, 10.47f, 20.25f, 3.6f),
+              "seat ride: the point moves with the drawn vehicle");
+        // Drawn one degree short of the simulated heading: a point two units ahead of the node swings with it.
+        const auto ahead = frame(0.0f, 0.0f, 0.0f, 0.0f);
+        const auto turned = frame(0.0f, 0.0f, 0.0f, -1.0f);
+        float lever[3]{2.0f, 0.0f, 1.0f};
+        Check(CarryPoint(ahead.data(), turned.data(), lever) &&
+                  near3(lever, 2.0f * std::cos(3.14159265f / 180.0f), -2.0f * std::sin(3.14159265f / 180.0f), 1.0f),
+              "seat ride: the vehicle's turn between the ticks carries the point round the node");
+        auto skewed = simulated;
+        skewed[1] = 0.5f;
+        float kept[3]{10.5f, 20.25f, 3.6f};
+        Check(!CarryPoint(simulated.data(), skewed.data(), kept) && near3(kept, 10.5f, 20.25f, 3.6f),
+              "seat ride: a frame that is not a rotation is refused");
+        const auto distant = frame(13.0f, 20.0f, 3.0f, 30.0f);
+        Check(!CarryPoint(simulated.data(), distant.data(), kept) && near3(kept, 10.5f, 20.25f, 3.6f),
+              "seat ride: a node three units away is not one frame's interpolation");
+        auto scaled = simulated;
+        scaled[0] = 1.2f;
+        Check(!CarryPoint(simulated.data(), scaled.data(), kept), "seat ride: frames of two scales are refused");
+
+        // The witness: a camera left at the tick sits ahead of a hull drawn a fifth of the way to it.
+        seat_head_trace::Carry carry{};
+        seat_head_trace::Window window{};
+        for (int k = 0; k < 6; ++k)
+        {
+            seat_head_trace::Sample s{};
+            s.us = 1000000ull + uint64_t(k) * 16667ull;
+            s.tick = 100 + k;
+            s.factor = 0.2f;
+            s.atTick[0] = s.placed[0] = 0.04f * float(k);
+            s.hull[0] = 0.04f * float(k) - 1.0f;
+            s.hullDrawn[0] = s.hull[0] - 0.8f * 0.04f;
+            s.hullValid = true;
+            window.Add(s, carry);
+        }
+        Check(window.moving == 5 && window.hullMeasured == 5 && window.hullAtFactor == 5 && window.aheadTick == 5 &&
+                  std::fabs(window.aheadSumMm / window.hullMeasured - 0.8 * 0.04 * 3048.0) < 0.5,
+              "seat trace: a camera at the tick leads a hull drawn at the factor by the rest of the step");
+        seat_head_trace::Carry carried{};
+        seat_head_trace::Window riding{};
+        for (int k = 0; k < 6; ++k)
+        {
+            seat_head_trace::Sample s{};
+            s.us = 1000000ull + uint64_t(k) * 16667ull;
+            s.tick = 100 + k;
+            s.factor = 0.2f;
+            s.atTick[0] = 0.04f * float(k);
+            s.placed[0] = s.atTick[0] - 0.8f * 0.04f;
+            s.hull[0] = 0.04f * float(k) - 1.0f;
+            s.hullDrawn[0] = s.hull[0] - 0.8f * 0.04f;
+            s.hullValid = s.carried = true;
+            riding.Add(s, carried);
+        }
+        Check(riding.on == 5 && riding.carried == 6 && std::fabs(riding.aheadMaxMm) < 0.5f &&
+                  std::fabs(riding.aheadMinMm) < 0.5f,
+              "seat trace: a carried camera sits on the drawn hull");
     }
     {
         AuthoredReticleRefreshState state{};

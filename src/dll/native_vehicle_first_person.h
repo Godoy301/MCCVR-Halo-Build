@@ -8,6 +8,7 @@ struct NativeVehicleCameraOwner
     int16_t seat{-1};
     uintptr_t object{};
     uint64_t vehicleIdentity{}; // stable authored identity; never a live object datum
+    uint32_t root{UINT32_MAX};  // the vehicle at the top of the seat's parent chain, where the title reads it
     bool operator==(const NativeVehicleCameraOwner&) const = default;
 };
 

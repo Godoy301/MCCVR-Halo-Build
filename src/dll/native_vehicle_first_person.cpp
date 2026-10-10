@@ -3,9 +3,17 @@
 #include "game.h"
 #include "sigscan.h"
 #include "hook_quiescence.h"
+#if HALOMCCVR_DEV_DIAGNOSTICS
+#include "halo2_observer_6dof.h"
+#include "sight_layer.h"
+#include "../common/seat_head_trace_logic.h"
+#include <cstdio>
+#include <string>
+#endif
 #include "../common/config.h"
 #include "../common/log.h"
 #include "../common/minhook_lifecycle.h"
+#include "../common/seat_camera_ride_logic.h"
 #include <windows.h>
 #include <MinHook.h>
 #include <array>
@@ -55,6 +63,68 @@ struct Runtime
 };
 Runtime runtime[3];
 #if HALOMCCVR_DEV_DIAGNOSTICS
+// Halo 2's seat camera, frame by frame (seat_head_trace_logic.h): the camera evaluator records, the cold poll
+// reports. One short exclusive section per frame.
+SRWLOCK g_seatHeadLock=SRWLOCK_INIT;
+seat_head_trace::Sample g_seatHead[seat_head_trace::kRing];
+unsigned g_seatHeadCount=0;
+void NoteSeatHead(const NativeVehicleCameraOwner& owner)
+{
+    const auto& r=runtime[1];
+    if(!r.marker||!r.markerInterpolated) return;
+    const auto query=reinterpret_cast<int16_t(__fastcall*)(uint32_t,uint32_t,void*,int16_t,uint8_t,uint8_t)>(
+        r.markerInterpolated);
+    alignas(16) uint8_t head[128]{},simulated[128]{},drawn[128]{};
+    if(reinterpret_cast<int16_t(__fastcall*)(uint32_t,uint32_t,void*,int16_t)>(
+        r.marker)(owner.unit,0x4000095,head,1)!=1) return;
+    seat_head_trace::Sample s{};
+    std::memcpy(s.atTick,head+96,12);std::memcpy(s.placed,head+96,12);
+    const uint32_t vehicle=owner.root!=UINT32_MAX?owner.root:owner.parent;
+    if(vehicle!=UINT32_MAX&&query(vehicle,0,simulated,1,0,0)==1&&query(vehicle,0,drawn,1,0,1)==1) {
+        float a[seat_camera_ride::kFrameFloats]{},b[seat_camera_ride::kFrameFloats]{};
+        std::memcpy(a,simulated+56,sizeof(a));std::memcpy(b,drawn+56,sizeof(b));
+        s.hullValid=seat_camera_ride::UsableFrame(a)&&seat_camera_ride::UsableFrame(b);
+        std::memcpy(s.hull,a+10,12);std::memcpy(s.hullDrawn,b+10,12);
+        if(g_config.vehicle_cam_smoothing) s.carried=seat_camera_ride::CarryPoint(a,b,s.placed);
+    }
+    long long tick=-1;
+    Halo2Observer6Dof_DevGameClock(tick,s.factor);
+    s.tick=tick;s.us=Sight_NowUs();s.thread=GetCurrentThreadId();
+    AcquireSRWLockExclusive(&g_seatHeadLock);
+    if(g_seatHeadCount<seat_head_trace::kRing) g_seatHead[g_seatHeadCount++]=s;
+    ReleaseSRWLockExclusive(&g_seatHeadLock);
+}
+// The cold poll's half: one line for the window, and the rows themselves into a file beside the log while a file
+// named halomccvr_seat_trace.on sits there.
+void ReportSeatHead()
+{
+    static seat_head_trace::Sample rows[seat_head_trace::kRing];
+    AcquireSRWLockExclusive(&g_seatHeadLock);
+    const unsigned n=g_seatHeadCount;
+    std::memcpy(rows,g_seatHead,sizeof(rows[0])*n);
+    g_seatHeadCount=0;
+    ReleaseSRWLockExclusive(&g_seatHeadLock);
+    if(n<2) return;
+    static seat_head_trace::Carry carry{};
+    char line[1800]{};
+    if(seat_head_trace::Summarise(rows,n,carry,line,sizeof(line)))
+        LOG("Vehicle first person title=6 seat camera trace (dev): %s",line);
+    std::wstring dir=LogDirectory();
+    if(dir.empty()) return;
+    if(dir.back()!=L'\\'&&dir.back()!=L'/') dir+=L'\\';
+    if(GetFileAttributesW((dir+L"halomccvr_seat_trace.on").c_str())==INVALID_FILE_ATTRIBUTES) return;
+    FILE* f=nullptr;
+    if(_wfopen_s(&f,(dir+L"halomccvr_seat_trace.csv").c_str(),L"ab")||!f) return;
+    for(unsigned k=0;k<n;++k) {
+        const auto& s=rows[k];
+        std::fprintf(f,"%llu,%lld,%.4f,%.5f,%.5f,%.5f,%.5f,%.5f,%.5f,%.5f,%.5f,%.5f,%.5f,%.5f,%.5f,%d,%d,%u\n",
+            static_cast<unsigned long long>(s.us),static_cast<long long>(s.tick),double(s.factor),
+            double(s.placed[0]),double(s.placed[1]),double(s.placed[2]),double(s.atTick[0]),double(s.atTick[1]),
+            double(s.atTick[2]),double(s.hull[0]),double(s.hull[1]),double(s.hull[2]),double(s.hullDrawn[0]),
+            double(s.hullDrawn[1]),double(s.hullDrawn[2]),s.hullValid?1:0,s.carried?1:0,s.thread);
+    }
+    std::fclose(f);
+}
 // The first-person witness (NativeVehicleFirstPerson_ArmSelectWitness): armed and taken by one caller on its own
 // thread around one native call; Halo 4's selector hook records into it only while it is armed.
 thread_local NativeVehicleSelectWitness t_selectWitness{};
@@ -92,24 +162,40 @@ bool Owner(unsigned i,uint32_t unit,NativeVehicleCameraOwner& owner) noexcept
 #endif
     return why==OwnerOk;
 }
+// Halo 2 draws a vehicle between the last two ticks (MCC's frame interpolator) but answers a marker of its seated
+// occupant from the simulation, interpolation asked for or not: the occupant is not interpolated on its own. Left
+// there, the camera sits at the newest tick while the hull is drawn up to a tick's travel behind it, by an amount
+// that changes every frame. So the point is carried by the vehicle's own interpolation this frame
+// (seat_camera_ride_logic.h): the marker query, asked for no marker (0), answers the object's root node, as drawn
+// when interpolation is asked for and the interpolator holds the object, else as simulated. A vehicle the
+// interpolator does not hold gives the same frame twice and the point stays where it is.
+bool RideDrawnVehicle(const NativeVehicleCameraOwner& owner,float position[3])
+{
+    const auto& r=runtime[1];
+    const uint32_t vehicle=owner.root!=UINT32_MAX?owner.root:owner.parent;
+    if (!r.markerInterpolated||vehicle==UINT32_MAX) return false;
+    const auto query=reinterpret_cast<int16_t(__fastcall*)(uint32_t,uint32_t,void*,int16_t,uint8_t,uint8_t)>(
+        r.markerInterpolated);
+    alignas(16) uint8_t simulated[128]{},drawn[128]{};
+    if (query(vehicle,0,simulated,1,0,0)!=1||query(vehicle,0,drawn,1,0,1)!=1) return false;
+    float a[seat_camera_ride::kFrameFloats]{},b[seat_camera_ride::kFrameFloats]{};
+    std::memcpy(a,simulated+56,sizeof(a));std::memcpy(b,drawn+56,sizeof(b));
+    return seat_camera_ride::CarryPoint(a,b,position);
+}
 // All three native marker records have their world transform at +56 and
 // translation at +96, independently witnessed by their own camera consumers.
 // Positive count is essential: the native missing-marker fallback also fills
 // a transform, but returns zero. It must not put the camera at the body origin.
-__declspec(noinline) bool Head(unsigned i,const NativeVehicleCameraOwner& owner,float position[3])
+// `place`: the point will be used as the camera's (the selector only asks whether the marker is there).
+__declspec(noinline) bool Head(unsigned i,const NativeVehicleCameraOwner& owner,float position[3],bool place)
 {
     const uint32_t unit=owner.unit;
     alignas(16) uint8_t record[128]{};
     int16_t count=0;
     if (i==0) count=reinterpret_cast<int16_t(__fastcall*)(uint32_t,const char*,void*,int16_t)>(
         runtime[i].marker)(unit,"head",record,1);
-    else if (i==1) {
-        if(g_config.vehicle_cam_smoothing&&runtime[i].markerInterpolated)
-            count=reinterpret_cast<int16_t(__fastcall*)(uint32_t,uint32_t,void*,int16_t,uint8_t,uint8_t)>(
-                runtime[i].markerInterpolated)(unit,0x4000095,record,1,0,1);
-        else count=reinterpret_cast<int16_t(__fastcall*)(uint32_t,uint32_t,void*,int16_t)>(
-            runtime[i].marker)(unit,0x4000095,record,1);
-    }
+    else if (i==1) count=reinterpret_cast<int16_t(__fastcall*)(uint32_t,uint32_t,void*,int16_t)>(
+        runtime[i].marker)(unit,0x4000095,record,1);
     else count=reinterpret_cast<int16_t(__fastcall*)(uint32_t,uint32_t,void*,int16_t,uint8_t,uint8_t,uint8_t)>(
         runtime[i].marker)(unit,0x122,record,1,0,0,1);
     if (count!=1) return false;
@@ -135,6 +221,7 @@ __declspec(noinline) bool Head(unsigned i,const NativeVehicleCameraOwner& owner,
         position[axis]+=scale*(forward[axis]*f+up[axis]*u+right[axis]*h);
     for (unsigned axis=0;axis<3;++axis)
         if (!std::isfinite(position[axis])||std::fabs(position[axis])>100000.0f) return false;
+    if (i==1&&place&&g_config.vehicle_cam_smoothing) RideDrawnVehicle(owner,position);
     return true;
 }
 __declspec(noinline) void Fault(unsigned i) noexcept
@@ -157,7 +244,7 @@ template<unsigned I> bool SelectOwned(uint32_t unit,Mode<I>* mode) noexcept
         if (mode) runtime[I].modeSeen[(*mode>=0&&*mode<=4)?unsigned(*mode):5u].fetch_add(1,std::memory_order_relaxed);
 #endif
         if (!mode||*mode!=2||!Owner(I,unit,before)) return false;
-        if (!Head(I,before,point)) {runtime[I].missingMarker.fetch_add(1,std::memory_order_relaxed);return false;}
+        if (!Head(I,before,point,false)) {runtime[I].missingMarker.fetch_add(1,std::memory_order_relaxed);return false;}
         return Owner(I,unit,after)&&before==after;
     } __except(EXCEPTION_EXECUTE_HANDLER) {
         Fault(I);return false;
@@ -170,9 +257,10 @@ template<unsigned I> void PositionOwned(uint32_t unit,void* result) noexcept
         if (!result||!Owner(I,unit,before)) return;
         reinterpret_cast<SelectorFn<I>>(runtime[I].original[Selector])(unit,&mode);
         if (mode!=2) return;
-        if (!Head(I,before,point)) {runtime[I].missingMarker.fetch_add(1,std::memory_order_relaxed);return;}
+        if (!Head(I,before,point,true)) {runtime[I].missingMarker.fetch_add(1,std::memory_order_relaxed);return;}
         if (!Owner(I,unit,after)||before!=after) return;
 #if HALOMCCVR_DEV_DIAGNOSTICS
+        if constexpr (I==1) NoteSeatHead(before);
         // The native camera point, before the override replaces it (NativeVehicleFirstPerson_SeatEyeDelta).
         [[maybe_unused]] float native[3]{};
         if constexpr (I==2) std::memcpy(native,static_cast<const uint8_t*>(result)+4,12);
@@ -406,6 +494,7 @@ void NativeVehicleFirstPerson_Poll()
                 "generation %u, no seat %u",unsigned(title),modes[0],modes[1],modes[2],modes[3],modes[4],modes[5],
                 why[OwnerOk],why[OwnerNotCurrent],why[OwnerBadUnit],why[OwnerRead],why[OwnerUnitMismatch],
                 r.lastSelectorUnit.load(),r.lastOwnerUnit.load(),why[OwnerGeneration],why[OwnerNoSeat]);
+            if (title==GameTitle::Halo2) ReportSeatHead();
             if (title==GameTitle::Halo4) {
                 Game_Halo4CameraOwnerReport();
                 const uint64_t published=r.eyePublished.exchange(0,std::memory_order_relaxed);
