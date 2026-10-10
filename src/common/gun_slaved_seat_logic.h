@@ -111,7 +111,11 @@ inline float AngleBetweenDeg(float yawA, float pitchA, float yawB, float pitchB)
 // every new sample of that axis: with the gun and the record both at rest (each moved under `rest` since the last
 // sample) a gap over `tol` counts, anything under resets, and `needed` such samples in a row REVOKE the occupant's
 // proof of that axis for the rest of the stint (the camera's check alone decides it again).
-// A gun at a stop the record shares (the accumulator clamps both to the seat's range) shows no gap.
+// A gun at a seat's stop is not watched: the caller holds the watch off while the seat-limit latch holds the axis.
+// The accumulator clamps the record to the seat's range, but on a tilted vehicle the gun's own stop is not where
+// that clamp leaves the record (more than 3 deg apart, at rest, on a Warthog climbing a slope), and a watch that
+// counted it revoked the proof at every stop. The caller also runs the watch only where the simulation aims the
+// seat from the gun camera: elsewhere the gun is a witness, not what the record is solved for.
 struct OffsetWatch
 {
     float tol = 0.0524f;     // 3 deg: farther than this, a gun at rest is not lagging
