@@ -35,8 +35,8 @@ struct Halo2ListenerWitness
     uintptr_t base = 0;
     uint32_t generation = 0;
     halo2_sound_listener::Sites sites;
-    // One sampler at a time: tried, never waited for (the tracker's sampler has been seen on one thread only, but
-    // Halo 4's tracker build turned out to run on job threads, so this does not rest on that).
+    // One sampler at a time: tried, never waited for (the tracker's sampler is observed on one thread only, but
+    // Halo 4's tracker build runs on job threads, so this does not rest on that).
     std::atomic<bool> sampling{false};
     listener_witness::Window open;        // under `sampling`
     uint32_t lastThread = 0;              // under `sampling`

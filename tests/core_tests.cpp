@@ -1781,6 +1781,48 @@ int main()
               "art centre: an unmeasured sample keeps the centre; the first one sets it");
     }
     {
+        // The capture window follows art drawn away from the view's centre (a Halo 2 vehicle's reticle).
+        const auto at = [](float dxTexels, float dyTexels) {
+            AuthoredReticleArtCentre c{};
+            c.u = 0.5f + dxTexels / 512.0f;
+            c.v = 0.5f + dyTexels / 512.0f;
+            c.ink = 1000;
+            c.valid = true;
+            return c;
+        };
+        const auto step = [](ReticleCaptureFollow& f, const AuthoredReticleArtCentre& c, uint64_t capture,
+                             uint64_t now) { return f.Step(c, capture, now, 512.0f, 32.0f, 6.0f, 768.0f, 3); };
+        ReticleCaptureFollow follow{};
+        Check(!step(follow, at(10.0f, -20.0f), 5, 6) && follow.x == 0.0f && follow.y == 0.0f,
+              "capture follow: art near the middle is left where the capture puts it");
+        // A reticle drawn 236 px low, its lower half cut by the texture: the first centre is of what shows.
+        Check(step(follow, at(0.0f, 200.0f), 6, 7) && follow.y == 200.0f && follow.movedSerial == 7,
+              "capture follow: art far from the middle moves the window");
+        Check(!step(follow, at(0.0f, 200.0f), 7, 8) && follow.y == 200.0f,
+              "capture follow: a capture cut with the old window does not move the new one");
+        Check(step(follow, at(0.0f, 36.0f), 8, 9) && follow.y == 236.0f,
+              "capture follow: the whole art, now in view, takes the window the rest of the way");
+        Check(!step(follow, at(2.0f, -4.0f), 10, 11) && follow.y == 236.0f,
+              "capture follow: a moved window holds inside its deadband");
+        Check(step(follow, at(0.0f, 9.0f), 11, 12) && follow.y == 245.0f,
+              "capture follow: a moved window tracks past its deadband");
+        // Back on foot: the crosshair is in the middle of the view again, so far above the window.
+        Check(step(follow, at(0.0f, -240.0f), 13, 14) && follow.x == 0.0f && follow.y == 0.0f,
+              "capture follow: art back near the middle puts the window in the middle outright");
+        // Artless captures while away send the window home; in the middle they change nothing.
+        ReticleCaptureFollow away{};
+        (void)step(away, at(0.0f, 300.0f), 1, 2);
+        Check(!step(away, {}, 3, 4) && !step(away, {}, 4, 5) && step(away, {}, 5, 6) && away.y == 0.0f,
+              "capture follow: a window that finds no art goes back to the middle");
+        Check(!step(away, {}, 7, 8) && !step(away, {}, 8, 9) && !step(away, {}, 9, 10) && away.moves == 2,
+              "capture follow: no art in the middle is nothing to follow");
+        ReticleCaptureFollow outward{};
+        Check(step(outward, at(0.0f, 240.0f), 1, 2) && step(outward, at(0.0f, 240.0f), 3, 4) &&
+                  step(outward, at(0.0f, 240.0f), 5, 6) && step(outward, at(0.0f, 240.0f), 7, 8) &&
+                  outward.y == 768.0f && !step(outward, at(0.0f, 240.0f), 9, 10),
+              "capture follow: the window stops at its limit");
+    }
+    {
         AuthoredReticleRefreshState state{};
         Check(!ShouldUploadAuthoredReticle(
                   AuthoredReticleRefreshPolicy::IdentityAndColorState,
@@ -14204,8 +14246,8 @@ int main()
         std::filesystem::remove(rollbackAimConfig);
     }
     {
-        // 2026-10-01: direct drive is the default. A file without aim_direct_drive (every released
-        // config) takes it ON, and so does a first run with no file at all; the old per-lane keys can
+        // Direct drive is the default. A file without aim_direct_drive (every config written before
+        // the key existed) takes it ON, and so does a first run with no file at all; the old per-lane keys can
         // only turn it on, so a leftover legacy_direct_drive = 0 / reach_direct_drive = 0 does not
         // turn it off. An explicit aim_direct_drive = 0 is still honoured.
         const std::filesystem::path driveConfig = configDir / L"direct-drive-default.cfg";
@@ -14234,7 +14276,7 @@ int main()
     }
 #if !HALOMCCVR_DEV_DIAGNOSTICS
     {
-        // 2026-10-01: the player-facing honest reticle is retired. A player build
+        // There is no player-facing honest reticle. A player build
         // ignores the old key, never reads the dev assessment key, and saves
         // neither, so no player cfg can move the reticle off the aim point.
         const std::filesystem::path honestConfig = configDir / L"honest-reticle-retired.cfg";
@@ -15512,8 +15554,10 @@ int main()
               g_config.cutscene_theater_distance_m == 4.0f,
         "legacy configs inherit the enabled cutscene-theatre defaults");
     Check(!g_config.roomscale_movement, "legacy config leaves roomscale off");
-    Check(!g_config.roomscale_recenter_jump && !g_config.roomscale_recenter_move_start &&
-          !g_config.roomscale_recenter_moving, "legacy config leaves every roomscale view recenter option off");
+    Check(g_config.roomscale_recenter_jump && g_config.roomscale_recenter_move_start &&
+          g_config.roomscale_recenter_moving && g_config.roomscale_recenter_moving_speed == 0.25f,
+          "legacy config inherits the roomscale view recenter options (on; they act only with roomscale on)");
+    Check(g_config.shots_from_muzzle, "legacy config inherits shots from the muzzle");
     Check(!g_config.experimental_hand_alignment, "legacy config preserves released hand positioning");
     Check(!g_config.manual_reload&&!g_config.weapon_holsters,"legacy config leaves both weapon gestures off");
     Check(!g_config.game_menu_pointer, "legacy config leaves native menu pointing off");
@@ -19998,7 +20042,7 @@ int main()
         Check((mx!=0 || my!=0) && !follow.stalled,
             "the eye's half-millimetre swing is not a jump: the probe keeps following");
     }
-    // The owed distance survives an interruption (the user, 2026-09-28: "they are not under me").
+    // The owed distance survives an interruption (otherwise the body is left standing away from the player).
     // Tracking or admission goes away while the player walks 0.6 m; when it comes back the body still
     // owes the whole 0.6 m -- the offset at the moment of return is NOT the new "under me".
     {
@@ -20084,8 +20128,8 @@ int main()
             "a new generation's first seed moves the reference to the head, horizontally, without a walk");
     }
     // The first run after any re-seed other than a level start or a recenter is a probe; and while we push,
-    // travel against the push is never our step. Halo 4 leaving third person (user log 2026-09-30): the
-    // camera glides back to the eye while the follow pushes, and that glide was claimed as a walk.
+    // travel against the push is never our step. Halo 4 leaving third person: the camera glides back to
+    // the eye while the follow pushes, and that glide must not be claimed as a walk.
     {
         RoomscaleFollow follow;
         float body[3]{}, head[3]{0,1.7f,0}, reference[3]{0,1.7f,0};
@@ -20179,8 +20223,8 @@ int main()
         Check(claimedEarly && !claimedLate, "the tail is claimed up to kSettleMaxMs after the last command, never after");
     }
     // A unit that ignores the stick is not pushed forever, and what it does meanwhile is not claimed.
-    // Reach, 2026-09-28 (headset, dev trace): control stopped for 2-7 s at a time; the follow kept
-    // commanding, then consumed the body point's jump as control came back and chased it 2.2 m out and
+    // Reach stops control for 2-7 s at a time (measured); a follow that keeps commanding through that
+    // consumes the body point's jump as control comes back and chases it 2.2 m out and
     // back at full stick. Here: an 8 cm lean, a unit that never moves, then the body point swinging
     // 0.4 m back and 0.7 m on in 30 Hz sim-tick chunks (Head right = tracking +x; body right = world -y).
     {
@@ -20267,9 +20311,9 @@ int main()
             "walking back over the body ends a stand-down with nothing to walk");
     }
     // A run that WALKS and then stops answering, still commanding, stands down too -- not only a run
-    // that never moved. All-titles FA, 2026-09-29: 0.5 m steps in Halo 3, Halo 2 and Halo CE walked
-    // most of the way, then stopped 16-27 mm short (past the stop band) while a 0.06-0.09 command the
-    // unit never moved for ran on. The native walker decelerates gradually, so the brake-by-release
+    // that never moved. Measured: 0.5 m steps in Halo 3, Halo 2 and Halo CE walk most of the way,
+    // then stop 16-27 mm short (past the stop band) while a 0.06-0.09 command the unit never moves
+    // for runs on. The native walker decelerates gradually, so the brake-by-release
     // never zeroes the command in between and the run never restarts: progress counted from the start
     // of the run (~0.48 m) can never read as "no response".
     {
@@ -20295,8 +20339,8 @@ int main()
         head[0]+=0.02f; step();
         Check(mx==0 && my==0, "and 2 cm further does not restart it");
     }
-    // An unpause is not a lost title. The sim resumes a moment after the pause flag clears (Reach,
-    // 2026-09-28: ~1.5 s in a Falcon, where nothing else stamps the heartbeat), so the teardown waits
+    // An unpause is not a lost title. The sim resumes a moment after the pause flag clears (Reach:
+    // ~1.5 s measured in a Falcon, where nothing else stamps the heartbeat), so the teardown waits
     // kTitlePauseResumeGraceMs from the unpause before a stale heartbeat counts.
     {
         const uint64_t lastBeat=10'000, unpaused=23'700;   // paused ~13 s, then the flag clears

@@ -2,7 +2,7 @@
 // from shots (animated barrels refused), the firing assist's cap from the weapon tag, the band, and the clamp of one
 // shot's elevation relative to the hull's up (yaw never clamped).
 //
-// MUTATION-CHECKED (2026-10-03, tools/mutate_vehicle_gun_aim.py): every mutation listed there for this header fails
+// MUTATION-CHECKED (tools/mutate_vehicle_gun_aim.py): every mutation listed there for this header fails
 // at least one check below.
 #include "vehicle_gun_band_logic.h"
 

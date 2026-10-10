@@ -10,7 +10,7 @@
 // look) along the controller. The engine fires from its own eye (g_baseCam*, the camera before head look:
 // the seat re-origin in Game_ComputeAimStick already treats it as the shot origin), so a servo that chases
 // the controller's direction leaves every shot parallel to the sight line, off by the head's offset. The
-// servo now chases the direction from the engine eye through the point the intent ray hits:
+// servo chases the direction from the engine eye through the point the intent ray hits:
 //
 //      aim = normalize((H - E) + u * d)        H the rendered eye, u the controller, E the engine eye
 //
@@ -220,23 +220,23 @@ int32_t LegacySightRootOf(LegacyObjectDataFn objectData, int32_t object)
 // teardown drains before the collision trampoline is freed). Traces the local unit's published intent ray
 // at most every 30 ms: on foot, or in a seat whose vehicle the aim path named.
 //
-// SEATED, the ray starts at the rendered eye INSIDE the vehicle, so it must not stop on the vehicle itself
-// (user report 2026-09-30: "in the Banshee it felt like my intent ray was colliding with the vehicle"). It
-// ignores the vehicle's ROOT in the first slot -- the slot both engines' own crosshair traces fill (Reach's
-// engine query is (root, -1, -1); Halo 3's ignores the unit's root) -- then the occupant and the seat's own
-// parent when that is not the root (a Warthog's turret is a vehicle of its own); and any other part of
-// the same vehicle the ray still meets (another occupant, an attached gun) is looked past, as Reach's trace
-// does. Before this the vehicle sat only in the second slot and the hit object was never read.
+// SEATED, the ray starts at the rendered eye INSIDE the vehicle, so it must not stop on the vehicle itself (in a
+// Banshee the intent ray would otherwise collide with the Banshee). It ignores the vehicle's ROOT in the first
+// slot -- the slot both engines' own crosshair traces fill (Reach's engine query is (root, -1, -1); Halo 3's
+// ignores the unit's root) -- then the occupant and the seat's own parent when that is not the root (a
+// Warthog's turret is a vehicle of its own); and any other part of the same vehicle the ray still meets
+// (another occupant, an attached gun) is looked past, as Reach's trace does. The root must be in the FIRST slot
+// and the hit object must be read: with the vehicle only in the second slot the ray stops on it.
 //
-// WHAT THE ENGINE ALREADY DOES WITH THOSE IGNORES (static read of both modules, 2026-10-05; sight_hit_class_logic.h):
+// WHAT THE ENGINE ALREADY DOES WITH THOSE IGNORES (static read of both modules; sight_hit_class_logic.h):
 // collision_test_vector's per-object predicate (halo3 0x1FC430, odst 0x22E4F4) compares all three slots alike, then
 // walks the hit object's parent chain and skips anything that descends from an ignored object -- EXCEPT a biped,
 // vehicle or giant in a seat whose definition names a boarding seat. So the engine itself passes through our
 // vehicle, its turret, its other occupants and every held weapon, and the one thing of our own hierarchy it still
 // returns is a BOARDER. The look-past therefore keeps a biped that is not our own unit as the hit
-// (sight_hit::LookPastOwnHierarchy): before, it stepped past the hijacker hanging on our hood and converged the
-// aim on the wall behind him. CANDIDATE: read from code, not yet seen in a headset (dev: SIGHT HITS counts what
-// was looked past by class, so one boarding shows it).
+// (sight_hit::LookPastOwnHierarchy): stepping past a hijacker hanging on our hood would converge the aim on the
+// wall behind him. Inferred from the retail binaries; not confirmed in game (dev: SIGHT HITS counts what was
+// looked past by class, so one boarding shows it).
 void LegacySightTraceTick(GameTitle title, uint32_t unit, int32_t localUnit, bool onFoot,
                           const LegacyWorldCollisionFeature& collision, LegacyObjectDataFn objectData,
                           LegacyObjectTypeFn objectType)
@@ -436,7 +436,7 @@ struct LegacyEngineTraceWindow
     std::atomic<uint64_t> siteFlags{0};
     std::atomic<uint32_t> seen{0}, compared{0};
     // Converged queries skipped because a natural cause (a seat's latch, a turret's slew, a stall) held the game's
-    // aim off the point: the mark stays on through those since 2026-10-01, so they are not misses of the solve.
+    // aim off the point: the converged mark stays on through those, so they are not misses of the solve.
     std::atomic<uint32_t> heldOff{0};
     std::atomic<float> missMm{0.0f}, maxMissMm{0.0f}, rangeM{0.0f}, angleDeg{0.0f};
     std::atomic<float> startAlongMm{0.0f}, startRightMm{0.0f}, startUpMm{0.0f};
@@ -478,8 +478,8 @@ void LegacySightPublishTurretSeat(int32_t parentHandle, bool gunSettled)
 
 // The firing call (Halo 3's native weapon fire, after its final ray): one shot of the gun `shooter` holds -- the firing
 // weapon's owner (+0x168). Not the unit the shot-line call receives: that is the OCCUPANT (the firing routine walks the
-// gunner chain +0x2A4 down to it, 0x368B82 `mov ecx, esi`), so comparing it with the turret matched no shot at all and
-// the line never logged (until 2026-10-03).
+// gunner chain +0x2A4 down to it, 0x368B82 `mov ecx, esi`), so comparing that unit with the turret matches no shot at
+// all and the line never logs.
 void LegacySightNoteTurretShot(GameTitle title, uint32_t shooter, const float* origin, const float* direction)
 {
 #if HALOMCCVR_DEV_DIAGNOSTICS
@@ -613,7 +613,7 @@ void LegacySightNoteEngineTrace(GameTitle title, uint64_t flags, const float* st
 #endif
 }
 
-// ---- THE SHOT, RE-AIMED THROUGH THE INTENT POINT (every build; shot_lag_logic.h, 2026-10-02) ------------------
+// ---- THE SHOT, RE-AIMED THROUGH THE INTENT POINT (every build; shot_lag_logic.h) ------------------------------
 // Halo 3 and ODST decide a shot's line at its fire tick: the weapon's fire (Halo 3 0x3683A0) calls the firing
 // assist (0x13BAD0, from 0x368DFE), whose crosshair query -- the resolved crosshair site, siteReturn above -- traces
 // from the shooter's camera along the record's aim, and the shot is turned at whatever that query hits. The record's
@@ -629,9 +629,9 @@ void LegacySightNoteEngineTrace(GameTitle title, uint64_t flags, const float* st
 // in a gun-slaved turret, whose query traces the GUN's camera, which sits off the record and moves at the fire (the
 // gauss turret; converge::SeatAssistReaimRefuses): there the re-aim carries its shot onto the reticle's point. A
 // query already within 10 mm of P is left exactly as the game built it (shot_lag::Reaim::AlreadyThrough): Halo 3's
-// campaign vehicles were already coherent (user, 2026-10-02) and stay byte-identical. Left alone (fail closed) when
+// campaign vehicles are coherent without it and stay byte-identical. Left alone (fail closed) when
 // the point is stale (over 150 ms) or for another generation, the converged aim is not in effect, the solve held at
-// the pitch rail, a seat is held at its stop (a turret is NOT refused for being one since 2026-10-03: the assist's own
+// the pitch rail, a seat is held at its stop (a turret is NOT refused for being one: the assist's own
 // seat cap bounds a shot fired while the gun catches up), the fire or the
 // query is not the local player's (shot_lag::FireMark, QueryIsLocal: by identity, never by distance), another gun's
 // own line owns the fire (an off-hand gun, a barrel or muzzle shot: LegacyOwnShotLineActive), or no forward line
@@ -643,7 +643,7 @@ thread_local int t_legacyFirePredicted = -1;
 bool LegacyDriveRecordSnapshot(GameTitle title, float& nativeYaw, float& nativePitch, float& setYaw, float& setPitch);
 
 #if HALOMCCVR_DEV_DIAGNOSTICS
-// THE HORNET CAPTURE (dev, Halo 3 seats): the 2-5 deg the crosshair line was seen off the solve in a flying seat.
+// THE HORNET CAPTURE (dev, Halo 3 seats): for the 2-5 deg the crosshair line can sit off the solve in a flying seat.
 // Each seated crosshair query, before the re-aim: its start and direction, the point, the driver record and the
 // setpoint, the hull's velocity (the eye's) and tilt. A ring; the cold worker prints what is new every 5 s.
 struct LegacySeatQueryRecord

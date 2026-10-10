@@ -70,11 +70,11 @@ static const wchar_t* EditionName(Edition edition)
 
 static std::wstring g_logPath;
 
-// --headless (the unattended FA harness, tools/Enter-Reach-FA.ps1): launch the mod in the launcher's own
+// --headless (for unattended test scripts such as tools/Enter-Reach-FA.ps1): launch the mod in the launcher's own
 // folder at once, without the setup menu, and never show a dialog. Every message then reaches only
 // HaloMCCVRLauncher.log, in full, and the exit code says what happened -- so an unattended run can never
-// leave a modal box on the desktop of whoever is using the PC (measured 2026-09-30: a "Steam is not
-// running" box sat there after the harness had given up). A headless-test hook, so it is compiled into
+// leave a modal box on the desktop of whoever is using the PC (a "Steam is not running" box would
+// otherwise sit there after the script has given up). A test hook, so it is compiled into
 // dev builds only (HALOMCCVR_DEV_DIAGNOSTICS): a player's launcher never parses it, and no player-facing
 // string names it (tools/verify-qol-package.py checks the packaged launcher for the switch).
 #if HALOMCCVR_DEV_DIAGNOSTICS
@@ -83,7 +83,7 @@ static bool g_headless = false;
 static constexpr bool g_headless = false;
 #endif
 
-// --flat-probe (dev builds only, 2026-10-03): the AS SEEN control arm. Starts MCC exactly as the VR launch does
+// --flat-probe (dev builds only): the AS SEEN control arm. Starts MCC exactly as the VR launch does
 // (anti-cheat never started: Steam's direct shipping executable / the Store's NoEAC entry) but FLAT -- no VR render
 // surface arguments, no render-size environment -- and loads ONLY HaloMCCFlatProbe.dll from this folder, an
 // observe-only measurement DLL (src/probe/flat_probe.cpp). HaloMCCVR.dll is never loaded in this mode. Refused from
@@ -614,7 +614,7 @@ static int LaunchInstalledMod(const std::wstring& dir)
                     renderWidth, renderHeight, resolutionScale,
                     kNativeRenderWidth, kNativeRenderHeight);
 
-    // The FA harness starts this launcher (whose manifest asks for administrator
+    // An unattended test starts this launcher (whose manifest asks for administrator
     // rights, for installs) unelevated through __COMPAT_LAYER=RunAsInvoker, so no
     // UAC prompt reaches the desktop. That override is for the launcher alone;
     // the game inherits this environment, so it starts without it.
@@ -887,8 +887,7 @@ int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int showCommand)
         return 0;
     }
     // --headless (dev builds): launch THIS folder's mod. The menu's Launch always targets <game>\Halo_MCC_VR,
-    // so a side-by-side install in another folder is only ever launched from its own folder
-    // this way.
+    // so a side-by-side install in another folder is only ever launched from its own folder this way.
 #if HALOMCCVR_DEV_DIAGNOSTICS
     const bool headless = args && count == 2 && !wcscmp(args[1], L"--headless");
     g_headless = headless;

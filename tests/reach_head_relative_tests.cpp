@@ -1,6 +1,6 @@
 // Reach: the motion tracker and the sound listener follow the head (src/common/reach_head_relative_logic.h).
 // For each: the decode of the game's own sites (offsets read from its instructions, the agreements between
-// independent sites, every refusal), and the player's headset checks as geometry -- on the game's OWN arithmetic
+// independent sites, every refusal), and what a player checks in a headset, as geometry -- on the game's OWN arithmetic
 // (the tracker's placement, the listener's matrix rows and its transform), not on a model of it.
 #include "reach_head_relative_logic.h"
 
@@ -72,7 +72,7 @@ void PutRel(std::vector<uint8_t>& bytes, size_t opcode, int64_t fromRva, int64_t
     std::memcpy(bytes.data() + opcode + 1, &rel, 4);
 }
 
-// The image as retail haloreach.dll lays it out (the offsets from the module base measured 2026-10-06).
+// The image as retail haloreach.dll lays it out (the offsets from the module base).
 constexpr int64_t kUpdateRva = 0x2ED0C8, kSiteRva = 0x2ED187, kFirstRva = 0x2EC164, kSecondRva = 0x2EC404,
                   kThirdRva = 0x2ECEB0, kHalfPiRva = 0xA8B004;
 constexpr uint32_t kHeading = 0x13D4, kUser = 0x13B8;
@@ -384,7 +384,7 @@ void TestRefusals()
 }
 
 // ==== the sound listener ============================================================================================
-// The image as retail haloreach.dll lays it out (measured 2026-10-06).
+// The image as retail haloreach.dll lays it out (offsets from the module base).
 constexpr int64_t kListenerUpdateRva = 0x28820, kListenerStoreRva = 0x28C79, kSoundGlobalsRva = 0xC1A3E8,
                   kBuilderRva = 0xA7BEC, kTransformRva = 0xA8F7C;
 constexpr uint32_t kListenerStride = 0x54, kListenerHeader = 0xBC, kListenerMatrix = 0xC4, kListenerVelocity = 0xF8,

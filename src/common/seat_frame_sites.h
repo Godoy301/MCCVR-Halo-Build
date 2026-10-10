@@ -13,7 +13,7 @@
 // each title's rebase (and its getter) over a synthetic world built from these fields, comparing the result with a
 // twin of SeatFrameRead + seat_frame::BuildFrame / Apply.
 //
-// ADDR-HYGIENE: guarded. Measured 2026-10-01 on the retail Steam modules (the Store modules are byte-identical,
+// ADDR-HYGIENE: guarded. Measured on the retail Steam modules (the Store modules are byte-identical,
 // MCC-EDITIONS-EVIDENCE). Install refuses (and every seated write of that title stands down) unless both patterns
 // are unique at their RVAs, the rebase's call to the getter lands on it, and every decoded global lies inside the
 // module. At runtime every read is salt-checked or bounded and SEH-guarded, and the forward / up the getter logic
@@ -78,7 +78,7 @@ inline constexpr uint32_t kObjectEntryData = 0x10;            // ...data pointer
 inline constexpr uint32_t kNodeMatrixStride = 0x34;           // scale, forward, left, up, position
 inline constexpr uint32_t kNodeForward = 0x04, kNodeLeft = 0x10, kNodeUp = 0x1C;
 
-// ADDR-HYGIENE: guarded (see the header). Measured 2026-10-01, retail Steam.
+// ADDR-HYGIENE: guarded (see the header). Measured on retail Steam.
 inline constexpr ReaderSite kHalo3Reader{
     .name = "Halo 3",
     .rebaseRva = 0x355E20,
@@ -324,6 +324,52 @@ struct ReadResult
     int16_t seat = -1;
 };
 
+// A vehicle's forward and up, world, by the up getter's logic: its own frame when it is a root object, else
+// composed through its carrier's node. False: a link did not read (forward and up are then not to be used).
+// Mem is the memory accessor described below.
+template <class Mem>
+bool VehicleFrameRead(const ReaderSite& site, Mem& mem, uintptr_t vehicle, float forward[3], float up[3])
+{
+    uint32_t carrier = 0;
+    if (!mem.U32(vehicle + site.objectParent, carrier))
+        return false;
+    float localForward[3]{}, localUp[3]{};
+    for (int i = 0; i < 3; ++i)
+        if (!mem.F32(vehicle + site.localForward + 4u * i, localForward[i]) ||
+            !mem.F32(vehicle + site.localUp + 4u * i, localUp[i]))
+            return false;
+    if (carrier == kNone)
+    {
+        for (int i = 0; i < 3; ++i)
+        {
+            forward[i] = localForward[i];
+            up[i] = localUp[i];
+        }
+        return true;
+    }
+    const uintptr_t carrierData = mem.Object(carrier, 0);
+    uint8_t node = 0;
+    uint16_t table = 0;
+    if (!carrierData || !mem.U8(vehicle + site.nodeIndex, node) || !mem.U16(carrierData + site.nodeTable, table))
+        return false;
+    const int64_t nodeIndex = site.nodeIndexSigned ? static_cast<int8_t>(node) : node;
+    const int64_t tableOffset = site.nodeTableSigned ? static_cast<int16_t>(table) : table;
+    const uintptr_t matrix =
+        static_cast<uintptr_t>(carrierData + tableOffset + nodeIndex * static_cast<int64_t>(kNodeMatrixStride));
+    float m[3][3]{};   // columns: forward, left, up
+    const uint32_t columns[3]{kNodeForward, kNodeLeft, kNodeUp};
+    for (int c = 0; c < 3; ++c)
+        for (int i = 0; i < 3; ++i)
+            if (!mem.F32(matrix + columns[c] + 4u * i, m[c][i]))
+                return false;
+    for (int i = 0; i < 3; ++i)
+    {
+        forward[i] = localForward[0] * m[0][i] + localForward[1] * m[1][i] + localForward[2] * m[2][i];
+        up[i] = localUp[0] * m[0][i] + localUp[1] * m[1][i] + localUp[2] * m[2][i];
+    }
+    return true;
+}
+
 // The read itself, over a memory accessor:
 //   bool Mem::U8 / U16 / U32 / U64 / F32(uintptr_t address, T& out) -- false on any fault or bound
 //   uintptr_t Mem::Object(uint32_t handle, uint32_t typeMask)        -- the salt-checked object data (0: none)
@@ -429,48 +475,29 @@ ReadResult SeatFrameRead(const ReaderSite& site, const ReaderGlobals& g, Mem& me
     if (r.flags & kSeatFlagThirdPersonBit)
         return r;   // the rebase exits here; no up is read
 
-    // The up getter: the vehicle's own frame when it is a root object, else composed through its carrier's node.
-    uint32_t carrier = 0;
-    if (!mem.U32(vehicle + site.objectParent, carrier))
+    // The up getter's logic.
+    if (!VehicleFrameRead(site, mem, vehicle, r.forward, r.up))
         return r;
-    float localForward[3]{}, localUp[3]{};
-    for (int i = 0; i < 3; ++i)
-        if (!mem.F32(vehicle + site.localForward + 4u * i, localForward[i]) ||
-            !mem.F32(vehicle + site.localUp + 4u * i, localUp[i]))
-            return r;
-    if (carrier == kNone)
-    {
-        for (int i = 0; i < 3; ++i)
-        {
-            r.forward[i] = localForward[i];
-            r.up[i] = localUp[i];
-        }
-    }
-    else
-    {
-        const uintptr_t carrierData = mem.Object(carrier, 0);
-        uint8_t node = 0;
-        uint16_t table = 0;
-        if (!carrierData || !mem.U8(vehicle + site.nodeIndex, node) || !mem.U16(carrierData + site.nodeTable, table))
-            return r;
-        const int64_t nodeIndex = site.nodeIndexSigned ? static_cast<int8_t>(node) : node;
-        const int64_t tableOffset = site.nodeTableSigned ? static_cast<int16_t>(table) : table;
-        const uintptr_t matrix =
-            static_cast<uintptr_t>(carrierData + tableOffset + nodeIndex * static_cast<int64_t>(kNodeMatrixStride));
-        float m[3][3]{};   // columns: forward, left, up
-        const uint32_t columns[3]{kNodeForward, kNodeLeft, kNodeUp};
-        for (int c = 0; c < 3; ++c)
-            for (int i = 0; i < 3; ++i)
-                if (!mem.F32(matrix + columns[c] + 4u * i, m[c][i]))
-                    return r;
-        for (int i = 0; i < 3; ++i)
-        {
-            r.forward[i] = localForward[0] * m[0][i] + localForward[1] * m[1][i] + localForward[2] * m[2][i];
-            r.up[i] = localUp[0] * m[0][i] + localUp[1] * m[1][i] + localUp[2] * m[2][i];
-        }
-    }
     r.upKnown = FrameReadAgrees(r.forward, r.up);
     return r;
+}
+
+// The frame of the vehicle a seated unit sits in, whatever its seat's flags (the rebase itself reads no up for a
+// seat flagged third-person camera). The same links and the same checks as the read above. False: not seated, a
+// link did not read, or forward and up are not unit and perpendicular.
+template <class Mem>
+bool SeatedVehicleFrameRead(const ReaderSite& site, Mem& mem, uint32_t unitHandle, float forward[3], float up[3])
+{
+    const uintptr_t unit = mem.Object(unitHandle, 0);
+    if (!unit)
+        return false;
+    uint32_t gate = 0, parent = 0;
+    uint16_t seatWord = 0;
+    if (!mem.U32(unit + site.unitGate, gate) || !mem.U16(unit + site.unitSeat, seatWord) || gate == kNone ||
+        static_cast<int16_t>(seatWord) == -1 || !mem.U32(unit + site.objectParent, parent) || parent == kNone)
+        return false;
+    const uintptr_t vehicle = mem.Object(parent, site.parentTypeMask);
+    return vehicle && VehicleFrameRead(site, mem, vehicle, forward, up) && FrameReadAgrees(forward, up);
 }
 
 // The case for this update from a read and whether our skip jump is in the rebase right now.

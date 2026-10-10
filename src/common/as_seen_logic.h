@@ -1,8 +1,8 @@
 #pragma once
 
-// AS SEEN -- an impact against the crosshair the player is LOOKING AT when the impact first appears (dev, 2026-10-03).
+// AS SEEN -- an impact against the crosshair the player is LOOKING AT when the impact first appears (dev).
 //
-// The SHOT IMPACT witness (shot_impact_logic.h) proved where the rounds go: onto P, the point the player meant at the
+// The SHOT IMPACT witness (shot_impact_logic.h) proves where the rounds go: onto P, the point the player meant at the
 // fire. That is not what the player judges. He judges the impact against the crosshair ON SCREEN when the impact
 // appears, and by then he has strafed on. This file is that measurement, written once and used by two hosts so the
 // two numbers are computed identically:
@@ -419,7 +419,7 @@ struct Window
 // frame in three) and steps by whole ticks; an interpolated camera moves on every frame by about speed x frame time.
 // `stepRatio` = |step| / (speed x frame time): ~1 every frame when interpolated, 0 and ~1.5 alternating when not.
 //
-// With the simulation's TICK COUNTER at each frame (Halo 2, 2026-10-04) the question is answered directly instead of
+// With the simulation's TICK COUNTER at each frame (Halo 2) the question is answered directly instead of
 // from the step pattern: per frame, how many ticks ran since the previous frame (0 / 1 / 2+), and on the frames where
 // NO tick ran while the player moved, did the eye still move (interpolated between ticks) or repeat? A frame rate
 // below the tick rate never has a tick-less frame, so the step ratio is the evidence there. `alpha`: the frame
@@ -605,7 +605,7 @@ inline float FlatArtHalfAngleDeg(float vrHudWidthPx, float flatTanHalfX)
     return std::atan(128.0f / vrHudWidthPx * flatTanHalfX) * kRadToDeg;
 }
 
-// ---- 8. MCC's frame clock in Halo Reach and Halo 4 (decoded from code; 2026-10-04) --------------------------------
+// ---- 8. MCC's frame clock in Halo Reach and Halo 4 (decoded from code) --------------------------------------------
 // Both pinned modules run the same frame loop (static analysis of the retail haloreach.dll / halo4.dll): the tick loop
 // (Reach 0x57434, Halo 4 0x9A380) sets the frame interpolator's IN-TICK byte (state +2 / +3) before every tick and
 // rotates its two banks, the post-tick record (Reach 0xCE100, Halo 4 0x133318) records each user's camera and clears
@@ -801,7 +801,7 @@ struct FireEyeBothWays
     }
 };
 
-// ---- 10. the VR witness core (dev; Reach and Halo 4, 2026-10-04) --------------------------------------------------
+// ---- 10. the VR witness core (dev; Reach and Halo 4) --------------------------------------------------------------
 // The VR AS SEEN witness without its engine: rounds (the local player's projectiles, each with the aim line it was
 // fired through), their impacts (matched to a round by QueryOnRound), the prepared frames a stereo core noted (its
 // centre camera, the head orientation its views were submitted with, the engine eye and stock aim, the tick and the

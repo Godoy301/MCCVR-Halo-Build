@@ -3,8 +3,8 @@
 // SEATS AIM IN WORLD ANGLES (src/common/seat_aim_frame_logic.h has the mechanism; docs/ALL-TITLES-AIM-2026-09-29.md
 // "Seats aim in world angles: the C20 flag and the vehicle-tilt rebase"). Halo 3 and ODST rotate a player's aim
 // by the parent vehicle's up frame unless the occupied seat carries the `third person camera` flag (bit 4). Every
-// stock player seat carries it, so stock never does; our C20 first-person seat patch clears it, which switched the
-// rebase on and added the hull's tilt to the world angles the seat direct drive writes. Here the bit-4 test's
+// stock player seat carries it, so stock never does; our C20 first-person seat patch clears it, which switches the
+// rebase on and adds the hull's tilt to the world angles the seat direct drive writes. Here the bit-4 test's
 // `jne skip` becomes `jmp skip; nop` while the title's first-person seat patch is enabled, so seats aim in world
 // angles exactly as in stock, and the restore puts the jne back.
 //
@@ -16,7 +16,7 @@
 // and puts the game's rebase back while it is occupied, because there stock rebases too -- and the seat drive then
 // writes R^-1 of the aim (seat_frame_reader.h, case b), which every peer's rebase turns back into it.
 //
-// REACH (2026-10-01, slot 2) follows the same rule for the seats ITS patch touches: R-V27 clears bit 4 on
+// REACH (slot 2) follows the same rule for the seats ITS patch touches: R-V27 clears bit 4 on
 // `allows weapons` passenger seats, which keep the flag in stock, so the skip restores stock there (case a). Reach
 // also has stock seats that natively lack the flag; the Reach sampler publishes one from R-V27's own lease
 // (g_reachSeatNativeNoThirdPerson) and the skip stands down while it is occupied (case b, the inverse). Halo 2 and
@@ -67,7 +67,7 @@ struct SeatAimFrameState
     bool pendingLogged = false;                   // a transition is waiting on the thread freeze (logged once)
     uint32_t removeFailures = 0;
 };
-// Slots: 0 Halo 3, 1 ODST, 2 Reach (2026-10-01: R-V27's `allows weapons` passenger seats, case (a)).
+// Slots: 0 Halo 3, 1 ODST, 2 Reach (R-V27's `allows weapons` passenger seats, case (a)).
 constexpr int kSeatAimFrameSlots = 3;
 SeatAimFrameState g_seatAimFrame[kSeatAimFrameSlots];
 
@@ -81,12 +81,12 @@ const char* SeatAimFrameSlotName(int slot)
     return slot == 0 ? "Halo 3" : slot == 1 ? "ODST" : "Reach";
 }
 
-// CO-OP LIMIT OF THE GLOBAL SKIP (review round 1, finding 3; docs/ALL-TITLES-AIM-2026-09-29.md "Co-op limit of
+// CO-OP LIMIT OF THE GLOBAL SKIP (docs/ALL-TITLES-AIM-2026-09-29.md "Co-op limit of
 // the skip"). The jump skips the rebase for EVERY player unit this machine simulates, not only ours. When we host,
-// a co-op peer sitting in a seat whose OWN flags lack bit 4 is no longer rebased on our host while the peer's own
+// a co-op peer sitting in a seat whose OWN flags lack bit 4 is not rebased on our host while the peer's own
 // game rebases it. Stock Halo 3 / ODST player seats all carry bit 4, so there it needs custom content; stock Reach
-// has such seats. Kept global on purpose: a per-unit skip needs a new code relay inside the rebase, which this round
-// did not add. Logged once per skip so a co-op aim report can be read against it.
+// has such seats. Kept global on purpose: a per-unit skip needs a new code relay inside the rebase, which does not
+// exist. Logged once per skip so a co-op aim report can be read against it.
 void SeatAimFrameLogCoopLimit(int slot)
 {
     static bool s_logged[3]{};
@@ -448,5 +448,5 @@ void SeatAimFrameSync()
     }
 }
 
-// The dev frame check that used to live here (Halo 3 / ODST only) is now every title's: seat_frame_reader.h
+// The dev frame check is every title's and lives in seat_frame_reader.h
 // (seat_frame_rt::NoteFrameCheck), printed in each drive's seats line.

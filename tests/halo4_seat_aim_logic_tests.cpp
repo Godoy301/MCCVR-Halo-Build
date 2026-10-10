@@ -88,7 +88,7 @@ void TestEye()
     Check(JudgeEye(0, true, 0.0f, std::nanf("")) == EyeEvidence::Chase, "unknown speed: a chase sample still unproves");
     Check(JudgeEye(-1, true, 0.0f, std::nanf("")) == EyeEvidence::Disagree, "unknown speed: no witness still disagrees");
     Check(JudgeEye(1, false, 0.0f, std::nanf("")) == EyeEvidence::Disagree, "unknown speed: another seat disagrees");
-    // A boost past the cap: no evidence either way (it used to be judged on the capped rail and fail).
+    // A boost past the cap: no evidence either way (judged on the capped rail it would wrongly fail).
     Check(JudgeEye(1, true, 3.0f, 55.0f) == EyeEvidence::None, "55 m/s, 3 m apart: a boost is no evidence");
     Check(JudgeEye(1, true, 0.1f, 55.0f) == EyeEvidence::None, "55 m/s, close: no agreement on an unjudgeable rail");
     Check(JudgeEye(0, true, 0.0f, 55.0f) == EyeEvidence::Chase, "55 m/s: a chase sample still unproves");
@@ -380,7 +380,7 @@ void TestRecordFrame()
     Check(!SeatRecordIsWorld(true, 0, true, {0, 0, 0}), "a zero up proves nothing");
     Check(SeatRecordIsWorld(true, 0, true, {0, 0, 5}), "an unnormalised up is normalised");
 
-    // THE GATE (2026-10-01): a tilt is natural and no longer refuses the solve; only our code's proofs do.
+    // THE GATE: a tilt is natural and does not refuse the solve; only our code's proofs do.
     Check(!SeatRecordSolvable(false, kSeatFlagWorldAngles, true, {0, 0, 1}), "solvable: flags unknown, never");
     Check(SeatRecordSolvable(true, kSeatFlagWorldAngles, false, {}), "solvable: bit 4 at any tilt");
     Check(SeatRecordSolvable(true, 0, true, {0, 0, 1}), "solvable: level");

@@ -1,10 +1,10 @@
-"""Guard the sight layer's ONE clock (review finding, 2026-10-03).
+"""Guard the sight layer's ONE clock.
 
 Every stamp and every age in the sight layer (src/dll/sight_layer.cpp) is
 QueryPerformanceCounter time: Sight_NowMs() / Sight_NowUs(). A publication
 stamped on another clock and aged against this one loses its freshness window
-to the clocks' offset: the seat limit ray was stamped with GetTickCount64 and
-aged against Sight_NowMs (36 ms apart, drifting), so it could read never
+to the clocks' offset: a seat limit ray stamped with GetTickCount64 and
+aged against Sight_NowMs (36 ms apart, drifting) can read never
 fresh. No behavioural test compiles the layer, so this checks the source:
 
   1. sight_layer.cpp never reads GetTickCount64 (nor timeGetTime, nor

@@ -75,8 +75,8 @@ struct Settings
     // (holsterCustom). A single reserve slot exchanges the two native guns.
     int holsterLocation{};
     // Location 3: metres from the head, to the weapon side (mirrors with handedness), up, and forward, in the
-    // same level frame as the other spots (the way the head faces, flattened). Until the player sets one it
-    // is the over-the-shoulder spot.
+    // same level frame as the other spots (the way the head faces, flattened). The caller supplies it from
+    // the configuration; this default (the over-the-shoulder spot) is only what a bare Settings holds.
     Vec holsterCustom{kOverShoulderSide,-kOverShoulderDown,-kOverShoulderBack};
     uint32_t reloadButton{0x4000}, swapButton{0x8000};
 };

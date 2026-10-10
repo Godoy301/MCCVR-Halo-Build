@@ -1,6 +1,6 @@
 #pragma once
 
-// SEAT CONVERGENCE, Halo CE and Halo 2 (2026-10-06) -- the pure half.
+// SEAT CONVERGENCE, Halo CE and Halo 2 -- the pure half.
 //
 // HOW THESE TWO TITLES AIM A SEAT'S WEAPON (read from the retail modules; docs/H2-CE-SEAT-CONVERGENCE-2026-10-06.md).
 // The fire routine (CE trigger 0xB7A374, Halo 2 0x8E4940) takes the shot's origin and direction from the weapon's own
@@ -104,7 +104,7 @@ enum class Why : uint8_t
     EvaluatorFault,    // ...or faulted when asked
     EyeNonFinite,      // ...or answered a non-finite position
     ChaseCamera,       // the engine aims this seat from its following camera (the first-person seat view is off or
-                       // in an entry / exit transition): not solved in this lane, the seat keeps its earlier aim
+                       // in an entry / exit transition): not solved here, the seat keeps its unconverged aim
     StanceSettling,    // the newest trace is another stance's (just sat down / stood up / changed seat)
     NoTrace,           // no fresh trace result (the simulation stalled, the trace is off or faulted)
     NoRange,           // the traces have no range yet, or the geometry cannot resolve
@@ -163,20 +163,20 @@ inline Why SeatEye(const EyeAnswer& a, float eye[3])
 
 // THE GAME'S AIM IN A HALO 2 SEAT, for the seat drive's per-axis proof (seat_drive::StintCheck) and its arm gate.
 // The record the drive writes is player control's desired angles; the proof compares it with "the aim the game shows"
-// before an axis is written. Until 2026-10-06 that was the OBSERVER camera's forward (the rendered camera), which on
-// foot is the unit's aim. MEASURED in the first headless run of a Halo 2 seat (2026-10-06, Coagulation, retail Steam
+// before an axis is written. The OBSERVER camera's forward (the rendered camera), which on foot is the unit's aim,
+// is the wrong reference in a seat. MEASURED (Coagulation, retail Steam
 // halo2.dll, read out of process beside the mod's own log): in a seat the observer camera's forward sits a constant
 // 5.1-5.2 deg of pitch ABOVE the unit's aiming vector -- Ghost seat 0 (flags 0x801C) and Warthog passenger seat 1
 // (flags 0x1070), at four headings and at record pitches from -31 to +13 deg -- while the unit's aiming vector
-// (unit+0x174) equals the record to 0.02 deg on both axes. So against the camera the pitch could never prove (it
-// failed and retried every 5 s), the pitch stayed on the stick servo, and no Halo 2 seat ever wrote both axes: none
-// converged. The unit's aiming vector is the line the engine itself fires along (0x77DAA0 copies it into the
+// (unit+0x174) equals the record to 0.02 deg on both axes. So against the camera the pitch can never prove (it
+// fails and retries every 5 s), the pitch stays on the stick servo, and no Halo 2 seat writes both axes: none
+// converges. The unit's aiming vector is the line the engine itself fires along (0x77DAA0 copies it into the
 // deterministic first-person camera the crosshair test runs on; the fire routine takes it as the shot's line where no
 // barrel is), so it is the reference: the proof then says what it means -- the record's angles ARE the unit's world
 // aim, with no frame or offset between them.
 //
 // `unitAim` is used when it read and is a unit vector (the game keeps it normalised: within 2 %); otherwise the camera
-// as before (fail closed to the earlier behaviour, never to no reference). `cameraOffDeg` is the angle between the
+// (fail closed to the camera reference, never to no reference). `cameraOffDeg` is the angle between the
 // two when both are there (the dev line prints its maximum), NaN otherwise.
 struct AimReference
 {

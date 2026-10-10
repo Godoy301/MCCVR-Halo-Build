@@ -47,8 +47,8 @@ inline constexpr float kSightRangeTauMs = 120.0f;
 // and averaged over kSightRangeTauMs, so a sweep off a near edge onto a far wall does not snap the aim in
 // one trace. A MISS means the target is at least the whole trace away, so it feeds the far end: a sustained
 // miss converges far, exactly as Reach's aim does (Game_ReachSightSample hands its provider the trace
-// length on a miss). Holding the last range instead kept Halo 4's aim converged on a 1.6 m spawn hit
-// through minutes of sky, bending every far shot by the eye-to-hand parallax (FA, Forge, 2026-09-29).
+// length on a miss). Do not hold the last range on a miss instead: the aim then stays converged on the last
+// near hit (1.6 m, say) while the ray points at open sky, bending every far shot by the eye-to-hand parallax.
 // `continuous` false (a new generation, or a gap in the traces) starts afresh from this sample.
 inline float SightSmoothInverseRange(float invPerWu, bool continuous, bool hit, float rangeWu, float dtSeconds)
 {
@@ -59,7 +59,7 @@ inline float SightSmoothInverseRange(float invPerWu, bool continuous, bool hit, 
         aim_solve::ema_alpha(kSightRangeTauMs, std::clamp(dtSeconds, 0.001f, 0.1f)));
 }
 
-// THE SIGHT CLOCK (2026-10-02): every stamp and every age in this layer -- rays, traces, the converged and written
+// THE SIGHT CLOCK: every stamp and every age in this layer -- rays, traces, the converged and written
 // marks, the intent point -- is QueryPerformanceCounter time, in milliseconds (Sight_NowMs) or microseconds
 // (Sight_NowUs). GetTickCount64 ticks in 15.6 ms steps, which is half of the 25-40 ms lag the shot-lag witness
 // measures. The ray publishers (Sight_PublishRay, the auxiliary rays) stamp `sampleMs` THEMSELVES at the publish,
@@ -111,7 +111,7 @@ void Sight_NoteTraceFault(GameTitle title);
 bool Sight_TraceFaulted(GameTitle title);
 void Sight_ResetTitle(GameTitle title);   // a new title generation: forget faults and stale state
 
-// THE TRACE'S STANCE (Halo CE and Halo 2 seats, 2026-10-06; 0 = on foot, a seat's seat_converge::StanceKey otherwise).
+// THE TRACE'S STANCE (Halo CE and Halo 2 seats; 0 = on foot, a seat's seat_converge::StanceKey otherwise).
 // A title whose ONE trace serves both the on-foot ray and a seat's says, on its trace thread and before each trace,
 // which it is about to run. A change drops the published result and the smoothed range at once: a range measured on
 // foot must never bend a seat's aim (nor a seat's the walk after it), and the 150 ms freshness window alone would
@@ -135,7 +135,7 @@ bool Sight_AimWrittenLive(GameTitle title);
 // through the point at the smoothed traced range, as seen from `eye`. False (out untouched) when there is
 // no fresh trace for this generation, no hit yet, or the geometry cannot resolve. A bent aim steeper than
 // `maxPitchDeg` (the steepest pitch the caller's actuation can reach) is HELD AT THAT PITCH and still
-// returned as converged (2026-10-01): a close ceiling or floor is natural geometry, not our code failing.
+// returned as converged: a close ceiling or floor is natural geometry, not our code failing.
 // `outWhy`, when given, receives why it declined (our code's reasons only: converge::ConvergeOff).
 // `railHold`, when given, is the caller's hysteresis for that clamp (aim_solve::RailHold: one per actuation loop,
 // owned by the thread that calls; a call that does not clamp, including every decline, forgets it).
@@ -210,7 +210,7 @@ void Sight_NoteMuzzleShotUnconverged(GameTitle title);
 // a rate-capped turret): the shot leaves as the game fires it. The convergence claim is not touched.
 void Sight_NoteMuzzleShotHeld(GameTitle title);
 
-// THE INTENT POINT (shot_lag_logic.h; 2026-10-02). The aim path publishes its converged intent as a WORLD POINT P,
+// THE INTENT POINT (shot_lag_logic.h). The aim path publishes its converged intent as a WORLD POINT P,
 // not only as the angles it solved -- angles from a render-time eye land a frame or more later as a line parallel to
 // the one meant, moved by the eye's travel in between (Reach: mean 93 mm, p90 187, max 307). A shot site that knows
 // its own origin aims through P from there (Sight_ReaimThroughPoint). `point` comes from ONE frame-coherent
@@ -230,27 +230,27 @@ bool Sight_ReadIntent(GameTitle title, SightIntent& out);
 shot_lag::IntentUse Sight_IntentForShot(GameTitle title, uint64_t maxAgeMs, bool naturalHeld, SightIntent& out);
 inline constexpr uint64_t kSightIntentShotMaxAgeMs = 150;
 
-// THE SHOT POINT MOVED WITH THE EYE -- FLAT PARITY (every build since 2026-10-03; the dev key shot_point_transport,
+// THE SHOT POINT MOVED WITH THE EYE -- FLAT PARITY (every build; the dev key shot_point_transport,
 // default 1 and fixed at 1 in a player build, is the A/B; shot_lag_logic.h 4a). Stock flat Halo fires through its
 // crosshair from the game's eye AFTER the fire tick's move: one tick of strafe ahead of the crosshair the player aimed
-// with, so the impact lands on the crosshair of the frame that shows it (the flat probe, AS SEEN, 2026-10-03). P is a
+// with, so the impact lands on the crosshair of the frame that shows it (the flat probe's AS SEEN measure). P is a
 // world point fixed at a camera sample a tick or so older. So a local shot aims through P' = P + (E_fire - E_P): E_P
 // the engine eye of P's camera sample, E_fire the game's eye at the fire -- MEASURED where the title has one (Halo 3
 // on foot, Sight_SetFireEyeSource: the query's own start, or the evaluator asked at a muzzle shot, else this tick's
 // eye carried a tick), else EXTRAPOLATED as E_P + v * age (ODST). Covered: Halo 3 and ODST -- the
 // crosshair-assist query re-aim (LegacySightReaimCrosshairQuery) and the muzzle shot (Sight_AimMuzzleShot), on foot;
 // seats only under the second dev key shot_point_transport_seated (default 0); and Halo 3's on-foot record
-// recomposition (shot_lag::RecomposeRecord). Since 2026-10-03 (fix/flat-parity-other-titles) also the other titles'
+// recomposition (shot_lag::RecomposeRecord). Also covered: the other titles'
 // on-foot shots that aim through a WORLD point: Halo 2's and CE's muzzle shots (E_fire their camera evaluator asked at
 // the fire once proven, shot_lag::EvaluatorEyeProof, else E_P carried a tick: Sight_ShotPointSample), CE's player
-// assist ray, and Halo 4's muzzle shot (since 2026-10-04 its unit camera position asked in the fire once proven, else
-// E_P carried a tick: halo4_fire_eye.inl -- Halo 4 interpolates its camera, so one tick was short). A consumer that
-// applies a DIRECTION solved from E_P at the fire's own eye (the unit aim Halo 2, CE and Halo 4 write, and every
-// record) already IS flat parity: its line from E_fire passes through P + (E_fire - E_P). REACH (fix/flat-parity-reach,
-// 2026-10-03): its on-foot shots aim through a world point since the 2026-10-02 shot-lag fix -- the unit-adjust and
+// assist ray, and Halo 4's muzzle shot (its unit camera position asked in the fire once proven, else
+// E_P carried a tick: halo4_fire_eye.inl -- Halo 4 interpolates its camera, so a carried tick alone is short). A
+// consumer that applies a DIRECTION solved from E_P at the fire's own eye (the unit aim Halo 2, CE and Halo 4 write,
+// and every record) already IS flat parity: its line from E_fire passes through P + (E_fire - E_P). REACH: its on-foot
+// shots aim through a world point -- the unit-adjust and
 // crosshair-query re-aims and the muzzle shot, all through the provider's actuated point -- so by the rule they trail a
-// strafe by E_fire - E_P unless Reach fires from the render's eye (the player reported no lag there; the old shot
-// witness measured its native line 93 mm off the solve's eye while moving). Covered now, MEASURED OR NOTHING
+// strafe by E_fire - E_P unless Reach fires from the render's eye (its native shot line measures 93 mm off the
+// solve's eye while moving). Reach is covered MEASURED OR NOTHING
 // (shot_lag_logic.h 4f): its intent carries the camera sample's stamp (the local shot ray's publish), and E_fire is
 // Reach's own unit camera-position evaluator asked inside the fire for our unit (reach_fire_eye.inl), used only once
 // proven equal to E_P at rest; never carried or extrapolated (SightPointSample::measuredOnly), so an unproven or absent
@@ -387,7 +387,7 @@ void Sight_NoteIntentPairing(GameTitle title, int kind);
 // Cold worker: one status line per title that is tracing, every 2 s.
 void Sight_Report();
 
-// WHAT THE INTENT RAY CAN HIT (sight_hit_class_logic.h, 2026-10-05). A trace whose flags leave out bipeds or
+// WHAT THE INTENT RAY CAN HIT (sight_hit_class_logic.h). A trace whose flags leave out bipeds or
 // vehicles converges the aim on the wall behind the target, and nothing else in the log would say so.
 // Sight_AnnounceTraceQuery (every build; cold path): the title's trace driver says, once per install, when its
 // flags are settled, which query it runs and with which flags; the line decodes them into structure / bipeds / vehicles /
@@ -399,7 +399,7 @@ void Sight_Report();
 // part of our own vehicle a seated trace looked past. Logged by Sight_Report every 2 s per title:
 //   SIGHT HITS <title> (dev): N traces (S seated): structure a [x-y m], biped b [x-y m], vehicle c [x-y m],
 //     other object d [x-y m, last type T], unknown-type object u, miss m; looked past our own vehicle: k (...)
-// A headset check is then one look: aim at an enemy or a parked vehicle in front of a far wall and the biped /
+// To check it in game: aim at an enemy or a parked vehicle in front of a far wall and the biped /
 // vehicle count rises with the near range. `objectType`: the title's own object type (0 biped, 1 vehicle), -1
 // unknown. One writer per title (its trace thread).
 void Sight_AnnounceTraceQuery(GameTitle title, sight_hit::Engine engine, uint64_t flags, const char* query,
@@ -412,7 +412,7 @@ inline sight_hit::HitClass Sight_ObjectHitClass(int objectType)
     return sight_hit::ClassifyHit(true, true, objectType);
 }
 
-// SEAT CONVERGENCE WITNESS, Halo CE and Halo 2 (seat_converge_logic.h; 2026-10-06). Each seated aim update says, for
+// SEAT CONVERGENCE WITNESS, Halo CE and Halo 2 (seat_converge_logic.h). Each seated aim update says, for
 // the seat it is in (`seatKey` = seat_converge::StanceKey, `role` its role), whether the aim it handed the game was
 // the converged one, else the first reason it was not -- always ours, never a natural limit. Logged by Sight_Report
 // every 2 s in EVERY build (a refusal nobody can see hides for a whole stint):
@@ -486,11 +486,11 @@ void Sight_ResetAssessTrace(GameTitle title);
 #endif
 
 // CONVERGE-OFF WITNESS (dev; empty stubs in player builds, converge_policy.h). Natural in-game limits never
-// switch the converged aim off any more (2026-10-01); these lines are how a headset session proves it.
+// switch the converged aim off; these lines are the evidence that they do not.
 // Sight_NoteConvergeState: each aim poll in gameplay (Halo 3, ODST and Halo 4 from Game_ComputeAimStick,
 // Reach from its provider) says whether the converged aim is in effect and, if not, the FIRST reason -- which
 // is always our code's or a state convergence does not apply to.
-// Sight_NoteNatural: the natural causes that USED to switch it off, counted only -- no decision reads them.
+// Sight_NoteNatural: the natural causes (which must never switch it off), counted only -- no decision reads them.
 // Sight_NaturalHeld: one of those held this title's aim off the point within `windowMs` (the dev engine-trace
 // witnesses skip such polls, so their miss statistics measure our solve, not a seat's stop).
 // Sight_ReportConverge (cold worker, every loop): an edge line when a title's converged aim goes off or comes

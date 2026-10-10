@@ -1,6 +1,6 @@
 #pragma once
 
-// MCC's frame clock in Halo Reach and Halo 4, read at runtime (dev measurement only; 2026-10-04). The layout -- which
+// MCC's frame clock in Halo Reach and Halo 4, read at runtime (dev measurement only). The layout -- which
 // TLS block slots hold game_time_globals and the frame interpolator's state, where the tick counter and the blend factor
 // sit -- is DECODED from the engine's own instructions (as_seen_logic.h section 8: the fraction leaf, the factor writer
 // and the tick increment, each signature matching exactly once in its module), never assumed. Shared by the VR dev

@@ -1189,14 +1189,14 @@ bool VR_GetPhysicalCrouchSample(VrPhysicalCrouchSample& out) noexcept;
 // below the player's STANDING height now, to add to the captured height. With the physical crouch on, the
 // view's neutral height is then the standing height the crouch itself measures from, wherever the head was
 // when the recenter landed -- most recenters are automatic (an unpause, a cutscene's end, a level load) and
-// catch the player crouched or leaning, and the view kept that height as "standing" until the next manual
+// catch the player crouched or leaning, and the view would keep that height as "standing" until the next manual
 // recenter. 0 -- the head as it is -- with the physical crouch off; with no standing height CONFIRMED yet
 // (a learned one may still fall back, and the lift would outlive it); and in a vehicle seat (Game_TitleSeated):
 // a seat composes its own view, the player may well be sitting in it, and nothing there pairs with the lift.
 float VR_RecenterStandingLiftM(GameTitle title) noexcept;
 // The same rule, late (standing_height_follow.h): VR_RecenterStandingLiftM gives no lift until the standing height
 // is confirmed, so a recenter in a session's first minute (the automatic one at a level's start among them) that
-// caught the player low left the view's neutral height that low. Call once per camera frame, on foot or not,
+// catches the player low leaves the view's neutral height that low. Call once per camera frame, on foot or not,
 // with the head height the reference is compared against and the reference itself: once the standing height is
 // confirmed, a reference more than 5 cm under it glides up to it (30 cm a second; up only; never in a seat;
 // view_follows_standing_height). True when it moved `referenceY`. `state` is the caller's, one per reference.

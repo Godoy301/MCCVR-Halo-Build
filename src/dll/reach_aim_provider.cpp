@@ -30,7 +30,7 @@
 namespace {
 using namespace aim_solve;
 using reach_aim_basis::kCmPerWorldUnit;   // 304.8: a Reach world unit is 10 ft
-// The user's rule (2026-09-28): the fallback is only for when this path cannot resolve at all.
+// The rule: the fallback (OriginRelocation) is only for when this path cannot resolve at all.
 // Game_ReachSightSample hands over only a FRESH trace result (a hit, or a miss's far end); with none,
 // the shot genuinely cannot be resolved.
 // The direct-drive hook clamps pitch to 1.45 rad (aim_write::clamp_pitch in ReachPcApplyForUser), so a

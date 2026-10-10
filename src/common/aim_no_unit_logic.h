@@ -1,10 +1,9 @@
 #pragma once
 // THE FREE CAMERA WITH NO PLAYER UNIT (death, a respawn wait, spectating): the pure, testable half.
 //
-// User report (2026-10-01, ODST): "When I am dead in ODST, the aim keeps swirling in a circular motion (or was
-// it a figure 8?)". And, on the fix: "I do like being able to fly around in free cam, aiming where I want to go
-// though with my motion control." So the hand KEEPS steering the camera while the player has no unit; what has
-// to go is the swirl.
+// With no unit (dead in ODST, for one) an uncorrected aim servo keeps swirling the camera in a circle or a figure
+// eight. Flying the free camera by pointing the hand where to go is wanted, so the hand KEEPS steering the camera
+// while the player has no unit; what has to go is the swirl.
 //
 // What closes the loop. The hand's target is composed in the VR-owned frame (g_gameYawRef / g_headYawRef in
 // Halo 3 / ODST, the published copies of the same pair in Reach and Halo 4): those move only with the turn stick
@@ -12,7 +11,7 @@
 // the actuator's. The servo's stick goes into the camera's own look integrator, and ToRawStick floors every
 // non-zero command at 27.5% deflection (aim_servo_logic.h): the camera hears only "stop" or "at least 27.5%",
 // steps past the target, the error changes sign, and it steps back -- a limit cycle one minimum step wide. A
-// turret pitch axis showed exactly that as a one-axis "wiggle"; a free camera has NO rate cap on EITHER axis, so
+// turret pitch axis shows exactly that as a one-axis "wiggle"; a free camera has NO rate cap on EITHER axis, so
 // both axes cycle at once, each at its own period, and two such cycles traced together are a circle or a figure
 // eight. The cure is the turret's: rest hysteresis (AimServoCommand), on both axes.
 //
@@ -25,7 +24,7 @@
 // engine thread and publishes Present / Absent with the time it read it. The input thread debounces it: a seat
 // change can read no unit for a frame, so Absent must hold kEnterMs before the free-camera frame begins, and
 // Present must hold kExitMs before it ends. Anything unknown -- no sample, a stale one, another title's -- fails
-// OPEN: the aim behaves exactly as it always has.
+// OPEN: the aim behaves exactly as it does with a unit.
 #include <cstdint>
 
 #include "runtime_types.h"

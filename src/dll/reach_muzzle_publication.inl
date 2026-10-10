@@ -17,7 +17,7 @@ bool ReachCaptureMuzzleOwner(int view,int slot,uint32_t& unit,uint32_t& weapon) 
     __except(EXCEPTION_EXECUTE_HANDLER){return false;}
 }
 // WHY NO MUZZLE WAS PUBLISHED (dev builds; ReportReachMuzzle prints the window). The barrel lane reads the muzzle
-// this publishes; "no muzzle publication" was every refusal of the lane's first live session (2026-10-06).
+// this publishes; when it finds none it refuses the shot with "no muzzle publication", and these say why.
 enum ReachMuzzlePublishWhy : int
 {
     kReachPublishOptionOff,kReachPublishContext,kReachPublishPairScope,kReachPublishModelUnread,
@@ -81,10 +81,10 @@ void ReachPublishMuzzlePalette(uint16_t tag,const ReachFpInterpolationContext& c
                 if(!weapon_muzzle::Transform(*marker,node.scale,node.rotation,node.translation,ray))
                 {ReachMuzzleNotPublished(kReachPublishTransform);continue;}
                 // THE RECEIPT'S SPACE IS THE TRACKING-SPACE EPOCH, the number the barrel lane reads it back with
-                // (VR_GetContactTrackingSnapshot's referenceEpoch, as Halo 3's publication does). It was
-                // contactReference, Reach's melee HASH of that epoch, which no epoch ever equals: with the lane
-                // installed at last (2026-10-06) every barrel shot was refused "no muzzle publication" while this
-                // published a muzzle for every first-person palette (122 of 122 per window).
+                // (VR_GetContactTrackingSnapshot's referenceEpoch, as Halo 3's publication does). NOT
+                // contactReference: that is Reach's melee HASH of the epoch, which no epoch ever equals, so every
+                // barrel shot would be refused "no muzzle publication" while this publishes a muzzle for every
+                // first-person palette.
                 palette.barrels[barrel]={GameTitle::HaloReach,context.generation,unit,weapon,checksum,
                     tracking.contactSpaceEpoch,tracking.contactSerial,now,tracking.contactTimeNs,0,barrel,g_config.left_handed,ray};
 #if HALOMCCVR_DEV_DIAGNOSTICS

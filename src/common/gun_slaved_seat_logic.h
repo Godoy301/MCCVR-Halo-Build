@@ -7,9 +7,9 @@
 // Warthog turret's gunner seat (flags 0x00101198) is one. So in that seat the camera forward this mod reads as
 // "the game's aim" (g_aimFwd) is the GUN, and the gun slews toward the aim the record asks for at its own rate
 // (~125-140 deg/s on the Warthog turret, measured). Comparing the record against it -- the seat's per-axis proof,
-// the arm gate, the stick servo before the proof -- compares it against a quantity that lags by design: turret
-// stints spent 1-2 s unwritten, short ones never wrote, and with the pitch left on the stick servo the servo
-// closed its loop on the lagging gun, ran the record past the target, and the gun nodded.
+// the arm gate, the stick servo before the proof -- compares it against a quantity that lags by design: a turret
+// stint then spends 1-2 s unwritten, a short one never writes, and with the pitch left on the stick servo the servo
+// closes its loop on the lagging gun, runs the record past the target, and the gun nods.
 //
 // What the record really drives is the OCCUPANT's own aim vector, the same one the camera reads on foot. The
 // control update proves that relation itself: it re-derives the record's desired angles from exactly that vector
@@ -106,11 +106,11 @@ inline float AngleBetweenDeg(float yawA, float pitchA, float yawB, float pitchB)
 // The occupant's aim proves that the record holds the aim the record drives. It cannot prove that the GUN then
 // points there: a seat whose gun marker sat at a constant angle from the occupant's aim would pass the occupant's
 // check, be written, and leave the gun off the hand -- where the camera check (failing on that offset, by design)
-// had kept the axis on the servo, closing on the gun. Lag and a real offset part company when the gun comes to REST:
+// keeps the axis on the servo, closing on the gun. Lag and a real offset part company when the gun comes to REST:
 // lag is gone then, an offset is not. So once an axis is written on the occupant's proof alone, this watch steps on
 // every new sample of that axis: with the gun and the record both at rest (each moved under `rest` since the last
 // sample) a gap over `tol` counts, anything under resets, and `needed` such samples in a row REVOKE the occupant's
-// proof of that axis for the rest of the stint (the camera's check alone decides it again: today's behaviour).
+// proof of that axis for the rest of the stint (the camera's check alone decides it again).
 // A gun at a stop the record shares (the accumulator clamps both to the seat's range) shows no gap.
 struct OffsetWatch
 {
@@ -165,7 +165,7 @@ struct OffsetWatch
 // Where a gun-slaved seat's axis is still steered (before its proof, or after a failed one), the servo closes on
 // the occupant's aim once that aim has agreed with the record on this axis for `trust` consecutive judged samples
 // of this stint (the record is what the stick moves, so this feedback has no lag). Otherwise -- no binding, no
-// fresh sample, a disagreement, any other seat -- it closes on the camera's forward exactly as before.
+// fresh sample, a disagreement, any other seat -- it closes on the camera's forward.
 enum class Feedback : uint8_t
 {
     Gun = 0,       // the camera forward (g_aimFwd); in a gun-slaved seat, the gun
@@ -182,7 +182,7 @@ constexpr Feedback ServoFeedback(bool gunSlaved, bool occupantFresh, unsigned ag
 // its slew: polls later. A continuous command keeps pushing through that latency, the record runs past the target,
 // the feedback arrives late, the error flips sign and the loop drives back: the nod. The rest hysteresis
 // (AimServoCommand) cannot catch it, because the overshoot is the latency's, not the stick's quantum (its measured
-// quantum read 0.0000 in every turret stint of the 2026-10-02 log: the gun never moved on the poll after a command).
+// quantum reads 0.0000 in a turret stint: the gun never moves on the poll after a command).
 // So the pacer lets one poll's command through, then holds zero until the feedback has moved and come to rest (or
 // `timeoutPolls` pass: a stop that never answers is asked again), and holds while the feedback is still travelling
 // toward the target. It also measures what one floor-level pulse moved the feedback by, from rest -- the quantum
@@ -437,14 +437,14 @@ private:
     }
 };
 
-// ---- the gun's own offset from the occupant's aim (2026-10-03) -------------------------------------------------
+// ---- the gun's own offset from the occupant's aim --------------------------------------------------------------
 // The firing assist (Halo 3 0x13BAD0) aims the shot at the crosshair of the GUN's camera -- the marker the seat's
 // first-person camera rides (0x212198 -> 0x17DAEC) -- not at the occupant's aim the record drives. On the Warthog's
-// gauss turret (definition 0x069C) that camera's forward sits off the occupant's aim (CORRECTED 2026-10-03: the
-// "~2.3-2.4 deg at rest" first written here was the 2 s window's MAX of the gun against the record -- the gun's own
-// swing with the hand still -- not a steady offset; the still samples of 2026-10-03 read ~0.6-0.9 deg, and at each
-// fire the assist's query sat ~0.5 deg yaw / ~1.1 deg pitch off the record). The solve aims the camera's ray through
-// the point, so a record written as that ray left the gauss's slugs ~1.2 deg off it. The shot itself is now carried
+// gauss turret (definition 0x069C) that camera's forward sits off the occupant's aim: still samples read
+// ~0.6-0.9 deg, and at each fire the assist's query sits ~0.5 deg yaw / ~1.1 deg pitch off the record. (The gun
+// against the record peaks at ~2.3-2.4 deg over a 2 s window, but that is the gun's own swing with the hand still,
+// not a steady offset.) The solve aims the camera's ray through
+// the point, so a record written as that ray leaves the gauss's slugs ~1.2 deg off it. The shot itself is carried
 // onto the point at the fire by the crosshair-assist re-aim (converge::SeatAssistReaimRefuses), whatever the offset
 // at that instant; this calibration only points the gun's camera at the point while it is at rest.
 //
@@ -453,7 +453,7 @@ private:
 // sampled only while the gun has come to rest on its aim and the hand is still (no lag in it), averaged per stint
 // and remembered per definition. A sample is refused by identity only (OffsetSampleRefusal) -- the occupant's aim not
 // proven against the record this stint, or the seat held at its stop (the gun rests where the hand's record does
-// not) -- never by its size (the 5 deg refusal until 2026-10-03; the user's rule). Then it is fed
+// not) -- never by its size. Then it is fed
 // FORWARD, once, as a static calibration: the record is written as the camera ray through the point MINUS delta, so
 // the camera -- record plus delta -- lands on the ray. Nothing closes a loop on it. Everything that read the gun as
 // a stand-in for the record (the camera check, the outcome guard, the servo's gun feedback) takes the gun minus
@@ -547,8 +547,8 @@ struct Stillness
     }
 };
 
-// Why a still sample is not averaged in: identity and freshness only, never the sample's size (2026-10-03; it was
-// "over 5 deg" before). The cases the size refusal stood for are named instead:
+// Why a still sample is not averaged in: identity and freshness only, never the sample's size. The cases a size
+// limit (such as "over 5 deg") would stand for are named instead:
 //   * HeldAtStop -- the seat is held at its natural stop (the drive's seat-limit latch, or the reticle clamped there):
 //     the gun rests at the stop, the hand's record need not;
 //   * OccupantUnproven -- the occupant's aim has not agreed with the record for the servo's trust count this stint

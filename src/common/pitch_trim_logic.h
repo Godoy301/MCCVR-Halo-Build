@@ -1,20 +1,19 @@
 #pragma once
 // THE F8 / F9 PITCH TRIM IS A FLAT-SCREEN CONTROL. IN STEREO VR IT IS ZERO.
 //
-// The trim dates from the mod's first milestone: head tracking on a flat screen, where the player has no
-// absolute "level" and nudges the view up or down until it sits right. Every camera path adds it to the HEAD's
-// pitch only. The hands, the shot and the compositor reticle never had it.
+// The trim is for head tracking on a flat screen, where the player has no absolute "level" and nudges the view
+// up or down until it sits right. Every camera path adds it to the HEAD's pitch only. The hands, the shot and
+// the compositor reticle do not carry it.
 //
 // In stereo VR that is not a comfort setting, it is a fault: the head's pose is the player's real one, so a trim
 // tilts the whole view against everything that is tracked or drawn in the headset's own space. The reticle is a
 // compositor quad placed along the controller's direction from the real centre eye; with a trim of T the world
 // point that ray hits is seen T lower (or higher), so the reticle floats above (or below) every shot by T.
 //
-// INCIDENT (2026-10-07, Halo: Reach, a player session): the game window received F9 twice, 14 s apart, while the
-// player was in the headset. Nothing on screen says so. The trim went to 2.0 and then 4.0 degrees, and the report
-// was "my aim reticle is higher than my shot by a good bit": about 1.4 m at 20 m. The session before it had
-// taken three such presses (6 degrees). The trim is not saved, so each launch began at zero again, which is why
-// it looked like something that "broke" part-way through a session.
+// HOW IT GOES WRONG: the game window can receive F8 / F9 while the player is in the headset (another program's
+// hotkey, a stray key), and nothing on screen says so. Each press is about 2 degrees: two presses put the reticle
+// 4 degrees above every shot, about 1.4 m at 20 m. The trim is not saved, so each launch begins at zero again and
+// the fault looks like something that breaks part-way through play.
 //
 // So: a stored trim applies only while stereo is off, and a key press in stereo is ignored (it must not bank a
 // trim that appears the next time stereo goes off). Pure and unit-tested (tests/pitch_trim_tests.cpp).

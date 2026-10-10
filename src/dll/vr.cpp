@@ -409,7 +409,17 @@ namespace
     // Two texels of the 512 capture: below it a centroid change is noise.
     constexpr float kAuthoredReticleCentreDeadband = 2.0f / 512.0f;
     bool g_authoredReticleCentreQueued = false;
+    // The prepared-frame serial of the capture the queued centre readback copied.
+    uint64_t g_authoredReticleCentreSerial = 0;
     AuthoredReticleArtCentre g_authoredReticleMeasuredCentre{};
+    // Halo 2's capture window follows its art (authored_reticle_logic.h, ReticleCaptureFollow). The follower is
+    // stepped where the centre is measured; the capture, on the thread that draws the HUD, reads the pair below.
+    ReticleCaptureFollow g_halo2ReticleFollow{};
+    std::atomic<float> g_halo2ReticleWindowX{0.0f}, g_halo2ReticleWindowY{0.0f};
+    constexpr float kHalo2ReticleFollowEngage = 32.0f;     // texels: nearer the middle than this is centred art
+    constexpr float kHalo2ReticleFollowDeadband = 6.0f;    // texels: a moved window holds the art this close
+    constexpr float kHalo2ReticleFollowLimit = 768.0f;     // view pixels: no reticle is drawn farther out
+    constexpr uint32_t kHalo2ReticleFollowBlankLimit = 8;
     // The centre of the art now in the swapchain; invalid while it holds
     // procedural art or art nobody measured.
     AuthoredReticleArtCentre g_authoredReticlePublishedCentre{};
@@ -8497,8 +8507,8 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         g_stockAimFresh.store(stockControllersFresh, std::memory_order_release);
         LeaveCriticalSection(&g_headCs);
 
-        // test_accept_untracked_head is for the headless lane only: the Meta XR Simulator reports an
-        // Operator-overridden head VALID but not TRACKED. The valid bits were already required above.
+        // test_accept_untracked_head is for automated tests only: a simulated runtime can report a
+        // scripted head pose VALID but not TRACKED. The valid bits were already required above.
         // It widens ONLY roomscale and the physical crouch (what dllmain's DEV TEST OVERRIDE line
         // announces); the virtual-stock neutral capture above keeps the strict physicallyTracked bit.
         bool bodyHeadTracked = physicallyTracked;
@@ -8631,8 +8641,8 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
 
     // ---------------------------------------- crosshair opacity and brightness, in the crosshair's own image
     // crosshair_opacity / crosshair_brightness on a runtime that does NOT offer layer colour scaling
-    // (g_layerColorScaleExt != 1). SEEN IN A HEADSET (2026-10-07): "SteamVR/OpenXR in Meta compatibility mode
-    // 2.17.10" does not offer XR_KHR_composition_layer_color_scale_bias, and both sliders did nothing at 200%.
+    // (g_layerColorScaleExt != 1). The runtime "SteamVR/OpenXR in Meta compatibility mode 2.17.10" is one: it
+    // does not offer XR_KHR_composition_layer_color_scale_bias, so layer scaling would leave both sliders inert.
     // The same scale, applied by the mod to the image instead of by the compositor to the layer:
     //   * every image published into the crosshair's chain (the mod's own art, PaintReticle; the game's captured
     //     art, UploadAuthoredReticle) is first copied, as published, into a MASTER texture of ours;
@@ -9264,11 +9274,11 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         if (width != kAuthoredReticleProbeSize)
             return 0;
 
-        // Halo 4 also reads a finer level of the same capture, in the same
-        // readback, to find where its art sits (authored_reticle_logic.h).
+        // A finer level of the same capture rides the same readback, to find where the art sits
+        // (authored_reticle_logic.h): Halo 4 moves its quad by it, Halo 2 its capture window, and every
+        // title reports it.
         uint32_t centreMip = UINT32_MAX;
-        if (g_authoredReticleCentreStaging &&
-            TitleAdapter_GetActiveTitle() == GameTitle::Halo4)
+        if (g_authoredReticleCentreStaging)
         {
             for (uint32_t mip = 0; mip < desc.MipLevels; ++mip)
             {
@@ -9287,9 +9297,12 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                 g_authoredReticleTexture, probeMip, nullptr);
             g_authoredReticleCentreQueued = centreMip != UINT32_MAX;
             if (g_authoredReticleCentreQueued)
+            {
                 g_context->CopySubresourceRegion(
                     g_authoredReticleCentreStaging, 0, 0, 0, 0,
                     g_authoredReticleTexture, centreMip, nullptr);
+                g_authoredReticleCentreSerial = g_authoredReticleSerial;
+            }
         };
 
         if (g_authoredReticleGoodValid)
@@ -9388,6 +9401,16 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                     centreMapped.RowPitch, kAuthoredReticleCentreProbeSize,
                     colorInk > alphaInk, kAuthoredReticleArtAlphaThreshold);
                 g_context->Unmap(g_authoredReticleCentreStaging, 0);
+                // Halo 2: the capture window follows the art it has just been shown.
+                if (TitleAdapter_GetActiveTitle() == GameTitle::Halo2 &&
+                    g_halo2ReticleFollow.Step(g_authoredReticleMeasuredCentre, g_authoredReticleCentreSerial,
+                                              g_preparedFrame.serial, static_cast<float>(kReticleSize),
+                                              kHalo2ReticleFollowEngage, kHalo2ReticleFollowDeadband,
+                                              kHalo2ReticleFollowLimit, kHalo2ReticleFollowBlankLimit))
+                {
+                    g_halo2ReticleWindowX.store(g_halo2ReticleFollow.x, std::memory_order_relaxed);
+                    g_halo2ReticleWindowY.store(g_halo2ReticleFollow.y, std::memory_order_relaxed);
+                }
             }
         }
         // CE's native bitmap pass writes RGB only. Like Halo 4's CUI, its
@@ -9709,7 +9732,7 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         if (!copied && uploadTitle == GameTitle::HaloReach)
         {
             // Failure isolation: if the conversion cannot run (no view, no
-            // shader pipeline), publish the art the way Reach did before it -
+            // shader pipeline), publish the art by a plain copy instead -
             // too faint at partial opacity, but never no crosshair at all.
             copied = Blit(source, sourceDesc, g_reticleImages[index],
                           kReticleSize, kReticleSize, nullptr, false);
@@ -14009,7 +14032,7 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         }
 #endif
         {
-            // The gate's own edges, so a headset log shows each leave and each
+            // The gate's own edges, so the log shows each leave and each
             // return even with no hold engaged (and a title whose signal never
             // reads first person shows up as an exit that never ends). At most
             // one line a second; the rest are counted into the next.
@@ -18280,6 +18303,49 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                                                 ? "no measured art on the quad yet"
                                                 : "art-centre readback unavailable");
                                 }
+                                // The other titles' quads are centred on the texture: the line says how
+                                // far that leaves the art from the aim point (degrees of the crosshair's
+                                // configured size, which the quad keeps at every distance).
+                                else if (reticleTitle == GameTitle::Halo2 &&
+                                         g_authoredReticlePublishedCentre.valid)
+                                    LOG("RETICLE art centre (title %d): %+.3f right, %+.3f down of the "
+                                        "texture centre = %+.2f deg right, %+.2f deg down of the aim point "
+                                        "for a %.2f deg crosshair (ink %llu); the capture window follows the "
+                                        "art: it sits %+.0f px right, %+.0f px down of the view's centre "
+                                        "after %u moves",
+                                        static_cast<int>(reticleTitle),
+                                        g_authoredReticlePublishedCentre.u - 0.5f,
+                                        g_authoredReticlePublishedCentre.v - 0.5f,
+                                        (g_authoredReticlePublishedCentre.u - 0.5f) *
+                                            g_config.crosshair_size_deg,
+                                        (g_authoredReticlePublishedCentre.v - 0.5f) *
+                                            g_config.crosshair_size_deg,
+                                        g_config.crosshair_size_deg,
+                                        static_cast<unsigned long long>(
+                                            g_authoredReticlePublishedCentre.ink),
+                                        g_halo2ReticleFollow.x, g_halo2ReticleFollow.y,
+                                        g_halo2ReticleFollow.moves);
+                                else if (g_authoredReticlePublishedCentre.valid)
+                                    LOG("RETICLE art centre (title %d): %+.3f right, %+.3f down of the "
+                                        "texture centre = %+.2f deg right, %+.2f deg down of the aim point "
+                                        "for a %.2f deg crosshair (ink %llu); the quad is centred on the "
+                                        "texture, not on the art",
+                                        static_cast<int>(reticleTitle),
+                                        g_authoredReticlePublishedCentre.u - 0.5f,
+                                        g_authoredReticlePublishedCentre.v - 0.5f,
+                                        (g_authoredReticlePublishedCentre.u - 0.5f) *
+                                            g_config.crosshair_size_deg,
+                                        (g_authoredReticlePublishedCentre.v - 0.5f) *
+                                            g_config.crosshair_size_deg,
+                                        g_config.crosshair_size_deg,
+                                        static_cast<unsigned long long>(
+                                            g_authoredReticlePublishedCentre.ink));
+                                else
+                                    LOG("RETICLE art centre (title %d): not measured (%s)",
+                                        static_cast<int>(reticleTitle),
+                                        g_authoredReticleCentreStaging
+                                            ? "no measured art on the quad yet"
+                                            : "art-centre readback unavailable");
                                 g_authoredReticleBlankHeld = 0;
                                 s_uploadsDone = 0;
                                 s_uploadsSkipped = 0;
@@ -18865,7 +18931,7 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
 #if HALOMCCVR_DEV_DIAGNOSTICS && HALOMCCVR_EXPERIMENTAL_REACH_RENDER_CANDIDATE
                             // Dev SHOT RETICLE (game.cpp halo3_impact_witness.inl): the traced reticle as drawn --
                             // this frame, this eye, this direction, the range it was drawn for -- against each shot's P.
-                            // Reach and Halo 4 too (2026-10-04): their AS SEEN witnesses judge impacts against it.
+                            // Reach and Halo 4 too: their AS SEEN witnesses judge impacts against it.
                             if (tracedReticle && !limitFromEye)
                             {
                                 const float drawnFrom[3]{reticleOrigin.x, reticleOrigin.y, reticleOrigin.z};
@@ -18877,6 +18943,37 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                                 reticleOrigin.x + aimDir[0] * dist,
                                 reticleOrigin.y + aimDir[1] * dist,
                                 reticleOrigin.z + aimDir[2] * dist};
+#if HALOMCCVR_DEV_DIAGNOSTICS
+                            {
+                                // Dev: how the reticle is placed, once every two seconds. A quad nearer than the
+                                // point it marks sits inward of that point in each eye by the angle printed.
+                                static uint64_t lastDrawnLogMs = 0;
+                                const uint64_t drawnNowMs = GetTickCount64();
+                                if (drawnNowMs - lastDrawnLogMs >= 2000)
+                                {
+                                    lastDrawnLogMs = drawnNowMs;
+                                    float eyesApartM = 0.0f;
+                                    if (projection.viewCount == 2 && projectionViews.size() == 2)
+                                    {
+                                        const XrVector3f& a = projectionViews[0].pose.position;
+                                        const XrVector3f& b = projectionViews[1].pose.position;
+                                        eyesApartM = sqrtf((a.x - b.x) * (a.x - b.x) + (a.y - b.y) * (a.y - b.y) +
+                                                           (a.z - b.z) * (a.z - b.z));
+                                    }
+                                    const bool fromEye = reachNativeAim || tracedReticle || limitFromEye;
+                                    LOG("RETICLE as drawn (dev): %s, from %s, at %.2f m; eyes %.1f mm apart, so each "
+                                        "eye sees it %.2f deg inward of a distant point on the same line",
+                                        primaryBarrel ? "the weapon's barrel line"
+                                            : reachNativeAim ? "the game's own vehicle aim"
+                                            : limitFromEye ? "the seat's stop"
+                                            : tracedReticle ? "the traced eye ray" : "the controller's ray",
+                                        primaryBarrel ? "the barrel" : fromEye ? "the stereo centre eye"
+                                                                                 : "the controller",
+                                        dist, eyesApartM * 1000.0f,
+                                        dist > 0.01f ? atanf(0.5f * eyesApartM / dist) * 57.29578f : 0.0f);
+                                }
+                            }
+#endif
                             const float w = tracedReticle
                                 ? tracedPlacement.width_m
                                 : limitFromEye ? limitPlacement.width_m
@@ -18945,10 +19042,10 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                             // [assess-only begin]
                             // DEV ASSESSMENT MARKER (honest_reticle_assess): where the game's shot REALLY lands, as a
                             // SECOND marker -- a small magenta ring and dot (assess_reticle::MarkerPixel) -- beside
-                            // the player's reticle, which stays exactly where it is (2026-10-02). Until then the
-                            // assessment REPLACED the reticle, so the player aimed WITH it and the test measured
-                            // itself: in Reach on foot the DMR's shots seemed to land "where the reticle is at the
-                            // height of recoil", because the mark came from the kicking camera while the shots did not.
+                            // the player's reticle, which stays exactly where it is. It must never REPLACE the
+                            // reticle: the player would then aim WITH it and the test would measure itself (in Reach
+                            // on foot the DMR's shots would seem to land where the reticle is at the height of
+                            // recoil, because the mark comes from the kicking camera while the shots do not).
                             // The poll publishes the ray from the rendered eye through the point the game's shot
                             // reaches (from its own shot origin along its aim, to the first surface) and its distance;
                             // it is drawn from this frame's stereo centre eye, on the surface, at its depth, its width
@@ -21626,6 +21723,9 @@ void VR_DetachGamePresentation()
     g_authoredReticlePublishedCentre = {};
     g_authoredReticleMeasuredCentre = {};
     g_authoredReticleCentreQueued = false;
+    g_halo2ReticleFollow = {};
+    g_halo2ReticleWindowX.store(0.0f, std::memory_order_relaxed);
+    g_halo2ReticleWindowY.store(0.0f, std::memory_order_relaxed);
     // Known-good art belongs to the title that captured it; a new title must
     // measure its own before anything is held on its behalf.
     g_authoredReticleGoodValid = false;
@@ -24065,6 +24165,13 @@ static bool BeginAuthoredReticleCaptureInternal(
         (static_cast<float>(kReticleSize) - captureViewport.Width) * 0.5f;
     captureViewport.TopLeftY =
         (static_cast<float>(kReticleSize) - captureViewport.Height) * 0.5f;
+    // Halo 2 draws some reticles away from the view's centre (a vehicle's sits well below it); its window is
+    // cut about the point the art was last measured at instead (ReticleCaptureFollow).
+    if (captureTitle == GameTitle::Halo2)
+    {
+        captureViewport.TopLeftX -= g_halo2ReticleWindowX.load(std::memory_order_relaxed);
+        captureViewport.TopLeftY -= g_halo2ReticleWindowY.load(std::memory_order_relaxed);
+    }
     const D3D11_RECT captureScissor{
         0, 0, static_cast<LONG>(kReticleSize),
         static_cast<LONG>(kReticleSize)};

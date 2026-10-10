@@ -3,8 +3,8 @@
 // and the observer publication; it is fed by the collision detour (Halo2CollisionVectorDetour), both stereo cores
 // (Halo2Observer6Dof_DevNoteAsSeenFrame) and the compositor (Game_DevNoteTracedReticle).
 //
-// AS SEEN, Halo 2 in VR (dev builds only; 2026-10-04). After flat parity landed for Halo 2 (P' = P + (E_fire - E_P),
-// halo2_fire_eye.inl) the user, in Halo 2 Anniversary: "I am not feeling it" -- shots still seem to trail the strafe.
+// AS SEEN, Halo 2 in VR (dev builds only). With flat parity on for Halo 2 (P' = P + (E_fire - E_P),
+// halo2_fire_eye.inl), shots in Halo 2 Anniversary can still seem to trail a strafe.
 // The SHOT LAG transport line proves the shift is applied (+110..+140 mm on every shot); it cannot say what the player
 // SEES. This witness measures that, with the same code as the flat probe (src/common/as_seen_logic.h), so the VR and
 // flat numbers compare bin for bin and renderer for renderer:
@@ -235,6 +235,8 @@ bool Halo2AsSeenFrameShows(const Halo2AsSeenFrame& frame, const Halo2AsSeenPendi
 // ---- the spawn: object_new from the fire routine --------------------------------------------------------------------
 void Halo2ImpactNoteSpawn(const float spawn[3], const float fwd[3], const float* velocity)
 {
+    // A seated fire's round against the barrel it left (halo2_direct_drive.inl).
+    Halo2SeatBarrelNoteRound(spawn, fwd, velocity);
     auto& w = g_halo2Impact;
     const auto request = g_halo2MuzzleRequest;
     const uint32_t owned = Halo2OwnedUnit();
@@ -248,8 +250,24 @@ void Halo2ImpactNoteSpawn(const float spawn[3], const float fwd[3], const float*
     {
         ours = false;
     }
+    // A gun our seat fires is ours too (a seat's round): P's line is then the seat's intent ray. Another
+    // occupant's weapon is not: only a gun the seat's own fire has shown (this fire's aim call came first).
+    const bool seatGun = !ours && owned != UINT32_MAX && Halo2SeatBarrelKnownGun(request.weapon);
     Halo2AsSeenAim aim{};
-    if (ours)
+    if (seatGun)
+    {
+        Halo2ObserverPosePublication publication{};
+        aim.valid = Halo2SeatIntentRay(aim.head, aim.dir);
+        memcpy(aim.eye, aim.head, sizeof(aim.eye));
+        if (aim.valid && Halo2Observer6Dof_ReadPublishedPose(publication))
+        {
+            aim.camUs = publication.publishedUs;
+            aim.camTick = publication.gameTick;
+            aim.camFactor = publication.interpFactor;
+        }
+        ours = true;
+    }
+    else if (ours)
     {
         // P's line: the newest publication's sight geometry (the line Halo2AimMuzzleShot aims through at this fire).
         const uint32_t generation = g_generation.load(std::memory_order_acquire);

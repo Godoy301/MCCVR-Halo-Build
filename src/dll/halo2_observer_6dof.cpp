@@ -18,6 +18,7 @@
 #include "../common/director_camera_logic.h"
 #include "../common/aim_write_logic.h"
 #include "../common/seat_drive_policy.h"
+#include "../common/seat_barrel_logic.h"
 #include "../common/halo2_vehicle_identity.h"
 #include "contact_melee_queue.h"
 #include "hook_quiescence.h"
@@ -560,13 +561,13 @@ namespace
     constexpr uint32_t kHalo2CollisionVectorRva = 0x0075B850;
     constexpr uint32_t kHalo2ObjectSetLocalVelocityRva = 0x0090A000;
     constexpr uint32_t kHalo2CollisionFlags = 0x2480000Fu;
-    // THE SIGHT TRACE'S FLAGS: the PROJECTILE's own (2026-10-05). The intent ray was traced with the
-    // world-collision / melee flags above, which stop on every biped; Halo 2's own rounds do not: their flight
-    // query adds bit 20, which skips a biped whose data +0x10A has bit 2 (collision_test_vector's per-object
-    // test, 0x75C616; by position and by CE's source the damage flags' DEAD bit -- read from code, the name
-    // inferred). A body in front of a far target therefore pulled the convergence onto itself where the round
-    // flew on. Whatever that bit excludes, the game's own rounds exclude: the intent ray now measures the range
-    // a shot really reaches. The projectile's flags are RESOLVED from the code that issues them, never baked:
+    // THE SIGHT TRACE'S FLAGS: the PROJECTILE's own. The world-collision / melee flags above stop on every
+    // biped; Halo 2's own rounds do not: their flight query adds bit 20, which skips a biped whose data +0x10A
+    // has bit 2 (collision_test_vector's per-object test, 0x75C616; by position and by CE's source the damage
+    // flags' DEAD bit -- read from code, the name inferred). Traced with the flags above, a body in front of a
+    // far target pulls the convergence onto itself where the round flies on. Whatever that bit excludes, the
+    // game's own rounds exclude: with the projectile's flags the intent ray measures the range a shot really
+    // reaches. The projectile's flags are RESOLVED from the code that issues them, never baked:
     //   1. ANCHOR  the projectile flight wrapper's call (retail 0x75A164..0x75A185: `mov [rsp+28h],rax;
     //              mov ecx,imm32; mov eax,[rsp+D0h]; movss [rsp+34h],xmm1; mov [rsp+20h],eax;
     //              movss [rsp+38h],xmm0; call`) matches exactly once in the image, immediate wildcarded;
@@ -574,10 +575,10 @@ namespace
     //   3. VALUE   the immediate is this lane's own pinned flags plus bit 20 alone, and decodes to structure +
     //              bipeds + vehicles (sight_hit::Halo2ProjectileFlagsAgree). The engine-ray census measured the
     //              same value on every shot (caller +0x75A18A, 0x2490000F; ALL-TITLES-AIM-2026-09-29.md).
-    // Any rung failing keeps kHalo2CollisionFlags, the flags the trace has shipped with (they hit every object
-    // type too; only the projectile's biped exception is lost), and the install line says which.
+    // Any rung failing keeps kHalo2CollisionFlags as the fallback (they hit every object type too; only the
+    // projectile's biped exception is lost), and the install line says which.
     // ADDR-HYGIENE: resolved + guarded (unique signature, call edge to the hooked function, value agreement
-    // with an independently pinned value; 0 = unresolved, the older flags).
+    // with an independently pinned value; 0 = unresolved, the fallback flags).
     std::atomic<uint32_t> g_halo2SightProjectileFlags{0};
     // Both values the trace can run with stop on the level, on characters and on vehicles.
     static_assert(sight_hit::HitsUnitsAndVehicles(sight_hit::DecodeTraceFlags(
@@ -689,7 +690,7 @@ namespace
     bool ReadVehicleViewFrame(Halo2VehicleViewKey&,Halo2CameraBasis&) noexcept;
     // Roomscale re-seats of the reference (ApplyHeadPose): how many, and how far
     // the head had moved from the reference between its capture and the follow's
-    // first admission -- the offset that used to stay between view and legs.
+    // first admission -- the offset a re-seat removes from between view and legs.
     std::atomic<uint64_t> g_roomscaleReseats{0};
     std::atomic<uint32_t> g_roomscaleReseatMovedBits{0};
     std::atomic<uint64_t> g_snapTurns{0};
@@ -700,7 +701,7 @@ namespace
 
     void Halo2ApplyPhysicalCrouchCamera(float* position,float physicalDown,bool allowed) noexcept;
 
-    // The simulation's clock as the camera was built (2026-10-04): the game tick (game_time_globals +0x08; the slot
+    // The simulation's clock as the camera was built: the game tick (game_time_globals +0x08; the slot
     // C-H2-1 proved from two independent anchors before this core could arm) and MCC's frame-interpolator factor
     // (0x164B300, E-H2-30: written once a frame, after the ticks, just before the observer update). Read guarded; -1 /
     // NaN when unreadable. ADDR-HYGIENE: guarded (the C-H2-1 slot proof; the factor is range-checked to [0, 1] and only
@@ -917,12 +918,12 @@ namespace
         std::atomic<uint32_t> seatConvergedWrites{0};
         // The seat proof's reference (seat_converge::SeatAimReference): seated updates judged against the unit's own
         // aiming vector, against the observer camera (the vector did not read), and the largest angle the camera sat
-        // off the unit's aim in the window (degrees; the measured ~5.1 in every seat tried).
+        // off the unit's aim in the window (degrees; about 5.1 measured in every seat).
         std::atomic<uint32_t> seatUnitAimRefs{0}, seatCameraRefs{0};
         std::atomic<float> seatCameraOffMaxDeg{0.0f};
         // THE SEAT'S STOPS for the reticle (seat_limit_publication.h): after each seat write, the yaw latch's stop and
         // the record's own eased pitch limits, in the record's frame, with the hand's world aim the write was for.
-        // Not for an air vehicle (stintAircraft, read once per stint): no rotational limit there (the user).
+        // Not for an air vehicle (stintAircraft, read once per stint): no rotational limit is shown there.
         SeatStopsPublication stops{};
         bool stintAircraft = false;
     };
@@ -1315,9 +1316,9 @@ namespace
         // installs (every level load) or on a recentre, but the follow treats its
         // own first admitted update as the moment the player stands over the body
         // (roomscale_logic.h, initialLean), and admission comes later: on foot,
-        // palette armed, fresh input -- about 3 s after a load (user log,
-        // 2026-09-30). Whatever the player moved in between stayed between the
-        // view and the legs until an L3+R3 recentre: 0.45-0.79 m that session.
+        // palette armed, fresh input -- about 3 s after a load. Whatever the
+        // player moves in between would stay between the view and the legs
+        // until an L3+R3 recentre (0.45-0.79 m measured).
         // So the first admission after a capture re-seats the reference on the
         // head: one step of the view onto the body, as a recentre makes.
         const bool roomscaleAllowed = g_config.roomscale_movement &&
@@ -3911,7 +3912,7 @@ namespace
     }
 #endif
 
-    // IN A SEAT (seat_converge_logic.h; 2026-10-06) the caller hands the vehicle hierarchy's ULTIMATE PARENT
+    // IN A SEAT (seat_converge_logic.h) the caller hands the vehicle hierarchy's ULTIMATE PARENT
     // (`seatedRoot`) and the seat's stance key: the same ray, from the seat view's rendered eye, with that root in
     // the first ignore slot -- what Halo 2's own crosshair test passes (0x8D6A50 at 0x75998F, the second slot -1) --
     // and Halo 2 skips an ignored object with everything attached to it (0x75C59E): the occupants, their weapons,
@@ -4030,8 +4031,19 @@ namespace
 
     // Seat convergence (halo2_direct_drive.inl, included below): the seat's converged aim and its occupancy read.
     seat_converge::Why Halo2BuildSeatConvergedAim(uint32_t unit, uint32_t stance, float direction[3],
-                                                  float* point) noexcept;
+                                                  float* point, float* head = nullptr) noexcept;
     int Halo2DriveOccupancy(uint32_t& parent, int16_t& seat) noexcept;
+    // Aiming a seat's gun through the point (seat_barrel_logic.h; halo2_direct_drive.inl): what a fire shows.
+    void Halo2SeatBarrelNoteEye(const float* eye) noexcept;
+    void Halo2SeatBarrelLearn(uint32_t firer, uint32_t weapon, int16_t barrel, const float* muzzle,
+                              const float* direction) noexcept;
+    bool Halo2SeatBarrelOurFire(uint32_t firer, uint32_t unit) noexcept;
+    bool Halo2SeatShotPoint(uint32_t unit, float point[3]);   // halo2_seat_fire.inl
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    void Halo2SeatBarrelNoteRound(const float spawn[3], const float forward[3], const float* velocity) noexcept;
+    bool Halo2SeatBarrelKnownGun(uint32_t weapon) noexcept;
+    bool Halo2SeatIntentRay(float head[3], float dir[3]) noexcept;
+#endif
 
     // The direction the owned on-foot unit aims along. Trace-and-reaim whenever it can resolve: the line
     // from the stock camera through the point the eye-anchored intent ray hits (`converged`). Without a
@@ -4692,10 +4704,9 @@ namespace
                 cursor = regionEnd;
             }
             // The count above is of the bytes in memory. Where this mod has an
-            // enabled hook those are our jump, not the game's code: a Halo 2
-            // lane that proved a function head after another lane hooked it
-            // would read "missing" on a healthy game (the defect that kept
-            // Halo 4's and Reach's muzzle lanes off, sigscan.h). Make it the
+            // enabled hook those are our jump, not the game's code: a proof
+            // of a function head run after another hook patched it would
+            // read "missing" on a healthy game (sigscan.h). Make it the
             // count over the game's own bytes; a match that needed them is
             // reported once as PROOF AFTER HOOK.
             sig::CorrectLiveCountForHooks(
@@ -4757,12 +4768,12 @@ namespace
     // SHOTS FROM THE MUZZLE (sight_layer.h), for halo2_muzzle_shots.inl: the newest publication's intent ray
     // (rendered eye along the aiming hand's carrier) and engine eye, through Sight_AimMuzzleShotFromRay.
     // `distance` is how far along the new direction the converged point lies.
-    // FLAT PARITY (2026-10-03): the converged point P is a WORLD point fixed at this publication's camera; the round
-    // leaves at the fire, one tick of travel (or more) later, so a strafing muzzle shot through P trailed flat by
-    // that travel -- "I experienced the shot lag in Halo 2 Anniversary" with shots_from_muzzle on (the user,
-    // 2026-10-03). It flies through P' = P + (E_fire - E_P) instead (halo2_fire_eye.inl: E_fire the firing assist's
-    // own camera evaluator asked now, once proven, else E_P carried a tick). The unit aim this builder writes is a
-    // DIRECTION from E_P, which the game applies at its own fire eye: flat parity already, untouched.
+    // FLAT PARITY: the converged point P is a WORLD point fixed at this publication's camera; the round leaves at
+    // the fire, one tick of travel (or more) later, so a strafing muzzle shot aimed through P would trail flat by
+    // that travel (felt as shot lag with shots_from_muzzle on). It flies through P' = P + (E_fire - E_P) instead
+    // (halo2_fire_eye.inl: E_fire the firing assist's own camera evaluator asked now, once proven, else E_P
+    // carried a tick). The unit aim this builder writes is a DIRECTION from E_P, which the game applies at its own
+    // fire eye: flat parity already, untouched.
     bool Halo2AimMuzzleShot(const float before[3], const float position[3], float direction[3], float up[3],
                             float& distance) noexcept
     {
@@ -6445,11 +6456,12 @@ namespace
             g_config.independent_dual_aim?1:0);
         {
             const uint64_t seatApplied=g_halo2SeatFireApplied.exchange(0),seatThrough=g_halo2SeatFireThrough.exchange(0),
-                seatSkipped=g_halo2SeatFireSkipped.exchange(0);
-            if(seatApplied||seatThrough||seatSkipped)
-                LOG("Halo 2 seat fire: the engine's crosshair line at a seated fire re-aimed through the traced point "
+                seatSkipped=g_halo2SeatFireSkipped.exchange(0),seatFromEye=g_halo2SeatFireFromEye.exchange(0);
+            if(seatApplied||seatThrough||seatSkipped||seatFromEye)
+                LOG("Halo 2 seat fire: the engine's crosshair line at a seated fire replaced by the player's own (from "
+                    "the rendered eye through the traced point) %llu, re-aimed from the seat camera through the point "
                     "%llu, already through it or geometrically refused (SHOT REAIM names which) %llu, left as the game "
-                    "built it (the seat's aim was not converged) %llu",seatApplied,seatThrough,seatSkipped);
+                    "built it (the seat's aim was not converged) %llu",seatFromEye,seatApplied,seatThrough,seatSkipped);
         }
         LOG("Halo 2 barrel trajectory: enabled=%d fault=%d applied=%llu refused=%llu option=%d",
             g_halo2Muzzle.enabled.load()?1:0,g_halo2Muzzle.faulted.load()?1:0,

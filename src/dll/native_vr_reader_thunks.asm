@@ -2,10 +2,10 @@
 ; +0x187028, ODST +0x1B8420, Halo 4 +0x13F5CC; gesture_binding_reader.inl).
 ;
 ; Each reader is a LEAF, and LTCG let many of its native callers keep VOLATILE registers live across the
-; call because the compiler knew the leaf leaves them alone (tools/audit_caller_area.py, 2026-10-01:
+; call because the compiler knew the leaf leaves them alone (tools/audit_caller_area.py:
 ; Reach 28 of 114 callers, Halo 3 23 of 102, ODST 29 of 120, Halo 4 35 of 127). A C++ detour clobbers
 ; them. Halo 3's input step (+0xF8D3C) keeps its player-control bit array in r10/r11 across two reader
-; calls and then writes through it: with the C++ detour it wrote through r10 = 0 (+0xF8EBC / +0xF8EC9),
+; calls and then writes through it: with a plain C++ detour it writes through r10 = 0 (+0xF8EBC / +0xF8EC9),
 ; crashing Halo 3 at every level load.
 ;
 ; So the hook is entered here: every volatile register except rax (the returned record) -- rcx, rdx,

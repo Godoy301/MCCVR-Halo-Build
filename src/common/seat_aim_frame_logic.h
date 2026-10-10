@@ -56,13 +56,13 @@ struct Site
     uint32_t anchorToJcc;
 };
 
-// ADDR-HYGIENE: guarded. Measured 2026-10-01 on the retail Steam modules (the Store modules are byte-identical,
+// ADDR-HYGIENE: guarded. Measured on the retail Steam modules (the Store modules are byte-identical,
 // MCC-EDITIONS-EVIDENCE). The install refuses unless the anchor is unique and at anchorRva, and the six bytes at
 // the jne are exactly 0F 85 with its target at skipRva (or our own E9 to skipRva + 90, which it adopts).
 inline constexpr Site kHalo3Site{"Halo 3", 0x355E20, 0xE3C4B, 0x355EEB, 0x355EFA, 0x355FDD, kAnchorPattern,
                                  kAnchorToJcc};
 inline constexpr Site kOdstSite{"ODST", 0x39A600, 0xFDF48, 0x39A6B5, 0x39A6C4, 0x39A7C8, kAnchorPattern, kAnchorToJcc};
-// REACH (2026-10-01): the same mechanism (docs/ALL-TITLES-AIM-2026-09-29.md, the per-title table). The rebase
+// REACH: the same mechanism (docs/ALL-TITLES-AIM-2026-09-29.md, the per-title table). The rebase
 // 0x48ADB8's only call is 0x45E34 in the unit-aim build 0x45C2C, which indexes the "players" data array (TLS block
 // +0x18, element 0x490, data_array_new at 0x43469) with its first argument and hands the rebase the unit at +0x28
 // of that record -- players only, as in Halo 3. The skip label 0x48AF72 is the function's common exit (its
@@ -144,7 +144,7 @@ inline bool BuildStockJcc(const uint8_t patched[kPatchBytes], uint32_t jcc, uint
 // rebase for a player; it is our own C20 patch that clears the bit. Skipping restores exactly what an unmodded
 // peer computes. (Halo 2 and CE have a similar rebase, but there some stock seats natively LACK the flag and no
 // patch of ours clears it, so there is nothing to skip: their seat drives write the inverse instead. Reach skips
-// too since 2026-10-01, but only where R-V27 cleared the bit -- ReachWanted -- for the same reason as here.)
+// too, but only where R-V27 cleared the bit -- ReachWanted -- for the same reason as here.)
 // So: skipped whenever the title's first-person seat patch is enabled (vehicle_first_person and
 // vehicle_hide_body, as the C20 patch reads them), unless the dev A/B key says to leave the game's rebase, and
 // NOT while the occupied seat natively lacks bit 4 (a custom or modded seat: there stock rebases, so we must too).
@@ -163,7 +163,7 @@ inline bool BuildStockJcc(const uint8_t patched[kPatchBytes], uint32_t jcc, uint
 // samples again, and for that window the skip suppresses a rebase stock would run. Gating on a sampler heartbeat
 // instead would be worse: the hook stops on pauses and loads (and off ODST's single-user path), so the code patch
 // would toggle -- each toggle freezes every game thread -- and it would put the rebase back while C20 may still
-// hold bit 4 cleared on a seat sampled earlier, which is the original bug.
+// hold bit 4 cleared on a seat sampled earlier, which is the very fault this patch removes.
 inline bool Wanted(bool vehicleFirstPerson, bool vehicleHideBody, bool worldFrameKey, bool vehicleSamplerBound,
                    bool seatNativelyLacksBit4)
 {

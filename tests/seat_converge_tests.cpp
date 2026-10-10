@@ -152,7 +152,7 @@ void TestBounds()
 
 void TestAimReference()
 {
-    // The measured Halo 2 seat (2026-10-06): the record and the unit's aiming vector at yaw -88.65, pitch -4.97 deg;
+    // A measured Halo 2 seat: the record and the unit's aiming vector at yaw -88.65, pitch -4.97 deg;
     // the observer camera 5.1 deg of pitch above it. The reference is the unit's aim, and the camera's offset is said.
     const float d2r = 0.0174532925f;
     const float yaw = -88.65f * d2r, pitch = -4.97f * d2r;
@@ -167,7 +167,7 @@ void TestAimReference()
     // No camera: still the unit's aim, with no offset to report.
     r = SeatAimReference(true, aim, false, 0.0f, 0.0f);
     Check(r.valid && r.fromUnit && std::isnan(r.cameraOffDeg), "the unit's aim needs no camera");
-    // A vector that is not the aiming vector (not unit length, non-finite, not read): the camera, as before.
+    // A vector that is not the aiming vector (not unit length, non-finite, not read): the camera is the reference.
     const float longAim[3]{aim[0] * 1.5f, aim[1] * 1.5f, aim[2] * 1.5f};
     r = SeatAimReference(true, longAim, true, 0.4f, -0.2f);
     Check(r.valid && !r.fromUnit && Near(r.yaw, 0.4f) && Near(r.pitch, -0.2f) && std::isnan(r.cameraOffDeg),

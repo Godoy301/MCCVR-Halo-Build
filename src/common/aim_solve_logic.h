@@ -23,8 +23,7 @@
 // The core owns the trace-and-reaim math and the strategy choice; the provider owns the trace and the
 // origin hook.
 //
-// Reference: the vr-game-conversion playbook (references/aim.md) and CampE's src/AimConverge.cpp,
-// from which the trace-and-reaim math below is ported.
+// Reference: CampE's src/AimConverge.cpp, from which the trace-and-reaim math below is ported.
 
 #include <cmath>
 #include <cstdint>
@@ -87,16 +86,16 @@ struct Vec3 { float x = 0.0f, y = 0.0f, z = 0.0f; };
 // test, test_reach_basis), not here.
 
 // TRACE-AND-REAIM IS THE AIM PATH, NOT ONE OPTION AMONG SEVERAL. It declines ONLY when it cannot
-// resolve the shot: the geometry is degenerate, or the title cannot actuate the aim it needs. The older
+// resolve the shot: the geometry is degenerate, or the title cannot actuate the aim it needs. The other
 // reconciliations (origin relocation, fixed-range re-aim) are the worst-case fallback for exactly
-// those cases, never an alternative (the user's rule, 2026-09-28).
+// those cases, never an alternative.
 //
-// There is deliberately NO correction-size rail. One used to decline any bend over 20 deg as "a wrong
-// range", which is true only while the ray starts within arm's reach of the shot origin. With the
+// There is deliberately NO correction-size rail. Declining a large bend (say, over 20 deg) as "a wrong
+// range" is right only while the ray starts within arm's reach of the shot origin. With the
 // player standing away from the character (roomscale off, or the body still catching up), a big bend
-// is the geometry itself -- 2.4 m of offset at 7 m is 19 deg -- and every decline handed the shot to a
-// fallback that could not reach (relocation refuses beyond 1.5 m), so it left stock, parallel to the
-// ray and off by the whole offset (measured in FA 2026-09-28). The range comes from the engine's own
+// is the geometry itself -- 2.4 m of offset at 7 m is 19 deg -- and every decline hands the shot to a
+// fallback that cannot reach (relocation refuses beyond 1.5 m), so it leaves stock, parallel to the
+// ray and off by the whole offset (measured). The range comes from the engine's own
 // crosshair-trace query and the offset from the frame both sides render, so a big bend is not evidence
 // that either is wrong.
 struct ConvergeRails {
@@ -177,7 +176,7 @@ inline bool converge_trace_reaim(float& yaw_deg, float& pitch_deg,
     if (!std::isfinite(ny) || !std::isfinite(np)) return false;
     // The one physical limit: an aim steeper than the control record accepts would be clamped on the
     // way in and miss, so it cannot resolve here. Reach (the only caller of this angle form) keeps this
-    // decline on purpose (R13r, 2026-10-01): its fallback relocates the hand shot exactly, which lands a close
+    // decline on purpose (R13r): its fallback relocates the hand shot exactly, which lands a close
     // floor or ceiling shot better than a clamped converged aim. converge_direction clamps instead.
     if (std::fabs(np) > r.max_pitch_deg) return false;
 
@@ -194,10 +193,10 @@ inline bool converge_trace_reaim(float& yaw_deg, float& pitch_deg,
 // true when the aim converges (bent, or the offset is below min_divergence_cm, which returns `dir`
 // itself); false, `out` untouched, only when it cannot resolve.
 //
-// THE PITCH RAIL CLAMPS here (2026-10-01; Halo 3, ODST and Halo 4 -- the H2/CE callers pass 90, where it is
+// THE PITCH RAIL CLAMPS here (Halo 3, ODST and Halo 4 -- the H2/CE callers pass 90, where it is
 // inert). A bend steeper than max_pitch_deg -- a close ceiling or floor with the head well off the engine eye --
-// cannot be actuated exactly, but it is natural geometry, not our code failing, so it no longer declines (which
-// handed the write the unbent steer, a jump by the whole bend, and switched convergence off). The aim is held
+// cannot be actuated exactly, but it is natural geometry, not our code failing, so it does not decline (a decline
+// would hand the write the unbent steer, a jump by the whole bend, and switch convergence off). The aim is held
 // AT the rail and stays converged. Its heading: the bent aim's own near the rail (continuous with the unclamped
 // bend), handing over to the intent ray's as the bent aim nears the pole, where atan2 of a vanishing horizontal
 // whips through any heading at the smallest change. Weight w^2, w = |bent horizontal| / cos(rail).
@@ -205,7 +204,7 @@ inline bool converge_trace_reaim(float& yaw_deg, float& pitch_deg,
 // THAT BLEND HAS A SINGULARITY, and no blend can avoid one: mapping every bent aim past the rail onto a heading
 // that agrees with the bent aim's own at the rail is a retraction of a disk onto its rim. It sits where the bent
 // heading points AWAY from the hand's and w^2 = 1/2 (a bent pitch near 85 deg at an 83 deg rail): a hand at 80 deg
-// under a ceiling 0.5 m up, with the engine eye 13 cm ahead of the rendered head, swept the output heading through
+// under a ceiling 0.5 m up, with the engine eye 13 cm ahead of the rendered head, sweeps the output heading through
 // 180 deg in half a millimetre of eye motion -- a 14 deg whip of the written aim near vertical. So the clamp keeps
 // a RailHold (caller-owned, one per actuation loop): inside the band where the blend nearly cancels
 // (|mix| < kRailHoldEnter) it holds the heading it wrote last poll, and lets go only once the blend agrees with
@@ -349,8 +348,8 @@ inline TracedReticle traced_reticle_placement(bool hit, float range_m, float cap
 //   - PointNotAhead: P less than min_ahead_cm ahead of the muzzle along the intent ray (a point behind or
 //     beside the gun, or a wall at its muzzle);
 //   - NonFinite: any non-finite or degenerate input.
-// NO DISTANCE-FROM-THE-EYE LIMIT (user's decision, 2026-10-03: a size limit cannot tell a right answer from a
-// wrong one). There was one -- a muzzle over 150 cm from the engine eye, "a stale or foreign muzzle" -- and
+// NO DISTANCE-FROM-THE-EYE LIMIT (a size limit cannot tell a right answer from a wrong one). A rail such as
+// "a muzzle over 150 cm from the engine eye is stale or foreign" is not needed:
 // every caller already proves that by identity before it gets here: each title reads the muzzle from a
 // weapon_muzzle receipt that must match this title, generation, the firing unit, the weapon being fired, its
 // slot, barrel and handedness, and be under 100 ms old (weapon_muzzle::Fresh). Where the gun sits relative to

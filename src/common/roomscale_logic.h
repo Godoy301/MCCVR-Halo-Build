@@ -21,8 +21,8 @@ struct RoomscaleFollow
 {
     // Follow hysteresis (Halo: Campaign Evolved's rule): a catch-up starts only once the head is
     // kFollowStart from the body and, once started, runs until it is inside kFollowStop. With a
-    // single 1.5 cm threshold, ordinary head sway fired a stream of ~1 cm body steps (measured in
-    // Reach: a 2.5 cm lean moved the body 13 mm in one burst), each a walk-cycle blip. The view is
+    // single 1.5 cm threshold, ordinary head sway fires a stream of ~1 cm body steps (measured in
+    // Reach: a 2.5 cm lean moves the body 13 mm in one burst), each a walk-cycle blip. The view is
     // head-locked either way; only the collision body lags, by at most kFollowStart.
     static constexpr float kFollowStart=0.03f, kFollowStop=0.015f;
     // How long after the last command the body's own stopping tail may still be consumed as ours (it
@@ -32,8 +32,8 @@ struct RoomscaleFollow
     static constexpr uint64_t kSettleMaxMs=700;
     // The longest a released stick keeps roomscale paused. The body's braking tail after a stick walk
     // is a few hundred milliseconds; the quiet test below cannot tell it from motion that never stops.
-    // Measured 2026-09-28 (Reach, headset): after a stick walk the follow stayed admitted on every poll
-    // and never commanded for up to 10 s while the player walked a metre away from the body. The only
+    // Without the cap, after a stick walk the follow can stay admitted on every poll and never command
+    // for up to 10 s while the player walks a metre away from the body (measured in Reach). The only
     // gate left in that state is this quiet test, and Reach's body point is the character's EYE, which
     // moves as the aim turns him (inferred, not measured: any sub-millimetre motion per frame holds the
     // pause open). Past this, the pause ends anyway.
@@ -43,39 +43,39 @@ struct RoomscaleFollow
     // body: the first seed of a title generation, and a recenter (the reference moved to the head).
     // Every other re-seed -- a stale camera, an admission change, a tracking gap, a hitch, a teleport --
     // keeps it, so a distance walked away while the follow could not act is still owed and the body
-    // catches up (Halo: Campaign Evolved's standing origin behaves the same way). Until 2026-09-28
-    // every re-seed captured the current offset, which made that distance the new "under me" -- the
-    // user, in the headset: "I got away from my legs, and they still respond when I walk around, but
-    // they are not under me."
+    // catches up (Halo: Campaign Evolved's standing origin behaves the same way). Capturing the current
+    // offset at every re-seed instead would make that distance the new "under me": the legs would
+    // still follow the player's steps, but from wherever the interruption left them, never back
+    // under the head.
     bool neutralValid=false;
     uint32_t neutralGeneration=0;
     // What is NOT owed: a tracking fault. A head that moves further between two consecutive updates
     // than a person can (a jump) is folded into the REFERENCE, and a debt larger than any play space is
     // dropped the same way. Neither is a walk. Folding into the reference (not the neutral lean) keeps
     // the view where it was -- the view is built from head minus reference -- so the player stays over
-    // the body; folding into the lean let the view jump with the fault while the legs stayed behind for
-    // good (the user, 2026-09-30: "my legs end up far away from me, and they don't roomscale back").
+    // the body; folding into the lean instead lets the view jump with the fault while the legs stay
+    // behind for good (far from the player, and never walked back).
     static constexpr float kHeadJumpM=0.5f, kHeadMaxSpeed=6.0f, kMaxDebtM=3.0f;
     bool haveLastHead=false;
     uint64_t lastHeadMs=0;
     float lastHead[2]{};
-    // A UNIT THAT IGNORES THE STICK IS NOT PUSHED, AND WHAT IT DOES MEANWHILE IS NOT OURS. Measured
-    // 2026-09-28 (Reach, headset, dev trace): five times in one minute the character stopped responding
-    // for 2-7 s (the game kept ticking; only the player's control update stopped). The follow commanded
-    // into him the whole time, and as control came back the body point jumped (the error changed sign
-    // within 100 ms). Consumed as a walk, that sent the follow chasing it at full stick for ~3 s: the
-    // body 2.2 m out and back. So a command run that has not moved the body kNoResponseM the way it
+    // A UNIT THAT IGNORES THE STICK IS NOT PUSHED, AND WHAT IT DOES MEANWHILE IS NOT OURS. The game can
+    // stop answering for seconds at a time (measured in Reach: the character unresponsive for 2-7 s, five
+    // times in one minute; the game keeps ticking, only the player's control update stops). A follow
+    // that commands into him the whole time sees the body point jump as control comes back (the error
+    // changes sign within 100 ms). Consumed as a walk, that sends the follow chasing it at full stick
+    // for ~3 s: the body 2.2 m out and back. So a command run that has not moved the body kNoResponseM the way it
     // pushes in any kNoResponseMs of the run stands the follow down: no command, nothing claimed. Any
     // window, not only the first: a run that walks most of the way and then stops answering short of
-    // the stop band has its whole walk behind it (all-titles FA, 2026-09-29: Halo 3, Halo 2 and CE
-    // steps stopped 16-27 mm short with a 0.06-0.09 command running on; the walker's own braking never
-    // zeroed the command, so the run never restarted). If the body point
+    // the stop band has its whole walk behind it (measured: Halo 3, Halo 2 and CE
+    // steps stop 16-27 mm short with a 0.06-0.09 command running on; the walker's own braking never
+    // zeroes the command, so the run would never restart). If the body point
     // moves meanwhile (control handed back, a camera settling), the follow resumes once it has been
     // still for kStallQuietMs (kStallMaxMs at the latest). If it never moves (a deadzone above the
     // stick floor, a wall, a lock that hands back quietly), the follow restarts only when the body is
     // under the head again or the head is a further kFollowStart away than where it stood down --
-    // never on a timer, which would push into a wall every few seconds (the rule the all-titles branch
-    // measured in Halo 3 FA, where a 27 mm residual commanded a stick the unit never moved for). The
+    // never on a timer, which would push into a wall every few seconds (measured in Halo 3: a 27 mm
+    // residual commands a stick the unit never moves for). The
     // run after either is a probe: until it has moved the body kProbeConfirmM the way it pushes, a step
     // longer than kProbeStepM, or one more across the push than along it, is the game moving him, not
     // our step, and stands it down again. What is owed is kept throughout. The body point arrives in
@@ -173,11 +173,11 @@ struct RoomscaleFollow
         if (reset)
         {
             // Only a new title generation or a recenter says the player is over the body now. A NEW
-            // GENERATION moves the reference to the head, as a position recenter does: the title captured
+            // GENERATION moves the reference to the head, as a position recenter does: the title captures
             // its reference earlier -- at the level's first decodable pose, tracked or not, before a
-            // cutscene, before the headset came back on -- and whatever the head moved since then was
-            // being baked into the lean, legs off to one side until a manual recenter (Halo 4, user log
-            // 2026-09-30: 0.55 m baked at a level start; Halo 2 had its own re-seat for the same reason).
+            // cutscene, before the headset comes back on -- and whatever the head moved since then would
+            // otherwise be baked into the lean, legs off to one side until a manual recenter (Halo 4:
+            // 0.55 m measured at a level start).
             if (newGeneration)
             {
                 reference[0]=head[0]; reference[2]=head[2];
@@ -189,7 +189,7 @@ struct RoomscaleFollow
                 // A recenter put the reference on the head at that instant: the player was over the body
                 // THEN, so the lean is zero. Noticed late -- it landed while the follow was not admitted
                 // (F1, a seat, a pause; ODST recenters at every unpause) -- whatever the head moved since is
-                // owed like any other walk. Capturing head - reference here baked that into the lean for good.
+                // owed like any other walk. Capturing head - reference here would bake that into the lean for good.
                 initialLean[0]=initialLean[1]=0;
                 neutralValid=true; neutralGeneration=epoch;
             }
@@ -199,8 +199,8 @@ struct RoomscaleFollow
             // After any OTHER re-seed -- an admission change, a stale camera, a tracking gap, a teleport --
             // the first run is a probe: until it has moved the body the way it pushes, a jump or travel
             // across the push is the game moving him. Halo 4 leaving third person re-admits while its
-            // camera is still gliding back to the eye; claimed as a walk, that glide moved the reference
-            // with it and left the view hanging back while the body walked off (user log 2026-09-30).
+            // camera is still gliding back to the eye; claimed as a walk, that glide moves the reference
+            // with it and leaves the view hanging back while the body walks off.
             stalled=false; probing=!(newGeneration || recentered); runProgress=windowProgress=0;
             haveLastHead=false;   // no jump test across a re-seed: the head may really have moved
         }
@@ -338,8 +338,8 @@ struct RoomscaleFollow
                 float cz=error[1]*3.5f-velocity[1]*.18f;
                 // Brake by RELEASING, never by reversing. Near the target the velocity term turns
                 // the command against the error, and MCC's move-stick floor (any nonzero command
-                // is sent as >=27% stick) makes that a real walk the other way: measured in Reach
-                // FA, a 0.3 m step braked from 4 mm into an 18 mm reverse residual. Releasing lets
+                // is sent as >=27% stick) makes that a real walk the other way: measured in Reach,
+                // a 0.3 m step brakes from 4 mm into an 18 mm reverse residual. Releasing lets
                 // the game's own deceleration stop the unit. A genuine overshoot still corrects,
                 // because the error itself has flipped and the command again points along it.
                 if(cx*error[0]+cz*error[1]<=0){cx=cz=0;}
@@ -348,7 +348,7 @@ struct RoomscaleFollow
                 {
                     // The previous command for the against-push rule is taken when a run starts and kept
                     // through it: MCC's deceleration spans a few 30 Hz body chunks, several updates each, so
-                    // a direction replaced every update stopped covering the coast after one. A run that
+                    // a direction replaced every update would stop covering the coast after one. A run that
                     // starts from rest has no earlier direction to coast along; one that starts while the last
                     // run's tail is still settling keeps that run's (an overshoot correction).
                     const float nx=cx/magnitude, nz=cz/magnitude;
@@ -392,7 +392,7 @@ struct RoomscaleFollow
     }
 };
 
-// THE THRESHOLD FOLLOW LAW (upstream 56fed9e, as it shipped in Alpha 0.6.0), kept VERBATIM for the live A/B
+// THE THRESHOLD FOLLOW LAW (commit 56fed9e, as it shipped in Alpha 0.6.0), kept VERBATIM for the live A/B
 // switch roomscale_follow_law = 0: walks from 1.5 cm and brakes by reversing. RoomscaleFollow above is the
 // hysteresis law (default): 3 cm start / 1.5 cm stop, brake by release, command only while a follow runs,
 // the stopping tail claimed only in the walked direction, the 500 ms pause cap, and an owed distance that

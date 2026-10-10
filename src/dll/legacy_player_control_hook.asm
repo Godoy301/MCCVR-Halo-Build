@@ -1,6 +1,6 @@
 ; Halo 3 / ODST / Halo 4 direct drive (legacy_direct_drive): entry detours for each title's per-user
 ; control update -- the ACCUMULATOR of player_control.desired_angles, Reach's 0x6375C in each sibling
-; engine (located 2026-09-29 by structure: TLS player_control, a per-user stride, desired += stick delta
+; engine (located by structure: TLS player_control, a per-user stride, desired += stick delta
 ; then clamps; see LegacyDrive in game.cpp for the RVAs and the anchors that guard them).
 ; Signature, as Reach's: ecx = user index, xmm1..xmm3 = floats, no stack arguments; the record is reached
 ; through the calling (sim) thread's own TLS, so the C callee re-derives it from the same thread.

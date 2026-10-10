@@ -89,8 +89,8 @@ static void test_converge() {
         CHECK(converge_trace_reaim(y, p, Vec3{0, 10, 0}, 1000.0f, r));
         CHECK(near(y, std::atan2(10.0f, 1000.0f) * 57.29578f) && near(p, 0));
     }
-    // NO correction-size rail (the user's rule, 2026-09-28): a big bend is geometry, not an error.
-    // 4.2 m of offset at 7.7 m (29 deg) -- the case the old 20 deg rail handed to a fallback that left the
+    // NO correction-size rail: a big bend is geometry, not an error.
+    // 4.2 m of offset at 7.7 m (29 deg) -- a case a 20 deg rail would hand to a fallback that leaves the
     // shot parallel and 4.2 m off -- converges, onto the target point.
     {
         float y = 0, p = 0;
@@ -440,8 +440,8 @@ static void test_converge_direction() {
         CHECK(!converge_direction(Vec3{0.1f, 0, 0}, Vec3{0, 0, 0}, 1.0f, kCm, r, a) && near(a.x, 9.0f, 1e-6f));
         CHECK(!converge_direction(Vec3{0.1f, 0, 0}, Vec3{1, 0, 0}, 1.0f, 0.0f, r, a) && near(a.x, 9.0f, 1e-6f));
     }
-    {   // a bend steeper than the record accepts is HELD AT THE RAIL and stays converged (2026-10-01; it used to
-        // decline, handing the write the unbent steer and switching convergence off)
+    {   // a bend steeper than the record accepts is HELD AT THE RAIL and stays converged (a decline would
+        // hand the write the unbent steer and switch convergence off)
         ConvergeRails steep{}; steep.max_pitch_deg = 1.45f * 57.29578f;
         Vec3 a{9, 9, 9};
         CHECK(converge_direction(Vec3{0.1f, 0, 0.9f}, Vec3{0, 0, 1}, 0.2f, kCm, steep, a));
@@ -493,9 +493,9 @@ static void test_converge_direction() {
         }
         CHECK(hi - lo < 0.5f);   // the bent aim's own heading swept all 360 deg
     }
-    {   // THE BLEND'S SINGULARITY (code review, 2026-10-01): a hand at 80 deg under a ceiling 0.5 m up, the engine eye
+    {   // THE BLEND'S SINGULARITY: a hand at 80 deg under a ceiling 0.5 m up, the engine eye
         // E ahead of the rendered head along the hand's heading (a roomscale lean). Sweeping E through ~13 cm sends the
-        // bent aim over the pole and away from the hand; the stateless blend whipped the output's heading through
+        // bent aim over the pole and away from the hand; the stateless blend whips the output's heading through
         // 180 deg in 0.5 mm there (and through -52..-140 deg in 1 mm with a 2 mm lateral offset), a 14 deg swing of
         // the written aim. With a RailHold the sweep flips the heading AT MOST ONCE, and every other 0.1 mm step
         // moves the aim by a fraction of a degree.
@@ -774,7 +774,7 @@ static void test_muzzle_shot_direction() {
         CHECK(near(out.x, 9.0f, 1e-6f) && near(up.z, 1.0f, 1e-6f));
     }
     {   // NO DISTANCE-FROM-THE-EYE LIMIT: a muzzle 2 m (or 10 m) from the eye is aimed through P. Whose gun it
-        // is was proven by the caller's weapon_muzzle receipt, not by where it sits.
+        // is is proven by the caller's weapon_muzzle receipt, not by where it sits.
         for (const float metres : {2.0f, 10.0f}) {
             Vec3 out{9, 9, 9}, up{0, 0, 1};
             const Vec3 far{0.0f, metres / 3.048f, 0.0f};

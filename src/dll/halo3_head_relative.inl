@@ -89,8 +89,8 @@ struct Halo3HeadRelativeLane
     // WHERE IS THE TRACKER CENTRED (dev)? The update's first object contact is the player's own unit (slot 0,
     // no point). Its blip as the builder placed it, in fractions of the radius: x right, y DOWN. (0, 0) means
     // the tracker is centred on the unit. The game centres it on the unit's HEAD MARKER (the update calls
-    // +0x355460, marker 0x9F), which the animated skeleton carries away from the body. A player reported the
-    // dot that stands for them sitting below the centre (2026-10-07).
+    // +0x355460, marker 0x9F), which the animated skeleton carries away from the body: the player then sees
+    // the dot that stands for them sitting below the centre.
     std::atomic<float> ownBlipX{0.0f}, ownBlipY{0.0f}, ownRangeWu{0.0f};
     std::atomic<uint32_t> ownBlips{0};
 #endif
@@ -1083,7 +1083,7 @@ void Halo3HeadRelativeReport()
 // ODST (halo3odst.dll carries the same tracker and listener code: every signature above matches exactly once
 // there too; tools/verify-halo3-motion-tracker.py odst, tools/verify-halo3-sound-listener.py odst). The same two
 // seams, proofs, gates and refusals, with ODST's own lanes, detours, head publication (OdstApplyHeadLook) and
-// title generation. NEVER RUN IN A GAME: built, unit-tested and proven offline only. Log: TRACKER HEAD ODST /
+// title generation. NOT CONFIRMED IN GAME: built, unit-tested and proven offline only. Log: TRACKER HEAD ODST /
 // AUDIO HEAD ODST. `py -3 tools/audit_caller_area.py halo3odst.dll 3654B0:10:i 365188:11:i B8898:8:v` is clean.
 #if HALOMCCVR_EXPERIMENTAL_ODST_BRINGUP
 Halo3HeadRelativeLane g_odstHeadRelative;
@@ -1125,9 +1125,9 @@ __declspec(noinline) bool __fastcall OdstTrackerObjectDetour(void* self, int slo
     {
         const bool own = Halo3TrackerPair(lane, t_odstTrackerHold, self, sinA, cosA);
         // The player's own blip at the centre, as in Halo 3. ODST's update +0x3655A0 is Halo 3's +0x32DA98
-        // instruction for instruction but for where player control keeps the heading (read 2026-10-07, retail
+        // instruction for instruction but for where player control keeps the heading (read from the retail
         // file): the origin from the unit's head marker (+0x399C38), then the same first object call (+0x365759)
-        // with a null point. Not seen in a game: ODST has not been run. As in Halo 3, own = the tracked entry
+        // with a null point. A static read; not confirmed in game. As in Halo 3, own = the tracked entry
         // that holds the player's unit, in whichever of the twenty slots; never another unit that sits in slot 0.
         const bool ownSlot = own && !point && Halo3TrackerSlotIsOwn(lane, self, slot);
         const float* placedPoint = halo3_head_relative::OwnBlipPoint(own, ownSlot, point, origin);

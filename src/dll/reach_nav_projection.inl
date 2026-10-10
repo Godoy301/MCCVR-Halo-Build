@@ -3,17 +3,19 @@
 // are in src/common/reach_nav_marker_logic.h; the write-up is docs/REACH-NAV-MARKERS-2026-10-07.md.
 //
 // THE OFF-SCREEN ARROW (the write-up's part 2). A caller that wants an off-screen indicator has the game bring a
-// far-off point onto a ring, laid out about each eye's own axis. Measured in a game (simulator): 41.6 degrees
+// far-off point onto a ring, laid out about each eye's own axis. Measured in a game (simulated runtime): 41.6 degrees
 // out sideways and 30.0 up and down for a 100 degree eye, the two eyes agreeing, which puts a sideways arrow
 // past the 40 degrees the other eye sees toward the nose: in one eye only. With the arrow switch on, for a point
 // outside a ring about the HEAD's axis (at most 30 degrees out), the detour hands the game a stand-in for that
 // one call: the point's direction brought onto the head's ring, at the point's own distance. Both eyes project
 // the same stand-in; the game draws its own arrow on it. When the game returns, the record's point is put back
 // and its off-screen value set by the game's own formula.
-//   * WHOSE CALL: the navpoint list's only (objective markers and marked players, by a static read; the hill
-//     marker, in a game). The call site is proved at install and the detour compares its own return address
-//     with the address decoded then. The projection's other callers (aim points, damage indicators, name tags
-//     and the rest: reach_nav_marker_logic.h) keep the game's own ring and are counted by reason;
+//   * WHOSE CALL: the navpoint list's (objective markers and marked players, by a static read; the hill
+//     marker, in a game) and the object-anchored markers' wrapper call. Each call site is proved at install and
+//     the detour compares its own return address with the addresses decoded then; when the object markers'
+//     site is not found, only the navpoint list's acts. The projection's other callers (aim points, damage
+//     indicators, name tags and the rest: reach_nav_marker_logic.h) keep the game's own ring and are counted
+//     by reason;
 //   * what is written: twelve bytes of the caller's record before the call and the same twelve after it (the
 //     game's own point again, in a __finally), plus the record's off-screen float. Nothing else;
 //   * every projection lands in exactly one counted verdict (reach_nav_markers::Ring); only Moved writes.

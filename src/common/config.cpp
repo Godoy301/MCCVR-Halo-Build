@@ -1020,7 +1020,7 @@ void ConfigLoad(const wchar_t* path)
             g_config.physical_running_sensitivity=std::clamp(g_config.physical_running_sensitivity,.25f,3.f);continue;
         }
         if(!strcmp(key,"physical_crouch")) {g_config.physical_crouch=atoi(val)!=0;continue;}
-#if HALOMCCVR_DEV_DIAGNOSTICS   // headless-test hook: a player build never reads it
+#if HALOMCCVR_DEV_DIAGNOSTICS   // test hook for a simulated runtime: a player build never reads it
         if(!strcmp(key,"test_accept_untracked_head")) {g_config.test_accept_untracked_head=atoi(val)!=0;continue;}
 #endif
         if(!strcmp(key,"head_leash_below_eye_m")) {g_config.head_leash_below_eye_m=static_cast<float>(atof(val));continue;}
@@ -1289,6 +1289,8 @@ void ConfigLoad(const wchar_t* path)
         if (!strcmp(key, "converged_aim")) { g_config.converged_aim = atoi(val) != 0 ? 1 : 0; continue; }
         if (!strcmp(key, "scope_converge")) { g_config.scope_converge = atoi(val) != 0 ? 1 : 0; continue; }
         if (!strcmp(key, "seat_direct_drive")) { g_config.seat_direct_drive = atoi(val) != 0 ? 1 : 0; continue; }
+        if (!strcmp(key, "seat_aim_through_barrel")) { g_config.seat_aim_through_barrel = atoi(val) != 0; continue; }
+        if (!strcmp(key, "seat_fire_from_eye")) { g_config.seat_fire_from_eye = atoi(val) != 0; continue; }
         if (!strcmp(key, "aim_direct_drive"))
         { g_config.aim_direct_drive = atoi(val) != 0 ? 1 : 0; aimDirectDriveSeen = true; continue; }
         if (!strcmp(key, "reach_direct_drive"))
@@ -1354,9 +1356,9 @@ void ConfigLoad(const wchar_t* path)
         }
         if (!strcmp(key, "honest_reticle_onfoot"))
         {
-            // Retired 2026-10-01: the player-facing honest reticle is gone (the crosshair stays on the converged
-            // point; the game's own tracers show where a held or slewing gun really fires). Dev builds have the
-            // assessment key honest_reticle_assess instead. Logged once a session when a cfg still sets it.
+            // A retired key, read and ignored: there is no player-facing honest reticle (the crosshair stays on the
+            // converged point; the game's own tracers show where a held or slewing gun really fires). Dev builds have
+            // the assessment key honest_reticle_assess instead. Logged once a session when a cfg still sets it.
             static bool s_loggedHonestOnFoot = false;
             if (atoi(val) != 0 && !s_loggedHonestOnFoot)
             {
@@ -2172,7 +2174,7 @@ void ConfigSave()
         d.title_unload_wait ? 1 : 0);
     fprintf(f, "title_unload_wait = %d\n", g_config.title_unload_wait ? 1 : 0);
     fprintf(f, "# Sound follows your head. 1 = you hear the world from the way your head faces. 0 = from the\n");
-    fprintf(f, "# way the gun points, as the game does it. Halo: Reach, Halo 3, Halo 4 and ODST (ODST not yet tested) for now; a game with no head-relative\n");
+    fprintf(f, "# way the gun points, as the game does it. Halo: Reach, Halo 3, Halo 4 and ODST; a game with no head-relative\n");
     fprintf(f, "# sound yet keeps its own (log: AUDIO HEAD <game>). Live in F1 > Comfort. (default %d)\n",
         d.audio_follows_head ? 1 : 0);
     fprintf(f, "audio_follows_head = %d\n", g_config.audio_follows_head ? 1 : 0);
@@ -2269,7 +2271,8 @@ void ConfigSave()
     fprintf(f, "# Use verified visible weapon muzzle origin and orientation.\ngun_barrel_aim = %d\n\n", g_config.gun_barrel_aim ? 1 : 0);
     fprintf(f, "# Shots leave the visible muzzle but fly through the converged aim's point (the reticle):\n"
                "# they land where the shot from the eye would have. Needs converged_aim; gun_barrel_aim wins.\n"
-               "shots_from_muzzle = %d\n\n", g_config.shots_from_muzzle ? 1 : 0);
+               "# (default %d)\n"
+               "shots_from_muzzle = %d\n\n", d.shots_from_muzzle ? 1 : 0, g_config.shots_from_muzzle ? 1 : 0);
     fprintf(f, "# Floating VR-crosshair smoothing only; bullets stay raw.\n");
     fprintf(f, "# (default %.2f, range 0 to 0.95)\n", d.aim_stabilization);
     fprintf(f, "aim_stabilization = %.2f\n\n", g_config.aim_stabilization);
@@ -2481,6 +2484,19 @@ void ConfigSave()
     fprintf(f, "# the stick. F1 > Vehicles: \"Direct drive in seats\". (default %d)\n",
             d.seat_direct_drive);
     fprintf(f, "seat_direct_drive = %d\n\n", g_config.seat_direct_drive);
+    fprintf(f, "# Halo 2. 1 = a vehicle gun you aim (a tank's cannon, a turret) is aimed so that its BARREL points\n");
+    fprintf(f, "# at the crosshair's point, so the shot lands on it at any range. A Scorpion's barrel is known; any\n");
+    fprintf(f, "# other gun's place is learned from your own shots and remembered for that kind of vehicle while the\n");
+    fprintf(f, "# game runs, so only the first shot from a gun new to it can still land beside a near point.\n");
+    fprintf(f, "# 0 = the seat is aimed from its camera only: shots at near targets land beside the crosshair, by\n");
+    fprintf(f, "# about the distance from your view to the barrel. Needs seat_direct_drive and converged_aim.\n");
+    fprintf(f, "# Live. (default %d)\n", d.seat_aim_through_barrel ? 1 : 0);
+    fprintf(f, "seat_aim_through_barrel = %d\n\n", g_config.seat_aim_through_barrel ? 1 : 0);
+    fprintf(f, "# Halo 2. 1 = when you fire a vehicle's gun the game checks what is under the crosshair along YOUR\n");
+    fprintf(f, "# line of sight. 0 = along the line from the seat's own camera, as the game does: a shot aimed over\n");
+    fprintf(f, "# something low and near can then be pulled down onto it. Needs converged_aim. Live.\n");
+    fprintf(f, "# (default %d)\n", d.seat_fire_from_eye ? 1 : 0);
+    fprintf(f, "seat_fire_from_eye = %d\n\n", g_config.seat_fire_from_eye ? 1 : 0);
     fprintf(f, "# Reach, Halo 3, ODST and Halo 4 (switch it live in F1 > Weapon & aim). 1 = DIRECT DRIVE: your\n");
     fprintf(f, "# aim writes the game's own aim instead of steering the right stick (which can only turn at the\n");
     fprintf(f, "# game's turn rate). It arms itself a moment after it is switched on, once the aim it found\n");
@@ -2955,8 +2971,8 @@ void ConfigSave()
     fprintf(f, "# Holster location: 0 = weapon-side shoulder, 1 = weapon-side hip, 2 = over the weapon-side\n");
     fprintf(f, "# shoulder (higher and further back: the Campaign Evolved mod's weapon-switch spot).\n");
     fprintf(f, "# 3 = your own spot, the three values below: metres from your head to the weapon side, up, and\n");
-    fprintf(f, "# forward. Set it by hand: F1 > Reload & Holsters > Set the holster spot with my hand, then\n");
-    fprintf(f, "# squeeze the weapon grip where the holster should be.\n");
+    fprintf(f, "# forward. Set it by hand: F1 > Reload & Holsters > Calibrate Holster Location, close the menu,\n");
+    fprintf(f, "# then squeeze the weapon grip where the holster should be. (defaults 0.198, 0.085, -0.284)\n");
     fprintf(f, "weapon_holster_location = %d\n",g_config.weapon_holster_location);
     fprintf(f, "weapon_holster_custom_x_m = %.3f\nweapon_holster_custom_y_m = %.3f\nweapon_holster_custom_z_m = %.3f\n",
         g_config.weapon_holster_custom_x_m,g_config.weapon_holster_custom_y_m,g_config.weapon_holster_custom_z_m);

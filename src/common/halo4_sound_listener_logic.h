@@ -1,10 +1,10 @@
 // HALO 4: THE SOUND LISTENER FOLLOWS THE HEAD, the pure half (no game, engine or OpenXR includes).
 //
-// EVIDENCE CLASS: RETAIL-DERIVED LEAD, NOT H4EK-VERIFIED. No Halo 4 editing kit is installed on the machine this
-// was written on, and docs/EDITING-KIT-EVIDENCE.md's Halo 4 rule lets halo4.dll only match and verify what the
-// kit explains. Everything below was read from retail halo4.dll (SHA-256 7C53E7D5...FA84) alone, so every name is
+// EVIDENCE CLASS: RETAIL-DERIVED LEAD, NOT H4EK-VERIFIED. Nothing here has been checked against the Halo 4 editing
+// kit, and docs/EDITING-KIT-EVIDENCE.md's Halo 4 rule lets halo4.dll only match and verify what the
+// kit explains. Everything below is read from retail halo4.dll (SHA-256 7C53E7D5...FA84) alone, so every name is
 // ours (but one: the hooked function's, which the retail image itself exports) and nothing here is a kit fact.
-// As in the tracker lane (halo4_head_relative_logic.h), two things stand in for the kit until it is there:
+// As in the tracker lane (halo4_head_relative_logic.h), two things stand in for the kit:
 //   * the hook proves the doubtful facts at RUN TIME before it changes anything (HandOffProof, below);
 //   * docs/HALO4-HEAD-RELATIVE-2026-10-06.md lists, per binding, the kit artefact that would settle it.
 // Other titles' listener lanes are a lead for where to look and are not evidence for anything here.

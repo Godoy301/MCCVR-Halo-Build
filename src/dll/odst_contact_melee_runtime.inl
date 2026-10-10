@@ -5,9 +5,9 @@ using OdstContactUpdateFn=uint8_t(__fastcall*)(uint32_t);
 using OdstContactMeleeFn=void(__fastcall*)(uint32_t,int32_t,int16_t,float);
 // The damage event 3B68A8 takes six arguments but keeps a bool in its CALLER's stack at entry+0x38, the
 // slot a seventh would use (LTCG: every native caller reserves it, so the compiler may). Forwarded with only
-// its six, that byte landed on the detour's saved r15 and went back to the native caller -- the unit-action
-// updater 3FCBE4 then read its own unit through a pointer one byte off and faulted (the ODST crashes,
-// 2026-09-29). So the original is called through CallNativeWithSpareSlots (native_forward.h), whose spare
+// its six, that byte lands on the detour's saved r15 and goes back to the native caller -- the unit-action
+// updater 3FCBE4 then reads its own unit through a pointer one byte off and faults (a crash in ODST).
+// So the original is called through CallNativeWithSpareSlots (native_forward.h), whose spare
 // stack slots it may scribble on. tools/audit_caller_area.py finds any other hooked function that does this.
 using OdstContactDamageFn=void(__fastcall*)(void*,uint32_t,int16_t,int16_t,uint16_t,void*);
 struct OdstContactRuntime
@@ -16,7 +16,7 @@ struct OdstContactRuntime
     std::atomic<uint32_t> callbacks{0};
     std::atomic<uint64_t> queries{0},contacts{0},submitted[2]{},rejected{0},overflow{0},predicted{0};
     // Damage events forwarded to the native, and those from the unit-action updater (3FCBE4, return
-    // 3FCF1F) -- the caller that crashed while the forward reserved too little stack (OdstContactDamageFn).
+    // 3FCF1F) -- the caller that crashes when the forward reserves too little stack (OdstContactDamageFn).
     std::atomic<uint64_t> damageEvents{0},actionDamageEvents{0};
     uintptr_t base=0;
     uint32_t generation=0;

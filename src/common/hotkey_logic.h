@@ -6,11 +6,11 @@
 // window's key-down messages. A player in a headset cannot see the keyboard, and other software sends keys of its
 // own. A key that arrives with Ctrl, Alt or a Windows key held is somebody else's chord, not ours.
 //
-// INCIDENTS, both from player sessions:
-//  * SteamVR's exit / dashboard flow sent Alt+F4; while F4 was a hotkey that flipped the yaw sign and inverted
-//    head-turn and hand-aim ("controls completely broken"). Upstream removed the F4/F5/F7 keys for it.
-//  * 2026-10-07: Ctrl+F9 was the player's replay-capture hotkey. Every clip they saved added 2 degrees of pitch
-//    trim, and the reticle sat 4 degrees above every shot (pitch_trim_logic.h has the rest).
+// WHAT A FOREIGN CHORD DOES WHEN IT IS TAKEN AS OURS:
+//  * SteamVR's exit / dashboard flow sends Alt+F4. With F4 as a hotkey that flips the yaw sign, that inverts
+//    head-turn and hand-aim. (F4, F5 and F7 are not hotkeys.)
+//  * Ctrl+F9 can be another program's hotkey (a replay-capture tool's, for one). Each use adds 2 degrees of pitch
+//    trim, and the reticle sits above every shot by the total (pitch_trim_logic.h has the rest).
 //
 // Shift is deliberately NOT treated as a foreign modifier: a keyboard player may well be holding it (sprint,
 // crouch) when they reach for a hotkey, and tools do not use Shift alone for global hotkeys.

@@ -63,7 +63,7 @@ void PutBranch(std::vector<uint8_t>& bytes, size_t opcode, int64_t fromRva, int6
     std::memcpy(bytes.data() + opcode + 1, &rel, 4);
 }
 
-// The image as retail halo4.dll lays it out (the offsets from the module base measured 2026-10-06).
+// The image as retail halo4.dll lays it out (the offsets from the module base, as measured).
 constexpr int64_t kMethodRva = 0x423648, kPlayerBuildRva = 0x4CF7A4, kOtherBuildRva = 0x4CF97C, kSiteRva = 0x4CF841,
                   kBuilderRva = 0x4CFCB4, kHalfPiRva = 0xD957AC;
 

@@ -3,13 +3,13 @@
 
 LOG is `Logf(const char* fmt, ...)`: nothing checks a call's arguments against its format, and MSVC only checks
 the CRT's own printf family. One argument short is not a wrong log line, it is a crash: the next conversion reads
-whatever the variadic slot holds. Found by the first headless run of the build that introduced it (2026-10-06):
+whatever the variadic slot holds. The case this guard exists for:
 
     LOG("First-person camera %s: director camera record bound: ... engine TLS +0x%X ...", record.blockOffset, ...)
 
-`%s` took the block offset (0x188 in Reach, 0x150 in Halo 4) as a string, strnlen read address 0x188, and MCC
-died at every Reach and Halo 4 level load -- in player builds too, because the line is not a dev line. It had
-passed the build, 155 tests and an offline verifier: no test executes game.cpp's install path.
+`%s` takes the block offset (0x188 in Reach, 0x150 in Halo 4) as a string, strnlen reads address 0x188, and MCC
+dies at every Reach and Halo 4 level load -- in player builds too, because the line is not a dev line. The build,
+the unit tests and the offline verifiers all pass such a call: no test executes game.cpp's install path.
 
 This guard counts. It does not check argument TYPES (a `%s` given an int still passes); it does catch a missing
 or an extra argument in every call whose format is a plain string literal.

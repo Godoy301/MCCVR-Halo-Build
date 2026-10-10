@@ -1,12 +1,13 @@
 #pragma once
 
-// THE GAME'S OWN FIRST-PERSON ANSWER -- Reach, Halo 4 and Halo 2 (2026-10-06).
+// THE GAME'S OWN FIRST-PERSON ANSWER -- Reach, Halo 4 and Halo 2.
 //
 // Roomscale's admission (roomscale_admission_logic.h) and two-handed aim's exit (first_person_view_logic.h) both
 // ask "is the game showing the local player his own first-person view?". Halo 3, ODST and CE answer from the
-// game's camera; Reach, Halo 4 and Halo 2 answered only from the first-person WEAPON VIEW MODEL, which an unarmed
-// character does not have -- so an unarmed player on foot was refused ("no first-person view model") and a zoom
-// depended on whether the view model still drew. This file is the camera rung for those three titles.
+// game's camera. The other evidence Reach, Halo 4 and Halo 2 have is the first-person WEAPON VIEW MODEL, which an
+// unarmed character does not have -- judged by it alone, an unarmed player on foot is refused ("no first-person
+// view model") and a zoom depends on whether the view model still draws. This file is the camera rung for those
+// three titles.
 //
 // REACH and HALO 4 are Halo 3's engine: c_director::set_camera_mode stores, per output user, the perspective
 // c_director::get_perspective() computed and the camera mode, in a 0xC record after the four directors of the
@@ -19,22 +20,22 @@
 //     [globals + user*0xC + 0x6B8], the offsets retail has.
 //   * retail haloreach.dll: set_camera_mode 0xC5834 builds, per case, a camera whose vtable reports exactly the
 //     kit's type / perspective pairs, and stores perspective +0x6B4 / mode +0x6B8 in TLS block +0x188.
-//   * retail halo4.dll (no H4EK on this machine: retail read only, the names by analogy with Reach's kit):
+//   * retail halo4.dll (read from the retail binary only, no editing-kit symbols; names by analogy with Reach's kit):
 //     set_camera_mode 0x10BD98, the same table plus a 14th camera (type 13, perspective 3); perspective +0x744 /
 //     mode +0x748 in TLS block +0x150.
 // c_game_director::update (Reach 0x134260 = HREK 0x4E66B0, Halo 4 0x2056D8) picks the mode from the unit's camera
 // path (Reach 0xC6948, Halo 4 0x10D268): first person -> mode 3; third person -> the following camera 0 (or 9 /
 // 12). The path is third person for a seat whose tag says so, for an animation-driven camera, and while the unit's
 // active equipment's definition asks for a third-person camera (the flag is read from the equipment tag; the tags
-// themselves were not opened -- by the games' behaviour Reach's Armor Lock, Halo 4's Hardlight Shield and Thruster
+// themselves are not inspected -- by the games' behaviour Reach's Armor Lock, Halo 4's Hardlight Shield and Thruster
 // Pack). No unit -> the dead (4), respawning (8) or static (5) camera; cinematics are 6 / 7. get_perspective()
 // itself answers 1 while the first-person camera is still blending in, and 3 when the game is not in progress.
 // So "mode 3, perspective 0" is first person, and nothing else is.
 //
 // FORGE'S MONITOR. In Reach the game director gives an editing player the sandbox camera (11) only while the
-// game-engine globals carry an object index for him (by its use the object the editor holds; not confirmed in a
-// headset); an idle Monitor gets mode 3. Halo 4's game director asks the same question and drops the answer: with
-// a first-person camera path its Monitor gets mode 3 (where Halo 4 picks its sandbox camera was not found). So, as
+// game-engine globals carry an object index for him (by its use the object the editor holds; not confirmed in
+// game); an idle Monitor gets mode 3. Halo 4's game director asks the same question and drops the answer: with
+// a first-person camera path its Monitor gets mode 3 (where Halo 4 picks its sandbox camera is not known). So, as
 // in Halo 3, the camera does not exclude the Monitor and the game's own "this player is a sandbox editor"
 // predicate is asked (Reach 0x715AC = HREK 0x465800, Halo 4 0xBA400: a game engine, the multiplayer game mode, a
 // living player, the sandbox engine, and the per-player editor test).
@@ -45,7 +46,7 @@
 // not TLS) holds the camera's UPDATE FUNCTION, and director_get_perspective(user) (retail 0x6D4EC0, called from
 // 29 functions: first-person weapons, the HUD, player control) derives the perspective from it: 0 when the update
 // is first_person_camera_update and the record's transition timer is zero, 1 for the following camera, 2 for the
-// scripted ones, else 3. Halo 2 has no Forge. No H2EK on this machine: retail read only.
+// scripted ones, else 3. Halo 2 has no Forge. Read from the retail binary only (no editing-kit symbols).
 //
 // Nothing here ships an address or an offset: every one is decoded from two code sites that are each matched
 // uniquely and must agree (and, where the title already bound them, with the engine TLS index and the unit
@@ -95,7 +96,7 @@ inline int64_t RipRva(const uint8_t* site, size_t dispAt, size_t nextAt, int64_t
 // field right after the perspective; the store's call must land on site 2; and the TLS index must be the engine
 // TLS index the title already bound.
 // ADDR-HYGIENE: resolved -- no address or offset ships; each site is matched uniquely in the whole module and the
-// two are cross-checked (DecodeRecordSites). Unbound = no camera rung = the view-model rung, as before.
+// two are cross-checked (DecodeRecordSites). Unbound = no camera rung = the view-model rung.
 inline constexpr const char* kSetModeStoreSitePattern =
     "E8 ?? ?? ?? ?? 8B 15 ?? ?? ?? ?? 65 48 8B 0C 25 58 00 00 00 4C 63 86 ?? ?? ?? ?? 41 B9 ?? ?? ?? ?? "
     "48 8B 0C D1 49 8B 14 09 4F 8D 0C 40 42 39 84 8A ?? ?? ?? ?? 75 0D 4B 8D 0C 40 39 AC 8A ?? ?? ?? ?? 74 32 "
@@ -196,8 +197,8 @@ inline RecordBind DecodeRecordSites(const uint8_t* store, int64_t storeRva, cons
 // field]); UNIT must be the unit getter the title already calls, where it has bound one.
 // ADDR-HYGIENE: resolved -- the predicate's head and the director's call site are each matched uniquely; the call
 // must land on that head; the getter must have the getter's body; every TLS operand must be the engine TLS index
-// (DecodeEditorSites). Unbound or faulted = the Monitor answer is "unknown" and a first-person camera needs the
-// view model again, as before this change.
+// (DecodeEditorSites). Unbound or faulted = the Monitor answer is "unknown" and a first-person camera also needs
+// the view model.
 inline constexpr const char* kSandboxEditorPredicateHeadPattern =
     "48 89 5C 24 08 48 89 74 24 10 57 48 83 EC 20 45 32 C9 44 8B D1 48 8B DA 83 F9 FF 0F 84 ?? ?? ?? ?? "
     "65 48 8B 04 25 58 00 00 00 44 8B 05 ?? ?? ?? ?? BE ?? ?? ?? ??";
@@ -299,7 +300,7 @@ inline EditorBind DecodeEditorSites(const EditorCallSite& shape, const uint8_t* 
 //   lea rax, [rip + first_person_camera_update] / mov [rbx + rdi + UPDATE], rax / mov byte [rbx + rdi + ..], 0
 // They must agree on the globals, the stride, the update field and the first-person update function.
 // ADDR-HYGIENE: resolved -- no address or offset ships; both sites are matched uniquely and cross-checked
-// (DecodeHalo2DirectorSites). Unbound = no camera rung = Halo 2's first-person palette packet rung, as before.
+// (DecodeHalo2DirectorSites). Unbound = no camera rung = Halo 2's first-person palette packet rung.
 inline constexpr const char* kHalo2DirectorPerspectivePattern =
     "48 83 EC 28 48 63 C1 4C 8D 05 ?? ?? ?? ?? 48 69 C8 ?? ?? ?? ?? 48 8D 15 ?? ?? ?? ?? 4A 8B 44 01 ?? "
     "48 3B C2 75 18 F3 42 0F 10 4C 01 ?? 0F 57 C0 0F 2E C8 7A ?? 75 ?? 33 C0 48 83 C4 28 C3 "
@@ -403,7 +404,7 @@ inline Signal Halo2PerspectiveSignal(bool bound, bool read, uint64_t update, uin
 //   * the two agreeing kProven times proves the rung for the title generation (it reads the right field, with
 //     the right meaning), and nothing later condemns it;
 //   * a rung that has never agreed and says "not first person" kCondemn times in a row while the view model is
-//     drawn is condemned for the generation: the title falls back to the view-model rung (today's behaviour),
+//     drawn is condemned for the generation: the title falls back to the view-model rung,
 //     said once. Unverified is not known-bad: until either count is reached the rung is used.
 // Only frames where the view model is drawn tell; an unarmed player says nothing either way.
 struct RungTrust

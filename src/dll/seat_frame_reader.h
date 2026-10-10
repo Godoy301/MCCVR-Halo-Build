@@ -250,6 +250,24 @@ inline Live Read(const Binding& b, void* (*halo2Object)(uint32_t), uint32_t unit
     return live;
 }
 
+// Sim thread: the forward and up (world) of the vehicle `unit` sits in, for any seat. False: not bound, not
+// seated, or a link or a check failed.
+inline bool ReadVehicleFrame(const Binding& b, void* (*halo2Object)(uint32_t), uint32_t unit, float forward[3],
+                             float up[3])
+{
+    if (!b.ready.load(std::memory_order_acquire) || unit == seat_frame::kNone)
+        return false;
+    __try
+    {
+        RawMem mem{&b, halo2Object};
+        return seat_frame::SeatedVehicleFrameRead(*b.site, mem, unit, forward, up);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return false;
+    }
+}
+
 // Sim thread: the record angles to write for WORLD angles (yaw, pitch) through this update's case, and the game's
 // own WORLD aim expressed in the record's frame (so a check compares like with like). World / SkipWorld: the
 // identity. False only for Unknown, or a conversion that did not resolve (no seated write then).

@@ -262,9 +262,9 @@ inline uint64_t ResolveAuthoredAnimationGapFrames(int configuredFrames)
 // WHERE THE ART SITS IN ITS TEXTURE. The reticle quad is centred on the aim
 // point, so the art's own centre has to be the texture's centre, or the player
 // aims with one edge of it. Halo 4's capture framing is fitted per HUD layout,
-// and on the 2026-09-30 layout (baseY 647.256) it left the art wholly above the
-// centre: the magnum's bottom edge sat on the aim point, about 0.18 of the
-// texture high (1.3 deg at the 6 m cap). The centre is measured instead: the
+// and a layout can leave the art wholly above the centre (measured with baseY
+// 647.256: the magnum's bottom edge sits on the aim point, about 0.18 of the
+// texture high, 1.3 deg at the 6 m cap). The centre is measured instead: the
 // ink-weighted centroid of a downsampled copy of the capture. Reticles are
 // symmetric about their aim point, so the centroid is that point.
 struct AuthoredReticleArtCentre
@@ -356,6 +356,69 @@ inline AuthoredReticleQuadShift AuthoredReticleArtCentreShift(
     return shift;
 }
 
+// WHERE A CAPTURE LOOKS. A title whose capture cuts a fixed window out of the view (Halo 2: the texture's own
+// size in view pixels, one to one, about the view's centre) holds its art only when the HUD draws the crosshair
+// in the middle of the view. A reticle drawn elsewhere (Halo 2 draws a vehicle's well below the middle) lands
+// off the texture's centre, cut by its edge when it is far enough, and the player aims with art that is not on
+// the aim point: a Scorpion's shells land a degree and a half above its crosshair. The window follows the art
+// instead: the measured centre of each capture moves it, so the art comes to rest in the middle, whole.
+//
+// Art that already sits near the middle is left exactly where the capture puts it (`engage`): a centred
+// crosshair is drawn as it always was, whatever small asymmetry its art has. Once the window has moved it
+// tracks the art to within `deadband`, and it is back in the middle outright when the art is. A measurement
+// from a capture no newer than the window's last move describes another window and is ignored. Captures
+// with no art in them while the window is away from the middle send it back there after `blankLimit` of them:
+// what it followed is gone, and the middle is where a crosshair is looked for first.
+struct ReticleCaptureFollow
+{
+    float x = 0.0f;              // where the window's centre sits, in view pixels right of the view's centre
+    float y = 0.0f;              // ...and down from it
+    uint64_t movedSerial = 0;    // captures after this prepared-frame serial were cut with (x, y)
+    uint32_t blank = 0;          // consecutive artless captures while away from the middle
+    uint32_t moves = 0;
+
+    // `centre`: the measured centre of the capture taken in frame `captureSerial`; `nowSerial`: the frame being
+    // prepared; `size`: the texture's side in texels (= view pixels). True when the window moved.
+    bool Step(const AuthoredReticleArtCentre& centre, uint64_t captureSerial, uint64_t nowSerial, float size,
+              float engage, float deadband, float limit, uint32_t blankLimit) noexcept
+    {
+        if (captureSerial <= movedSerial)
+            return false;
+        const bool away = x != 0.0f || y != 0.0f;
+        if (!centre.valid)
+        {
+            if (!away || ++blank < blankLimit)
+                return false;
+            x = y = 0.0f;
+            blank = 0;
+            movedSerial = nowSerial;
+            ++moves;
+            return true;
+        }
+        blank = 0;
+        const float dx = (centre.u - 0.5f) * size;
+        const float dy = (centre.v - 0.5f) * size;
+        if (!std::isfinite(dx) || !std::isfinite(dy))
+            return false;
+        const float reach = std::fabs(dx) > std::fabs(dy) ? std::fabs(dx) : std::fabs(dy);
+        if (reach <= (away ? deadband : engage))
+            return false;
+        const auto bound = [limit](float value) {
+            return value < -limit ? -limit : (value > limit ? limit : value);
+        };
+        float nextX = bound(x + dx), nextY = bound(y + dy);
+        if (std::fabs(nextX) < engage * 0.5f && std::fabs(nextY) < engage * 0.5f)
+            nextX = nextY = 0.0f;   // the art is back in the middle
+        if (nextX == x && nextY == y)
+            return false;
+        x = nextX;
+        y = nextY;
+        movedSerial = nowSerial;
+        ++moves;
+        return true;
+    }
+};
+
 // WHAT A CAPTURED CROSSHAIR TEXEL HOLDS, AND WHAT THE COMPOSITOR MUST BE GIVEN.
 //
 // The capture is cleared to transparent black and the game then draws its
@@ -368,12 +431,12 @@ inline AuthoredReticleQuadShift AuthoredReticleArtCentreShift(
 //
 // The aim quad is submitted with XR_COMPOSITION_LAYER_UNPREMULTIPLIED_ALPHA_BIT,
 // so the runtime multiplies colour by alpha AGAIN. Copying the capture
-// straight in therefore applied the game's fade twice (C x A instead of C),
-// and the sRGB decode of the already-darkened bytes dimmed it further: Reach's
-// DMR, whose crosshair idles well below full opacity, read as far fainter in
-// the headset than on the monitor.
+// straight in would therefore apply the game's fade twice (C x A instead of C),
+// and the sRGB decode of the already-darkened bytes dims it further: Reach's
+// DMR, whose crosshair idles well below full opacity, then reads as far fainter
+// in the headset than on the monitor.
 //
-// The fix converts to straight alpha before upload, in the shared blit shader's
+// So it is converted to straight alpha before upload, in the shared blit shader's
 // `fix()` (src/common/vr_blit_shader.h), which this function mirrors exactly:
 // alpha = max(A, max(R,G,B)), colour = C / alpha. Straight-alpha compositing
 // then adds alpha x C/alpha = C - precisely the colour the flat game adds,
@@ -416,9 +479,9 @@ inline float CompositePremultipliedChannel(
     return colour + background * (1.0f - alpha);
 }
 
-// Development evidence for the fix above: what the capture held, what the
-// flat game adds, what the headset was shown before the straight-alpha
-// conversion and what it is shown now. Values are 0..255 and come from the
+// Development evidence for the conversion above: what the capture holds, what
+// the flat game adds, what the headset would be shown without the straight-alpha
+// conversion and what it is shown with it. Values are 0..255 and come from the
 // coverage probe's small mip level, so they are box-filtered MEANS of the art
 // (a 1-texel line reads fainter there than it is); compare them with each
 // other, not with a screenshot.
@@ -433,9 +496,9 @@ struct AuthoredReticleAlphaSummary
     uint32_t capturedAlphaMean = 0;
     // Brightest colour channel = the colour the flat game ADDS to the scene.
     uint32_t addedColourPeak = 0;
-    // What the headset added before the fix: colour x alpha a second time.
+    // What the headset would add unconverted: colour x alpha a second time.
     uint32_t legacyAddedColourPeak = 0;
-    // Alpha the compositor is given now (straight), and the colour it adds.
+    // Alpha the compositor is given (straight), and the colour it adds.
     uint32_t drawnAlphaPeak = 0;
     uint32_t drawnAlphaMean = 0;
     uint32_t drawnAddedColourPeak = 0;

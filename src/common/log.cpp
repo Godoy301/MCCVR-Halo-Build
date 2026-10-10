@@ -22,11 +22,11 @@ void LogInit(const wchar_t* filePath)
     g_directory = slash == std::wstring::npos ? std::wstring() : g_directory.substr(0, slash + 1);
     std::wstring prev(filePath);
     prev += L".prev";
-    // The rename fails while another process still holds the old log. Until
-    // 2026-10-01 the log was opened inheritable and without delete sharing, so
-    // the crash reporter MCC spawns (which outlives MCC) kept it, every later
-    // rename failed silently, and .prev stayed days old while each launch
-    // overwrote the log -- the evidence of a crash went with the relaunch.
+    // The rename fails while another process still holds the old log. A log
+    // opened inheritable and without delete sharing is kept by the crash
+    // reporter MCC spawns (which outlives MCC): every later rename then fails
+    // silently, and .prev stays days old while each launch overwrites the
+    // log -- the evidence of a crash goes with the relaunch.
     // Copy it then: the holder shares read.
     if (!MoveFileExW(filePath, prev.c_str(), MOVEFILE_REPLACE_EXISTING) &&
         GetLastError() != ERROR_FILE_NOT_FOUND)

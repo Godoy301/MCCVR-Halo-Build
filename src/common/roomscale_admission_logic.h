@@ -7,11 +7,11 @@
 // Each title proves that with whatever it can read. This file is the one rule that turns those readings
 // into a verdict, and names the reading that failed when it refuses.
 //
-// WHY IT WAS REWRITTEN (user log, 2026-10-05, Halo 3, the start of Sierra 117: the Chief has no weapon). The
-// only first-person proof Halo 3, ODST, Reach and Halo 4 had was the first-person VIEW-MODEL witness: the hook
-// that runs while the engine draws the weapon in the player's hands. An unarmed character draws none, so
-// roomscale stood down for as long as he was unarmed (`blocked native=121` in every two-second window, while
-// the game's own camera director said "first-person camera, first-person perspective" throughout).
+// WHY THE VIEW MODEL ALONE IS NOT ENOUGH. The first-person VIEW-MODEL witness is the hook that runs while the
+// engine draws the weapon in the player's hands. An unarmed character draws none (Halo 3, the start of Sierra
+// 117: the Chief has no weapon), so a rule built on that witness alone stands roomscale down for as long as he
+// is unarmed, while the game's own camera director says "first-person camera, first-person perspective"
+// throughout. Hence the camera rung comes first.
 //
 // The ladder, strongest rung first:
 //   1. CAMERA      the game's own camera mode / perspective (Halo 3, ODST, Reach and Halo 4: the director's
@@ -19,27 +19,27 @@
 //                  first-person camera update with no transition; CE: the user's native perspective 0). A
 //                  camera that is NOT first person refuses whatever else is true. A camera that IS first
 //                  person admits without a view model -- provided the unit is not Forge's Monitor (below).
-//                  Reach, Halo 4 and Halo 2 got theirs on 2026-10-06 (director_camera_logic.h); until then an
-//                  unarmed player there was refused for want of a view model.
+//                  Reach's, Halo 4's and Halo 2's rungs are in director_camera_logic.h; without one an
+//                  unarmed player is refused for want of a view model.
 //   2. VIEW MODEL  the first-person view-model witness, where the title's camera rung did not bind on this
 //                  build or was condemned by the witness itself (director_camera::RungTrust). Fresh = first
 //                  person. Not drawn = refused: there an unarmed player, a native zoom and a third-person
 //                  camera all look alike.
 //   3. NEITHER     a build where the witness hook did not install and no camera rung is bound admits on the
-//                  on-foot proof alone, as it did before the witnesses existed (the optional hook must not
-//                  cost the whole session its roomscale).
+//                  on-foot proof alone (the optional hook must not cost the whole session its roomscale).
 //
 // FORGE'S MONITOR. The Monitor is an unarmed unit, on foot (no seat), player-controlled, and Halo 3's
 // director gives it the FIRST-PERSON camera: c_game_director::update (0x211E80) picks mode 3 for any living
 // unit whose camera path is first person, and its special mode 8 only while the editor's record carries an
-// object index (0x2120AF..0x2120D2; by its use the object the Monitor holds -- read offline, not confirmed in
-// a headset). Until now the Monitor was excluded by accident -- it draws no view model. So the camera rung
-// admits an unarmed player only when the game itself says the unit is NOT the Monitor: the engine's own
+// object index (0x2120AF..0x2120D2; by its use the object the Monitor holds -- read from the retail binary, not
+// confirmed in game). The view-model rung excludes the Monitor only by accident -- it draws no view model. So
+// the camera rung admits an unarmed player only when the game itself says the unit is NOT the Monitor: the
+// engine's own
 // "this player is a sandbox editor" predicate (Halo 3 0x111E44: multiplayer, engine type 5 = sandbox, the
 // player's bit in the editor mask and his unit the editor biped; Reach 0x715AC and Halo 4 0xBA400 are the same
 // question, and their game directors give an idle Monitor mode 3 too). A title with no Forge (CE, Halo 2, ODST)
 // answers No by construction. A title whose predicate is not bound or could not be read answers "unknown",
-// and then only the view model can vouch: fail closed, exactly the behaviour before this change.
+// and then only the view model can vouch: fail closed.
 //
 // Every real stand-down stays: a seat or a turret, a cinematic, death (no unit), a third-person / orbit /
 // spectator / scripted camera, the Monitor, a menu or a pause, an untracked head (the caller's own gate).

@@ -196,8 +196,8 @@ void Roomscale_Camera(GameTitle title,const roomscale_admission::Verdict& admiss
     if (law!=priorLaw)
     { state={}; original={}; recenter.Reset(); priorLaw=law; lawInEffect.store(law,std::memory_order_relaxed); }
     // A different title starts over. An admission change (priorHistoryEpoch) only ends the follow in
-    // progress: the distance the player is owed survives it (RoomscaleFollow::Rebase). The original
-    // law started over there too, as it shipped.
+    // progress: the distance the player is owed survives it (RoomscaleFollow::Rebase). The threshold
+    // law starts over there too, as in Alpha 0.6.0.
     if (prior!=title)
     {
         state={}; original={}; recenter.Reset(); prior=title; priorHistoryEpoch=history;

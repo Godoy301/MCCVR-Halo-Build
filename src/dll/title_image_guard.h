@@ -7,9 +7,9 @@
 // Several per-frame readers keep an address INSIDE a title DLL: Halo 3's native pause flag, ODST's, Reach's, and
 // Halo 4's pause getter. The worker learns that a title has gone on its next module poll, tens of milliseconds
 // later; the render thread reads every frame. When MCC exits it frees the title DLL while frames are still being
-// presented, so the reader dereferenced an unmapped image: one caught first-chance fault per exit, in
-// HaloMCCVR-native-faults.log (Halo 3: a read of halo3.dll+0xA3CA9A from the pause reader, seen in the logs of
-// 2026-10-05 and 2026-10-06). A poll cannot close that window however fast it is.
+// presented, so an unguarded reader dereferences an unmapped image: one caught first-chance fault per exit, in
+// HaloMCCVR-native-faults.log (Halo 3: a read of halo3.dll+0xA3CA9A from the pause reader).
+// A poll cannot close that window however fast it is.
 //
 // The loader can. LdrRegisterDllNotification calls us when a DLL is being unloaded, AFTER its DllMain has
 // detached and BEFORE its image is unmapped. The callback takes this guard exclusively and clears every address

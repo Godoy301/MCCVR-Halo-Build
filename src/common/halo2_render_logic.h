@@ -1749,8 +1749,8 @@ struct Halo2ObserverPosePublication
     // How far stock and footReference sit ABOVE the engine's own eye, straight up (world units): the physical
     // crouch give-back plus the leash below the character's eye. The view and the hands are built on them
     // and want it; the engine eye -- where Halo 2 fires from, the sight trace's origin -- is stock minus this
-    // (Halo2EngineEyePosition). Before 2026-09-30 the give-back sat in stock with nothing to take it back
-    // out, so a physical crouch aimed every converged shot from up to half a metre above the real eye.
+    // (Halo2EngineEyePosition). Do not aim from stock itself: with the give-back left in, a physical crouch
+    // aims every converged shot from up to half a metre above the real eye.
     float viewLiftZ=0.0f;
     // FLAT PARITY (sight_layer.h SightCameraSample): when this publication was written (the sight clock, us; 0 =
     // unknown) and the engine eye's velocity (world units/s) over ~100 ms of publications, measured on the publishing
@@ -1759,7 +1759,7 @@ struct Halo2ObserverPosePublication
     bool engineEyeVelValid=false;
     float engineEyeVel[3]{};
     // The simulation tick (game_time +0x08) and MCC's frame-interpolator factor (0x164B300) when this publication was
-    // written (2026-10-04). The observer's camera is lerp(previous tick, newest tick, factor) -- the unit camera reads
+    // written. The observer's camera is lerp(previous tick, newest tick, factor) -- the unit camera reads
     // back the interpolator outside a tick (0x927170 -> 0x7227A0) -- so its engine eye is (1 - factor) of a tick behind
     // the newest tick's. -1 / NaN when unreadable.
     int64_t gameTick=-1;
@@ -2643,7 +2643,7 @@ inline bool Halo2BuildSaberViewMatrix(
     return true;
 }
 
-// The inverse of Halo2BuildSaberViewMatrix (dev flat probe, 2026-10-04): the Blam camera a Saber view matrix was built
+// The inverse of Halo2BuildSaberViewMatrix (for the dev flat probe): the Blam camera a Saber view matrix was built
 // from, so a probe reading the view record the Anniversary scene render latched (record+0x20) can measure in Blam
 // world units. blam(s) = (s.x, -s.z, s.y) undoes saber(v) = (v.x, v.z, -v.y); the position takes the engine's offsets
 // and its forward push back out of row 3 and converts metres to world units.

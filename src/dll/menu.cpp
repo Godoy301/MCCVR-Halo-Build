@@ -420,8 +420,8 @@ namespace
         if (sysKeyDown && wp == VK_F4)
             LOG("Alt+F4 received; passing it to the game (close request)");
         // A mod hotkey is a BARE key (hotkey_logic.h). One that arrives with Ctrl, Alt or a Windows key held is
-        // another tool's chord and goes on to the game untouched: Ctrl+F9, a replay-capture hotkey, once added two
-        // degrees of pitch trim per saved clip (2026-10-07).
+        // another tool's chord and goes on to the game untouched: otherwise Ctrl+F9, a replay-capture hotkey, adds
+        // two degrees of pitch trim per saved clip.
         hotkey::Modifiers mods;
         if (msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN)
         {
@@ -677,7 +677,7 @@ namespace
         changed |= ImGui::Checkbox("Sound follows your head", &g_config.audio_follows_head);
         ImGui::TextDisabled("ON: you hear the world from the way your head faces.\n"
                             "OFF: from the way your gun points, as the game does it.\n"
-                            "Halo: Reach, Halo 3, Halo 4 and ODST (ODST not yet tested) for now; other games keep their own sound. Live.");
+                            "Halo: Reach, Halo 3, Halo 4 and ODST; other games keep their own sound. Live.");
         ImGui::Spacing();
         ImGui::Separator();
         ImGui::Text("Startup");
@@ -799,7 +799,7 @@ namespace
                   "and a distance you walked away during a tracking gap is still caught up."
                 : "Threshold: walks from 1.5 cm and brakes by reversing. Kept as it shipped in Alpha 0.6.0, "
                   "for comparison.");
-            // The view recenter (roomscale_recenter_logic.h): three independent options, all off by default.
+            // The view recenter (roomscale_recenter_logic.h): three independent options, all on by default.
             ImGui::Spacing();
             ImGui::Text("Bring the view back over your character (steadier aim):");
             changed |= ImGui::Checkbox("On a jump", &g_config.roomscale_recenter_jump);
@@ -2001,8 +2001,7 @@ namespace
         ImGui::TextDisabled("ON: contacts are placed by where your head faces, so they match what you see:\n"
                             "sweeping the gun moves nothing, turning your head turns them.\n"
                             "OFF: by where your gun points, as the game draws it.\n"
-                            "Halo: Reach, Halo 3, Halo 4 and ODST (ODST not yet tested) for now; other games keep\n"
-                            "their own tracker. Live.\n"
+                            "Halo: Reach, Halo 3, Halo 4, Halo 2 and Halo: CE (ODST has no motion tracker). Live.\n"
                             "Halo 4 starts each level on the game's own tracker and changes over once it has\n"
                             "checked that the heading it replaces follows your aim: a few seconds on foot with\n"
                             "Direct drive on (Weapon & Aim). Not yet seen in a headset.\n"
@@ -2014,7 +2013,7 @@ namespace
         ImGui::TextDisabled("ON: the tracker's dots are drawn on the tracker wherever HUD height puts it.\n"
                             "OFF: where the game draws them: below the tracker by the HUD height\n"
                             "(a quarter of the tracker's radius at the default height), your own dot included.\n"
-                            "Halo 3 only. Live. Not yet seen in a headset.");
+                            "Halo 3 only. Live.");
         ImGui::Spacing();
         ImGui::Separator();
         ImGui::Text("Waypoints");

@@ -25,8 +25,8 @@ template<class T> T Read(const uint8_t* pointer,unsigned offset) noexcept
 // just before the offset: each block lives INSIDE the object, after its fixed fields. A reference is
 // judged by itself -- present, non-empty, past every fixed field this reader reads, and within the 16-bit
 // offset space -- never by a guessed ceiling. The live blocks sit far above one: Reach's physics at
-// 0x49B4, Halo 4's physics at 0x6628 (256 bytes) and animation at 0x4B98 (6320 bytes); the old 0x4000 cap
-// refused every biped in both titles, so neither crouch camera ever ran (measured 2026-09-28 / 09-29).
+// 0x49B4, Halo 4's physics at 0x6628 (256 bytes) and animation at 0x4B98 (6320 bytes); a 0x4000 cap
+// refuses every biped in both titles, so neither crouch camera would ever run.
 inline constexpr unsigned UnitFixedEnd(const Layout& l) noexcept
 {
     unsigned end=0;

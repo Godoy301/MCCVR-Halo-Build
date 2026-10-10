@@ -2,7 +2,7 @@
 // convention and fallback, its inverse, the record <-> world angle conversions, the frame check, the value check
 // on a read object frame, and the case decision.
 //
-// MUTATION-CHECKED (2026-10-01, by hand, each reverted): f = u x Y instead of Y x u; the fallback Z x u dropped
+// MUTATION-CHECKED, each of these applied alone: f = u x Y instead of Y x u; the fallback Z x u dropped
 // (or replaced by X x u); Apply using the rows (R^T) instead of the columns; Invert using R instead of R^-1; the
 // [0, 2pi) wrap removed; the up-pole fallback yaw ignored; FrameReadAgrees without the perpendicular test. Every
 // one of them fails at least one check below.

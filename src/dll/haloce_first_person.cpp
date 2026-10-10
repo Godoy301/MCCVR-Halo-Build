@@ -167,10 +167,10 @@ bool LocalOnFootShooter(uint32_t shooter,HaloCELocalPlayerState* outState=nullpt
 // on what the controller points at, at any range and however far the head is from the character. The
 // engine eye is CE's own director eye when the caller has it (`engineEye`), else the stock centre camera.
 // Only when there is no fresh trace does it fall back to the controller's own direction, which runs
-// parallel to the hand ray from the engine eye (the aim before this).
-// FLAT PARITY (2026-10-03; sight_layer.h): P is a world point fixed at the gameplay context's camera, and the player
+// parallel to the hand ray from the engine eye (the unconverged aim).
+// FLAT PARITY (sight_layer.h): P is a world point fixed at the gameplay context's camera, and the player
 // aim-assist ray's own eye (`engineEye`) is CE's eye AT THE FIRE, a tick of travel or more past it. Bent from that eye
-// through P, the assist's line trailed a strafe; flat traces along its crosshair DIRECTION from that eye. So with the
+// through P, the assist's line trails a strafe; flat traces along its crosshair DIRECTION from that eye. So with the
 // transport wanted the bend is solved from the context's camera eye E_P -- the eye P was built from -- and applied at
 // the assist's eye: the line through P' = P + (E_fire - E_P), what flat traces. Counted as a measured transport (E_fire
 // is the ray's own eye). The native shot's direction (no `engineEye`) is solved from E_P already: flat parity as is.
@@ -236,7 +236,7 @@ bool WriteDirection(Vec3* destination,const Vec3& value) noexcept
     __except(EXCEPTION_EXECUTE_HANDLER)
     { exceptions.fetch_add(1,std::memory_order_relaxed);return false; }
 }
-// FLAT PARITY, CE on foot (sight_layer.h SightFireEyeFn; shot_lag_logic.h 4e; 2026-10-03). A muzzle shot flies through
+// FLAT PARITY, CE on foot (sight_layer.h SightFireEyeFn; shot_lag_logic.h 4e). A muzzle shot flies through
 // P' = P + (E_fire - E_P): E_P the gameplay context's camera eye P was built from, E_fire the eye after the fire tick's
 // move. Its source is CE's player aim-assist ray -- the director ray (assistRayHook; the assist's call returns to
 // 0xB67BE4, AssistRayBody) -- asked for our unit inside the fire. Its answer counts only once PROVEN (shot_lag::EvaluatorEyeProof:

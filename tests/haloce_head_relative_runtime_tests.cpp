@@ -524,7 +524,7 @@ int main(int argc, char** argv)
                      "unproven=24; faults 0, mixed sample reads 0; draws while the frame was Anniversary's 1, "
                      "Classic's 24; ", afterRest) &&
                   Logged(threads, afterRest),
-              "the dev line (the first run's acceptance check): the three headings, their difference, the proof's "
+              "the dev line (the acceptance check): the three headings, their difference, the proof's "
               "counts, the refusals, the graphics mode of each draw and both threads");
         // The reading is there before anything is substituted: the first window, all of it unproven.
         Check(Logged("TRACKER HEAD Halo CE (dev): substituted 0; the game's heading 20.0 deg, the view frame's 20.0 "
@@ -701,7 +701,7 @@ int main(int argc, char** argv)
           "retired before the report ran: the proof's line is still said, and the reinstall does NOT keep a provisional proof");
     Check(Draw(140.0f, -20.0f) == GameField(140.0f), "... so the first draw after it is the game's own again");
 
-    // ---- the simulator before its poses are set: the head half a turn from everything -----------------------------
+    // ---- a runtime whose poses are not set yet: the head half a turn from everything ------------------------------
     NewLoad();
     (void)Poll();
     DrawToProvisional(20.0f, 180.0f);
