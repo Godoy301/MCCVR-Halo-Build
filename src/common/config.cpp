@@ -28,6 +28,8 @@ Config g_config;
 // scorpion's trim on a mongoose.
 Config::Config()
 {
+    title_profiles[kTitleProfileReach].crosshair_size_deg =
+        TitleTunables{}.crosshair_size_deg * kReachCrosshairSizeSeedScale;
     for (const ConfigShippedSeatTrim& trim : kConfigShippedSeatTrims)
     {
         const int slot = ConfigSeatTrimSlot(
@@ -719,6 +721,9 @@ struct TunableField
     float Config::*live;
     float minimum;
     float maximum;
+    // The profile the live field follows, and an edit lands in, while no game is running; -1 = the shared
+    // defaults.
+    int noGameProfile = -1;
 };
 
 const TunableField kTunableFields[] = {
@@ -745,19 +750,25 @@ const TunableField kTunableFields[] = {
     {"gun_up_m", &TitleTunables::gun_up_m, &Config::gun_up_m, -0.30f, 0.30f},
     {"left_hand_forward_m", &TitleTunables::left_hand_forward_m,
      &Config::left_hand_forward_m, -0.15f, 0.30f},
-    {"hud_size", &TitleTunables::hud_size, &Config::hud_size, 0.30f, 1.00f},
+    {"hud_size", &TitleTunables::hud_size, &Config::hud_size, 0.30f, 1.00f, kTitleProfileReach},
     {"hud_aspect", &TitleTunables::hud_aspect, &Config::hud_aspect,
-     kHudAspectMin, kHudAspectMax},
+     kHudAspectMin, kHudAspectMax, kTitleProfileReach},
     {"hud_curvature", &TitleTunables::hud_curvature, &Config::hud_curvature,
-     kHudCurvatureMin, kHudCurvatureMax},
+     kHudCurvatureMin, kHudCurvatureMax, kTitleProfileReach},
     {"hud_vertical_offset", &TitleTunables::hud_vertical_offset,
-     &Config::hud_vertical_offset, kHudHeightMin, kHudHeightMax},
+     &Config::hud_vertical_offset, kHudHeightMin, kHudHeightMax, kTitleProfileReach},
     {"barrel_pitch_deg", &TitleTunables::barrel_pitch_deg,
      &Config::barrel_pitch_deg, -180.0f, 180.0f},
     {"barrel_yaw_deg", &TitleTunables::barrel_yaw_deg,
      &Config::barrel_yaw_deg, -180.0f, 180.0f},
     {"barrel_roll_deg", &TitleTunables::barrel_roll_deg,
      &Config::barrel_roll_deg, -180.0f, 180.0f},
+    {"crosshair_size_deg", &TitleTunables::crosshair_size_deg,
+     &Config::crosshair_size_deg, 0.3f, 20.0f, kTitleProfileReach},
+    {"crosshair_opacity", &TitleTunables::crosshair_opacity,
+     &Config::crosshair_opacity, 0.0f, 2.0f, kTitleProfileReach},
+    {"crosshair_brightness", &TitleTunables::crosshair_brightness,
+     &Config::crosshair_brightness, 0.0f, 2.0f, kTitleProfileReach},
 };
 constexpr int kTunableFieldCount =
     static_cast<int>(sizeof(kTunableFields) / sizeof(kTunableFields[0]));
@@ -767,10 +778,27 @@ const char* const kTitleProfilePrefixes[kTitleProfileCount] = {
 const char* const kTitleProfileTitles[kTitleProfileCount] = {
     "Halo 3", "Halo 3: ODST", "Halo: Reach", "Halo 4",
     "Halo 2 Anniversary", "Halo 2 Classic",
-    "Halo: Combat Evolved (future bring-up)"};
+    "Halo: Combat Evolved"};
 
 bool g_profileFieldSet[kTitleProfileCount][kTunableFieldCount]{};
 std::atomic<int> g_activeTitleProfile{-1};
+
+// What a profile field the cfg did not name starts from, as a multiple of the shared default.
+float ProfileSeedScale(int profile, const TunableField& descriptor)
+{
+    return profile == kTitleProfileReach && descriptor.member == &TitleTunables::crosshair_size_deg
+        ? kReachCrosshairSizeSeedScale : 1.0f;
+}
+
+// Where a field's live value comes from, and where an edit of it goes, for the active profile (-1 = no game).
+TitleTunables& ProfileFor(int active, const TunableField& descriptor)
+{
+    if (active >= 0 && active < kTitleProfileCount)
+        return g_config.title_profiles[active];
+    if (descriptor.noGameProfile >= 0 && descriptor.noGameProfile < kTitleProfileCount)
+        return g_config.title_profiles[descriptor.noGameProfile];
+    return g_config.base_tunables;
+}
 #include "weapon_alignment_config.inl"
 
 void ResetTitleProfileTracking()
@@ -820,17 +848,20 @@ void ResolveTitleProfiles()
         {
             const TunableField& descriptor = kTunableFields[field];
             float& value = g_config.title_profiles[profile].*descriptor.member;
-            if (!g_profileFieldSet[profile][field])
-                value = g_config.base_tunables.*descriptor.member;
+            if (!g_profileFieldSet[profile][field] || !std::isfinite(value))
+                value = g_config.base_tunables.*descriptor.member * ProfileSeedScale(profile, descriptor);
             value = std::clamp(value, descriptor.minimum, descriptor.maximum);
         }
     }
+    // The live fields follow the active profile; with no game running, a field with a profile of its own for
+    // that case follows it, and the rest keep the shared defaults just parsed into them.
     const int active = g_activeTitleProfile.load(std::memory_order_acquire);
-    if (active >= 0 && active < kTitleProfileCount)
+    for (int field = 0; field < kTunableFieldCount; ++field)
     {
-        for (int field = 0; field < kTunableFieldCount; ++field)
-            g_config.*kTunableFields[field].live =
-                g_config.title_profiles[active].*kTunableFields[field].member;
+        const TunableField& descriptor = kTunableFields[field];
+        const TitleTunables& source = ProfileFor(active, descriptor);
+        if (&source != &g_config.base_tunables)
+            g_config.*descriptor.live = source.*descriptor.member;
     }
 }
 } // namespace
@@ -847,6 +878,12 @@ int Config_ActiveTitleProfile()
     return g_activeTitleProfile.load(std::memory_order_acquire);
 }
 
+int Config_ShownTitleProfile()
+{
+    const int active = g_activeTitleProfile.load(std::memory_order_acquire);
+    return active >= 0 && active < kTitleProfileCount ? active : kTitleProfileReach;
+}
+
 void Config_ApplyTitleProfile(int profile)
 {
     const std::lock_guard lock(g_profileMutex);
@@ -861,14 +898,11 @@ void Config_ApplyTitleProfile(int profile)
         g_activeTitleProfile.exchange(profile, std::memory_order_acq_rel);
     if (previous == profile)
         return;
-    const TitleTunables& source = profile >= 0
-        ? g_config.title_profiles[profile]
-        : g_config.base_tunables;
     for (int field = 0; field < kTunableFieldCount; ++field)
         g_config.*kTunableFields[field].live =
-            source.*kTunableFields[field].member;
-    LOG("config: weapon/hand/HUD tunables now follow %s",
-        Config_TitleProfileName(profile));
+            ProfileFor(profile, kTunableFields[field]).*kTunableFields[field].member;
+    LOG("config: weapon and hand tunables now follow %s; the crosshair and the HUD layout follow %s",
+        Config_TitleProfileName(profile), Config_TitleProfileName(Config_ShownTitleProfile()));
 }
 
 void Config_StoreLiveTunables()
@@ -876,15 +910,11 @@ void Config_StoreLiveTunables()
     const std::lock_guard lock(g_profileMutex);
     StoreWeaponAlignment();
     const int active = g_activeTitleProfile.load(std::memory_order_acquire);
-    TitleTunables& destination =
-        active >= 0 && active < kTitleProfileCount
-            ? g_config.title_profiles[active]
-            : g_config.base_tunables;
     for (int field = 0; field < kTunableFieldCount; ++field)
     {
         const TunableField& descriptor = kTunableFields[field];
         if(g_activeWeaponProfile>=0&&WeaponAlignmentFieldIndex(descriptor.live)>=0) continue;
-        destination.*descriptor.member = std::clamp(
+        ProfileFor(active, descriptor).*descriptor.member = std::clamp(
             g_config.*descriptor.live, descriptor.minimum, descriptor.maximum);
     }
 }
@@ -941,8 +971,11 @@ void ConfigLoad(const wchar_t* path)
     if (!f)
     {
         LOG("config: no file yet, writing defaults");
-        // A first run takes the same derived aim modes a loaded file does (each lane reads its own field).
+        // A first run takes the same derived aim modes a loaded file does (each lane reads its own field),
+        // and the same profiles: every game's starts from the shared defaults, and the live fields follow the
+        // profile they belong to before the save stores them back.
         Config_ApplyAimModes();
+        ResolveTitleProfiles();
         ConfigSave();
         return;
     }
@@ -2306,16 +2339,21 @@ void ConfigSave()
     fprintf(f, "# How far away that crosshair floats, in meters.\n");
     fprintf(f, "# (default %.1f, range 2 to 50)\n", d.crosshair_distance_m);
     fprintf(f, "crosshair_distance_m = %.1f\n\n", g_config.crosshair_distance_m);
-    fprintf(f, "# Apparent size of the crosshair, in degrees.\n");
+    fprintf(f, "# Apparent size of the crosshair, in degrees. Each game keeps its own (halo3_crosshair_size_deg\n");
+    fprintf(f, "# and so on, at the end of this file; F1 > Crosshair edits the running game's). This is the\n");
+    fprintf(f, "# size a game's profile starts from when it names none; Reach's starts %.2f times larger,\n",
+        kReachCrosshairSizeSeedScale);
+    fprintf(f, "# because its crosshair art fills less of the crosshair.\n");
     fprintf(f, "# (default %.2f, range 0.3 to 20)\n", d.crosshair_size_deg);
-    fprintf(f, "crosshair_size_deg = %.2f\n\n", g_config.crosshair_size_deg);
+    fprintf(f, "crosshair_size_deg = %.2f\n\n", g_config.base_tunables.crosshair_size_deg);
     fprintf(f, "# Crosshair opacity and brightness. 1 = as the game draws it. Opacity below 1 is more\n");
     fprintf(f, "# see-through, above 1 makes a faint crosshair more solid; brightness below 1 is dimmer,\n");
-    fprintf(f, "# above 1 brighter. Every game. Live in F1 > Crosshair.\n");
+    fprintf(f, "# above 1 brighter. Each game keeps its own, like the size: these are the values a game's\n");
+    fprintf(f, "# profile starts from. Live in F1 > Crosshair.\n");
     fprintf(f, "# (defaults %.2f and %.2f, range 0 to 2)\n",
         d.crosshair_opacity, d.crosshair_brightness);
-    fprintf(f, "crosshair_opacity = %.2f\n", g_config.crosshair_opacity);
-    fprintf(f, "crosshair_brightness = %.2f\n\n", g_config.crosshair_brightness);
+    fprintf(f, "crosshair_opacity = %.2f\n", g_config.base_tunables.crosshair_opacity);
+    fprintf(f, "crosshair_brightness = %.2f\n\n", g_config.base_tunables.crosshair_brightness);
     fprintf(f, "# Every game, while the aim converges: the crosshair sits on the surface you aim at, pulled\n");
     fprintf(f, "# back reticle_surface_offset_m, and parks at reticle_max_dist_m beyond that.\n");
     fprintf(f, "# It shrinks away as a surface comes closer than reticle_min_scale_dist_m\n");
@@ -3294,12 +3332,14 @@ void ConfigSave()
     fprintf(f, "# Ghosting diagnostic: 1 renders the right eye first.\n");
     fprintf(f, "# (default %d)\n", d.right_eye_first ? 1 : 0);
     fprintf(f, "right_eye_first = %d\n", g_config.right_eye_first ? 1 : 0);
-    fprintf(f, "# --- Per-title weapon/hand/HUD profiles (C-TITLE-1) ---\n");
+    fprintf(f, "# --- Per-title weapon/hand/HUD/crosshair profiles (C-TITLE-1) ---\n");
     fprintf(f, "# Every supported game - and Halo 2 Anniversary vs Classic\n");
-    fprintf(f, "# separately - keeps its OWN copy of the thirteen tunables\n");
-    fprintf(f, "# below. The F1 sliders edit the profile of whichever game\n");
+    fprintf(f, "# separately - keeps its OWN copy of the tunables below.\n");
+    fprintf(f, "# The F1 sliders edit the profile of whichever game\n");
     fprintf(f, "# is running; the shared keys above are only the defaults a\n");
-    fprintf(f, "# fresh profile starts from. Edit these by hand freely.\n\n");
+    fprintf(f, "# fresh profile starts from. Edit these by hand freely.\n");
+    fprintf(f, "# With no game running, the crosshair's size, opacity and\n");
+    fprintf(f, "# brightness sliders and the HUD layout's four edit Halo: Reach's.\n\n");
     for (int profile = 0; profile < kTitleProfileCount; ++profile)
     {
         fprintf(f, "# %s\n", kTitleProfileTitles[profile]);

@@ -15330,7 +15330,9 @@ int main()
           "\nhalo2a_gun_scale = ", "\nhalo2c_gun_scale = ",
           "\nhalo1_gun_scale = ", "\nhalo2a_hud_size = ",
           "\nhalo2c_hud_size = ", "\nhalo3_left_hand_forward_m = ",
-          "\nhalo2c_barrel_pitch_deg = ", "\nhalo3_barrel_roll_deg = "})
+          "\nhalo2c_barrel_pitch_deg = ", "\nhalo3_barrel_roll_deg = ",
+          "\nreach_crosshair_size_deg = ", "\nhalo2a_crosshair_opacity = ",
+          "\nhalo1_crosshair_brightness = "})
     {
         Check(organizedConfig.find(profilePrefix) != std::string::npos,
             "The universal config carries every per-title tunable profile");
@@ -15364,6 +15366,138 @@ int main()
         Config_ApplyTitleProfile(-1);
         Check(g_config.gun_pitch_deg == sharedPitch,
             "Leaving every title restores the shared defaults");
+    }
+    {
+        // The crosshair's size, opacity and brightness are per game. A profile that names none starts from the
+        // shared key (Reach's size a fixed multiple of it); an edit lands in the running game's profile; and
+        // with no game running the three follow and edit Reach's, never the shared defaults.
+        ConfigSave();
+        const auto crosshairPath = configDir / L"crosshair-per-game.cfg";
+        {
+            std::ofstream file(crosshairPath);
+            file << "config_version = 6\n";
+            file << "crosshair_size_deg = 5\n";
+            file << "crosshair_opacity = 0.8\n";
+            file << "crosshair_brightness = 1.5\n";
+            file << "halo3_crosshair_size_deg = 3\n";
+            file << "odst_crosshair_opacity = 0.4\n";
+        }
+        ConfigLoad(crosshairPath.c_str());
+        const float reachSeed = 5.0f * kReachCrosshairSizeSeedScale;
+        bool seeded = g_config.base_tunables.crosshair_size_deg == 5.0f &&
+            g_config.base_tunables.crosshair_opacity == 0.8f;
+        for (int i = 0; i < kTitleProfileCount; ++i)
+        {
+            const auto& profile = g_config.title_profiles[i];
+            const float size = i == 0 ? 3.0f : i == kTitleProfileReach ? reachSeed : 5.0f;
+            seeded = seeded && std::fabs(profile.crosshair_size_deg - size) < 1.0e-4f &&
+                profile.crosshair_opacity == (i == 1 ? 0.4f : 0.8f) && profile.crosshair_brightness == 1.5f;
+        }
+        Check(seeded, "crosshair per game: a profile that names no value starts from the shared key, Reach's "
+                      "size from its multiple of it, and a named value stays");
+        Check(std::string(Config_TitleProfileName(kTitleProfileReach)) == "Halo: Reach",
+              "crosshair per game: the no-game profile is Reach's");
+        Check(Config_ActiveTitleProfile() == -1 && Config_ShownTitleProfile() == kTitleProfileReach &&
+                  std::fabs(g_config.crosshair_size_deg - reachSeed) < 1.0e-4f &&
+                  g_config.crosshair_opacity == 0.8f && g_config.crosshair_brightness == 1.5f,
+              "crosshair per game: with no game running the live crosshair is Reach's");
+        Config_ApplyTitleProfile(0);
+        Check(Config_ShownTitleProfile() == 0 && g_config.crosshair_size_deg == 3.0f,
+              "crosshair per game: a running game's own size goes live");
+        g_config.crosshair_size_deg = 6.0f;
+        g_config.crosshair_brightness = 0.9f;
+        Config_StoreLiveTunables();
+        Check(g_config.title_profiles[0].crosshair_size_deg == 6.0f &&
+                  g_config.title_profiles[0].crosshair_brightness == 0.9f &&
+                  std::fabs(g_config.title_profiles[kTitleProfileReach].crosshair_size_deg - reachSeed) < 1.0e-4f &&
+                  g_config.title_profiles[1].crosshair_brightness == 1.5f &&
+                  g_config.base_tunables.crosshair_size_deg == 5.0f &&
+                  g_config.base_tunables.crosshair_brightness == 1.5f,
+              "crosshair per game: an edit lands in the running game's profile only");
+        Config_ApplyTitleProfile(1);
+        Check(g_config.crosshair_size_deg == 5.0f && g_config.crosshair_opacity == 0.4f,
+              "crosshair per game: the next game brings its own");
+        Config_ApplyTitleProfile(-1);
+        Check(std::fabs(g_config.crosshair_size_deg - reachSeed) < 1.0e-4f && g_config.crosshair_opacity == 0.8f,
+              "crosshair per game: leaving every game puts Reach's back on the sliders");
+        g_config.crosshair_size_deg = 8.0f;
+        ConfigSave();
+        Check(g_config.title_profiles[kTitleProfileReach].crosshair_size_deg == 8.0f &&
+                  g_config.base_tunables.crosshair_size_deg == 5.0f,
+              "crosshair per game: an edit with no game running lands in Reach's profile, not the shared key");
+        const std::string crosshairSaved = ReadTextFile(crosshairPath);
+        Check(CountText(crosshairSaved, "\ncrosshair_size_deg = 5.00") == 1 &&
+                  CountText(crosshairSaved, "\nreach_crosshair_size_deg = 8.0000") == 1 &&
+                  CountText(crosshairSaved, "\nhalo3_crosshair_size_deg = 6.0000") == 1 &&
+                  CountText(crosshairSaved, "\nhalo3_crosshair_brightness = 0.9000") == 1 &&
+                  CountText(crosshairSaved, "\nodst_crosshair_opacity = 0.4000") == 1 &&
+                  CountText(crosshairSaved, "\ncrosshair_opacity = 0.80") == 1,
+              "crosshair per game: the file keeps the shared keys and every game's own");
+        ConfigLoad(crosshairPath.c_str());
+        Check(g_config.title_profiles[kTitleProfileReach].crosshair_size_deg == 8.0f &&
+                  g_config.title_profiles[0].crosshair_size_deg == 6.0f &&
+                  g_config.title_profiles[3].crosshair_size_deg == 5.0f &&
+                  g_config.base_tunables.crosshair_size_deg == 5.0f && g_config.crosshair_size_deg == 8.0f,
+              "crosshair per game: a save and load keeps each game's own and the shared default apart");
+        // An update's config merge adds no per-game crosshair key to a config that has the shared one, so the
+        // player's own size goes on being every game's starting point.
+        const std::string mergedCrosshair =
+            mcc_installer::MergeConfig("config_version=6\ncrosshair_size_deg=6\n", organizedConfig).text;
+        Check(mergedCrosshair.find("reach_crosshair_size_deg") == std::string::npos &&
+                  mergedCrosshair.find("halo3_crosshair_size_deg") == std::string::npos &&
+                  mergedCrosshair.find("halo3_crosshair_opacity") == std::string::npos &&
+                  CountText(mergedCrosshair, "crosshair_opacity = ") == 1,
+              "crosshair per game: an update names no per-game crosshair value in a config that has its own "
+              "shared ones, and adds a shared key it lacks once");
+        const Config untouched;
+        bool defaults = true;
+        for (int i = 0; i < kTitleProfileCount; ++i)
+            defaults = defaults && std::fabs(untouched.title_profiles[i].crosshair_size_deg -
+                (i == kTitleProfileReach ? 4.0f * kReachCrosshairSizeSeedScale : 4.0f)) < 1.0e-4f;
+        Check(defaults, "crosshair per game: a fresh configuration has Reach's size at its multiple");
+        // The HUD layout's four values follow the same rule: Reach's with no game running, never the shared
+        // defaults, and an edit made then lands in Reach's profile.
+        {
+            std::ofstream file(crosshairPath);
+            file << "config_version = 6\n";
+            file << "hud_size = 0.50\n";
+            file << "hud_aspect = 1.10\n";
+            file << "reach_hud_size = 0.39\n";
+            file << "halo3_hud_aspect = 0.91\n";
+        }
+        ConfigLoad(crosshairPath.c_str());
+        Check(g_config.hud_size == 0.39f && g_config.hud_aspect == 1.10f &&
+                  g_config.base_tunables.hud_size == 0.50f && g_config.title_profiles[0].hud_size == 0.50f &&
+                  g_config.title_profiles[0].hud_aspect == 0.91f,
+              "HUD per game: with no game running the live HUD layout is Reach's");
+        Config_ApplyTitleProfile(0);
+        Check(g_config.hud_size == 0.50f && g_config.hud_aspect == 0.91f,
+              "HUD per game: a running game's own layout goes live");
+        Config_ApplyTitleProfile(-1);
+        g_config.hud_size = 0.60f;
+        g_config.hud_vertical_offset = -8.0f;
+        ConfigSave();
+        Check(g_config.title_profiles[kTitleProfileReach].hud_size == 0.60f &&
+                  g_config.title_profiles[kTitleProfileReach].hud_vertical_offset == -8.0f &&
+                  g_config.base_tunables.hud_size == 0.50f && g_config.title_profiles[0].hud_size == 0.50f,
+              "HUD per game: an edit with no game running lands in Reach's profile, not the shared key");
+        const std::string hudSaved = ReadTextFile(crosshairPath);
+        Check(CountText(hudSaved, "\nhud_size = 0.50") == 1 &&
+                  CountText(hudSaved, "\nreach_hud_size = 0.6000") == 1 &&
+                  CountText(hudSaved, "\nhalo3_hud_size = 0.5000") == 1,
+              "HUD per game: the file keeps the shared size and each game's own");
+        // A first run, with no file yet, writes the same thing.
+        std::filesystem::remove(crosshairPath);
+        ConfigLoad(crosshairPath.c_str());
+        const std::string firstRun = ReadTextFile(crosshairPath);
+        Check(CountText(firstRun, "\ncrosshair_size_deg = 4.00") == 1 &&
+                  CountText(firstRun, "\nreach_crosshair_size_deg = 7.4000") == 1 &&
+                  CountText(firstRun, "\nhalo3_crosshair_size_deg = 4.0000") == 1 &&
+                  std::fabs(g_config.crosshair_size_deg - 4.0f * kReachCrosshairSizeSeedScale) < 1.0e-4f &&
+                  g_config.base_tunables.crosshair_size_deg == 4.0f,
+              "crosshair per game: a first run writes Reach's starting size and leaves the shared default alone");
+        ConfigLoad(primary.c_str());
+        std::filesystem::remove(crosshairPath);
     }
     {
         // Real save/load, swap, disable and graphics-mode transitions. A gun

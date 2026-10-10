@@ -1793,6 +1793,16 @@ namespace
                 changed = true;
             }
             {
+                // Size, opacity and brightness are each game's own: say whose are on the sliders.
+                ImGui::Spacing();
+                ImGui::Text("Adjusting crosshair size, opacity and brightness for: %s",
+                            Config_TitleProfileName(Config_ShownTitleProfile()));
+                if (Config_ActiveTitleProfile() < 0)
+                    ImGui::TextDisabled("No game is running, so %s's are shown.\n"
+                                        "Each game keeps its own: be in a game to adjust that game's crosshair.",
+                                        Config_TitleProfileName(kTitleProfileReach));
+                changed |= vr_menu::SliderFloat("Crosshair size (deg)", &g_config.crosshair_size_deg,
+                                              0.3f, 20.0f, "%.1f");
                 float opacityPercent = g_config.crosshair_opacity * 100.0f;
                 float brightnessPercent = g_config.crosshair_brightness * 100.0f;
                 if (vr_menu::SliderFloat("Crosshair opacity", &opacityPercent, 0.0f, 200.0f, "%.0f%%",
@@ -1821,11 +1831,10 @@ namespace
                     changed = true;
                 }
                 ImGui::TextDisabled("100%% is the crosshair as the game draws it. Opacity above 100%% makes a\n"
-                                    "faint crosshair more solid; below, more see-through. Every game. Live.\n"
-                                    "(defaults 125%% and 125%%)");
+                                    "faint crosshair more solid; below, more see-through. Saved for this game.\n"
+                                    "Live. (defaults 125%% and 125%%)");
+                ImGui::Spacing();
             }
-            changed |= vr_menu::SliderFloat("Crosshair size (deg)", &g_config.crosshair_size_deg,
-                                          0.3f, 20.0f, "%.1f");
             changed |= vr_menu::SliderFloat("Crosshair distance (m)", &g_config.crosshair_distance_m,
                                           2.0f, 50.0f, "%.0f");
             ImGui::TextDisabled("Where the crosshair floats when it is not traced (while the aim is\n"
@@ -2053,6 +2062,14 @@ namespace
                 ImGui::TextWrapped("Bring your empty support hand near your headset for a moment. Move it away to hide the HUD again. Gripping, dual wielding, reloading and menus cancel the gesture.");
             }
         }
+        // Size, width, curvature and height are each game's own: say whose are on the sliders.
+        ImGui::Spacing();
+        ImGui::Text("Adjusting HUD size, width, curvature and height for: %s",
+                    Config_TitleProfileName(Config_ShownTitleProfile()));
+        if (Config_ActiveTitleProfile() < 0)
+            ImGui::TextDisabled("No game is running, so %s's are shown.\n"
+                                "Each game keeps its own: be in a game to adjust that game's HUD.",
+                                Config_TitleProfileName(kTitleProfileReach));
         changed |= vr_menu::SliderFloat("HUD size", &g_config.hud_size, 0.30f, 1.00f, "%.2f");
         changed |= vr_menu::SliderFloat("HUD width / aspect", &g_config.hud_aspect,
                                       kHudAspectMin, kHudAspectMax, "%.2f");
