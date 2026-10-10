@@ -436,6 +436,18 @@ static int ScaleEven(int base, float scale)
     return value;
 }
 
+// Whether this process runs with an administrator's elevated token.
+static bool ProcessIsElevated()
+{
+    HANDLE token = nullptr;
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) return false;
+    TOKEN_ELEVATION elevation{};
+    DWORD size = 0;
+    const bool read = GetTokenInformation(token, TokenElevation, &elevation, sizeof(elevation), &size) != 0;
+    CloseHandle(token);
+    return read && elevation.TokenIsElevated != 0;
+}
+
 static int LaunchInstalledMod(const std::wstring& dir)
 {
     g_logPath = dir + L"\\HaloMCCVRLauncher.log";
@@ -446,6 +458,12 @@ static int LaunchInstalledMod(const std::wstring& dir)
         if (f) fclose(f);
     }
     LauncherLog("launcher started; self dir = %ls", dir.c_str());
+    // The game is started with this process's token. In an elevated game the OpenXR loader ignores
+    // XR_RUNTIME_JSON, so a headset runtime chosen with that variable is replaced by the machine's registered one.
+    if (ProcessIsElevated())
+        LauncherLog("NOTE: the launcher is running as administrator, so the game will too. If VR does not start, "
+                    "open the launcher normally: an elevated game ignores an OpenXR runtime chosen with "
+                    "XR_RUNTIME_JSON");
 
     const std::wstring dllPath = dir + (g_flatProbe ? L"\\HaloMCCFlatProbe.dll" : L"\\HaloMCCVR.dll");
     if (g_flatProbe)
@@ -614,10 +632,9 @@ static int LaunchInstalledMod(const std::wstring& dir)
                     renderWidth, renderHeight, resolutionScale,
                     kNativeRenderWidth, kNativeRenderHeight);
 
-    // An unattended test starts this launcher (whose manifest asks for administrator
-    // rights, for installs) unelevated through __COMPAT_LAYER=RunAsInvoker, so no
-    // UAC prompt reaches the desktop. That override is for the launcher alone;
-    // the game inherits this environment, so it starts without it.
+    // An unattended test may start this launcher through __COMPAT_LAYER=RunAsInvoker, which keeps
+    // a UAC prompt off the desktop whatever the launcher's manifest asks for. That override is for
+    // the launcher alone; the game inherits this environment, so it starts without it.
     if (g_headless)
     {
         wchar_t layer[64]{};
