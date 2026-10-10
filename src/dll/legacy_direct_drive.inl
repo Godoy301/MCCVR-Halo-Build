@@ -1616,6 +1616,59 @@ struct LegacySeatUpstream
 };
 LegacySeatUpstream g_legacySeatUpstream;   // the stick call's thread only
 
+// A STOCK SEAT'S AIM AS SOLVED, for the seat limit reticle (game.cpp, SeatLimitReticleStep). The aim poll hands the
+// hook the hand's aim from the seat; in a seat whose line is the game's chase-camera line the hook then writes a
+// record bent toward that line (LegacyDriveRecomposeSeated), by up to tens of degrees for a near point. It is the
+// BENT record the game holds at a seat's stop, and the shot goes where the game's line meets the world at the held
+// record: so the limit reticle needs the record as solved and where the line starts, not the hand's aim and the
+// seat. Published by the stick call at every pass that solved a stock line, cleared by every pass that did not.
+struct LegacySeatStockAim
+{
+    SRWLOCK lock = SRWLOCK_INIT;
+    uint32_t generation = 0, seatKey = 0;
+    float start[3]{};
+    float yaw = 0.0f, pitch = 0.0f;
+    uint64_t atUs = 0;
+};
+LegacySeatStockAim g_legacySeatStockAim;
+// `generation` 0: this pass solved no stock line.
+void LegacySeatStockAimPublish(uint32_t generation, uint32_t seatKey, const float start[3], float yaw, float pitch,
+                               uint64_t nowUs)
+{
+    auto& aim = g_legacySeatStockAim;
+    const bool valid = generation && shot_lag::Finite3(start) && std::isfinite(yaw) && std::isfinite(pitch);
+    AcquireSRWLockExclusive(&aim.lock);
+    aim.generation = valid ? generation : 0;
+    aim.seatKey = seatKey;
+    if (valid)
+    {
+        memcpy(aim.start, start, sizeof(aim.start));
+        aim.yaw = yaw;
+        aim.pitch = pitch;
+    }
+    aim.atUs = nowUs;
+    ReleaseSRWLockExclusive(&aim.lock);
+}
+// The last solved stock line of this seat, no older than `maxAgeUs`. False: none (the outputs are untouched).
+bool LegacySeatStockAimRead(uint32_t generation, uint32_t seatKey, uint64_t maxAgeUs, float start[3], float& yaw,
+                            float& pitch)
+{
+    auto& aim = g_legacySeatStockAim;
+    AcquireSRWLockShared(&aim.lock);
+    const bool match = generation && aim.generation == generation && aim.seatKey == seatKey && aim.atUs;
+    const uint64_t at = aim.atUs;
+    const float startCopy[3]{aim.start[0], aim.start[1], aim.start[2]};
+    const float yawCopy = aim.yaw, pitchCopy = aim.pitch;
+    ReleaseSRWLockShared(&aim.lock);
+    const uint64_t now = Sight_NowUs();
+    if (!match || now < at || now - at > maxAgeUs)
+        return false;
+    memcpy(start, startCopy, sizeof(startCopy));
+    yaw = yawCopy;
+    pitch = pitchCopy;
+    return true;
+}
+
 // The local player's unit (Halo 3), guarded; -1 when unknown.
 int32_t LegacyHalo3LocalUnit()
 {
@@ -1818,6 +1871,9 @@ LegacySeatRecomposeWhy LegacyDriveRecomposeSeated(int slot, const LegacyDrivePub
     float bendDeg = 0.0f;
     const LegacySeatRecomposeWhy why = seat_upstream::RecomposeSeat(in, yaw, pitch, bendDeg);
     g_legacySeatRecompose[static_cast<size_t>(why)].fetch_add(1, std::memory_order_relaxed);
+    // For the seat limit reticle: the stock line as solved at this pass, or none.
+    LegacySeatStockAimPublish(why == LegacySeatRecomposeWhy::Recomposed && stockLine ? generation : 0, pub.seatKey,
+                              camera, yaw, pitch, nowUs);
     if (why == LegacySeatRecomposeWhy::Recomposed && stockLine)
         g_legacySeatStockStart[static_cast<size_t>(stock.source)].fetch_add(1, std::memory_order_relaxed);
     if (why == LegacySeatRecomposeWhy::Recomposed)
