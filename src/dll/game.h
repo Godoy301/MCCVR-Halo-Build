@@ -148,6 +148,10 @@ void Game_DetachForVrRuntimeFailure();
 // loaded chud_globals tag data (auto-located from the same verified anchor).
 void Game_LocateHudSafeFrames();  // manual rescan (menu button; normally automatic)
 void Game_GetHudSafeFrameStatus(int& matches, bool& scanning);
+// The safe-frame pair the active title's HUD is drawn with, while the mod's layout is in every slot; false while
+// it is not (the title's own safe frame then scales across and down alike). Lock-free: the crosshair capture
+// reads it on the thread that draws the HUD.
+bool Game_GetAppliedHudSafeFrame(float& horizontal, float& vertical);
 
 // Head-tracking controls, driven by hotkeys so we can tune it live in-headset.
 void Game_ToggleHeadTracking(); // F2

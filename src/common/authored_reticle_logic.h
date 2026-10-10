@@ -280,6 +280,43 @@ struct AuthoredReticleArtCentre
     bool valid = false;
 };
 
+// HOW MUCH WIDER THAN AUTHORED THE HUD DRAWS ITS ART. Halo 3 lays its HUD out on a 16:9 canvas and stretches
+// that canvas over the whole raster, then scales it by the safe frame, across and down separately. The mod moves
+// the safe frame for the HUD's size, its width setting and the headset's field of view, so a widget authored
+// round is drawn `safeHorizontal / safeVertical * rasterAspect / canvasAspect` times as wide as it is tall
+// (measured in a headset: 1.36 for the ring crosshair at 0.5246 / 0.2989 on a 2912x2100 raster, against 1.37
+// from this rule). The crosshair's quad is square, so its capture has to undo that. 1 when an input is unusable.
+inline constexpr float kHalo3HudCanvasAspect = 16.0f / 9.0f;
+inline float AuthoredReticleCanvasStretch(float safeHorizontal, float safeVertical, float rasterAspect,
+                                          float canvasAspect) noexcept
+{
+    if (!std::isfinite(safeHorizontal) || !std::isfinite(safeVertical) || !std::isfinite(rasterAspect) ||
+        !std::isfinite(canvasAspect) || safeHorizontal <= 0.0f || safeVertical <= 0.0f || rasterAspect <= 0.0f ||
+        canvasAspect <= 0.0f)
+        return 1.0f;
+    const float stretch = safeHorizontal / safeVertical * rasterAspect / canvasAspect;
+    return std::isfinite(stretch) && stretch >= 0.25f && stretch <= 4.0f ? stretch : 1.0f;
+}
+
+// The factors that give a capture of such art its authored shape back: the wider axis is narrowed, never the
+// other widened, so nothing that fitted the capture is pushed out of it.
+struct AuthoredReticleCaptureFit
+{
+    float across = 1.0f;
+    float down = 1.0f;
+};
+inline AuthoredReticleCaptureFit AuthoredReticleFitForStretch(float stretch) noexcept
+{
+    AuthoredReticleCaptureFit fit{};
+    if (!std::isfinite(stretch) || stretch <= 0.0f)
+        return fit;
+    if (stretch > 1.0f)
+        fit.across = 1.0f / stretch;
+    else
+        fit.down = stretch;
+    return fit;
+}
+
 // The captured art's width over its height, from its ink spread; 0 when it has no height to compare with.
 inline float AuthoredReticleArtAspect(const AuthoredReticleArtCentre& centre) noexcept
 {

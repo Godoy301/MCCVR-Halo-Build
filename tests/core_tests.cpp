@@ -1759,6 +1759,27 @@ int main()
         }
         Check(AuthoredReticleArtAspect(AuthoredReticleArtCentre{}) == 0.0f,
               "art shape: no measurement has no aspect");
+        {
+            // The HUD's own scale: the pair measured in a headset with the ring 1.36 times as wide as tall.
+            const float raster = 2912.0f / 2100.0f;
+            const float measured = AuthoredReticleCanvasStretch(0.5246f, 0.2989f, raster, kHalo3HudCanvasAspect);
+            Check(std::fabs(measured - 1.369f) < 0.01f, "canvas stretch: the headset's measured pair gives 1.37");
+            const float tuned = AuthoredReticleCanvasStretch(0.4095f, 0.3128f, raster, kHalo3HudCanvasAspect);
+            Check(std::fabs(tuned - 1.021f) < 0.01f, "canvas stretch: a narrower HUD setting is nearly round");
+            Check(AuthoredReticleCanvasStretch(0.0f, 0.3f, raster, kHalo3HudCanvasAspect) == 1.0f &&
+                      AuthoredReticleCanvasStretch(0.5f, 0.3f, 0.0f, kHalo3HudCanvasAspect) == 1.0f &&
+                      AuthoredReticleCanvasStretch(0.5f, 0.3f, raster, std::nanf("")) == 1.0f &&
+                      AuthoredReticleCanvasStretch(9.0f, 0.1f, raster, kHalo3HudCanvasAspect) == 1.0f,
+                  "canvas stretch: an unusable input or an absurd result leaves the capture alone");
+            const AuthoredReticleCaptureFit wide = AuthoredReticleFitForStretch(measured);
+            Check(std::fabs(wide.across * measured - 1.0f) < 1.0e-5f && wide.down == 1.0f,
+                  "capture fit: art drawn wide is narrowed across, and its height is left");
+            const AuthoredReticleCaptureFit tall = AuthoredReticleFitForStretch(0.8f);
+            Check(tall.across == 1.0f && std::fabs(tall.down - 0.8f) < 1.0e-6f,
+                  "capture fit: art drawn tall is shortened, never widened");
+            const AuthoredReticleCaptureFit none = AuthoredReticleFitForStretch(std::nanf(""));
+            Check(none.across == 1.0f && none.down == 1.0f, "capture fit: no stretch, no change");
+        }
         const std::array<uint8_t, pitch * size> blank{};
         Check(!MeasureAuthoredReticleArtCentre(blank.data(), pitch, size, true, 2).valid,
               "art centre: a blank capture has no centre");

@@ -3752,6 +3752,10 @@ namespace
     std::atomic<uint32_t> g_hudAppliedBits{0};
     std::atomic<uint32_t> g_hudAppliedAspectBits{0};
     std::atomic<uint32_t> g_hudAppliedCurvatureBits{0};
+    // The safe-frame pair in the title's slots while every slot holds it (0 otherwise): the crosshair capture
+    // reads how the HUD it lifts its art from is scaled (Game_GetAppliedHudSafeFrame).
+    std::atomic<uint32_t> g_hudAppliedSafeFrameHBits{0};
+    std::atomic<uint32_t> g_hudAppliedSafeFrameVBits{0};
     std::atomic<HudLayoutProfile> g_hudLayoutOwner{HudLayoutProfile::None};
     std::atomic<uint32_t> g_hudLayoutGeneration{1};
     std::atomic<HudLayoutProfile> g_safeFramePublishedOwner{
@@ -4031,6 +4035,8 @@ namespace
         g_hudAppliedBits.store(0, std::memory_order_relaxed);
         g_hudAppliedAspectBits.store(0, std::memory_order_relaxed);
         g_hudAppliedCurvatureBits.store(0, std::memory_order_relaxed);
+        g_hudAppliedSafeFrameHBits.store(0, std::memory_order_relaxed);
+        g_hudAppliedSafeFrameVBits.store(0, std::memory_order_relaxed);
     }
 
     static bool HudLayoutContextMatches(
@@ -4753,6 +4759,8 @@ namespace
                 wantAspectBits, std::memory_order_relaxed);
             g_hudAppliedCurvatureBits.store(
                 wantCurvatureBits, std::memory_order_relaxed);
+            g_hudAppliedSafeFrameHBits.store(wantHBits, std::memory_order_relaxed);
+            g_hudAppliedSafeFrameVBits.store(wantVBits, std::memory_order_relaxed);
         }
         else
         {
@@ -4760,6 +4768,8 @@ namespace
             g_hudAppliedAspectBits.store(0, std::memory_order_relaxed);
             g_hudAppliedCurvatureBits.store(
                 0, std::memory_order_relaxed);
+            g_hudAppliedSafeFrameHBits.store(0, std::memory_order_relaxed);
+            g_hudAppliedSafeFrameVBits.store(0, std::memory_order_relaxed);
             g_safeFramePublishedOwner.store(
                 HudLayoutProfile::None, std::memory_order_relaxed);
             g_safeFramePublishedGeneration.store(
@@ -4823,6 +4833,8 @@ namespace
         g_hudAppliedAspectBits.store(0, std::memory_order_relaxed);
         g_hudAppliedCurvatureBits.store(
             0, std::memory_order_relaxed);
+        g_hudAppliedSafeFrameHBits.store(0, std::memory_order_relaxed);
+        g_hudAppliedSafeFrameVBits.store(0, std::memory_order_relaxed);
         g_safeFramePublishedOwner.store(
             profile, std::memory_order_relaxed);
         g_safeFramePublishedGeneration.store(
@@ -50579,6 +50591,22 @@ void Game_GetHudSafeFrameStatus(int& matches, bool& scanning)
     scanning = (c == -2) ||
         g_safeFrameScanInFlight.load(std::memory_order_acquire);
     matches = (c > 0) ? c : 0;
+}
+
+bool Game_GetAppliedHudSafeFrame(float& horizontal, float& vertical)
+{
+    const uint32_t h = g_hudAppliedSafeFrameHBits.load(std::memory_order_relaxed);
+    const uint32_t v = g_hudAppliedSafeFrameVBits.load(std::memory_order_relaxed);
+    if (!h || !v)
+        return false;
+    float readH = 0.0f, readV = 0.0f;
+    memcpy(&readH, &h, sizeof(readH));
+    memcpy(&readV, &v, sizeof(readV));
+    if (!isfinite(readH) || !isfinite(readV) || readH <= 0.0f || readV <= 0.0f)
+        return false;
+    horizontal = readH;
+    vertical = readV;
+    return true;
 }
 
 void Game_ToggleHeadTracking()
