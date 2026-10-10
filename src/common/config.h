@@ -335,10 +335,25 @@ inline constexpr int kTitleProfileCount = 7;
 // Reach's slot among the profiles (cfg prefix reach_). The crosshair's three tunables and the HUD layout's four
 // follow and edit this profile while no game is running, so the menu always shows one game's own values.
 inline constexpr int kTitleProfileReach = 2;
-// Reach's crosshair art fills about half as much of the crosshair's quad as Halo 3's (its ring's ink spread
-// measured 0.092 of the capture against 0.170 at one HUD scale). A Reach profile that names no crosshair size
-// therefore starts this much larger than the shared size, and a given shared size looks alike in the two games.
-inline constexpr float kReachCrosshairSizeSeedScale = 1.85f;
+// Each game draws its own crosshair art, which fills more or less of the crosshair's quad than the next game's
+// (Reach's ring about half as much as Halo 3's), so one size shows it larger in one game than in another. These
+// are each game's starting size and opacity at the shared defaults (TitleTunables: 4 degrees, 1.25), headset-tuned
+// so the games' crosshairs look alike. A profile that names no size or opacity starts from the shared value in
+// the same proportion.
+struct CrosshairStart
+{
+    float size_deg;
+    float opacity;
+};
+inline constexpr CrosshairStart kCrosshairStarts[kTitleProfileCount] = {
+    {4.00f, 1.25f},  // Halo 3
+    {4.00f, 1.25f},  // Halo 3: ODST
+    {10.30f, 0.69f}, // Halo: Reach
+    {4.00f, 1.25f},  // Halo 4
+    {8.00f, 1.25f},  // Halo 2 Anniversary
+    {8.00f, 1.25f},  // Halo 2 Classic
+    {7.20f, 1.25f},  // Halo: Combat Evolved
+};
 
 struct TitleTunables
 {
@@ -1032,7 +1047,7 @@ struct Config
     // cap. crosshair_distance_m still applies whenever the aim is not converged (the fallback aim).
     float reticle_max_dist_m = 50.0f;
     float reticle_surface_offset_m = 0.5f;
-    float reticle_min_scale_dist_m = 0.7f;
+    float reticle_min_scale_dist_m = 0.07f;
     float reticle_min_scale = 0.001f;
 
     // DEV BUILD ONLY (parsed, saved and in the F1 menu only in dev builds): an ASSESSMENT aid -- a second marker

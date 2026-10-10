@@ -1803,6 +1803,9 @@ namespace
                                         Config_TitleProfileName(kTitleProfileReach));
                 changed |= vr_menu::SliderFloat("Crosshair size (deg)", &g_config.crosshair_size_deg,
                                               0.3f, 20.0f, "%.1f");
+                // The shown game's own defaults (kCrosshairStarts): what the Defaults button restores.
+                const float defaultOpacity = kCrosshairStarts[Config_ShownTitleProfile()].opacity;
+                const float defaultBrightness = TitleTunables{}.crosshair_brightness;
                 float opacityPercent = g_config.crosshair_opacity * 100.0f;
                 float brightnessPercent = g_config.crosshair_brightness * 100.0f;
                 if (vr_menu::SliderFloat("Crosshair opacity", &opacityPercent, 0.0f, 200.0f, "%.0f%%",
@@ -1826,13 +1829,14 @@ namespace
                 ImGui::SameLine();
                 if (ImGui::Button("Defaults##crosshairtint"))
                 {
-                    g_config.crosshair_opacity = Config{}.crosshair_opacity;
-                    g_config.crosshair_brightness = Config{}.crosshair_brightness;
+                    g_config.crosshair_opacity = defaultOpacity;
+                    g_config.crosshair_brightness = defaultBrightness;
                     changed = true;
                 }
                 ImGui::TextDisabled("100%% is the crosshair as the game draws it. Opacity above 100%% makes a\n"
                                     "faint crosshair more solid; below, more see-through. Saved for this game.\n"
-                                    "Live. (defaults 125%% and 125%%)");
+                                    "Live. (this game's defaults: %.0f%% and %.0f%%)",
+                                    defaultOpacity * 100.0f, defaultBrightness * 100.0f);
                 ImGui::Spacing();
             }
             changed |= vr_menu::SliderFloat("Crosshair distance (m)", &g_config.crosshair_distance_m,
