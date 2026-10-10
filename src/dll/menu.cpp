@@ -1506,7 +1506,7 @@ namespace
                 bool seated = g_config.shot_point_transport_seated != 0;
                 if (ImGui::Checkbox("In vehicle seats too (dev)", &seated))
                 { g_config.shot_point_transport_seated = seated ? 1 : 0; changed = true; }
-                ImGui::TextDisabled("OFF keeps seats as they are (the Hornet felt right that way).");
+                ImGui::TextDisabled("ON (default). OFF aims a seated shot through the point fixed in the world.");
                 bool measured = g_config.halo2_measured_fire_eye != 0;
                 if (ImGui::Checkbox("Halo 2: the game's own eye at the fire, once proven (dev)", &measured))
                 { g_config.halo2_measured_fire_eye = measured ? 1 : 0; changed = true; }

@@ -2407,7 +2407,8 @@ void ConfigSave()
     fprintf(f, "# tick; the A/B). The reticle never moves. Live.\n");
     fprintf(f, "# (default %d)\n", d.shot_point_transport);
     fprintf(f, "shot_point_transport = %d\n", g_config.shot_point_transport);
-    fprintf(f, "# DEV BUILD ONLY. With shot_point_transport = 1: 1 = seated shots too. 0 = seats as before.\n");
+    fprintf(f, "# DEV BUILD ONLY (players always get 1). With shot_point_transport = 1: 1 = seated shots too.\n");
+    fprintf(f, "# 0 = seated shots through the point fixed in the world.\n");
     fprintf(f, "shot_point_transport_seated = %d\n", g_config.shot_point_transport_seated);
     fprintf(f, "# DEV BUILD ONLY (players always get 1). Halo 2 on foot, with shot_point_transport = 1: 1 = once proven,\n");
     fprintf(f, "# a muzzle shot's eye at the fire is the game's own camera evaluator asked in the fire (the eye after\n");
