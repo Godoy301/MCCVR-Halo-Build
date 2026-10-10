@@ -268,6 +268,9 @@ bool Halo3SeatViewRemove();
 void Halo3SeatViewSync();
 bool Halo3SeatViewAvailable();
 bool Halo3SeatViewWritesTag();
+#if HALOMCCVR_DEV_DIAGNOSTICS
+void AimTraceDev_Flush();   // a seat's aim, poll by poll (defined beside the aim loop); the cold worker's half
+#endif
 void Halo3SeatViewArm(int32_t unit);
 void Halo3SeatViewDisarm();
 #if HALOMCCVR_DEV_DIAGNOSTICS
@@ -48597,6 +48600,7 @@ namespace
             Input_ReportPhysicalCrouch(pollNow);
 #if HALOMCCVR_DEV_DIAGNOSTICS
             SeatWitness_Poll();   // SEATEXIT witness blocks (dev builds only)
+            AimTraceDev_Flush();
 #endif
             if(const unsigned notice=g_bodyNotice.exchange(0,std::memory_order_acq_rel))
                 LOG("Legacy H3 body switch: %s; independent body/hand visibility remains WIP",
@@ -54240,6 +54244,75 @@ static bool AimNoUnit_Step()
     return s_debounce.freeCamera;
 }
 
+#if HALOMCCVR_DEV_DIAGNOSTICS
+// A SEAT'S AIM, POLL BY POLL (dev). One row per input poll while a seat or a turret is aimed: the hand's
+// direction, the target handed to the drive, the game's aim, the record as the drive hook last saw it, the
+// vehicle frame the view follows, the traced range and the stick command. The aim loop records; the cold worker
+// writes the rows to halomccvr_aim_trace.csv beside the log while a file named halomccvr_aim_trace.on sits there
+// (and drops them otherwise). One short exclusive section per poll.
+namespace aim_trace_dev
+{
+struct Row
+{
+    uint64_t us;
+    float intentYaw, intentPitch, desiredYaw, desiredPitch, aimYaw, aimPitch, servoAimYaw, servoAimPitch;
+    float recordYaw, recordPitch, hookAimYaw, hookAimPitch, hullFwd[3], hullUp[3], rangeWu, outRx, outRy;
+    uint32_t flags;   // 1 turret seat, 2 yaw written, 4 pitch written, 8 gun-slaved servo, 16 hull frame followed,
+                      // 32 the servo parks, 64 free camera, 128 the hull's vectors were read
+};
+constexpr unsigned kRing = 4096;
+SRWLOCK g_lock = SRWLOCK_INIT;
+Row g_rows[kRing];
+unsigned g_count = 0;
+void Note(const Row& row)
+{
+    AcquireSRWLockExclusive(&g_lock);
+    if (g_count < kRing)
+        g_rows[g_count++] = row;
+    ReleaseSRWLockExclusive(&g_lock);
+}
+} // namespace aim_trace_dev
+
+void AimTraceDev_Flush()
+{
+    static aim_trace_dev::Row rows[aim_trace_dev::kRing];
+    AcquireSRWLockExclusive(&aim_trace_dev::g_lock);
+    const unsigned n = aim_trace_dev::g_count;
+    memcpy(rows, aim_trace_dev::g_rows, sizeof(rows[0]) * n);
+    aim_trace_dev::g_count = 0;
+    ReleaseSRWLockExclusive(&aim_trace_dev::g_lock);
+    if (!n)
+        return;
+    const wchar_t* dir = LogDirectory();
+    const size_t dirLength = dir ? wcslen(dir) : 0;
+    if (!dirLength)
+        return;
+    const wchar_t* separator =
+        dir[dirLength - 1] == L'\\' || dir[dirLength - 1] == L'/' ? L"" : L"\\";
+    wchar_t flagPath[1024], filePath[1024];
+    if (swprintf_s(flagPath, L"%s%shalomccvr_aim_trace.on", dir, separator) < 0 ||
+        swprintf_s(filePath, L"%s%shalomccvr_aim_trace.csv", dir, separator) < 0 ||
+        GetFileAttributesW(flagPath) == INVALID_FILE_ATTRIBUTES)
+        return;
+    FILE* f = nullptr;
+    if (_wfopen_s(&f, filePath, L"ab") || !f)
+        return;
+    for (unsigned k = 0; k < n; ++k)
+    {
+        const auto& r = rows[k];
+        fprintf(f, "%llu,%.5f,%.5f,%.5f,%.5f,%.5f,%.5f,%.5f,%.5f,%.5f,%.5f,%.5f,%.5f,%.5f,%.5f,%.5f,%.5f,%.5f,%.5f,"
+                   "%.2f,%.4f,%.4f,%u\n",
+                static_cast<unsigned long long>(r.us), double(r.intentYaw), double(r.intentPitch),
+                double(r.desiredYaw), double(r.desiredPitch), double(r.aimYaw), double(r.aimPitch),
+                double(r.servoAimYaw), double(r.servoAimPitch), double(r.recordYaw), double(r.recordPitch),
+                double(r.hookAimYaw), double(r.hookAimPitch), double(r.hullFwd[0]), double(r.hullFwd[1]),
+                double(r.hullFwd[2]), double(r.hullUp[0]), double(r.hullUp[1]), double(r.hullUp[2]),
+                double(r.rangeWu), double(r.outRx), double(r.outRy), r.flags);
+    }
+    fclose(f);
+}
+#endif
+
 bool Game_ComputeAimStick(float& outRx, float& outRy)
 {
 #if HALOMCCVR_DEV_DIAGNOSTICS
@@ -55148,6 +55221,10 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
     // before writing it and reports what it wrote; an axis it does not write stays on the servo below (or the
     // steering author), and the stick is zeroed only on the written ones (seatWritten).
     seat_drive::Axes seatWritten{};
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    float traceHullFwd[3]{}, traceHullUp[3]{};   // the occupied vehicle's own forward and up (dev aim trace)
+    bool traceHullRead = false;
+#endif
     // GUN-SLAVED SEAT (Halo 3 / ODST seat flag bit 7, gun_slaved_seat_logic.h): this poll's seat when its first-person
     // camera is the GUN -- the game's aim read above is then the gun's marker, slewing toward the record. The hook
     // proves that seat against the occupant's own aim as well, and the servo below closes on it once it agrees.
@@ -55216,6 +55293,11 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
                     {
                         const auto id = static_cast<Halo3VehicleId>(seat.identity);
                         seatFacts.identified = id != Halo3VehicleId::Unknown;
+#if HALOMCCVR_DEV_DIAGNOSTICS
+                        memcpy(traceHullFwd, seat.hullFwd, sizeof(traceHullFwd));
+                        memcpy(traceHullUp, seat.hullUp, sizeof(traceHullUp));
+                        traceHullRead = true;
+#endif
                         // THE VIEW IS THE MOD'S OWN whenever its seat camera has the seat's authored point: the
                         // rendered eye is then that point, whatever camera the game's director runs, so a
                         // hand-aimed record cannot swing it. The seat's aim does not depend on how the body
@@ -55486,6 +55568,37 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
                 else
                 {
                     s_seatOutcomeWitness.reset();
+                }
+            }
+#endif
+#if HALOMCCVR_DEV_DIAGNOSTICS
+            {
+                // Both axes written (the loop returns below): the trace's row for this poll.
+                if (seatWritten.yaw && seatWritten.pitch && !halo4Aim)
+                {
+                    aim_trace_dev::Row row{};
+                    row.us = Sight_NowUs();
+                    row.intentYaw = intentYaw;
+                    row.intentPitch = intentPitch;
+                    row.desiredYaw = desiredYaw;
+                    row.desiredPitch = desiredPitch;
+                    row.aimYaw = row.servoAimYaw = aimYaw;
+                    row.aimPitch = row.servoAimPitch = aimPitch;
+                    const int traceSlot = LegacyDriveSlot(driveTitle);
+                    if (traceSlot >= 0)
+                    {
+                        const auto& hook = g_legacyDrive[traceSlot];
+                        row.recordYaw = hook.nativeYaw.load(std::memory_order_relaxed);
+                        row.recordPitch = hook.nativePitch.load(std::memory_order_relaxed);
+                        row.hookAimYaw = hook.aimYaw.load(std::memory_order_relaxed);
+                        row.hookAimPitch = hook.aimPitch.load(std::memory_order_relaxed);
+                    }
+                    memcpy(row.hullFwd, traceHullFwd, sizeof(row.hullFwd));
+                    memcpy(row.hullUp, traceHullUp, sizeof(row.hullUp));
+                    row.rangeWu = limitTargetRangeWu;
+                    row.flags = 2u | 4u | (gunSlavedSeat ? 8u : 0u) | (followedVehicleFrame ? 16u : 0u) |
+                        (freeCamera ? 64u : 0u) | (traceHullRead ? 128u : 0u);
+                    aim_trace_dev::Note(row);
                 }
             }
 #endif
@@ -55814,6 +55927,39 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
     servoLastYawCommand = fabsf(outRx);
     if (turretSeat && outRx == 0.0f && outRy == 0.0f)
         ++servoParkedFrames;
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    if (!halo4Aim && (turretSeat || seatWritten.any() || followedVehicleFrame))
+    {
+        aim_trace_dev::Row row{};
+        row.us = Sight_NowUs();
+        row.intentYaw = intentYaw;
+        row.intentPitch = intentPitch;
+        row.desiredYaw = desiredYaw;
+        row.desiredPitch = desiredPitch;
+        row.aimYaw = aimYaw;
+        row.aimPitch = aimPitch;
+        row.servoAimYaw = servoAimYaw;
+        row.servoAimPitch = servoAimPitch;
+        const int traceSlot = LegacyDriveSlot(TitleAdapter_GetActiveTitle());
+        if (traceSlot >= 0)
+        {
+            const auto& hook = g_legacyDrive[traceSlot];
+            row.recordYaw = hook.nativeYaw.load(std::memory_order_relaxed);
+            row.recordPitch = hook.nativePitch.load(std::memory_order_relaxed);
+            row.hookAimYaw = hook.aimYaw.load(std::memory_order_relaxed);
+            row.hookAimPitch = hook.aimPitch.load(std::memory_order_relaxed);
+        }
+        memcpy(row.hullFwd, traceHullFwd, sizeof(row.hullFwd));
+        memcpy(row.hullUp, traceHullUp, sizeof(row.hullUp));
+        row.rangeWu = limitTargetRangeWu;
+        row.outRx = outRx;
+        row.outRy = outRy;
+        row.flags = (turretSeat ? 1u : 0u) | (seatWritten.yaw ? 2u : 0u) | (seatWritten.pitch ? 4u : 0u) |
+            (gunSlavedServo ? 8u : 0u) | (followedVehicleFrame ? 16u : 0u) | (servoParks ? 32u : 0u) |
+            (freeCamera ? 64u : 0u) | (traceHullRead ? 128u : 0u);
+        aim_trace_dev::Note(row);
+    }
+#endif
 #if HALOMCCVR_DEV_DIAGNOSTICS
     if (freeCamera && outRx == 0.0f && outRy == 0.0f)
         ++g_aimFreeCameraParked;
