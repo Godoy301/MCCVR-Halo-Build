@@ -1049,7 +1049,7 @@ struct Config
     // cap. crosshair_distance_m still applies whenever the aim is not converged (the fallback aim).
     float reticle_max_dist_m = 50.0f;
     float reticle_surface_offset_m = 0.5f;
-    float reticle_min_scale_dist_m = 0.07f;
+    float reticle_min_scale_dist_m = 0.7f;
     float reticle_min_scale = 0.001f;
 
     // DEV BUILD ONLY (parsed, saved and in the F1 menu only in dev builds): an ASSESSMENT aid -- a second marker

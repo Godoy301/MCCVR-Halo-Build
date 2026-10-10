@@ -15466,7 +15466,7 @@ int main()
               "shared ones, and adds a shared key it lacks once");
         const Config untouched;
         bool defaults = untouched.crosshair_size_deg == 4.0f && untouched.crosshair_opacity == 1.25f &&
-            untouched.reticle_min_scale_dist_m == 0.07f;
+            untouched.reticle_min_scale_dist_m == 0.7f;
         for (int i = 0; i < kTitleProfileCount; ++i)
             defaults = defaults && untouched.title_profiles[i].crosshair_size_deg == kCrosshairStarts[i].size_deg &&
                 untouched.title_profiles[i].crosshair_opacity == kCrosshairStarts[i].opacity &&
@@ -15478,7 +15478,7 @@ int main()
                   untouched.title_profiles[6].crosshair_size_deg == 7.2f &&
                   untouched.title_profiles[0].crosshair_size_deg == 4.0f,
               "crosshair per game: a fresh configuration has every game's own starting size and opacity, and the "
-              "crosshair shrinks away only within 7 cm");
+              "crosshair shrinks away within 0.7 m");
         // The HUD layout's four values follow the same rule: Reach's with no game running, never the shared
         // defaults, and an edit made then lands in Reach's profile.
         {
@@ -15522,7 +15522,7 @@ int main()
                   CountText(firstRun, "\nhalo1_crosshair_size_deg = 7.2000") == 1 &&
                   CountText(firstRun, "\nhalo3_crosshair_size_deg = 4.0000") == 1 &&
                   CountText(firstRun, "\nhalo3_crosshair_opacity = 1.2500") == 1 &&
-                  CountText(firstRun, "\nreticle_min_scale_dist_m = 0.07") == 1 &&
+                  CountText(firstRun, "\nreticle_min_scale_dist_m = 0.70") == 1 &&
                   g_config.crosshair_size_deg == 10.3f && g_config.crosshair_opacity == 0.69f &&
                   g_config.base_tunables.crosshair_size_deg == 4.0f,
               "crosshair per game: a first run writes every game's starting size and opacity and leaves the "
