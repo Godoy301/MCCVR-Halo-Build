@@ -271,9 +271,20 @@ struct AuthoredReticleArtCentre
 {
     float u = 0.5f;  // 0..1 across the texture, left to right
     float v = 0.5f;  // 0..1 down the texture, top to bottom
+    // How far the ink spreads about that centre, across and down (its standard deviation, as a fraction of the
+    // texture). A reticle authored as wide as it is tall has the two equal; their ratio is how much wider than
+    // tall the captured art is, whatever its outline.
+    float spreadU = 0.0f;
+    float spreadV = 0.0f;
     uint64_t ink = 0;
     bool valid = false;
 };
+
+// The captured art's width over its height, from its ink spread; 0 when it has no height to compare with.
+inline float AuthoredReticleArtAspect(const AuthoredReticleArtCentre& centre) noexcept
+{
+    return centre.valid && centre.spreadV > 1.0e-6f ? centre.spreadU / centre.spreadV : 0.0f;
+}
 
 // `rows`: `size` x `size` RGBA8 texels, `rowPitch` bytes apart. `colourInk`
 // weighs each texel by r+g+b (Halo 4's CUI target writes colour with a zero
@@ -285,7 +296,7 @@ inline AuthoredReticleArtCentre MeasureAuthoredReticleArtCentre(
     AuthoredReticleArtCentre out{};
     if (!rows || size == 0 || rowPitch < static_cast<size_t>(size) * 4)
         return out;
-    double sumX = 0.0, sumY = 0.0;
+    double sumX = 0.0, sumY = 0.0, sumXX = 0.0, sumYY = 0.0;
     uint64_t ink = 0;
     for (uint32_t y = 0; y < size; ++y)
     {
@@ -299,14 +310,21 @@ inline AuthoredReticleArtCentre MeasureAuthoredReticleArtCentre(
                 continue;
             sumX += (x + 0.5) * weight;
             sumY += (y + 0.5) * weight;
+            sumXX += (x + 0.5) * (x + 0.5) * weight;
+            sumYY += (y + 0.5) * (y + 0.5) * weight;
             ink += weight;
         }
     }
     out.ink = ink;
     if (ink == 0 || ink < minimumInk)
         return out;
-    out.u = static_cast<float>(sumX / static_cast<double>(ink) / size);
-    out.v = static_cast<float>(sumY / static_cast<double>(ink) / size);
+    const double total = static_cast<double>(ink);
+    const double meanX = sumX / total, meanY = sumY / total;
+    out.u = static_cast<float>(meanX / size);
+    out.v = static_cast<float>(meanY / size);
+    const double varianceX = sumXX / total - meanX * meanX, varianceY = sumYY / total - meanY * meanY;
+    out.spreadU = static_cast<float>(std::sqrt(varianceX > 0.0 ? varianceX : 0.0) / size);
+    out.spreadV = static_cast<float>(std::sqrt(varianceY > 0.0 ? varianceY : 0.0) / size);
     out.valid = std::isfinite(out.u) && std::isfinite(out.v);
     return out;
 }

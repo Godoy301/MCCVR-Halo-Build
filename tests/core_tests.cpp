@@ -1742,6 +1742,23 @@ int main()
               "art centre: alpha ink finds the same centre");
         Check(!MeasureAuthoredReticleArtCentre(alpha.data(), pitch, size, true, 2).valid,
               "art centre: colour ink ignores alpha-only art");
+        Check(std::fabs(AuthoredReticleArtAspect(byAlpha) - 1.0f) < 1.0e-4f && byAlpha.spreadU > 0.0f,
+              "art shape: a square ring is as wide as it is tall");
+        {
+            // The same ring drawn twice as wide: 16 texels across, 8 down.
+            std::array<uint8_t, pitch * size> wide{};
+            for (uint32_t y = 14; y < 22; ++y)
+                for (uint32_t x = 24; x < 40; ++x)
+                    if (y == 14 || y == 21 || x == 24 || x == 25 || x == 38 || x == 39)
+                        wide[y * pitch + x * 4 + 3] = 255;
+            const AuthoredReticleArtCentre stretched =
+                MeasureAuthoredReticleArtCentre(wide.data(), pitch, size, false, 2);
+            const float aspect = AuthoredReticleArtAspect(stretched);
+            Check(stretched.valid && std::fabs(stretched.u - 0.5f) < 1.0e-5f && aspect > 1.8f && aspect < 2.2f,
+                  "art shape: a ring stretched to twice its width measures about twice as wide as tall");
+        }
+        Check(AuthoredReticleArtAspect(AuthoredReticleArtCentre{}) == 0.0f,
+              "art shape: no measurement has no aspect");
         const std::array<uint8_t, pitch * size> blank{};
         Check(!MeasureAuthoredReticleArtCentre(blank.data(), pitch, size, true, 2).valid,
               "art centre: a blank capture has no centre");

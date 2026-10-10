@@ -18312,7 +18312,8 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                                         "texture centre = %+.2f deg right, %+.2f deg down of the aim point "
                                         "for a %.2f deg crosshair (ink %llu); the capture window follows the "
                                         "art: it sits %+.0f px right, %+.0f px down of the view's centre "
-                                        "after %u moves",
+                                        "after %u moves; the art is %.2f times as wide as it is tall (ink "
+                                        "spread %.3f across, %.3f down)",
                                         static_cast<int>(reticleTitle),
                                         g_authoredReticlePublishedCentre.u - 0.5f,
                                         g_authoredReticlePublishedCentre.v - 0.5f,
@@ -18324,12 +18325,16 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                                         static_cast<unsigned long long>(
                                             g_authoredReticlePublishedCentre.ink),
                                         g_halo2ReticleFollow.x, g_halo2ReticleFollow.y,
-                                        g_halo2ReticleFollow.moves);
+                                        g_halo2ReticleFollow.moves,
+                                        AuthoredReticleArtAspect(g_authoredReticlePublishedCentre),
+                                        g_authoredReticlePublishedCentre.spreadU,
+                                        g_authoredReticlePublishedCentre.spreadV);
                                 else if (g_authoredReticlePublishedCentre.valid)
                                     LOG("RETICLE art centre (title %d): %+.3f right, %+.3f down of the "
                                         "texture centre = %+.2f deg right, %+.2f deg down of the aim point "
                                         "for a %.2f deg crosshair (ink %llu); the quad is centred on the "
-                                        "texture, not on the art",
+                                        "texture, not on the art; the art is %.2f times as wide as it is tall "
+                                        "(ink spread %.3f across, %.3f down)",
                                         static_cast<int>(reticleTitle),
                                         g_authoredReticlePublishedCentre.u - 0.5f,
                                         g_authoredReticlePublishedCentre.v - 0.5f,
@@ -18339,7 +18344,10 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                                             g_config.crosshair_size_deg,
                                         g_config.crosshair_size_deg,
                                         static_cast<unsigned long long>(
-                                            g_authoredReticlePublishedCentre.ink));
+                                            g_authoredReticlePublishedCentre.ink),
+                                        AuthoredReticleArtAspect(g_authoredReticlePublishedCentre),
+                                        g_authoredReticlePublishedCentre.spreadU,
+                                        g_authoredReticlePublishedCentre.spreadV);
                                 else
                                     LOG("RETICLE art centre (title %d): not measured (%s)",
                                         static_cast<int>(reticleTitle),
