@@ -1779,6 +1779,27 @@ int main()
                   "capture fit: art drawn tall is shortened, never widened");
             const AuthoredReticleCaptureFit none = AuthoredReticleFitForStretch(std::nanf(""));
             Check(none.across == 1.0f && none.down == 1.0f, "capture fit: no stretch, no change");
+            // One capture: the mod's layout applied, or the title's own safe frame.
+            const AuthoredReticleCaptureFit applied =
+                AuthoredReticleFitForCapture(true, 0.5246f, 0.2989f, raster, kHalo3HudCanvasAspect);
+            Check(std::fabs(applied.across - wide.across) < 1.0e-6f && applied.down == 1.0f,
+                  "capture fit: with the mod's layout applied the pair's own stretch is undone");
+            const AuthoredReticleCaptureFit own =
+                AuthoredReticleFitForCapture(false, 0.5246f, 0.2989f, raster, kHalo3HudCanvasAspect);
+            Check(own.across == 1.0f && std::fabs(own.down - raster / kHalo3HudCanvasAspect) < 1.0e-5f,
+                  "capture fit: under the title's own safe frame only the canvas stretches the art");
+            // A HUD laid out for the raster itself (Reach): the pair alone stretches its art.
+            const float rasterCanvas = AuthoredReticleCanvasAspect(true, raster);
+            Check(rasterCanvas == raster && AuthoredReticleCanvasAspect(false, raster) == kHalo3HudCanvasAspect,
+                  "canvas aspect: the raster's for a HUD laid out for it, 16:9 otherwise");
+            const AuthoredReticleCaptureFit reachOwn =
+                AuthoredReticleFitForCapture(false, 0.5246f, 0.2989f, raster, rasterCanvas);
+            Check(reachOwn.across == 1.0f && reachOwn.down == 1.0f,
+                  "capture fit: a raster-shaped HUD under its own safe frame is not fitted");
+            const AuthoredReticleCaptureFit reachApplied =
+                AuthoredReticleFitForCapture(true, 0.5246f, 0.3581f, raster, rasterCanvas);
+            Check(std::fabs(reachApplied.across - 0.3581f / 0.5246f) < 1.0e-5f && reachApplied.down == 1.0f,
+                  "capture fit: a raster-shaped HUD is narrowed by the pair's own ratio");
         }
         const std::array<uint8_t, pitch * size> blank{};
         Check(!MeasureAuthoredReticleArtCentre(blank.data(), pitch, size, true, 2).valid,

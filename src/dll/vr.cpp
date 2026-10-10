@@ -416,8 +416,8 @@ namespace
     // stepped where the centre is measured; the capture, on the thread that draws the HUD, reads the pair below.
     ReticleCaptureFollow g_halo2ReticleFollow{};
     std::atomic<float> g_halo2ReticleWindowX{0.0f}, g_halo2ReticleWindowY{0.0f};
-    // Halo 3 / ODST: what the last capture was narrowed by, across and down, to give HUD art its authored shape
-    // back (AuthoredReticleCanvasStretch). For the art-centre log line.
+    // What the last capture was narrowed by, across and down, to give HUD art its authored shape back
+    // (AuthoredReticleFitForCapture); 1 / 1 for a title whose capture is not fitted. For the art-centre log line.
     std::atomic<float> g_authoredReticleFitAcross{1.0f}, g_authoredReticleFitDown{1.0f};
     constexpr float kHalo2ReticleFollowEngage = 32.0f;     // texels: nearer the middle than this is centred art
     constexpr float kHalo2ReticleFollowDeadband = 6.0f;    // texels: a moved window holds the art this close
@@ -24182,20 +24182,24 @@ static bool BeginAuthoredReticleCaptureInternal(
     captureViewport.Height *= authoredCaptureScale;
     // Halo 3 and ODST stretch their HUD's 16:9 canvas over the raster and scale it by the safe frame, across and
     // down separately, so art authored round reaches this capture wider or narrower than that. The quad that
-    // shows it is square: narrow the wider axis here, by the HUD's own scale (authored_reticle_logic.h).
-    if (captureTitle == GameTitle::Halo3 || captureTitle == GameTitle::Halo3ODST)
+    // shows it is square: narrow the wider axis here, by the HUD's own scale (authored_reticle_logic.h). Reach's
+    // HUD is given the same safe-frame pair but is laid out for the raster itself, so only the pair stretches its
+    // art; under its own safe frame it arrives as authored.
+    const bool reachCapture = captureTitle == GameTitle::HaloReach;
+    AuthoredReticleCaptureFit captureFit{};
+    if (captureTitle == GameTitle::Halo3 || captureTitle == GameTitle::Halo3ODST || reachCapture)
     {
         float safeHorizontal = 1.0f, safeVertical = 1.0f;
-        (void)Game_GetAppliedHudSafeFrame(safeHorizontal, safeVertical);
+        const bool modLayoutApplied = Game_GetAppliedHudSafeFrame(safeHorizontal, safeVertical);
         const float rasterAspect = captureViewport.Height > 0.0f
             ? captureViewport.Width / captureViewport.Height : 0.0f;
-        const AuthoredReticleCaptureFit fit = AuthoredReticleFitForStretch(
-            AuthoredReticleCanvasStretch(safeHorizontal, safeVertical, rasterAspect, kHalo3HudCanvasAspect));
-        captureViewport.Width *= fit.across;
-        captureViewport.Height *= fit.down;
-        g_authoredReticleFitAcross.store(fit.across, std::memory_order_relaxed);
-        g_authoredReticleFitDown.store(fit.down, std::memory_order_relaxed);
+        captureFit = AuthoredReticleFitForCapture(modLayoutApplied, safeHorizontal, safeVertical, rasterAspect,
+                                                  AuthoredReticleCanvasAspect(reachCapture, rasterAspect));
+        captureViewport.Width *= captureFit.across;
+        captureViewport.Height *= captureFit.down;
     }
+    g_authoredReticleFitAcross.store(captureFit.across, std::memory_order_relaxed);
+    g_authoredReticleFitDown.store(captureFit.down, std::memory_order_relaxed);
     // This symmetric centring is what maps the SOURCE's own centre - where any
     // FPS crosshair sits in its own normal full-screen render, independent of
     // whatever viewport is used to display it - to the capture texture's
