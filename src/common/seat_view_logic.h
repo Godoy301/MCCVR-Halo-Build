@@ -20,8 +20,8 @@
 // So the tag is left alone and only the director is answered: the three director call sites are redirected to a
 // relay that calls the game's own function and then, for the one occupant whose seat view the mod owns, turns the
 // settled "third person" answer into "first person". Everything the simulation reads is untouched, and so is the
-// function itself -- a host that hooks it for its own camera modes (Project Reclaimer does) keeps its hook, and
-// the relay calls through it.
+// function itself -- a host that hooks it for camera modes of its own keeps its hook, and the relay calls through
+// it.
 //
 // THE FUNCTION'S ANSWER (read from the pinned module): it returns 1 for third person and writes a state through
 // its second argument: 2 = settled in the seat, where the answer is the seat's bit 4; 1, 3 and 4 are the entry
