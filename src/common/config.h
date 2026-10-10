@@ -993,8 +993,8 @@ struct Config
     // rendering. The game's own HUD reticle sits at head-center and is wrong
     // whenever hand aim is on; this one is the truth.
     bool crosshair = true;
-    float crosshair_distance_m = 41.0f; // how far along the aim ray it floats
-    float crosshair_size_deg = 10.10f;  // apparent (angular) size
+    float crosshair_distance_m = 50.0f; // how far along the aim ray it floats
+    float crosshair_size_deg = 4.00f;   // apparent (angular) size
     // The crosshair's opacity and brightness, as a scale on its own headset layer (1 = as the game draws it).
     // Opacity scales the art's alpha: below 1 it is more see-through, above 1 a faint crosshair becomes more
     // solid. Brightness scales its colour: below 1 dimmer, above 1 brighter (towards white). 0 to 2 each.
@@ -1007,13 +1007,14 @@ struct Config
 
     // EVERY TITLE, while the aim converges (Reach through its own trace, the others through the sight
     // layer -- vr.cpp's traced_reticle_placement): Halo: Campaign Evolved's reticle placement
-    // (its aimreticulemaxdist / surfaceoff / minscale knobs, same defaults). The crosshair sits on the
+    // (its aimreticulemaxdist / surfaceoff / minscale knobs; its defaults but for the maximum distance,
+    // which is 50 m here so the crosshair stays on a far target). The crosshair sits on the
     // surface the aim ray hits, pulled back reticle_surface_offset_m; it parks at reticle_max_dist_m
     // beyond that and on a miss; and it shrinks away as the surface comes closer than
     // reticle_min_scale_dist_m (to reticle_min_scale there). The ray starts at the player's eye, so
     // parking it short never moves it off the thing being aimed at. It holds crosshair_size_deg at the
     // cap. crosshair_distance_m still applies whenever the aim is not converged (the fallback aim).
-    float reticle_max_dist_m = 6.0f;
+    float reticle_max_dist_m = 50.0f;
     float reticle_surface_offset_m = 0.5f;
     float reticle_min_scale_dist_m = 0.7f;
     float reticle_min_scale = 0.001f;
