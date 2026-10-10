@@ -328,10 +328,17 @@ inline constexpr int kConfigReachShippedSeatTrimCount =
     sizeof(kConfigReachShippedSeatTrims) /
     sizeof(kConfigReachShippedSeatTrims[0]);
 
-// C-TITLE-1: the thirteen weapon/hand/HUD tunables every title keeps its
+// C-TITLE-1: the weapon/hand/HUD/crosshair tunables every title keeps its
 // own copy of - one struct so a profile is copied whole. Defaults mirror
 // the shared fields' defaults so an untouched profile behaves identically.
 inline constexpr int kTitleProfileCount = 7;
+// Reach's slot among the profiles (cfg prefix reach_). The crosshair's three tunables follow and edit this
+// profile while no game is running, so the menu always shows one game's own values.
+inline constexpr int kTitleProfileReach = 2;
+// Reach's crosshair art fills about half as much of the crosshair's quad as Halo 3's (its ring's ink spread
+// measured 0.092 of the capture against 0.170 at one HUD scale). A Reach profile that names no crosshair size
+// therefore starts this much larger than the shared size, and a given shared size looks alike in the two games.
+inline constexpr float kReachCrosshairSizeSeedScale = 1.85f;
 
 struct TitleTunables
 {
@@ -362,6 +369,12 @@ struct TitleTunables
     float barrel_pitch_deg = 0.0f;
     float barrel_yaw_deg = 0.0f;
     float barrel_roll_deg = 0.0f;
+    // The crosshair's size, opacity and brightness (Config::crosshair_size_deg, _opacity, _brightness). Each game
+    // draws its own crosshair art, larger, fainter or brighter than the next game's. With no game running these
+    // three follow and edit Reach's profile rather than the shared defaults (kTitleProfileReach).
+    float crosshair_size_deg = 4.00f;
+    float crosshair_opacity = 1.25f;
+    float crosshair_brightness = 1.25f;
 };
 
 struct Config
@@ -994,7 +1007,7 @@ struct Config
     // whenever hand aim is on; this one is the truth.
     bool crosshair = true;
     float crosshair_distance_m = 50.0f; // how far along the aim ray it floats
-    float crosshair_size_deg = 4.00f;   // apparent (angular) size
+    float crosshair_size_deg = 4.00f;   // apparent (angular) size; saved per game (title_profiles)
     // The crosshair's opacity and brightness, as a scale on its own headset layer (1 = as the game draws it).
     // Opacity scales the art's alpha: below 1 it is more see-through, above 1 a faint crosshair becomes more
     // solid. Brightness scales its colour: below 1 dimmer, above 1 brighter (towards white). 0 to 2 each.
@@ -1002,6 +1015,7 @@ struct Config
     // scaling (XR_KHR_composition_layer_color_scale_bias) the compositor applies them; where it does not
     // (SteamVR) the mod applies them to the crosshair's own image. Log: CROSSHAIR TINT. Read live.
     // The defaults are 1.25 and 1.25: a little more solid and a little brighter than the game draws it.
+    // Saved per game (title_profiles).
     float crosshair_opacity = 1.25f;
     float crosshair_brightness = 1.25f;
 
@@ -1545,10 +1559,10 @@ struct Config
     // move to the right lens. See docs/CONTINUATION.md "KNOWN MAJOR BUG".
     bool right_eye_first = false;
 
-    // C-TITLE-1: per-title weapon/hand/HUD profiles. Every supported game -
-    // and Halo 2's Anniversary and Classic renderers separately - keeps its
-    // OWN copy of the thirteen tunables below, exactly like the per-vehicle
-    // seat trims. The gun_*/left_hand_*/hud_* fields ABOVE are the live
+    // C-TITLE-1: per-title weapon/hand/HUD/crosshair profiles. Every supported
+    // game - and Halo 2's Anniversary and Classic renderers separately - keeps
+    // its OWN copy of the tunables in TitleTunables, exactly like the per-vehicle
+    // seat trims. The gun_*/left_hand_*/hud_*/crosshair_* fields ABOVE are the live
     // values the engine reads; the title worker copies the active game's
     // profile into them when the game (or Halo 2 renderer) changes, and the
     // F1 sliders edit the active game's profile. `base_tunables` holds the
@@ -1745,6 +1759,9 @@ extern Config g_config;
 // profile (the F1 save path). Both are cheap and safe on any thread.
 const char* Config_TitleProfileName(int profile);
 int Config_ActiveTitleProfile();
+// The profile whose crosshair size, opacity and brightness are live now: the running game's, or Reach's while
+// no game is running.
+int Config_CrosshairTitleProfile();
 void Config_ApplyTitleProfile(int profile);
 void Config_StoreLiveTunables();
 // Cold config/UI path only. Identity comes from the admitted primary weapon
