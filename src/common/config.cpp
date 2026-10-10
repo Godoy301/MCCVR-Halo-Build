@@ -28,8 +28,11 @@ Config g_config;
 // scorpion's trim on a mongoose.
 Config::Config()
 {
-    title_profiles[kTitleProfileReach].crosshair_size_deg =
-        TitleTunables{}.crosshair_size_deg * kReachCrosshairSizeSeedScale;
+    for (int profile = 0; profile < kTitleProfileCount; ++profile)
+    {
+        title_profiles[profile].crosshair_size_deg = kCrosshairStarts[profile].size_deg;
+        title_profiles[profile].crosshair_opacity = kCrosshairStarts[profile].opacity;
+    }
     for (const ConfigShippedSeatTrim& trim : kConfigShippedSeatTrims)
     {
         const int slot = ConfigSeatTrimSlot(
@@ -783,11 +786,26 @@ const char* const kTitleProfileTitles[kTitleProfileCount] = {
 bool g_profileFieldSet[kTitleProfileCount][kTunableFieldCount]{};
 std::atomic<int> g_activeTitleProfile{-1};
 
-// What a profile field the cfg did not name starts from, as a multiple of the shared default.
-float ProfileSeedScale(int profile, const TunableField& descriptor)
+// What a profile field the cfg did not name starts from: the shared value, but for the crosshair's size and
+// opacity, which keep the proportion of the game's own start to the shared default (kCrosshairStarts).
+float ProfileSeed(int profile, const TunableField& descriptor, float shared)
 {
-    return profile == kTitleProfileReach && descriptor.member == &TitleTunables::crosshair_size_deg
-        ? kReachCrosshairSizeSeedScale : 1.0f;
+    const TitleTunables defaults{};
+    float start = 0.0f, sharedDefault = 0.0f;
+    if (descriptor.member == &TitleTunables::crosshair_size_deg)
+    {
+        start = kCrosshairStarts[profile].size_deg;
+        sharedDefault = defaults.crosshair_size_deg;
+    }
+    else if (descriptor.member == &TitleTunables::crosshair_opacity)
+    {
+        start = kCrosshairStarts[profile].opacity;
+        sharedDefault = defaults.crosshair_opacity;
+    }
+    else
+        return shared;
+    // The shared default gives the game's start itself, not that start through a quotient's rounding.
+    return shared == sharedDefault ? start : shared * (start / sharedDefault);
 }
 
 // Where a field's live value comes from, and where an edit of it goes, for the active profile (-1 = no game).
@@ -849,7 +867,7 @@ void ResolveTitleProfiles()
             const TunableField& descriptor = kTunableFields[field];
             float& value = g_config.title_profiles[profile].*descriptor.member;
             if (!g_profileFieldSet[profile][field] || !std::isfinite(value))
-                value = g_config.base_tunables.*descriptor.member * ProfileSeedScale(profile, descriptor);
+                value = ProfileSeed(profile, descriptor, g_config.base_tunables.*descriptor.member);
             value = std::clamp(value, descriptor.minimum, descriptor.maximum);
         }
     }
@@ -2341,15 +2359,23 @@ void ConfigSave()
     fprintf(f, "crosshair_distance_m = %.1f\n\n", g_config.crosshair_distance_m);
     fprintf(f, "# Apparent size of the crosshair, in degrees. Each game keeps its own (halo3_crosshair_size_deg\n");
     fprintf(f, "# and so on, at the end of this file; F1 > Crosshair edits the running game's). This is the\n");
-    fprintf(f, "# size a game's profile starts from when it names none; Reach's starts %.2f times larger,\n",
-        kReachCrosshairSizeSeedScale);
-    fprintf(f, "# because its crosshair art fills less of the crosshair.\n");
+    fprintf(f, "# size a game's profile starts from when it names none, in proportion to that game's own\n");
+    fprintf(f, "# default: each game's crosshair art fills a different share of the crosshair. At %.2f:\n",
+        d.crosshair_size_deg);
+    for (int profile = 0; profile < kTitleProfileCount; ++profile)
+        if (d.title_profiles[profile].crosshair_size_deg != d.crosshair_size_deg)
+            fprintf(f, "#   %s starts at %.2f\n", Config_TitleProfileName(profile),
+                d.title_profiles[profile].crosshair_size_deg);
     fprintf(f, "# (default %.2f, range 0.3 to 20)\n", d.crosshair_size_deg);
     fprintf(f, "crosshair_size_deg = %.2f\n\n", g_config.base_tunables.crosshair_size_deg);
     fprintf(f, "# Crosshair opacity and brightness. 1 = as the game draws it. Opacity below 1 is more\n");
     fprintf(f, "# see-through, above 1 makes a faint crosshair more solid; brightness below 1 is dimmer,\n");
     fprintf(f, "# above 1 brighter. Each game keeps its own, like the size: these are the values a game's\n");
     fprintf(f, "# profile starts from. Live in F1 > Crosshair.\n");
+    for (int profile = 0; profile < kTitleProfileCount; ++profile)
+        if (d.title_profiles[profile].crosshair_opacity != d.crosshair_opacity)
+            fprintf(f, "# %s's opacity starts at %.2f for the default %.2f, and in that proportion.\n",
+                Config_TitleProfileName(profile), d.title_profiles[profile].crosshair_opacity, d.crosshair_opacity);
     fprintf(f, "# (defaults %.2f and %.2f, range 0 to 2)\n",
         d.crosshair_opacity, d.crosshair_brightness);
     fprintf(f, "crosshair_opacity = %.2f\n", g_config.base_tunables.crosshair_opacity);
