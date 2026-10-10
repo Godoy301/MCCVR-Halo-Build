@@ -789,6 +789,54 @@ int8_t LegacyFireTag(GameTitle title)
     return title == GameTitle::Halo3 ? t_halo3Fire : title == GameTitle::Halo3ODST ? t_odstFire : shot_lag::kFireNone;
 }
 
+// THE STOCK LINE'S START, AS THE GAME BUILT IT (Halo 3 seats; seat_upstream_logic.h 4b). With the seat's tag as
+// loaded the game queries a third-person seat's crosshair from its chase camera -- on this machine, on a lockstep
+// peer and on an unmodded host alike. That query's START for the local player's seat is published here from the
+// crosshair site, with its direction, and read at the stick call (LegacyDriveRecomposeSeated). It is a point on the
+// camera's line and not the camera (the query starts at the shot origin's projection on that line), and the game
+// runs the query when the gun fires. So it is the last of the stick call's sources, and the line its asked chase
+// camera is checked against. It needs no hook on the unit camera evaluator.
+struct LegacySeatStockLine
+{
+    SRWLOCK lock = SRWLOCK_INIT;
+    float start[3]{}, dir[3]{};
+    uint64_t atUs = 0;
+    uint32_t generation = 0;
+};
+LegacySeatStockLine g_legacySeatStockLine;
+
+// `vector`: the query's own (any length; only its direction is kept).
+void LegacySeatStockLinePublish(uint32_t generation, const float start[3], const float vector[3])
+{
+    float dir[3]{vector[0], vector[1], vector[2]};
+    if (!generation || !shot_lag::Finite3(start) || !shot_lag::Finite3(dir) || !seat_upstream::Normalize(dir))
+        return;
+    auto& line = g_legacySeatStockLine;
+    AcquireSRWLockExclusive(&line.lock);
+    memcpy(line.start, start, sizeof(line.start));
+    memcpy(line.dir, dir, sizeof(line.dir));
+    line.atUs = Sight_NowUs();
+    line.generation = generation;
+    ReleaseSRWLockExclusive(&line.lock);
+}
+bool LegacySeatStockLineRead(uint32_t generation, uint64_t maxAgeUs, float start[3], float dir[3], uint64_t& atUs)
+{
+    auto& line = g_legacySeatStockLine;
+    AcquireSRWLockShared(&line.lock);
+    const bool fresh = generation && line.generation == generation && line.atUs;
+    const uint64_t at = line.atUs;
+    const float startCopy[3]{line.start[0], line.start[1], line.start[2]};
+    const float dirCopy[3]{line.dir[0], line.dir[1], line.dir[2]};
+    ReleaseSRWLockShared(&line.lock);
+    const uint64_t now = Sight_NowUs();
+    if (!fresh || now < at || now - at > maxAgeUs)
+        return false;
+    memcpy(start, startCopy, sizeof(startCopy));
+    memcpy(dir, dirCopy, sizeof(dirCopy));
+    atUs = at;
+    return true;
+}
+
 // Returns true when `out` holds the re-aimed vector the native query must trace instead.
 bool LegacySightReaimCrosshairQuery(GameTitle title, uint64_t flags, const float* start, const float* vector,
                                     int32_t ignoredA, uintptr_t caller, float out[3])
@@ -819,6 +867,15 @@ bool LegacySightReaimCrosshairQuery(GameTitle title, uint64_t flags, const float
     const bool rayRead = Sight_ReadRay(title, generation, 250, ray);
     const bool seated = intent.p.seated;
     const float* point = seated ? intent.solvePoint : intent.p.point;
+    // Another unit's fire or query (an ally, an enemy, a co-op player in the next seat), or no ray to tell: never
+    // ours.
+    const bool localQuery = rayRead && LegacySightQueryIsLocal(title, ignoredA, ray, seated);
+    // A Halo 3 seat whose simulation is the stock one (the tag as loaded): publish where the game's own line starts.
+    // Another occupant of the same vehicle names the same objects, so a fire known to be someone else's is left
+    // out; where no fire is tagged (the fire routine is not hooked) the ignore list alone decides.
+    const bool stockSeat = title == GameTitle::Halo3 && seated && !Halo3SeatViewWritesTag();
+    if (stockSeat && localQuery && LegacyFireTag(title) != shot_lag::kFireOther)
+        LegacySeatStockLinePublish(generation, start, vector);
 #if HALOMCCVR_DEV_DIAGNOSTICS
     // The capture first, from the query as the game built it.
     if (title == GameTitle::Halo3 && seated && use != shot_lag::IntentUse::Missing)
@@ -852,9 +909,7 @@ bool LegacySightReaimCrosshairQuery(GameTitle title, uint64_t flags, const float
     // to touch. The local fire's own shot line (an off-hand gun under independent dual aim, a barrel / muzzle shot):
     // its assist traces that gun's ray, never the aim hand's point (shot_lag::GateCrosshairQuery).
     const shot_lag::QueryGate gate = shot_lag::GateCrosshairQuery(
-        true, LegacyFireTag(title),
-        rayRead && LegacySightQueryIsLocal(title, ignoredA, ray, seated),
-        LegacyOwnShotLineActive(title));
+        true, LegacyFireTag(title), localQuery, LegacyOwnShotLineActive(title));
     if (gate != shot_lag::QueryGate::Try)
     {
         if (gate != shot_lag::QueryGate::NotSite)
@@ -884,7 +939,13 @@ bool LegacySightReaimCrosshairQuery(GameTitle title, uint64_t flags, const float
     if (title == GameTitle::Halo3 && seated && Halo3SeatedInheritPoint(point, compensated))
         point = compensated;
 #endif
-    const bool reaimed = Sight_ReaimThroughPoint(title, SightShotSite::CrosshairAssist, start, out, point, seated);
+    // A STOCK SEAT'S QUERY IS LEFT AS THE GAME BUILT IT. Bending it here is a change only this machine makes: a
+    // host fires its own line whatever this machine predicted, and a lockstep peer computes another shot. The
+    // record was aimed along this very line upstream instead, at every control pass (LegacyDriveRecomposeSeated),
+    // so the line already passes through the point as closely as that solve got. SHOT RECORD Halo 3 seated counts
+    // the passes it could not solve, and the dev SHOT UPSTREAM line below measures what is left.
+    const bool reaimed = !stockSeat &&
+        Sight_ReaimThroughPoint(title, SightShotSite::CrosshairAssist, start, out, point, seated);
 #if HALOMCCVR_DEV_DIAGNOSTICS
     if (stock.valid)
         LegacySightNoteStockLine(stock, reaimed, intent.solvePoint);

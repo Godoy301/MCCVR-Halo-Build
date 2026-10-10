@@ -147,7 +147,11 @@ bool SeatAimFrameWanted(int slot)
     if (slot == 2)
         return seat_aim_frame::ReachWanted(g_config.vehicle_first_person, key, SeatAimFrameSamplerBound(slot),
                                            SeatAimFrameNativeNoThirdPerson(slot) != 0);
-    return seat_aim_frame::Wanted(g_config.vehicle_first_person, g_config.vehicle_hide_body, key,
+    // Halo 3 leaves the seat's tag as loaded unless the dev A/B key asks for the write (halo3_seat_view.inl): with
+    // bit 4 still set the game does not rebase, so there is nothing for the skip to undo and no instruction on the
+    // simulation's path is touched. ODST still writes its tag.
+    const bool tagWritten = g_config.vehicle_hide_body && (slot != 0 || Halo3SeatViewWritesTag());
+    return seat_aim_frame::Wanted(g_config.vehicle_first_person, tagWritten, key,
                                   SeatAimFrameSamplerBound(slot), SeatAimFrameNativeNoThirdPerson(slot) != 0);
 }
 
@@ -270,6 +274,9 @@ const char* SeatAimFrameWhyOff(int slot)
         return "vehicle_first_person off: R-V27 leaves every seat's third-person flag stock";
     if (slot != 2 && (!g_config.vehicle_first_person || !g_config.vehicle_hide_body))
         return "vehicle_first_person / vehicle_hide_body off: seats keep their stock third-person flag";
+    if (slot == 0 && !Halo3SeatViewWritesTag())
+        return "Halo 3 seats keep their tag flag as loaded (the camera director is answered instead), so the game "
+               "does not rebase them";
     if (!SeatAimFrameSamplerBound(slot))
         return slot == 2 ? "the Reach vehicle camera binding is not installed: R-V27 patches no seat flag"
                          : "the vehicle sampler is not bound: no seat is checked, and no seat flag is patched";

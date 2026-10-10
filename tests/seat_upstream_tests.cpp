@@ -308,6 +308,276 @@ void TestStockLineWindow()
           "the dev line carries the unmodded host's chase line and the unreproducible count");
 }
 
+// A stock seat's line start (section 4b): the choice, the carried query start, the ask's agreement with the game,
+// and the claim the solve rests on -- solved each step against the camera the last record produced, the error
+// shrinks by R / (L + R).
+void TestStockStart()
+{
+    using seat_upstream::StockStart;
+    seat_upstream::StockStartInput in{};
+    Check(seat_upstream::ChooseStockStart(in).source == StockStart::None, "nothing in hand: no start");
+
+    in.query = true;
+    in.queryPos[0] = 10.0f * kWuPerM;
+    in.queryAgeUs = 100000;
+    auto c = seat_upstream::ChooseStockStart(in);
+    Check(c.source == StockStart::Query && !c.velValid && c.pos[0] == in.queryPos[0],
+          "a query start with no seat velocity is used where it was");
+    in.seatVelValid = true;
+    in.seatVel[1] = 10.0f * kWuPerM;
+    c = seat_upstream::ChooseStockStart(in);
+    Check(c.source == StockStart::Query && c.velValid && std::fabs(c.pos[1] - 1.0f * kWuPerM) < 1.0e-4f &&
+              c.vel[1] == in.seatVel[1],
+          "a 100 ms old query start in a seat moving 10 m/s is carried 1 m");
+    in.queryAgeUs = seat_upstream::kStockQueryMaxAgeUs + 1;
+    Check(seat_upstream::ChooseStockStart(in).source == StockStart::None, "a query start past its age is refused");
+    in.queryAgeUs = 100000;
+    in.queryPos[2] = std::nanf("");
+    Check(seat_upstream::ChooseStockStart(in).source == StockStart::None, "a non-finite query start is refused");
+    in.queryPos[2] = 0.0f;
+
+    in.asked = true;
+    in.askedPos[0] = 20.0f * kWuPerM;
+    c = seat_upstream::ChooseStockStart(in);
+    Check(c.source == StockStart::Asked && c.pos[0] == in.askedPos[0] && !c.velValid,
+          "the asked camera comes before the query's start");
+    in.askedVelValid = true;
+    in.askedVel[0] = std::nanf("");
+    Check(!seat_upstream::ChooseStockStart(in).velValid, "a non-finite velocity is no velocity");
+    in.askedVel[0] = 3.0f;
+    Check(seat_upstream::ChooseStockStart(in).velValid, "...and a finite one is carried");
+
+    in.evaluator = true;
+    in.evaluatorPos[0] = 30.0f * kWuPerM;
+    in.evaluatorVelValid = true;
+    c = seat_upstream::ChooseStockStart(in);
+    Check(c.source == StockStart::Evaluator && c.pos[0] == in.evaluatorPos[0] && c.velValid,
+          "this pass's own camera comes first");
+    in.evaluatorPos[1] = std::nanf("");
+    Check(seat_upstream::ChooseStockStart(in).source == StockStart::Asked, "a non-finite one falls through");
+
+    // The ask against the game's own query LINE. The query starts some metres along the camera's line, so the two
+    // points are far apart when the camera is exactly where the game's is.
+    {
+        seat_upstream::AskAgreement agreement;
+        Check(agreement.Usable() && agreement.Lead() == 0.0f, "never compared: the ask is used, with no lead");
+        const float camera[3]{0.0f, 0.0f, 0.0f}, forward[3]{1.0f, 0.0f, 0.0f};
+        const float onLine[3]{6.4f * kWuPerM, 0.0f, 0.0f};                      // 6.4 m ahead, on the line
+        const float nearLine[3]{6.4f * kWuPerM, 0.4f * kWuPerM, 0.0f};          // 0.4 m aside
+        const float offLine[3]{6.4f * kWuPerM, 0.0f, 3.0f * kWuPerM};           // 3 m aside
+        auto reading = agreement.Note(camera, forward, onLine, forward);
+        Check(reading.compared && seat_upstream::AskAgreement::Agrees(reading) && reading.asideWu < 1.0e-4f &&
+                  std::fabs(reading.aheadWu - 6.4f * kWuPerM) < 1.0e-4f,
+              "a camera 6.4 m behind the query's start, on its line, agrees");
+        Check(std::fabs(agreement.Lead() - 6.4f * kWuPerM) < 1.0e-4f, "...and the lead is how far ahead the query starts");
+        reading = agreement.Note(camera, forward, nearLine, forward);
+        Check(seat_upstream::AskAgreement::Agrees(reading) && std::fabs(reading.asideWu - 0.4f * kWuPerM) < 1.0e-4f,
+              "40 cm aside is on the line");
+        reading = agreement.Note(camera, forward, offLine, forward);
+        Check(reading.compared && !seat_upstream::AskAgreement::Agrees(reading) && agreement.Usable(),
+              "one comparison off the line proves nothing");
+        agreement.Note(camera, forward, offLine, forward);
+        Check(agreement.Usable(), "nor do two");
+        agreement.Note(camera, forward, offLine, forward);
+        Check(!agreement.Usable(), "three in a row: the ask is not the game's camera");
+        agreement.Note(camera, forward, onLine, forward);
+        Check(agreement.Usable(), "the first one on the line brings it back");
+        agreement.Note(camera, forward, offLine, forward);
+        agreement.Note(camera, forward, offLine, forward);
+        agreement.Note(camera, forward, onLine, forward);
+        agreement.Note(camera, forward, offLine, forward);
+        agreement.Note(camera, forward, offLine, forward);
+        Check(agreement.Usable(), "comparisons off the line that are not in a row do not refuse it");
+        // Another occupant shooting at the same target 40 m off from a seat 3 m aside: his line is 4 deg from ours.
+        const float partner[3]{std::cos(0.07f), std::sin(0.07f), 0.0f};
+        reading = agreement.Note(camera, forward, offLine, partner);
+        Check(!reading.compared, "a query along another aim is not this seat's");
+        // The aim turned between the query and the ask: no evidence either way.
+        const float turned[3]{std::cos(0.1f), std::sin(0.1f), 0.0f};
+        const float before = agreement.Lead();
+        reading = agreement.Note(camera, turned, offLine, forward);
+        Check(!reading.compared && agreement.Usable() && agreement.Lead() == before,
+              "a comparison across a turn of the aim is no evidence");
+        const float bad[3]{std::nanf(""), 0.0f, 0.0f};
+        reading = agreement.Note(camera, forward, bad, forward);
+        Check(!reading.compared && !seat_upstream::AskAgreement::Agrees(reading), "a non-finite line is no comparison");
+        const float nowhere[3]{};
+        reading = agreement.Note(camera, nowhere, onLine, forward);
+        Check(!reading.compared, "a camera with no direction is no comparison");
+        // The lead follows a change slowly (a quarter of the way a comparison).
+        seat_upstream::AskAgreement slow;
+        slow.Note(camera, forward, onLine, forward);
+        const float further[3]{10.4f * kWuPerM, 0.0f, 0.0f};
+        slow.Note(camera, forward, further, forward);
+        Check(std::fabs(slow.Lead() - 7.4f * kWuPerM) < 1.0e-3f, "the lead is smoothed");
+        agreement.Reset();
+        Check(agreement.Usable() && agreement.Lead() == 0.0f, "a new occupant starts unjudged");
+
+        // The asked start carried by the lead.
+        seat_upstream::StockStartInput led{};
+        led.asked = true;
+        led.askedPos[0] = 20.0f * kWuPerM;
+        led.askedDir[1] = 2.0f;                         // not unit length
+        led.askedLeadWu = 6.0f * kWuPerM;
+        Check(seat_upstream::ChooseStockStart(led).pos[1] == 0.0f, "with no point to solve through there is no lead");
+        led.pointValid = true;
+        led.point[0] = led.askedPos[0];
+        led.point[1] = 50.0f * kWuPerM;
+        auto start = seat_upstream::ChooseStockStart(led);
+        Check(start.source == StockStart::Asked && start.pos[0] == led.askedPos[0] &&
+                  std::fabs(start.pos[1] - 3.0f * kWuPerM) < 1.0e-4f,
+              "the asked camera is carried along its own direction by half the lead");
+        led.point[1] = 4.0f * kWuPerM;
+        start = seat_upstream::ChooseStockStart(led);
+        Check(std::fabs(start.pos[1] - 2.0f * kWuPerM) < 1.0e-4f,
+              "...but never more than half the way to the point");
+        led.point[1] = -8.0f * kWuPerM;
+        Check(seat_upstream::ChooseStockStart(led).pos[1] == 0.0f, "a point behind the camera: no lead");
+        led.point[1] = 50.0f * kWuPerM;
+        led.askedLeadWu = -3.0f * kWuPerM;
+        Check(seat_upstream::ChooseStockStart(led).pos[1] == 0.0f, "a query that starts behind the camera: no lead");
+        led.askedLeadWu = 6.0f * kWuPerM;
+        led.askedDir[1] = 0.0f;
+        Check(seat_upstream::ChooseStockStart(led).pos[1] == 0.0f, "with no direction it stays at the camera");
+    }
+
+    // The limit keeps every arm converging. A lead of four camera arms would start the solve an arm past the pivot;
+    // with the point nearer the pivot than that the error would grow each step. Limited to half the way to the
+    // point, it shrinks every step.
+    {
+        const float R = 6.0f * kWuPerM, L = 5.0f * kWuPerM;
+        const float pivot[3]{};
+        const float exact[3]{1.0f, 0.0f, 0.0f};
+        const float point[3]{L, 0.0f, 0.0f};
+        float yaw = 15.0f / shot_lag::kRadToDeg, pitch = 0.0f;
+        float errorDeg = 15.0f;
+        bool shrinking = true;
+        for (int pass = 0; pass < 6; ++pass)
+        {
+            float record[3]{};
+            seat_upstream::DirFromAngles(yaw, pitch, record);
+            seat_upstream::StockStartInput from{};
+            from.asked = true;
+            from.pointValid = true;
+            for (int axis = 0; axis < 3; ++axis)
+            {
+                from.askedPos[axis] = pivot[axis] - record[axis] * R;
+                from.askedDir[axis] = record[axis];
+                from.point[axis] = point[axis];
+            }
+            from.askedLeadWu = 4.0f * R;
+            const auto origin = seat_upstream::ChooseStockStart(from);
+            seat_upstream::SeatRecomposeInput step = HornetInput();
+            step.gain = 0.0f;
+            step.cameraVelValid = false;
+            std::memcpy(step.point, point, sizeof(point));
+            std::memcpy(step.camera, origin.pos, sizeof(step.camera));
+            step.setYaw = step.intent.solvedYaw = yaw;
+            step.setPitch = step.intent.solvedPitch = pitch;
+            float bend = 0.0f;
+            if (seat_upstream::RecomposeSeat(step, yaw, pitch, bend) != seat_upstream::SeatRecompose::Recomposed)
+            {
+                shrinking = false;
+                break;
+            }
+            seat_upstream::DirFromAngles(yaw, pitch, record);
+            const float now = seat_upstream::AngleDeg(record, exact);
+            shrinking = shrinking && now < errorDeg;
+            errorDeg = now;
+        }
+        Check(shrinking && errorDeg < 0.05f,
+              "a lead past the pivot and a point beside the vehicle: the limited lead still converges");
+    }
+
+    // The fixed point with the lead: a query that starts at the pivot. Each step closes more of the error than a
+    // step from the camera does, and from the same side (the record never swings past the answer).
+    {
+        const float R = 6.5f * kWuPerM, L = 5.0f * kWuPerM;
+        const float pivot[3]{1.0f * kWuPerM, -2.0f * kWuPerM, 0.5f * kWuPerM};
+        const float exact[3]{0.8f, 0.6f, 0.0f};
+        const float point[3]{pivot[0] + exact[0] * L, pivot[1] + exact[1] * L, pivot[2] + exact[2] * L};
+        seat_upstream::SeatRecomposeInput step = HornetInput();
+        step.gain = 0.0f;
+        step.cameraVelValid = false;
+        std::memcpy(step.point, point, sizeof(point));
+        float setYaw = 0.0f, setPitch = 0.0f;
+        Check(seat_upstream::AnglesFromDir(exact, setYaw, setPitch), "the exact line has angles");
+        setYaw += 20.0f / shot_lag::kRadToDeg;
+        step.setYaw = step.intent.solvedYaw = setYaw;
+        step.setPitch = step.intent.solvedPitch = setPitch;
+        float record[3]{};
+        seat_upstream::DirFromAngles(setYaw, setPitch, record);
+        // The camera the record in effect produces, carried R along its own direction: the pivot.
+        seat_upstream::StockStartInput from{};
+        from.asked = true;
+        for (int axis = 0; axis < 3; ++axis)
+        {
+            from.askedPos[axis] = pivot[axis] - record[axis] * R;
+            from.askedDir[axis] = record[axis];
+        }
+        from.askedLeadWu = R;
+        from.pointValid = true;
+        std::memcpy(from.point, point, sizeof(point));
+        const auto origin = seat_upstream::ChooseStockStart(from);
+        std::memcpy(step.camera, origin.pos, sizeof(step.camera));
+        float yaw = 0.0f, pitch = 0.0f, bend = 0.0f;
+        Check(seat_upstream::RecomposeSeat(step, yaw, pitch, bend) == seat_upstream::SeatRecompose::Recomposed,
+              "the step from the led start recomposes");
+        float led[3]{};
+        seat_upstream::DirFromAngles(yaw, pitch, led);
+        // The same step from the camera itself.
+        std::memcpy(step.camera, from.askedPos, sizeof(step.camera));
+        Check(seat_upstream::RecomposeSeat(step, yaw, pitch, bend) == seat_upstream::SeatRecompose::Recomposed,
+              "the step from the camera recomposes");
+        float plain[3]{};
+        seat_upstream::DirFromAngles(yaw, pitch, plain);
+        const float ledDeg = seat_upstream::AngleDeg(led, exact), plainDeg = seat_upstream::AngleDeg(plain, exact);
+        Check(ledDeg < plainDeg * 0.7f && plainDeg < 20.0f, "the led start closes more of the error in a step");
+        // Same side: the led record lies between the one in effect and the exact line.
+        Check(seat_upstream::AngleDeg(record, led) < 20.0f && seat_upstream::AngleDeg(record, led) + ledDeg < 20.01f,
+              "...and does not swing past the answer");
+    }
+
+    // The fixed point. A chase camera R behind a pivot along the record; the point L from the pivot.
+    const float R = 2.0f * kWuPerM, L = 30.0f * kWuPerM;
+    const float pivot[3]{1.0f * kWuPerM, -2.0f * kWuPerM, 0.5f * kWuPerM};
+    float exact[3]{0.8f, 0.6f, 0.0f};
+    const float point[3]{pivot[0] + exact[0] * L, pivot[1] + exact[1] * L, pivot[2] + exact[2] * L};
+    seat_upstream::SeatRecomposeInput step = HornetInput();
+    step.gain = 0.0f;
+    step.cameraVelValid = false;
+    std::memcpy(step.point, point, sizeof(point));
+    // The published setpoint (what the solve from the render eye asked for): 10 degrees off the exact line.
+    float setYaw = 0.0f, setPitch = 0.0f;
+    Check(seat_upstream::AnglesFromDir(exact, setYaw, setPitch), "the exact line has angles");
+    setYaw += 10.0f / shot_lag::kRadToDeg;
+    step.setYaw = step.intent.solvedYaw = setYaw;
+    step.setPitch = step.intent.solvedPitch = setPitch;
+    float record[3]{};
+    seat_upstream::DirFromAngles(setYaw, setPitch, record);
+    float error = seat_upstream::AngleDeg(record, exact), firstRatio = 0.0f;
+    bool everyStep = true;
+    for (int k = 0; k < 4; ++k)
+    {
+        // The camera the record in effect produces; the next record is solved from it.
+        for (int axis = 0; axis < 3; ++axis)
+            step.camera[axis] = pivot[axis] - record[axis] * R;
+        float yaw = 0.0f, pitch = 0.0f, bend = 0.0f;
+        everyStep = everyStep &&
+            seat_upstream::RecomposeSeat(step, yaw, pitch, bend) == seat_upstream::SeatRecompose::Recomposed;
+        seat_upstream::DirFromAngles(yaw, pitch, record);
+        const float next = seat_upstream::AngleDeg(record, exact);
+        if (k == 0)
+            firstRatio = next / error;
+        error = next;
+    }
+    Check(everyStep, "every step of the fixed point recomposes");
+    Check(std::fabs(firstRatio - R / (L + R)) < 0.01f, "one step shrinks the error by R / (L + R)");
+    // From the camera the last record produces, its own line passes within a few millimetres of the point.
+    const float camera[3]{pivot[0] - record[0] * R, pivot[1] - record[1] * R, pivot[2] - record[2] * R};
+    Check(LineMissWu(camera, record, point) * shot_lag::kMmPerWu < 5.0f, "four steps on, the stock line hits the point");
+}
+
 void TestStockCamera()
 {
     using seat_upstream::StockCamera;
@@ -327,6 +597,7 @@ int main()
     TestWriteRing();
     TestRecomposeSeat();
     TestStockLineWindow();
+    TestStockStart();
     TestStockCamera();
     std::printf("%u checks, %u failures\n", checks, failures);
     return failures ? 1 : 0;

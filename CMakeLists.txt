@@ -739,6 +739,18 @@ if(BUILD_TESTING)
     add_executable(halomccvr_halo3_seat_lifetime_tests tests/halo3_seat_lifetime_tests.cpp)
     target_compile_definitions(halomccvr_halo3_seat_lifetime_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
     add_test(NAME halomccvr_halo3_seat_lifetime_tests COMMAND halomccvr_halo3_seat_lifetime_tests)
+    add_executable(halomccvr_seat_view_tests tests/seat_view_tests.cpp)
+    target_compile_definitions(halomccvr_seat_view_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    add_test(NAME halomccvr_seat_view_tests COMMAND halomccvr_seat_view_tests)
+    # The production install / sync / teardown of the Halo 3 seat view (src/dll/halo3_seat_view.inl) over a
+    # fixture module whose director call sites are run. Player and dev flavour (the dev A/B key).
+    add_executable(halomccvr_halo3_seat_view_tests tests/halo3_seat_view_tests.cpp)
+    target_compile_definitions(halomccvr_halo3_seat_view_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    add_test(NAME halomccvr_halo3_seat_view_tests COMMAND halomccvr_halo3_seat_view_tests)
+    add_executable(halomccvr_halo3_seat_view_dev_tests tests/halo3_seat_view_tests.cpp)
+    target_compile_definitions(halomccvr_halo3_seat_view_dev_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN
+        HALOMCCVR_DEV_DIAGNOSTICS=1)
+    add_test(NAME halomccvr_halo3_seat_view_dev_tests COMMAND halomccvr_halo3_seat_view_dev_tests)
     add_executable(halomccvr_halo4_vehicle_input_tests tests/halo4_vehicle_input_tests.cpp)
     target_compile_definitions(halomccvr_halo4_vehicle_input_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
     add_test(NAME halomccvr_halo4_vehicle_input_tests COMMAND halomccvr_halo4_vehicle_input_tests)

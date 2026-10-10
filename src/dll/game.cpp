@@ -91,6 +91,7 @@
 #include "ik.h"
 #include "title_adapter.h"
 #include "../common/authored_reticle_logic.h"
+#include "../common/seat_view_logic.h"
 #include "../common/reach_chud_logic.h"
 #include "../common/reach_render_logic.h"
 #include "../common/reach_vehicle_logic.h"
@@ -258,6 +259,17 @@ void GunAimReport();
 bool SeatAimFrameInstall(GameTitle title, uintptr_t base, size_t size, uint32_t generation);
 bool SeatAimFrameRemove(GameTitle title);
 void SeatAimFrameSync();
+// Halo 3 seats, first person for the camera director only (halo3_seat_view.inl; seat_view_logic.h has the why): the
+// seat's loaded tag is left alone and the director's own three calls are answered instead. Install/remove with the
+// title; the WaitThread poll follows the settings; the seat sampler arms the occupant. WritesTag: the dev A/B key
+// that puts the tag write back.
+bool Halo3SeatViewInstall(uintptr_t base, size_t size, uint32_t generation);
+bool Halo3SeatViewRemove();
+void Halo3SeatViewSync();
+bool Halo3SeatViewAvailable();
+bool Halo3SeatViewWritesTag();
+void Halo3SeatViewArm(int32_t unit);
+void Halo3SeatViewDisarm();
 #if HALOMCCVR_DEV_DIAGNOSTICS
 // DEV BUILDS ONLY: the log-only hooks on the type-13 pilot controllers (type13_flight_log.inl): the cold
 // worker's report, and Halo 4's install/remove inside its camera core.
@@ -2610,6 +2622,7 @@ namespace
     void EndHalo3AvatarPair();
     void ObserveHalo3AvatarFp(uint16_t tag,const BoneMatrix* destination);
     bool InstallHalo3DualAim(uintptr_t base, size_t size, uint32_t generation);
+    void BindHalo3ChaseCamera(uintptr_t base, size_t size, uint32_t generation);
     bool RemoveHalo3DualAim();
     void PublishHalo3DualAim();
     void ReportHalo3DualAim();
@@ -2707,6 +2720,10 @@ namespace
     // ...and the shot re-aimed through the intent point at that query (every build), with its dev witness.
     bool LegacySightReaimCrosshairQuery(GameTitle title, uint64_t flags, const float* start, const float* vector,
         int32_t ignoredA, uintptr_t caller, float out[3]);
+    // Where the game's own crosshair query for the local player's stock Halo 3 seat last started (published at the
+    // crosshair site; read at the stick call, which aims the seat's record from it).
+    bool LegacySeatStockLineRead(uint32_t generation, uint64_t maxAgeUs, float start[3], float dir[3],
+                                 uint64_t& atUs);
     void LegacySightNoteCrosshairQuery(GameTitle title, uint64_t flags, const float* start, const float* vector,
         int32_t ignoredA, uintptr_t caller);
     // True on a fire thread while another gun's own line owns the local fire: Halo 3's independent shot scope (the
@@ -9824,13 +9841,15 @@ namespace
         SeatWitness_NoteSeat(GameTitle::Halo3, generation, seated, unit, seat, parent,
             directType, defIndex, native);
 #endif
-        // C20: while the player is in a seat, tell Halo that seat is first
-        // person so it stops drawing the character model around the headset.
+        // While the player is in a seat, have Halo treat that seat as first
+        // person so it stops drawing the character model around the headset:
+        // by answering the camera director for this occupant (the default; the
+        // seat's tag is not written), or by the tag write behind the dev key.
         // Off foot, on feature-disable, or on any layout failure this restores
         // the seat's own value immediately â€” including when a config reload
         // crosses an old live session.
         if (seated)
-            Halo3EnsureFirstPersonSeatFlag(defIndex, seat, generation);
+            Halo3EnsureFirstPersonSeatFlag(defIndex, seat, generation, unit);
         else
             Halo3RestoreNativeSeatPatch();
         // Publish the vehicle transform for the authored-point camera.
@@ -11337,23 +11356,45 @@ namespace
             if (nativeState == Halo3NativeSeatState::Active)
             {
                 const uint32_t seatFlags = Halo3OccupiedSeatFlags();
-                LOG("H3 first-person seat: Active; occupied seat reports "
-                    "first person, so Halo stops drawing the player's own "
-                    "character model. Camera anchor unchanged. Seat flags "
-                    "%08X (allows-weapons=%d); personal-weapon shots are "
-                    "re-origined onto the engine's own eye so they pass "
-                    "through the floating reticle (%u aim frames so far)",
-                    seatFlags,
-                    Halo3SeatFiresPersonalWeapon(seatFlags) ? 1 : 0,
-                    g_halo3SeatAimReOrigins.load(std::memory_order_relaxed));
+                if (Halo3SeatViewWritesTag())
+                    LOG("H3 first-person seat: Active (seat_view_tag_write = 1: the "
+                        "seat's tag flag is cleared, which the simulation reads too); "
+                        "occupied seat reports first person, so Halo stops drawing "
+                        "the player's own character model. Camera anchor unchanged. "
+                        "Seat flags %08X (allows-weapons=%d); personal-weapon shots "
+                        "are re-origined onto the engine's own eye so they pass "
+                        "through the floating reticle (%u aim frames so far)",
+                        seatFlags,
+                        Halo3SeatFiresPersonalWeapon(seatFlags) ? 1 : 0,
+                        g_halo3SeatAimReOrigins.load(std::memory_order_relaxed));
+                else
+                {
+                    // Named from the seat snapshot; a vehicle this build has no entry for reads "unidentified".
+                    Halo3SeatSnapshot occupied;
+                    char seatName[64] = "seat not read yet";
+                    if (Halo3ReadSeatSnapshot(occupied))
+                        std::snprintf(seatName, sizeof(seatName), "%s, seat %d%s",
+                                      Halo3VehicleIdName(occupied.identity), occupied.seatIndex,
+                                      occupied.mounted ? " mounted" : "");
+                    LOG("H3 first-person seat: Active (%s); the camera director "
+                        "is told the occupied seat is first person, so Halo stops drawing "
+                        "the player's own character model. The seat's data is as "
+                        "loaded (flags %08X, allows-weapons=%d, third-person camera=%d): its "
+                        "shots follow the game's own crosshair line, and the seat's aim is "
+                        "solved along that line. Camera anchor unchanged",
+                        seatName, seatFlags, Halo3SeatFiresPersonalWeapon(seatFlags) ? 1 : 0,
+                        (seatFlags & seat_upstream::kSeatThirdPersonBit) ? 1 : 0);
+                }
             }
             else if (nativeState == Halo3NativeSeatState::StockFallback)
-                LOG("H3 first-person seat: StockFallback; loaded seat layout "
-                    "did not validate, character model stays drawn and the "
-                    "camera core is unaffected");
+                LOG("H3 first-person seat: StockFallback; the loaded seat layout "
+                    "did not validate or the camera director's calls are not "
+                    "redirected; character model stays drawn and the camera core "
+                    "is unaffected");
             else
-                LOG("H3 first-person seat: restored the seat's own camera "
-                    "flag");
+                LOG("H3 first-person seat: ended (%s)", Halo3SeatViewWritesTag()
+                    ? "the seat's own camera flag is restored"
+                    : "the director is given the game's own answer again; nothing was written");
             nativeSeatSerialLogged = nativeSeatSerial;
         }
 
@@ -16847,6 +16888,8 @@ namespace
         // The seat flags are stock again, so the rebase skip is now inert;
         // put the game's own jne back (only over our bytes).
         if (!SeatAimFrameRemove(GameTitle::Halo3)) return false;
+        // The director's calls go back to the game's own, and the relay is released once nothing is inside it.
+        if (!Halo3SeatViewRemove()) return false;
         // Optional publishers are now stopped too. Retire every old feature
         // before any new module can overwrite its target/original pair.
         if (!RemoveHalo3Avatar()) return false;
@@ -17810,12 +17853,16 @@ namespace
         (void)InstallHalo3ContactMelee(base,size,runtimeGeneration);
         (void)LegacyDriveInstall(GameTitle::Halo3,base,size);
         (void)SeatAimFrameInstall(GameTitle::Halo3,base,size,runtimeGeneration);
+        (void)Halo3SeatViewInstall(base,size,runtimeGeneration);
         (void)InstallHalo3WeaponHaptics(base,size,runtimeGeneration);
         (void)InstallHalo3Avatar(base,size,runtimeGeneration);
         // The rejected early-helper-only detours remain inert. The new optional
         // path owns acquisition and downstream assist together, with its own
         // default-off setting and feature-only failure isolation.
         (void)InstallHalo3DualAim(base,size,runtimeGeneration);
+        // The evaluator's chase path, the start of a stock seat's crosshair line (seat_upstream_logic.h 4b): no hook,
+        // so it is bound whether or not the lane above installed.
+        BindHalo3ChaseCamera(base,size,runtimeGeneration);
         // The record recomposition's first-person eye identity (shot_lag_logic.h 4d): two sites, no hook.
         (void)BindHalo3DirectorCamera(base,size,runtimeGeneration,g_engineTlsIndex);
         // Roomscale's Forge Monitor check (roomscale_admission_logic.h): two sites, two reader calls, no hook.
@@ -48227,6 +48274,7 @@ namespace
             OdstHeadRelativeReport();    // TRACKER HEAD ODST / AUDIO HEAD ODST
 #endif
             SeatAimFrameSync();   // Halo 3 / ODST seat aim: follow the first-person seat settings
+            Halo3SeatViewSync();  // Halo 3 seats: the camera director's relay follows them too
 #if HALOMCCVR_DEV_DIAGNOSTICS
             Type13LogReport();   // the type-13 pilot-controller log lines (REACH SF, H4 T13)
 #endif
@@ -53330,6 +53378,7 @@ static bool ReachSeatAimFrameBindingInstalled()
         static_cast<uint8_t>(ReachVehicleCameraBindingState::Installed);
 }
 #include "seat_aim_world_frame.inl"
+#include "halo3_seat_view.inl"
 #include "legacy_direct_drive.inl"
 // The Halo 4 tracker lane's proof reference (declared with the legacy drive's other accessors, above): the yaw
 // the input thread last published for the direct drive to write. Only while the drive is LIVE (armed on its own
@@ -54434,7 +54483,10 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
     // seat with no trim - the correction is exactly zero. Gated to a seat whose
     // own loaded tag sets `allows weapons`, because a driver's or mounted
     // gunner's shots leave a vehicle barrel rather than the occupant's eye.
-    if (!halo4Aim && aimFrame.seatReOrigin &&
+    // Only where the seat's tag is written (the dev A/B): that is what makes the engine fire a passenger's own
+    // weapon from the seat's first-person eye. With the tag as loaded it fires along its chase camera's line, and
+    // the seat's record is solved along that line at the stick call (LegacyDriveRecomposeSeated).
+    if (!halo4Aim && aimFrame.seatReOrigin && Halo3SeatViewWritesTag() &&
         Halo3SeatFiresPersonalWeapon(Halo3OccupiedSeatFlags()) && tl > 1e-3f &&
         g_camValid.load(std::memory_order_acquire) &&
         g_baseCamValid.load(std::memory_order_acquire))
@@ -55136,14 +55188,24 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
                     {
                         const auto id = static_cast<Halo3VehicleId>(seat.identity);
                         seatFacts.identified = id != Halo3VehicleId::Unknown;
-                        seatFacts.view_owned = g_halo3NativeSeatState.load(std::memory_order_acquire) ==
-                            static_cast<uint32_t>(Halo3NativeSeatState::Active);
+                        // THE VIEW IS THE MOD'S OWN whenever its seat camera has the seat's authored point: the
+                        // rendered eye is then that point, whatever camera the game's director runs, so a
+                        // hand-aimed record cannot swing it. The seat's aim does not depend on how the body
+                        // is hidden. With the tag written (the dev A/B) the view is owned only while the native
+                        // seat patch is Active: the game's own first-person seat camera is then the view.
+                        seatFacts.view_owned = Halo3SeatViewWritesTag()
+                            ? g_halo3NativeSeatState.load(std::memory_order_acquire) ==
+                                  static_cast<uint32_t>(Halo3NativeSeatState::Active)
+                            : seat.anchorValid != 0;
                         seatFacts.driver = Halo3SeatIsDriver(id, seat.seatIndex, seat.mounted);
                         seatFacts.look_steered = Halo3VehicleIsLookSteered(id);
                         seatAircraft = id == Halo3VehicleId::Banshee || id == Halo3VehicleId::Hornet;
                         seatKey = seat_drive::SeatKey(seat.parentHandle, seat.seatIndex, seat.mounted);
                         // The seat's ORIGINAL tag flags (C20 keeps them while it owns the view; it clears bit 4 only).
-                        gunSlavedSeat = seatFacts.view_owned &&
+                        // A camera slaved to the gun is the game's own FIRST-PERSON seat camera: the
+                        // simulation uses it only where the seat's tag is written. With the tag as loaded the
+                        // game queries every stock seat from its chase camera, and the stock line solve covers it.
+                        gunSlavedSeat = Halo3SeatViewWritesTag() && seatFacts.view_owned &&
                             gun_slaved::CameraSlavedToGun(Halo3OccupiedSeatFlags());
                         gunSlavedKey = seatKey;
                         gunSlavedParent = seat.parentHandle;
@@ -55268,6 +55330,11 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
             // THE SEAT LIMIT RETICLE (SeatLimitReticleStep): a written seat of a land vehicle whose aim the game holds
             // at a natural stop draws the reticle where the gun is held. The stops are the seat-limit latch's, from the
             // hook's last seat write of THIS seat; the target is what this poll hands the hook.
+            // A HALO 3 SEAT WHOSE LINE IS THE GAME'S CHASE-CAMERA LINE: the hook writes that target bent toward the
+            // line (a near point below a camera some metres above the seat needs tens of degrees), and it is the
+            // bent record the stop holds. So there the target is the record as the hook last solved it, and the
+            // clamped ray starts where the game's line starts: the reticle is then where the game's crosshair, and
+            // the shot it turns the round toward, really are at the stop.
             if (driveSeated && seatWritten.any() && !seatAircraft)
             {
                 SeatLimitPoll limitPoll{};
@@ -55277,11 +55344,15 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
                 limitPoll.stopsFresh =
                     LegacyDriveSeatStops(driveTitle, limitPoll.stops, publishedKey, limitPoll.recordYaw) &&
                     publishedKey == seatKey;
-                limitPoll.targetYaw = desiredYaw;
-                limitPoll.targetPitch = desiredPitch;
+                float stockStart[3]{}, stockYaw = 0.0f, stockPitch = 0.0f;
+                const bool stockAim = driveTitle == GameTitle::Halo3 &&
+                    LegacySeatStockAimRead(TitleAdapter_GetGeneration(driveTitle), seatKey, 250000, stockStart,
+                                           stockYaw, stockPitch);
+                limitPoll.targetYaw = stockAim ? stockYaw : desiredYaw;
+                limitPoll.targetPitch = stockAim ? stockPitch : desiredPitch;
                 limitPoll.eyes = limitEyes && limitEyesTitle == driveTitle;
                 memcpy(limitPoll.head, limitHead, sizeof(limitPoll.head));
-                memcpy(limitPoll.shotOrigin, limitShotOrigin, sizeof(limitPoll.shotOrigin));
+                memcpy(limitPoll.shotOrigin, stockAim ? stockStart : limitShotOrigin, sizeof(limitPoll.shotOrigin));
                 limitPoll.halo4Map = halo4Aim;
                 limitPoll.followed = followedVehicleFrame;
                 limitPoll.hullYaw = hullYaw;

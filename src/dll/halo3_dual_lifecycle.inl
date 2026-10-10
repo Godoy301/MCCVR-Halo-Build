@@ -3,6 +3,7 @@ bool RemoveHalo3DualAim()
     auto& feature = g_halo3Dual;
     feature.enabled.store(false, std::memory_order_release);
     feature.chaseCamera.store(nullptr, std::memory_order_release);   // callers hold the callback count: the wait covers them
+    feature.chaseGeneration.store(0, std::memory_order_release);
     void** targets[]{&feature.fireTarget, &feature.aimTarget,&feature.queryTarget,&feature.cameraTarget};
     bool any = false;
     for (auto target : targets)
@@ -13,7 +14,14 @@ bool RemoveHalo3DualAim()
         if (status != MH_OK && status != MH_ERROR_DISABLED && status != MH_ERROR_NOT_CREATED)
         { LOG("Halo 3 dual aim CleanupRequired: disable failed"); return false; }
     }
-    if (!any) return RemoveHalo3Muzzle();
+    if (!any)
+    {
+        // No hook to retire, but the chase path is asked without this lane's hooks and may be mid-ask on a
+        // simulation thread. It is unbound above, so no new ask reaches the game; one already inside holds the count.
+        if (feature.callbacks.load(std::memory_order_acquire) != 0)
+        { LOG("Halo 3 dual aim CleanupRequired: a chase camera ask is still running"); return false; }
+        return RemoveHalo3Muzzle();
+    }
     const void* functions[]{reinterpret_cast<const void*>(&Halo3IndependentFireDetour),
         reinterpret_cast<const void*>(&Halo3IndependentAimDetour),
         reinterpret_cast<const void*>(&Halo3IndependentQueryDetour),
@@ -46,33 +54,49 @@ bool RemoveHalo3DualAim()
     return true;
 }
 
-// THE EVALUATOR'S CHASE PATH (seat_upstream_logic.h StockCamera): optional, never hooked, only ever called under the
-// lane's callback count (Halo3AskChaseCamera). Resolved from the bound evaluator's own call, never assumed: the
-// evaluator's branch `test eax, eax; jne; call <first person>; jmp; call <chase>` at 0x2121C7 must match, its chase
-// call must land on a function whose body matches uniquely in the module. Unbound: no stock chase camera (the seated
-// record keeps this machine's camera, the dev line says so). ADDR-HYGIENE: resolved (decoded from the bound
-// evaluator) + guarded (a unique body signature at the decoded target).
-void BindHalo3ChaseCamera(uintptr_t base, size_t size)
+// THE EVALUATOR'S CHASE PATH (seat_upstream_logic.h 4b and StockCamera): never hooked, only ever called under the
+// lane's callback count (Halo3AskChaseCamera). It is the start of a stock seat's crosshair line, so it is bound
+// whether or not this lane's hooks went in -- also in a host that hooks the evaluator's entry itself, where the
+// evaluator's own signature no longer reads. Resolved from the evaluator's body, never assumed:
+//   * the evaluator is the one expected: its call at 0x2121B8 goes to the seat's third-person test 0x1326E8 (a link
+//     a hook on either function's entry leaves in place);
+//   * its branch `test eax, eax; jne; call <first person>; jmp; call <chase>` at 0x2121C7 matches;
+//   * the chase call lands on a function whose body matches uniquely in the module.
+// Unbound: a stock seat's record is solved from the last crosshair query's start, and the log says so.
+// ADDR-HYGIENE: resolved (decoded from the evaluator's body) + guarded (the evaluator's own call target, and a
+// unique body signature at the decoded target).
+void BindHalo3ChaseCamera(uintptr_t base, size_t size, uint32_t generation)
 {
     auto& feature = g_halo3Dual;
     feature.chaseCamera.store(nullptr, std::memory_order_release);
+    feature.chaseGeneration.store(0, std::memory_order_release);
+    feature.chaseFaulted.store(false, std::memory_order_release);
     static constexpr char kChaseBody[] =
         "48 89 5C 24 08 48 89 6C 24 18 48 89 74 24 20 57 41 56 41 57 48 83 EC 50 44 8B 0D ?? ?? ?? ?? 33 DB 65 48 8B "
         "04 25 58 00 00 00 4C 8B FA 48 8B 15 ?? ?? ?? ?? 49 8B E8 44 8B F1";
     const auto* branch = reinterpret_cast<const uint8_t*>(base + 0x2121C7);
     const bool shape = size > 0x2121D7 && branch[0] == 0x85 && branch[1] == 0xC0 && branch[2] == 0x75 &&
         branch[3] == 0x07 && branch[4] == 0xE8 && branch[9] == 0xEB && branch[10] == 0x05 && branch[11] == 0xE8;
-    const uintptr_t chase = shape ? base + 0x2121D7 + *reinterpret_cast<const int32_t*>(branch + 12) : 0;
+    uintptr_t test = 0;
+    const uintptr_t testCall = base + seat_view::kHalo3EvaluatorCallRva;
+    const bool evaluator = generation && shape &&
+        seat_view::ReadCall(reinterpret_cast<const uint8_t*>(testCall), testCall, test) &&
+        test == base + seat_view::kHalo3ThirdPersonRva;
+    const uintptr_t chase = evaluator ? base + 0x2121D7 + *reinterpret_cast<const int32_t*>(branch + 12) : 0;
     const uintptr_t hit = chase ? sig::Find(base, size, kChaseBody) : 0;
     if (!chase || hit != chase || sig::Find(hit + 1, base + size - hit - 1, kChaseBody))
     {
-        LOG("Halo 3 seat stock camera: the evaluator's chase path did not bind (branch %s, body %s); an unmodded "
-            "host's chase line is not measured and seat_upstream_aim 2 uses this machine's camera",
-            shape ? "matched" : "changed", hit ? (hit == chase ? "ambiguous" : "elsewhere") : "missing");
+        LOG("Halo 3 seat stock camera: the evaluator's chase path did not bind (branch %s, the evaluator's call to "
+            "the third-person test %s, body %s); a seat's record is solved from the last crosshair query's start, so "
+            "only while the gun fires",
+            shape ? "matched" : "changed", evaluator ? "matched" : "changed or not read",
+            hit ? (hit == chase ? "ambiguous" : "elsewhere") : "missing");
         return;
     }
+    feature.chaseGeneration.store(generation, std::memory_order_release);
     feature.chaseCamera.store(reinterpret_cast<Halo3ChaseCameraFn>(chase), std::memory_order_release);
-    LOG("Halo 3 seat stock camera: the evaluator's chase path bound at +0x%llX (from the evaluator's call +0x2121D2)",
+    LOG("Halo 3 seat stock camera: the evaluator's chase path bound at +0x%llX (from the evaluator's call +0x2121D2); "
+        "a seat's record is solved from it at every control pass",
         static_cast<unsigned long long>(chase - base));
 }
 
@@ -150,7 +174,6 @@ bool InstallHalo3DualAim(uintptr_t base, size_t size, uint32_t generation)
         (void)RemoveHalo3DualAim();
         return false;
     }
-    BindHalo3ChaseCamera(base, size);
     feature.enabled.store(true, std::memory_order_release);
     (void)InstallHalo3Muzzle(base,size);
     LOG("Halo 3 dual aim Installed: optional independent controller rays with native per-shot acquisition; option=%d; single weapon, vehicles and remote units retain native aim",g_config.independent_dual_aim?1:0);

@@ -927,6 +927,12 @@ struct Config
     // first-person seat patch is enabled, so seats aim in world angles as in stock (src/dll/seat_aim_world_frame.inl).
     // 0 = leave the game's rebase in place: the A/B arm for the dev "frame check" line. Followed live. (default 1)
     int seat_aim_world_frame = 1;
+    // DEV BUILD ONLY (a player build always uses 0), Halo 3 seats: how the game is made to treat the occupied seat
+    // as first person. 0 = the camera director alone is answered (src/dll/halo3_seat_view.inl): the vehicle's
+    // loaded data and everything the simulation reads stay stock. 1 = the earlier way, for an A/B: clear the seat's
+    // `third person camera` flag in the loaded vehicle definition while seated (C20), which the simulation reads
+    // too -- a co-op campaign client goes out of step with its host in a seat. Followed live. (default 0)
+    int seat_view_tag_write = 0;
     // DEV BUILD ONLY, for automated tests: 1 = the synthetic gamepad. Scripts dropped as halomccvr_pad.txt in the
     // mod folder press its buttons (tools/Send-MccPad.ps1; the language is src/common/dev_pad_script.h).
     // Read once at startup. Leave at 0 to play.

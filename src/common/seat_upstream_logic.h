@@ -5,8 +5,10 @@
 // fires the authoritative shot with the stock game from that record. Every correction at the FIRE SITE (re-aiming the
 // firing assist's crosshair query through P, Sight_ReaimThroughPoint) changes only this machine's prediction. So the
 // record itself is chosen here so that the STOCK game's own crosshair query at the fire tick already passes through
-// P; the fire-site re-aim stays as the local backstop, and how often it still has to act is the multiplayer residual
-// (the SHOT REAIM line's seated count; the dev SHOT UPSTREAM line measures it in mm and degrees).
+// P. A seat whose tag this machine writes (the dev A/B) keeps the fire-site re-aim as its local backstop. A seat
+// whose tag is as loaded is never re-aimed at the fire site: there the record is all there is, so its line's start
+// has to be in hand at every control pass (section 4b). The dev SHOT UPSTREAM line measures what is left, in mm and
+// degrees.
 //
 // THE STOCK QUERY, read from the pinned halo3.dll (B209D845...EFB63, offline):
 //   * the firing assist 0x13BAD0 takes its line from the camera evaluator 0x212198 (called at 0x13BC08): the line
@@ -362,6 +364,200 @@ inline SeatRecompose RecomposeSeat(const SeatRecomposeInput& in, float& yaw, flo
     pitch = pt;
     bendDeg = AngleDeg(set, record);
     return SeatRecompose::Recomposed;
+}
+
+// ---- 4b. where a stock seat's crosshair line starts -------------------------------------------------------------
+// A seat whose loaded tag keeps `third person camera` is queried from the game's chase camera, on every machine.
+// The record is solved from that camera (RecomposeSeat), so the camera's position is needed at every control pass,
+// firing or not. Three sources, best first:
+//   Evaluator  this pass's own acquisition camera: the evaluator's chase-path answer for our unit, where the
+//              evaluator is hooked. Fresh, with a measured velocity.
+//   Asked      the evaluator's chase path asked directly at the stick call, once a simulation tick. As fresh; its
+//              velocity comes from its own track. Used unless it is known to be off the game's line (AskAgreement),
+//              and carried along its own direction by the lead the game's query shows.
+//   Query      the start of the game's last crosshair query for the seat: a point on the camera's line, not the
+//              camera (the shot origin's projection on it). The game runs that query when the gun fires, so
+//              between bursts there is none and inside one it can be old: it is carried forward by the seat's own
+//              velocity for its age, and refused past kStockQueryMaxAgeUs.
+// The chase camera follows the record, so each record is solved against the camera the last one produced. With the
+// camera R behind its pivot and the point L from the pivot the angle error shrinks by R / (L + R) a step, from any
+// start (unit-tested). A step is one simulation tick for the first two sources and the time between queries for
+// the third, which is why they come first.
+enum class StockStart : uint8_t { None = 0, Evaluator, Asked, Query, Count };
+inline const char* StockStartName(StockStart source)
+{
+    switch (source)
+    {
+    case StockStart::Evaluator: return "this pass's own camera";
+    case StockStart::Asked: return "the chase camera asked at the stick call";
+    case StockStart::Query: return "the last crosshair query's start";
+    default: return "none";
+    }
+}
+inline constexpr uint64_t kStockQueryMaxAgeUs = 250000;
+// The chase camera changes once a simulation tick; without a tick count it is asked again after this long.
+inline constexpr uint64_t kStockAskRefreshUs = 50000;
+
+// IS THE ASKED CAMERA ON THE GAME'S OWN QUERY LINE? The chase path is asked outside the evaluator, so a host that
+// replaces the evaluator's answer (a camera mode of its own) would leave the ask describing a camera the game no
+// longer uses. Whenever a fresh query is in hand the two are compared -- as a point against a LINE. The query does
+// not start at the camera: it starts further along the camera's line, at the shot origin's projection on it (some
+// metres ahead in a chase view), so the distance between the two points says nothing. What must hold is that the
+// asked camera lies ON the query's line: its distance aside from it under kAgreeWu. A comparison made while the
+// aim turned between the two (their directions more than kSameAimDeg apart) is no evidence. That bound is tight
+// on purpose: the query and the ask are the same camera a pass apart, while another occupant of the same vehicle
+// (whose query names the same objects, and whose fire is not always tagged) looks along his own aim, which
+// differs by the seats' parallax even when both shoot at one target. Not yet compared is not disagreement: the
+// ask is used until kDisagreeToRefuse comparisons in a row put it off the line, and again from the first
+// that puts it on.
+// THE LEAD. How far along the line the query starts ahead of the camera is kept, smoothed. From the camera itself
+// each step of the solve shrinks the error by R / (L + R) (the camera R behind the pivot it turns about, the point
+// L from the pivot), always from the same side. A start carried ahead along the camera's direction is nearer the
+// pivot, and the solve less sensitive to how far the camera swings between this pass and the fire. A start
+// carried PAST the pivot by d turns each step's error into -d / (L - d) of itself: the record swings past the
+// answer and back, and a gun that follows the record is seen to hunt. The query's start is past the pivot by the
+// gun's own reach ahead of it, so (LeadToward):
+//   * only kLeadShare of the measured lead is used: the start stays behind the pivot wherever the gun's reach
+//     ahead of the pivot is less than the camera's distance behind it, which is every chase camera;
+//   * never more than half the way from the camera to the point: the factor's size is then under
+//     (L - R) / (L + R), below one for every arm and every point;
+//   * never negative: behind the camera is further from the pivot than the camera is.
+struct AskAgreement
+{
+    static constexpr float kAgreeWu = 1.0f * shot_lag::kWuPerMetre;
+    static constexpr float kSameAimDeg = 0.5f;
+    static constexpr float kMaxLeadWu = 40.0f * shot_lag::kWuPerMetre;
+    static constexpr float kLeadShare = 0.5f;
+    static constexpr uint64_t kCompareMaxAgeUs = 60000;   // a query older than this is not compared
+    static constexpr uint32_t kDisagreeToRefuse = 3;
+    bool refused = false;
+    uint32_t streak = 0;
+    bool leadKnown = false;
+    float leadWu = 0.0f;
+
+    struct Reading
+    {
+        bool compared = false;
+        float asideWu = 0.0f;   // the asked camera's distance from the query's line
+        float aheadWu = 0.0f;   // how far along the line the query starts ahead of the camera
+    };
+    void Reset() { *this = AskAgreement{}; }
+    static bool Agrees(const Reading& reading) { return reading.compared && reading.asideWu <= kAgreeWu; }
+    // One comparison: the asked camera (its position and direction) against the query's line, whose start is
+    // already carried to the instant of the ask. A reading that is not `compared` changes nothing.
+    Reading Note(const float asked[3], const float askedDir[3], const float lineStart[3], const float lineDir[3])
+    {
+        Reading reading;
+        float a[3]{askedDir[0], askedDir[1], askedDir[2]}, d[3]{lineDir[0], lineDir[1], lineDir[2]};
+        if (!shot_lag::Finite3(asked) || !shot_lag::Finite3(lineStart) || !shot_lag::Finite3(a) ||
+            !shot_lag::Finite3(d) || !Normalize(a) || !Normalize(d))
+            return reading;
+        if (AngleDeg(a, d) > kSameAimDeg)
+            return reading;
+        const float w[3]{lineStart[0] - asked[0], lineStart[1] - asked[1], lineStart[2] - asked[2]};
+        const float ahead = shot_lag::Dot(w, d);
+        const float off[3]{w[0] - d[0] * ahead, w[1] - d[1] * ahead, w[2] - d[2] * ahead};
+        const float aside = shot_lag::Length(off);
+        if (!std::isfinite(aside) || !std::isfinite(ahead))
+            return reading;
+        reading.compared = true;
+        reading.asideWu = aside;
+        reading.aheadWu = ahead;
+        if (aside <= kAgreeWu)
+        {
+            streak = 0;
+            refused = false;
+            if (std::fabs(ahead) <= kMaxLeadWu)
+            {
+                leadWu = leadKnown ? leadWu + (ahead - leadWu) * 0.25f : ahead;
+                leadKnown = true;
+            }
+        }
+        else if (++streak >= kDisagreeToRefuse)
+            refused = true;
+        return reading;
+    }
+    bool Usable() const { return !refused; }
+    float Lead() const { return leadKnown ? leadWu : 0.0f; }
+    // The lead to use toward `point` from a camera at `asked` looking along `askedDir` (unit).
+    static float LeadToward(float leadWu, const float asked[3], const float askedDir[3], const float point[3])
+    {
+        if (!(leadWu > 0.0f) || !std::isfinite(leadWu))
+            return 0.0f;
+        const float toPoint[3]{point[0] - asked[0], point[1] - asked[1], point[2] - asked[2]};
+        const float reach = shot_lag::Dot(toPoint, askedDir);
+        if (!std::isfinite(reach) || reach <= 0.0f)
+            return 0.0f;
+        const float share = leadWu * kLeadShare, half = reach * 0.5f;
+        return share < half ? share : half;
+    }
+};
+
+struct StockStartInput
+{
+    bool evaluator = false;
+    float evaluatorPos[3]{}, evaluatorVel[3]{};
+    bool evaluatorVelValid = false;
+    bool asked = false;            // asked this tick, and not refused by AskAgreement
+    float askedPos[3]{}, askedVel[3]{};
+    bool askedVelValid = false;
+    float askedDir[3]{};           // the asked camera's own direction
+    float askedLeadWu = 0.0f;      // AskAgreement::Lead(): how far along it the solve starts (0 = at the camera)
+    bool pointValid = false;       // the point the record is solved through; without one the lead is not applied
+    float point[3]{};
+    bool query = false;
+    float queryPos[3]{};
+    uint64_t queryAgeUs = 0;
+    float seatVel[3]{};            // the seat's own velocity, wu/s: what carries an old query start forward
+    bool seatVelValid = false;
+};
+struct StockStartChoice
+{
+    StockStart source = StockStart::None;
+    float pos[3]{}, vel[3]{};
+    bool velValid = false;
+};
+// A query start carried to now by the seat's velocity. False (out untouched): too old, or not finite.
+inline bool CarryQueryStart(const float queryPos[3], uint64_t ageUs, const float seatVel[3], bool seatVelValid,
+                            float out[3])
+{
+    if (!shot_lag::Finite3(queryPos) || ageUs > kStockQueryMaxAgeUs)
+        return false;
+    const float zero[3]{};
+    const float* vel = seatVelValid && shot_lag::Finite3(seatVel) ? seatVel : zero;
+    return shot_lag::ExtrapolateEye(queryPos, vel, float(ageUs) * 1.0e-6f, float(kStockQueryMaxAgeUs) * 1.0e-6f, out);
+}
+inline StockStartChoice ChooseStockStart(const StockStartInput& in)
+{
+    StockStartChoice c{};
+    const auto take = [&c](StockStart source, const float pos[3], const float vel[3], bool velValid) {
+        const bool usable = velValid && shot_lag::Finite3(vel);
+        c.source = source;
+        for (int axis = 0; axis < 3; ++axis)
+        {
+            c.pos[axis] = pos[axis];
+            c.vel[axis] = usable ? vel[axis] : 0.0f;
+        }
+        c.velValid = usable;
+    };
+    float carried[3]{};
+    if (in.evaluator && shot_lag::Finite3(in.evaluatorPos))
+        take(StockStart::Evaluator, in.evaluatorPos, in.evaluatorVel, in.evaluatorVelValid);
+    else if (in.asked && shot_lag::Finite3(in.askedPos))
+    {
+        float origin[3]{in.askedPos[0], in.askedPos[1], in.askedPos[2]};
+        float along[3]{in.askedDir[0], in.askedDir[1], in.askedDir[2]};
+        if (in.pointValid && shot_lag::Finite3(in.point) && shot_lag::Finite3(along) && Normalize(along))
+        {
+            const float lead = AskAgreement::LeadToward(in.askedLeadWu, in.askedPos, along, in.point);
+            for (int axis = 0; axis < 3; ++axis)
+                origin[axis] += along[axis] * lead;
+        }
+        take(StockStart::Asked, origin, in.askedVel, in.askedVelValid);
+    }
+    else if (in.query && CarryQueryStart(in.queryPos, in.queryAgeUs, in.seatVel, in.seatVelValid, carried))
+        take(StockStart::Query, carried, in.seatVel, in.seatVelValid);
+    return c;
 }
 
 // ---- 5. the multiplayer residual: the stock query against P, before any re-aim -----------------------------------
