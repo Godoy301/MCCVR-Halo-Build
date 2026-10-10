@@ -129,7 +129,7 @@ def check_config(data: bytes) -> int:
     for key in ("virtual_stock", "virtual_stock_proximity_release",
                 "vr_action_mapping", "flashlight_suppress_on_two_hand", "physical_crouch"):
         require(values.get(key) in ("0", "1"), f"Missing boolean config setting: {key}")
-    require(values["physical_crouch"] == "0", "Optional physical crouch must default off")
+    require(values["physical_crouch"] == "1", "Physical crouch must default on")
     require(values["virtual_stock"] == "0", "Optional virtual stock must default off")
     for key, low, high in (
         ("virtual_stock_standard_strength", 0, 1),
