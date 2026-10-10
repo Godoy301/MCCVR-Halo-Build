@@ -1796,7 +1796,7 @@ namespace
                 // Size, opacity and brightness are each game's own: say whose are on the sliders.
                 ImGui::Spacing();
                 ImGui::Text("Adjusting crosshair size, opacity and brightness for: %s",
-                            Config_TitleProfileName(Config_CrosshairTitleProfile()));
+                            Config_TitleProfileName(Config_ShownTitleProfile()));
                 if (Config_ActiveTitleProfile() < 0)
                     ImGui::TextDisabled("No game is running, so %s's are shown.\n"
                                         "Each game keeps its own: be in a game to adjust that game's crosshair.",
@@ -2062,6 +2062,14 @@ namespace
                 ImGui::TextWrapped("Bring your empty support hand near your headset for a moment. Move it away to hide the HUD again. Gripping, dual wielding, reloading and menus cancel the gesture.");
             }
         }
+        // Size, width, curvature and height are each game's own: say whose are on the sliders.
+        ImGui::Spacing();
+        ImGui::Text("Adjusting HUD size, width, curvature and height for: %s",
+                    Config_TitleProfileName(Config_ShownTitleProfile()));
+        if (Config_ActiveTitleProfile() < 0)
+            ImGui::TextDisabled("No game is running, so %s's are shown.\n"
+                                "Each game keeps its own: be in a game to adjust that game's HUD.",
+                                Config_TitleProfileName(kTitleProfileReach));
         changed |= vr_menu::SliderFloat("HUD size", &g_config.hud_size, 0.30f, 1.00f, "%.2f");
         changed |= vr_menu::SliderFloat("HUD width / aspect", &g_config.hud_aspect,
                                       kHudAspectMin, kHudAspectMax, "%.2f");

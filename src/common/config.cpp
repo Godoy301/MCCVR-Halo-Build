@@ -750,13 +750,13 @@ const TunableField kTunableFields[] = {
     {"gun_up_m", &TitleTunables::gun_up_m, &Config::gun_up_m, -0.30f, 0.30f},
     {"left_hand_forward_m", &TitleTunables::left_hand_forward_m,
      &Config::left_hand_forward_m, -0.15f, 0.30f},
-    {"hud_size", &TitleTunables::hud_size, &Config::hud_size, 0.30f, 1.00f},
+    {"hud_size", &TitleTunables::hud_size, &Config::hud_size, 0.30f, 1.00f, kTitleProfileReach},
     {"hud_aspect", &TitleTunables::hud_aspect, &Config::hud_aspect,
-     kHudAspectMin, kHudAspectMax},
+     kHudAspectMin, kHudAspectMax, kTitleProfileReach},
     {"hud_curvature", &TitleTunables::hud_curvature, &Config::hud_curvature,
-     kHudCurvatureMin, kHudCurvatureMax},
+     kHudCurvatureMin, kHudCurvatureMax, kTitleProfileReach},
     {"hud_vertical_offset", &TitleTunables::hud_vertical_offset,
-     &Config::hud_vertical_offset, kHudHeightMin, kHudHeightMax},
+     &Config::hud_vertical_offset, kHudHeightMin, kHudHeightMax, kTitleProfileReach},
     {"barrel_pitch_deg", &TitleTunables::barrel_pitch_deg,
      &Config::barrel_pitch_deg, -180.0f, 180.0f},
     {"barrel_yaw_deg", &TitleTunables::barrel_yaw_deg,
@@ -878,7 +878,7 @@ int Config_ActiveTitleProfile()
     return g_activeTitleProfile.load(std::memory_order_acquire);
 }
 
-int Config_CrosshairTitleProfile()
+int Config_ShownTitleProfile()
 {
     const int active = g_activeTitleProfile.load(std::memory_order_acquire);
     return active >= 0 && active < kTitleProfileCount ? active : kTitleProfileReach;
@@ -901,8 +901,8 @@ void Config_ApplyTitleProfile(int profile)
     for (int field = 0; field < kTunableFieldCount; ++field)
         g_config.*kTunableFields[field].live =
             ProfileFor(profile, kTunableFields[field]).*kTunableFields[field].member;
-    LOG("config: weapon/hand/HUD tunables now follow %s; the crosshair's size, opacity and brightness follow %s",
-        Config_TitleProfileName(profile), Config_TitleProfileName(Config_CrosshairTitleProfile()));
+    LOG("config: weapon and hand tunables now follow %s; the crosshair and the HUD layout follow %s",
+        Config_TitleProfileName(profile), Config_TitleProfileName(Config_ShownTitleProfile()));
 }
 
 void Config_StoreLiveTunables()
@@ -3339,7 +3339,7 @@ void ConfigSave()
     fprintf(f, "# is running; the shared keys above are only the defaults a\n");
     fprintf(f, "# fresh profile starts from. Edit these by hand freely.\n");
     fprintf(f, "# With no game running, the crosshair's size, opacity and\n");
-    fprintf(f, "# brightness sliders edit Halo: Reach's.\n\n");
+    fprintf(f, "# brightness sliders and the HUD layout's four edit Halo: Reach's.\n\n");
     for (int profile = 0; profile < kTitleProfileCount; ++profile)
     {
         fprintf(f, "# %s\n", kTitleProfileTitles[profile]);

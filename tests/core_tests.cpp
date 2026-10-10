@@ -15397,12 +15397,12 @@ int main()
                       "size from its multiple of it, and a named value stays");
         Check(std::string(Config_TitleProfileName(kTitleProfileReach)) == "Halo: Reach",
               "crosshair per game: the no-game profile is Reach's");
-        Check(Config_ActiveTitleProfile() == -1 && Config_CrosshairTitleProfile() == kTitleProfileReach &&
+        Check(Config_ActiveTitleProfile() == -1 && Config_ShownTitleProfile() == kTitleProfileReach &&
                   std::fabs(g_config.crosshair_size_deg - reachSeed) < 1.0e-4f &&
                   g_config.crosshair_opacity == 0.8f && g_config.crosshair_brightness == 1.5f,
               "crosshair per game: with no game running the live crosshair is Reach's");
         Config_ApplyTitleProfile(0);
-        Check(Config_CrosshairTitleProfile() == 0 && g_config.crosshair_size_deg == 3.0f,
+        Check(Config_ShownTitleProfile() == 0 && g_config.crosshair_size_deg == 3.0f,
               "crosshair per game: a running game's own size goes live");
         g_config.crosshair_size_deg = 6.0f;
         g_config.crosshair_brightness = 0.9f;
@@ -15455,6 +15455,37 @@ int main()
             defaults = defaults && std::fabs(untouched.title_profiles[i].crosshair_size_deg -
                 (i == kTitleProfileReach ? 4.0f * kReachCrosshairSizeSeedScale : 4.0f)) < 1.0e-4f;
         Check(defaults, "crosshair per game: a fresh configuration has Reach's size at its multiple");
+        // The HUD layout's four values follow the same rule: Reach's with no game running, never the shared
+        // defaults, and an edit made then lands in Reach's profile.
+        {
+            std::ofstream file(crosshairPath);
+            file << "config_version = 6\n";
+            file << "hud_size = 0.50\n";
+            file << "hud_aspect = 1.10\n";
+            file << "reach_hud_size = 0.39\n";
+            file << "halo3_hud_aspect = 0.91\n";
+        }
+        ConfigLoad(crosshairPath.c_str());
+        Check(g_config.hud_size == 0.39f && g_config.hud_aspect == 1.10f &&
+                  g_config.base_tunables.hud_size == 0.50f && g_config.title_profiles[0].hud_size == 0.50f &&
+                  g_config.title_profiles[0].hud_aspect == 0.91f,
+              "HUD per game: with no game running the live HUD layout is Reach's");
+        Config_ApplyTitleProfile(0);
+        Check(g_config.hud_size == 0.50f && g_config.hud_aspect == 0.91f,
+              "HUD per game: a running game's own layout goes live");
+        Config_ApplyTitleProfile(-1);
+        g_config.hud_size = 0.60f;
+        g_config.hud_vertical_offset = -8.0f;
+        ConfigSave();
+        Check(g_config.title_profiles[kTitleProfileReach].hud_size == 0.60f &&
+                  g_config.title_profiles[kTitleProfileReach].hud_vertical_offset == -8.0f &&
+                  g_config.base_tunables.hud_size == 0.50f && g_config.title_profiles[0].hud_size == 0.50f,
+              "HUD per game: an edit with no game running lands in Reach's profile, not the shared key");
+        const std::string hudSaved = ReadTextFile(crosshairPath);
+        Check(CountText(hudSaved, "\nhud_size = 0.50") == 1 &&
+                  CountText(hudSaved, "\nreach_hud_size = 0.6000") == 1 &&
+                  CountText(hudSaved, "\nhalo3_hud_size = 0.5000") == 1,
+              "HUD per game: the file keeps the shared size and each game's own");
         // A first run, with no file yet, writes the same thing.
         std::filesystem::remove(crosshairPath);
         ConfigLoad(crosshairPath.c_str());

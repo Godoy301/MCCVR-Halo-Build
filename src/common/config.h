@@ -332,8 +332,8 @@ inline constexpr int kConfigReachShippedSeatTrimCount =
 // own copy of - one struct so a profile is copied whole. Defaults mirror
 // the shared fields' defaults so an untouched profile behaves identically.
 inline constexpr int kTitleProfileCount = 7;
-// Reach's slot among the profiles (cfg prefix reach_). The crosshair's three tunables follow and edit this
-// profile while no game is running, so the menu always shows one game's own values.
+// Reach's slot among the profiles (cfg prefix reach_). The crosshair's three tunables and the HUD layout's four
+// follow and edit this profile while no game is running, so the menu always shows one game's own values.
 inline constexpr int kTitleProfileReach = 2;
 // Reach's crosshair art fills about half as much of the crosshair's quad as Halo 3's (its ring's ink spread
 // measured 0.092 of the capture against 0.170 at one HUD scale). A Reach profile that names no crosshair size
@@ -359,6 +359,8 @@ struct TitleTunables
     float gun_right_m = 0.0f;
     float gun_up_m = 0.0f;
     float left_hand_forward_m = -0.063f;
+    // The HUD layout. With no game running these four follow and edit Reach's profile rather than the shared
+    // defaults (kTitleProfileReach), like the crosshair's below.
     float hud_size = 0.43f;
     float hud_aspect = 1.22f;
     float hud_curvature = 0.48f;
@@ -1759,9 +1761,9 @@ extern Config g_config;
 // profile (the F1 save path). Both are cheap and safe on any thread.
 const char* Config_TitleProfileName(int profile);
 int Config_ActiveTitleProfile();
-// The profile whose crosshair size, opacity and brightness are live now: the running game's, or Reach's while
-// no game is running.
-int Config_CrosshairTitleProfile();
+// The profile whose crosshair and HUD layout tunables are live now, and which the menu names beside them: the
+// running game's, or Reach's while no game is running.
+int Config_ShownTitleProfile();
 void Config_ApplyTitleProfile(int profile);
 void Config_StoreLiveTunables();
 // Cold config/UI path only. Identity comes from the admitted primary weapon
