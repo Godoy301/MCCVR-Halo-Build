@@ -285,8 +285,16 @@ struct AuthoredReticleArtCentre
 // the safe frame for the HUD's size, its width setting and the headset's field of view, so a widget authored
 // round is drawn `safeHorizontal / safeVertical * rasterAspect / canvasAspect` times as wide as it is tall
 // (measured in a headset: 1.36 for the ring crosshair at 0.5246 / 0.2989 on a 2912x2100 raster, against 1.37
-// from this rule). The crosshair's quad is square, so its capture has to undo that. 1 when an input is unusable.
+// from this rule; and 1.14 at 0.5246 / 0.3581 on the same raster, where the fitted capture measured 1.00). The
+// crosshair's quad is square, so its capture has to undo that. 1 when an input is unusable.
+// Reach is given the same pair but lays its HUD out for the raster itself: its canvas aspect is the raster's, and
+// only the pair stretches its art (its ring crosshair measured 1.06 times as wide as tall under the game's own
+// safe frame, and 1.51 at 0.5246 / 0.3581, whose ratio is 1.46).
 inline constexpr float kHalo3HudCanvasAspect = 16.0f / 9.0f;
+inline float AuthoredReticleCanvasAspect(bool laidOutForRaster, float rasterAspect) noexcept
+{
+    return laidOutForRaster ? rasterAspect : kHalo3HudCanvasAspect;
+}
 inline float AuthoredReticleCanvasStretch(float safeHorizontal, float safeVertical, float rasterAspect,
                                           float canvasAspect) noexcept
 {
@@ -315,6 +323,19 @@ inline AuthoredReticleCaptureFit AuthoredReticleFitForStretch(float stretch) noe
     else
         fit.down = stretch;
     return fit;
+}
+
+// The fit for one capture. `modLayoutApplied`: the pair is the mod's and every one of the title's slots holds
+// it. While it is not, the title draws with its own safe frame, the same across and down (1 / 1 here), and only
+// the canvas stretches its art: nothing for a HUD laid out for the raster.
+inline AuthoredReticleCaptureFit AuthoredReticleFitForCapture(bool modLayoutApplied, float safeHorizontal,
+                                                              float safeVertical, float rasterAspect,
+                                                              float canvasAspect) noexcept
+{
+    if (!modLayoutApplied)
+        safeHorizontal = safeVertical = 1.0f;
+    return AuthoredReticleFitForStretch(
+        AuthoredReticleCanvasStretch(safeHorizontal, safeVertical, rasterAspect, canvasAspect));
 }
 
 // The captured art's width over its height, from its ink spread; 0 when it has no height to compare with.
