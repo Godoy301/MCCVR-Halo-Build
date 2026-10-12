@@ -22,7 +22,9 @@
 //   0x1DD998 -> 0x1DF988 -> PhysicsRayCast). The published seated intent ray is traced there with that query:
 //   the vehicle's root, the occupant and the seat's parent ignored, our own vehicle looked past (three passes;
 //   exhaustion is a MISS), a boarder kept. The object table is walked by reading it; the ray cast is the only
-//   native call.
+//   native call. Every direct caller up from the seat's control update (the accumulator 0xA8B34) leads to the main
+//   loop's control pass and none to the tick; a control update that arrives inside a tick all the same is counted
+//   and not traced.
 //
 //   THE POLL (Halo4SeatConvergePrepare / EndPoll, Game_ComputeAimStick): the solve's start from the newest
 //   sample (halo4_seat_converge::SolveStart), held across a gap in the samples, and the first reason a poll does
@@ -162,8 +164,9 @@ struct Halo4SeatConvergeRuntime
     // Counters since the last report.
     std::atomic<uint64_t> samples{0}, samplesStock{0}, samplesOutsideTick{0}, samplesTickUnread{0},
         samplesFollowing{0}, pushMilliWu{0}, samplerBusy{0}, tickSideCalls{0};
-    std::atomic<uint64_t> controlUpdates{0}, traces{0}, traceHits{0}, traceMisses{0}, lookPasts{0}, exhausted{0},
-        noRay{0}, otherRay{0}, rootFallbacks{0}, costTicks{0}, costMaxTicks{0}, faults{0};
+    std::atomic<uint64_t> controlUpdates{0}, controlInTick{0}, traces{0}, traceHits{0}, traceMisses{0},
+        lookPasts{0}, exhausted{0}, noRay{0}, otherRay{0}, rootFallbacks{0}, costTicks{0}, costMaxTicks{0},
+        faults{0};
     std::atomic<uint64_t> polls{0}, why[static_cast<size_t>(halo4_seat_converge::Why::Count)]{}, heldPolls{0},
         ageMilliMs{0}, ageSamples{0};
     std::atomic<uint32_t> ageMaxMilliMs{0}, eyeSpeedMilliMps{0}, lastFlags{0}, lastFlagsKnown{0};
@@ -701,6 +704,13 @@ void Halo4SeatConvergeControlUpdate(const uint8_t* tls, const Halo4VehicleInputS
     f.controlUpdates.fetch_add(1, std::memory_order_relaxed);
     f.lastFlags.store(record.flags, std::memory_order_relaxed);
     f.lastFlagsKnown.store(record.flagsKnown, std::memory_order_relaxed);
+    // The trace is the lane's one native call, and it is never made inside a simulation tick. The control update
+    // is not expected there at all, so this only counts if the game ever reaches it another way.
+    if (NativeVehicleFirstPerson_InSimulationTick(GameTitle::Halo4) == 1)
+    {
+        f.controlInTick.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
     Halo4SeatConvergeTrace(tls, seat, seatKey, Halo4SeatConvergeOn());
 }
 
@@ -915,6 +925,7 @@ void Halo4SeatConvergeReport()
     const uint64_t polls = f.polls.exchange(0, std::memory_order_relaxed);
     const uint64_t samples = f.samples.exchange(0, std::memory_order_relaxed);
     const uint64_t updates = f.controlUpdates.exchange(0, std::memory_order_relaxed);
+    const uint64_t updatesInTick = f.controlInTick.exchange(0, std::memory_order_relaxed);
     uint64_t why[static_cast<size_t>(Why::Count)]{};
     for (size_t i = 0; i < static_cast<size_t>(Why::Count); ++i)
         why[i] = f.why[i].exchange(0, std::memory_order_relaxed);
@@ -956,7 +967,7 @@ void Halo4SeatConvergeReport()
     const double usPerTick = frequency.QuadPart ? 1.0e6 / double(frequency.QuadPart) : 0.0;
     const uint32_t flags = f.lastFlags.load(std::memory_order_relaxed);
     const bool flagsKnown = f.lastFlagsKnown.load(std::memory_order_relaxed) != 0;
-    char pollText[640], sampleText[520], traceText[420], witnessText[760];
+    char pollText[640], sampleText[520], traceText[480], witnessText[760];
     snprintf(pollText, sizeof(pollText),
              "%llu seated polls, %llu SOLVED; not solved: %s %llu, %s %llu, %s %llu, %s %llu, %s %llu, %s %llu, "
              "%s %llu, %s %llu, %s %llu, %s %llu, %s %llu",
@@ -990,10 +1001,11 @@ void Halo4SeatConvergeReport()
              double(ageMax) / 1000.0, static_cast<unsigned long long>(held),
              double(f.eyeSpeedMilliMps.load(std::memory_order_relaxed)) / 1000.0);
     snprintf(traceText, sizeof(traceText),
-             "control updates %llu, seated traces %llu (%llu hits, %llu misses, %llu of them after three passes on "
-             "our own vehicle; looked past it %llu times; no ray %llu, a ray that is not this seat's %llu, root "
-             "fallbacks %llu, faults %llu; cost avg %.1f / max %.1f us)",
-             static_cast<unsigned long long>(updates), static_cast<unsigned long long>(traces),
+             "control updates %llu (inside a tick, not traced: %llu), seated traces %llu (%llu hits, %llu misses, "
+             "%llu of them after three passes on our own vehicle; looked past it %llu times; no ray %llu, a ray "
+             "that is not this seat's %llu, root fallbacks %llu, faults %llu; cost avg %.1f / max %.1f us)",
+             static_cast<unsigned long long>(updates), static_cast<unsigned long long>(updatesInTick),
+             static_cast<unsigned long long>(traces),
              static_cast<unsigned long long>(hits), static_cast<unsigned long long>(misses),
              static_cast<unsigned long long>(exhausted), static_cast<unsigned long long>(lookPasts),
              static_cast<unsigned long long>(noRay), static_cast<unsigned long long>(otherRay),
