@@ -333,6 +333,16 @@ template<unsigned I> void PositionOwned(uint32_t unit,void* result) noexcept
             r.trimVersion.fetch_add(1,std::memory_order_release);
             r.trimWriting.clear(std::memory_order_release);
         }
+        // Which vehicle model and seat this is, once per change: the name a seat's own camera offsets are
+        // saved under (config: vehicle_model_<game>_<model>_seat<N>_forward_m / _up_m / _right_m).
+        {
+            static std::atomic<uint64_t> named{0};
+            const uint64_t key=before.vehicleIdentity^(static_cast<uint64_t>(before.seat+1)<<58);
+            if (named.exchange(key,std::memory_order_relaxed)!=key)
+                LOG("Vehicle first person title=%u: the camera is in seat %d of vehicle model %016llx",
+                    unsigned(kBindings[I].title),int(before.seat),
+                    static_cast<unsigned long long>(before.vehicleIdentity));
+        }
         runtime[I].positioned.fetch_add(1,std::memory_order_relaxed);
         r.positionedParent.store(before.parent,std::memory_order_relaxed);
         r.positionedSeat.store(before.seat,std::memory_order_relaxed);

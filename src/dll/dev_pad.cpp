@@ -16,6 +16,8 @@
 #include "../common/roomscale_recenter_logic.h"
 #include "../common/log.h"
 #include "vr.h"
+#include "native_vehicle_first_person.h"
+#include "title_adapter.h"
 
 #include <algorithm>
 #include <atomic>
@@ -125,6 +127,20 @@ bool SetLive(const std::string& name, int value)
     // that write coverage (what a player build does), 2 no draw writes alpha. Takes effect at the next capture.
     // (A switch's name is letters and underscores: no digit.)
     else if (name == "reticle_capture_alpha") VR_DevSetHalo4ReticleAlphaMode(value);
+    // The seat camera's offsets for the vehicle model and seat the camera is in now, in centimetres plus 500
+    // (a script's numbers are unsigned): 500 is zero, 650 is +1.5 m. What the Vehicles page's sliders write.
+    else if (name == "seat_cam_forward" || name == "seat_cam_up" || name == "seat_cam_right")
+    {
+        const GameTitle title = TitleAdapter_GetActiveTitle();
+        uint64_t identity = 0;
+        int seat = -1;
+        if (!NativeVehicleFirstPerson_TrimTarget(title, identity, seat)) return false;
+        const int slot = ConfigEnsureVehicleModelTrim(g_config, title, identity, seat);
+        if (slot < 0) return false;
+        const unsigned axis = name == "seat_cam_forward" ? 0u : (name == "seat_cam_up" ? 1u : 2u);
+        g_config.vehicle_model_trims[slot].value[axis] = static_cast<float>(value - 500) / 100.0f;
+        g_config.vehicle_model_trims[slot].set[axis] = true;
+    }
     else return false;
     return true;
 }
