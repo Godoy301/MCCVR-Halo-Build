@@ -750,7 +750,11 @@ struct Config
     // Halo 4's authored Mjolnir helmet/visor overlay. This is deliberately
     // separate from HUD scale/curvature so players can keep the complete HUD
     // while hiding only the helmet frame.
-    bool halo4_helmet = true;
+    // Off by default. The frame is opaque art the game lights like a model, authored to sit at the edges of a
+    // flat screen. The HUD's scale brings it into the middle of the view with the rest of the HUD: in the
+    // campaign it covers a band above the HUD and a larger one below it, and each eye sees it cut off at a
+    // different place. The visor's thin outline is drawn by another shader and stays.
+    bool halo4_helmet = false;
     bool hide_hud = false;
     bool hud_reveal_near_head = false;
     float hud_reveal_radius_m = .22f;

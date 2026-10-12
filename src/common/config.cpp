@@ -2312,7 +2312,8 @@ void ConfigSave()
             d.halo4_hands_mirrored);
     fprintf(f, "halo4_hands_mirrored = %d\n\n", g_config.halo4_hands_mirrored);
     fprintf(f, "# Halo 4 authored Mjolnir helmet/visor frame. This does not hide\n");
-    fprintf(f, "# shields, radar, ammo, objectives, or the aiming reticle. (default %d)\n",
+    fprintf(f, "# shields, radar, ammo, objectives, or the aiming reticle. In the campaign the\n");
+    fprintf(f, "# frame is a dark band above the HUD and a larger one below it. (default %d)\n",
             d.halo4_helmet ? 1 : 0);
     fprintf(f, "halo4_helmet = %d\n\n", g_config.halo4_helmet ? 1 : 0);
     fprintf(f, "# Hide gameplay HUD and VR reticle; menus remain available.\nhide_hud = %d\n\n", g_config.hide_hud ? 1 : 0);

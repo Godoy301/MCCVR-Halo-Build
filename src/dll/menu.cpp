@@ -2144,7 +2144,9 @@ namespace
             changed |= ImGui::Checkbox(
                 "Show Halo 4 helmet frame", &g_config.halo4_helmet);
             ImGui::TextDisabled(
-                "Keeps or hides only the authored Mjolnir helmet/visor shading; the rest of the HUD stays visible.");
+                "Keeps or hides only the authored Mjolnir helmet/visor shading; the rest of the HUD stays visible.\n"
+                "In the campaign the shading is a dark band above the HUD and a larger one below it, in the\n"
+                "middle of your view. OFF (default) leaves the visor's thin outline. Live.");
         }
         }
 
