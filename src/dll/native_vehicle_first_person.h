@@ -13,6 +13,10 @@ struct NativeVehicleCameraOwner
 };
 
 // Optional CE/H2/H4 camera feature. Existing H3/ODST/Reach paths are independent.
+// The seat's camera also answers the simulation (the player's targeting, a fire's crosshair line). While
+// one-machine changes are not allowed (sight_layer.h Sight_FireTimeChangesAllowed) the override answers the frame
+// only: in Halo 4 by the engine's own in-tick byte, in Halo 2 through SetStockOnThisThread below, and in Halo CE,
+// whose tick is not read, not at all.
 void NativeVehicleFirstPerson_Poll();
 bool NativeVehicleFirstPerson_TrimTarget(GameTitle title,uint64_t& identity,int& seat) noexcept;
 // This override placed the camera in exactly this seat within 250 ms: the seat's view is the occupant's own

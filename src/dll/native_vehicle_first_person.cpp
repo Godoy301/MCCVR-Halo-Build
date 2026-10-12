@@ -3,9 +3,9 @@
 #include "game.h"
 #include "sigscan.h"
 #include "hook_quiescence.h"
+#include "sight_layer.h"
 #if HALOMCCVR_DEV_DIAGNOSTICS
 #include "halo2_observer_6dof.h"
-#include "sight_layer.h"
 #include "../common/seat_head_trace_logic.h"
 #include <cstdio>
 #include <string>
@@ -15,6 +15,7 @@
 #include "../common/minhook_lifecycle.h"
 #include "../common/seat_camera_ride_logic.h"
 #include <windows.h>
+#include <intrin.h>
 #include <MinHook.h>
 #include <array>
 #include <atomic>
@@ -45,6 +46,13 @@ struct Runtime
     std::atomic<uint64_t> positionedMs{};
     std::atomic<uint32_t> positionedParent{UINT32_MAX};
     std::atomic<int> positionedSeat{-1};
+    // The simulation's in-tick byte, where this title's is known (ResolveTick): the calling thread's engine TLS
+    // block holds, at tickSlot, the frame interpolator's state, whose byte at tickByte the tick loop sets before
+    // every tick and the post-tick record clears. tlsIndex null: this title's tick cannot be told from its frame.
+    const uint32_t* tlsIndex{};
+    uint32_t tickSlot{},tickByte{};
+    // Selector calls for our own seat that were answered as the game built them, for the simulation's sake.
+    std::atomic<uint64_t> simulationCalls{};
 #if HALOMCCVR_DEV_DIAGNOSTICS
     // Why the selector was not taken over: the native mode it chose (0-4, other), and Owner()'s first refusal.
     std::atomic<uint32_t> modeSeen[6]{};
@@ -231,6 +239,33 @@ __declspec(noinline) void Fault(unsigned i) noexcept
     runtime[i].faulted.store(true,std::memory_order_release);
     runtime[i].faults.fetch_add(1,std::memory_order_relaxed);
 }
+// Inside a simulation tick on the calling thread (1), outside one (0), or not known (-1). Guarded: the block and
+// the state are the engine's own.
+__declspec(noinline) int InTick(unsigned i) noexcept
+{
+    const auto& r=runtime[i];
+    if (!r.tlsIndex) return -1;
+    __try {
+        const uint32_t index=*r.tlsIndex;
+        const auto* slots=reinterpret_cast<const uintptr_t*>(__readgsqword(0x58));
+        if (!slots||index>=0x400||!slots[index]) return -1;
+        const auto* state=*reinterpret_cast<const uint8_t* const*>(slots[index]+r.tickSlot);
+        return state?(state[r.tickByte]?1:0):-1;
+    } __except(EXCEPTION_EXECUTE_HANDLER) {
+        return -1;
+    }
+}
+// WHO IS ASKING. The selector and the camera answer the simulation as well as the frame: the player's per-tick
+// targeting and a fire's crosshair line start from the seat's camera, and in a shared simulation every machine
+// must get the game's own answer there. While one-machine changes are not allowed (sight_layer.h
+// Sight_FireTimeChangesAllowed) the override answers only outside a simulation tick -- the frame's cameras are
+// built between ticks -- and not at all in a title whose tick cannot be read. Halo 2's one simulation caller
+// stands the override down itself (NativeVehicleFirstPerson_SetStockOnThisThread).
+template<unsigned I> bool ForTheSimulation() noexcept
+{
+    if constexpr (I==1) return false;
+    else return !Sight_FireTimeChangesAllowed()&&InTick(I)!=0;
+}
 template<unsigned I> using Mode=std::conditional_t<I==2,int32_t,int16_t>;
 template<unsigned I> using SelectorFn=uint32_t(__fastcall*)(uint32_t,Mode<I>*);
 // Keep the guarded feature body separate from native forwarding/finally. A
@@ -317,7 +352,11 @@ template<unsigned I> uint32_t __fastcall SelectHook(uint32_t unit,Mode<I>* mode)
 #if HALOMCCVR_DEV_DIAGNOSTICS
         const uint32_t nativeResult=result;
 #endif
-        const bool owned=!t_stockOnThisThread&&SelectOwned<I>(unit,mode);
+        bool owned=false;
+        if (!t_stockOnThisThread&&SelectOwned<I>(unit,mode)) {
+            if (ForTheSimulation<I>()) r.simulationCalls.fetch_add(1,std::memory_order_relaxed);
+            else owned=true;
+        }
         if (owned) {result=0;r.selected.fetch_add(1,std::memory_order_relaxed);}
 #if HALOMCCVR_DEV_DIAGNOSTICS
         if constexpr (I==2) {
@@ -336,7 +375,7 @@ template<unsigned I> void __fastcall CameraHook(uint32_t unit,const void* facing
     auto& r=runtime[I];r.callbacks.fetch_add(1,std::memory_order_acq_rel);
     __try {
         reinterpret_cast<CameraFn>(r.original[Camera])(unit,facing,result);
-        if (!t_stockOnThisThread) PositionOwned<I>(unit,result);
+        if (!t_stockOnThisThread&&!ForTheSimulation<I>()) PositionOwned<I>(unit,result);
     } __finally {r.callbacks.fetch_sub(1,std::memory_order_release);}
 }
 void* const hooks[3][2]{
@@ -373,13 +412,39 @@ bool Retire(unsigned i)
     }
     if (r.module) FreeLibrary(r.module);
     r.module=nullptr;r.base=0;r.generation=0;r.marker=r.markerInterpolated=nullptr;
+    r.tlsIndex=nullptr;r.tickSlot=r.tickByte=0;
     r.trimIdentity.store(0);r.trimGeneration.store(0);r.trimSeat.store(-1);
     r.attempted=r.ready=false;r.faulted.store(false,std::memory_order_release);return true;
+}
+// Halo 4's tick loop where it marks a tick begun: mov r8d, <slot>; inc ecx; mov r8, [r8+rsi]; mov byte ptr
+// [r8+<byte>], 1 -- rsi the thread's engine TLS block. The slot and the byte are the match's own operands, and the
+// module's TLS index is its PE TLS directory's.
+// ADDR-HYGIENE: resolved (one signature that must match exactly once, decoded; the PE TLS directory). Unresolved
+// fails closed: while one-machine changes are not allowed the override then answers nothing (ForTheSimulation).
+constexpr char kHalo4TickBegun[]="41 B8 ?? ?? ?? ?? FF C1 4D 8B 04 30 41 C6 40 ?? 01";
+void ResolveTick(unsigned i,size_t size)
+{
+    auto& r=runtime[i];r.tlsIndex=nullptr;r.tickSlot=r.tickByte=0;
+    if (kBindings[i].title!=GameTitle::Halo4) return;
+    const auto hit=sig::Find(r.base,size,kHalo4TickBegun);
+    if (!hit||sig::Find(hit+1,r.base+size-hit-1,kHalo4TickBegun)) return;
+    uint32_t slot=0;std::memcpy(&slot,reinterpret_cast<const void*>(hit+2),sizeof(slot));
+    const uint8_t byte=*reinterpret_cast<const uint8_t*>(hit+15);
+    const auto* dos=reinterpret_cast<const IMAGE_DOS_HEADER*>(r.base);
+    const auto* nt=reinterpret_cast<const IMAGE_NT_HEADERS64*>(r.base+dos->e_lfanew);
+    const auto& directory=nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_TLS];
+    if (!slot||slot>0x4000||(slot&7)||byte>0x7F||!directory.VirtualAddress||directory.VirtualAddress>=size||
+        size-directory.VirtualAddress<sizeof(IMAGE_TLS_DIRECTORY64)) return;
+    const auto* tls=reinterpret_cast<const IMAGE_TLS_DIRECTORY64*>(r.base+directory.VirtualAddress);
+    if (tls->AddressOfIndex<r.base||tls->AddressOfIndex-r.base>=size||
+        size-(tls->AddressOfIndex-r.base)<sizeof(uint32_t)) return;
+    r.tickSlot=slot;r.tickByte=byte;r.tlsIndex=reinterpret_cast<const uint32_t*>(tls->AddressOfIndex);
 }
 bool Install(unsigned i,size_t size)
 {
     auto& r=runtime[i];
     for (const auto& binding:kBindings[i].entries) if (!Prove(r.base,size,binding)) return false;
+    ResolveTick(i,size);
     r.marker=reinterpret_cast<void*>(r.base+kBindings[i].markerRva);
     // H2EK object marker argument 6 selects frame-interpolated object nodes.
     // This exact retail entry is already independently cold-proved above.
@@ -484,13 +549,20 @@ void NativeVehicleFirstPerson_Poll()
             r.ready=Install(i,nt->OptionalHeader.SizeOfImage);
             LOG("Vehicle first person %s: %s; existing toggle, local seated head marker, native entry/exit; headset verification pending",
                 descriptor->displayName,r.ready?"installed":"STOCK FALLBACK (binding/hook)");
+            if (r.ready&&title!=GameTitle::Halo2)
+                LOG("Vehicle first person %s with co-op safe shots on: %s",descriptor->displayName,r.tlsIndex
+                    ?"inside a simulation tick the seat's camera is the game's own (every machine's targeting and "
+                     "fire start from it); the frame's is the one placed here"
+                    :"this game's simulation tick cannot be told from its frame, so seats keep the game's own camera");
         }
         r.requested.store(r.ready&&g_config.vehicle_first_person,std::memory_order_release);
         if (r.module&&now>=r.reportAt) {
             r.reportAt=now+5000;
-            LOG("Vehicle first person title=%u enabled=%d selected=%llu positioned=%llu missingHead=%llu faults=%llu%s",
+            LOG("Vehicle first person title=%u enabled=%d selected=%llu positioned=%llu missingHead=%llu faults=%llu "
+                "simulation=%llu (co-op safe: selector calls for our seat answered as the game built them)%s",
                 unsigned(title),r.requested.load()?1:0,r.selected.load(),r.positioned.load(),
-                r.missingMarker.load(),r.faults.load(),r.faulted.load()?" STOCK FALLBACK (guarded access fault)":"");
+                r.missingMarker.load(),r.faults.load(),r.simulationCalls.load(),
+                r.faulted.load()?" STOCK FALLBACK (guarded access fault)":"");
 #if HALOMCCVR_DEV_DIAGNOSTICS
             uint32_t modes[6]{},why[7]{};
             for (unsigned k=0;k<6;++k) modes[k]=r.modeSeen[k].exchange(0,std::memory_order_relaxed);
