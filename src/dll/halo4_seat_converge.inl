@@ -39,12 +39,17 @@
 
 // ---- small pieces ---------------------------------------------------------------------------------------------
 // A seqlock over a trivially copyable value, every word atomic: one writer, any reader; a torn read retries once,
-// then reports nothing.
+// then reports nothing. Clear is any thread's and is not a write: it only withdraws the value until the next
+// Publish, and never touches the sequence -- a Clear that landed inside a Publish would otherwise leave the
+// sequence odd at rest and even during every later write, and a reader would then accept a torn value. (A
+// Publish that a Clear lands inside shows its value again when it ends. No reader takes a value without holding
+// it to the seat it names, and to its stamp and generation wherever its age matters.)
 template <class T>
 struct Halo4SeatBlob
 {
     static constexpr size_t kWords = (sizeof(T) + 7) / 8;
     std::atomic<uint32_t> sequence{0};
+    std::atomic<bool> live{false};
     std::atomic<uint64_t> words[kWords]{};
     void Publish(const T& value)
     {
@@ -55,10 +60,13 @@ struct Halo4SeatBlob
         for (size_t i = 0; i < kWords; ++i)
             words[i].store(raw[i], std::memory_order_relaxed);
         sequence.fetch_add(1, std::memory_order_release);
+        live.store(true, std::memory_order_release);
     }
-    void Clear() { sequence.store(0, std::memory_order_release); }
+    void Clear() { live.store(false, std::memory_order_release); }
     bool Read(T& out) const
     {
+        if (!live.load(std::memory_order_acquire))
+            return false;
         for (int attempt = 0; attempt < 2; ++attempt)
         {
             const uint32_t before = sequence.load(std::memory_order_acquire);
@@ -1062,10 +1070,15 @@ void InstallHalo4SeatConverge(uintptr_t base, size_t size, uint32_t generation)
     f.base = base;
     f.generation = generation;
     f.lastTraceMs = 0;
+    // The sampler's own state, under the sampler's flag: a view call of the last generation that was already past
+    // its checks may still be finishing.
+    while (f.sampling.test_and_set(std::memory_order_acquire))
+        YieldProcessor();
     f.track.Reset();
     f.trackUnit = f.trackParent = UINT32_MAX;
     f.trackSeat = -1;
     f.last = {};
+    f.sampling.clear(std::memory_order_release);
     if (!g_halo4BarrelBindingsReady.load(std::memory_order_acquire) || g_halo4Barrel.base != base)
     {
         LOG("SIGHT Halo 4 seat converge: the muzzle lane is not installed (its view detour carries the aim-camera "
