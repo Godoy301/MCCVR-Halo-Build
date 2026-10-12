@@ -73,6 +73,7 @@
 #include "title_reentry_probe.h"
 #include "roomscale.h"
 #include "sight_layer.h"
+#include "../common/session_read_logic.h"
 #include "seat_limit_publication.h"
 #include "telemetry_recorder.h"
 #include "../common/support_diagnostics.h"
@@ -52988,13 +52989,12 @@ extern "C" void ReachPcApplyForUser(int user, const uint8_t* entryRsp)
             tls = (slots && index < 0x200) ? reinterpret_cast<unsigned char*>(slots[index]) : nullptr;
             const uintptr_t globals = tls ? *reinterpret_cast<const uintptr_t*>(tls + kReachPlayerControlTlsOffset) : 0;
             pc = globals ? globals + static_cast<uintptr_t>(user) * kReachPlayerControlStride : 0;
-            // The session's simulation type, for the log: the game globals ReachContactPredictionMode reads
-            // (engine TLS +0x48), byte +0x11, with bytes +0 / +1 the game-in-progress flags.
+            // The session as the game holds it, for the log (src/common/session_read_logic.h).
             if (tls)
             {
-                const auto* session = *reinterpret_cast<const uint8_t* const*>(tls + 0x48);
-                Sight_NoteSessionType(GameTitle::HaloReach,
-                                      session && (session[0] || session[1]) ? session[0x11] : -1);
+                const session_read::Session session =
+                    session_read::ReadTls(tls, session_read::kReachSlots, session_read::kReach);
+                Sight_NoteSession(GameTitle::HaloReach, session.type, session.players, session.others);
             }
         }
         armed = g_reachPcArmed.load(std::memory_order_acquire) ? 1 : 0;   // flag first, then the address

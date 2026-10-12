@@ -1182,18 +1182,23 @@ bool LegacyDriveSeatStops(GameTitle title, seat_limit::Stops& out, uint32_t& sea
 
 namespace
 {
-// The session's simulation type, for the log (Sight_NoteSessionType): the game globals the contact-melee lanes'
-// matched consumers read -- engine TLS +0x48 in Halo 3, +0x40 in ODST -- byte +0x11, with bytes +0 / +1 the
-// game-in-progress flags. Halo 4 answers through a function of its own and is not read here.
-// ADDR-HYGIENE: structural (the same offsets halo3_contact_melee_runtime.inl / odst_contact_melee_runtime.inl
-// read once their consumer pattern matched); a wrong value mislabels one log line and gates nothing.
+// The session as the game holds it, for the log (Sight_NoteSession; src/common/session_read_logic.h says what is
+// read, where, and what guards it): Halo 3, ODST and Halo 4 keep it behind this thread's engine TLS block. The
+// caller's handler guards the reads.
 void LegacyDriveNoteSession(GameTitle title, const uint8_t* tls)
 {
-    const uint32_t slot = title == GameTitle::Halo3 ? 0x48u : title == GameTitle::Halo3ODST ? 0x40u : 0u;
-    if (!slot || !tls)
+    if (!tls)
         return;
-    const auto* globals = *reinterpret_cast<const uint8_t* const*>(tls + slot);
-    Sight_NoteSessionType(title, globals && (globals[0] || globals[1]) ? globals[0x11] : -1);
+    session_read::Session s{};
+    if (title == GameTitle::Halo3)
+        s = session_read::ReadTls(tls, session_read::kHalo3Slots, session_read::kHalo3);
+    else if (title == GameTitle::Halo3ODST)
+        s = session_read::ReadTls(tls, session_read::kOdstSlots, session_read::kOdst);
+    else if (title == GameTitle::Halo4)
+        s = session_read::ReadTls(tls, session_read::kHalo4Slots, session_read::kHalo4);
+    else
+        return;
+    Sight_NoteSession(title, s.type, s.players, s.others);
 }
 
 // This (sim) thread's TLS -> the record the native update just wrote. 0 when any link is missing.

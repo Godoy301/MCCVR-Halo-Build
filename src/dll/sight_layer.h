@@ -202,10 +202,12 @@ struct SightCameraSample
 // counts it (Sight_Report logs "CO-OP SAFE SHOTS" every 2 s).
 bool Sight_FireTimeChangesAllowed();
 void Sight_NoteFireTimeStoodDown(GameTitle title);
-// The game's own simulation type for the session in progress, as the title's simulation thread reads it from the
-// game globals (-1: no game in progress). Sight_Report logs it whenever it changes ("SESSION <game>: ..."), so a
-// solo level, a campaign co-op session and a custom game can be told apart in a log. Nothing acts on it.
-void Sight_NoteSessionType(GameTitle title, int type);
+// The session in progress as the game holds it, read by the title's simulation thread
+// (src/common/session_read_logic.h): its simulation type, the players in the game and the machines other than
+// this one (-1 each: not read; a type of -1: no game in progress). Sight_Report logs them whenever one changes
+// ("SESSION <game>: ..."), so a solo level, a co-op host, a co-op joiner and a host-authoritative game can be told
+// apart in a log. Nothing acts on it.
+void Sight_NoteSession(GameTitle title, int type, int players, int otherMachines);
 // THE WRITTEN AIM, LED (the player key aim_lead_ticks; src/common/aim_lead_logic.h). A record written at one control
 // pass is first used by the next simulation tick, so a shot leaves along a hand sample about a tick old. The title's
 // simulation-thread write of the ON-FOOT record hands its setpoint through here just before it writes: `yaw` and

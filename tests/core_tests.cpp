@@ -17,6 +17,7 @@ int RunDirectorCameraTests();
 #include "../src/common/halo3_melee_selection_logic.h"
 #include "../src/common/weapon_order_diagnostic_logic.h"
 #include "../src/common/contact_melee_motion.h"
+#include "../src/common/session_read_logic.h"
 #include "../src/dll/contact_melee_queue.h"
 #include <array>
 #include <cstdlib>
@@ -20722,6 +20723,98 @@ int main()
             !MakeControllerFingerInput(true,.5f,true,2.f).valid,"missing or malformed finger axes retain authored poses");
         const auto bounded=MakeControllerFingerInput(true,-.005f,true,1.005f);
         Check(bounded.valid&&bounded.trigger==0&&bounded.grip==1,"small analog endpoint noise remains bounded");
+    }
+    {
+        // The session read: each layout's own offsets, built as the engine lays them out.
+        using namespace session_read;
+        struct Fixture
+        {
+            const Layout* layout;
+            alignas(8) uint8_t globals[0x40]{}, header[0x80]{}, count[0x100]{};
+            explicit Fixture(const Layout& l, int type, int players, uint64_t mask, int local) : layout(&l)
+            {
+                globals[0] = 1;
+                if (l.typeDword) { const uint32_t v = uint32_t(type); std::memcpy(globals + l.typeOffset, &v, 4); }
+                else globals[l.typeOffset] = uint8_t(type);
+                std::memcpy(header, "players", 8);
+                const uint32_t signature = kDataArraySignature;
+                const int32_t maximum = 16;
+                if (l.wideHeader)
+                {
+                    const uint64_t size = l.datumSize;
+                    std::memcpy(header + 0x20, &size, 8);
+                    std::memcpy(header + 0x28, &signature, 4);
+                    std::memcpy(header + 0x2C, &maximum, 4);
+                }
+                else
+                {
+                    std::memcpy(header + 0x20, &maximum, 4);
+                    std::memcpy(header + 0x24, &l.datumSize, 4);
+                    std::memcpy(header + 0x2C, &signature, 4);
+                }
+                const int32_t p = players, me = local;
+                std::memcpy(count, &p, 4);
+                if (l.mask64) std::memcpy(count + l.maskOffset, &mask, 8);
+                else { const uint32_t m = uint32_t(mask); std::memcpy(count + l.maskOffset, &m, 4); }
+                std::memcpy(count + l.localOffset, &me, 4);
+            }
+            Session read() const { return Read(globals, header, count, *layout); }
+        };
+        for (const Layout* layout : {&kHalo3, &kOdst, &kReach, &kHalo4, &kHalo2})
+        {
+            Fixture solo(*layout, 3, 1, 0x1, 0);
+            Session s = solo.read();
+            Check(s.type == 3 && s.players == 1 && s.others == 0, "session: a solo level is a sync-server with one player");
+            Fixture host(*layout, 3, 2, 0x3, 0);
+            s = host.read();
+            Check(s.type == 3 && s.players == 2 && s.others == 1, "session: a co-op host has the same type and another machine");
+            Fixture joiner(*layout, 2, 3, 0x7, 2);
+            s = joiner.read();
+            Check(s.type == 2 && s.players == 3 && s.others == 2, "session: a joiner's own machine bit is not counted");
+            Fixture wrongSize(*layout, 3, 1, 0x1, 0);
+            wrongSize.header[layout->wideHeader ? 0x20 : 0x24] ^= 0x08;
+            s = wrongSize.read();
+            Check(s.type == 3 && s.players == kNotRead && s.others == kNotRead,
+                "session: another build's players array proves nothing beside it");
+            Fixture wrongName(*layout, 3, 1, 0x1, 0);
+            wrongName.header[0] = 'q';
+            Check(wrongName.read().players == kNotRead, "session: the array must carry its own name");
+            Fixture noLocal(*layout, 3, 2, 0x3, -1);
+            s = noLocal.read();
+            Check(s.players == 2 && s.others == kNotRead, "session: without a local machine the others are not read");
+            Fixture garbage(*layout, 3, 99, 0x1, 0);
+            Check(garbage.read().players == kNotRead, "session: a count past sixteen players is not believed");
+            Check(Read(nullptr, host.header, host.count, *layout).type == kNotRead &&
+                Read(host.globals, nullptr, host.count, *layout).players == kNotRead &&
+                Read(host.globals, host.header, nullptr, *layout).players == kNotRead,
+                "session: a missing pointer reads nothing past it");
+            if (layout->progressFlags)
+            {
+                Fixture idle(*layout, 3, 1, 0x1, 0);
+                idle.globals[0] = idle.globals[1] = 0;
+                Check(idle.read().type == kNotRead, "session: no game in progress has no type");
+            }
+        }
+        {
+            Fixture wide(kHalo4, 5, 4, (uint64_t(1) << 16) | 0x1F | (uint64_t(1) << 40), 16);
+            const Session s = wide.read();
+            Check(s.type == 5 && s.players == 4 && s.others == 5,
+                "session: Halo 4's mask is 64 bits wide and only its 17 machine bits count");
+        }
+        {
+            alignas(8) uint8_t tls[0x200]{};
+            Fixture host(kReach, 3, 2, 0x3, 1);
+            const uint8_t* pointers[3]{host.globals, host.header, host.count};
+            std::memcpy(tls + kReachSlots.gameGlobals, &pointers[0], sizeof(void*));
+            std::memcpy(tls + kReachSlots.playersArray, &pointers[1], sizeof(void*));
+            std::memcpy(tls + kReachSlots.countBlock, &pointers[2], sizeof(void*));
+            const Session s = ReadTls(tls, kReachSlots, kReach);
+            Check(s.type == 3 && s.players == 2 && s.others == 1, "session: the three pointers come from the engine's TLS block");
+            Check(ReadTls(nullptr, kReachSlots, kReach).type == kNotRead, "session: no TLS block reads nothing");
+        }
+        Check(std::strcmp(TypeName(3), "sync-server") == 0 && std::strcmp(TypeName(2), "sync-client") == 0 &&
+            std::strcmp(TypeName(4), "dist-client") == 0 && std::strcmp(TypeName(9), "unknown") == 0,
+            "session: the type names are the game's own");
     }
     g_failures += RunRoomscaleInputTests();
     g_failures += RunRoomscaleRecenterTests();

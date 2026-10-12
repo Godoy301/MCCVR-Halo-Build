@@ -4,6 +4,7 @@
 #include "sight_layer.h"
 #include "title_adapter.h"
 #include "../common/aim_lead_logic.h"
+#include "../common/session_read_logic.h"
 #include "../common/aim_solve_logic.h"
 #include "../common/config.h"
 #include "../common/log.h"
@@ -74,10 +75,10 @@ struct Stats
     std::atomic<uint64_t> muzzleAimed{0}, muzzleUnconverged{0}, muzzleHeld{0};
     // Local shots a fire-time change was stood down for (coop_safe_shots).
     std::atomic<uint64_t> fireTimeStoodDown{0};
-    // The game's simulation type (Sight_NoteSessionType; kSessionUnread until a simulation thread reports), and
-    // the value the report last logged (the reporting thread's own).
-    std::atomic<int> sessionType{kSessionUnread};
-    int sessionTypeLogged = kSessionUnread;
+    // The session as the game holds it (Sight_NoteSession; the type is kSessionUnread until a simulation thread
+    // reports), and what the report last logged (the reporting thread's own).
+    std::atomic<int> sessionType{kSessionUnread}, sessionPlayers{-1}, sessionOthers{-1};
+    int sessionTypeLogged = kSessionUnread, sessionPlayersLogged = -1, sessionOthersLogged = -1;
     // Of those, the re-aims that would have applied, and by how much (milli-degrees): what the stand-down costs.
     // [0] on foot, [1] seated; `through`: the re-aims that would have left the shot alone (already through the point).
     struct StoodDownBends
@@ -490,9 +491,12 @@ bool Sight_ConvergedDirection(GameTitle title, uint32_t generation, const float 
     return true;
 }
 
-void Sight_NoteSessionType(GameTitle title, int type)
+void Sight_NoteSession(GameTitle title, int type, int players, int otherMachines)
 {
-    g_stats[Slot(title)].sessionType.store(type, std::memory_order_relaxed);
+    auto& s = g_stats[Slot(title)];
+    s.sessionType.store(type, std::memory_order_relaxed);
+    s.sessionPlayers.store(players, std::memory_order_relaxed);
+    s.sessionOthers.store(otherMachines, std::memory_order_relaxed);
 }
 
 bool Sight_FireTimeChangesAllowed()
@@ -1991,15 +1995,25 @@ void Sight_Report()
 #if HALOMCCVR_DEV_DIAGNOSTICS
         ReportHitClasses(i);
 #endif
-        if (const int session = s.sessionType.load(std::memory_order_relaxed); session != s.sessionTypeLogged)
         {
-            s.sessionTypeLogged = session;
-            if (session < 0)
-                LOG("SESSION %s: no game in progress", TitleName(static_cast<GameTitle>(i)));
-            else
-                LOG("SESSION %s: the game's simulation type is %d (game globals +0x11; a solo level, a campaign "
-                    "co-op session and a custom game each have their own)",
-                    TitleName(static_cast<GameTitle>(i)), session);
+            const int session = s.sessionType.load(std::memory_order_relaxed);
+            const int players = s.sessionPlayers.load(std::memory_order_relaxed);
+            const int others = s.sessionOthers.load(std::memory_order_relaxed);
+            if (session != s.sessionTypeLogged || players != s.sessionPlayersLogged ||
+                others != s.sessionOthersLogged)
+            {
+                s.sessionTypeLogged = session;
+                s.sessionPlayersLogged = players;
+                s.sessionOthersLogged = others;
+                if (session < 0)
+                    LOG("SESSION %s: no game in progress", TitleName(static_cast<GameTitle>(i)));
+                else
+                    LOG("SESSION %s: the game's simulation type is %d (%s), players in the game %d, machines "
+                        "other than this one %d (-1: not read). A solo campaign level is a sync-server with 1 "
+                        "player; a co-op joiner is a sync-client",
+                        TitleName(static_cast<GameTitle>(i)), session, session_read::TypeName(session), players,
+                        others);
+            }
         }
         if (const uint64_t stoodDown = s.fireTimeStoodDown.exchange(0, std::memory_order_relaxed))
         {

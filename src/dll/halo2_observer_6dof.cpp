@@ -58,6 +58,7 @@
 #include "halo2_stereo_core.h"
 #include "vr.h"
 #include "sight_layer.h"
+#include "../common/session_read_logic.h"
 
 #ifndef HALOMCCVR_HALO2_OBSERVER_6DOF
 #define HALOMCCVR_HALO2_OBSERVER_6DOF 0
@@ -4173,6 +4174,22 @@ namespace
                 auto* const unit=static_cast<uint8_t*>(Halo2ObjectFromIndex(objectIndex));
                 if (!unit || unit[0xAA]!=0) __leave;
                 ownedForContact = true;
+                // The session as the game holds it, for the log (src/common/session_read_logic.h). Halo 2 keeps
+                // the three pointers in module globals: game globals, the players array, "players globals".
+                // ADDR-HYGIENE: guarded (session_read::Read believes the count only beside a players array
+                // whose own name, signature, maximum and datum size check) and log only: nothing acts on it.
+                {
+                    constexpr uintptr_t kGameGlobalsRva=0xE80A78,kPlayersArrayRva=0xE80A28,kPlayersGlobalsRva=0xE80A20;
+                    const uintptr_t base=g_moduleBase.load(std::memory_order_acquire);
+                    if (base)
+                    {
+                        const session_read::Session session=session_read::Read(
+                            *reinterpret_cast<const uint8_t* const*>(base+kGameGlobalsRva),
+                            *reinterpret_cast<const uint8_t* const*>(base+kPlayersArrayRva),
+                            *reinterpret_cast<const uint8_t* const*>(base+kPlayersGlobalsRva),session_read::kHalo2);
+                        Sight_NoteSession(GameTitle::Halo2,session.type,session.players,session.others);
+                    }
+                }
                 if (g_vehicleSeatVerified.load(std::memory_order_acquire))
                 {
                     const bool seated = *reinterpret_cast<const int16_t*>(
