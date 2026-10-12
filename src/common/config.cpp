@@ -2573,7 +2573,7 @@ void ConfigSave()
     fprintf(f, "# something low and near can then be pulled down onto it. Needs converged_aim. Live.\n");
     fprintf(f, "# (default %d)\n", d.seat_fire_from_eye ? 1 : 0);
     fprintf(f, "seat_fire_from_eye = %d\n\n", g_config.seat_fire_from_eye ? 1 : 0);
-    fprintf(f, "# EXPERIMENTAL, Halo 4. 1 = CONVERGED AIM IN HALO 4 SEATS: the game traces the ray from your eye\n");
+    fprintf(f, "# Halo 4. 1 = CONVERGED AIM IN HALO 4 SEATS: the game traces the ray from your eye\n");
     fprintf(f, "# along the controller, and the seat's aim is bent so the line the game itself aims the seat\n");
     fprintf(f, "# along passes through the point it hits; the reticle sits on that point. With coop_safe_shots\n");
     fprintf(f, "# on that line starts at the game's own seat camera, the same on every player's game, and\n");
@@ -2596,7 +2596,7 @@ void ConfigSave()
     fprintf(f, "# Every title (Reach also needs aim_direct_drive = 1), on foot and in vehicle seats: Halo 3,\n");
     fprintf(f, "# ODST and Reach; Halo CE and Halo 2 in their first-person seat view (vehicle_first_person = 1;\n");
     fprintf(f, "# Halo 2 where direct drive writes the seat, see seat_direct_drive); Halo 4 seats with\n");
-    fprintf(f, "# halo4_seat_converge = 1 (experimental).\n");
+    fprintf(f, "# halo4_seat_converge = 1.\n");
     fprintf(f, "# 1 = CONVERGED AIM: the game traces the ray from your eye\n");
     fprintf(f, "# along the controller and bends the aim so the shot passes through the point it hits, at\n");
     fprintf(f, "# any distance; the reticle sits on that point. In a Halo CE or Halo 2 seat the game's own\n");

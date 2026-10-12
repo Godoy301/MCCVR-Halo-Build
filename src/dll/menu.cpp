@@ -1236,9 +1236,9 @@ namespace
                                     "itself. Halo CE's hand aims every seat either way.");
             }
             bool halo4Seats = g_config.halo4_seat_converge != 0;
-            if (ImGui::Checkbox("Halo 4: converged aim in seats (experimental)", &halo4Seats))
+            if (ImGui::Checkbox("Halo 4: converged aim in seats", &halo4Seats))
             { g_config.halo4_seat_converge = halo4Seats ? 1 : 0; changed = true; }
-            ImGui::TextDisabled("EXPERIMENTAL. ON: in a Halo 4 seat the game traces your aim, and the seat's aim is\n"
+            ImGui::TextDisabled("ON (default): in a Halo 4 seat the game traces your aim, and the seat's aim is\n"
                                 "bent so the line the game itself aims that seat along passes through the point\n"
                                 "you point at; the crosshair sits on that point. With Co-op safe shots on, that\n"
                                 "line starts at the game's own seat camera, as on every other player's game, and\n"

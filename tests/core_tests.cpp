@@ -15892,7 +15892,7 @@ int main()
     Check(g_config.physical_crouch && g_config.physical_crouch_depth_m == 0.22f,
           "legacy config inherits the physical crouch (on) at its default depth");
     Check(!g_config.experimental_hand_alignment, "legacy config preserves released hand positioning");
-    Check(g_config.halo4_seat_converge == 0, "legacy config leaves Halo 4 seated convergence off (experimental)");
+    Check(g_config.halo4_seat_converge == 1, "legacy config inherits Halo 4 seated convergence (on)");
     Check(!g_config.manual_reload&&g_config.weapon_holsters,
         "legacy config leaves manual reload off and inherits weapon holsters (on)");
     Check(!g_config.game_menu_pointer, "legacy config leaves native menu pointing off");
@@ -16030,12 +16030,12 @@ int main()
         file << "aim_lead_ticks = 1.5\n";
         file << "experimental_body_ik = 1\nbody_ik_hide_lower = 1\n";
         file << "physical_melee_swing_speed = 0.10\n";
-        file << "halo4_seat_converge = 1\n";
+        file << "halo4_seat_converge = 0\n";
     }
     ConfigLoad(primary.c_str());
     Check(g_config.world_collision,
         "the shared world-collision option can be enabled from config");
-    Check(g_config.halo4_seat_converge == 1, "Halo 4 seated convergence is a player key: every build reads it");
+    Check(g_config.halo4_seat_converge == 0, "Halo 4 seated convergence is a player key: every build reads it");
     Check(g_config.physical_melee &&
               g_config.physical_melee_swing_speed == 0.3f,
         "physical melee loads independently and clamps its swing threshold");
@@ -16058,7 +16058,7 @@ int main()
         "left-handed main-weapon mode survives a save/load round trip");
     Check(!g_config.experimental_hand_alignment,
         "left-handed updates keep released positioning until explicitly opted in");
-    Check(g_config.halo4_seat_converge == 1, "Halo 4 seated convergence survives config save/load");
+    Check(g_config.halo4_seat_converge == 0, "Halo 4 seated convergence survives config save/load");
     g_config.experimental_hand_alignment = true;
     ConfigSave();
     ConfigLoad(primary.c_str());
