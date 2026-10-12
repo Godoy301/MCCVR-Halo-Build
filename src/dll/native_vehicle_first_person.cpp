@@ -306,6 +306,8 @@ template<unsigned I> void PositionOwned(uint32_t unit,void* result) noexcept
         Fault(I);
     }
 }
+// NativeVehicleFirstPerson_SetStockOnThisThread: the hooks below forward and change nothing while it is set.
+thread_local bool t_stockOnThisThread=false;
 template<unsigned I> uint32_t __fastcall SelectHook(uint32_t unit,Mode<I>* mode)
 {
     auto& r=runtime[I];r.callbacks.fetch_add(1,std::memory_order_acq_rel);
@@ -315,7 +317,7 @@ template<unsigned I> uint32_t __fastcall SelectHook(uint32_t unit,Mode<I>* mode)
 #if HALOMCCVR_DEV_DIAGNOSTICS
         const uint32_t nativeResult=result;
 #endif
-        const bool owned=SelectOwned<I>(unit,mode);
+        const bool owned=!t_stockOnThisThread&&SelectOwned<I>(unit,mode);
         if (owned) {result=0;r.selected.fetch_add(1,std::memory_order_relaxed);}
 #if HALOMCCVR_DEV_DIAGNOSTICS
         if constexpr (I==2) {
@@ -334,7 +336,7 @@ template<unsigned I> void __fastcall CameraHook(uint32_t unit,const void* facing
     auto& r=runtime[I];r.callbacks.fetch_add(1,std::memory_order_acq_rel);
     __try {
         reinterpret_cast<CameraFn>(r.original[Camera])(unit,facing,result);
-        PositionOwned<I>(unit,result);
+        if (!t_stockOnThisThread) PositionOwned<I>(unit,result);
     } __finally {r.callbacks.fetch_sub(1,std::memory_order_release);}
 }
 void* const hooks[3][2]{
@@ -393,6 +395,10 @@ bool Install(unsigned i,size_t size)
     }
     return true;
 }
+}
+void NativeVehicleFirstPerson_SetStockOnThisThread(bool stock) noexcept
+{
+    t_stockOnThisThread=stock;
 }
 bool NativeVehicleFirstPerson_SeatViewOwned(GameTitle title,uint32_t parent,int seat) noexcept
 {

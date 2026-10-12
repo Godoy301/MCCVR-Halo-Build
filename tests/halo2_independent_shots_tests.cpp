@@ -27,6 +27,9 @@ static struct {bool independent_dual_aim=true;float crosshair_distance_m=10;bool
 [[maybe_unused]] static bool Sight_ShotsFromMuzzle(){return g_config.shots_from_muzzle;}
 [[maybe_unused]] static bool Sight_GunBarrelAim(){return g_config.gun_barrel_aim;}
 [[maybe_unused]] static bool Sight_IndependentDualAim(){return g_config.independent_dual_aim;}
+// Fire-time changes allowed (the co-op switch off), and the first-person seat override's stand-down a no-op.
+[[maybe_unused]] static bool Sight_FireTimeChangesAllowed(){return true;}
+[[maybe_unused]] static void NativeVehicleFirstPerson_SetStockOnThisThread(bool) noexcept{}
 // Shots from the muzzle (sight_layer.h): admitted only with the barrel aim off; the converged point itself is
 // sight_layer's (aim_solve_tests), so here it keeps the barrel's direction and counts the asks.
 static unsigned muzzleAimCalls=0;static bool muzzleAimRefuses=false;

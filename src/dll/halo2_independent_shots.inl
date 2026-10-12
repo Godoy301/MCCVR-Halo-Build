@@ -55,7 +55,17 @@ __declspec(noinline) int32_t __fastcall Halo2IndependentCameraDetour(
     __try
     {
         if(!feature.cameraOriginal)__leave;
-        result=feature.cameraOriginal(unit,position,direction);
+        // Co-op safe: at a fire the evaluator answers the line the crosshair test starts on, from the unit's seat
+        // camera. The first-person seat override places that camera on this machine only, so for this call it
+        // stands down and the line is the one every machine computes.
+        if(reinterpret_cast<uintptr_t>(_ReturnAddress())==feature.base+0x7597BD&&!Sight_FireTimeChangesAllowed())
+        {
+            NativeVehicleFirstPerson_SetStockOnThisThread(true);
+            __try {result=feature.cameraOriginal(unit,position,direction);}
+            __finally {NativeVehicleFirstPerson_SetStockOnThisThread(false);}
+        }
+        else
+            result=feature.cameraOriginal(unit,position,direction);
         // Flat parity (halo2_fire_eye.inl): the firing assist's own call for our unit, before anything below
         // replaces its outputs, is a free sample of the evaluator against the publication's engine eye.
         if(position&&reinterpret_cast<uintptr_t>(_ReturnAddress())==feature.base+0x7597BD&&unit==Halo2OwnedUnit())

@@ -18,6 +18,11 @@ bool NativeVehicleFirstPerson_TrimTarget(GameTitle title,uint64_t& identity,int&
 // This override placed the camera in exactly this seat within 250 ms: the seat's view is the occupant's own
 // head, not the native chase camera (which orbits with the aim).
 bool NativeVehicleFirstPerson_SeatViewOwned(GameTitle title,uint32_t parent,int seat) noexcept;
+// While set on the calling thread this override answers nothing there: the title's own camera selector and
+// evaluator run as built. For a call whose answer feeds the simulation and not the view -- Halo 2's fire asks the
+// seat camera for the line its crosshair test starts on, and every other machine computes that from the game's
+// own chase camera.
+void NativeVehicleFirstPerson_SetStockOnThisThread(bool stock) noexcept;
 bool Game_ReadVehicleCameraOwner(GameTitle title, NativeVehicleCameraOwner& owner) noexcept;
 #if HALOMCCVR_DEV_DIAGNOSTICS
 void Game_Halo4CameraOwnerReport() noexcept;   // dev: why Game_ReadVehicleCameraOwner refused Halo 4 seats
