@@ -95,7 +95,7 @@ void Halo4ContactTick(uint32_t unit,void* instance)
         if(unit==g_halo4Contact.owner.load(std::memory_order_acquire) && biped==instance)
         {
             const uint64_t now=GetTickCount64();
-            const bool admit=!exclusive_input::Active() && g_config.physical_melee && g_enabled.load() && VR_IsStereoEnabled() &&
+            const bool admit=!exclusive_input::Active() && Sight_PhysicalMelee() && g_enabled.load() && VR_IsStereoEnabled() &&
                 g_halo4Camera.armed.load() && !g_halo4Camera.teardownRequested.load() &&
                 g_halo4Contact.generation==g_halo4Camera.generation.load() &&
                 g_halo4Contact.playbackMode && g_halo4Contact.playbackMode()==0 &&
@@ -562,7 +562,7 @@ bool InstallHalo4ContactMelee(uintptr_t base,size_t size,uint32_t generation)
 void Halo4PublishContactHand(int hand,const float points[][3],uint32_t count,
     int32_t unit,uint64_t shape)
 {
-    if(!Halo4ContactMeleeReady() || !g_config.physical_melee || hand<0 || hand>1 ||
+    if(!Halo4ContactMeleeReady() || !Sight_PhysicalMelee() || hand<0 || hand>1 ||
         !points || !count || count>contact_melee::kMaxPoints || unit==-1 ||
         g_halo4FloatingPair.generation!=g_halo4Contact.generation) return;
     ContactMeleePacket packet{};

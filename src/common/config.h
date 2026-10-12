@@ -772,7 +772,8 @@ struct Config
     // from the eye. In Halo 2 the character's aim and the aim-assist target are also left to the game.
     // A campaign co-op session runs one simulation on every machine from shared input. The written aim is part
     // of that input; a change made inside one machine's simulation is not, and the machines then disagree.
-    // Not covered: VR contact melee's own damage (physical_melee, off by default).
+    // Contact melee (physical_melee) does not apply its own damage either: its swing presses the game's melee
+    // (Halo CE has no such lane; there it does nothing).
     // sight_layer.h: Sight_FireTimeChangesAllowed.
     bool coop_safe_shots = false;
 

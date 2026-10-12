@@ -2065,7 +2065,7 @@ namespace
                 VR_PublishReloadTarget(GameTitle::Halo2,TitleAdapter_GetGeneration(GameTitle::Halo2),
                     identity,context.contactFrames[1].serial,context.contactFrames[1].transform,point);
         }
-        if ((!g_config.world_collision && !g_config.physical_melee) || !handsMatrices || !gunMatrices ||
+        if ((!g_config.world_collision && !Sight_PhysicalMelee()) || !handsMatrices || !gunMatrices ||
             !context.valid || context.handsCount == 0 ||
             context.handsCount > kHalo2FirstPersonPaletteCapacity ||
             context.gunCount == 0 ||

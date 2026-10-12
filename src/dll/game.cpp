@@ -7798,7 +7798,7 @@ namespace
     {
         LegacyWorldCollisionFeature* feature=LegacyCollisionForTitle(title);
         if(!feature || !solved || !context.valid || !generation ||
-            (!g_config.world_collision && !((title==GameTitle::HaloReach || title==GameTitle::Halo3 || title==GameTitle::Halo3ODST) && g_config.physical_melee)) ||
+            (!g_config.world_collision && !((title==GameTitle::HaloReach || title==GameTitle::Halo3 || title==GameTitle::Halo3ODST) && Sight_PhysicalMelee())) ||
             (!feature->installed.load(std::memory_order_acquire) &&
                 !(title==GameTitle::HaloReach && ReachContactMeleeReady()) &&
                 !(title==GameTitle::Halo3 && Halo3ContactMeleeReady()) &&
@@ -26241,7 +26241,7 @@ namespace
         LegacyWorldCollisionFeature* feature=LegacyCollisionForTitle(title);
         if(!feature || !generation || feature->generation!=generation)
             return false;
-        if (!g_config.world_collision && !g_config.physical_melee) return false;
+        if (!g_config.world_collision && !Sight_PhysicalMelee()) return false;
         // Observe the body even when its checksum is unfamiliar. Only the
         // native appended held graph can authorize an unknown weapon model.
         const bool mappedWeapon=feature->runtimeBoundsProven.load(std::memory_order_acquire) &&
@@ -26586,7 +26586,7 @@ namespace
             LOG("Physical melee title=%d: requested=%d world-contact=%d threshold=%.2f m/s; "
                 "%u polls / %u unavailable, %u missing velocity, peak %.2f m/s, "
                 "%u crossings / %u native-input pulses / %u cooldown blocks; native range/target/damage",
-                static_cast<int>(title),g_config.physical_melee?1:0,g_config.world_collision?1:0,
+                static_cast<int>(title),Sight_PhysicalMelee()?1:0,g_config.world_collision?1:0,
                 g_config.physical_melee_swing_speed,melee->polls.exchange(0),
                 melee->unavailable.exchange(0),melee->invalidVelocity.exchange(0),
                 melee->peakCmPerSecond.exchange(0)/100.0f,melee->crossings.exchange(0),
@@ -40182,7 +40182,7 @@ namespace
         g_halo4WorldCollision.configured.store(
             g_config.world_collision, std::memory_order_release);
         g_halo4WorldCollision.physicalMeleeConfigured.store(
-            g_config.physical_melee,
+            Sight_PhysicalMelee(),
             std::memory_order_release);
         g_halo4WorldCollision.physicalMeleeRequiredSpeed.store(
             g_config.physical_melee_swing_speed, std::memory_order_release);
@@ -40239,7 +40239,7 @@ namespace
         if (previous != requested)
             g_halo4WorldCollision.configurationResetPending.store(
                 true, std::memory_order_release);
-        const bool meleeRequested = g_config.physical_melee;
+        const bool meleeRequested = Sight_PhysicalMelee();
         const bool previousMelee =
             g_halo4WorldCollision.physicalMeleeConfigured.exchange(
                 meleeRequested, std::memory_order_acq_rel);
@@ -40352,7 +40352,7 @@ namespace
         const BoneMatrix* solved, int32_t ignoredObjectIndex)
     {
         if ((!g_halo4WorldCollision.configured.load(
-                std::memory_order_acquire) && !(Halo4ContactMeleeReady() && g_config.physical_melee)) ||
+                std::memory_order_acquire) && !(Halo4ContactMeleeReady() && Sight_PhysicalMelee())) ||
             !solved || !g_halo4FloatingPair.targetsValid ||
             !g_halo4FloatingPair.generation)
             return;
@@ -40406,7 +40406,7 @@ namespace
         uint32_t shapeId)
     {
         if ((!g_halo4WorldCollision.configured.load(
-                std::memory_order_acquire) && !(Halo4ContactMeleeReady() && g_config.physical_melee)))
+                std::memory_order_acquire) && !(Halo4ContactMeleeReady() && Sight_PhysicalMelee())))
             return;
         const uint32_t handCount =
             g_halo4FloatingPair.handCollisionSampleCount[1];
@@ -42664,7 +42664,7 @@ namespace
         }
         Halo4WeaponCollisionBounds runtimeBounds{};
         const bool needsBounds=g_halo4WorldCollision.configured.load(
-            std::memory_order_acquire) || (Halo4ContactMeleeReady() && g_config.physical_melee);
+            std::memory_order_acquire) || (Halo4ContactMeleeReady() && Sight_PhysicalMelee());
         const bool readBounds=needsBounds && Halo4ReadRuntimeWeaponBounds(
             renderModelDescriptor,runtimeImportChecksum,runtimeBounds);
         if (needsBounds) (readBounds ? g_halo4RuntimeWeaponBoundsReads :
@@ -49887,7 +49887,11 @@ uint32_t Game_GestureMeleeInput(uint64_t nowMs)
     telemetry.polls.fetch_add(1,std::memory_order_relaxed);
     // With both modes selected, contact owns melee. The gesture must never
     // add a second native target/animation to the same physical strike.
-    if (exclusive_input::Active() || !g_config.gesture_melee || g_config.physical_melee || !transport ||
+    // Co-op safe: contact melee applies its damage on this machine only, so there it stands down and its swing
+    // takes this lane instead -- the game's own melee binding, which is input every machine shares.
+    const bool contactOwns = Sight_PhysicalMelee();
+    const bool gesture = g_config.gesture_melee || (g_config.physical_melee && !contactOwns);
+    if (exclusive_input::Active() || !gesture || contactOwns || !transport ||
         TitleAdapter_GetRuntimeMode()!=RuntimeMode::Gameplay ||
         !g_enabled.load(std::memory_order_acquire) ||
         !VR_IsStereoEnabled())

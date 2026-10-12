@@ -1486,7 +1486,9 @@ namespace
             changed |= ImGui::Checkbox("Co-op safe shots", &g_config.coop_safe_shots);
             ImGui::TextDisabled("For campaign co-op. ON: nothing changes a shot as it is fired, so both players'\n"
                                 "games fire it the same way. Your hand still aims; shots leave your eye, and the\n"
-                                "muzzle option above has no effect. Live.");
+                                "muzzle option above has no effect. In Halo 2 your hand aims only with Direct\n"
+                                "drive on. True physical melee presses the game's melee instead of striking on\n"
+                                "contact (Halo CE: it does nothing). Live.");
             ImGui::TextDisabled("Both cover vehicle seats too. Every seat you aim from converges (Halo 3, ODST,\n"
                                 "Halo CE and Halo 2 in first-person seats; Reach and Halo 2 with Direct drive;\n"
                                 "Halo 4 seats not yet). With Direct drive, seats have\n"

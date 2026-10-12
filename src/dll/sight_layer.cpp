@@ -500,6 +500,11 @@ bool Sight_IndependentDualAim()
     return g_config.independent_dual_aim && Sight_FireTimeChangesAllowed();
 }
 
+bool Sight_PhysicalMelee()
+{
+    return g_config.physical_melee && Sight_FireTimeChangesAllowed();
+}
+
 bool Sight_MuzzleShotsConverge()
 {
     return Sight_ShotsFromMuzzle() && !Sight_GunBarrelAim() && Sight_AimEnabled();

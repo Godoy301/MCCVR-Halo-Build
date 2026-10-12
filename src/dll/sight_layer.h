@@ -196,8 +196,9 @@ struct SightCameraSample
 // False while coop_safe_shots is on: every site that would change the simulation on this machine only leaves it
 // as the game built it -- a shot changed inside the fire routine (the muzzle shot, a re-aim through the intent
 // point, Reach's hand ray, seat redirect and passenger origin, ODST's passenger origin, Halo 2's seated
-// fire-from-eye), and in Halo 2 the unit's aim vectors and the aim-assist calculation. The aim written into the
-// control record is shared input and is not affected. A site that stands a local shot down for this reason
+// fire-from-eye), in Halo 2 the unit's aim vectors and the aim-assist calculation, and contact melee's own
+// damage. The aim written into the control record and a pressed binding are shared input and are not
+// affected. A site that stands a local shot down for this reason
 // counts it (Sight_Report logs "CO-OP SAFE SHOTS" every 2 s).
 bool Sight_FireTimeChangesAllowed();
 void Sight_NoteFireTimeStoodDown(GameTitle title);
@@ -211,6 +212,11 @@ void Sight_NoteSessionType(GameTitle title, int type);
 bool Sight_ShotsFromMuzzle();
 bool Sight_GunBarrelAim();
 bool Sight_IndependentDualAim();
+// Contact melee (physical_melee) as it is IN EFFECT, on the same predicate: its strike applies damage through the
+// game's melee routine on this machine only. While it reads off, the gesture lane presses the game's melee
+// binding for the same swing (game.cpp), so the setting still gives a melee in every game that lane serves
+// (all but Halo CE).
+bool Sight_PhysicalMelee();
 bool Sight_MuzzleShotsConverge();
 bool Sight_AimMuzzleShot(GameTitle title, uint32_t generation, const float before[3], const float position[3],
                          float direction[3], float up[3]);
