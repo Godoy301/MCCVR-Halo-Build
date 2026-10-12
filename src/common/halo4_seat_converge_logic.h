@@ -186,24 +186,43 @@ inline float ContractionFactor(float startBehindPivotWu, float pivotToPointWu)
 // The game makes its aim-view call behind the unit's weapon test, so a weapon switch stops the samples for about
 // a second. That is natural, and must not switch a seat's convergence off (converge_policy.h): the last start
 // is kept as an offset from the rendered head, which rides the same vehicle, and stands in until a sample comes.
+//
+// A FOLLOWING camera's start does not stay put against the head: it orbits the seat's pivot as the aim turns,
+// and nothing iterates the fixed point while no sample comes. A start held through a turn of t degrees leaves the
+// aim off by about atan(r sin t / (L + r cos t)): 4 degrees for r = 2.5 m, L = 10 m, t = 20. So such a start is
+// held only while the hand still points within kHoldTurnDeg of where it pointed when the start was taken (about
+// 1 degree off at those numbers); past that the seat has no start until the next sample. A first-person eye does
+// not move with the aim, and its start is held through any turn.
+inline constexpr float kHoldTurnDeg = 5.0f;
 struct StartHold
 {
     bool have = false;
+    bool orbits = false;     // the start was a following camera's (the view pushed its trace start)
     uint64_t atUs = 0;
     float fromHead[3]{};
+    float pointing[3]{};     // where the hand pointed when the start was taken
     void Reset() { *this = StartHold{}; }
-    void Note(uint64_t nowUs, const float start[3], const float head[3])
+    void Note(uint64_t nowUs, const float start[3], const float head[3], const float handPointing[3],
+              bool followingCamera)
     {
-        if (!nowUs || !shot_lag::Finite3(start) || !shot_lag::Finite3(head))
+        if (!nowUs || !shot_lag::Finite3(start) || !shot_lag::Finite3(head) || !handPointing ||
+            !shot_lag::Finite3(handPointing))
             return;
         have = true;
+        orbits = followingCamera;
         atUs = nowUs;
         for (int axis = 0; axis < 3; ++axis)
+        {
             fromHead[axis] = start[axis] - head[axis];
+            pointing[axis] = handPointing[axis];
+        }
     }
-    bool Get(uint64_t nowUs, const float head[3], float out[3]) const
+    bool Get(uint64_t nowUs, const float head[3], const float handPointing[3], float out[3]) const
     {
         if (!have || nowUs < atUs || nowUs - atUs > kSampleHoldUs || !shot_lag::Finite3(head))
+            return false;
+        if (orbits && (!handPointing || !shot_lag::Finite3(handPointing) ||
+                       !(seat_upstream::AngleDeg(pointing, handPointing) <= kHoldTurnDeg)))
             return false;
         for (int axis = 0; axis < 3; ++axis)
             out[axis] = head[axis] + fromHead[axis];

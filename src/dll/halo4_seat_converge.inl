@@ -840,7 +840,7 @@ bool Halo4SeatConvergePrepare(Halo4SeatConvergePoll& out, const float rayDir[3])
             memcpy(out.eye, start.pos, sizeof(out.eye));
             facts.start = true;
             if (facts.headKnown)
-                s_state.hold.Note(nowUs, start.pos, out.head);
+                s_state.hold.Note(nowUs, start.pos, out.head, rayDir, start.pushWu > 0.0f);
             const uint32_t ageMilli = static_cast<uint32_t>((nowUs - sample.camera.stampUs));   // us = milli-ms
             f.ageMilliMs.fetch_add(ageMilli, std::memory_order_relaxed);
             f.ageSamples.fetch_add(1, std::memory_order_relaxed);
@@ -848,7 +848,7 @@ bool Halo4SeatConvergePrepare(Halo4SeatConvergePoll& out, const float rayDir[3])
                 f.ageMaxMilliMs.store(ageMilli, std::memory_order_relaxed);
         }
     }
-    if (!facts.start && facts.headKnown && s_state.hold.Get(nowUs, out.head, out.eye))
+    if (!facts.start && facts.headKnown && s_state.hold.Get(nowUs, out.head, rayDir, out.eye))
     {
         facts.start = true;
         out.held = true;

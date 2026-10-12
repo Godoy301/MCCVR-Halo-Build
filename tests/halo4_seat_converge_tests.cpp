@@ -389,19 +389,61 @@ void TestStartHold()
     StartHold hold{};
     float out[3]{};
     const float head[3]{1.0f, 2.0f, 3.0f}, start[3]{0.0f, 2.5f, 3.4f};
-    Check(!hold.Get(1000, head, out), "nothing held yet");
-    hold.Note(1000, start, head);
-    Check(hold.Get(1000, head, out) && Near(out[0], 0.0f, 1e-6f) && Near(out[1], 2.5f, 1e-6f), "held: the start itself");
+    const float ahead[3]{1.0f, 0.0f, 0.0f};
+    const auto turned = [](float deg, float v[3]) {
+        v[0] = std::cos(deg * kDeg);
+        v[1] = std::sin(deg * kDeg);
+        v[2] = 0.0f;
+    };
+    float quarter[3]{}, four[3]{}, six[3]{};
+    turned(90.0f, quarter);
+    turned(4.0f, four);
+    turned(6.0f, six);
+
+    // A FIRST-PERSON EYE's start: held through any turn.
+    Check(!hold.Get(1000, head, ahead, out), "nothing held yet");
+    hold.Note(1000, start, head, ahead, false);
+    Check(hold.Get(1000, head, ahead, out) && Near(out[0], 0.0f, 1e-6f) && Near(out[1], 2.5f, 1e-6f),
+          "held: the start itself");
     const float moved[3]{11.0f, 2.0f, 3.0f};
-    Check(hold.Get(1000 + 500000, moved, out) && Near(out[0], 10.0f, 1e-5f) && Near(out[2], 3.4f, 1e-5f),
+    Check(hold.Get(1000 + 500000, moved, ahead, out) && Near(out[0], 10.0f, 1e-5f) && Near(out[2], 3.4f, 1e-5f),
           "half a second on, the vehicle 10 wu further: the start rode with the head");
-    Check(!hold.Get(1000 + kSampleHoldUs + 1, moved, out), "past the hold: nothing");
-    Check(!hold.Get(999, moved, out), "a clock running backwards: nothing");
+    Check(hold.Get(1000 + 500000, moved, quarter, out), "an eye's start is held through a quarter turn of the hand");
+    Check(!hold.Get(1000 + kSampleHoldUs + 1, moved, ahead, out), "past the hold: nothing");
+    Check(!hold.Get(999, moved, ahead, out), "a clock running backwards: nothing");
     hold.Reset();
-    Check(!hold.Get(2000, head, out), "reset: nothing");
+    Check(!hold.Get(2000, head, ahead, out), "reset: nothing");
     const float bad[3]{std::nanf(""), 0.0f, 0.0f};
-    hold.Note(3000, bad, head);
+    hold.Note(3000, bad, head, ahead, false);
     Check(!hold.have, "a non-finite start is never held");
+    hold.Note(3000, start, head, bad, false);
+    Check(!hold.have, "nor one taken with no direction of the hand");
+
+    // A FOLLOWING CAMERA's start: held only while the hand still points where it did.
+    hold.Note(4000, start, head, ahead, true);
+    Check(hold.Get(4000 + 500000, moved, four, out) && Near(out[0], 10.0f, 1e-5f),
+          "a following camera's start: held while the hand has turned 4 degrees");
+    Check(!hold.Get(4000 + 500000, moved, six, out), "...and given up once it has turned 6");
+    Check(!hold.Get(4000 + 500000, moved, nullptr, out) && !hold.Get(4000 + 500000, moved, bad, out),
+          "...or when where the hand points is not known");
+    Check(hold.Get(4000 + 900000, moved, ahead, out), "...and held again when the hand comes back");
+
+    // WHY: the model's following camera, the hand turned t degrees with no sample since. The aim solved from the
+    // held start is off by about atan(r sin t / (L + r cos t)); at the limit that is under a degree for a point
+    // 10 m out, and it would be several at 20.
+    Chase chase{};
+    chase.pivot = {0.0f, 0.0f, 0.6f};
+    chase.distance = 2.5f * kM;
+    chase.push = false;
+    const auto offAfterTurn = [&](float deg) {
+        const V before = Unit({1.0f, 0.0f, 0.0f});
+        const V after = Unit({std::cos(deg * kDeg), std::sin(deg * kDeg), 0.0f});
+        const V point = chase.pivot + after * (10.0f * kM);
+        const V heldStart = chase.pivot - before * chase.distance;   // where the camera was
+        return AngleRad(Unit(point - heldStart), after) / kDeg;
+    };
+    Check(offAfterTurn(kHoldTurnDeg) < 1.1f, "at the turn limit a held following start leaves the aim about a degree off");
+    Check(offAfterTurn(20.0f) > 3.5f, "...where 20 degrees would leave it several off: why there is a limit");
 }
 
 void TestWhy()
