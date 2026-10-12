@@ -465,6 +465,11 @@ void NativeVehicleFirstPerson_SetStockOnThisThread(bool stock) noexcept
 {
     t_stockOnThisThread=stock;
 }
+int NativeVehicleFirstPerson_InSimulationTick(GameTitle title) noexcept
+{
+    for (unsigned i=0;i<3;++i) if (kBindings[i].title==title) return InTick(i);
+    return -1;
+}
 bool NativeVehicleFirstPerson_SeatViewOwned(GameTitle title,uint32_t parent,int seat) noexcept
 {
     if (title!=TitleAdapter_GetActiveTitle()||parent==UINT32_MAX||seat<0) return false;
