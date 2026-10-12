@@ -335,6 +335,7 @@ struct LegacyDriveState
     std::atomic<uint32_t> seq{0};
     std::atomic<float> yaw{0.0f}, pitch{0.0f}, aimYaw{0.0f}, aimPitch{0.0f};
     std::atomic<uint64_t> setMs{0};
+    std::atomic<uint64_t> setSerial{0};      // the tracking frame the setpoint was solved from (0: unknown)
     std::atomic<bool> setValid{false};
     std::atomic<bool> setSeated{false};      // the setpoint is a seat's (seat_direct_drive)
     std::atomic<bool> setGunSlaved{false};   // seated: the simulation aims the seat from its gun camera (flag bit 7)
@@ -363,6 +364,9 @@ struct LegacyDriveState
     std::atomic<float> occYaw{0.0f}, occPitch{0.0f};
     std::atomic<uint64_t> occMs{0};
     std::atomic<uint32_t> occKey{0}, occAgree{0};
+    // The occupant's pitch check for the servo's hold (gun_slaved::CheckHold): bit 31 set while it collects
+    // evidence, the low bits its attempt (its count of failed ones). Inside the same seqlock.
+    std::atomic<uint32_t> occPitchCheck{0};
 #if HALOMCCVR_DEV_DIAGNOSTICS
     // Gun-slaved seats, per report window (deg as float bits): the largest |record - occupant's aim| and
     // |record - gun| this stint's updates saw, in the record's frame.
@@ -996,6 +1000,9 @@ void LegacyDrivePublish(GameTitle title, float yaw, float pitch, float aimYaw, f
     st.aimYaw.store(aimYaw, std::memory_order_relaxed);
     st.aimPitch.store(aimPitch, std::memory_order_relaxed);
     st.setMs.store(GetTickCount64(), std::memory_order_relaxed);
+    // The prepared tracking frame this poll's hand pose came from: the written aim's lead takes one sample per
+    // frame, however many polls publish it (Sight_LeadWrittenAim).
+    st.setSerial.store(VR_CurrentPreparedSerial(), std::memory_order_relaxed);
     st.setValid.store(valid && std::isfinite(yaw) && std::isfinite(pitch), std::memory_order_relaxed);
     st.setSeated.store(seated, std::memory_order_relaxed);
     st.setAxes.store(seated ? (axes.yaw ? kLegacyDriveAxisYaw : 0u) | (axes.pitch ? kLegacyDriveAxisPitch : 0u)
@@ -1078,8 +1085,10 @@ bool LegacyDriveSeatLimited(GameTitle title)
 // Input thread, a gun-slaved seat (Halo 3 / ODST): the occupant's own aim in WORLD angles, as the hook last read it
 // for seat `seatKey`, and how many judged samples in a row it has agreed with the record per axis ([0] yaw, [1]
 // pitch). False when unbound, torn, stale (kLegacyOccupantAimFreshMs) or another seat's: the servo then closes on the
-// camera's forward.
-bool LegacyDriveOccupantAim(GameTitle title, uint32_t seatKey, float& yaw, float& pitch, unsigned agreeing[2])
+// camera's forward. `pitchCheck` (optional): the occupant's pitch check as published -- bit 31 while it collects
+// evidence, the low bits its attempt.
+bool LegacyDriveOccupantAim(GameTitle title, uint32_t seatKey, float& yaw, float& pitch, unsigned agreeing[2],
+                            uint32_t* pitchCheck = nullptr)
 {
     const int slot = LegacyDriveSlot(title);
     if (slot < 0 || slot > 1 || !seatKey)
@@ -1093,6 +1102,7 @@ bool LegacyDriveOccupantAim(GameTitle title, uint32_t seatKey, float& yaw, float
         const uint64_t at = st.occMs.load(std::memory_order_relaxed);
         const uint32_t key = st.occKey.load(std::memory_order_relaxed);
         const uint32_t agree = st.occAgree.load(std::memory_order_relaxed);
+        const uint32_t check = st.occPitchCheck.load(std::memory_order_relaxed);
         const float y = st.occYaw.load(std::memory_order_relaxed);
         const float p = st.occPitch.load(std::memory_order_relaxed);
         std::atomic_thread_fence(std::memory_order_acquire);
@@ -1106,6 +1116,8 @@ bool LegacyDriveOccupantAim(GameTitle title, uint32_t seatKey, float& yaw, float
         pitch = p;
         agreeing[0] = agree & 0xFFFFu;
         agreeing[1] = agree >> 16;
+        if (pitchCheck)
+            *pitchCheck = check;
         return true;
     }
     return false;
@@ -1178,6 +1190,25 @@ bool LegacyDriveSeatStops(GameTitle title, seat_limit::Stops& out, uint32_t& sea
 
 namespace
 {
+// The session as the game holds it, for the log (Sight_NoteSession; src/common/session_read_logic.h says what is
+// read, where, and what guards it): Halo 3, ODST and Halo 4 keep it behind this thread's engine TLS block. The
+// caller's handler guards the reads.
+void LegacyDriveNoteSession(GameTitle title, const uint8_t* tls)
+{
+    if (!tls)
+        return;
+    session_read::Session s{};
+    if (title == GameTitle::Halo3)
+        s = session_read::ReadTls(tls, session_read::kHalo3Slots, session_read::kHalo3);
+    else if (title == GameTitle::Halo3ODST)
+        s = session_read::ReadTls(tls, session_read::kOdstSlots, session_read::kOdst);
+    else if (title == GameTitle::Halo4)
+        s = session_read::ReadTls(tls, session_read::kHalo4Slots, session_read::kHalo4);
+    else
+        return;
+    Sight_NoteSession(title, s.type, s.players, s.others);
+}
+
 // This (sim) thread's TLS -> the record the native update just wrote. 0 when any link is missing.
 uintptr_t LegacyDriveRecord(const LegacyDriveState& st, const LegacyDriveSite& site, int user, const uint8_t** tlsOut)
 {
@@ -1196,6 +1227,7 @@ struct LegacyDrivePublication
 {
     float yaw = 0.0f, pitch = 0.0f, aimYaw = 0.0f, aimPitch = 0.0f;
     uint64_t setMs = 0;
+    uint64_t serial = 0;   // the tracking frame the setpoint was solved from (0: unknown)
     uint32_t axesBits = 0, seatKey = 0;
     bool valid = false, seated = false, pitchLatch = true, coherent = false, gunSlaved = false, gunCamera = false;
     // What a stick write was made under, for the put-back (aim_caller::Context).
@@ -1215,6 +1247,7 @@ LegacyDrivePublication LegacyDriveReadPublication(const LegacyDriveState& st)
         p.aimYaw = st.aimYaw.load(std::memory_order_relaxed);
         p.aimPitch = st.aimPitch.load(std::memory_order_relaxed);
         p.setMs = st.setMs.load(std::memory_order_relaxed);
+        p.serial = st.setSerial.load(std::memory_order_relaxed);
         p.valid = st.setValid.load(std::memory_order_relaxed);
         p.seated = st.setSeated.load(std::memory_order_relaxed);
         p.axesBits = st.setAxes.load(std::memory_order_relaxed);
@@ -1975,6 +2008,7 @@ extern "C" void LegacyPcApplyForUser(int slot, int user, uintptr_t ret, const ui
     bool seatKept = false;    // this update continued a seat stint (its checks survive)
     bool wroteAxis[2]{};      // which axes this update's seat write wrote
     bool latchRead[2]{};      // which axes the seat-limit latch read this update (their stops go to the reticle)
+    bool leadStepped = false; // this update's on-foot write went through the written aim's lead (its motion is kept)
     seat_frame_rt::Live seatFrame{};   // the seat's frame this update (World unless read)
     // What record this call leaves in effect, in world angles, for the seated gain learner's pairing (Halo 3).
     bool noteKnown = false;
@@ -1998,6 +2032,8 @@ extern "C" void LegacyPcApplyForUser(int slot, int user, uintptr_t ret, const ui
                 break;
             const uint8_t* tls = nullptr;
             const uintptr_t pc = LegacyDriveRecord(st, site, user, &tls);
+            if (user == 0)
+                LegacyDriveNoteSession(site.title, tls);
             LEGACY_DRIVE_WITNESS(ds.outcome = seat_witness::DriveNoRecord);
             if (!pc)
                 break;
@@ -2252,6 +2288,13 @@ extern "C" void LegacyPcApplyForUser(int slot, int user, uintptr_t ret, const ui
                     st.occPitch.store(occupantWorldPitch, std::memory_order_relaxed);
                     st.occKey.store(seatKey, std::memory_order_relaxed);
                     st.occAgree.store(yawAgree | pitchAgree << 16, std::memory_order_relaxed);
+                    // The pitch check as the servo's hold needs it: collecting evidence (not passed, not failed,
+                    // not revoked), and which attempt of the stint this is.
+                    const bool pitchChecking = !st.occWatch[1].revoked && !st.stintOccupant.pitch_ok &&
+                                               !st.stintOccupant.pitch_failed;
+                    st.occPitchCheck.store((pitchChecking ? 0x80000000u : 0u) |
+                                               (st.stintOccupant.pitch_fails & 0x7FFFFFFFu),
+                                           std::memory_order_relaxed);
                     st.occMs.store(now, std::memory_order_relaxed);
                     st.occSeq.fetch_add(1, std::memory_order_release);
                 }
@@ -2352,6 +2395,21 @@ extern "C" void LegacyPcApplyForUser(int slot, int user, uintptr_t ret, const ui
                         y = aim_write::unwrap_to_branch(held[0], nativeYaw);
                     if (latch[1])
                         p = aim_write::clamp_pitch(held[1], 1.45f);
+                }
+                // THE WRITTEN AIM, LED (sight_layer.h Sight_LeadWrittenAim; the player key aim_lead_ticks). On foot
+                // in Halo 3 and ODST the setpoint -- after Halo 3's recomposition -- is carried ahead by its own
+                // rate, to the tick that will fire along it. Never a seat's: its checks, latch and stops read the
+                // record back. Halo 4, which shares this hook, is written as before. And not while the zoom lens
+                // looks along the game's aim instead of along the converged ray: the lens is drawn, and nothing
+                // drawn is led.
+                if (!seatWrite && slot != 2 && Sight_AimLeadOn())
+                {
+                    const bool lensOnRecord = VR_IsScopeActive() && !Sight_ScopeConvergedLive(site.title);
+                    Sight_LeadWrittenAim(site.title, pub.serial,
+                                         g_legacyTickPeriodUs[slot].load(std::memory_order_relaxed), lensOnRecord, y,
+                                         p);
+                    p = aim_write::clamp_pitch(p, 1.45f);
+                    leadStepped = true;
                 }
                 // All three titles pack the control yaw into the per-tick player action as 13 bits over
                 // [0, 2*pi], and keep their own record in [0, 2*pi). The branch-matched value above can lie up
@@ -2479,9 +2537,14 @@ extern "C" void LegacyPcApplyForUser(int slot, int user, uintptr_t ret, const ui
         seatKept = false;
         wroteAxis[0] = wroteAxis[1] = false;
         noteKnown = false;
+        leadStepped = false;
         st.faults.fetch_add(1, std::memory_order_relaxed);
         LEGACY_DRIVE_WITNESS(ds.outcome = seat_witness::DriveFault);
     }
+    // The written aim's lead keeps its motion only across consecutive on-foot writes: an update that led none -- a
+    // seat, nothing written, not armed, switched off, a fault -- ends it, and the next on-foot write starts afresh.
+    if (!leadStepped && slot != 2)
+        Sight_ForgetAimLead(site.title);
     // The seated gain learner's pairing (Halo 3): the record this stick call leaves for the ticks that follow it.
     if (slot == 0)
         LegacySeatUpstreamNoteCall(noteKey, noteKnown ? noteDir : nullptr);

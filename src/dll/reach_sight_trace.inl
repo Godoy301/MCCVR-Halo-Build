@@ -950,7 +950,9 @@ bool ReachSightReaimCrosshairQuery(uint64_t flags, const float* start, const flo
     const float* point = Sight_ShotPointSample(GameTitle::HaloReach, SightTransportSite::CrosshairAssist, sample,
                                                seated, sample.point, moved);
     memcpy(out, vector, sizeof(float) * 3);
-    return Sight_ReaimThroughPoint(GameTitle::HaloReach, SightShotSite::CrosshairAssist, start, out, point);
+    // `seated` only sorts the count: a seat's bend is reported apart from the on-foot one the written aim's lead
+    // acts on.
+    return Sight_ReaimThroughPoint(GameTitle::HaloReach, SightShotSite::CrosshairAssist, start, out, point, seated);
 }
 
 // The dev SHOT LAG line for Reach: the shot (origin, direction) against the provider's intent point.

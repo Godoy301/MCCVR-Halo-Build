@@ -92,7 +92,7 @@ __declspec(noinline) void __fastcall Halo4MuzzleQueryDetour(int32_t inputUser,ui
 {
     auto& feature=g_halo4Barrel;feature.callbacks.fetch_add(1,std::memory_order_acq_rel);
     const auto previous=g_halo4BarrelCapture;g_halo4BarrelCapture={};
-    const bool capture=feature.enabled.load()&&!feature.faulted.load()&&(g_config.gun_barrel_aim||Sight_MuzzleShotsConverge())&&
+    const bool capture=feature.enabled.load()&&!feature.faulted.load()&&(Sight_GunBarrelAim()||Sight_MuzzleShotsConverge())&&
         inputUser>=0&&inputUser<4&&!(flags&1)&&direction&&control&&targeting;
     g_halo4BarrelCapture.active=capture;
     __try
@@ -143,7 +143,7 @@ bool AcquireHalo4MuzzleTarget(const weapon_muzzle::Receipt& muzzle,NativeShotTar
 bool ApplyHalo4MuzzleMarker(uint32_t object,uint64_t count,void* markers,int16_t capacity)
 {
     auto& feature=g_halo4Barrel;const auto request=g_halo4BarrelRequest;
-    if(!feature.enabled.load()||feature.faulted.load()||!(g_config.gun_barrel_aim||Sight_MuzzleShotsConverge())||
+    if(!feature.enabled.load()||feature.faulted.load()||!(Sight_GunBarrelAim()||Sight_MuzzleShotsConverge())||
         exclusive_input::Active()||!g_vrAim.load()||!g_enabled.load()||!VR_IsStereoEnabled()||
         TitleAdapter_GetActiveTitle()!=GameTitle::Halo4||feature.generation!=g_halo4Camera.generation.load()||
         !request.lease||request.lease->active||request.barrel<0||request.barrel>=2||
@@ -169,7 +169,7 @@ bool ApplyHalo4MuzzleMarker(uint32_t object,uint64_t count,void* markers,int16_t
     // SHOTS FROM THE MUZZLE (sight_layer.h): keep the origin the obstruction check left, but fly through the
     // converged point instead of along the barrel. A refusal refuses the barrel shot: it leaves the eye.
     // A seat held at its stop refuses it too (SeatMuzzleShotHeld; the owner check already refuses vehicles).
-    if(!g_config.gun_barrel_aim&&(SeatMuzzleShotHeld(GameTitle::Halo4)||!Sight_AimMuzzleShot(GameTitle::Halo4,TitleAdapter_GetGeneration(GameTitle::Halo4),
+    if(!Sight_GunBarrelAim()&&(SeatMuzzleShotHeld(GameTitle::Halo4)||!Sight_AimMuzzleShot(GameTitle::Halo4,TitleAdapter_GetGeneration(GameTitle::Halo4),
         before,muzzle.ray.position,muzzle.ray.direction,muzzle.ray.up)))return false;
     if(!AcquireHalo4MuzzleTarget(muzzle,*request.lease))return false;
     const auto& ray=muzzle.ray;auto* bytes=static_cast<uint8_t*>(markers);

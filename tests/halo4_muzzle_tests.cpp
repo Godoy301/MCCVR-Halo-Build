@@ -19,6 +19,10 @@ static struct {std::atomic<uint32_t> generation{7};std::atomic<bool> armed{true}
 static struct {std::atomic<bool> ready{true};} g_halo4VehicleInput;
 static std::atomic<bool> g_vrAim{true},g_enabled{true};
 static struct {bool gun_barrel_aim=true,left_handed=false,shots_from_muzzle=false;} g_config;
+// The three shot switches as they are in effect (sight_layer.h); here, the test's own config.
+[[maybe_unused]] static bool Sight_ShotsFromMuzzle(){return g_config.shots_from_muzzle;}
+[[maybe_unused]] static bool Sight_GunBarrelAim(){return g_config.gun_barrel_aim;}
+[[maybe_unused]] static bool Sight_IndependentDualAim(){return false;}
 static thread_local bool g_halo4MuzzleOwnedQuery=false;
 static alignas(8) uint8_t tlsBytes[0x700]{},users[0x5F48]{},unitBytes[0x700]{},replacementBytes[0x700]{},
     primaryBytes[0x700]{},secondaryBytes[0x700]{},targetBytes[0x700]{},table[0x80]{},entries[6*0x18]{};

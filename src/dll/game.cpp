@@ -73,6 +73,7 @@
 #include "title_reentry_probe.h"
 #include "roomscale.h"
 #include "sight_layer.h"
+#include "../common/session_read_logic.h"
 #include "seat_limit_publication.h"
 #include "telemetry_recorder.h"
 #include "../common/support_diagnostics.h"
@@ -165,6 +166,9 @@ static std::atomic<bool>               g_reachDriveSeated{false};
 // Whether that seat's latch may read pitch limits (ReachSeatPitchLatches): false for a look-steered driver,
 // whose pitch the game levels as the vehicle moves (autolevel is not a limit). Part of the same seqlock.
 static std::atomic<bool>               g_reachDrivePitchLatch{true};
+// The prepared tracking frame the setpoint's hand pose came from (0: unknown): the written aim's lead takes one
+// sample per frame, however many polls publish it (Sight_LeadWrittenAim). Part of the same seqlock.
+static std::atomic<uint64_t>           g_reachDriveSerial{0};
 static std::atomic<unsigned>           g_reachApplyLimited{0};   // updates written held at a seat limit
 static std::atomic<unsigned>           g_reachApplyPitchFree{0}; // seated updates whose pitch was not latched
 // Seqlock over the setpoint (yaw, pitch, converged, seated, pitch latch, publish time): the sim-thread hook must never pair
@@ -7798,7 +7802,7 @@ namespace
     {
         LegacyWorldCollisionFeature* feature=LegacyCollisionForTitle(title);
         if(!feature || !solved || !context.valid || !generation ||
-            (!g_config.world_collision && !((title==GameTitle::HaloReach || title==GameTitle::Halo3 || title==GameTitle::Halo3ODST) && g_config.physical_melee)) ||
+            (!g_config.world_collision && !((title==GameTitle::HaloReach || title==GameTitle::Halo3 || title==GameTitle::Halo3ODST) && Sight_PhysicalMelee())) ||
             (!feature->installed.load(std::memory_order_acquire) &&
                 !(title==GameTitle::HaloReach && ReachContactMeleeReady()) &&
                 !(title==GameTitle::Halo3 && Halo3ContactMeleeReady()) &&
@@ -13332,6 +13336,13 @@ namespace
         const uintptr_t firingReturn = g_odstFiringOriginReturn;
         if (!firingReturn || caller != firingReturn)
             return;                       // not the shot line; leave it alone
+        if (!Sight_FireTimeChangesAllowed())
+        {
+            // Co-op safe shots: the origin stays the game's own, reported as stock.
+            if (telemetryAccepting)
+                PublishOdstShotDiagnostic(unitIndex, out, false);
+            return;
+        }
         if (g_odstCinematicLocked.load(std::memory_order_relaxed))
         {
             // Authored camera owns the view; the engine's own shot origin is
@@ -21277,6 +21288,8 @@ namespace
             std::memory_order_relaxed);
         if (caller != returnA && caller != returnB)
             return stockResult;           // not the shot line; leave it alone
+        if (!Sight_FireTimeChangesAllowed())
+            return stockResult;           // co-op safe shots: the origin stays the game's own
         if (g_reachCinematicLocked.load(std::memory_order_relaxed))
             return stockResult;           // authored camera owns the view
         ReachShotOccupationSnapshot occupation{};
@@ -21555,6 +21568,15 @@ namespace
             unitIndex, origin, direction, basisForward, barrelOffset,
             optionalCameraPoint, firesFromCamera, useUnitAim, collision,
             simulation);
+        // Co-op safe shots: the shot stays as Reach built it -- no re-aim through the intent point, no hand ray
+        // on foot and no redirect in a seat.
+        if (!Sight_FireTimeChangesAllowed())
+        {
+            if (origin && direction && unitIndex != -1 &&
+                unitIndex == LegacyCollisionIgnoredObject(GameTitle::HaloReach))
+                Sight_NoteFireTimeStoodDown(GameTitle::HaloReach);
+            return;
+        }
         // The same HREK-proven weapon transaction handles on-foot shots. Own
         // only the exact current local unit and a completed, fresh on-foot ray.
         // Reuse native world clipping from the already-safe stock origin to
@@ -26223,7 +26245,7 @@ namespace
         LegacyWorldCollisionFeature* feature=LegacyCollisionForTitle(title);
         if(!feature || !generation || feature->generation!=generation)
             return false;
-        if (!g_config.world_collision && !g_config.physical_melee) return false;
+        if (!g_config.world_collision && !Sight_PhysicalMelee()) return false;
         // Observe the body even when its checksum is unfamiliar. Only the
         // native appended held graph can authorize an unknown weapon model.
         const bool mappedWeapon=feature->runtimeBoundsProven.load(std::memory_order_acquire) &&
@@ -26568,7 +26590,7 @@ namespace
             LOG("Physical melee title=%d: requested=%d world-contact=%d threshold=%.2f m/s; "
                 "%u polls / %u unavailable, %u missing velocity, peak %.2f m/s, "
                 "%u crossings / %u native-input pulses / %u cooldown blocks; native range/target/damage",
-                static_cast<int>(title),g_config.physical_melee?1:0,g_config.world_collision?1:0,
+                static_cast<int>(title),Sight_PhysicalMelee()?1:0,g_config.world_collision?1:0,
                 g_config.physical_melee_swing_speed,melee->polls.exchange(0),
                 melee->unavailable.exchange(0),melee->invalidVelocity.exchange(0),
                 melee->peakCmPerSecond.exchange(0)/100.0f,melee->crossings.exchange(0),
@@ -30892,7 +30914,10 @@ namespace
         // camera bit buys nothing and the 7235d8d headset run reported it
         // breaking every turret. Those seats keep exactly the behavior the user
         // called "a better state" one build earlier.
-        if (!frame.active || !g_config.vehicle_first_person ||
+        // Co-op safe: the seat's flags are data the simulation reads too, so clearing the camera bit changes the
+        // game on this machine only. While one-machine changes are not allowed the passenger seat is left as the
+        // game built it (and keeps the game's own camera).
+        if (!frame.active || !g_config.vehicle_first_person || !Sight_FireTimeChangesAllowed() ||
             (frame.seatFlags & kReachSeatAllowsWeaponsBit) == 0 ||
             g_reachCamera.teardownRequested.load(std::memory_order_acquire) ||
             g_reachCamera.vehicleCameraBindingState.load(
@@ -40164,7 +40189,7 @@ namespace
         g_halo4WorldCollision.configured.store(
             g_config.world_collision, std::memory_order_release);
         g_halo4WorldCollision.physicalMeleeConfigured.store(
-            g_config.physical_melee,
+            Sight_PhysicalMelee(),
             std::memory_order_release);
         g_halo4WorldCollision.physicalMeleeRequiredSpeed.store(
             g_config.physical_melee_swing_speed, std::memory_order_release);
@@ -40221,7 +40246,7 @@ namespace
         if (previous != requested)
             g_halo4WorldCollision.configurationResetPending.store(
                 true, std::memory_order_release);
-        const bool meleeRequested = g_config.physical_melee;
+        const bool meleeRequested = Sight_PhysicalMelee();
         const bool previousMelee =
             g_halo4WorldCollision.physicalMeleeConfigured.exchange(
                 meleeRequested, std::memory_order_acq_rel);
@@ -40334,7 +40359,7 @@ namespace
         const BoneMatrix* solved, int32_t ignoredObjectIndex)
     {
         if ((!g_halo4WorldCollision.configured.load(
-                std::memory_order_acquire) && !(Halo4ContactMeleeReady() && g_config.physical_melee)) ||
+                std::memory_order_acquire) && !(Halo4ContactMeleeReady() && Sight_PhysicalMelee())) ||
             !solved || !g_halo4FloatingPair.targetsValid ||
             !g_halo4FloatingPair.generation)
             return;
@@ -40388,7 +40413,7 @@ namespace
         uint32_t shapeId)
     {
         if ((!g_halo4WorldCollision.configured.load(
-                std::memory_order_acquire) && !(Halo4ContactMeleeReady() && g_config.physical_melee)))
+                std::memory_order_acquire) && !(Halo4ContactMeleeReady() && Sight_PhysicalMelee())))
             return;
         const uint32_t handCount =
             g_halo4FloatingPair.handCollisionSampleCount[1];
@@ -42646,7 +42671,7 @@ namespace
         }
         Halo4WeaponCollisionBounds runtimeBounds{};
         const bool needsBounds=g_halo4WorldCollision.configured.load(
-            std::memory_order_acquire) || (Halo4ContactMeleeReady() && g_config.physical_melee);
+            std::memory_order_acquire) || (Halo4ContactMeleeReady() && Sight_PhysicalMelee());
         const bool readBounds=needsBounds && Halo4ReadRuntimeWeaponBounds(
             renderModelDescriptor,runtimeImportChecksum,runtimeBounds);
         if (needsBounds) (readBounds ? g_halo4RuntimeWeaponBoundsReads :
@@ -49869,7 +49894,11 @@ uint32_t Game_GestureMeleeInput(uint64_t nowMs)
     telemetry.polls.fetch_add(1,std::memory_order_relaxed);
     // With both modes selected, contact owns melee. The gesture must never
     // add a second native target/animation to the same physical strike.
-    if (exclusive_input::Active() || !g_config.gesture_melee || g_config.physical_melee || !transport ||
+    // Co-op safe: contact melee applies its damage on this machine only, so there it stands down and its swing
+    // takes this lane instead -- the game's own melee binding, which is input every machine shares.
+    const bool contactOwns = Sight_PhysicalMelee();
+    const bool gesture = g_config.gesture_melee || (g_config.physical_melee && !contactOwns);
+    if (exclusive_input::Active() || !gesture || contactOwns || !transport ||
         TitleAdapter_GetRuntimeMode()!=RuntimeMode::Gameplay ||
         !g_enabled.load(std::memory_order_acquire) ||
         !VR_IsStereoEnabled())
@@ -52621,6 +52650,7 @@ void Game_ReachDirectDrivePublish(float gameYaw, float gamePitch, bool converged
     g_reachDriveConverged.store(converged, std::memory_order_relaxed);
     g_reachDriveSeated.store(seated, std::memory_order_relaxed);
     g_reachDrivePitchLatch.store(pitchLatch, std::memory_order_relaxed);
+    g_reachDriveSerial.store(VR_CurrentPreparedSerial(), std::memory_order_relaxed);
     g_reachDriveMs.store(GetTickCount64(), std::memory_order_relaxed);
     g_reachDriveSeq.fetch_add(1, std::memory_order_release);    // even: one coherent setpoint
     g_reachDriveValid.store(true, std::memory_order_release);
@@ -52951,6 +52981,7 @@ extern "C" void ReachPcApplyForUser(int user, const uint8_t* entryRsp)
     float yaw = 0.0f, pitch = 0.0f; unsigned long long age = 0;
     uintptr_t pc = 0;
     aim_caller::Action action = aim_caller::Action::StepAndWrite;
+    bool led = false;   // this update's on-foot write went through the written aim's lead (its motion is kept)
     __try
     {
         unsigned char* tls = nullptr;
@@ -52961,6 +52992,13 @@ extern "C" void ReachPcApplyForUser(int user, const uint8_t* entryRsp)
             tls = (slots && index < 0x200) ? reinterpret_cast<unsigned char*>(slots[index]) : nullptr;
             const uintptr_t globals = tls ? *reinterpret_cast<const uintptr_t*>(tls + kReachPlayerControlTlsOffset) : 0;
             pc = globals ? globals + static_cast<uintptr_t>(user) * kReachPlayerControlStride : 0;
+            // The session as the game holds it, for the log (src/common/session_read_logic.h).
+            if (tls)
+            {
+                const session_read::Session session =
+                    session_read::ReadTls(tls, session_read::kReachSlots, session_read::kReach);
+                Sight_NoteSession(GameTitle::HaloReach, session.type, session.players, session.others);
+            }
         }
         armed = g_reachPcArmed.load(std::memory_order_acquire) ? 1 : 0;   // flag first, then the address
         const uintptr_t expected = g_reachPcExpected.load(std::memory_order_acquire);
@@ -52988,6 +53026,7 @@ extern "C" void ReachPcApplyForUser(int user, const uint8_t* entryRsp)
         // writes nothing and the game keeps the last angles.
         bool coherent = false, drivenConverged = false, drivenSeated = false, drivenPitchLatch = true;
         unsigned long long publishedMs = 0;
+        uint64_t drivenSerial = 0;
         for (int attempt = 0; attempt < 2 && !coherent; ++attempt)
         {
             const uint32_t before = g_reachDriveSeq.load(std::memory_order_acquire);
@@ -52998,6 +53037,7 @@ extern "C" void ReachPcApplyForUser(int user, const uint8_t* entryRsp)
             drivenConverged = g_reachDriveConverged.load(std::memory_order_relaxed);
             drivenSeated = g_reachDriveSeated.load(std::memory_order_relaxed);
             drivenPitchLatch = g_reachDrivePitchLatch.load(std::memory_order_relaxed);
+            drivenSerial = g_reachDriveSerial.load(std::memory_order_relaxed);
             publishedMs = g_reachDriveMs.load(std::memory_order_relaxed);
             coherent = g_reachDriveSeq.load(std::memory_order_acquire) == before;
         }
@@ -53015,6 +53055,7 @@ extern "C" void ReachPcApplyForUser(int user, const uint8_t* entryRsp)
                 s_putBack = aim_caller::PutBack{};
                 s_putBack.max_age = AimCallerClockFromMs(kAimCallerPutBackCapMs);
                 s_stickSeq = 0;
+                Sight_ForgetAimLead(GameTitle::HaloReach);
                 g_reachSeatFrameUnknownMs.store(0, std::memory_order_release);
 #if HALOMCCVR_DEV_DIAGNOSTICS
                 g_reachCensus.restart(g_reachCallerMap.dispatcher_mode());
@@ -53188,6 +53229,20 @@ extern "C" void ReachPcApplyForUser(int user, const uint8_t* entryRsp)
                 }
                 else
                     s_seatLimit.reset();
+                // THE WRITTEN AIM, LED (sight_layer.h Sight_LeadWrittenAim; the player key aim_lead_ticks): on foot
+                // the setpoint is carried ahead by its own rate, to the tick that will fire along it. Never a
+                // seat's (its latch and stops read the record back). Not while the zoom lens looks along the game's
+                // aim -- it does unless the converged ray is in effect (reach_scope.inl) -- because the lens is
+                // drawn, and nothing drawn is led.
+                if (frameOk && !drivenSeated && user == 0 && Sight_AimLeadOn())
+                {
+                    const bool lensOnRecord = VR_IsScopeActive() &&
+                        !(g_config.scope_converge && g_config.converged_aim && drivenConverged);
+                    Sight_LeadWrittenAim(GameTitle::HaloReach, drivenSerial,
+                                         Sight_TickPeriodUs(GameTitle::HaloReach, 16667), lensOnRecord, target[0],
+                                         target[1]);
+                    led = true;
+                }
                 // Keep yaw on the branch the game's value is on, then inside the game's own [0, 2*pi]: Reach
                 // packs the yaw into its player action as 13 bits over [0, 2*pi] and CLAMPS an out-of-range
                 // value (0x3C7033), so a branch-matched write just past the seam would arrive as 0 or 2*pi -- a
@@ -53260,7 +53315,13 @@ extern "C" void ReachPcApplyForUser(int user, const uint8_t* entryRsp)
     {
         if (user == 0)
             s_putBack.invalidate();
+        led = false;
     }
+    // The written aim's lead keeps its motion only across consecutive on-foot writes: an update that led none -- a
+    // seat, nothing written, not armed, the no-unit call, a fault -- ends it, and the next on-foot write starts
+    // afresh. An impulse call is not an update and leaves it alone.
+    if (user == 0 && action != aim_caller::Action::RestoreOnly && !led)
+        Sight_ForgetAimLead(GameTitle::HaloReach);
     // Counted here, logged by the cold worker (Game_ReachDirectDriveReport): no file I/O or log lock on
     // the simulation thread. Stick calls only: "calls" are the updates, one per rendered frame.
     if (user == 0 && action == aim_caller::Action::StepAndWrite)
@@ -55644,12 +55705,20 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
 #if HALOMCCVR_DEV_DIAGNOSTICS
     int servoFeedback[2]{-1, -1};   // per axis: 1 the occupant, 0 the gun, -1 not steered (dev witness)
 #endif
+    // The pitch stick is held still while this stint's pitch check collects its evidence (gun_slaved::CheckHold).
+    bool holdPitchForCheck = false;
+    static gun_slaved::CheckHold s_pitchCheckHold;
+    if (!gunSlavedServo)
+        s_pitchCheckHold.reset();
     if (gunSlavedServo)
     {
         float occupantYaw = 0.0f, occupantPitch = 0.0f;
         unsigned agreeing[2]{};
+        uint32_t pitchCheck = 0;
         const bool occupantFresh = LegacyDriveOccupantAim(TitleAdapter_GetActiveTitle(), gunSlavedKey, occupantYaw,
-                                                          occupantPitch, agreeing);
+                                                          occupantPitch, agreeing, &pitchCheck);
+        holdPitchForCheck = s_pitchCheckHold.step(gunSlavedKey, occupantFresh, (pitchCheck & 0x80000000u) != 0,
+                                                  pitchCheck & 0x7FFFFFFFu, GetTickCount64());
         if (gun_slaved::ServoFeedback(true, occupantFresh, agreeing[0]) == gun_slaved::Feedback::Occupant)
             servoAimYaw = occupantYaw;
         if (gun_slaved::ServoFeedback(true, occupantFresh, agreeing[1]) == gun_slaved::Feedback::Occupant)
@@ -55789,7 +55858,7 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
     static float servoLastPitchCommand = 0.0f;
     static float servoLastYawCommand = 0.0f;
     static bool servoWasTurret = false;
-    static uint32_t servoFrames = 0, servoParkedFrames = 0;
+    static uint32_t servoFrames = 0, servoParkedFrames = 0, servoCheckHeldFrames = 0;
     if (s_turretServoStale || g_aimFreeCameraServoReset)
     {
         // The drive aimed for the servo since its last frame, or the free-camera frame began or ended (the camera
@@ -55811,6 +55880,7 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
             servoLastYawCommand = 0.0f;
             servoFrames = 0;
             servoParkedFrames = 0;
+            servoCheckHeldFrames = 0;
             LOG("Turret seat: aim servo armed. The gun is a rate-capped "
                 "machine (H3EK: shade 15 deg/s both axes, warthog turret "
                 "60 deg/s yaw and NO pitch cap), so the loop parks instead "
@@ -55823,10 +55893,11 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
     else if (servoWasTurret)
     {
         LOG("Turret seat: aim servo released after %u frames, %u parked "
-            "(%u%%); measured stick quantum pitch %.4f rad, yaw %.4f rad",
+            "(%u%%); measured stick quantum pitch %.4f rad, yaw %.4f rad; the pitch stick was held still for "
+            "the seat's pitch check on %u frames",
             servoFrames, servoParkedFrames,
             servoFrames ? servoParkedFrames * 100u / servoFrames : 0u,
-            servoPitch.minStep, servoYaw.minStep);
+            servoPitch.minStep, servoYaw.minStep, servoCheckHeldFrames);
         AimServoReset(servoPitch);
         AimServoReset(servoYaw);
         servoLastPitchCommand = 0.0f;
@@ -55849,7 +55920,12 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
                           gunSlavedServo ? servoPacerPitch.exit(kAimServoRestExitRadians) : kAimServoRestExitRadians)
         : Clamp(errPitch * k, -1.0f, 1.0f);
     if (gunSlavedServo)
-        outRy = servoPacerPitch.pace(servoAimPitch, errPitch, seatWritten.pitch ? 0.0f : outRy, kAimServoStickFloor);
+    {
+        if (holdPitchForCheck && !seatWritten.pitch)
+            ++servoCheckHeldFrames;
+        outRy = servoPacerPitch.pace(servoAimPitch, errPitch,
+                                     (seatWritten.pitch || holdPitchForCheck) ? 0.0f : outRy, kAimServoStickFloor);
+    }
 #if HALOMCCVR_DEV_DIAGNOSTICS
     if (gunSlavedServo)
     {

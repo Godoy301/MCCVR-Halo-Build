@@ -766,6 +766,28 @@ struct Config
     // own obstruction check pulls back (the gun through a wall the eye sees past) and every other refusal
     // leave from the eye as before. gun_barrel_aim, when on, wins. sight_layer.h: Sight_AimMuzzleShot.
     bool shots_from_muzzle = true;
+    // CO-OP SAFE SHOTS (default ON, live; F1 > Advanced): 1 = nothing changes a shot as it is fired. It leaves as the game
+    // builds it from the aim the hand writes: not from the muzzle or along the barrel, not re-aimed through the
+    // newest intent point, not from a second gun's own controller and, in a seat, not redirected or restarted
+    // from the eye. In Halo 2 the character's aim and the aim-assist target are also left to the game.
+    // A campaign co-op session runs one simulation on every machine from shared input. The written aim is part
+    // of that input; a change made inside one machine's simulation is not, and the machines then disagree.
+    // Contact melee (physical_melee) does not apply its own damage either: its swing presses the game's melee
+    // (Halo CE has no such lane; there it does nothing).
+    // On by default because nothing tells a player his session is shared before his first shot ends it: 0 is
+    // for solo play, and brings back what the switch stands down.
+    // sight_layer.h: Sight_FireTimeChangesAllowed.
+    bool coop_safe_shots = true;
+    // AIM LEAD (default 1 tick, live; 0 = off, up to 3): the aim written into the game's record on foot (Halo 3,
+    // ODST, Reach) is carried ahead by the setpoint's own rate times this many simulation ticks. A record
+    // written at one control pass is first used by the next tick, so a shot leaves along a hand sample about a
+    // tick old; the lead writes where the aim will be then. Only the record is led -- the reticle, the gun and
+    // the scope are drawn from the hand as before -- and the record is shared input, so every machine of a
+    // co-op session fires the same shot. A snap turn, a recentre, a stop and an aim at rest are written
+    // unchanged (aim_lead_logic.h). The default is the tick the record recomposition already carries the game's
+    // eye by, not a measured optimum: the "AIM LEAD" and "CO-OP SAFE SHOTS" / "SHOT REAIM" log lines say what it
+    // did and what is left. Seats are not led. sight_layer.h: Sight_LeadWrittenAim.
+    float aim_lead_ticks = 1.0f;
 
     // EXPERIMENTAL (dev): route this title's aim through the game-agnostic aim-solve core + per-game
     // provider (src/common/aim_solve_logic.h, aim_provider.h). 0 = off (shipped path untouched).

@@ -11,6 +11,7 @@
 
 #if HALOMCCVR_DEV_DIAGNOSTICS
 #include "../common/dev_pad_script.h"
+#include "../common/aim_lead_logic.h"
 #include "../common/config.h"
 #include "../common/roomscale_recenter_logic.h"
 #include "../common/log.h"
@@ -108,6 +109,10 @@ bool SetLive(const std::string& name, int value)
     else if (name == "seat_fire_from_eye") g_config.seat_fire_from_eye = value != 0;
     else if (name == "reach_vehicle_aim") g_config.reach_vehicle_aim = value < 0 ? 0 : (value > 2 ? 2 : value);
     else if (name == "shots_from_muzzle") g_config.shots_from_muzzle = value != 0;
+    else if (name == "coop_safe_shots") g_config.coop_safe_shots = value != 0;
+    // The aim lead as a whole number of hundredths of a tick (100 = one tick, 0 = off).
+    else if (name == "aim_lead_ticks_x100")
+        g_config.aim_lead_ticks = aim_lead::ClampTicks(float(value) * 0.01f, Config{}.aim_lead_ticks);
     else if (name == "gun_barrel_aim") g_config.gun_barrel_aim = value != 0;
     else if (name == "vehicle_cam_smoothing") g_config.vehicle_cam_smoothing = value != 0;
     // The first-person ladder's fault bits (config.h): the ladders read the value at every evaluation, so

@@ -16742,7 +16742,7 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                 rig.visualRightHandOffset[1]=g_config.right_hand_mesh_y_m;
                 rig.visualRightHandOffset[2]=g_config.right_hand_mesh_z_m;
                 rig.visualPitchDeg=g_config.barrel_pitch_deg;
-                rig.gunBarrelAim=g_config.gun_barrel_aim;
+                rig.gunBarrelAim=Sight_GunBarrelAim();
                 rig.muzzleShots=Sight_MuzzleShotsConverge();
                 rig.visualYawDeg=g_config.barrel_yaw_deg;
                 rig.visualRollDeg=g_config.barrel_roll_deg;
@@ -18685,7 +18685,7 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                             weapon_muzzle::Ray committedPrimary{},committedSecondary{};
                             VrContactTrackingSnapshot reticleTracking{};
                             bool primaryBarrel=false,secondaryBarrel=false;
-                            if(g_config.gun_barrel_aim && dual_reticle::Supported(reticleTitle) &&
+                            if(Sight_GunBarrelAim() && dual_reticle::Supported(reticleTitle) &&
                                 VR_GetContactTrackingSnapshot(reticleTracking)) {
                                 for(unsigned slot=0;slot<2;++slot) {
                                     dual_reticle::ProjectedRay projected{};

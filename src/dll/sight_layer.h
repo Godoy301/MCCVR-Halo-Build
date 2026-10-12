@@ -193,6 +193,53 @@ struct SightCameraSample
     bool velValid = false;
     float vel[3]{};
 };
+// False while coop_safe_shots is on: every site that would change the simulation on this machine only leaves it
+// as the game built it -- a shot changed inside the fire routine (the muzzle shot, a re-aim through the intent
+// point, Reach's hand ray, seat redirect and passenger origin, ODST's passenger origin, Halo 2's seated
+// fire-from-eye), in Halo 2 the unit's aim vectors and the aim-assist calculation, contact melee's own
+// damage, the first-person seat camera's answers to the simulation (native_vehicle_first_person.h) and the
+// edit of a seat's loaded flags that ODST's and Reach's first-person seats are made with.
+// The aim written into the control record and a pressed binding are shared input and are not
+// affected. A site that stands a local shot down for this reason
+// counts it (Sight_Report logs "CO-OP SAFE SHOTS" every 2 s).
+bool Sight_FireTimeChangesAllowed();
+void Sight_NoteFireTimeStoodDown(GameTitle title);
+// The session in progress as the game holds it, read by the title's simulation thread
+// (src/common/session_read_logic.h): its simulation type, the players in the game and the machines other than
+// this one (-1 each: not read; a type of -1: no game in progress). Sight_Report logs them whenever one changes
+// ("SESSION <game>: ..."), so a solo level, a co-op host, a co-op joiner and a host-authoritative game can be told
+// apart in a log. Nothing acts on it.
+void Sight_NoteSession(GameTitle title, int type, int players, int otherMachines);
+// THE WRITTEN AIM, LED (the player key aim_lead_ticks; src/common/aim_lead_logic.h). A record written at one control
+// pass is first used by the next simulation tick, so a shot leaves along a hand sample about a tick old. The title's
+// simulation-thread write of the ON-FOOT record hands its setpoint through here just before it writes: `yaw` and
+// `pitch` come back carried ahead by the setpoint's own rate times aim_lead_ticks ticks of `tickUs` (0: unmeasured,
+// 60 Hz) -- or unchanged: the key off, an aim at rest, a jump (a snap turn, a recentre), a gap, a stop, or
+// `drawnFromRecord`. That last is the caller's word that something drawn this frame looks along the game's aim (the
+// zoom lens while it is not on the converged ray): nothing drawn may move with the lead, so the record is not led
+// then. `sampleKey` names the tracking frame the setpoint was solved from (0: unknown), so a pass that meets one
+// frame twice, or misses one, does not read as a change of speed. The caller still wraps the yaw and clamps the pitch.
+// The write is shared input, not a fire-time change: it is the same in solo and co-op, and coop_safe_shots does not
+// stand it down. One writer thread per title; nothing here allocates, logs or blocks. Sight_Report logs "AIM LEAD"
+// every 2 s: how many writes were led and by how much, and why the others were not.
+void Sight_LeadWrittenAim(GameTitle title, uint64_t sampleKey, uint32_t tickUs, bool drawnFromRecord, float& yaw,
+                          float& pitch);
+// The title's update did not end in an on-foot write (a seat, nothing written, disarmed): the next on-foot write
+// starts afresh. The same thread as Sight_LeadWrittenAim.
+void Sight_ForgetAimLead(GameTitle title);
+// The key is on (any thread): a caller need not gather `drawnFromRecord` otherwise.
+bool Sight_AimLeadOn();
+// The three settings that change a shot inside the fire routine, as they are IN EFFECT: each reads off while
+// fire-time changes are not allowed. Everything but the settings menu and the dev pad reads these, never the raw
+// fields, so the one predicate above governs every lane.
+bool Sight_ShotsFromMuzzle();
+bool Sight_GunBarrelAim();
+bool Sight_IndependentDualAim();
+// Contact melee (physical_melee) as it is IN EFFECT, on the same predicate: its strike applies damage through the
+// game's melee routine on this machine only. While it reads off, the gesture lane presses the game's melee
+// binding for the same swing (game.cpp), so the setting still gives a melee in every game that lane serves
+// (all but Halo CE).
+bool Sight_PhysicalMelee();
 bool Sight_MuzzleShotsConverge();
 bool Sight_AimMuzzleShot(GameTitle title, uint32_t generation, const float before[3], const float position[3],
                          float direction[3], float up[3]);
