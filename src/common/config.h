@@ -822,8 +822,12 @@ struct Config
     // (Halo CE has no such lane; there it does nothing).
     // On by default because nothing tells a player his session is shared before his first shot ends it: 0 is
     // for solo play, and brings back what the switch stands down.
+    // 2 = AUTOMATIC: stood down unless the game itself says nothing can disagree -- the player is alone in the
+    // session, or the session is host-authoritative (Firefight, custom games) -- as the title's simulation thread
+    // reads it (session_read_logic.h); anything unread counts as shared. Halo 3, ODST, Reach, Halo 4 and Halo 2;
+    // Halo CE's session is not read, so there 2 behaves as 1.
     // sight_layer.h: Sight_FireTimeChangesAllowed.
-    bool coop_safe_shots = true;
+    int coop_safe_shots = 1;
     // AIM LEAD (default 1 tick, live; 0 = off, up to 3): the aim written into the game's record on foot (Halo 3,
     // ODST, Reach) is carried ahead by the setpoint's own rate times this many simulation ticks. A record
     // written at one control pass is first used by the next tick, so a shot leaves along a hand sample about a

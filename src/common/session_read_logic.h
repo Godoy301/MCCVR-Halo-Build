@@ -140,6 +140,72 @@ inline Session Read(const uint8_t* gameGlobals, const uint8_t* playersHeader, co
     return s;
 }
 
+// ---- whether a change made on this machine only can end the session ------------------------------------------
+// A synchronous session computes one simulation on every machine from shared input, so a change made inside one
+// machine's simulation ends it; a distributed one has an authority, and the same change there is a misprediction.
+//   Alone          a synchronous (or local) game with one player and no other machine: nothing to disagree with;
+//   Authoritative  a distributed game (Firefight, custom games): no shared simulation to break;
+//   Shared         a synchronous client, or a synchronous server with anyone else in it;
+//   Unknown        anything not read. Unknown is never safe.
+enum class Standing : uint8_t { Unknown = 0, Alone, Authoritative, Shared };
+
+inline Standing Classify(const Session& s)
+{
+    if (s.type == 4 || s.type == 5)
+        return Standing::Authoritative;
+    if (s.type == 2)
+        return Standing::Shared;
+    if (s.type == 1 || s.type == 3)
+    {
+        if (s.players == 1 && s.others == 0)
+            return Standing::Alone;
+        if (s.players > 1 || s.others > 0)
+            return Standing::Shared;
+    }
+    return Standing::Unknown;
+}
+
+inline bool OneMachineChangesSafe(Standing standing)
+{
+    return standing == Standing::Alone || standing == Standing::Authoritative;
+}
+
+inline const char* StandingText(Standing standing)
+{
+    switch (standing)
+    {
+    case Standing::Alone: return "alone in a synchronous game";
+    case Standing::Authoritative: return "a host-authoritative game (Firefight, custom games)";
+    case Standing::Shared: return "a shared simulation (campaign co-op, Spartan Ops)";
+    default: return "not read";
+    }
+}
+
+// THE AUTOMATIC SWITCH'S GATE. The session is read by the title's simulation thread on every control update; the
+// gate opens only on a run of `kGateSettleNotes` consecutive notes that all say safe, and closes at once on one
+// that does not. Notes that stop coming are no evidence of anything: after `kGateStaleMs` without one the gate is
+// closed, and the next note starts the run again -- so does a note from another title -- because the level, the
+// lobby and the session may all have changed in between. Every failure of the read leaves the gate closed.
+inline constexpr unsigned kGateSettleNotes = 30;
+inline constexpr unsigned long long kGateStaleMs = 5000;
+
+// The run of safe notes after one more note. `continued`: the previous note was this title's and within
+// kGateStaleMs.
+inline unsigned GateNote(unsigned safeNotes, bool safeNow, bool continued)
+{
+    if (!safeNow)
+        return 0;
+    if (!continued)
+        return 1;
+    return safeNotes < 0x7FFFFFFFu ? safeNotes + 1 : safeNotes;
+}
+
+// `sinceLastNoteMs`: how long ago the newest note arrived.
+inline bool GateOpen(unsigned safeNotes, unsigned long long sinceLastNoteMs)
+{
+    return safeNotes >= kGateSettleNotes && sinceLastNoteMs <= kGateStaleMs;
+}
+
 // The same from an engine thread's TLS block (null: nothing read).
 inline Session ReadTls(const uint8_t* tls, const TlsSlots& slots, const Layout& layout)
 {

@@ -1334,7 +1334,8 @@ void ConfigLoad(const wchar_t* path)
         if (!strcmp(key, "two_hand_coherent_aim")) { g_config.two_hand_coherent_aim=atoi(val)!=0; continue; }
         if (!strcmp(key, "gun_barrel_aim")) { g_config.gun_barrel_aim=atoi(val)!=0; continue; }
         if (!strcmp(key, "shots_from_muzzle")) { g_config.shots_from_muzzle=atoi(val)!=0; continue; }
-        if (!strcmp(key, "coop_safe_shots")) { g_config.coop_safe_shots=atoi(val)!=0; continue; }
+        if (!strcmp(key, "coop_safe_shots"))
+        { const int v=atoi(val); g_config.coop_safe_shots=v<0?0:(v>2?2:v); continue; }
         if (!strcmp(key, "aim_lead_ticks"))
         {
             // Held inside 0 to 3 ticks; a value that is not a number keeps the one in effect.
@@ -2370,8 +2371,10 @@ void ConfigSave()
                "# Your hand still aims; shots leave the eye. True physical melee presses the game's melee\n"
                "# instead of striking on contact (Halo CE: it does nothing), in Halo 2 your hand aims only with\n"
                "# direct drive on, and seats in Halo CE and ODST and passenger seats in Reach keep the game's\n"
-               "# own camera. (default %d)\n"
-               "coop_safe_shots = %d\n\n", d.coop_safe_shots ? 1 : 0, g_config.coop_safe_shots ? 1 : 0);
+               "# own camera.\n"
+               "# 2 = automatic (experimental): as 1 whenever anyone else is in your campaign session, and as 0\n"
+               "# when the game says you are alone or in Firefight or a custom game. 0 = off. (default %d)\n"
+               "coop_safe_shots = %d\n\n", d.coop_safe_shots, g_config.coop_safe_shots);
     fprintf(f, "# Aim lead, on foot in Halo 3, ODST and Reach: the aim written for each shot is carried ahead by\n"
                "# this many simulation ticks of the aim's own motion, so a shot fired while you turn lands where\n"
                "# the reticle is and not where it was a tick ago. Only the game's aim is led: the reticle, the\n"

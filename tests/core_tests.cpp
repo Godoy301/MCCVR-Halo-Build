@@ -15985,7 +15985,7 @@ int main()
           g_config.roomscale_recenter_moving && g_config.roomscale_recenter_moving_speed == 0.25f,
           "legacy config inherits the roomscale view recenter options (on; they act only with roomscale on)");
     Check(g_config.shots_from_muzzle, "legacy config inherits shots from the muzzle");
-    Check(g_config.coop_safe_shots, "legacy config gets co-op safe shots on");
+    Check(g_config.coop_safe_shots == 1, "legacy config gets co-op safe shots always on");
     Check(g_config.aim_lead_ticks == 1.0f, "legacy config inherits the aim lead at its default of one tick");
     Check(g_config.physical_crouch && g_config.physical_crouch_depth_m == 0.22f,
           "legacy config inherits the physical crouch (on) at its default depth");
@@ -20913,6 +20913,41 @@ int main()
             const Session s = ReadTls(tls, kReachSlots, kReach);
             Check(s.type == 3 && s.players == 2 && s.others == 1, "session: the three pointers come from the engine's TLS block");
             Check(ReadTls(nullptr, kReachSlots, kReach).type == kNotRead, "session: no TLS block reads nothing");
+        }
+        {
+            // Whether a one-machine change can end the session, from the three facts as they were read in play.
+            const auto standing = [](int type, int players, int others) {
+                Session s{};
+                s.type = type;
+                s.players = players;
+                s.others = others;
+                return Classify(s);
+            };
+            Check(standing(3, 1, 0) == Standing::Alone && OneMachineChangesSafe(Standing::Alone),
+                "session: a synchronous server with one player and no other machine is alone");
+            Check(standing(3, 2, 1) == Standing::Shared && standing(2, 2, 1) == Standing::Shared &&
+                !OneMachineChangesSafe(Standing::Shared), "session: a co-op host and a co-op joiner share a simulation");
+            Check(standing(3, 2, 0) == Standing::Shared && standing(3, 1, 1) == Standing::Shared,
+                "session: either count alone says someone else is here");
+            Check(standing(2, 1, 0) == Standing::Shared, "session: a synchronous client is never alone");
+            Check(standing(4, 2, 1) == Standing::Authoritative && standing(5, 1, 0) == Standing::Authoritative &&
+                OneMachineChangesSafe(Standing::Authoritative), "session: a distributed game has an authority");
+            Check(standing(3, kNotRead, kNotRead) == Standing::Unknown && standing(3, 1, kNotRead) == Standing::Unknown &&
+                standing(3, kNotRead, 0) == Standing::Unknown && standing(kNotRead, 1, 0) == Standing::Unknown &&
+                standing(0, 1, 0) == Standing::Unknown && standing(9, 1, 0) == Standing::Unknown &&
+                !OneMachineChangesSafe(Standing::Unknown), "session: anything not read is not safe");
+            // The gate: a settled run of fresh safe notes opens it; anything else closes it or starts the run again.
+            unsigned notes = 0;
+            for (unsigned i = 0; i < kGateSettleNotes - 1; ++i)
+                notes = GateNote(notes, true, i != 0);
+            Check(!GateOpen(notes, 0), "gate: one note short of the run it stays closed");
+            notes = GateNote(notes, true, true);
+            Check(GateOpen(notes, 0) && GateOpen(notes, kGateStaleMs), "gate: a settled run of safe notes opens it");
+            Check(!GateOpen(notes, kGateStaleMs + 1), "gate: notes that stop coming close it");
+            Check(GateNote(notes, true, false) == 1 && !GateOpen(GateNote(notes, true, false), 0),
+                "gate: a note after a gap, or from another title, starts the run again");
+            Check(GateNote(notes, false, true) == 0, "gate: one note that is not safe closes it at once");
+            Check(GateNote(0x7FFFFFFFu, true, true) == 0x7FFFFFFFu, "gate: the run does not wrap");
         }
         Check(std::strcmp(TypeName(3), "sync-server") == 0 && std::strcmp(TypeName(2), "sync-client") == 0 &&
             std::strcmp(TypeName(4), "dist-client") == 0 && std::strcmp(TypeName(9), "unknown") == 0,

@@ -2403,13 +2403,21 @@ namespace
 
         if (g_activeCategory == Cat_Advanced)
         {
-        changed |= ImGui::Checkbox("Co-op safe shots (leave on)", &g_config.coop_safe_shots);
-        ImGui::TextDisabled("ON (default): nothing the mod does changes a shot as it is fired, so every player's game\n"
+        ImGui::Text("Co-op safe shots (leave on Always)");
+        changed |= ImGui::RadioButton("Always##coopsafe", &g_config.coop_safe_shots, 1);
+        ImGui::SameLine();
+        changed |= ImGui::RadioButton("Automatic (experimental)##coopsafe", &g_config.coop_safe_shots, 2);
+        ImGui::SameLine();
+        changed |= ImGui::RadioButton("Off##coopsafe", &g_config.coop_safe_shots, 0);
+        ImGui::TextDisabled("ALWAYS (default): nothing the mod does changes a shot as it is fired, so every player's game\n"
                             "fires it the same way and a campaign co-op or Spartan Ops session stays together. Your\n"
                             "hand still aims; shots leave your eye. In Halo 2 your hand aims only with Direct drive\n"
                             "on, True physical melee presses the game's melee instead of striking on contact (Halo\n"
                             "CE: it does nothing), and seats in Halo CE and ODST and passenger seats in Reach keep\n"
                             "the game's own camera.\n"
+                            "AUTOMATIC: as Always whenever anyone else is in your campaign session, and as Off when\n"
+                            "the game says you are alone, or in Firefight or a custom game (the log's CO-OP SAFE\n"
+                            "SHOTS automatic line says which). Not Halo CE, where it stays as Always.\n"
                             "OFF is for playing alone: shots can leave the visible muzzle and are re-aimed as they\n"
                             "are fired. With it off, your first shot in a co-op session ends it for everyone. Live.");
         ImGui::Spacing();
