@@ -4171,6 +4171,11 @@ namespace
                 }
                 if (!directVrAim) __leave;
                 Halo2SightTrace(objectIndex);
+                // Co-op safe: the unit's two aim vectors are simulation state, and writing them here changes it on
+                // this machine only. The stock updater then builds them from the control record the direct
+                // drive writes (the converged aim, halo2_direct_drive.inl), as it does for every other player;
+                // the trace above still ran for that write.
+                if (!Sight_FireTimeChangesAllowed()) __leave;
                 float direction[3]{};
                 bool converged = false;
                 if (!BuildPublishedControllerAimDirection(direction, &converged)) __leave;
@@ -4283,9 +4288,12 @@ namespace
         g_aimAssistCalls.fetch_add(1, std::memory_order_relaxed);
         const auto original = reinterpret_cast<Halo2AimAssistCalculateFn>(
             g_aimAssistOriginal.load(std::memory_order_acquire));
+        // Co-op safe: the calculation runs as the game built it, from the view the control record gives it (the
+        // hand's aim, under the direct drive). Feeding it the controller ray, or blanking its result, changes the
+        // target the simulation works from on this machine only.
         const bool suppress = original && userIndex == kOwnedUser && control &&
             targeting && Game_Halo2ControllerAimActive() &&
-            Halo2Observer6Dof_DirectWeaponAimArmed();
+            Halo2Observer6Dof_DirectWeaponAimArmed() && Sight_FireTimeChangesAllowed();
 
         bool originalCompleted = false;
         bool originalStarted = false;

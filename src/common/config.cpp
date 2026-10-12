@@ -2317,10 +2317,10 @@ void ConfigSave()
                "# they land where the shot from the eye would have. Needs converged_aim; gun_barrel_aim wins.\n"
                "# (default %d)\n"
                "shots_from_muzzle = %d\n\n", d.shots_from_muzzle ? 1 : 0, g_config.shots_from_muzzle ? 1 : 0);
-    fprintf(f, "# Co-op safe shots, for campaign co-op: 1 = nothing changes a shot as it is fired (no muzzle\n"
-               "# origin, no fire-time re-aim, no Reach hand ray or seat redirect), so every player's game fires\n"
-               "# it the same way. Your hand still aims; shots leave the eye. gun_barrel_aim and\n"
-               "# independent_dual_aim are not covered: keep them off in co-op. (default %d)\n"
+    fprintf(f, "# Co-op safe shots, for campaign co-op: 1 = nothing changes a shot as it is fired (no muzzle or\n"
+               "# barrel origin, no fire-time re-aim, no separate dual-wield aim, no seat redirect), so every\n"
+               "# player's game fires it the same way. Your hand still aims; shots leave the eye. Not covered:\n"
+               "# VR contact melee (physical_melee): keep it off in co-op. (default %d)\n"
                "coop_safe_shots = %d\n\n", d.coop_safe_shots ? 1 : 0, g_config.coop_safe_shots ? 1 : 0);
     fprintf(f, "# Floating VR-crosshair smoothing only; bullets stay raw.\n");
     fprintf(f, "# (default %.2f, range 0 to 0.95)\n", d.aim_stabilization);
