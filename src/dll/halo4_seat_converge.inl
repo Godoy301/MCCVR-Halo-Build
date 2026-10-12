@@ -221,6 +221,8 @@ Halo4SeatConvergeCall Halo4SeatConvergeBeforeView(uintptr_t caller, uint32_t uni
     const uintptr_t base = g_halo4Barrel.base;
     if (!base || base != f.base)
         return call;
+    // ADDR-HYGIENE: resolved -- the three return addresses below are the muzzle lane's own call edges into the
+    // view, proven at its install on this image; this lane is ready only after that lane is, on the same base.
     const bool targeting = caller == base + 0x1DB9A6 || caller == base + 0x1DBDB6;
     // The fire's own assist (0x1DC86C's call), and only inside a native weapon fire on this thread: the assist
     // has other callers.
@@ -434,6 +436,10 @@ void Halo4SeatConvergeAfterView(Halo4SeatConvergeCall& call, uint32_t unit, cons
 // This thread's object table entry, read and salt-checked without a native call: the engine TLS block's table
 // at +0x18 (stride 0x18: salt word +0, type byte +4, data +0x10), as the title's own accessor 0x43AD8 walks it.
 // Guarded. False: no such object now.
+// ADDR-HYGIENE: guarded -- the layout is a reading of one build, so nothing is taken on trust: a table that is
+// not valid or whose stride word is not 0x18, an index past its count, a salt that does not match, a type past
+// the engine's range and an unreadable page all read as "no such object". The trace then names the seat's parent
+// as the root, and a hit it cannot place is kept as the hit (never looked past).
 bool Halo4SeatConvergeObject(const uint8_t* tls, uint32_t handle, const uint8_t*& data, int& type)
 {
     __try
@@ -460,7 +466,8 @@ bool Halo4SeatConvergeObject(const uint8_t* tls, uint32_t handle, const uint8_t*
 }
 
 // The root of an object's parent chain (+0x24, the link the seat readers walk). -1 on a stale link or a chain
-// deeper than any vehicle. Guarded.
+// deeper than any vehicle. Guarded. ADDR-HYGIENE: guarded -- every link is an object the table check above
+// accepted, and a failed walk is reported as -1, never as a root.
 int32_t Halo4SeatConvergeRootOf(const uint8_t* tls, int32_t object)
 {
     if (object == -1)
