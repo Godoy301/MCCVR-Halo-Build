@@ -22,7 +22,9 @@
 //   0x1DD998 -> 0x1DF988 -> PhysicsRayCast). The published seated intent ray is traced there with that query:
 //   the vehicle's root, the occupant and the seat's parent ignored, our own vehicle looked past (three passes;
 //   exhaustion is a MISS), a boarder kept. The object table is walked by reading it; the ray cast is the only
-//   native call. Every direct caller up from the seat's control update (the accumulator 0xA8B34) leads to the main
+//   native call. (The unit the seat controls, which the game's own view asks 0x5F9694 for, is not asked for: that
+//   would be a second native call. A part of our own vehicle is looked past whether or not it is named.)
+//   Every direct caller up from the seat's control update (the accumulator 0xA8B34) leads to the main
 //   loop's control pass and none to the tick; a control update that arrives inside a tick all the same, or while
 //   the tick cannot be read, is counted and not traced.
 //
@@ -155,8 +157,9 @@ struct Halo4SeatSpread
 
 struct Halo4SeatConvergeRuntime
 {
-    uintptr_t base = 0;
-    uint32_t generation = 0;
+    // Written by the install, read on the game's threads (a level reload reinstalls under live detours).
+    std::atomic<uintptr_t> base{0};
+    std::atomic<uint32_t> generation{0};
     std::atomic<bool> ready{false};   // the aim camera's anchors proved on this image
     // THE SAMPLE. One writer in practice (the control pass's thread); the try-lock only keeps a second caller of
     // the view, should one ever appear, from tearing the track: its call is then not sampled.
@@ -290,9 +293,12 @@ void Halo4SeatConvergeNoteSample(const Halo4SeatConvergeCall& call, uint32_t uni
         return;
     }
     const uint64_t nowUs = Sight_NowUs();
-    if (f.trackUnit != unit || f.trackParent != call.seat.parent || f.trackSeat != call.seat.seat)
+    if (f.trackUnit != unit || f.trackParent != call.seat.parent || f.trackSeat != call.seat.seat ||
+        (f.last.camera.valid && (f.last.stock != 0) != stock))
     {
-        // Another seat (or the first sample): its eye is no continuation of the last seat's.
+        // Another seat (or the first sample), or the other camera answering now (the key, co-op safe shots or an
+        // aim switch changed live): this eye is no continuation of the last one, and a velocity across the two
+        // would be the jump between them.
         f.track.Reset();
         f.trackUnit = unit;
         f.trackParent = call.seat.parent;
@@ -382,8 +388,9 @@ void Halo4SeatConvergeNoteFire(const Halo4SeatConvergeCall& call, const float* o
     if (pushed[0] * pushed[0] + pushed[1] * pushed[1] + pushed[2] * pushed[2] > 1.0e-8f)
         f.firesFollowing.fetch_add(1, std::memory_order_relaxed);
     Halo4SeatSolvedPoint solved{};
-    const uint64_t nowUs = Sight_NowUs();
-    if (!f.solved.Read(solved) || solved.generation != f.generation ||
+    const bool solvedRead = f.solved.Read(solved);
+    const uint64_t nowUs = Sight_NowUs();   // after the read: a point published meanwhile is not from the future
+    if (!solvedRead || solved.generation != f.generation ||
         solved.seatKey != Halo4SeatConvergeKey(call.seat.parent, call.seat.seat) || nowUs < solved.stampUs ||
         nowUs - solved.stampUs > kSightFreshMs * 1000ull)
     {
@@ -652,6 +659,8 @@ void Halo4SeatConvergeTrace(const uint8_t* tls, const Halo4VehicleInputState& se
         Halo4PublishSeatTrace(generation, result.hit, result.rangeWu, ray);
     }
 #endif
+    // Not publishing (a dev build measuring with the key off): the result above went to the dev witnesses, and
+    // the rays below, which belong to a seat that solves, are not traced.
     if (!publish)
         return;
     // This seat's stance first: a range measured on foot, or in another seat, is withdrawn before this one is
@@ -825,8 +834,8 @@ bool Halo4SeatConvergePrepare(Halo4SeatConvergePoll& out, const float rayDir[3])
     facts.traceFaulted = Sight_TraceFaulted(kTitle);
     facts.stanceOurs = Sight_Stance(kTitle) == out.seatKey;
     Halo4SeatControlRecord control{};
-    const uint64_t nowMs = Sight_NowMs();
     const bool controlRead = f.control.Read(control) && control.seatKey == out.seatKey;
+    const uint64_t nowMs = Sight_NowMs();   // after the read, as below
     facts.controlUpdate = controlRead && nowMs >= control.ms && nowMs - control.ms <= kHalo4SeatControlFreshMs;
     // THE POINT, when this seat's trace has a range: the intent ray at the range the aim converges on.
     float point[3]{};
@@ -844,7 +853,11 @@ bool Halo4SeatConvergePrepare(Halo4SeatConvergePoll& out, const float rayDir[3])
     const bool sampleRead = f.sample.Read(sample) && sample.generation == generation &&
         sample.unit == stamp.unit && sample.parent == stamp.parent && sample.seat == stamp.seat;
     const float tickS = float(Sight_TickPeriodUs(kTitle, 16667)) * 1.0e-6f;
-    const float carryS = sampleRead ? halo4_seat_converge::CarrySeconds(sample.camera.stampUs, nowUs, tickS) : -1.0f;
+    // The sample's age on a clock read AFTER the sample: one published since this poll began would otherwise be
+    // "from the future", refused, and counted as a gap in the samples.
+    const uint64_t sampleNowUs = Sight_NowUs();
+    const float carryS =
+        sampleRead ? halo4_seat_converge::CarrySeconds(sample.camera.stampUs, sampleNowUs, tickS) : -1.0f;
     if (sampleRead && carryS >= 0.0f)
     {
         const halo4_seat_converge::Start start =
@@ -855,7 +868,7 @@ bool Halo4SeatConvergePrepare(Halo4SeatConvergePoll& out, const float rayDir[3])
             facts.start = true;
             if (facts.headKnown)
                 s_state.hold.Note(nowUs, start.pos, out.head, rayDir, start.pushWu > 0.0f);
-            const uint32_t ageMilli = static_cast<uint32_t>((nowUs - sample.camera.stampUs));   // us = milli-ms
+            const uint32_t ageMilli = static_cast<uint32_t>(sampleNowUs - sample.camera.stampUs);   // us = milli-ms
             f.ageMilliMs.fetch_add(ageMilli, std::memory_order_relaxed);
             f.ageSamples.fetch_add(1, std::memory_order_relaxed);
             if (ageMilli > f.ageMaxMilliMs.load(std::memory_order_relaxed))
@@ -1092,7 +1105,8 @@ void InstallHalo4SeatConverge(uintptr_t base, size_t size, uint32_t generation)
     RemoveHalo4SeatConverge();
     f.base = base;
     f.generation = generation;
-    f.lastTraceMs = 0;
+    // (The trace's rate limiter is the stick call's thread's alone and needs no reset: a last trace it cannot
+    // place against the clock never holds the next one back.)
     // The sampler's own state, under the sampler's flag: a view call of the last generation that was already past
     // its checks may still be finishing.
     while (f.sampling.test_and_set(std::memory_order_acquire))
