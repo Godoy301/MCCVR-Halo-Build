@@ -206,7 +206,8 @@ const char* Halo4ResolveShotFlags(uintptr_t base,size_t size,uint64_t meleeValue
 // and the SHOT's own flags (above) when they resolve, else the melee collision flags the contact install
 // pinned from their own call site (the query the contact lane issues itself), and ignores the unit.
 // The unit is the one whose first-person body the render thread last solved (g_halo4SightUnit), and a
-// seated unit (parent != -1) is not traced.
+// seated unit (parent != -1) is not traced here: a seat's ray is traced from the seat's control update
+// (halo4_seat_converge.inl), under the seat's own stance.
 void Halo4SightTraceTick(uint32_t unit,void* instance)
 {
     constexpr GameTitle kTitle=GameTitle::Halo4;
@@ -321,12 +322,6 @@ void Halo4SightTraceTick(uint32_t unit,void* instance)
 #endif
 }
 
-#if HALOMCCVR_DEV_DIAGNOSTICS
-// The SEATED trace (halo4_seat_sight.inl, dev builds only: stage 0 counts, the dev key halo4_seat_converge
-// publishes). Its own cheap pre-gate, before the shared 30 ms rate limit, keeps every other unit out.
-void Halo4SightTraceSeated(uint32_t unit,void* instance);
-#endif
-
 // Flat parity's fire-eye proof (halo4_fire_eye.inl), fed from our unit's own update: only for the render's
 // first-person unit (a cheap atomic test first: every unit comes through), on foot by the same biped test the trace uses.
 void Halo4FireEyeTickFromUpdate(uint32_t unit,void* instance)
@@ -359,11 +354,6 @@ __declspec(noinline) uint8_t __fastcall Halo4ContactUpdateDetour(void* instance)
         __except(EXCEPTION_EXECUTE_HANDLER) { unit=UINT32_MAX; }
         if(g_halo4Contact.updateOriginal) result=g_halo4Contact.updateOriginal(instance);
         if(unit!=UINT32_MAX) Halo4ContactTick(unit,instance);
-#if HALOMCCVR_DEV_DIAGNOSTICS
-        // Seated first: its pre-gate passes only for the seated local unit, which the on-foot trace would refuse
-        // only after taking the rate limit's slot.
-        if(unit!=UINT32_MAX) Halo4SightTraceSeated(unit,instance);
-#endif
         if(unit!=UINT32_MAX) Halo4SightTraceTick(unit,instance);
         if(unit!=UINT32_MAX) Halo4FireEyeTickFromUpdate(unit,instance);
     }
@@ -554,9 +544,9 @@ bool InstallHalo4ContactMelee(uintptr_t base,size_t size,uint32_t generation)
                 "PhysicsRayCast, profile 0x1A",
                 shotWhy ? "the melee query's flags, a proxy: the shot's own did not resolve"
                         : "the engine's own shot aim-assist query, resolved and value-checked",
-                "on foot it ignores the unit (the engine skips the held weapon with it); a seated unit is not "
-                "traced in a player build (dev halo4_seat_converge: the vehicle's root, the occupant, the seat's "
-                "parent and the controlled unit, and the engine skips the rest of that vehicle but a boarder)");
+                "on foot it ignores the unit (the engine skips the held weapon with it); a seat is traced only "
+                "with halo4_seat_converge = 1, from the seat's control update: the vehicle's root, the occupant and "
+                "the seat's parent ignored, and the engine skips the rest of that vehicle but a boarder");
     }
     return true;
 }

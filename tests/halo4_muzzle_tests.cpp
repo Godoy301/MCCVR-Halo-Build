@@ -80,6 +80,29 @@ void PublishShotDiagnostic(GameTitle,uint32_t,uint32_t,uint32_t,uint8_t,uint8_t,
 #include "../src/dll/halo4_muzzle_shots.inl"
 #undef __readgsqword
 #undef _ReturnAddress
+// The seated convergence lane's three calls from the view detour (halo4_seat_converge.inl), stood in for here:
+// before the native view with the detour's caller, after it with the GAME's own outputs (before any barrel
+// substitution), and at the detour's unwind, by which time no stand-down may be left.
+static unsigned seatBefore=0,seatAfter=0,seatUnwound=0,seatStockAsked=0,seatStockLeft=0;
+Halo4SeatConvergeCall Halo4SeatConvergeBeforeView(uintptr_t at,uint32_t unit)
+{
+    ++seatBefore;Check(unit==owner,"the seat lane is handed the view's own unit");
+    Halo4SeatConvergeCall call{};
+    call.sample=at==imageBase+0x1DB9A6||at==imageBase+0x1DBDB6;call.fire=at==imageBase+0x1DC8C4;
+    Check(call.sample||call.fire,"the seat lane is handed the detour's own caller");
+    call.stock=call.sample;if(call.stock)++seatStockAsked;
+    return call;
+}
+void Halo4SeatConvergeAfterView(Halo4SeatConvergeCall& call,uint32_t unit,const float* origin,const float* dir,
+    const float* camera)
+{
+    ++seatAfter;
+    Check(unit==owner&&origin[0]==21&&dir[0]==1&&camera[0]==22,
+        "the seat lane sees the game's own view outputs, before any barrel substitution");
+    call.stock=false;
+}
+void Halo4SeatConvergeViewUnwound(Halo4SeatConvergeCall& call)
+{++seatUnwound;if(call.stock)++seatStockLeft;call.stock=false;}
 static bool expectMuzzle=true,queryFault=false,preflightFault=false,fireFault=false,markerFault=false,nested=false,
     omitView=false,replaceStorage=false,changeGeneration=false,changeOwner=false,nativeChangesTarget=false,invalidTarget=false,nonfiniteTarget=false;
 static unsigned fireCalls=0,queryCalls=0,markerCalls=0,aimCalls=0,viewCalls=0;
@@ -429,5 +452,8 @@ static void OwnerEvidenceTests()
 int main()
 {
     ShotTests();PublicationTests();OwnerEvidenceTests();LifecycleTests();
+    Check(seatBefore>0&&seatBefore==seatAfter,"every native view call is bracketed by the seat lane's two calls");
+    Check(seatUnwound>=seatBefore&&seatStockAsked>0&&seatStockLeft==0,
+        "a stand-down asked for a view call is over by the call's end, and the unwind finds none left");
     std::printf("PASS: %u production Halo4 muzzle checks (native services stubbed)\n",checks);
 }

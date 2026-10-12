@@ -1213,6 +1213,36 @@ uintptr_t LegacyDriveRecord(const LegacyDriveState& st, const LegacyDriveSite& s
     return globals ? globals + static_cast<uintptr_t>(user) * site.stride : 0;
 }
 
+#if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA
+// Halo 4, the stick call: a record whose own unit is seated reaches the seated convergence lane
+// (halo4_seat_converge.inl) -- its heartbeat, the seat's live flags word (the frame reader's own read, no native
+// call) and the seated trace. It runs ahead of every direct-drive gate, so a seat the stick still steers is
+// traced too. Guarded on its own: a fault here costs that lane this update and nothing else.
+void LegacyDriveHalo4SeatConverge(const LegacyDriveState& st, const LegacyDriveSite& site, int user)
+{
+    if (!Halo4SeatConvergeMeasures())
+        return;
+    __try
+    {
+        if (!st.installed.load(std::memory_order_acquire) || !st.tlsIndexAddress || !st.halo4RecordUnit)
+            return;
+        const uint8_t* tls = nullptr;
+        const uintptr_t pc = LegacyDriveRecord(st, site, user, &tls);
+        if (!pc || !tls)
+            return;
+        const uint32_t unit = *reinterpret_cast<const uint32_t*>(pc + kHalo4RecordUnitOffset);
+        Halo4VehicleInputState seat{};
+        if (!Halo4ReadVehicleInputMemory(tls, unit, seat) || !seat.seated)
+            return;
+        const seat_frame_rt::Live frame = seat_frame_rt::Read(st.frame, nullptr, unit);
+        Halo4SeatConvergeControlUpdate(tls, seat, frame.flagsKnown, frame.flags);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+    }
+}
+#endif
+
 // The input thread's latest publication (seqlock): one coherent read, retried once. Torn twice: `coherent`
 // false, and the fields hold the last attempt (as the hook always read them).
 struct LegacyDrivePublication
@@ -1996,6 +2026,10 @@ extern "C" void LegacyPcApplyForUser(int slot, int user, uintptr_t ret, const ui
     const aim_caller::PutBack previousWrite = st.putBack;
 #endif
     st.putBack.invalidate();  // this update writes afresh, or nothing is put back after it
+#if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA
+    if (slot == 2)
+        LegacyDriveHalo4SeatConverge(st, site, user);
+#endif
     bool seatWrote = false;   // this update ended in a seat write (the latch keeps its last value only then)
     bool seatKept = false;    // this update continued a seat stint (its checks survive)
     bool wroteAxis[2]{};      // which axes this update's seat write wrote
