@@ -125,7 +125,6 @@ bool SetLive(const std::string& name, int value)
     else if (name == "first_person_rung_fault") g_config.first_person_rung_fault = value & 0xF;
     // Halo 4's reticle capture (vr.h, VrHalo4ReticleDrawScope): 0 as the game draws it, 1 alpha only from draws
     // that write coverage (what a player build does), 2 no draw writes alpha. Takes effect at the next capture.
-    // (A switch's name is letters and underscores: no digit.)
     else if (name == "reticle_capture_alpha") VR_DevSetHalo4ReticleAlphaMode(value);
     // The seat camera's offsets for the vehicle model and seat the camera is in now, in centimetres plus 500
     // (a script's numbers are unsigned): 500 is zero, 650 is +1.5 m. What the Vehicles page's sliders write.
