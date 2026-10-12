@@ -116,6 +116,7 @@
 #include "../common/frame_pacing_logic.h"
 #include "../common/halo4_render_logic.h"
 #include "../common/halo4_cui_reticle_logic.h"
+#include "../common/halo4_reticle_alpha_logic.h"
 #include "../common/halo4_world_collision_logic.h"
 #include "../common/input_logic.h"
 #include "../common/weapon_haptic_pulses.h"
@@ -9385,6 +9386,24 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                         s.drawnAlphaPeak, s.inkTexels,
                         s.alphaBelowColourTexels);
                 }
+            }
+        }
+        // Halo 4: what the capture's alpha plane holds beside its colour. Art the game only adds leaves alpha
+        // at zero; alpha with little colour under it is what the headset shows as a dark box.
+        if (TitleAdapter_GetActiveTitle() == GameTitle::Halo4)
+        {
+            static uint64_t lastHalo4AlphaLogMs = 0;
+            const uint64_t nowMs = GetTickCount64();
+            if (nowMs - lastHalo4AlphaLogMs >= 2000)
+            {
+                lastHalo4AlphaLogMs = nowMs;
+                const AuthoredReticleAlphaSummary s =
+                    SummarizeAuthoredReticleAlpha(
+                        rows, mapped.RowPitch, kAuthoredReticleProbeSize);
+                LOG("H4 RETICLE ALPHA (dev; 8x8 mip means, 0-255): alpha ink %u, colour ink %u | captured "
+                    "alpha mean %u peak %u | brightest colour %u | ink texels %u, alpha below colour in %u",
+                    alphaInk, colorInk, s.capturedAlphaMean, s.capturedAlphaPeak, s.addedColourPeak,
+                    s.inkTexels, s.alphaBelowColourTexels);
             }
         }
 #endif
@@ -23164,17 +23183,17 @@ void VR_Halo4NoteBoundRenderTargets(
         std::memory_order_release);
 }
 
-void VR_Halo4PrepareAuthoredReticleDraw(ID3D11DeviceContext* context)
+static bool Halo4DrawIsIntoReticleCapture(ID3D11DeviceContext* context)
 {
-    if (context != g_context ||
-        !g_reticleCaptureState.active ||
-        !g_reticleCaptureState.framingCaptured ||
-        !g_halo4AuthoredReticleTargetBound.load(std::memory_order_acquire) ||
-        TitleAdapter_GetActiveTitle() != GameTitle::Halo4)
-    {
-        return;
-    }
+    return context == g_context &&
+        g_reticleCaptureState.active &&
+        g_reticleCaptureState.framingCaptured &&
+        g_halo4AuthoredReticleTargetBound.load(std::memory_order_acquire) &&
+        TitleAdapter_GetActiveTitle() == GameTitle::Halo4;
+}
 
+static void Halo4FrameAuthoredReticleDraw(ID3D11DeviceContext* context)
+{
     const D3D11_VIEWPORT& base = g_reticleCaptureState.captureViewport;
     const Halo4CuiCaptureViewport input{
         base.TopLeftX, base.TopLeftY, base.Width, base.Height,
@@ -23206,6 +23225,216 @@ void VR_Halo4PrepareAuthoredReticleDraw(ID3D11DeviceContext* context)
         1, &g_reticleCaptureState.captureScissor);
     g_authoredReticleFramingReasserts.fetch_add(
         1, std::memory_order_relaxed);
+}
+
+namespace
+{
+    // A blend state the game draws reticle art with, and its twin that leaves the capture's alpha alone. The
+    // twins live as long as the device: a reticle uses a handful of states.
+    struct Halo4ReticleBlendTwin
+    {
+        D3D11_BLEND_DESC desc{};
+        ID3D11BlendState* twin = nullptr;   // null: it could not be made, and is not tried again per draw
+    };
+    constexpr size_t kHalo4ReticleBlendTwinMax = 16;
+    Halo4ReticleBlendTwin g_halo4ReticleBlendTwins[kHalo4ReticleBlendTwinMax];
+    size_t g_halo4ReticleBlendTwinCount = 0;
+    ID3D11Device* g_halo4ReticleBlendTwinDevice = nullptr;
+
+    bool Halo4SameTargetBlend(const D3D11_RENDER_TARGET_BLEND_DESC& a, const D3D11_RENDER_TARGET_BLEND_DESC& b)
+    {
+        return a.BlendEnable == b.BlendEnable && a.SrcBlend == b.SrcBlend && a.DestBlend == b.DestBlend &&
+            a.BlendOp == b.BlendOp && a.SrcBlendAlpha == b.SrcBlendAlpha &&
+            a.DestBlendAlpha == b.DestBlendAlpha && a.BlendOpAlpha == b.BlendOpAlpha &&
+            a.RenderTargetWriteMask == b.RenderTargetWriteMask;
+    }
+
+    // Field by field: the structure has padding a byte compare would read.
+    bool Halo4SameBlend(const D3D11_BLEND_DESC& a, const D3D11_BLEND_DESC& b)
+    {
+        if (a.AlphaToCoverageEnable != b.AlphaToCoverageEnable ||
+            a.IndependentBlendEnable != b.IndependentBlendEnable)
+            return false;
+        const size_t targets = a.IndependentBlendEnable ? 8 : 1;
+        for (size_t i = 0; i < targets; ++i)
+            if (!Halo4SameTargetBlend(a.RenderTarget[i], b.RenderTarget[i]))
+                return false;
+        return true;
+    }
+
+    ID3D11BlendState* Halo4ReticleBlendTwinFor(const D3D11_BLEND_DESC& desc)
+    {
+        if (!g_device)
+            return nullptr;
+        if (g_halo4ReticleBlendTwinDevice != g_device)
+        {
+            for (size_t i = 0; i < g_halo4ReticleBlendTwinCount; ++i)
+                if (g_halo4ReticleBlendTwins[i].twin)
+                    g_halo4ReticleBlendTwins[i].twin->Release();
+            g_halo4ReticleBlendTwinCount = 0;
+            g_halo4ReticleBlendTwinDevice = g_device;
+        }
+        for (size_t i = 0; i < g_halo4ReticleBlendTwinCount; ++i)
+            if (Halo4SameBlend(g_halo4ReticleBlendTwins[i].desc, desc))
+                return g_halo4ReticleBlendTwins[i].twin;
+        if (g_halo4ReticleBlendTwinCount == kHalo4ReticleBlendTwinMax)
+            return nullptr;   // more states than a reticle uses: this draw keeps the game's own
+        D3D11_BLEND_DESC twinDesc = desc;
+        // The capture is render target 0, which is also the one that counts without independent blending.
+        twinDesc.RenderTarget[0].RenderTargetWriteMask =
+            halo4_reticle_alpha::WriteMaskWithoutAlpha(desc.RenderTarget[0].RenderTargetWriteMask);
+        ID3D11BlendState* twin = nullptr;
+        if (FAILED(g_device->CreateBlendState(&twinDesc, &twin)))
+            twin = nullptr;
+        g_halo4ReticleBlendTwins[g_halo4ReticleBlendTwinCount++] = {desc, twin};
+        return twin;
+    }
+
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    // 0 the capture as the game draws it, 1 the rule (halo4_reticle_alpha_logic.h), 2 no draw writes alpha.
+    std::atomic<int> g_devHalo4ReticleAlphaMode{1};
+
+    // What the game binds for the draws of a capture, for the log: one entry per blend state seen in 2 s.
+    struct Halo4ReticleBlendSeen
+    {
+        D3D11_RENDER_TARGET_BLEND_DESC rt{};
+        uint32_t draws = 0;
+        uint32_t withoutAlpha = 0;
+    };
+    constexpr size_t kHalo4ReticleBlendSeenMax = 10;
+    Halo4ReticleBlendSeen g_halo4ReticleBlendSeen[kHalo4ReticleBlendSeenMax];
+    size_t g_halo4ReticleBlendSeenCount = 0;
+    uint32_t g_halo4ReticleBlendUnlisted = 0;
+    uint64_t g_halo4ReticleBlendLogMs = 0;
+
+    void Halo4NoteReticleBlend(const D3D11_RENDER_TARGET_BLEND_DESC& rt, bool withoutAlpha, int mode)
+    {
+        size_t i = 0;
+        for (; i < g_halo4ReticleBlendSeenCount; ++i)
+            if (Halo4SameTargetBlend(g_halo4ReticleBlendSeen[i].rt, rt))
+                break;
+        if (i == g_halo4ReticleBlendSeenCount)
+        {
+            if (i == kHalo4ReticleBlendSeenMax)
+            {
+                ++g_halo4ReticleBlendUnlisted;
+                i = SIZE_MAX;
+            }
+            else
+            {
+                g_halo4ReticleBlendSeen[g_halo4ReticleBlendSeenCount++] = Halo4ReticleBlendSeen{rt, 0, 0};
+            }
+        }
+        if (i != SIZE_MAX)
+        {
+            ++g_halo4ReticleBlendSeen[i].draws;
+            if (withoutAlpha)
+                ++g_halo4ReticleBlendSeen[i].withoutAlpha;
+        }
+        const uint64_t nowMs = GetTickCount64();
+        if (nowMs - g_halo4ReticleBlendLogMs < 2000)
+            return;
+        g_halo4ReticleBlendLogMs = nowMs;
+        char text[1100];
+        size_t used = 0;
+        text[0] = 0;
+        for (size_t k = 0; k < g_halo4ReticleBlendSeenCount && used + 120 < sizeof(text); ++k)
+        {
+            const Halo4ReticleBlendSeen& s = g_halo4ReticleBlendSeen[k];
+            const int wrote = snprintf(
+                text + used, sizeof(text) - used,
+                "%s[blend %d colour %d,%d op %d alpha %d,%d op %d mask %X] x%u (%u without alpha)",
+                k ? "; " : "", s.rt.BlendEnable ? 1 : 0, static_cast<int>(s.rt.SrcBlend),
+                static_cast<int>(s.rt.DestBlend), static_cast<int>(s.rt.BlendOp),
+                static_cast<int>(s.rt.SrcBlendAlpha), static_cast<int>(s.rt.DestBlendAlpha),
+                static_cast<int>(s.rt.BlendOpAlpha), static_cast<unsigned>(s.rt.RenderTargetWriteMask),
+                s.draws, s.withoutAlpha);
+            if (wrote <= 0)
+                break;
+            used += static_cast<size_t>(wrote);
+        }
+        LOG("H4 RETICLE BLEND (dev): mode %d (0 stock, 1 alpha only from draws that write coverage, 2 no alpha "
+            "at all); draws into the capture since the last line by blend state, D3D11_BLEND values (1 zero, "
+            "2 one, 5 src alpha, 6 inv src alpha, 7 dest alpha): %s; %u more in states not listed",
+            mode, text, g_halo4ReticleBlendUnlisted);
+        g_halo4ReticleBlendSeenCount = 0;
+        g_halo4ReticleBlendUnlisted = 0;
+    }
+#endif
+}   // namespace
+
+#if HALOMCCVR_DEV_DIAGNOSTICS
+void VR_DevSetHalo4ReticleAlphaMode(int mode)
+{
+    g_devHalo4ReticleAlphaMode.store(mode < 0 ? 0 : (mode > 2 ? 2 : mode), std::memory_order_relaxed);
+}
+#endif
+
+VrHalo4ReticleDrawScope::VrHalo4ReticleDrawScope(ID3D11DeviceContext* context)
+{
+    if (!Halo4DrawIsIntoReticleCapture(context))
+        return;
+    Halo4FrameAuthoredReticleDraw(context);
+
+    ID3D11BlendState* bound = nullptr;
+    FLOAT factor[4]{};
+    UINT sampleMask = 0;
+    context->OMGetBlendState(&bound, factor, &sampleMask);
+    D3D11_BLEND_DESC desc{};
+    if (bound)
+    {
+        bound->GetDesc(&desc);
+    }
+    else
+    {
+        // No state bound is D3D's default: blending off, every channel written.
+        for (D3D11_RENDER_TARGET_BLEND_DESC& rt : desc.RenderTarget)
+        {
+            rt.SrcBlend = D3D11_BLEND_ONE;
+            rt.DestBlend = D3D11_BLEND_ZERO;
+            rt.BlendOp = D3D11_BLEND_OP_ADD;
+            rt.SrcBlendAlpha = D3D11_BLEND_ONE;
+            rt.DestBlendAlpha = D3D11_BLEND_ZERO;
+            rt.BlendOpAlpha = D3D11_BLEND_OP_ADD;
+            rt.RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
+        }
+    }
+    const D3D11_RENDER_TARGET_BLEND_DESC& rt = desc.RenderTarget[0];
+    const halo4_reticle_alpha::Blend blend{
+        rt.BlendEnable != FALSE, static_cast<int>(rt.DestBlend), static_cast<int>(rt.BlendOp),
+        rt.RenderTargetWriteMask};
+    bool dropsAlpha = halo4_reticle_alpha::DropsAlphaWrite(blend);
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    const int mode = g_devHalo4ReticleAlphaMode.load(std::memory_order_relaxed);
+    if (mode == 0)
+        dropsAlpha = false;
+    else if (mode == 2)
+        dropsAlpha = (blend.writeMask & halo4_reticle_alpha::kWriteAlpha) != 0;
+#endif
+    ID3D11BlendState* twin = dropsAlpha ? Halo4ReticleBlendTwinFor(desc) : nullptr;
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    Halo4NoteReticleBlend(rt, twin != nullptr, mode);
+#endif
+    if (!twin)
+    {
+        if (bound)
+            bound->Release();
+        return;
+    }
+    context->OMSetBlendState(twin, factor, sampleMask);
+    context_ = context;
+    saved_ = bound;   // keeps the reference OMGetBlendState took, until the game's state is bound again
+    memcpy(factor_, factor, sizeof(factor_));
+    sampleMask_ = sampleMask;
+}
+
+VrHalo4ReticleDrawScope::~VrHalo4ReticleDrawScope()
+{
+    if (!context_)
+        return;
+    context_->OMSetBlendState(saved_, factor_, sampleMask_);
+    if (saved_)
+        saved_->Release();
 }
 
 bool VR_Halo4AuthoredReticleFeatureHealthy()

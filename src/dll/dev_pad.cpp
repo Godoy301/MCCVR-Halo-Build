@@ -15,6 +15,7 @@
 #include "../common/config.h"
 #include "../common/roomscale_recenter_logic.h"
 #include "../common/log.h"
+#include "vr.h"
 
 #include <algorithm>
 #include <atomic>
@@ -120,6 +121,10 @@ bool SetLive(const std::string& name, int value)
     // needs a level the camera rung has not been proven in (the value agreement never withdraws a proven
     // rung), so it still wants the key set before the level loads.
     else if (name == "first_person_rung_fault") g_config.first_person_rung_fault = value & 0xF;
+    // Halo 4's reticle capture (vr.h, VrHalo4ReticleDrawScope): 0 as the game draws it, 1 alpha only from draws
+    // that write coverage (what a player build does), 2 no draw writes alpha. Takes effect at the next capture.
+    // (A switch's name is letters and underscores: no digit.)
+    else if (name == "reticle_capture_alpha") VR_DevSetHalo4ReticleAlphaMode(value);
     else return false;
     return true;
 }

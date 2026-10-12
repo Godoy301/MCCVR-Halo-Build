@@ -342,7 +342,7 @@ static void STDMETHODCALLTYPE Halo2DrawIndexedCensusHook(
     if(hud_visibility::Hidden()) return;
     Halo2HudDrawMutation mutation = BeginHalo2HudDraw(context);
     if(mutation.kind==Halo2HudDrawMutation::Kind::Hidden) return;
-    VR_Halo4PrepareAuthoredReticleDraw(context);
+    VrHalo4ReticleDrawScope reticleDraw(context);
     {
         BloomDrawScope bloom(context);
         g_origHalo2DrawIndexed(context, indexCount, startIndex, baseVertex);
@@ -358,7 +358,7 @@ static void STDMETHODCALLTYPE Halo2DrawCensusHook(
     if(hud_visibility::Hidden()) return;
     Halo2HudDrawMutation mutation = BeginHalo2HudDraw(context);
     if(mutation.kind==Halo2HudDrawMutation::Kind::Hidden) return;
-    VR_Halo4PrepareAuthoredReticleDraw(context);
+    VrHalo4ReticleDrawScope reticleDraw(context);
     {
         BloomDrawScope bloom(context);
         g_origHalo2Draw(context, vertexCount, startVertex);
@@ -553,7 +553,7 @@ static void STDMETHODCALLTYPE Halo4DrawIndexedFramingHook(
     ID3D11DeviceContext* context, UINT indexCount, UINT startIndex,
     INT baseVertex)
 {
-    VR_Halo4PrepareAuthoredReticleDraw(context);
+    VrHalo4ReticleDrawScope reticleDraw(context);
     BloomDrawScope bloom(context);
     g_origHalo4DrawIndexed(context, indexCount, startIndex, baseVertex);
 }
@@ -561,7 +561,7 @@ static void STDMETHODCALLTYPE Halo4DrawIndexedFramingHook(
 static void STDMETHODCALLTYPE Halo4DrawFramingHook(
     ID3D11DeviceContext* context, UINT vertexCount, UINT startVertex)
 {
-    VR_Halo4PrepareAuthoredReticleDraw(context);
+    VrHalo4ReticleDrawScope reticleDraw(context);
     BloomDrawScope bloom(context);
     g_origHalo4Draw(context, vertexCount, startVertex);
 }
