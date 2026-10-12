@@ -55702,12 +55702,20 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
 #if HALOMCCVR_DEV_DIAGNOSTICS
     int servoFeedback[2]{-1, -1};   // per axis: 1 the occupant, 0 the gun, -1 not steered (dev witness)
 #endif
+    // The pitch stick is held still while this stint's pitch check collects its evidence (gun_slaved::CheckHold).
+    bool holdPitchForCheck = false;
+    static gun_slaved::CheckHold s_pitchCheckHold;
+    if (!gunSlavedServo)
+        s_pitchCheckHold.reset();
     if (gunSlavedServo)
     {
         float occupantYaw = 0.0f, occupantPitch = 0.0f;
         unsigned agreeing[2]{};
+        uint32_t pitchCheck = 0;
         const bool occupantFresh = LegacyDriveOccupantAim(TitleAdapter_GetActiveTitle(), gunSlavedKey, occupantYaw,
-                                                          occupantPitch, agreeing);
+                                                          occupantPitch, agreeing, &pitchCheck);
+        holdPitchForCheck = s_pitchCheckHold.step(gunSlavedKey, occupantFresh, (pitchCheck & 0x80000000u) != 0,
+                                                  pitchCheck & 0x7FFFFFFFu, GetTickCount64());
         if (gun_slaved::ServoFeedback(true, occupantFresh, agreeing[0]) == gun_slaved::Feedback::Occupant)
             servoAimYaw = occupantYaw;
         if (gun_slaved::ServoFeedback(true, occupantFresh, agreeing[1]) == gun_slaved::Feedback::Occupant)
@@ -55847,7 +55855,7 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
     static float servoLastPitchCommand = 0.0f;
     static float servoLastYawCommand = 0.0f;
     static bool servoWasTurret = false;
-    static uint32_t servoFrames = 0, servoParkedFrames = 0;
+    static uint32_t servoFrames = 0, servoParkedFrames = 0, servoCheckHeldFrames = 0;
     if (s_turretServoStale || g_aimFreeCameraServoReset)
     {
         // The drive aimed for the servo since its last frame, or the free-camera frame began or ended (the camera
@@ -55869,6 +55877,7 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
             servoLastYawCommand = 0.0f;
             servoFrames = 0;
             servoParkedFrames = 0;
+            servoCheckHeldFrames = 0;
             LOG("Turret seat: aim servo armed. The gun is a rate-capped "
                 "machine (H3EK: shade 15 deg/s both axes, warthog turret "
                 "60 deg/s yaw and NO pitch cap), so the loop parks instead "
@@ -55881,10 +55890,11 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
     else if (servoWasTurret)
     {
         LOG("Turret seat: aim servo released after %u frames, %u parked "
-            "(%u%%); measured stick quantum pitch %.4f rad, yaw %.4f rad",
+            "(%u%%); measured stick quantum pitch %.4f rad, yaw %.4f rad; the pitch stick was held still for "
+            "the seat's pitch check on %u frames",
             servoFrames, servoParkedFrames,
             servoFrames ? servoParkedFrames * 100u / servoFrames : 0u,
-            servoPitch.minStep, servoYaw.minStep);
+            servoPitch.minStep, servoYaw.minStep, servoCheckHeldFrames);
         AimServoReset(servoPitch);
         AimServoReset(servoYaw);
         servoLastPitchCommand = 0.0f;
@@ -55907,7 +55917,12 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
                           gunSlavedServo ? servoPacerPitch.exit(kAimServoRestExitRadians) : kAimServoRestExitRadians)
         : Clamp(errPitch * k, -1.0f, 1.0f);
     if (gunSlavedServo)
-        outRy = servoPacerPitch.pace(servoAimPitch, errPitch, seatWritten.pitch ? 0.0f : outRy, kAimServoStickFloor);
+    {
+        if (holdPitchForCheck && !seatWritten.pitch)
+            ++servoCheckHeldFrames;
+        outRy = servoPacerPitch.pace(servoAimPitch, errPitch,
+                                     (seatWritten.pitch || holdPitchForCheck) ? 0.0f : outRy, kAimServoStickFloor);
+    }
 #if HALOMCCVR_DEV_DIAGNOSTICS
     if (gunSlavedServo)
     {

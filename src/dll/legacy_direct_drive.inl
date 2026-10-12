@@ -364,6 +364,9 @@ struct LegacyDriveState
     std::atomic<float> occYaw{0.0f}, occPitch{0.0f};
     std::atomic<uint64_t> occMs{0};
     std::atomic<uint32_t> occKey{0}, occAgree{0};
+    // The occupant's pitch check for the servo's hold (gun_slaved::CheckHold): bit 31 set while it collects
+    // evidence, the low bits its attempt (its count of failed ones). Inside the same seqlock.
+    std::atomic<uint32_t> occPitchCheck{0};
 #if HALOMCCVR_DEV_DIAGNOSTICS
     // Gun-slaved seats, per report window (deg as float bits): the largest |record - occupant's aim| and
     // |record - gun| this stint's updates saw, in the record's frame.
@@ -1082,8 +1085,10 @@ bool LegacyDriveSeatLimited(GameTitle title)
 // Input thread, a gun-slaved seat (Halo 3 / ODST): the occupant's own aim in WORLD angles, as the hook last read it
 // for seat `seatKey`, and how many judged samples in a row it has agreed with the record per axis ([0] yaw, [1]
 // pitch). False when unbound, torn, stale (kLegacyOccupantAimFreshMs) or another seat's: the servo then closes on the
-// camera's forward.
-bool LegacyDriveOccupantAim(GameTitle title, uint32_t seatKey, float& yaw, float& pitch, unsigned agreeing[2])
+// camera's forward. `pitchCheck` (optional): the occupant's pitch check as published -- bit 31 while it collects
+// evidence, the low bits its attempt.
+bool LegacyDriveOccupantAim(GameTitle title, uint32_t seatKey, float& yaw, float& pitch, unsigned agreeing[2],
+                            uint32_t* pitchCheck = nullptr)
 {
     const int slot = LegacyDriveSlot(title);
     if (slot < 0 || slot > 1 || !seatKey)
@@ -1097,6 +1102,7 @@ bool LegacyDriveOccupantAim(GameTitle title, uint32_t seatKey, float& yaw, float
         const uint64_t at = st.occMs.load(std::memory_order_relaxed);
         const uint32_t key = st.occKey.load(std::memory_order_relaxed);
         const uint32_t agree = st.occAgree.load(std::memory_order_relaxed);
+        const uint32_t check = st.occPitchCheck.load(std::memory_order_relaxed);
         const float y = st.occYaw.load(std::memory_order_relaxed);
         const float p = st.occPitch.load(std::memory_order_relaxed);
         std::atomic_thread_fence(std::memory_order_acquire);
@@ -1110,6 +1116,8 @@ bool LegacyDriveOccupantAim(GameTitle title, uint32_t seatKey, float& yaw, float
         pitch = p;
         agreeing[0] = agree & 0xFFFFu;
         agreeing[1] = agree >> 16;
+        if (pitchCheck)
+            *pitchCheck = check;
         return true;
     }
     return false;
@@ -2280,6 +2288,13 @@ extern "C" void LegacyPcApplyForUser(int slot, int user, uintptr_t ret, const ui
                     st.occPitch.store(occupantWorldPitch, std::memory_order_relaxed);
                     st.occKey.store(seatKey, std::memory_order_relaxed);
                     st.occAgree.store(yawAgree | pitchAgree << 16, std::memory_order_relaxed);
+                    // The pitch check as the servo's hold needs it: collecting evidence (not passed, not failed,
+                    // not revoked), and which attempt of the stint this is.
+                    const bool pitchChecking = !st.occWatch[1].revoked && !st.stintOccupant.pitch_ok &&
+                                               !st.stintOccupant.pitch_failed;
+                    st.occPitchCheck.store((pitchChecking ? 0x80000000u : 0u) |
+                                               (st.stintOccupant.pitch_fails & 0x7FFFFFFFu),
+                                           std::memory_order_relaxed);
                     st.occMs.store(now, std::memory_order_relaxed);
                     st.occSeq.fetch_add(1, std::memory_order_release);
                 }
