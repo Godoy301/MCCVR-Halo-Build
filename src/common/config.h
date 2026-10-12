@@ -776,6 +776,16 @@ struct Config
     // (Halo CE has no such lane; there it does nothing).
     // sight_layer.h: Sight_FireTimeChangesAllowed.
     bool coop_safe_shots = false;
+    // AIM LEAD (default 1 tick, live; 0 = off, up to 3): the aim written into the game's record on foot (Halo 3,
+    // ODST, Reach) is carried ahead by the setpoint's own rate times this many simulation ticks. A record
+    // written at one control pass is first used by the next tick, so a shot leaves along a hand sample about a
+    // tick old; the lead writes where the aim will be then. Only the record is led -- the reticle, the gun and
+    // the scope are drawn from the hand as before -- and the record is shared input, so every machine of a
+    // co-op session fires the same shot. A snap turn, a recentre, a stop and an aim at rest are written
+    // unchanged (aim_lead_logic.h). The default is the tick the record recomposition already carries the game's
+    // eye by, not a measured optimum: the "AIM LEAD" and "CO-OP SAFE SHOTS" / "SHOT REAIM" log lines say what it
+    // did and what is left. Seats are not led. sight_layer.h: Sight_LeadWrittenAim.
+    float aim_lead_ticks = 1.0f;
 
     // EXPERIMENTAL (dev): route this title's aim through the game-agnostic aim-solve core + per-game
     // provider (src/common/aim_solve_logic.h, aim_provider.h). 0 = off (shipped path untouched).

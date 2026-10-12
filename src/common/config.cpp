@@ -16,6 +16,7 @@
 #include "flashlight_input.h"
 #include "dlss_logic.h"
 #include "roomscale_recenter_logic.h"
+#include "aim_lead_logic.h"
 #include "log.h"
 
 Config g_config;
@@ -1328,6 +1329,14 @@ void ConfigLoad(const wchar_t* path)
         if (!strcmp(key, "gun_barrel_aim")) { g_config.gun_barrel_aim=atoi(val)!=0; continue; }
         if (!strcmp(key, "shots_from_muzzle")) { g_config.shots_from_muzzle=atoi(val)!=0; continue; }
         if (!strcmp(key, "coop_safe_shots")) { g_config.coop_safe_shots=atoi(val)!=0; continue; }
+        if (!strcmp(key, "aim_lead_ticks"))
+        {
+            // Held inside 0 to 3 ticks; a value that is not a number keeps the one in effect.
+            float ticks = g_config.aim_lead_ticks;
+            if (ParseFloatSetting(key, val, ticks))
+                g_config.aim_lead_ticks = aim_lead::ClampTicks(ticks, g_config.aim_lead_ticks);
+            continue;
+        }
         if (!strcmp(key, "aim_provider")) { g_config.aim_provider=atoi(val); continue; }
         if (!strcmp(key, "legacy_direct_drive")) { g_config.legacy_direct_drive = atoi(val) != 0 ? 1 : 0; continue; }
         if (!strcmp(key, "converged_aim")) { g_config.converged_aim = atoi(val) != 0 ? 1 : 0; continue; }
@@ -2321,8 +2330,15 @@ void ConfigSave()
                "# barrel origin, no fire-time re-aim, no separate dual-wield aim, no seat redirect), so every\n"
                "# player's game fires it the same way. Your hand still aims; shots leave the eye. True\n"
                "# physical melee presses the game's melee instead of striking on contact (Halo CE: it does\n"
-               "# nothing), and in Halo 2 your hand aims only with direct drive on. (default %d)\n"
+               "# nothing), in Halo 2 your hand aims only with direct drive on, and Halo CE seats keep the\n"
+               "# game's own camera. (default %d)\n"
                "coop_safe_shots = %d\n\n", d.coop_safe_shots ? 1 : 0, g_config.coop_safe_shots ? 1 : 0);
+    fprintf(f, "# Aim lead, on foot in Halo 3, ODST and Reach: the aim written for each shot is carried ahead by\n"
+               "# this many simulation ticks of the aim's own motion, so a shot fired while you turn lands where\n"
+               "# the reticle is and not where it was a tick ago. Only the game's aim is led: the reticle, the\n"
+               "# gun and the scope do not move. The same in solo and co-op. 0 = off.\n"
+               "# (default %.2f, range 0 to %.0f)\n"
+               "aim_lead_ticks = %.2f\n\n", d.aim_lead_ticks, aim_lead::kMaxTicks, g_config.aim_lead_ticks);
     fprintf(f, "# Floating VR-crosshair smoothing only; bullets stay raw.\n");
     fprintf(f, "# (default %.2f, range 0 to 0.95)\n", d.aim_stabilization);
     fprintf(f, "aim_stabilization = %.2f\n\n", g_config.aim_stabilization);

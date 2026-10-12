@@ -1488,12 +1488,20 @@ namespace
                                 "games fire it the same way. Your hand still aims; shots leave your eye, and the\n"
                                 "muzzle option above has no effect. In Halo 2 your hand aims only with Direct\n"
                                 "drive on. True physical melee presses the game's melee instead of striking on\n"
-                                "contact (Halo CE: it does nothing). Live.");
+                                "contact (Halo CE: it does nothing). Halo CE seats keep the game's own camera.\n"
+                                "Live.");
             ImGui::TextDisabled("Both cover vehicle seats too. Every seat you aim from converges (Halo 3, ODST,\n"
                                 "Halo CE and Halo 2 in first-person seats; Reach and Halo 2 with Direct drive;\n"
                                 "Halo 4 seats not yet). With Direct drive, seats have\n"
                                 "their aim written too (Vehicles > Aim in seats says which); a seat first checks\n"
                                 "its own aim, about a second after you sit down.");
+            changed |= vr_menu::SliderFloat("Aim lead (game ticks)", &g_config.aim_lead_ticks, 0.0f, 3.0f, "%.2f");
+            ImGui::TextDisabled("On foot in Halo 3, ODST and Reach with Direct drive. The game fires each shot along\n"
+                                "the aim it was given about one game tick earlier, so a shot fired while you turn\n"
+                                "lands a little behind the reticle. This writes the aim that far ahead of your\n"
+                                "hand's own motion instead. Only the game's aim is led: the reticle, the gun and\n"
+                                "the scope do not move, and a snap turn or a hand at rest is never led. It works\n"
+                                "the same in solo and co-op. 0 = off. Live.");
 #if HALOMCCVR_DEV_DIAGNOSTICS
             ImGui::Spacing();
             bool transport = g_config.shot_point_transport != 0;

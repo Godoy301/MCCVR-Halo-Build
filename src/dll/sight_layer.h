@@ -206,6 +206,25 @@ void Sight_NoteFireTimeStoodDown(GameTitle title);
 // game globals (-1: no game in progress). Sight_Report logs it whenever it changes ("SESSION <game>: ..."), so a
 // solo level, a campaign co-op session and a custom game can be told apart in a log. Nothing acts on it.
 void Sight_NoteSessionType(GameTitle title, int type);
+// THE WRITTEN AIM, LED (the player key aim_lead_ticks; src/common/aim_lead_logic.h). A record written at one control
+// pass is first used by the next simulation tick, so a shot leaves along a hand sample about a tick old. The title's
+// simulation-thread write of the ON-FOOT record hands its setpoint through here just before it writes: `yaw` and
+// `pitch` come back carried ahead by the setpoint's own rate times aim_lead_ticks ticks of `tickUs` (0: unmeasured,
+// 60 Hz) -- or unchanged: the key off, an aim at rest, a jump (a snap turn, a recentre), a gap, a stop, or
+// `drawnFromRecord`. That last is the caller's word that something drawn this frame looks along the game's aim (the
+// zoom lens while it is not on the converged ray): nothing drawn may move with the lead, so the record is not led
+// then. `sampleKey` names the tracking frame the setpoint was solved from (0: unknown), so a pass that meets one
+// frame twice, or misses one, does not read as a change of speed. The caller still wraps the yaw and clamps the pitch.
+// The write is shared input, not a fire-time change: it is the same in solo and co-op, and coop_safe_shots does not
+// stand it down. One writer thread per title; nothing here allocates, logs or blocks. Sight_Report logs "AIM LEAD"
+// every 2 s: how many writes were led and by how much, and why the others were not.
+void Sight_LeadWrittenAim(GameTitle title, uint64_t sampleKey, uint32_t tickUs, bool drawnFromRecord, float& yaw,
+                          float& pitch);
+// The title's update did not end in an on-foot write (a seat, nothing written, disarmed): the next on-foot write
+// starts afresh. The same thread as Sight_LeadWrittenAim.
+void Sight_ForgetAimLead(GameTitle title);
+// The key is on (any thread): a caller need not gather `drawnFromRecord` otherwise.
+bool Sight_AimLeadOn();
 // The three settings that change a shot inside the fire routine, as they are IN EFFECT: each reads off while
 // fire-time changes are not allowed. Everything but the settings menu and the dev pad reads these, never the raw
 // fields, so the one predicate above governs every lane.
