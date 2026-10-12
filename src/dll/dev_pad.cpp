@@ -111,6 +111,7 @@ bool SetLive(const std::string& name, int value)
     else if (name == "seat_direct_drive") g_config.seat_direct_drive = value ? 1 : 0;
     else if (name == "seat_aim_through_barrel") g_config.seat_aim_through_barrel = value != 0;
     else if (name == "seat_fire_from_eye") g_config.seat_fire_from_eye = value != 0;
+    else if (name == "halo4_seat_converge") g_config.halo4_seat_converge = value ? 1 : 0;
     else if (name == "reach_vehicle_aim") g_config.reach_vehicle_aim = value < 0 ? 0 : (value > 2 ? 2 : value);
     else if (name == "shots_from_muzzle") g_config.shots_from_muzzle = value != 0;
     else if (name == "coop_safe_shots") g_config.coop_safe_shots = value != 0;
