@@ -292,6 +292,8 @@ void Halo4SightTraceTick(uint32_t unit,void* instance)
     }
     if(!onFoot) return;
     const bool hit=returned && std::isfinite(output.fraction) && output.fraction>=0.0f && output.fraction<=1.0f;
+    // The on-foot stance: a range a seat's trace left is withdrawn before this one is published.
+    Sight_SetStance(kTitle,0);
     Sight_PublishTrace(kTitle,generation,hit,hit ? kSightTraceSkipWu+output.fraction*length : 0.0f,
         static_cast<uint64_t>(after.QuadPart-before.QuadPart));
 #if HALOMCCVR_DEV_DIAGNOSTICS
