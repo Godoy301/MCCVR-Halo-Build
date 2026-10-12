@@ -1071,9 +1071,12 @@ void Halo4SeatConvergeReport()
              firePitch.maxAbs, fireMm.meanAbs, fireMm.maxAbs, fireAlong.mean, fireImplied.mean,
              static_cast<unsigned long long>(fireImplied.count), static_cast<unsigned long long>(tickSide),
              tickSideMs.mean, static_cast<unsigned long long>(tickSideMs.count));
-    LOG("SIGHT Halo 4 seat converge: %s; %s; %s; %s; seat flags 0x%X (%s); co-op safe shots %s",
+    // The last field is the rule as it stands now (sight_layer.h Sight_FireTimeChangesAllowed), not a switch's
+    // position: with the seat's aim the hand's, it decides which camera answers the sampled call.
+    LOG("SIGHT Halo 4 seat converge: %s; %s; %s; %s; seat flags 0x%X (%s); one-machine changes %s",
         pollText, sampleText, traceText, witnessText, flagsKnown ? flags : 0u,
-        halo4_seat_converge::RoleName(flagsKnown, flags), Sight_FireTimeChangesAllowed() ? "off" : "on");
+        halo4_seat_converge::RoleName(flagsKnown, flags),
+        Sight_FireTimeChangesAllowed() ? "allowed" : "not allowed");
 }
 
 // ---- install / remove ------------------------------------------------------------------------------------------
