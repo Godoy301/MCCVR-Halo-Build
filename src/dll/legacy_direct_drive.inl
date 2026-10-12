@@ -335,6 +335,7 @@ struct LegacyDriveState
     std::atomic<uint32_t> seq{0};
     std::atomic<float> yaw{0.0f}, pitch{0.0f}, aimYaw{0.0f}, aimPitch{0.0f};
     std::atomic<uint64_t> setMs{0};
+    std::atomic<uint64_t> setSerial{0};      // the tracking frame the setpoint was solved from (0: unknown)
     std::atomic<bool> setValid{false};
     std::atomic<bool> setSeated{false};      // the setpoint is a seat's (seat_direct_drive)
     std::atomic<bool> setGunSlaved{false};   // seated: the simulation aims the seat from its gun camera (flag bit 7)
@@ -996,6 +997,9 @@ void LegacyDrivePublish(GameTitle title, float yaw, float pitch, float aimYaw, f
     st.aimYaw.store(aimYaw, std::memory_order_relaxed);
     st.aimPitch.store(aimPitch, std::memory_order_relaxed);
     st.setMs.store(GetTickCount64(), std::memory_order_relaxed);
+    // The prepared tracking frame this poll's hand pose came from: the written aim's lead takes one sample per
+    // frame, however many polls publish it (Sight_LeadWrittenAim).
+    st.setSerial.store(VR_CurrentPreparedSerial(), std::memory_order_relaxed);
     st.setValid.store(valid && std::isfinite(yaw) && std::isfinite(pitch), std::memory_order_relaxed);
     st.setSeated.store(seated, std::memory_order_relaxed);
     st.setAxes.store(seated ? (axes.yaw ? kLegacyDriveAxisYaw : 0u) | (axes.pitch ? kLegacyDriveAxisPitch : 0u)
@@ -1210,6 +1214,7 @@ struct LegacyDrivePublication
 {
     float yaw = 0.0f, pitch = 0.0f, aimYaw = 0.0f, aimPitch = 0.0f;
     uint64_t setMs = 0;
+    uint64_t serial = 0;   // the tracking frame the setpoint was solved from (0: unknown)
     uint32_t axesBits = 0, seatKey = 0;
     bool valid = false, seated = false, pitchLatch = true, coherent = false, gunSlaved = false, gunCamera = false;
     // What a stick write was made under, for the put-back (aim_caller::Context).
@@ -1229,6 +1234,7 @@ LegacyDrivePublication LegacyDriveReadPublication(const LegacyDriveState& st)
         p.aimYaw = st.aimYaw.load(std::memory_order_relaxed);
         p.aimPitch = st.aimPitch.load(std::memory_order_relaxed);
         p.setMs = st.setMs.load(std::memory_order_relaxed);
+        p.serial = st.setSerial.load(std::memory_order_relaxed);
         p.valid = st.setValid.load(std::memory_order_relaxed);
         p.seated = st.setSeated.load(std::memory_order_relaxed);
         p.axesBits = st.setAxes.load(std::memory_order_relaxed);
@@ -1989,6 +1995,7 @@ extern "C" void LegacyPcApplyForUser(int slot, int user, uintptr_t ret, const ui
     bool seatKept = false;    // this update continued a seat stint (its checks survive)
     bool wroteAxis[2]{};      // which axes this update's seat write wrote
     bool latchRead[2]{};      // which axes the seat-limit latch read this update (their stops go to the reticle)
+    bool leadStepped = false; // this update's on-foot write went through the written aim's lead (its motion is kept)
     seat_frame_rt::Live seatFrame{};   // the seat's frame this update (World unless read)
     // What record this call leaves in effect, in world angles, for the seated gain learner's pairing (Halo 3).
     bool noteKnown = false;
@@ -2369,6 +2376,21 @@ extern "C" void LegacyPcApplyForUser(int slot, int user, uintptr_t ret, const ui
                     if (latch[1])
                         p = aim_write::clamp_pitch(held[1], 1.45f);
                 }
+                // THE WRITTEN AIM, LED (sight_layer.h Sight_LeadWrittenAim; the player key aim_lead_ticks). On foot
+                // in Halo 3 and ODST the setpoint -- after Halo 3's recomposition -- is carried ahead by its own
+                // rate, to the tick that will fire along it. Never a seat's: its checks, latch and stops read the
+                // record back. Halo 4, which shares this hook, is written as before. And not while the zoom lens
+                // looks along the game's aim instead of along the converged ray: the lens is drawn, and nothing
+                // drawn is led.
+                if (!seatWrite && slot != 2 && Sight_AimLeadOn())
+                {
+                    const bool lensOnRecord = VR_IsScopeActive() && !Sight_ScopeConvergedLive(site.title);
+                    Sight_LeadWrittenAim(site.title, pub.serial,
+                                         g_legacyTickPeriodUs[slot].load(std::memory_order_relaxed), lensOnRecord, y,
+                                         p);
+                    p = aim_write::clamp_pitch(p, 1.45f);
+                    leadStepped = true;
+                }
                 // All three titles pack the control yaw into the per-tick player action as 13 bits over
                 // [0, 2*pi], and keep their own record in [0, 2*pi). The branch-matched value above can lie up
                 // to half a turn past the seam, so it is wrapped into that range (aim_write::wrap_0_2pi).
@@ -2495,9 +2517,14 @@ extern "C" void LegacyPcApplyForUser(int slot, int user, uintptr_t ret, const ui
         seatKept = false;
         wroteAxis[0] = wroteAxis[1] = false;
         noteKnown = false;
+        leadStepped = false;
         st.faults.fetch_add(1, std::memory_order_relaxed);
         LEGACY_DRIVE_WITNESS(ds.outcome = seat_witness::DriveFault);
     }
+    // The written aim's lead keeps its motion only across consecutive on-foot writes: an update that led none -- a
+    // seat, nothing written, not armed, switched off, a fault -- ends it, and the next on-foot write starts afresh.
+    if (!leadStepped && slot != 2)
+        Sight_ForgetAimLead(site.title);
     // The seated gain learner's pairing (Halo 3): the record this stick call leaves for the ticks that follow it.
     if (slot == 0)
         LegacySeatUpstreamNoteCall(noteKey, noteKnown ? noteDir : nullptr);

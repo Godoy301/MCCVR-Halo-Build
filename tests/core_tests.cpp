@@ -15669,6 +15669,7 @@ int main()
         file << "haptic_intensity = 2.0\n";
         file << "headset_smoothing = 1.0\n";
         file << "aim_stabilization = -1.0\n";
+        file << "aim_lead_ticks = 9.0\n";
         file << "vehicle_cam_forward_m = -9.0\n";
         file << "vehicle_cam_up_m = 9.0\n";
         file << "vehicle_cam_right_m = 9.0\n";
@@ -15679,6 +15680,7 @@ int main()
     Check(g_config.headset_smoothing == 0.10f,
         "Headset smoothing is capped at the low-latency maximum");
     Check(g_config.aim_stabilization == 0.0f, "Aim stabilization is safely clamped");
+    Check(g_config.aim_lead_ticks == 3.0f, "The aim lead is held inside its range of 0 to 3 ticks");
     Check(g_config.vehicle_cam_forward_m == kVehicleCamForwardMin &&
               g_config.vehicle_cam_up_m == kVehicleCamUpMax &&
               g_config.vehicle_cam_right_m == kVehicleCamRightMax,
@@ -15885,6 +15887,7 @@ int main()
           "legacy config inherits the roomscale view recenter options (on; they act only with roomscale on)");
     Check(g_config.shots_from_muzzle, "legacy config inherits shots from the muzzle");
     Check(!g_config.coop_safe_shots, "legacy config leaves co-op safe shots off");
+    Check(g_config.aim_lead_ticks == 1.0f, "legacy config inherits the aim lead at its default of one tick");
     Check(g_config.physical_crouch && g_config.physical_crouch_depth_m == 0.22f,
           "legacy config inherits the physical crouch (on) at its default depth");
     Check(!g_config.experimental_hand_alignment, "legacy config preserves released hand positioning");
@@ -16022,6 +16025,7 @@ int main()
         file << "physical_running = 1\nphysical_running_speed = 0.6\nphysical_running_sensitivity = 2\n";
         file << "physical_crouch = 0\n";
         file << "coop_safe_shots = 1\n";
+        file << "aim_lead_ticks = 1.5\n";
         file << "experimental_body_ik = 1\nbody_ik_hide_lower = 1\n";
         file << "physical_melee_swing_speed = 0.10\n";
     }
@@ -16045,6 +16049,7 @@ int main()
         "physical running controls and separate avatar/lower-body toggles survive config save/load");
     Check(!g_config.physical_crouch, "a config that switched the physical crouch off keeps it off through save/load");
     Check(g_config.coop_safe_shots, "co-op safe shots survives config save/load");
+    Check(g_config.aim_lead_ticks == 1.5f, "the aim lead survives config save/load");
     Check(g_config.left_handed,
         "left-handed main-weapon mode survives a save/load round trip");
     Check(!g_config.experimental_hand_alignment,

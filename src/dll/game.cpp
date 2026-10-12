@@ -165,6 +165,9 @@ static std::atomic<bool>               g_reachDriveSeated{false};
 // Whether that seat's latch may read pitch limits (ReachSeatPitchLatches): false for a look-steered driver,
 // whose pitch the game levels as the vehicle moves (autolevel is not a limit). Part of the same seqlock.
 static std::atomic<bool>               g_reachDrivePitchLatch{true};
+// The prepared tracking frame the setpoint's hand pose came from (0: unknown): the written aim's lead takes one
+// sample per frame, however many polls publish it (Sight_LeadWrittenAim). Part of the same seqlock.
+static std::atomic<uint64_t>           g_reachDriveSerial{0};
 static std::atomic<unsigned>           g_reachApplyLimited{0};   // updates written held at a seat limit
 static std::atomic<unsigned>           g_reachApplyPitchFree{0}; // seated updates whose pitch was not latched
 // Seqlock over the setpoint (yaw, pitch, converged, seated, pitch latch, publish time): the sim-thread hook must never pair
@@ -52639,6 +52642,7 @@ void Game_ReachDirectDrivePublish(float gameYaw, float gamePitch, bool converged
     g_reachDriveConverged.store(converged, std::memory_order_relaxed);
     g_reachDriveSeated.store(seated, std::memory_order_relaxed);
     g_reachDrivePitchLatch.store(pitchLatch, std::memory_order_relaxed);
+    g_reachDriveSerial.store(VR_CurrentPreparedSerial(), std::memory_order_relaxed);
     g_reachDriveMs.store(GetTickCount64(), std::memory_order_relaxed);
     g_reachDriveSeq.fetch_add(1, std::memory_order_release);    // even: one coherent setpoint
     g_reachDriveValid.store(true, std::memory_order_release);
@@ -52969,6 +52973,7 @@ extern "C" void ReachPcApplyForUser(int user, const uint8_t* entryRsp)
     float yaw = 0.0f, pitch = 0.0f; unsigned long long age = 0;
     uintptr_t pc = 0;
     aim_caller::Action action = aim_caller::Action::StepAndWrite;
+    bool led = false;   // this update's on-foot write went through the written aim's lead (its motion is kept)
     __try
     {
         unsigned char* tls = nullptr;
@@ -53014,6 +53019,7 @@ extern "C" void ReachPcApplyForUser(int user, const uint8_t* entryRsp)
         // writes nothing and the game keeps the last angles.
         bool coherent = false, drivenConverged = false, drivenSeated = false, drivenPitchLatch = true;
         unsigned long long publishedMs = 0;
+        uint64_t drivenSerial = 0;
         for (int attempt = 0; attempt < 2 && !coherent; ++attempt)
         {
             const uint32_t before = g_reachDriveSeq.load(std::memory_order_acquire);
@@ -53024,6 +53030,7 @@ extern "C" void ReachPcApplyForUser(int user, const uint8_t* entryRsp)
             drivenConverged = g_reachDriveConverged.load(std::memory_order_relaxed);
             drivenSeated = g_reachDriveSeated.load(std::memory_order_relaxed);
             drivenPitchLatch = g_reachDrivePitchLatch.load(std::memory_order_relaxed);
+            drivenSerial = g_reachDriveSerial.load(std::memory_order_relaxed);
             publishedMs = g_reachDriveMs.load(std::memory_order_relaxed);
             coherent = g_reachDriveSeq.load(std::memory_order_acquire) == before;
         }
@@ -53041,6 +53048,7 @@ extern "C" void ReachPcApplyForUser(int user, const uint8_t* entryRsp)
                 s_putBack = aim_caller::PutBack{};
                 s_putBack.max_age = AimCallerClockFromMs(kAimCallerPutBackCapMs);
                 s_stickSeq = 0;
+                Sight_ForgetAimLead(GameTitle::HaloReach);
                 g_reachSeatFrameUnknownMs.store(0, std::memory_order_release);
 #if HALOMCCVR_DEV_DIAGNOSTICS
                 g_reachCensus.restart(g_reachCallerMap.dispatcher_mode());
@@ -53214,6 +53222,20 @@ extern "C" void ReachPcApplyForUser(int user, const uint8_t* entryRsp)
                 }
                 else
                     s_seatLimit.reset();
+                // THE WRITTEN AIM, LED (sight_layer.h Sight_LeadWrittenAim; the player key aim_lead_ticks): on foot
+                // the setpoint is carried ahead by its own rate, to the tick that will fire along it. Never a
+                // seat's (its latch and stops read the record back). Not while the zoom lens looks along the game's
+                // aim -- it does unless the converged ray is in effect (reach_scope.inl) -- because the lens is
+                // drawn, and nothing drawn is led.
+                if (frameOk && !drivenSeated && user == 0 && Sight_AimLeadOn())
+                {
+                    const bool lensOnRecord = VR_IsScopeActive() &&
+                        !(g_config.scope_converge && g_config.converged_aim && drivenConverged);
+                    Sight_LeadWrittenAim(GameTitle::HaloReach, drivenSerial,
+                                         Sight_TickPeriodUs(GameTitle::HaloReach, 16667), lensOnRecord, target[0],
+                                         target[1]);
+                    led = true;
+                }
                 // Keep yaw on the branch the game's value is on, then inside the game's own [0, 2*pi]: Reach
                 // packs the yaw into its player action as 13 bits over [0, 2*pi] and CLAMPS an out-of-range
                 // value (0x3C7033), so a branch-matched write just past the seam would arrive as 0 or 2*pi -- a
@@ -53286,7 +53308,13 @@ extern "C" void ReachPcApplyForUser(int user, const uint8_t* entryRsp)
     {
         if (user == 0)
             s_putBack.invalidate();
+        led = false;
     }
+    // The written aim's lead keeps its motion only across consecutive on-foot writes: an update that led none -- a
+    // seat, nothing written, not armed, the no-unit call, a fault -- ends it, and the next on-foot write starts
+    // afresh. An impulse call is not an update and leaves it alone.
+    if (user == 0 && action != aim_caller::Action::RestoreOnly && !led)
+        Sight_ForgetAimLead(GameTitle::HaloReach);
     // Counted here, logged by the cold worker (Game_ReachDirectDriveReport): no file I/O or log lock on
     // the simulation thread. Stick calls only: "calls" are the updates, one per rendered frame.
     if (user == 0 && action == aim_caller::Action::StepAndWrite)
