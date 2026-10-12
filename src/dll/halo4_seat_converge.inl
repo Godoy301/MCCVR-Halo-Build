@@ -248,8 +248,11 @@ Halo4SeatConvergeCall Halo4SeatConvergeBeforeView(uintptr_t caller, uint32_t uni
     // pass's call is answered by it, and so is the fire's. Inside a tick the seat override already stands down
     // by the title's in-tick byte, so for the fire this changes nothing while that byte is being written; the
     // lane does not rest on it, since the sample and the fire must be answered by the same camera. Only with the
-    // key on: a dev build measuring with it off leaves both calls as they were.
-    if (halo4_seat_converge::SampleWithGameCamera(Halo4SeatConvergeOn(), Sight_FireTimeChangesAllowed()))
+    // key on and the seat's aim the hand's (converged_aim, reach_vehicle_aim): a dev build measuring with the key
+    // off, and a seat nothing is solved for, leave both calls exactly as they were.
+    if (halo4_seat_converge::SampleWithGameCamera(
+            Halo4SeatConvergeOn() && Sight_AimEnabled() && g_config.reach_vehicle_aim > 0,
+            Sight_FireTimeChangesAllowed()))
     {
         NativeVehicleFirstPerson_SetStockOnThisThread(true);
         call.stock = true;
@@ -711,8 +714,9 @@ void Halo4SeatConvergeControlUpdate(const uint8_t* tls, const Halo4VehicleInputS
                                     uint32_t flags)
 {
     auto& f = g_h4SeatConverge;
-    if (!Halo4SeatConvergeMeasures() || !tls || !seat.seated || seat.parent == UINT32_MAX || seat.seat < 0 ||
-        TitleAdapter_GetActiveTitle() != GameTitle::Halo4 ||
+    // Without the aim camera's anchors nothing can be sampled and no seat solves: nothing is traced either.
+    if (!Halo4SeatConvergeMeasures() || !f.ready.load(std::memory_order_acquire) || !tls || !seat.seated ||
+        seat.parent == UINT32_MAX || seat.seat < 0 || TitleAdapter_GetActiveTitle() != GameTitle::Halo4 ||
         f.generation != TitleAdapter_GetGeneration(GameTitle::Halo4))
         return;
     const uint32_t seatKey = Halo4SeatConvergeKey(seat.parent, seat.seat);
@@ -771,7 +775,9 @@ bool Halo4SeatConvergePrepare(Halo4SeatConvergePoll& out, const float rayDir[3])
         halo4_seat_converge::StartHold hold{};
     };
     static State s_state;   // this thread only, like the servo's own statics
-    if (!Halo4SeatConvergeMeasures())
+    // The lane off, or its anchors unproven on this build: the seat is left exactly as with the key off (the
+    // install's one line says so).
+    if (!Halo4SeatConvergeMeasures() || !g_h4SeatConverge.ready.load(std::memory_order_acquire))
     {
         s_state = {};
         return false;
