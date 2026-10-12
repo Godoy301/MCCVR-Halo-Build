@@ -23,8 +23,8 @@
 //   the vehicle's root, the occupant and the seat's parent ignored, our own vehicle looked past (three passes;
 //   exhaustion is a MISS), a boarder kept. The object table is walked by reading it; the ray cast is the only
 //   native call. Every direct caller up from the seat's control update (the accumulator 0xA8B34) leads to the main
-//   loop's control pass and none to the tick; a control update that arrives inside a tick all the same is counted
-//   and not traced.
+//   loop's control pass and none to the tick; a control update that arrives inside a tick all the same, or while
+//   the tick cannot be read, is counted and not traced.
 //
 //   THE POLL (Halo4SeatConvergePrepare / EndPoll, Game_ComputeAimStick): the solve's start from the newest
 //   sample (halo4_seat_converge::SolveStart), held across a gap in the samples, and the first reason a poll does
@@ -36,6 +36,8 @@
 //
 // NOTHING HERE RUNS A NATIVE CALL, CHANGES A RETURN VALUE OR WRITES GAME MEMORY INSIDE A SIMULATION TICK. The
 // only outputs are the aim the direct drive writes into the control record and the stick -- shared input.
+// The lane tells a tick from the control pass by the title's own in-tick byte (NativeVehicleFirstPerson_
+// InSimulationTick). Where that byte cannot be read it neither samples nor traces, so no seat solves.
 
 // ---- small pieces ---------------------------------------------------------------------------------------------
 // A seqlock over a trivially copyable value, every word atomic: one writer, any reader; a torn read retries once,
@@ -170,11 +172,11 @@ struct Halo4SeatConvergeRuntime
     // THE SOLVED POINT (the aim path's thread writes, the fire witness reads).
     Halo4SeatBlob<Halo4SeatSolvedPoint> solved;
     // Counters since the last report.
-    std::atomic<uint64_t> samples{0}, samplesStock{0}, samplesOutsideTick{0}, samplesTickUnread{0},
-        samplesFollowing{0}, pushMilliWu{0}, samplerBusy{0}, tickSideCalls{0};
-    std::atomic<uint64_t> controlUpdates{0}, controlInTick{0}, traces{0}, traceHits{0}, traceMisses{0},
-        lookPasts{0}, exhausted{0}, noRay{0}, otherRay{0}, rootFallbacks{0}, costTicks{0}, costMaxTicks{0},
-        faults{0};
+    std::atomic<uint64_t> samples{0}, samplesStock{0}, samplesTickUnread{0}, samplesFollowing{0}, pushMilliWu{0},
+        samplerBusy{0}, tickSideCalls{0};
+    std::atomic<uint64_t> controlUpdates{0}, controlInTick{0}, controlTickUnread{0}, traces{0}, traceHits{0},
+        traceMisses{0}, lookPasts{0}, exhausted{0}, noRay{0}, otherRay{0}, rootFallbacks{0}, costTicks{0},
+        costMaxTicks{0}, faults{0};
     std::atomic<uint64_t> polls{0}, why[static_cast<size_t>(halo4_seat_converge::Why::Count)]{}, heldPolls{0},
         ageMilliMs{0}, ageSamples{0};
     std::atomic<uint32_t> ageMaxMilliMs{0}, eyeSpeedMilliMps{0}, lastFlags{0}, lastFlagsKnown{0};
@@ -273,9 +275,10 @@ bool Halo4SeatConvergeFinite3(const float* v)
 // View calls closer than this belong to one control pass (passes are a rendered frame apart: 4 ms at 240 fps).
 inline constexpr uint64_t kHalo4SeatSamePassUs = 2000;
 
-// A control-pass sample: published for the solve. The sampling thread.
+// A control-pass sample (a targeting call made outside a simulation tick): published for the solve. The sampling
+// thread.
 void Halo4SeatConvergeNoteSample(const Halo4SeatConvergeCall& call, uint32_t unit, const float* origin,
-                                 const float* dir, const float* camera, bool stock, int inTick)
+                                 const float* dir, const float* camera, bool stock)
 {
     auto& f = g_h4SeatConverge;
     if (f.sampling.test_and_set(std::memory_order_acquire))
@@ -321,7 +324,6 @@ void Halo4SeatConvergeNoteSample(const Halo4SeatConvergeCall& call, uint32_t uni
     f.samples.fetch_add(1, std::memory_order_relaxed);
     if (stock)
         f.samplesStock.fetch_add(1, std::memory_order_relaxed);
-    (inTick == 0 ? f.samplesOutsideTick : f.samplesTickUnread).fetch_add(1, std::memory_order_relaxed);
     const float push = halo4_seat_converge::PushAlongLine(r.camera);
     if (push > 0.0f)
     {
@@ -426,10 +428,14 @@ void Halo4SeatConvergeAfterView(Halo4SeatConvergeCall& call, uint32_t unit, cons
     const int inTick = NativeVehicleFirstPerson_InSimulationTick(GameTitle::Halo4);
     if (call.fire)
         Halo4SeatConvergeNoteFire(call, origin, dir, camera, inTick);
+    else if (inTick == 0)
+        Halo4SeatConvergeNoteSample(call, unit, origin, dir, camera, stock);
     else if (inTick == 1)
         Halo4SeatConvergeNoteTickSide(unit, origin, dir);
     else
-        Halo4SeatConvergeNoteSample(call, unit, origin, dir, camera, stock, inTick);
+        // The tick cannot be read, so which side of it this call was made on is not known: it is neither the
+        // sample (a tick-side call must never enter the sample's track) nor the tick-side witness.
+        g_h4SeatConverge.samplesTickUnread.fetch_add(1, std::memory_order_relaxed);
 }
 
 // ---- the seated trace (the stick call) ------------------------------------------------------------------------
@@ -719,11 +725,13 @@ void Halo4SeatConvergeControlUpdate(const uint8_t* tls, const Halo4VehicleInputS
     f.controlUpdates.fetch_add(1, std::memory_order_relaxed);
     f.lastFlags.store(record.flags, std::memory_order_relaxed);
     f.lastFlagsKnown.store(record.flagsKnown, std::memory_order_relaxed);
-    // The trace is the lane's one native call, and it is never made inside a simulation tick. The control update
-    // is not expected there at all, so this only counts if the game ever reaches it another way.
-    if (NativeVehicleFirstPerson_InSimulationTick(GameTitle::Halo4) == 1)
+    // The trace is the lane's one native call, and it is made only where the tick is KNOWN not to be running.
+    // The control update is not expected inside a tick at all, so the first count only moves if the game ever
+    // reaches it another way; the second moves where the title's in-tick byte cannot be read.
+    const int inTick = NativeVehicleFirstPerson_InSimulationTick(GameTitle::Halo4);
+    if (inTick != 0)
     {
-        f.controlInTick.fetch_add(1, std::memory_order_relaxed);
+        (inTick == 1 ? f.controlInTick : f.controlTickUnread).fetch_add(1, std::memory_order_relaxed);
         return;
     }
     Halo4SeatConvergeTrace(tls, seat, seatKey, Halo4SeatConvergeOn());
@@ -941,11 +949,11 @@ void Halo4SeatConvergeReport()
     const uint64_t samples = f.samples.exchange(0, std::memory_order_relaxed);
     const uint64_t updates = f.controlUpdates.exchange(0, std::memory_order_relaxed);
     const uint64_t updatesInTick = f.controlInTick.exchange(0, std::memory_order_relaxed);
+    const uint64_t updatesTickUnread = f.controlTickUnread.exchange(0, std::memory_order_relaxed);
     uint64_t why[static_cast<size_t>(Why::Count)]{};
     for (size_t i = 0; i < static_cast<size_t>(Why::Count); ++i)
         why[i] = f.why[i].exchange(0, std::memory_order_relaxed);
     const uint64_t samplesStock = f.samplesStock.exchange(0, std::memory_order_relaxed);
-    const uint64_t outsideTick = f.samplesOutsideTick.exchange(0, std::memory_order_relaxed);
     const uint64_t tickUnread = f.samplesTickUnread.exchange(0, std::memory_order_relaxed);
     const uint64_t following = f.samplesFollowing.exchange(0, std::memory_order_relaxed);
     const uint64_t pushMilli = f.pushMilliWu.exchange(0, std::memory_order_relaxed);
@@ -975,14 +983,14 @@ void Halo4SeatConvergeReport()
     const auto fireYaw = f.fireYaw.Take(), firePitch = f.firePitch.Take(), fireMm = f.fireMm.Take();
     const auto fireAlong = f.fireAlongMm.Take(), fireImplied = f.fireImpliedMs.Take();
     const auto tickSideMs = f.tickSideMs.Take();
-    if (!key || (!polls && !samples && !updates))
+    if (!key || (!polls && !samples && !updates && !tickUnread))
         return;
     LARGE_INTEGER frequency{};
     QueryPerformanceFrequency(&frequency);
     const double usPerTick = frequency.QuadPart ? 1.0e6 / double(frequency.QuadPart) : 0.0;
     const uint32_t flags = f.lastFlags.load(std::memory_order_relaxed);
     const bool flagsKnown = f.lastFlagsKnown.load(std::memory_order_relaxed) != 0;
-    char pollText[640], sampleText[520], traceText[480], witnessText[760];
+    char pollText[640], sampleText[560], traceText[520], witnessText[760];
     snprintf(pollText, sizeof(pollText),
              "%llu seated polls, %llu SOLVED; not solved: %s %llu, %s %llu, %s %llu, %s %llu, %s %llu, %s %llu, "
              "%s %llu, %s %llu, %s %llu, %s %llu, %s %llu",
@@ -1004,23 +1012,25 @@ void Halo4SeatConvergeReport()
              halo4_seat_converge::WhyName(Why::NoTrace), static_cast<unsigned long long>(why[static_cast<size_t>(Why::NoTrace)]),
              halo4_seat_converge::WhyName(Why::NoRange), static_cast<unsigned long long>(why[static_cast<size_t>(Why::NoRange)]));
     snprintf(sampleText, sizeof(sampleText),
-             "aim-camera samples %llu (the game's own camera %llu, the seat view's %llu; outside a tick %llu, tick "
-             "unread %llu; following camera %llu, mean push %.2f m; sampler busy %llu), age at the poll avg %.1f / "
+             "aim-camera samples %llu, all outside a tick (the game's own camera %llu, the seat view's %llu; "
+             "following camera %llu, mean push %.2f m; sampler busy %llu; calls not sampled because the tick could "
+             "not be read %llu), age at the poll avg %.1f / "
              "max %.1f ms, start held across a sample gap in %llu polls, eye speed %.1f m/s",
              static_cast<unsigned long long>(samples), static_cast<unsigned long long>(samplesStock),
              static_cast<unsigned long long>(samples - (samplesStock < samples ? samplesStock : samples)),
-             static_cast<unsigned long long>(outsideTick), static_cast<unsigned long long>(tickUnread),
              static_cast<unsigned long long>(following),
              following ? double(pushMilli) / 1000.0 / double(following) * double(shot_lag::kMetresPerWu) : 0.0,
-             static_cast<unsigned long long>(busy), ageCount ? double(ageSum) / 1000.0 / double(ageCount) : 0.0,
+             static_cast<unsigned long long>(busy), static_cast<unsigned long long>(tickUnread),
+             ageCount ? double(ageSum) / 1000.0 / double(ageCount) : 0.0,
              double(ageMax) / 1000.0, static_cast<unsigned long long>(held),
              double(f.eyeSpeedMilliMps.load(std::memory_order_relaxed)) / 1000.0);
     snprintf(traceText, sizeof(traceText),
-             "control updates %llu (inside a tick, not traced: %llu), seated traces %llu (%llu hits, %llu misses, "
-             "%llu of them after three passes on our own vehicle; looked past it %llu times; no ray %llu, a ray "
-             "that is not this seat's %llu, root fallbacks %llu, faults %llu; cost avg %.1f / max %.1f us)",
+             "control updates %llu (not traced: %llu inside a tick, %llu with the tick unread), seated traces %llu "
+             "(%llu hits, %llu misses, %llu of them after three passes on our own vehicle; looked past it %llu "
+             "times; no ray %llu, a ray that is not this seat's %llu, root fallbacks %llu, faults %llu; cost avg "
+             "%.1f / max %.1f us)",
              static_cast<unsigned long long>(updates), static_cast<unsigned long long>(updatesInTick),
-             static_cast<unsigned long long>(traces),
+             static_cast<unsigned long long>(updatesTickUnread), static_cast<unsigned long long>(traces),
              static_cast<unsigned long long>(hits), static_cast<unsigned long long>(misses),
              static_cast<unsigned long long>(exhausted), static_cast<unsigned long long>(lookPasts),
              static_cast<unsigned long long>(noRay), static_cast<unsigned long long>(otherRay),
