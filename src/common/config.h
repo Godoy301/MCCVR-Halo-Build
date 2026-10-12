@@ -328,6 +328,39 @@ inline constexpr int kConfigReachShippedSeatTrimCount =
     sizeof(kConfigReachShippedSeatTrims) /
     sizeof(kConfigReachShippedSeatTrims[0]);
 
+// Seats named by the vehicle's stable model identity (ConfigVehicleModelTrim): the games whose seats have no
+// named bank above. A row is that seat's built-in camera offset from its occupant's head, in metres, all three
+// axes set. The seat's sliders start from it and its reset returns to it.
+//
+// Halo 4's Mantis. The pilot's head is inside a closed cockpit: a camera there sees the cockpit's walls and the
+// dashboard, and nothing of the world (the game's own camera for the seat is third person). The cockpit roof is
+// cleared at about 0.4 m above the head. The row puts the eye above the roof and a little forward, with the
+// roof and both weapon arms below it. Seen headless on one multiplayer map; not seen in a headset.
+struct ConfigShippedVehicleModelTrim
+{
+    GameTitle title;
+    uint64_t identity;
+    int16_t seat;
+    float forward;
+    float up;
+    float right;
+    const char* name;
+};
+
+inline constexpr ConfigShippedVehicleModelTrim kConfigShippedVehicleModelTrims[] = {
+    // game,            model identity,        seat, forward, up,    right, name
+    {GameTitle::Halo4, 0x000000551b05181eull, 0,    0.30f,   0.80f, 0.00f, "Mantis"},
+};
+
+inline const ConfigShippedVehicleModelTrim* ConfigShippedVehicleModelTrimFor(
+    GameTitle title, uint64_t identity, int seat)
+{
+    for (const ConfigShippedVehicleModelTrim& trim : kConfigShippedVehicleModelTrims)
+        if (trim.title == title && trim.identity == identity && trim.seat == seat)
+            return &trim;
+    return nullptr;
+}
+
 // C-TITLE-1: the weapon/hand/HUD/crosshair tunables every title keeps its
 // own copy of - one struct so a profile is copied whole. Defaults mirror
 // the shared fields' defaults so an untouched profile behaves identically.
@@ -1844,6 +1877,16 @@ inline int ConfigEnsureVehicleModelTrim(Config& c,GameTitle title,uint64_t ident
     for(unsigned i=0;i<kVehicleModelTrimCapacity;++i)if(!c.vehicle_model_trims[i].identity)
     {c.vehicle_model_trims[i]={title,identity,static_cast<int16_t>(seat)};return static_cast<int>(i);}
     return -1;
+}
+// Hands a seat back: to its built-in offset where one ships, and to its game's base otherwise.
+inline void ConfigResetVehicleModelTrim(Config& c,int slot)
+{
+    if(slot<0||slot>=static_cast<int>(kVehicleModelTrimCapacity))return;
+    ConfigVehicleModelTrim& trim=c.vehicle_model_trims[slot];
+    const ConfigShippedVehicleModelTrim* shipped=ConfigShippedVehicleModelTrimFor(trim.title,trim.identity,trim.seat);
+    if(!shipped){trim={};return;}
+    trim.value[0]=shipped->forward;trim.value[1]=shipped->up;trim.value[2]=shipped->right;
+    for(bool& axis:trim.set)axis=true;
 }
 inline float ConfigVehicleModelCam(const Config& c,GameTitle title,uint64_t identity,int seat,unsigned axis)
 {

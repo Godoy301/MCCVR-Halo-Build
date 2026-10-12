@@ -92,6 +92,12 @@ Config::Config()
         reach_vehicle_cam_up_set[slot] = true;
         reach_vehicle_cam_right_set[slot] = true;
     }
+    for (const ConfigShippedVehicleModelTrim& trim : kConfigShippedVehicleModelTrims)
+    {
+        const int slot = ConfigEnsureVehicleModelTrim(*this, trim.title, trim.identity, trim.seat);
+        if (slot >= 0)
+            ConfigResetVehicleModelTrim(*this, slot);
+    }
 }
 static std::wstring g_path;
 
@@ -2690,6 +2696,8 @@ void ConfigSave()
                 vehicleAxes[axis],g_config.vehicle_cam_game[title][axis]);
     fprintf(f,"\n");
     fprintf(f,"# Identified vehicle/seat overrides; stable authored model identity, never object handles.\n");
+    fprintf(f,"# Built in: Halo 4's Mantis pilot (halo4_000000551b05181e_seat0) sits above its closed cockpit,\n");
+    fprintf(f,"# forward 0.30, up 0.80. At 0 the eye is inside the cockpit and sees only its walls.\n");
     for(const auto& trim:g_config.vehicle_model_trims)
     {
         const int title=weapon_interaction::TitleIndex(trim.title);

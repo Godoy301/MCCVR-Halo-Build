@@ -1045,6 +1045,8 @@ namespace
         const bool modelTarget=!perSeat&&!editVehicleBase&&NativeVehicleFirstPerson_TrimTarget(
             editVehicleTitle,vehicleIdentity,modelSeat);
         const int modelTrim=ConfigVehicleModelTrimSlot(g_config,editVehicleTitle,vehicleIdentity,modelSeat);
+        const ConfigShippedVehicleModelTrim* shippedModelTrim=modelTarget?
+            ConfigShippedVehicleModelTrimFor(editVehicleTitle,vehicleIdentity,modelSeat):nullptr;
         bool modelCapacity=modelTrim>=0;
         for(const auto& trim:g_config.vehicle_model_trims)modelCapacity|=!trim.identity;
         auto setModelAxis=[&](unsigned axis,float value) {
@@ -1078,6 +1080,7 @@ namespace
                         Game_VehicleSeatTrimName(seatSlot, s_seatBank));
         else if(modelTarget) {
             const char* vehicleName=editVehicleTitle==GameTitle::Halo2?halo2_vehicle_identity::Name(vehicleIdentity):nullptr;
+            if(!vehicleName&&shippedModelTrim)vehicleName=shippedModelTrim->name;
             ImGui::Text("Adjusting: %s, seat %d (%s)",vehicleName?vehicleName:"last identified vehicle",modelSeat,
                 weapon_interaction::kTitleNames[vehicleGame]);
             ImGui::TextDisabled("Last identified seat; retained while F1 pauses the game.");
@@ -1150,8 +1153,9 @@ namespace
             changed = true;
         }
         ImGui::EndDisabled();
-        if(modelTarget&&modelTrim>=0&&ImGui::SmallButton("Use this game's base for this seat##modeltrim"))
-        {g_config.vehicle_model_trims[modelTrim]={};changed=true;}
+        if(modelTarget&&modelTrim>=0&&ImGui::SmallButton(shippedModelTrim?
+            "Back to this seat's built-in position##modeltrim":"Use this game's base for this seat##modeltrim"))
+        {ConfigResetVehicleModelTrim(g_config,modelTrim);changed=true;}
         if (perSeat && (trimForwardSet[seatSlot] || trimUpSet[seatSlot] ||
                         trimRightSet[seatSlot]))
         {
