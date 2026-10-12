@@ -2332,7 +2332,8 @@ void ConfigSave()
                "# separate dual-wield aim, no seat redirect), so every player's game fires it the same way.\n"
                "# Your hand still aims; shots leave the eye. True physical melee presses the game's melee\n"
                "# instead of striking on contact (Halo CE: it does nothing), in Halo 2 your hand aims only with\n"
-               "# direct drive on, and Halo CE seats keep the game's own camera. (default %d)\n"
+               "# direct drive on, and seats in Halo CE and ODST and passenger seats in Reach keep the game's\n"
+               "# own camera. (default %d)\n"
                "coop_safe_shots = %d\n\n", d.coop_safe_shots ? 1 : 0, g_config.coop_safe_shots ? 1 : 0);
     fprintf(f, "# Aim lead, on foot in Halo 3, ODST and Reach: the aim written for each shot is carried ahead by\n"
                "# this many simulation ticks of the aim's own motion, so a shot fired while you turn lands where\n"

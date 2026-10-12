@@ -2390,7 +2390,8 @@ namespace
                             "fires it the same way and a campaign co-op or Spartan Ops session stays together. Your\n"
                             "hand still aims; shots leave your eye. In Halo 2 your hand aims only with Direct drive\n"
                             "on, True physical melee presses the game's melee instead of striking on contact (Halo\n"
-                            "CE: it does nothing), and Halo CE seats keep the game's own camera.\n"
+                            "CE: it does nothing), and seats in Halo CE and ODST and passenger seats in Reach keep\n"
+                            "the game's own camera.\n"
                             "OFF is for playing alone: shots can leave the visible muzzle and are re-aimed as they\n"
                             "are fired. With it off, your first shot in a co-op session ends it for everyone. Live.");
         ImGui::Spacing();

@@ -30914,7 +30914,10 @@ namespace
         // camera bit buys nothing and the 7235d8d headset run reported it
         // breaking every turret. Those seats keep exactly the behavior the user
         // called "a better state" one build earlier.
-        if (!frame.active || !g_config.vehicle_first_person ||
+        // Co-op safe: the seat's flags are data the simulation reads too, so clearing the camera bit changes the
+        // game on this machine only. While one-machine changes are not allowed the passenger seat is left as the
+        // game built it (and keeps the game's own camera).
+        if (!frame.active || !g_config.vehicle_first_person || !Sight_FireTimeChangesAllowed() ||
             (frame.seatFlags & kReachSeatAllowsWeaponsBit) == 0 ||
             g_reachCamera.teardownRequested.load(std::memory_order_acquire) ||
             g_reachCamera.vehicleCameraBindingState.load(

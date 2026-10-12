@@ -196,8 +196,10 @@ struct SightCameraSample
 // False while coop_safe_shots is on: every site that would change the simulation on this machine only leaves it
 // as the game built it -- a shot changed inside the fire routine (the muzzle shot, a re-aim through the intent
 // point, Reach's hand ray, seat redirect and passenger origin, ODST's passenger origin, Halo 2's seated
-// fire-from-eye), in Halo 2 the unit's aim vectors and the aim-assist calculation, and contact melee's own
-// damage. The aim written into the control record and a pressed binding are shared input and are not
+// fire-from-eye), in Halo 2 the unit's aim vectors and the aim-assist calculation, contact melee's own
+// damage, the first-person seat camera's answers to the simulation (native_vehicle_first_person.h) and the
+// edit of a seat's loaded flags that ODST's and Reach's first-person seats are made with.
+// The aim written into the control record and a pressed binding are shared input and are not
 // affected. A site that stands a local shot down for this reason
 // counts it (Sight_Report logs "CO-OP SAFE SHOTS" every 2 s).
 bool Sight_FireTimeChangesAllowed();
