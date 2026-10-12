@@ -352,6 +352,9 @@ bool Game_GetClampedAimDirection(float outDir[3], float* outRangeM = nullptr,
 // for (VR metres, `hit` = a traced surface). The XInput hook, every poll: whether the RT fed to the game is pressed.
 void Game_DevNoteTracedReticle(uint64_t serial, const float center[3], const float dir[3], float rangeM, bool hit);
 void Game_DevNoteFireTrigger(bool pressed);
+// A gun-slaved seat's pitch check (Halo 3 / ODST): false lets the stick servo run while the check collects its
+// evidence, as before the hold existed. For comparing the two in one sitting; a player build always holds.
+void Game_DevSetSeatPitchCheckHold(bool hold);
 #endif
 // THE SEAT LIMIT RETICLE (all builds; src/common/seat_limit_reticle_logic.h):
 // true while this input poll clamped the seated reticle at a natural angular

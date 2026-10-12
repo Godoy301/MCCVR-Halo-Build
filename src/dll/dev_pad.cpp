@@ -16,6 +16,7 @@
 #include "../common/roomscale_recenter_logic.h"
 #include "../common/log.h"
 #include "vr.h"
+#include "game.h"
 #include "native_vehicle_first_person.h"
 #include "title_adapter.h"
 
@@ -118,6 +119,9 @@ bool SetLive(const std::string& name, int value)
         g_config.aim_lead_ticks = aim_lead::ClampTicks(float(value) * 0.01f, Config{}.aim_lead_ticks);
     else if (name == "gun_barrel_aim") g_config.gun_barrel_aim = value != 0;
     else if (name == "vehicle_cam_smoothing") g_config.vehicle_cam_smoothing = value != 0;
+    // A gun-slaved seat's pitch check: 1 the pitch stick is held while it collects (what a player build does),
+    // 0 the stick servo runs through it.
+    else if (name == "seat_pitch_check_hold") Game_DevSetSeatPitchCheckHold(value != 0);
     // The first-person ladder's fault bits (config.h): the ladders read the value at every evaluation, so
     // bits 0-2 take effect on the next camera frame and one launch can walk 0 -> 1 -> 3 -> 5 -> 0. Bit 3
     // needs a level the camera rung has not been proven in (the value agreement never withdraws a proven

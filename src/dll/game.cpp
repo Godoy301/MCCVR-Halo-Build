@@ -54231,6 +54231,13 @@ void Game_DevNoteFireTrigger(bool pressed)
     if (TitleAdapter_GetActiveTitle() == GameTitle::Halo3)
         Halo3ImpactNoteTrigger(pressed);
 }
+static std::atomic<bool> g_devSeatPitchCheckHoldOff{false};
+void Game_DevSetSeatPitchCheckHold(bool hold)
+{
+    g_devSeatPitchCheckHoldOff.store(!hold, std::memory_order_relaxed);
+    LOG("DRIVE gun-slaved seats (dev): the pitch stick is %s while a seat's pitch check collects its evidence",
+        hold ? "held still" : "NOT held (the stick servo runs through the check)");
+}
 #endif
 
 // THE FREE CAMERA WITH NO PLAYER UNIT (src/common/aim_no_unit_logic.h): the input thread's half. The decision
@@ -55719,6 +55726,10 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
                                                           occupantPitch, agreeing, &pitchCheck);
         holdPitchForCheck = s_pitchCheckHold.step(gunSlavedKey, occupantFresh, (pitchCheck & 0x80000000u) != 0,
                                                   pitchCheck & 0x7FFFFFFFu, GetTickCount64());
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        if (g_devSeatPitchCheckHoldOff.load(std::memory_order_relaxed))
+            holdPitchForCheck = false;
+#endif
         if (gun_slaved::ServoFeedback(true, occupantFresh, agreeing[0]) == gun_slaved::Feedback::Occupant)
             servoAimYaw = occupantYaw;
         if (gun_slaved::ServoFeedback(true, occupantFresh, agreeing[1]) == gun_slaved::Feedback::Occupant)
