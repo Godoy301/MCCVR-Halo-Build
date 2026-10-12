@@ -1178,6 +1178,20 @@ bool LegacyDriveSeatStops(GameTitle title, seat_limit::Stops& out, uint32_t& sea
 
 namespace
 {
+// The session's simulation type, for the log (Sight_NoteSessionType): the game globals the contact-melee lanes'
+// matched consumers read -- engine TLS +0x48 in Halo 3, +0x40 in ODST -- byte +0x11, with bytes +0 / +1 the
+// game-in-progress flags. Halo 4 answers through a function of its own and is not read here.
+// ADDR-HYGIENE: structural (the same offsets halo3_contact_melee_runtime.inl / odst_contact_melee_runtime.inl
+// read once their consumer pattern matched); a wrong value mislabels one log line and gates nothing.
+void LegacyDriveNoteSession(GameTitle title, const uint8_t* tls)
+{
+    const uint32_t slot = title == GameTitle::Halo3 ? 0x48u : title == GameTitle::Halo3ODST ? 0x40u : 0u;
+    if (!slot || !tls)
+        return;
+    const auto* globals = *reinterpret_cast<const uint8_t* const*>(tls + slot);
+    Sight_NoteSessionType(title, globals && (globals[0] || globals[1]) ? globals[0x11] : -1);
+}
+
 // This (sim) thread's TLS -> the record the native update just wrote. 0 when any link is missing.
 uintptr_t LegacyDriveRecord(const LegacyDriveState& st, const LegacyDriveSite& site, int user, const uint8_t** tlsOut)
 {
@@ -1998,6 +2012,8 @@ extern "C" void LegacyPcApplyForUser(int slot, int user, uintptr_t ret, const ui
                 break;
             const uint8_t* tls = nullptr;
             const uintptr_t pc = LegacyDriveRecord(st, site, user, &tls);
+            if (user == 0)
+                LegacyDriveNoteSession(site.title, tls);
             LEGACY_DRIVE_WITNESS(ds.outcome = seat_witness::DriveNoRecord);
             if (!pc)
                 break;

@@ -199,6 +199,16 @@ struct SightCameraSample
 // down for this reason counts it (Sight_Report logs "CO-OP SAFE SHOTS" every 2 s).
 bool Sight_FireTimeChangesAllowed();
 void Sight_NoteFireTimeStoodDown(GameTitle title);
+// The game's own simulation type for the session in progress, as the title's simulation thread reads it from the
+// game globals (-1: no game in progress). Sight_Report logs it whenever it changes ("SESSION <game>: ..."), so a
+// solo level, a campaign co-op session and a custom game can be told apart in a log. Nothing acts on it.
+void Sight_NoteSessionType(GameTitle title, int type);
+// The three settings that change a shot inside the fire routine, as they are IN EFFECT: each reads off while
+// fire-time changes are not allowed. Everything but the settings menu and the dev pad reads these, never the raw
+// fields, so the one predicate above governs every lane.
+bool Sight_ShotsFromMuzzle();
+bool Sight_GunBarrelAim();
+bool Sight_IndependentDualAim();
 bool Sight_MuzzleShotsConverge();
 bool Sight_AimMuzzleShot(GameTitle title, uint32_t generation, const float before[3], const float position[3],
                          float direction[3], float up[3]);

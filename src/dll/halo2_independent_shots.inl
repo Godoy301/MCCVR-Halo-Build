@@ -17,7 +17,7 @@ thread_local Halo2IndependentShotScope g_halo2IndependentShot;
 
 void RecordHalo2IndependentQuery()
 {
-    if(g_config.independent_dual_aim || g_config.gun_barrel_aim || g_config.shots_from_muzzle)
+    if(Sight_IndependentDualAim() || Sight_GunBarrelAim() || Sight_ShotsFromMuzzle())
         g_halo2IndependentQueryContext={Halo2OwnedUnit(),g_generation.load(),GetTickCount64()};
 }
 
@@ -117,7 +117,7 @@ bool AcquireHalo2IndependentShot(uint32_t weapon,NativeShotTargetLease<0x24>& le
 {
     auto& feature=g_halo2Dual;
     const auto query=reinterpret_cast<Halo2AimAssistCalculateFn>(g_aimAssistOriginal.load());
-    if(!feature.enabled.load() || feature.faulted.load() || (!muzzle&&!g_config.independent_dual_aim) ||
+    if(!feature.enabled.load() || feature.faulted.load() || (!muzzle&&!Sight_IndependentDualAim()) ||
         !Game_Halo2ControllerAimActive() || !Halo2Observer6Dof_FinalPaletteArmed() ||
         !Halo2Observer6Dof_DirectWeaponAimArmed() || !query ||
         !g_aimAssistViewDirectionOriginal.load() || feature.generation!=g_generation.load())return false;

@@ -2014,7 +2014,7 @@ namespace
 
     uint64_t Halo2ObserveReloadModel(uint32_t tag,uint32_t nodes,bool observePrimary=true) noexcept
     {
-        if((!g_config.manual_reload&&!g_config.per_gun_alignment&&!g_config.gun_barrel_aim&&!g_config.shots_from_muzzle)||
+        if((!g_config.manual_reload&&!g_config.per_gun_alignment&&!Sight_GunBarrelAim()&&!Sight_ShotsFromMuzzle())||
             tag==UINT32_MAX||!nodes) return 0;
         const auto get=reinterpret_cast<Halo2GraphDefinitionGetFn>(
             g_graphDefinitionGet.load(std::memory_order_acquire));
@@ -2051,7 +2051,7 @@ namespace
         if(context.valid&&handsMatrices&&gunMatrices)
         {
             const uint64_t identity=Halo2ObserveReloadModel(gunRenderModelTag,context.gunCount);
-            if(g_config.gun_barrel_aim||g_config.shots_from_muzzle)
+            if(Sight_GunBarrelAim()||Sight_ShotsFromMuzzle())
             {
                 Halo2PublishMuzzlePalette(context,0,identity,gunMatrices,context.gunCount);
                 const uint64_t secondaryIdentity=secondaryMatrices
@@ -6453,7 +6453,7 @@ namespace
             g_halo2Dual.secondaryRays.exchange(0), g_halo2Dual.refused.exchange(0));
         LOG("Halo 2 dual native targeting: queries=%llu restoreRefused=%llu option=%d",
             g_halo2Dual.nativeQueries.exchange(0),g_halo2Dual.targetRestoresRefused.exchange(0),
-            g_config.independent_dual_aim?1:0);
+            Sight_IndependentDualAim()?1:0);
         {
             const uint64_t seatApplied=g_halo2SeatFireApplied.exchange(0),seatThrough=g_halo2SeatFireThrough.exchange(0),
                 seatSkipped=g_halo2SeatFireSkipped.exchange(0),seatFromEye=g_halo2SeatFireFromEye.exchange(0);
@@ -6465,7 +6465,7 @@ namespace
         }
         LOG("Halo 2 barrel trajectory: enabled=%d fault=%d applied=%llu refused=%llu option=%d",
             g_halo2Muzzle.enabled.load()?1:0,g_halo2Muzzle.faulted.load()?1:0,
-            g_halo2Muzzle.applied.exchange(0),g_halo2Muzzle.refused.exchange(0),g_config.gun_barrel_aim?1:0);
+            g_halo2Muzzle.applied.exchange(0),g_halo2Muzzle.refused.exchange(0),Sight_GunBarrelAim()?1:0);
         const uint64_t applied = g_appliedPoses.load(std::memory_order_relaxed);
         // Report even when nothing is being applied. A silent zero is exactly
         // the failure this telemetry exists to expose: it distinguishes "the

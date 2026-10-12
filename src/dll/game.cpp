@@ -13332,6 +13332,13 @@ namespace
         const uintptr_t firingReturn = g_odstFiringOriginReturn;
         if (!firingReturn || caller != firingReturn)
             return;                       // not the shot line; leave it alone
+        if (!Sight_FireTimeChangesAllowed())
+        {
+            // Co-op safe shots: the origin stays the game's own, reported as stock.
+            if (telemetryAccepting)
+                PublishOdstShotDiagnostic(unitIndex, out, false);
+            return;
+        }
         if (g_odstCinematicLocked.load(std::memory_order_relaxed))
         {
             // Authored camera owns the view; the engine's own shot origin is
@@ -52972,6 +52979,14 @@ extern "C" void ReachPcApplyForUser(int user, const uint8_t* entryRsp)
             tls = (slots && index < 0x200) ? reinterpret_cast<unsigned char*>(slots[index]) : nullptr;
             const uintptr_t globals = tls ? *reinterpret_cast<const uintptr_t*>(tls + kReachPlayerControlTlsOffset) : 0;
             pc = globals ? globals + static_cast<uintptr_t>(user) * kReachPlayerControlStride : 0;
+            // The session's simulation type, for the log: the game globals ReachContactPredictionMode reads
+            // (engine TLS +0x48), byte +0x11, with bytes +0 / +1 the game-in-progress flags.
+            if (tls)
+            {
+                const auto* session = *reinterpret_cast<const uint8_t* const*>(tls + 0x48);
+                Sight_NoteSessionType(GameTitle::HaloReach,
+                                      session && (session[0] || session[1]) ? session[0x11] : -1);
+            }
         }
         armed = g_reachPcArmed.load(std::memory_order_acquire) ? 1 : 0;   // flag first, then the address
         const uintptr_t expected = g_reachPcExpected.load(std::memory_order_acquire);

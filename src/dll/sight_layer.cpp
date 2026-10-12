@@ -61,6 +61,8 @@ struct ConvergedStamp
     std::atomic<uint32_t> writtenGeneration{0};
 };
 
+constexpr int kSessionUnread = -2;   // no simulation thread has reported a session type yet
+
 struct Stats
 {
     std::atomic<uint64_t> rays{0}, traces{0}, hits{0}, misses{0}, faults{0}, converged{0}, declined{0}, written{0};
@@ -71,6 +73,13 @@ struct Stats
     std::atomic<uint64_t> muzzleAimed{0}, muzzleUnconverged{0}, muzzleHeld{0};
     // Local shots a fire-time change was stood down for (coop_safe_shots).
     std::atomic<uint64_t> fireTimeStoodDown{0};
+    // The game's simulation type (Sight_NoteSessionType; kSessionUnread until a simulation thread reports), and
+    // the value the report last logged (the reporting thread's own).
+    std::atomic<int> sessionType{kSessionUnread};
+    int sessionTypeLogged = kSessionUnread;
+    // Of those, the re-aims that would have applied, and by how much (milli-degrees): what the stand-down costs.
+    std::atomic<uint64_t> fireTimeBends{0}, fireTimeBendSumMilliDeg{0};
+    std::atomic<uint32_t> fireTimeBendMaxMilliDeg{0};
     std::atomic<uint64_t> muzzleRefused[static_cast<size_t>(aim_solve::MuzzleShot::Count)]{};
 };
 
@@ -461,6 +470,11 @@ bool Sight_ConvergedDirection(GameTitle title, uint32_t generation, const float 
     return true;
 }
 
+void Sight_NoteSessionType(GameTitle title, int type)
+{
+    g_stats[Slot(title)].sessionType.store(type, std::memory_order_relaxed);
+}
+
 bool Sight_FireTimeChangesAllowed()
 {
     return !g_config.coop_safe_shots;
@@ -471,10 +485,24 @@ void Sight_NoteFireTimeStoodDown(GameTitle title)
     g_stats[Slot(title)].fireTimeStoodDown.fetch_add(1, std::memory_order_relaxed);
 }
 
+bool Sight_ShotsFromMuzzle()
+{
+    return g_config.shots_from_muzzle && Sight_FireTimeChangesAllowed();
+}
+
+bool Sight_GunBarrelAim()
+{
+    return g_config.gun_barrel_aim && Sight_FireTimeChangesAllowed();
+}
+
+bool Sight_IndependentDualAim()
+{
+    return g_config.independent_dual_aim && Sight_FireTimeChangesAllowed();
+}
+
 bool Sight_MuzzleShotsConverge()
 {
-    return Sight_FireTimeChangesAllowed() && g_config.shots_from_muzzle && !g_config.gun_barrel_aim &&
-           Sight_AimEnabled();
+    return Sight_ShotsFromMuzzle() && !Sight_GunBarrelAim() && Sight_AimEnabled();
 }
 
 void Sight_NoteMuzzleShotUnconverged(GameTitle title)
@@ -625,16 +653,27 @@ shot_lag::IntentUse Sight_IntentForShot(GameTitle title, uint64_t maxAgeMs, bool
 bool Sight_ReaimThroughPoint(GameTitle title, SightShotSite site, const float start[3], float vector[3],
                              const float point[3], bool seated)
 {
-    if (!Sight_FireTimeChangesAllowed())
-    {
-        Sight_NoteFireTimeStoodDown(title);
-        return false;
-    }
     const size_t s = static_cast<size_t>(site) % static_cast<size_t>(SightShotSite::Count);
     auto& stats = g_reaim[Slot(title)][s];
     float out[3]{};
     float bend = 0.0f;
     const shot_lag::Reaim why = shot_lag::ReaimThroughPoint(start, vector, point, shot_lag::ReaimRails{}, out, &bend);
+    if (!Sight_FireTimeChangesAllowed())
+    {
+        // Stood down: `vector` stays as the game built it. The bend it would have had is kept for the log.
+        auto& stood = g_stats[Slot(title)];
+        stood.fireTimeStoodDown.fetch_add(1, std::memory_order_relaxed);
+        if (why == shot_lag::Reaim::Applied)
+        {
+            const uint32_t milli = static_cast<uint32_t>(std::min(bend * 1000.0f, 1.0e9f));
+            stood.fireTimeBends.fetch_add(1, std::memory_order_relaxed);
+            stood.fireTimeBendSumMilliDeg.fetch_add(milli, std::memory_order_relaxed);
+            uint32_t prior = stood.fireTimeBendMaxMilliDeg.load(std::memory_order_relaxed);
+            while (milli > prior &&
+                   !stood.fireTimeBendMaxMilliDeg.compare_exchange_weak(prior, milli, std::memory_order_relaxed)) {}
+        }
+        return false;
+    }
     if (why == shot_lag::Reaim::AlreadyThrough)
     {
         stats.through.fetch_add(1, std::memory_order_relaxed);
@@ -1825,10 +1864,26 @@ void Sight_Report()
 #if HALOMCCVR_DEV_DIAGNOSTICS
         ReportHitClasses(i);
 #endif
+        if (const int session = s.sessionType.load(std::memory_order_relaxed); session != s.sessionTypeLogged)
+        {
+            s.sessionTypeLogged = session;
+            if (session < 0)
+                LOG("SESSION %s: no game in progress", TitleName(static_cast<GameTitle>(i)));
+            else
+                LOG("SESSION %s: the game's simulation type is %d (game globals +0x11; a solo level, a campaign "
+                    "co-op session and a custom game each have their own)",
+                    TitleName(static_cast<GameTitle>(i)), session);
+        }
         if (const uint64_t stoodDown = s.fireTimeStoodDown.exchange(0, std::memory_order_relaxed))
-            LOG("CO-OP SAFE SHOTS %s: %llu fire-time changes stood down; each shot left as the game built it "
-                "(coop_safe_shots = 1)",
-                TitleName(static_cast<GameTitle>(i)), (unsigned long long)stoodDown);
+        {
+            const uint64_t bends = s.fireTimeBends.exchange(0, std::memory_order_relaxed);
+            const uint64_t bendSum = s.fireTimeBendSumMilliDeg.exchange(0, std::memory_order_relaxed);
+            const uint32_t bendMax = s.fireTimeBendMaxMilliDeg.exchange(0, std::memory_order_relaxed);
+            LOG("CO-OP SAFE SHOTS %s: %llu fire-time changes stood down; each shot left as the game built it. "
+                "%llu of them were re-aims that would have turned the shot by a mean of %.2f deg (max %.2f)",
+                TitleName(static_cast<GameTitle>(i)), (unsigned long long)stoodDown, (unsigned long long)bends,
+                bends ? double(bendSum) / double(bends) / 1000.0 : 0.0, double(bendMax) / 1000.0);
+        }
         if (muzzleAimed || muzzleRefused || muzzleUnconverged || muzzleHeld)
             LOG("SHOTS FROM THE MUZZLE %s: %llu aimed through the converged point, %llu refused%s%s%s, "
                 "%llu without a converged point, %llu held off (a seat held at its stop, or a turret: the gun "

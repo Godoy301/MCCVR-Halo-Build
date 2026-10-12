@@ -101,7 +101,7 @@ __declspec(noinline) void __fastcall ReachMuzzleQueryDetour(int32_t inputUser,ui
 {
     auto& feature=g_reachBarrel;feature.callbacks.fetch_add(1,std::memory_order_acq_rel);
     const auto previous=g_reachBarrelCapture;g_reachBarrelCapture={};
-    const bool capture=feature.enabled.load()&&!feature.faulted.load()&&(g_config.gun_barrel_aim||Sight_MuzzleShotsConverge())&&
+    const bool capture=feature.enabled.load()&&!feature.faulted.load()&&(Sight_GunBarrelAim()||Sight_MuzzleShotsConverge())&&
         inputUser>=0&&inputUser<4&&!(flags&1)&&direction&&control&&targeting;
     g_reachBarrelCapture.active=capture;
     __try
@@ -162,7 +162,7 @@ bool ApplyReachMuzzleMarker(uint32_t object,uint64_t count,void* markers,int16_t
 {
     auto& feature=g_reachBarrel;const auto request=g_reachBarrelRequest;
     if(!feature.enabled.load()||feature.faulted.load())return ReachMuzzleRefused(kReachWhyDisabled);
-    if(!(g_config.gun_barrel_aim||Sight_MuzzleShotsConverge()))return ReachMuzzleRefused(kReachWhyOptionOff);
+    if(!(Sight_GunBarrelAim()||Sight_MuzzleShotsConverge()))return ReachMuzzleRefused(kReachWhyOptionOff);
     if(exclusive_input::Active())return ReachMuzzleRefused(kReachWhyExclusiveInput);
     if(!g_vrAim.load()||!g_enabled.load()||!VR_IsStereoEnabled())return ReachMuzzleRefused(kReachWhyVrOff);
     if(TitleAdapter_GetActiveTitle()!=GameTitle::HaloReach||feature.generation!=g_reachCamera.generation.load())
@@ -218,7 +218,7 @@ bool ApplyReachMuzzleMarker(uint32_t object,uint64_t count,void* markers,int16_t
     // SHOTS FROM THE MUZZLE (sight_layer.h): keep the origin the obstruction check left, but fly through the
     // converged point instead of along the barrel. A refusal refuses the barrel shot: it leaves the eye.
     // Reach's converged point is the one its direct drive last wrote (ReachAimMuzzleShot).
-    if(!g_config.gun_barrel_aim&&!ReachAimMuzzleShot(context.unit,before,muzzle.ray.position,muzzle.ray.direction,muzzle.ray.up))
+    if(!Sight_GunBarrelAim()&&!ReachAimMuzzleShot(context.unit,before,muzzle.ray.position,muzzle.ray.direction,muzzle.ray.up))
         return ReachMuzzleRefused(kReachWhyNoConvergedPoint);
     if(!AcquireReachMuzzleTarget(muzzle,*request.lease))return ReachMuzzleRefused(kReachWhyTargeting);
     const auto& ray=muzzle.ray;auto* bytes=static_cast<uint8_t*>(markers);
