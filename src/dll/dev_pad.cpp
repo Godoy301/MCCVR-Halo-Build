@@ -108,6 +108,7 @@ bool SetLive(const std::string& name, int value)
     else if (name == "seat_fire_from_eye") g_config.seat_fire_from_eye = value != 0;
     else if (name == "reach_vehicle_aim") g_config.reach_vehicle_aim = value < 0 ? 0 : (value > 2 ? 2 : value);
     else if (name == "shots_from_muzzle") g_config.shots_from_muzzle = value != 0;
+    else if (name == "coop_safe_shots") g_config.coop_safe_shots = value != 0;
     else if (name == "gun_barrel_aim") g_config.gun_barrel_aim = value != 0;
     else if (name == "vehicle_cam_smoothing") g_config.vehicle_cam_smoothing = value != 0;
     // The first-person ladder's fault bits (config.h): the ladders read the value at every evaluation, so

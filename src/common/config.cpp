@@ -1327,6 +1327,7 @@ void ConfigLoad(const wchar_t* path)
         if (!strcmp(key, "two_hand_coherent_aim")) { g_config.two_hand_coherent_aim=atoi(val)!=0; continue; }
         if (!strcmp(key, "gun_barrel_aim")) { g_config.gun_barrel_aim=atoi(val)!=0; continue; }
         if (!strcmp(key, "shots_from_muzzle")) { g_config.shots_from_muzzle=atoi(val)!=0; continue; }
+        if (!strcmp(key, "coop_safe_shots")) { g_config.coop_safe_shots=atoi(val)!=0; continue; }
         if (!strcmp(key, "aim_provider")) { g_config.aim_provider=atoi(val); continue; }
         if (!strcmp(key, "legacy_direct_drive")) { g_config.legacy_direct_drive = atoi(val) != 0 ? 1 : 0; continue; }
         if (!strcmp(key, "converged_aim")) { g_config.converged_aim = atoi(val) != 0 ? 1 : 0; continue; }
@@ -2316,6 +2317,11 @@ void ConfigSave()
                "# they land where the shot from the eye would have. Needs converged_aim; gun_barrel_aim wins.\n"
                "# (default %d)\n"
                "shots_from_muzzle = %d\n\n", d.shots_from_muzzle ? 1 : 0, g_config.shots_from_muzzle ? 1 : 0);
+    fprintf(f, "# Co-op safe shots, for campaign co-op: 1 = nothing changes a shot as it is fired (no muzzle\n"
+               "# origin, no fire-time re-aim, no Reach hand ray or seat redirect), so every player's game fires\n"
+               "# it the same way. Your hand still aims; shots leave the eye. gun_barrel_aim and\n"
+               "# independent_dual_aim are not covered: keep them off in co-op. (default %d)\n"
+               "coop_safe_shots = %d\n\n", d.coop_safe_shots ? 1 : 0, g_config.coop_safe_shots ? 1 : 0);
     fprintf(f, "# Floating VR-crosshair smoothing only; bullets stay raw.\n");
     fprintf(f, "# (default %.2f, range 0 to 0.95)\n", d.aim_stabilization);
     fprintf(f, "aim_stabilization = %.2f\n\n", g_config.aim_stabilization);

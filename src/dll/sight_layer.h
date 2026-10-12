@@ -193,6 +193,12 @@ struct SightCameraSample
     bool velValid = false;
     float vel[3]{};
 };
+// False while coop_safe_shots is on: every site that would change a shot inside the fire routine (the muzzle
+// shot, a re-aim through the intent point, Reach's hand ray, seat redirect and passenger origin) leaves it as the
+// game built it. The written aim is not a fire-time change and is not affected. A site that stands a local shot
+// down for this reason counts it (Sight_Report logs "CO-OP SAFE SHOTS" every 2 s).
+bool Sight_FireTimeChangesAllowed();
+void Sight_NoteFireTimeStoodDown(GameTitle title);
 bool Sight_MuzzleShotsConverge();
 bool Sight_AimMuzzleShot(GameTitle title, uint32_t generation, const float before[3], const float position[3],
                          float direction[3], float up[3]);

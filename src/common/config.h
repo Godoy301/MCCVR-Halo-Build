@@ -766,6 +766,14 @@ struct Config
     // own obstruction check pulls back (the gun through a wall the eye sees past) and every other refusal
     // leave from the eye as before. gun_barrel_aim, when on, wins. sight_layer.h: Sight_AimMuzzleShot.
     bool shots_from_muzzle = true;
+    // CO-OP SAFE SHOTS (default off, live): 1 = nothing changes a shot as it is fired. It leaves as the game
+    // builds it from the aim the hand writes: not from the muzzle, not re-aimed through the newest intent point
+    // and, in Reach, not moved onto the controller's ray, redirected in a seat or started from the rendered eye.
+    // A campaign co-op session runs one simulation on every machine from shared input. The written aim is part
+    // of that input; a change made inside one machine's fire routine is not, and the machines then disagree
+    // about the shot. gun_barrel_aim and independent_dual_aim are separate switches (both off by default) and
+    // are not stood down by this one. sight_layer.h: Sight_FireTimeChangesAllowed.
+    bool coop_safe_shots = false;
 
     // EXPERIMENTAL (dev): route this title's aim through the game-agnostic aim-solve core + per-game
     // provider (src/common/aim_solve_logic.h, aim_provider.h). 0 = off (shipped path untouched).

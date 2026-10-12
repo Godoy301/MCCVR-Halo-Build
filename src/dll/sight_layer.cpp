@@ -69,6 +69,8 @@ struct Stats
     // without a point; and (defensive) held off because the gun points elsewhere, naturally -- a seat held at its
     // stop, a turret.
     std::atomic<uint64_t> muzzleAimed{0}, muzzleUnconverged{0}, muzzleHeld{0};
+    // Local shots a fire-time change was stood down for (coop_safe_shots).
+    std::atomic<uint64_t> fireTimeStoodDown{0};
     std::atomic<uint64_t> muzzleRefused[static_cast<size_t>(aim_solve::MuzzleShot::Count)]{};
 };
 
@@ -459,9 +461,20 @@ bool Sight_ConvergedDirection(GameTitle title, uint32_t generation, const float 
     return true;
 }
 
+bool Sight_FireTimeChangesAllowed()
+{
+    return !g_config.coop_safe_shots;
+}
+
+void Sight_NoteFireTimeStoodDown(GameTitle title)
+{
+    g_stats[Slot(title)].fireTimeStoodDown.fetch_add(1, std::memory_order_relaxed);
+}
+
 bool Sight_MuzzleShotsConverge()
 {
-    return g_config.shots_from_muzzle && !g_config.gun_barrel_aim && Sight_AimEnabled();
+    return Sight_FireTimeChangesAllowed() && g_config.shots_from_muzzle && !g_config.gun_barrel_aim &&
+           Sight_AimEnabled();
 }
 
 void Sight_NoteMuzzleShotUnconverged(GameTitle title)
@@ -478,6 +491,11 @@ bool Sight_AimMuzzleShotThrough(GameTitle title, const float point[3], const flo
                                 const float before[3], const float position[3], float direction[3], float up[3])
 {
     auto& refused = g_stats[Slot(title)].muzzleRefused;
+    if (!Sight_FireTimeChangesAllowed())
+    {
+        Sight_NoteFireTimeStoodDown(title);
+        return false;
+    }
     if (!point || !rayDir || !before || !position || !direction || !up)
     {
         refused[static_cast<size_t>(aim_solve::MuzzleShot::NonFinite)].fetch_add(1, std::memory_order_relaxed);
@@ -607,6 +625,11 @@ shot_lag::IntentUse Sight_IntentForShot(GameTitle title, uint64_t maxAgeMs, bool
 bool Sight_ReaimThroughPoint(GameTitle title, SightShotSite site, const float start[3], float vector[3],
                              const float point[3], bool seated)
 {
+    if (!Sight_FireTimeChangesAllowed())
+    {
+        Sight_NoteFireTimeStoodDown(title);
+        return false;
+    }
     const size_t s = static_cast<size_t>(site) % static_cast<size_t>(SightShotSite::Count);
     auto& stats = g_reaim[Slot(title)][s];
     float out[3]{};
@@ -1802,6 +1825,10 @@ void Sight_Report()
 #if HALOMCCVR_DEV_DIAGNOSTICS
         ReportHitClasses(i);
 #endif
+        if (const uint64_t stoodDown = s.fireTimeStoodDown.exchange(0, std::memory_order_relaxed))
+            LOG("CO-OP SAFE SHOTS %s: %llu fire-time changes stood down; each shot left as the game built it "
+                "(coop_safe_shots = 1)",
+                TitleName(static_cast<GameTitle>(i)), (unsigned long long)stoodDown);
         if (muzzleAimed || muzzleRefused || muzzleUnconverged || muzzleHeld)
             LOG("SHOTS FROM THE MUZZLE %s: %llu aimed through the converged point, %llu refused%s%s%s, "
                 "%llu without a converged point, %llu held off (a seat held at its stop, or a turret: the gun "

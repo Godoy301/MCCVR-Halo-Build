@@ -21277,6 +21277,8 @@ namespace
             std::memory_order_relaxed);
         if (caller != returnA && caller != returnB)
             return stockResult;           // not the shot line; leave it alone
+        if (!Sight_FireTimeChangesAllowed())
+            return stockResult;           // co-op safe shots: the origin stays the game's own
         if (g_reachCinematicLocked.load(std::memory_order_relaxed))
             return stockResult;           // authored camera owns the view
         ReachShotOccupationSnapshot occupation{};
@@ -21555,6 +21557,15 @@ namespace
             unitIndex, origin, direction, basisForward, barrelOffset,
             optionalCameraPoint, firesFromCamera, useUnitAim, collision,
             simulation);
+        // Co-op safe shots: the shot stays as Reach built it -- no re-aim through the intent point, no hand ray
+        // on foot and no redirect in a seat.
+        if (!Sight_FireTimeChangesAllowed())
+        {
+            if (origin && direction && unitIndex != -1 &&
+                unitIndex == LegacyCollisionIgnoredObject(GameTitle::HaloReach))
+                Sight_NoteFireTimeStoodDown(GameTitle::HaloReach);
+            return;
+        }
         // The same HREK-proven weapon transaction handles on-foot shots. Own
         // only the exact current local unit and a completed, fresh on-foot ray.
         // Reuse native world clipping from the already-safe stock origin to
