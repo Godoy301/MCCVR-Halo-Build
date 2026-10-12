@@ -1533,6 +1533,15 @@ namespace
                                     "proven while you stand still). OFF: the view's eye carried one tick (A/B).");
                 ImGui::Unindent();
             }
+            ImGui::Spacing();
+            bool halo4Seats = g_config.halo4_seat_converge != 0;
+            if (ImGui::Checkbox("Halo 4: converged aim in vehicle seats (dev, stage 1)", &halo4Seats))
+            { g_config.halo4_seat_converge = halo4Seats ? 1 : 0; changed = true; }
+            ImGui::TextDisabled("DEV BUILD ONLY, and it has not run in a game yet. ON: a Halo 4 seat is traced and\n"
+                                "its aim bent through the traced point once every proof holds (the SIGHT Halo 4 seat\n"
+                                "lines say which one does not). It needs the first-person seat view, Converged aim,\n"
+                                "and Co-op safe shots OFF: with that on, the game aims the seat from its own chase\n"
+                                "camera and this stage stands down. OFF: seats keep the fixed-distance aim. Live.");
 #endif
         }
         ImGui::Spacing();
