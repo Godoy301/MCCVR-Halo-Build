@@ -766,7 +766,7 @@ struct Config
     // own obstruction check pulls back (the gun through a wall the eye sees past) and every other refusal
     // leave from the eye as before. gun_barrel_aim, when on, wins. sight_layer.h: Sight_AimMuzzleShot.
     bool shots_from_muzzle = true;
-    // CO-OP SAFE SHOTS (default off, live): 1 = nothing changes a shot as it is fired. It leaves as the game
+    // CO-OP SAFE SHOTS (default ON, live; F1 > Advanced): 1 = nothing changes a shot as it is fired. It leaves as the game
     // builds it from the aim the hand writes: not from the muzzle or along the barrel, not re-aimed through the
     // newest intent point, not from a second gun's own controller and, in a seat, not redirected or restarted
     // from the eye. In Halo 2 the character's aim and the aim-assist target are also left to the game.
@@ -774,8 +774,10 @@ struct Config
     // of that input; a change made inside one machine's simulation is not, and the machines then disagree.
     // Contact melee (physical_melee) does not apply its own damage either: its swing presses the game's melee
     // (Halo CE has no such lane; there it does nothing).
+    // On by default because nothing tells a player his session is shared before his first shot ends it: 0 is
+    // for solo play, and brings back what the switch stands down.
     // sight_layer.h: Sight_FireTimeChangesAllowed.
-    bool coop_safe_shots = false;
+    bool coop_safe_shots = true;
     // AIM LEAD (default 1 tick, live; 0 = off, up to 3): the aim written into the game's record on foot (Halo 3,
     // ODST, Reach) is carried ahead by the setpoint's own rate times this many simulation ticks. A record
     // written at one control pass is first used by the next tick, so a shot leaves along a hand sample about a

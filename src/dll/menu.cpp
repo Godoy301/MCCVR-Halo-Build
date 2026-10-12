@@ -1482,14 +1482,9 @@ namespace
                                 "eye would have while tracers and projectiles come out of the barrel. Needs Converged\n"
                                 "aim. If the muzzle is inside a wall your eye sees past, or the aim is not converged,\n"
                                 "the shot leaves your eye as before. \"Aim from the visible gun barrel\" (Crosshair\n"
-                                "page), when on, wins and keeps the barrel's own direction. Live.");
-            changed |= ImGui::Checkbox("Co-op safe shots", &g_config.coop_safe_shots);
-            ImGui::TextDisabled("For campaign co-op. ON: nothing changes a shot as it is fired, so both players'\n"
-                                "games fire it the same way. Your hand still aims; shots leave your eye, and the\n"
-                                "muzzle option above has no effect. In Halo 2 your hand aims only with Direct\n"
-                                "drive on. True physical melee presses the game's melee instead of striking on\n"
-                                "contact (Halo CE: it does nothing). Halo CE seats keep the game's own camera.\n"
-                                "Live.");
+                                "page), when on, wins and keeps the barrel's own direction. Live.\n"
+                                "Only while Co-op safe shots (Advanced page) is off: with that on, as it is by\n"
+                                "default, shots leave your eye.");
             ImGui::TextDisabled("Both cover vehicle seats too. Every seat you aim from converges (Halo 3, ODST,\n"
                                 "Halo CE and Halo 2 in first-person seats; Reach and Halo 2 with Direct drive;\n"
                                 "Halo 4 seats not yet). With Direct drive, seats have\n"
@@ -1540,8 +1535,9 @@ namespace
             ImGui::TextDisabled("DEV BUILD ONLY, and it has not run in a game yet. ON: a Halo 4 seat is traced and\n"
                                 "its aim bent through the traced point once every proof holds (the SIGHT Halo 4 seat\n"
                                 "lines say which one does not). It needs the first-person seat view, Converged aim,\n"
-                                "and Co-op safe shots OFF: with that on, the game aims the seat from its own chase\n"
-                                "camera and this stage stands down. OFF: seats keep the fixed-distance aim. Live.");
+                                "and Co-op safe shots (Advanced page) OFF: with that on, the game aims the seat from\n"
+                                "its own chase camera and this stage stands down. OFF: seats keep the fixed-distance\n"
+                                "aim. Live.");
 #endif
         }
         ImGui::Spacing();
@@ -2389,6 +2385,16 @@ namespace
 
         if (g_activeCategory == Cat_Advanced)
         {
+        changed |= ImGui::Checkbox("Co-op safe shots (leave on)", &g_config.coop_safe_shots);
+        ImGui::TextDisabled("ON (default): nothing the mod does changes a shot as it is fired, so every player's game\n"
+                            "fires it the same way and a campaign co-op or Spartan Ops session stays together. Your\n"
+                            "hand still aims; shots leave your eye. In Halo 2 your hand aims only with Direct drive\n"
+                            "on, True physical melee presses the game's melee instead of striking on contact (Halo\n"
+                            "CE: it does nothing), and Halo CE seats keep the game's own camera.\n"
+                            "OFF is for playing alone: shots can leave the visible muzzle and are re-aimed as they\n"
+                            "are fired. With it off, your first shot in a co-op session ends it for everyone. Live.");
+        ImGui::Spacing();
+        ImGui::Separator();
         changed |= ImGui::Checkbox("Bone probe (diagnostic)", &g_config.weapon_probe);
         ImGui::TextDisabled("Pushes every composed skeleton 1m left to prove writable palette boundaries.");
         changed |= ImGui::Checkbox("Render right eye first (diagnostic)",

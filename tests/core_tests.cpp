@@ -15887,7 +15887,7 @@ int main()
           g_config.roomscale_recenter_moving && g_config.roomscale_recenter_moving_speed == 0.25f,
           "legacy config inherits the roomscale view recenter options (on; they act only with roomscale on)");
     Check(g_config.shots_from_muzzle, "legacy config inherits shots from the muzzle");
-    Check(!g_config.coop_safe_shots, "legacy config leaves co-op safe shots off");
+    Check(g_config.coop_safe_shots, "legacy config gets co-op safe shots on");
     Check(g_config.aim_lead_ticks == 1.0f, "legacy config inherits the aim lead at its default of one tick");
     Check(g_config.physical_crouch && g_config.physical_crouch_depth_m == 0.22f,
           "legacy config inherits the physical crouch (on) at its default depth");
@@ -16025,7 +16025,7 @@ int main()
         file << "roomscale_recenter_moving = 1\nroomscale_recenter_moving_speed = 0.01\n";
         file << "physical_running = 1\nphysical_running_speed = 0.6\nphysical_running_sensitivity = 2\n";
         file << "physical_crouch = 0\n";
-        file << "coop_safe_shots = 1\n";
+        file << "coop_safe_shots = 0\n";
         file << "aim_lead_ticks = 1.5\n";
         file << "experimental_body_ik = 1\nbody_ik_hide_lower = 1\n";
         file << "physical_melee_swing_speed = 0.10\n";
@@ -16049,7 +16049,7 @@ int main()
         g_config.physical_running_sensitivity==2&&g_config.experimental_body_ik&&g_config.body_ik_hide_lower,
         "physical running controls and separate avatar/lower-body toggles survive config save/load");
     Check(!g_config.physical_crouch, "a config that switched the physical crouch off keeps it off through save/load");
-    Check(g_config.coop_safe_shots, "co-op safe shots survives config save/load");
+    Check(!g_config.coop_safe_shots, "a config that switched co-op safe shots off keeps it off through save/load");
     Check(g_config.aim_lead_ticks == 1.5f, "the aim lead survives config save/load");
     Check(g_config.left_handed,
         "left-handed main-weapon mode survives a save/load round trip");
