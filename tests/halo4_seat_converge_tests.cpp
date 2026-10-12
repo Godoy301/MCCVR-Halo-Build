@@ -106,8 +106,14 @@ void TestCarry()
     const float tick = 1.0f / 60.0f;
     Check(Near(CarrySeconds(1000000, 1000000, tick), 2.0f * tick, 1.0e-6f), "a sample read at once: two ticks");
     Check(Near(CarrySeconds(1000000, 1010000, tick), 0.010f + 2.0f * tick, 1.0e-6f), "10 ms old: its age and two ticks");
-    Check(Near(CarrySeconds(1000000, 1140000, tick), kMaxCarryS, 1.0e-6f), "held at the longest carry");
+    Check(Near(CarrySeconds(1000000, 1140000, tick, kSampleHoldUs), kMaxCarryS, 1.0e-6f), "held at the longest carry");
     Check(CarrySeconds(1000000, 1000000 + kSampleFreshUs + 1, tick) < 0.0f, "past the fresh window: not carried");
+    {
+        // The oldest sample still used is carried its whole age and the ticks to the fire: the cap never cuts it.
+        const float oldest = CarrySeconds(1000000, 1000000 + kSampleFreshUs, tick);
+        Check(Near(oldest, float(kSampleFreshUs) * 1.0e-6f + kCarryTicks * tick, 1.0e-6f) && oldest < kMaxCarryS,
+              "the oldest fresh sample is carried in full, under the longest carry");
+    }
     Check(CarrySeconds(1000000, 999999, tick) < 0.0f, "a stamp from the future: refused");
     Check(CarrySeconds(0, 1000000, tick) < 0.0f, "no stamp: refused");
     Check(CarrySeconds(1000000, 1000000, 0.0f) < 0.0f, "no tick period: refused");
@@ -352,7 +358,9 @@ void TestMovingVehicle()
             s.eyeVelValid = true;
             float p[3]{};
             Put(point, p);
-            const Start start = SolveStart(s, p, carryTicks * tick);
+            // The lane's own carry for a sample read at once (CarrySeconds), or one tick: a tick short of it.
+            const float carry = carryTicks == 2.0f ? CarrySeconds(1000000, 1000000, tick) : carryTicks * tick;
+            const Start start = SolveStart(s, p, carry);
             const V written = Unit(point - Get(start.pos));
             // The fire: the next tick's state, along the written aim.
             chase.pivot = pivotAt(now + tick);
@@ -368,7 +376,7 @@ void TestMovingVehicle()
             // What is left is the fixed point following an answer that turns as the vehicle passes the point
             // (0.64 deg a tick here): a few hundredths of a degree.
             Check(miss.valid && miss.mm < 20.0f && miss.deg < 0.03f,
-                  "carried two ticks: the fire's own line passes within 2 cm of a point 30 m away");
+                  "carried as the lane carries it: the fire's own line passes within 2 cm of a point 30 m away");
             Check(miss.travel && std::fabs(miss.impliedMs) < 1.0f, "...and the witness reads no time left over");
         }
         else

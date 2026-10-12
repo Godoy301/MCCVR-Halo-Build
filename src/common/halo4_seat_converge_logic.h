@@ -80,10 +80,14 @@ struct CameraSample
     bool eyeVelValid = false;
 };
 
-// A sample is used as it is this long; after that the start it gave stands in, held relative to the rendered
-// head (StartHold), for as long as the game makes no aim-view call for the seat (a weapon switch takes about a
-// second). Past the hold the sampler is taken to have stopped and the seat no longer solves.
-inline constexpr uint64_t kSampleFreshUs = 150000;
+// A sample is used as it is this long (one comes every rendered frame); after that the start it gave stands in,
+// held relative to the rendered head (StartHold), for as long as the game makes no aim-view call for the seat (a
+// weapon switch takes about a second). Past the hold the sampler is taken to have stopped and the seat no longer
+// solves. The fresh window is short on purpose: a sample is carried by its age and kCarryTicks ticks, the carry
+// has a cap (kMaxCarryS), and an older sample would be carried short of where its camera has gone. The held
+// start rides the vehicle with the head instead. (The static_assert below holds the two together at 60 ticks a
+// second.)
+inline constexpr uint64_t kSampleFreshUs = 60000;
 inline constexpr uint64_t kSampleHoldUs = 3000000;
 
 // How far ahead of the sample the fire's camera is: the sample's age, plus kCarryTicks simulation ticks.
@@ -94,6 +98,8 @@ inline constexpr uint64_t kSampleHoldUs = 3000000;
 // along the camera's travel so it can be set from a session.
 inline constexpr float kCarryTicks = 2.0f;
 inline constexpr float kMaxCarryS = 0.1f;
+static_assert(float(kSampleFreshUs) * 1.0e-6f + kCarryTicks / 60.0f <= kMaxCarryS,
+              "a sample still fresh must be carried its whole age and the ticks to the fire");
 
 // Seconds to carry a sample taken at stampUs, read at nowUs. -1: no stamp, from the future, or past maxAgeUs.
 inline float CarrySeconds(uint64_t stampUs, uint64_t nowUs, float tickS, uint64_t maxAgeUs = kSampleFreshUs)
