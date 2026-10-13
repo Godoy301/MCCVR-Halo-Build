@@ -15989,6 +15989,24 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
     }
 #endif
 
+    // MONO RENDERING (mono_view_logic.h): Halo 2's and Halo CE's renderers have no single-pass path. Said once for
+    // each, the first time a frame of it is prepared with the setting on, so the setting never looks ignored.
+    void NoteMonoAskedInTitleWithoutIt() noexcept
+    {
+        if (!g_config.mono_rendering)
+            return;
+        const GameTitle title = TitleAdapter_GetActiveTitle();
+        if (title != GameTitle::Halo2 && title != GameTitle::HaloCE)
+            return;
+        static bool said[kTitleRuntimeSlotCount]{};
+        const size_t slot = TitleRuntimeSlotIndex(title);
+        if (slot >= kTitleRuntimeSlotCount || said[slot])
+            return;
+        said[slot] = true;
+        LOG("mono rendering (%s): asked for, and not available in this game: its renderer has no single-pass path, "
+            "so it is drawn in stereo", DlssTitleName(title));
+    }
+
 #if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA
     bool PublishHalo4RenderSnapshot(
         uint64_t preparedSerial, bool padFresh) noexcept
@@ -16899,6 +16917,8 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
             PublishReachRenderSnapshot(
                 g_preparedFrame.serial, upcomingPadFresh);
 #endif
+
+        NoteMonoAskedInTitleWithoutIt();
 
         PublishContactTrackingSnapshot(g_preparedFrame.serial,
             upcomingPadFresh && upcomingHeadValid && upcomingViewsValid);
