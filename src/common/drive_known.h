@@ -197,19 +197,36 @@ inline const Entry* Usable(const File& file, const char* module, const char* id,
 }
 
 // Puts a drive's addresses in, in place of whatever was held for that drive of that module (an older build's are
-// of no further use). Every other entry stays. False when the file is full.
-inline bool Put(File& file, const Entry& entry)
+// of no further use). Every other entry stays -- unless the file is full. Then one entry gives way, and the new
+// one is never refused: the oldest that is surely dead (one of ANOTHER BUILD of this entry's module, which is
+// the build loaded now), failing that the oldest of another module, failing that the oldest of all. The file's
+// order is the order in which its drives were first saved, so "oldest" is the first in it.
+inline void Put(File& file, const Entry& entry)
 {
     for (uint32_t i = 0; i < file.count; ++i)
         if (!std::strcmp(file.entries[i].module, entry.module) && !std::strcmp(file.entries[i].id, entry.id))
         {
             file.entries[i] = entry;
-            return true;
+            return;
         }
     if (file.count >= kMaxEntries)
-        return false;
+    {
+        uint32_t gives = kMaxEntries, otherModule = kMaxEntries;
+        for (uint32_t i = 0; i < file.count && gives == kMaxEntries; ++i)
+        {
+            const bool sameModule = !std::strcmp(file.entries[i].module, entry.module);
+            if (sameModule && file.entries[i].stamp != entry.stamp)
+                gives = i;
+            else if (!sameModule && otherModule == kMaxEntries)
+                otherModule = i;
+        }
+        if (gives == kMaxEntries)
+            gives = otherModule != kMaxEntries ? otherModule : 0;
+        for (uint32_t i = gives; i + 1 < file.count; ++i)
+            file.entries[i] = file.entries[i + 1];
+        --file.count;
+    }
     file.entries[file.count++] = entry;
-    return true;
 }
 
 // The longest line the file holds: an entry with every line (a letter, eight hex digits and a comma each), its
@@ -337,7 +354,7 @@ inline void Parse(const char* text, size_t size, File& out)
             e.rvas[k] = static_cast<uint32_t>(rva);
         }
         if (good && number(16, checksum) && *cursor == 0 && checksum == Checksum(e))
-            (void)Put(out, e);
+            Put(out, e);
     }
 }
 

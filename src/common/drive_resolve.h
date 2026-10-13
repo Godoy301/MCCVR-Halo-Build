@@ -202,10 +202,15 @@ struct Image
 };
 
 // Reads the executable sections and the exception directory out of a mapped PE32+ image's own headers. `why`
-// names what was refused. Every offset is bounds-checked against `size` before it is read.
-inline bool ReadImage(const uint8_t* base, size_t size, Image& out, const char*& why)
+// names what was refused. Every offset is bounds-checked against `size` before it is read. `readable`: the
+// owner's word on whether a range of a loaded module can be read at all (Image::readable; the image keeps it).
+// The function table is asked about BEFORE any of it is read: one that cannot be read is no table, and the
+// rest of the image is read all the same.
+inline bool ReadImage(const uint8_t* base, size_t size, Image& out, const char*& why,
+                      bool (*readable)(uintptr_t address, size_t size) = nullptr)
 {
     out = Image{};
+    out.readable = readable;
     why = nullptr;
     const auto u16 = [base](size_t at) {
         uint16_t v = 0;
@@ -285,6 +290,14 @@ inline bool ReadImage(const uint8_t* base, size_t size, Image& out, const char*&
         }
         out.functions = reinterpret_cast<const RuntimeFunction*>(base + pdataRva);
         out.functionCount = pdataSize / static_cast<uint32_t>(sizeof(RuntimeFunction));
+        // A table that cannot be read is no table: nothing that needs a function's start or extent resolves,
+        // and the drives that need one are not hooked.
+        if (readable && !readable(reinterpret_cast<uintptr_t>(out.functions),
+                                  static_cast<size_t>(out.functionCount) * sizeof(RuntimeFunction)))
+        {
+            out.functions = nullptr;
+            out.functionCount = 0;
+        }
         // A zeroed tail is padding, and would break the search below.
         while (out.functionCount && !out.functions[out.functionCount - 1].begin)
             --out.functionCount;

@@ -5,8 +5,9 @@
 // TLS directory, a pattern is found through one of "this mod's hooks" (a patch reported by the hook-patch
 // source), the address cache's file is really written, read back, replaced, refused and found damaged on disk, the one line
 // that says which rung won is really formatted, the proofs an install makes after its plan are run on a module
-// whose unwind info cannot be read (they must fail, not fault), and the hook watchdog is stepped as the cold
-// worker steps it. It maps no game code and opens no game file.
+// whose unwind info cannot be read (they must fail, not fault), a module whose function table cannot be read is
+// opened all the same, and the hook watchdog is stepped as the cold worker steps it. It maps no game code and
+// opens no game file.
 //
 // Built twice by CMake: as a player build compiles the file (no fault injection: the dev key must do nothing) and
 // as a dev build does (HALOMCCVR_DEV_DIAGNOSTICS=1, ADDRCASCADE_FAULTS=1: each forced fault must show).
@@ -367,6 +368,41 @@ void TestAnnounceAndFaults()
 #else
     Check(lines.empty(), "player build: nothing changed, nothing said");
 #endif
+
+    // THE LINE OF A RUNG THIS EXECUTABLE CANNOT REACH. It is no title's recorded build, so the line a player sees
+    // on today's game is said here from a result made by hand: the same report, verified at the recorded
+    // addresses.
+    {
+        drive_cascade::Rungs rungs;
+        rungs.recordedBuild = true;
+        rungs.outcome.rung = Rung::Recorded;
+        rungs.outcome.recordedTried = true;
+        addrcascade::TierReporter fresh;
+        lines.clear();
+        drive_cascade::Announce("TEST DRIVE", again.report, rungs, fresh);
+        Check(lines.size() == 1 &&
+                  Lines("TEST DRIVE: verified at the recorded addresses, all 2 of them, with no search (this game DLL "
+                        "is the build the tables were measured on)") == 1,
+              "the recorded build's one line, as formatted");
+        // The dev self-test's two lines.
+        rungs.outcome.searchedToo = true;
+        rungs.outcome.searchAgrees = true;
+        lines.clear();
+        drive_cascade::Announce("TEST DRIVE", again.report, rungs, fresh);
+        const size_t agreed = Lines("DEV self-test (drive_fault 0x80): the search was run as well, and it chose the "
+                                    "same address for every line");
+        rungs.outcome.searchAgrees = false;
+        drive_cascade::Announce("TEST DRIVE", again.report, rungs, fresh);
+        const size_t disagreed = Lines("DEV self-test (drive_fault 0x80): the search was run as well, and it DISAGREES "
+                                       "with the verified addresses");
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        Check(agreed == 1 && disagreed == 1 && Lines("verified at the recorded addresses") == 2,
+              "dev build: the self-test says whether the search agrees, after the rung's own line");
+#else
+        Check(agreed == 0 && disagreed == 0 && Lines("verified at the recorded addresses") == 2,
+              "player build: there is no self-test line");
+#endif
+    }
 }
 
 // ---- the address cache's file, on disk ---------------------------------------------------------------------------
@@ -617,38 +653,61 @@ void TestCacheFile()
               "and the next launch saves it");
     }
 
-    // THE DEV KEY AND THE FILE.
+    // THE DEV KEY AND THE FILE: while ANY bit of drive_fault is set the file is neither read nor written. That
+    // goes for the bits that force no result too -- the silenced watchdog (0x10) and the self-test (0x80).
     {
         Resolved seed;
         Check(Resolve(seed, kHalo3, markerRva) && seed.rungs.saved, "the file holds this drive's entry for these tables");
         const std::string before = ReadAll(cache);
-        g_config.drive_fault = 0x04;
-        Resolved forced;
-        Check(Resolve(forced, kHalo3, markerRva) && Whole(forced), "a resolution with drive_fault 0x04");
+        for (const int mask : {0x04, 0x10, 0x80, 0x90})
+        {
+            g_config.drive_fault = mask;
+            Resolved forced;
+            lines.clear();
+            addrcascade::TierReporter fresh;
+            const bool resolved = Resolve(forced, kHalo3, markerRva) && Whole(forced);
+            drive_cascade::Announce("TEST DRIVE", forced, fresh);
+            char what[200];
 #if HALOMCCVR_DEV_DIAGNOSTICS
-        Check(forced.rungs.outcome.rung == Rung::Search && !forced.rungs.outcome.savedTried && !forced.rungs.saved &&
-                  forced.rungs.notSaved && forced.report.lines[0].verdict == drive_resolve::Verdict::Moved,
-              "dev build: under a forced fault the file is not read, and the forced result is not saved");
-        Check(ReadAll(cache) == before, "dev build: a forced fault never writes the file");
-        g_config.drive_fault = 0x80;
-        Resolved tested;
-        lines.clear();
-        addrcascade::TierReporter fresh;
-        Check(Resolve(tested, kHalo3, markerRva) && Whole(tested) && tested.rungs.outcome.rung == Rung::Saved &&
-                  tested.rungs.outcome.searchedToo && tested.rungs.outcome.searchAgrees &&
-                  tested.rungs.outcome.scans == 1,
-              "dev build, self-test 0x80: the saved addresses are verified and used, and the search is run beside them");
-        drive_cascade::Announce("TEST DRIVE", tested, fresh);
-        Check(Lines("DEV self-test (drive_fault 0x80): the search was run as well, and it chose the same address for "
-                    "every line") == 1 && Lines("is forcing what the next line reports") == 0,
-              "dev build: and the log says the two agree");
-        Check(ReadAll(cache) == before, "dev build: the self-test writes nothing");
+            std::snprintf(what, sizeof(what), "dev build, drive_fault 0x%02X: a good entry is not read, the drive is "
+                                              "searched, and what the search found is not saved", mask);
+            Check(resolved && forced.rungs.outcome.rung == Rung::Search && !forced.rungs.outcome.savedTried &&
+                      !forced.rungs.savedRefused && forced.rungs.outcome.learn && !forced.rungs.saved &&
+                      Lines("NOT saved for the next launch (drive_fault is set: a launch with the dev key in it neither "
+                            "reads nor writes the file)") == 1,
+                  what);
+            std::snprintf(what, sizeof(what), "dev build, drive_fault 0x%02X: the file is as it was", mask);
 #else
-        Check(forced.rungs.outcome.rung == Rung::Saved && forced.rungs.outcome.scans == 0 &&
-                  forced.report.lines[0].verdict == drive_resolve::Verdict::AsRecorded,
-              "player build: the dev key does nothing, and the saved addresses are verified as ever");
-        Check(ReadAll(cache) == before, "player build: nothing written");
+            std::snprintf(what, sizeof(what), "player build, drive_fault 0x%02X: the key does nothing, and the saved "
+                                              "addresses are verified as ever", mask);
+            Check(resolved && forced.rungs.outcome.rung == Rung::Saved && forced.rungs.outcome.scans == 0 &&
+                      forced.report.lines[0].verdict == drive_resolve::Verdict::AsRecorded &&
+                      Lines("verified at the addresses saved from an earlier launch") == 1,
+                  what);
+            std::snprintf(what, sizeof(what), "player build, drive_fault 0x%02X: nothing written", mask);
 #endif
+            Check(ReadAll(cache) == before && !Exists(temporary), what);
+        }
+        // ... and with NO ENTRY PRESENT, when the search's result is one worth saving: no file is made.
+        DeleteFileW(cache.c_str());
+        for (const int mask : {0x80, 0x10, 0x90, 0x04})
+        {
+            g_config.drive_fault = mask;
+            Resolved r;
+            const bool searched = Resolve(r, kHalo3, markerRva) && Whole(r) && r.rungs.outcome.rung == Rung::Search &&
+                                  r.rungs.outcome.learn;
+            char what[200];
+#if HALOMCCVR_DEV_DIAGNOSTICS
+            std::snprintf(what, sizeof(what), "dev build, drive_fault 0x%02X with no entry present: the drive is searched, "
+                                              "and no file is written", mask);
+            Check(searched && !r.rungs.saved && r.rungs.notSaved && !Exists(cache) && !Exists(temporary), what);
+#else
+            std::snprintf(what, sizeof(what), "player build, drive_fault 0x%02X with no entry present: the key does "
+                                              "nothing, and the search is saved as ever", mask);
+            Check(searched && r.rungs.saved && Exists(cache), what);
+            DeleteFileW(cache.c_str());
+#endif
+        }
         g_config.drive_fault = 0;
     }
 
@@ -804,6 +863,78 @@ void TestInstallProofsNeverFault()
     VirtualFree(image, 0, MEM_RELEASE);
 }
 
+// ---- a module whose function table cannot be read ----------------------------------------------------------------
+// The table's last entries are the first thing a reader looks at (its zeroed tail is trimmed). When that page
+// cannot be read the module must still open: its signatures are found, and only what needs a function's start
+// or extent is lost.
+void TestUnreadableFunctionTable()
+{
+    drive_cascade::SetCacheFile(nullptr);
+    constexpr size_t kSize = 0x5000;
+    auto* const image = static_cast<uint8_t*>(VirtualAlloc(nullptr, kSize, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE));
+    Check(image != nullptr, "five pages for a module of the test's own");
+    if (!image)
+        return;
+    const uintptr_t base = reinterpret_cast<uintptr_t>(image);
+    const auto put16 = [image](size_t at, uint16_t v) { std::memcpy(image + at, &v, sizeof(v)); };
+    const auto put32 = [image](size_t at, uint32_t v) { std::memcpy(image + at, &v, sizeof(v)); };
+    // PE32+ headers: .text at +0x1000 (two pages), unwind info at +0x3000, the function table alone at +0x4000.
+    const size_t nt = 0x80, optional = nt + 24, sections = optional + 240;
+    put16(0, 0x5A4D);
+    put32(0x3C, static_cast<uint32_t>(nt));
+    put32(nt, 0x00004550u);
+    put16(nt + 4, 0x8664);
+    put16(nt + 6, 3);
+    put16(nt + 20, 240);
+    put16(optional, 0x20B);
+    put32(optional + 56, static_cast<uint32_t>(kSize));
+    put32(optional + 108, 16);
+    put32(sections + 8, 0x2000);
+    put32(sections + 12, 0x1000);
+    put32(sections + 36, 0x60000020u);
+    put32(sections + 40 + 8, 0x1000);
+    put32(sections + 40 + 12, 0x3000);
+    put32(sections + 40 + 36, 0x40000040u);
+    put32(sections + 80 + 8, 0x1000);
+    put32(sections + 80 + 12, 0x4000);
+    put32(sections + 80 + 36, 0x40000040u);
+    put32(optional + 112 + 3 * 8, 0x4000);
+    put32(optional + 112 + 3 * 8 + 4, 36);   // two entries and a zeroed third
+    std::memset(image + 0x1000, 0xCC, 0x2000);
+    const uint8_t entryBytes[16] = {0x48, 0x89, 0x5C, 0x24, 0x08, 0x57, 0x48, 0x83, 0xEC, 0x40, 0x8B, 0xDA, 0x48, 0x8B, 0xF9, 0x33};
+    std::memcpy(image + 0x1100, entryBytes, sizeof(entryBytes));
+    const RUNTIME_FUNCTION entries[2] = {{0x1100, 0x1200, 0x3000}, {0x1200, 0x1280, 0x3004}};
+    std::memcpy(image + 0x4000, entries, sizeof(entries));
+    image[0x3000] = 0x01;
+    image[0x3004] = 0x01;
+
+    struct Probe
+    {
+        uint32_t entry = 0;
+        bool isStart = false;
+        uint32_t functions = 0;
+    };
+    const auto resolve = [&](drive_cascade::Resolution<Probe>& out) {
+        return drive_cascade::Resolve(base, kSize, kHalo3, out, [](drive_resolve::Resolver& r) {
+            Probe f;
+            f.entry = r.Unique("ENTRY", 0x1100, "48 89 5C 24 08 57 48 83 EC 40 8B DA 48 8B F9 33");
+            f.isStart = r.IsFunctionStart(f.entry);
+            f.functions = r.image().functionCount;
+            return f;
+        });
+    };
+    drive_cascade::Resolution<Probe> whole, without;
+    Check(resolve(whole) && !whole.why && whole.found.entry == 0x1100 && whole.found.isStart && whole.found.functions == 2,
+          "with everything readable the module opens, and its function table says where a function starts");
+    DWORD old = 0;
+    Check(VirtualProtect(image + 0x4000, 0x1000, PAGE_NOACCESS, &old) != 0, "the function table's page can no longer be read");
+    Check(resolve(without) && !without.why,
+          "a module whose function table cannot be read still opens: the table is asked about before it is read");
+    Check(without.found.entry == 0x1100 && !without.found.isStart && without.found.functions == 0,
+          "its signatures are still found, and nothing in it is known to be a function's start");
+    VirtualFree(image, 0, MEM_RELEASE);
+}
+
 // The cold worker passes over a watch about every 50 ms.
 struct Worker
 {
@@ -925,6 +1056,7 @@ int main(int argc, char** argv)
     TestAnnounceAndFaults();
     TestCacheFile();
     TestInstallProofsNeverFault();
+    TestUnreadableFunctionTable();
     TestHookWatch();
 
     std::printf("drive_cascade_tests (%s build): %u checks, %u failures\n",

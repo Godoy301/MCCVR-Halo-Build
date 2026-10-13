@@ -939,9 +939,9 @@ struct Config
     // find everything. Bit 7 (0x80) = a self-test, not a fault: where the known addresses verified, the search
     // is run as well and the log says whether the two agree; what is used does not change. With bits 0, 1, 2
     // or 5 the known addresses fail first, so the whole path shows: not verified, searched, reported. While
-    // any bit that changes what a resolution finds is set (every bit but 0x10 and 0x80) the address cache's
-    // file is neither read nor written, so a forced result can never reach a later launch. Read when a drive
-    // is installed; 0 for every other run.
+    // ANY bit is set the address cache's file is neither read nor written, so nothing a launch with this key
+    // in it found can reach a later launch (with bit 7 the self-test is therefore of the recorded addresses,
+    // the only known ones left). Read when a drive is installed; 0 for every other run.
     int drive_fault = 0;
     // Diagnostic: log the distinct (caller, flags, mode) of Reach's own collision_test_vector calls,
     // to identify the flags a bullet's flight test uses. Leave at 0 for play.

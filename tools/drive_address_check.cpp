@@ -1014,7 +1014,7 @@ int main(int argc, char** argv)
                         cacheFailure = "the first launch did not search and learn";
                     else if (!drive_known::MakeEntry(learned, (std::string(title) + ".dll").c_str(), drive.id,
                                                      drive_known::Stamp(shifted.image), launchOne.out.report) ||
-                             !drive_known::Put(file, learned))
+                             (drive_known::Put(file, learned), false))
                         cacheFailure = "what the search found did not make an entry";
                     else
                     {

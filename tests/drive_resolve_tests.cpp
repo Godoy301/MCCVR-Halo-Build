@@ -679,6 +679,26 @@ void TestReadImage()
     Check(im.functionCount == 2 && FunctionStartOf(im, 0x1250) == 0x1200, "its .pdata is read, without the zeroed tail");
     Check(im.tlsIndexRva == 0, "the TLS index is left to the image's owner");
 
+    // A function table that cannot be read is no table: the owner is asked before any of it is read (its zeroed
+    // tail is the first thing a reader would look at), and the rest of the image is read all the same.
+    static uintptr_t unreadableFrom = 0, unreadableTo = 0;
+    static unsigned asked = 0;
+    const auto readable = [](uintptr_t address, size_t size) {
+        ++asked;
+        return address + size <= unreadableFrom || address >= unreadableTo;
+    };
+    unreadableFrom = reinterpret_cast<uintptr_t>(pe.data()) + 0x4000;
+    unreadableTo = unreadableFrom + 0x1000;
+    Check(ReadImage(pe.data(), pe.size(), im, why, readable) && !why && asked == 1 && im.functions == nullptr &&
+              im.functionCount == 0 && im.executableCount == 1 && im.readable != nullptr &&
+              FunctionStartOf(im, 0x1250) == 0,
+          "a function table that cannot be read is no table: the image is read, and no function is known in it");
+    unreadableFrom = unreadableTo = 0;
+    asked = 0;
+    Check(ReadImage(pe.data(), pe.size(), im, why, readable) && asked == 1 && im.functionCount == 2 &&
+              im.readable != nullptr && FunctionStartOf(im, 0x1250) == 0x1200,
+          "one that can be read is read, and the image keeps the owner's word for every later read");
+
     std::vector<uint8_t> bad = pe;
     bad[0] = 0;
     Check(!ReadImage(bad.data(), bad.size(), im, why) && why, "no DOS header is refused, with the reason");
@@ -1124,6 +1144,15 @@ void TestRungFaults()
           "self-test 0x80: the search is run beside a verified result, agrees, and changes nothing that is used");
     out = RunMini(image, 0, true, nullptr, found, report);
     Check(!out.searchedToo && out.scans == 0, "without it nothing is searched");
+    // The self-test beside SAVED addresses (a build that is not the recorded one).
+    Report searched;
+    (void)RunMini(image, 0, false, nullptr, found, searched);
+    drive_known::Entry entry;
+    Check(drive_known::MakeEntry(entry, "halo3.dll", "control-update", 1, searched), "what a search found, as an entry");
+    out = RunMini(image, kFaultSearchToo, false, &entry, found, report);
+    Check(out.rung == drive_known::Rung::Saved && out.searchedToo && out.searchAgrees && out.scans == 2 && found.ok &&
+              AllHow(report, How::Known),
+          "self-test 0x80 beside saved addresses: they stay in use, and the search chooses the same for every line");
 }
 
 // `text` with its one `from` replaced by `to`.
@@ -1167,7 +1196,9 @@ void TestCacheText()
               MakeEntry(halo4, ModuleName(GameTitle::Halo4), "pilot-controller", 0x68A0E7BF04A3F000ull, second),
           "two titles' drives as entries");
     File file;
-    Check(Put(file, halo3) && Put(file, halo4) && file.count == 2, "both are held");
+    Put(file, halo3);
+    Put(file, halo4);
+    Check(file.count == 2, "both are held");
     static char text[kMaxFileText];
     const size_t length = Format(file, text, sizeof(text));
     char rows[64];
@@ -1250,7 +1281,8 @@ void TestCacheText()
     Entry newer = halo3;
     newer.stamp = 0x7000000004800000ull;
     newer.rvas[0] = 0x9999;
-    Check(Put(back, newer) && back.count == 2 && Find(back, "halo3.dll", "control-update")->stamp == newer.stamp &&
+    Put(back, newer);
+    Check(back.count == 2 && Find(back, "halo3.dll", "control-update")->stamp == newer.stamp &&
               Find(back, "halo4.dll", "pilot-controller")->rvas[0] == kMiniEntry + 0x80,
           "saving one drive again replaces its entry and keeps every other");
 
@@ -1330,18 +1362,48 @@ void TestCacheText()
     // Limits.
     char small[64];
     Check(Format(file, small, sizeof(small)) == 0 && Format(file, nullptr, 0) == 0, "text that does not fit is not written");
-    File full;
-    bool allPut = true;
-    for (uint32_t i = 0; i < kMaxEntries; ++i)
-    {
-        Entry e = halo3;
-        std::snprintf(e.id, sizeof(e.id), "drive-%u", i);
-        allPut = allPut && Put(full, e);
-    }
+    // A FULL FILE: what is put is never refused. One entry gives way, the oldest that is surely dead first.
+    static File full;
+    const auto fill = [&halo3]() {
+        full = File{};
+        for (uint32_t i = 0; i < kMaxEntries; ++i)
+        {
+            Entry e = halo3;
+            std::snprintf(e.id, sizeof(e.id), "drive-%u", i);
+            Put(full, e);
+        }
+    };
     Entry extra = halo3;
-    std::snprintf(extra.id, sizeof(extra.id), "one-too-many");
-    Check(allPut && full.count == kMaxEntries && !Put(full, extra) && Format(full, text, sizeof(text)) > 0,
-          "a full file takes no more, and a full file's text fits");
+    std::snprintf(extra.id, sizeof(extra.id), "one-more");
+    fill();
+    Check(full.count == kMaxEntries && Format(full, text, sizeof(text)) > 0, "sixteen entries are held, and their text fits");
+    full.entries[5].stamp ^= 1;   // one of them is of another build of the module
+    full.entries[11].stamp ^= 1;  // and a later one too
+    Put(full, extra);
+    Check(full.count == kMaxEntries && !Find(full, "halo3.dll", "drive-5") && Find(full, "halo3.dll", "drive-11") &&
+              Find(full, "halo3.dll", "one-more") == &full.entries[kMaxEntries - 1] &&
+              Find(full, "halo3.dll", "drive-0") == &full.entries[0] && Find(full, "halo3.dll", "drive-6") == &full.entries[5],
+          "a full file: the oldest entry of another build of the module gives way, and every other is kept, in order");
+    fill();
+    std::snprintf(full.entries[2].module, sizeof(full.entries[2].module), "halo4.dll");
+    std::snprintf(full.entries[9].module, sizeof(full.entries[9].module), "halo4.dll");
+    Put(full, extra);
+    Check(full.count == kMaxEntries && !Find(full, "halo4.dll", "drive-2") && Find(full, "halo4.dll", "drive-9") &&
+              Find(full, "halo3.dll", "one-more") && Find(full, "halo3.dll", "drive-0"),
+          "with none of another build in it, the oldest entry of another module gives way");
+    fill();
+    Put(full, extra);
+    Check(full.count == kMaxEntries && !Find(full, "halo3.dll", "drive-0") &&
+              Find(full, "halo3.dll", "drive-1") == &full.entries[0] && Find(full, "halo3.dll", "one-more"),
+          "with nothing else to give, the oldest entry of all gives way");
+    fill();
+    Entry held = halo3;
+    std::snprintf(held.id, sizeof(held.id), "drive-7");
+    held.rvas[0] = 0x7777;
+    Put(full, held);
+    Check(full.count == kMaxEntries && Find(full, "halo3.dll", "drive-7") == &full.entries[7] &&
+              full.entries[7].rvas[0] == 0x7777 && Find(full, "halo3.dll", "drive-0"),
+          "a drive that is already held is replaced where it stands, in a full file as in any other");
     {
         // The longest entry there can be, sixteen times over.
         Entry big;

@@ -1,6 +1,7 @@
 // DRIVE CASCADE, the DLL's side (drive_cascade.h).
 #include <windows.h>
 
+#include <atomic>
 #include <cstdio>
 #include <cstring>
 #include <cwchar>
@@ -99,7 +100,11 @@ bool Open(uintptr_t base, size_t size, drive_resolve::Image& image, const char*&
         why = "the module's headers are not readable";
         return false;
     }
-    if (!drive_resolve::ReadImage(reinterpret_cast<const uint8_t*>(base), size, image, why))
+    // Outside the readable runs found below, every read asks the system first (WhollyReadable): a page that
+    // cannot be read costs the line that needed it, and the rest of the drive's resolution stands. The function
+    // table is asked about before any of it is read: one that cannot be read is no table, so nothing that needs
+    // a function's start or extent resolves, and the drives that need one are not hooked.
+    if (!drive_resolve::ReadImage(reinterpret_cast<const uint8_t*>(base), size, image, why, &WhollyReadable))
         return false;
     // Search only what can be read of each executable section.
     drive_resolve::Range runs[drive_resolve::kMaxExecutableRanges]{};
@@ -122,19 +127,7 @@ bool Open(uintptr_t base, size_t size, drive_resolve::Image& image, const char*&
     for (uint32_t i = 0; i < drive_resolve::kMaxExecutableRanges; ++i)
         image.executable[i] = i < count ? runs[i] : drive_resolve::Range{};
     image.executableCount = count;
-    // Without a readable .pdata nothing that needs a function's start or extent resolves, and those drives are
-    // not hooked.
-    if (image.functions &&
-        !WhollyReadable(reinterpret_cast<uintptr_t>(image.functions),
-                        static_cast<size_t>(image.functionCount) * sizeof(drive_resolve::RuntimeFunction)))
-    {
-        image.functions = nullptr;
-        image.functionCount = 0;
-    }
     ReadTlsIndex(base, size, image);
-    // Outside the readable runs found above, every read asks the system first: a page that cannot be read costs
-    // the line that needed it, and the rest of the drive's resolution stands.
-    image.readable = &WhollyReadable;
     // Every compare and every count is of the game's own bytes, whatever this mod has hooked by now.
     image.original = &sig::CopyUnhooked;
     image.correct = &sig::CorrectLiveCountForHooks;
@@ -244,12 +237,14 @@ bool LookUp(const char* module, const char* id, uint64_t stamp, drive_known::Ent
 }
 
 // Puts one drive's addresses into the file. The file is read again first, so every other drive's and every other
-// title's entry is kept.
+// title's entry is kept (a file that is full lets its oldest dead entry give way: drive_known::Put). False when
+// the file could not be written.
 bool Store(const drive_known::Entry& entry)
 {
     AcquireSRWLockExclusive(&g_cacheLock);
     ReadCacheLocked();
-    const bool stored = drive_known::Put(g_cacheFile, entry) && WriteCacheLocked();
+    drive_known::Put(g_cacheFile, entry);
+    const bool stored = WriteCacheLocked();
     ReleaseSRWLockExclusive(&g_cacheLock);
     return stored;
 }
@@ -297,12 +292,10 @@ void SetCacheFolder(const wchar_t* folder)
 bool RunPlan(uintptr_t base, size_t size, const Drive& drive, drive_known::PlanFn plan, drive_known::KeepFn keep,
              void* context, drive_resolve::Report& report, Rungs& rungs, const char*& why)
 {
-    static bool s_sinkSet = false;
-    if (!s_sinkSet)
-    {
-        s_sinkSet = true;
+    // Installs run on more than one worker: the library's log sink is set by exactly one of them.
+    static std::atomic<bool> s_sinkSet{false};
+    if (!s_sinkSet.exchange(true))
         addrcascade::set_logger([](const char* message) { LOG("%s", message); });
-    }
     report = drive_resolve::Report{};
     rungs = Rungs{};
     why = nullptr;
@@ -310,10 +303,11 @@ bool RunPlan(uintptr_t base, size_t size, const Drive& drive, drive_known::PlanF
     if (!GuardedOpen(base, size, image, why))
         return false;
     const uint32_t faults = Faults();
-    // A forced fault neither reads nor writes the player's file: what it makes of a drive is not what the game
-    // DLL holds, and must never be found there by a later launch.
-    const uint32_t forcing = faults & drive_resolve::kFaultsThatForce;
-    const bool cacheOn = !forcing && g_config.drive_address_cache != 0 && g_cachePath[0] != 0;
+    // While ANY bit of the dev key is set the player's file is neither read nor written. What a forced fault
+    // makes of a drive is not what the game DLL holds and must never be found there by a later launch; and a
+    // bit that forces nothing (the self-test, the silenced watchdog) still marks a launch whose result nobody
+    // meant to keep.
+    const bool cacheOn = !faults && g_config.drive_address_cache != 0 && g_cachePath[0] != 0;
     const char* const module = drive_known::ModuleName(drive.title);
     const uint64_t stamp = drive_known::Stamp(image);
     rungs.recordedBuild =
@@ -333,8 +327,8 @@ bool RunPlan(uintptr_t base, size_t size, const Drive& drive, drive_known::PlanF
     if (rungs.outcome.learn)
     {
 #if HALOMCCVR_DEV_DIAGNOSTICS
-        if (forcing)
-            rungs.notSaved = "a fault is being forced (drive_fault), and its result is not the game's";
+        if (faults)
+            rungs.notSaved = "drive_fault is set: a launch with the dev key in it neither reads nor writes the file";
         else
 #endif
         if (!g_config.drive_address_cache)
