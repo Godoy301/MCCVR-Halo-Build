@@ -1093,21 +1093,14 @@ bool InstallHalo2Drive(uintptr_t base, size_t size) noexcept
     static addrcascade::TierReporter s_foundHow;
     if (opened)
         drive_cascade::Announce("Halo 2 DRIVE", resolution, s_foundHow);
-    const bool entryOk = opened && found.entry != 0;
-    const bool strideOk = opened && found.stride != 0;
-    const bool yawOk = opened && found.yaw != 0;
-    const bool pitchOk = opened && found.pitch != 0;
-    // The call site's rel32 must land on the entry; the instruction after it is the return address the drive
-    // writes after. The record slot comes from the prologue's rip load and must lie inside the module. Both are
-    // read again here, from the loaded image, at the places the resolution found.
-    uintptr_t callTarget = 0, slot = 0;
-    const uintptr_t call = base + found.call;
-    const bool callOk = entryOk && found.call != 0 && *reinterpret_cast<const uint8_t*>(call) == 0xE8 &&
-        DecodeRipRelative(call, 1, 5, callTarget) && callTarget == base + found.entry;
-    const uintptr_t load = base + found.entry + drive_sites::kHalo2ControlSlotLoadOffset;
-    const bool slotOk = entryOk && found.slot != 0 && DecodeRipRelative(load, 3, 7, slot) && slot >= base &&
-        slot + sizeof(uintptr_t) <= base + size && slot == base + found.slot;
-    if (!entryOk || !strideOk || !yawOk || !pitchOk || !callOk || !slotOk)
+    // THE DECISION (drive_install.h; the offline check runs the same function on the game DLL as the loader maps
+    // it): every anchor found, the call site's rel32 landing on the entry, the record slot inside the module --
+    // the last two read again from the loaded image at the places the resolution found.
+    const drive_install::Halo2Decision decision = drive_install::DecideHalo2(base, size, opened, found);
+    const bool entryOk = decision.entryOk, strideOk = decision.strideOk, yawOk = decision.yawOk,
+               pitchOk = decision.pitchOk, callOk = decision.callOk, slotOk = decision.slotOk;
+    const uintptr_t call = decision.call, slot = decision.slot;
+    if (!decision.hook)
     {
         char first[280] = "";
         if (opened)

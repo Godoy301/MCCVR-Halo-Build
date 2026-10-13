@@ -33,6 +33,7 @@
 // resolution, and the DLL's side.
 #include "../common/drive_sites.h"
 #include "drive_cascade.h"
+#include "drive_install.h"
 #include "seat_frame_reader.h"
 #include "seat_limit_publication.h"
 #include "../common/physical_crouch_native_read.h"

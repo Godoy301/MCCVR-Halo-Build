@@ -548,34 +548,20 @@ bool Halo4Type13Install(uintptr_t base, size_t size, uint32_t generation)
     static addrcascade::TierReporter s_foundHow;
     if (opened)
         drive_cascade::Announce("Halo 4 Broadsword direct drive", resolution, s_foundHow);
-    char failed[96]{};
-    size_t used = 0;
-    bool anchorsOk = opened;
-    for (size_t i = 0; i < drive_sites::kHalo4FlightRows; ++i)
-    {
-        if (resolution.found.rows[i])
-            continue;
-        anchorsOk = false;
-        const int n = snprintf(failed + used, sizeof(failed) - used, "%s%s", used ? "," : "", kHalo4FlightAnchors[i].name);
-        if (n > 0 && used + static_cast<size_t>(n) < sizeof(failed))
-            used += static_cast<size_t>(n);
-    }
-    const bool callOk = anchorsOk && AimCallerCallReturn(base, size, found.call, found.entry) != 0;
-    // The controller's TLS index is the module's own (the resolution proved its load names it) and the direct
-    // drive's (so its record is the one written here).
-    const bool tlsOk = callOk && found.tlsIndex && base + found.tlsIndex == st.tlsIndexAddress;
-    // The frame through which the dispatcher's own return address is read from the controller's entry rsp: from the
-    // dispatcher's unwind info and its prologue, which must agree -- in the loaded module's function table as in
-    // the .pdata the resolution read.
-    uint32_t frame = 0;
-    const char* frameWhy = found.frameWhy;
-    const bool frameOk = tlsOk && found.dispatcher &&
-        AimCallerProveDispatcher(base, size, found.dispatcher, found.call, frame, frameWhy) && frame &&
-        frame == found.frame;
-    uintptr_t callerRet[4]{};
-    for (int i = 0; frameOk && i < 4; ++i)
-        callerRet[i] = AimCallerCallReturn(base, size, found.callerCall[i], found.dispatcher);
-    if (!anchorsOk || !callOk || !tlsOk || !frameOk || !callerRet[2])
+    // THE DECISION (drive_install.h; the offline check runs the same function on halo4.dll as the loader maps it):
+    // every row found; the dispatcher's call landing on the controller; the controller's TLS index the module's
+    // own (the resolution proved its load names it) and the direct drive's (so its record is the one written
+    // here); the frame through which the dispatcher's own return address is read from the controller's entry rsp
+    // out of the loaded module's function table and the one the resolution proved; the stick update's caller.
+    const drive_install::FlightDecision decision = drive_install::DecideFlight(
+        base, size, opened, kHalo4FlightAnchors, resolution.found.rows, found, st.tlsIndexAddress, false, 4, 2);
+    const char* const failed = decision.failed;
+    const bool anchorsOk = decision.rowsOk, callOk = decision.callOk, tlsOk = decision.callOk && decision.tlsOk,
+               frameOk = decision.frameOk;
+    const uint32_t frame = decision.frame;
+    const char* const frameWhy = decision.frameWhy;
+    const uintptr_t* const callerRet = decision.callerRet;
+    if (!decision.hook)
     {
         char first[280] = "";
         if (opened)

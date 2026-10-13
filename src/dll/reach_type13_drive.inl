@@ -366,14 +366,21 @@ bool ReachType13Install(uintptr_t base, size_t size, uint32_t generation)
     static addrcascade::TierReporter s_foundHow;
     if (opened)
         drive_cascade::Announce("Reach Sabre direct drive", resolution, s_foundHow);
+    // THE DECISION (drive_install.h; the offline check runs the same function on haloreach.dll as the loader maps
+    // it). The engine TLS index must be the module's own, loaded by the controller itself (the resolution), and
+    // the one this lane's readers use (ReachSabreRead and the apply read it through kReachEngineTlsIndexRva);
+    // every row is on a page of code; the dispatcher's call lands on the controller; the frame through which the
+    // dispatcher's own return address is read from the controller's entry rsp comes out of the loaded module's
+    // function table and is the one the resolution proved; the stick update's caller is proven.
+    const drive_install::FlightDecision decision = drive_install::DecideFlight(
+        base, size, opened, kReachSabreAnchors, resolution.found.rows, found, base + kReachEngineTlsIndexRva, true, 3, 1);
     char failed[96]{};
-    size_t used = 0;
-    // The engine TLS index: the module's own, loaded by the controller itself (the resolution), and the one this
-    // lane's readers use (ReachSabreRead and the apply read it through kReachEngineTlsIndexRva).
-    bool anchorsOk = opened && found.tlsIndex && found.tlsIndex == kReachEngineTlsIndexRva;
-    if (opened && !anchorsOk)
+    const bool tlsFailed = opened && !decision.tlsOk;
+    snprintf(failed, sizeof(failed), "%s%s%s", tlsFailed ? "TLS-INDEX" : "", tlsFailed && decision.failed[0] ? "," : "",
+             decision.failed);
+    const bool anchorsOk = decision.rowsOk && decision.tlsOk;
+    if (opened && !decision.tlsOk)
     {
-        used = static_cast<size_t>(snprintf(failed, sizeof(failed), "TLS-INDEX"));
         // NOT FOLLOWED, and said as what it is: the code may all have been found.
         if (found.tlsIndex)
             LOG("Reach Sabre direct drive: NOT FOLLOWED. This game DLL keeps its engine TLS index at +0x%X, and this "
@@ -381,29 +388,11 @@ bool ReachType13Install(uintptr_t base, size_t size, uint32_t generation)
                 "even where every code site was found, until that constant is the module's",
                 found.tlsIndex, static_cast<unsigned long long>(kReachEngineTlsIndexRva));
     }
-    for (size_t i = 0; i < drive_sites::kReachSabreRows; ++i)
-    {
-        const uint32_t at = resolution.found.rows[i];
-        if (at && ReachColdExecutableAddress(base + at))
-            continue;
-        anchorsOk = false;
-        const int n = snprintf(failed + used, sizeof(failed) - used, "%s%s", used ? "," : "", kReachSabreAnchors[i].name);
-        if (n > 0 && used + static_cast<size_t>(n) < sizeof(failed))
-            used += static_cast<size_t>(n);
-    }
-    const bool callOk = anchorsOk && AimCallerCallReturn(base, size, found.call, found.entry) != 0;
-    // The frame through which the dispatcher's own return address is read from the controller's entry rsp: from the
-    // dispatcher's unwind info and its prologue, which must agree -- in the loaded module's function table as in
-    // the .pdata the resolution read.
-    uint32_t frame = 0;
-    const char* frameWhy = found.frameWhy;
-    const bool frameOk = callOk && found.dispatcher &&
-        AimCallerProveDispatcher(base, size, found.dispatcher, found.call, frame, frameWhy) && frame &&
-        frame == found.frame;
-    uintptr_t callerRet[3]{};
-    for (int i = 0; frameOk && i < 3; ++i)
-        callerRet[i] = AimCallerCallReturn(base, size, found.callerCall[i], found.dispatcher);
-    if (!anchorsOk || !callOk || !frameOk || !callerRet[1])
+    const bool callOk = anchorsOk && decision.callOk, frameOk = decision.frameOk;
+    const uint32_t frame = decision.frame;
+    const char* const frameWhy = decision.frameWhy;
+    const uintptr_t* const callerRet = decision.callerRet;
+    if (!decision.hook)
     {
         char first[280] = "";
         if (opened)

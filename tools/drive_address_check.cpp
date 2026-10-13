@@ -53,6 +53,7 @@
 #include "config.h"
 #include "drive_known.h"
 #include "../src/dll/drive_cascade.h"
+#include "../src/dll/drive_install.h"
 
 // The DLL's side of the resolution logs through this (--loaded).
 void Logf(const char* format, ...)
@@ -303,18 +304,26 @@ bool MoveImage(const Loaded& module, uint32_t shift, Loaded& out, std::string& w
     return true;
 }
 
-// One drive's resolution: its report, where it would hook, and whether the hook may exist.
+// One drive's resolution: its report, where it would hook, and whether the hook may exist. And what its plan
+// found, typed: the install's own decision (drive_install.h) is made from that.
 struct Outcome
 {
     bool ok = false;
     uint32_t hook = 0;
     char detail[240]{};
     Report report{};
+    drive_sites::ReachControl reachControl{};
+    drive_sites::LegacyControl legacy{};
+    drive_sites::Callers callers{};
+    drive_sites::ReachSabre sabre{};
+    drive_sites::Halo4Flight halo4Flight{};
+    drive_sites::Halo2Control halo2{};
 };
 
 using RunFn = void (*)(Resolver&, Outcome&);
 
-void RunCallers(Resolver& r, const drive_sites::CallerAnchors& anchors, uint32_t entry, char* text, size_t size)
+drive_sites::Callers RunCallers(Resolver& r, const drive_sites::CallerAnchors& anchors, uint32_t entry, char* text,
+                               size_t size)
 {
     const drive_sites::Callers c = drive_sites::ResolveCallers(r, anchors, entry);
     const bool dispatcher = anchors.accumulatorCall.pattern != nullptr;
@@ -335,6 +344,7 @@ void RunCallers(Resolver& r, const drive_sites::CallerAnchors& anchors, uint32_t
     else
         std::snprintf(text, size, "caller map %s (by return address, %d of %d callers)", stick ? "proven" : "NOT proven",
                       proven, sites);
+    return c;
 }
 
 void RunReachControl(Resolver& r, Outcome& out)
@@ -342,7 +352,8 @@ void RunReachControl(Resolver& r, Outcome& out)
     const drive_sites::ReachControl f = drive_sites::ResolveReachControl(r);
     out.ok = f.ok;
     out.hook = f.entry;
-    RunCallers(r, drive_sites::kReachCallerAnchors, f.entry, out.detail, sizeof(out.detail));
+    out.reachControl = f;
+    out.callers = RunCallers(r, drive_sites::kReachCallerAnchors, f.entry, out.detail, sizeof(out.detail));
     (void)drive_sites::ResolveTick(r, drive_sites::kReachTickAnchors);
 }
 
@@ -352,7 +363,8 @@ void RunLegacy(Resolver& r, Outcome& out, int slot)
     out.ok = f.ok;
     out.hook = f.entry;
     char callers[160];
-    RunCallers(r, drive_sites::kLegacyCallerAnchors[slot], f.entry, callers, sizeof(callers));
+    out.legacy = f;
+    out.callers = RunCallers(r, drive_sites::kLegacyCallerAnchors[slot], f.entry, callers, sizeof(callers));
     if (slot == 2)
         std::snprintf(out.detail, sizeof(out.detail), "%s; record unit load %s", callers,
                       f.recordUnitLoad ? "proven (seats may be written)" : "NOT proven (seats keep the stick servo)");
@@ -378,12 +390,14 @@ void DescribeFlight(const drive_sites::Flight& f, Outcome& out)
 
 void RunReachSabre(Resolver& r, Outcome& out)
 {
-    DescribeFlight(drive_sites::ResolveReachSabre(r).flight, out);
+    out.sabre = drive_sites::ResolveReachSabre(r);
+    DescribeFlight(out.sabre.flight, out);
 }
 
 void RunHalo4Flight(Resolver& r, Outcome& out)
 {
-    DescribeFlight(drive_sites::ResolveHalo4Flight(r).flight, out);
+    out.halo4Flight = drive_sites::ResolveHalo4Flight(r);
+    DescribeFlight(out.halo4Flight.flight, out);
 }
 
 void RunHalo2(Resolver& r, Outcome& out)
@@ -391,6 +405,7 @@ void RunHalo2(Resolver& r, Outcome& out)
     const drive_sites::Halo2Control f = drive_sites::ResolveHalo2Control(r);
     out.ok = f.ok;
     out.hook = f.entry;
+    out.halo2 = f;
     std::snprintf(out.detail, sizeof(out.detail), "control update's call +0x%X; player control globals slot +0x%X",
                   f.call, f.slot);
 }
@@ -417,6 +432,91 @@ void RunT13Halo4(Resolver& r, Outcome& out)
     RunT13(r, out, drive_sites::kT13Halo4Anchors, drive_sites::kT13Halo4Flight, drive_sites::kT13Halo4Sites);
 }
 
+// THE INSTALL'S OWN DECISION on a module as the loader maps it: the functions of src/dll/drive_install.h that the
+// DLL's install calls once its plan has run. `hook`: the install would hook. `whole`: and everything it proves
+// beyond the hook (a control update's caller map) is proven. `legacyTls`: where Halo 4's control update drive
+// reads the engine TLS index (the Broadsword's drive writes through its record).
+struct InstallVerdict
+{
+    bool hook;
+    bool whole;
+};
+using InstallFn = InstallVerdict (*)(uintptr_t base, size_t size, const Outcome& out, uintptr_t legacyTls, char* text,
+                                     size_t n);
+
+InstallVerdict InstallControlMap(uintptr_t base, size_t size, bool hook, uint32_t entry, const drive_sites::Callers& callers,
+                                 const drive_sites::CallerAnchors& anchors, const char* flags, char* text, size_t n)
+{
+    aim_caller::CallerMap map;
+    const drive_install::CallerMapProof proof = drive_install::BuildCallerMap(base, size, entry, callers, anchors, map);
+    char sites[200];
+    drive_install::CallerMapText(base, anchors, proof, sites, sizeof(sites));
+    std::snprintf(text, n, "%s; caller map %s%s%s: %s", flags, proof.proven ? "proven" : "NOT proven (",
+                  proof.proven ? "" : (proof.why ? proof.why : "?"), proof.proven ? "" : ")", sites);
+    return {hook, proof.proven};
+}
+
+InstallVerdict InstallReachControl(uintptr_t base, size_t size, const Outcome& out, uintptr_t, char* text, size_t n)
+{
+    const drive_install::ReachControlDecision d =
+        drive_install::DecideReachControl(base, true, out.reachControl, drive_sites::kReachTlsIndexRva);
+    char flags[96];
+    std::snprintf(flags, sizeof(flags), "entry=%d tls=%d accumulator=%d tls-index=%d", d.entryOk, d.tlsOk, d.accOk,
+                  d.indexOk);
+    return InstallControlMap(base, size, d.hook, out.reachControl.entry, out.callers, drive_sites::kReachCallerAnchors,
+                             flags, text, n);
+}
+
+InstallVerdict InstallLegacy(int slot, uintptr_t base, size_t size, const Outcome& out, char* text, size_t n)
+{
+    const bool hook = drive_install::DecideLegacyControl(true, out.legacy);
+    return InstallControlMap(base, size, hook, out.legacy.entry, out.callers, drive_sites::kLegacyCallerAnchors[slot],
+                             hook ? "the control update resolved" : "the control update did NOT resolve", text, n);
+}
+InstallVerdict InstallHalo3(uintptr_t base, size_t size, const Outcome& out, uintptr_t, char* text, size_t n)
+{
+    return InstallLegacy(0, base, size, out, text, n);
+}
+InstallVerdict InstallOdst(uintptr_t base, size_t size, const Outcome& out, uintptr_t, char* text, size_t n)
+{
+    return InstallLegacy(1, base, size, out, text, n);
+}
+InstallVerdict InstallHalo4(uintptr_t base, size_t size, const Outcome& out, uintptr_t, char* text, size_t n)
+{
+    return InstallLegacy(2, base, size, out, text, n);
+}
+
+InstallVerdict FlightVerdict(const drive_install::FlightDecision& d, int stick, char* text, size_t n)
+{
+    std::snprintf(text, n, "rows=%d (failed: %s) tls=%d dispatcher call=%d frame=%d (0x%X%s%s) stick-update caller=%d",
+                  d.rowsOk, d.failed[0] ? d.failed : "none", d.tlsOk, d.callOk, d.frameOk, d.frame,
+                  d.frameWhy ? ": " : "", d.frameWhy ? d.frameWhy : "", d.callerRet[stick] ? 1 : 0);
+    return {d.hook, d.hook};
+}
+
+InstallVerdict InstallReachSabre(uintptr_t base, size_t size, const Outcome& out, uintptr_t, char* text, size_t n)
+{
+    return FlightVerdict(drive_install::DecideFlight(base, size, true, drive_sites::kReachSabreAnchors, out.sabre.rows,
+                                                     out.sabre.flight, base + drive_sites::kReachTlsIndexRva, true, 3, 1),
+                         1, text, n);
+}
+
+InstallVerdict InstallHalo4Flight(uintptr_t base, size_t size, const Outcome& out, uintptr_t legacyTls, char* text,
+                                  size_t n)
+{
+    return FlightVerdict(drive_install::DecideFlight(base, size, true, drive_sites::kHalo4FlightAnchors,
+                                                     out.halo4Flight.rows, out.halo4Flight.flight, legacyTls, false, 4, 2),
+                         2, text, n);
+}
+
+InstallVerdict InstallHalo2(uintptr_t base, size_t size, const Outcome& out, uintptr_t, char* text, size_t n)
+{
+    const drive_install::Halo2Decision d = drive_install::DecideHalo2(base, size, true, out.halo2);
+    std::snprintf(text, n, "entry=%d stride=%d yaw=%d pitch=%d call=%d slot=%d", d.entryOk, d.strideOk, d.yawOk, d.pitchOk,
+                  d.callOk, d.slotOk);
+    return {d.hook, d.hook};
+}
+
 struct Drive
 {
     const char* dll;
@@ -426,24 +526,30 @@ struct Drive
     bool readsTlsIndex;        // its resolution needs the engine TLS index
     bool survivesOffsetFault;  // with every in-function anchor denied its offset it can still be hooked
     const char* lostToOffsetFault[3];   // the sites that fault must lose (two matches in their function)
+    InstallFn install;                  // the install's own decision (null: a dev observer, which rides a drive's hook)
 };
 
 constexpr Drive kDrives[] = {
-    {"halo2", "control-update", "Halo 2 control update (on foot and seats)", &RunHalo2, false, true, {}},
-    {"halo3", "control-update", "Halo 3 control update (on foot and seats)", &RunHalo3, true, true, {}},
-    {"halo3odst", "control-update", "ODST control update (on foot and seats)", &RunOdst, true, true, {}},
-    {"haloreach", "control-update", "Reach control update (on foot and seats)", &RunReachControl, true, true, {}},
+    {"halo2", "control-update", "Halo 2 control update (on foot and seats)", &RunHalo2, false, true, {}, &InstallHalo2},
+    {"halo3", "control-update", "Halo 3 control update (on foot and seats)", &RunHalo3, true, true, {}, &InstallHalo3},
+    {"halo3odst", "control-update", "ODST control update (on foot and seats)", &RunOdst, true, true, {}, &InstallOdst},
+    {"haloreach", "control-update", "Reach control update (on foot and seats)", &RunReachControl, true, true, {},
+     &InstallReachControl},
     // A pilot's drive needs every row, and its shortest rows (the four bytes that load the angles' address) are
     // taken at their recorded offset or not at all: denied the offset, the drive is not hooked.
-    {"haloreach", "pilot-controller", "Reach Sabre / Seraph pilot controller", &RunReachSabre, true, false, {}},
-    {"haloreach", "pilot-observer", "Reach pilot controller, dev observer (dev builds only)", &RunT13Reach, true, false, {}},
+    {"haloreach", "pilot-controller", "Reach Sabre / Seraph pilot controller", &RunReachSabre, true, false, {},
+     &InstallReachSabre},
+    {"haloreach", "pilot-observer", "Reach pilot controller, dev observer (dev builds only)", &RunT13Reach, true, false, {},
+     nullptr},
     // Halo 4's record unit load stands three times in the control update: without its offset it is not found,
     // and only the seats lose direct drive.
-    {"halo4", "control-update", "Halo 4 control update (on foot and seats)", &RunHalo4, true, true, {"record unit load"}},
-    {"halo4", "pilot-controller", "Halo 4 Broadsword pilot controller", &RunHalo4Flight, true, false, {}},
+    {"halo4", "control-update", "Halo 4 control update (on foot and seats)", &RunHalo4, true, true, {"record unit load"},
+     &InstallHalo4},
+    {"halo4", "pilot-controller", "Halo 4 Broadsword pilot controller", &RunHalo4Flight, true, false, {},
+     &InstallHalo4Flight},
     // The observer's IDLE and RECUNIT rows stand more than once in their functions: the observer stays off.
     {"halo4", "pilot-observer", "Halo 4 pilot controller, dev observer (dev builds only)", &RunT13Halo4, true, false,
-     {"IDLE", "RECUNIT"}},
+     {"IDLE", "RECUNIT"}, nullptr},
 };
 
 struct TitleDll
@@ -793,7 +899,7 @@ int main(int argc, char** argv)
     unsigned movedSites = 0, movedFollowed = 0, movedFailures = 0;
     unsigned loadedDrives = 0, loadedSites = 0, loadedFailures = 0;
     unsigned rungOne = 0, rungFailures = 0, rungScans = 0, savedLaunches = 0;
-    unsigned titlesWanted = 0, titlesNotChecked = 0;
+    unsigned titlesWanted = 0, titlesNotChecked = 0, installDrives = 0, installHooks = 0;
     double rungOneMs = 0.0, searchMs = 0.0;
     constexpr uint32_t kMovedShift = 0x40;
     for (const TitleDll& entry : kTitles)
@@ -830,6 +936,7 @@ int main(int argc, char** argv)
         }
         bool any = false;
         HMODULE mapped = nullptr;
+        uintptr_t legacyTls = 0;   // Halo 4: where its control update drive reads the TLS index, on the mapped copy
         std::wstring mappedCopy;
         bool mapTried = false;
         for (const Drive& drive : kDrives)
@@ -1015,6 +1122,21 @@ int main(int argc, char** argv)
                         failure = "the search beside the verified addresses did not agree with them";
                     if (!failure && rungs.saved)
                         failure = "the recorded build's own addresses were written to the cache";
+                    // THE INSTALL'S OWN DECISION on this module (drive_install.h: the code the DLL's install runs
+                    // once its plan has): what is printed below as its hook is what the install would do.
+                    char decided[420] = "its readiness is its plan's (a dev observer rides the drive's hook)";
+                    InstallVerdict verdict{run.out.ok, true};
+                    if (drive.install)
+                    {
+                        verdict = drive.install(base, nt->OptionalHeader.SizeOfImage, run.out, legacyTls, decided,
+                                                sizeof(decided));
+                        ++installDrives;
+                        installHooks += verdict.hook && verdict.whole ? 1u : 0u;
+                    }
+                    if (!std::strcmp(title, "halo4") && !std::strcmp(drive.id, "control-update"))
+                        legacyTls = base + run.out.legacy.tlsIndex;
+                    if (!failure && healthy.report.Complete() && !(verdict.hook && verdict.whole))
+                        failure = "the install's own decision is not a hook with everything proven";
                     loadedSites += report.count;
                     loadedFailures += failure ? 1u : 0u;
                     std::printf("   as the loader maps it (base %p, through drive_cascade): %s; %s, %u scans, %.3f ms; "
@@ -1030,6 +1152,12 @@ int main(int argc, char** argv)
                                                            : "did not run",
                                 failure ? " -- DIFFERS: " : "", failure ? failure : "",
                                 notOpened ? ": " : "", notOpened ? notOpened : "");
+                    std::printf("      THE INSTALL'S OWN DECISION there: %s (%s)\n",
+                                !drive.install ? (verdict.hook ? "READY" : "NOT READY")
+                                               : verdict.hook ? (verdict.whole ? "HOOK, with everything it proves"
+                                                                               : "HOOK, but its caller map is NOT proven")
+                                                              : "NO HOOK",
+                                decided);
                 }
             }
             if (!faults)
@@ -1094,6 +1222,13 @@ int main(int argc, char** argv)
     if (moved)
         std::printf("THE ADDRESS CACHE: on the moved build %u of %u drives were searched and saved by the first launch "
                     "and verified with no scan by the second\n", savedLaunches, drives);
+    if (!loadedFolder.empty())
+        std::printf("THE INSTALLS' OWN DECISIONS (src/dll/drive_install.h, the code each install runs after its plan, on "
+                    "the mapped copies): %u of %u player drives would be hooked with everything they prove\n",
+                    installHooks, installDrives);
+    else
+        std::printf("THE INSTALLS' OWN DECISIONS were NOT made: they are made on a module as the loader maps it "
+                    "(--loaded <folder>). What is printed above as HOOK is the plan's word alone\n");
     std::printf("\nMODES RUN: the search's table and the rungs (always); the moved build: %s; the forced faults: %s; "
                 "each DLL as the loader maps it, through the DLL's own side: %s\n",
                 moved ? "yes" : "NO (--moved)", faults ? "yes" : "NO (--faults)",

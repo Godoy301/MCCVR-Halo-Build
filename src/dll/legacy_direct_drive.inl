@@ -590,7 +590,7 @@ uint32_t LegacyDriveBindPitchLimits(int slot, uintptr_t base, uint32_t clampRva,
 // Builds the title's caller map from the call sites the install's resolution FOUND in this module (`found`;
 // `entryRva`: the found control update) and logs what it proved. Each found call is proven again here, on the
 // loaded image: its rel32 must land on its target, and in dispatcher mode the dispatcher's frame is taken from the
-// loaded module's own function table (AimCallerProveDispatcher) and must be the one the resolution proved from the
+// loaded module's own function table (drive_install::ProveDispatcher) and must be the one the resolution proved from the
 // module's .pdata. Returns rung 1: the stick site is proven. Otherwise the map stays empty and every caller counts
 // as the update.
 bool LegacyDriveBuildCallerMap(int slot, uintptr_t base, size_t size, uint32_t entryRva,
@@ -598,60 +598,16 @@ bool LegacyDriveBuildCallerMap(int slot, uintptr_t base, size_t size, uint32_t e
 {
     const auto& site = kLegacyDriveSites[slot];
     const auto& anchors = kLegacyCallerAnchors[slot];
-    map.clear();
-    const char* why = found.why;
-    uint32_t callTarget = entryRva;
-    if (anchors.accumulatorCall.pattern)
+    // THE PROOF (drive_install.h; the offline check runs the same function on the game DLL as the loader maps it).
+    const drive_install::CallerMapProof proof = drive_install::BuildCallerMap(base, size, entryRva, found, anchors, map);
+    if (!proof.proven)
     {
-        // DISPATCHER MODE: the accumulator's one call site, the dispatcher around it, and its frame.
-        const uintptr_t accRet = AimCallerCallReturn(base, size, found.accumulatorCall, entryRva);
-        uint32_t frame = 0;
-        if (!accRet)
-            why = why ? why : "the accumulator's call site";
-        else if (!found.dispatcher)
-            why = why ? why : "the dispatcher prologue";
-        else if (AimCallerProveDispatcher(base, size, found.dispatcher, found.accumulatorCall, frame, why) &&
-                 frame != found.frame)
-        {
-            frame = 0;
-            why = "the dispatcher's frame differs between the loaded function table and the module's .pdata";
-        }
-        if (!frame)
-        {
-            map.clear();
-            LOG("DRIVE %s: caller map NOT proven (%s); every call counts as the update (as before)", site.name,
-                why ? why : "dispatcher frame");
-            return false;
-        }
-        map.acc_ret = accRet;
-        map.dispatcher_frame = frame;
-        callTarget = found.dispatcher;
-    }
-    map.no_unit_action = anchors.noUnitAction;
-    char sites[256] = "";
-    size_t used = 0;
-    for (int i = 0; i < drive_sites::kMaxCallers; ++i)
-    {
-        const auto& s = anchors.sites[i];
-        if (!s.pattern)
-            continue;
-        const uintptr_t ret = AimCallerCallReturn(base, size, found.call[i], callTarget);
-        const bool ok = ret && map.add(ret, s.role);
-        const int n = ok
-            ? snprintf(sites + used, sizeof(sites) - used, "%s%s +0x%llX", used ? ", " : "",
-                       aim_caller::CallerName(s.role), static_cast<unsigned long long>(ret - base))
-            : snprintf(sites + used, sizeof(sites) - used, "%s%s NOT verified (reads unknown)", used ? ", " : "",
-                       aim_caller::CallerName(s.role));
-        if (n > 0)
-            used = (std::min)(sizeof(sites) - 1, used + static_cast<size_t>(n));
-    }
-    if (!map.stick_proven())
-    {
-        map.clear();
-        LOG("DRIVE %s: caller map NOT proven (the stick update's call); every call counts as the update (as "
-            "before)", site.name);
+        LOG("DRIVE %s: caller map NOT proven (%s); every call counts as the update (as before)", site.name,
+            proof.why ? proof.why : "dispatcher frame");
         return false;
     }
+    char sites[256] = "";
+    drive_install::CallerMapText(base, anchors, proof, sites, sizeof(sites));
     if (map.dispatcher_mode())
         LOG("DRIVE %s: caller map proven by the dispatcher's return (accumulator call +0x%X in dispatcher +0x%X, "
             "frame 0x%X from its unwind info and prologue): %s. Only the stick call is the update; an extra call "
@@ -705,7 +661,7 @@ bool LegacyDriveInstall(GameTitle title, uintptr_t base, size_t size)
     snprintf(driveName, sizeof(driveName), "DRIVE %s", site.name);
     if (opened)
         drive_cascade::Announce(driveName, resolution, g_legacyDriveFoundHow[slot]);
-    if (!opened || !found.ok)
+    if (!drive_install::DecideLegacyControl(opened, found))
     {
         char first[280] = "";
         if (opened)

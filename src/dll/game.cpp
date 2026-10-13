@@ -103,6 +103,7 @@
 // Where the direct drives' code is in the loaded game DLL: the tables and their resolution, and the DLL's side.
 #include "../common/drive_sites.h"
 #include "drive_cascade.h"
+#include "drive_install.h"
 // THE FREE CAMERA WITH NO PLAYER UNIT (src/common/aim_no_unit_logic.h). Each servo title's own vehicle/seat
 // sampler already reads its local player's unit through the output-user getter on an engine thread; it also
 // publishes Present / Absent here, one word per title, with the time it read it. Game_ComputeAimStick (the input
@@ -389,42 +390,9 @@ bool Halo4Type13LogInstall(uintptr_t base, size_t size, uint32_t generation);
 #include "gesture_melee_bindings.inl"
 
 // AIM CALLER SPLIT (aim_caller_logic.h), engine side, shared by the Halo 3 / ODST / Halo 4 accumulator hook
-// (legacy_direct_drive.inl) and Reach's (ReachPcApplyForUser).
-//
-// The dispatcher-frame proof: the .pdata entry that contains the dispatcher, then the engine-free proof over
-// it (the entry begins at the dispatcher and contains the accumulator's call past the prolog; the unwind
-// info and the prologue's own instructions decode to one fixed frame). `entryFrame`: where the dispatcher's
-// return sits relative to the accumulator's entry rsp. `why`: the first failing proof.
-static bool AimCallerProveDispatcher(uintptr_t base, size_t size, uint32_t dispatcherRva, uint32_t accCallRva,
-                                     uint32_t& entryFrame, const char*& why)
-{
-    entryFrame = 0;
-    why = nullptr;
-    DWORD64 imageBase = 0;
-    const PRUNTIME_FUNCTION function =
-        RtlLookupFunctionEntry(static_cast<DWORD64>(base + dispatcherRva), &imageBase, nullptr);
-    if (!function || imageBase != static_cast<DWORD64>(base))
-    {
-        why = "dispatcher .pdata entry";
-        return false;
-    }
-    return aim_caller::ProveDispatcherFrame(reinterpret_cast<const uint8_t*>(base), size, dispatcherRva,
-                                           function->BeginAddress, function->EndAddress, function->UnwindData,
-                                           accCallRva, entryFrame, why);
-}
-
-// The `call` (E8 rel32) at `callRva` lands on `targetRva`: its return address, or 0.
-static uintptr_t AimCallerCallReturn(uintptr_t base, size_t size, uint32_t callRva, uint32_t targetRva)
-{
-    if (!callRva || static_cast<size_t>(callRva) + 5 > size)
-        return 0;
-    const auto* call = reinterpret_cast<const uint8_t*>(base + callRva);
-    int32_t rel = 0;
-    memcpy(&rel, call + 1, sizeof(rel));
-    if (call[0] != 0xE8 || static_cast<int64_t>(callRva) + 5 + rel != static_cast<int64_t>(targetRva))
-        return 0;
-    return base + callRva + 5;
-}
+// (legacy_direct_drive.inl) and Reach's (ReachPcApplyForUser). The proofs an install makes on the loaded module
+// -- a call that lands on its target, the dispatcher's frame out of the system's function table -- are
+// drive_install.h's (CallReturn, ProveDispatcher), which the offline check runs too.
 
 // The put-back slot's safety cap runs on QPC (monotonic, sub-millisecond), not GetTickCount64 (~16 ms steps).
 static uint64_t AimCallerClockNow()
@@ -36186,13 +36154,14 @@ namespace
             static addrcascade::TierReporter s_foundHow;
             if (opened)
                 drive_cascade::Announce("Reach direct-drive", resolution, s_foundHow);
-            const bool entryOk = opened && found.entry && ReachColdExecutableAddress(base + found.entry);
-            const bool tlsOk = opened && found.tlsBlock && ReachColdExecutableAddress(base + found.tlsBlock);
-            const bool accOk = opened && found.accumulator && ReachColdExecutableAddress(base + found.accumulator);
-            // The hook, the arm gate and the Sabre's controller all read the TLS index through this lane's own
-            // constant: the module's index must be that one.
-            const bool indexOk = opened && found.tlsIndex && found.tlsIndex == kReachEngineTlsIndexRva;
-            if (entryOk && tlsOk && accOk && indexOk)
+            // THE DECISION (drive_install.h; the offline check runs the same function on haloreach.dll as the
+            // loader maps it): each anchor on a page of code, and the module's TLS index the one this lane's
+            // readers use -- the hook, the arm gate and the Sabre's controller all read it through that constant.
+            const drive_install::ReachControlDecision decision =
+                drive_install::DecideReachControl(base, opened, found, static_cast<uint32_t>(kReachEngineTlsIndexRva));
+            const bool entryOk = decision.entryOk, tlsOk = decision.tlsOk, accOk = decision.accOk,
+                       indexOk = decision.indexOk;
+            if (decision.hook)
             {
                 // Which caller ran it (the dispatcher's return): built while no hook can run, logged inside.
                 (void)ReachBuildCallerMap(base, size, resolution.found);
@@ -53169,7 +53138,7 @@ bool Game_ReachSightReticleRange(float& outRangeM, bool& outHit)
 // call site, the dispatcher prologue and each caller site are exact byte patterns FOUND by signature in the module
 // (each exactly once), every E8 must land on its found target, the dispatcher must be the function that holds the
 // accumulator's call, and the frame is proven from the dispatcher's .pdata/unwind info and its prologue
-// (AimCallerProveDispatcher). Rung 1 is the stick site: without it every call counts as the update (no split by
+// (drive_install::ProveDispatcher). Rung 1 is the stick site: without it every call counts as the update (no split by
 // caller). A missing impulse or no-unit site only reads as unknown (put back).
 static aim_caller::CallerMap g_reachCallerMap;            // written at install, before the hook is enabled
 static std::atomic<uint8_t>  g_reachCallerMode{0};        // for the cold worker: 0 not proven, 2 by dispatcher
@@ -53196,54 +53165,20 @@ static std::atomic<uint32_t> g_reachExtraDeltaMax[2][2]{}, g_reachStickDriftMax[
 // Builds the caller map from the call sites the install's resolution FOUND in this module (drive_sites.h,
 // kReachCallerAnchors) and logs what it proved. Each found call is proven again here, on the loaded image: its
 // rel32 must land on its target, and the dispatcher's frame is taken from the loaded module's own function table
-// (AimCallerProveDispatcher) and must be the one the resolution proved from the module's .pdata.
+// (drive_install::ProveDispatcher) and must be the one the resolution proved from the module's .pdata.
 static bool ReachBuildCallerMap(uintptr_t base, size_t size, const ReachControlFound& resolved)
 {
     const drive_sites::CallerAnchors& anchors = drive_sites::kReachCallerAnchors;
     const drive_sites::Callers& found = resolved.callers;
     const uint32_t entry = resolved.control.entry;
+    // THE PROOF (drive_install.h; the offline check runs the same function on haloreach.dll as the loader maps it).
     aim_caller::CallerMap map;
-    const char* why = found.why;
-    const uintptr_t accRet = AimCallerCallReturn(base, size, found.accumulatorCall, entry);
-    uint32_t frame = 0;
-    if (!accRet)
-        why = why ? why : "the accumulator's call site";
-    else if (!found.dispatcher)
-        why = why ? why : "the dispatcher prologue";
-    else if (AimCallerProveDispatcher(base, size, found.dispatcher, found.accumulatorCall, frame, why) &&
-             frame != found.frame)
-    {
-        frame = 0;
-        why = "the dispatcher's frame differs between the loaded function table and the module's .pdata";
-    }
+    const drive_install::CallerMapProof proof = drive_install::BuildCallerMap(base, size, entry, found, anchors, map);
+    const bool proven = proof.proven;
+    const char* const why = proof.why;
+    const uint32_t frame = map.dispatcher_frame;
     char sites[200] = "";
-    size_t used = 0;
-    if (frame)
-    {
-        map.acc_ret = accRet;
-        map.dispatcher_frame = frame;
-        map.no_unit_action = anchors.noUnitAction;
-        for (int i = 0; i < drive_sites::kMaxCallers; ++i)
-        {
-            const drive_sites::CallSite& s = anchors.sites[i];
-            if (!s.pattern)
-                continue;
-            const uintptr_t ret = AimCallerCallReturn(base, size, found.call[i], found.dispatcher);
-            const bool ok = ret && map.add(ret, s.role);
-            const int n = ok
-                ? snprintf(sites + used, sizeof(sites) - used, "%s%s +0x%llX", used ? ", " : "",
-                           aim_caller::CallerName(s.role), static_cast<unsigned long long>(ret - base))
-                : snprintf(sites + used, sizeof(sites) - used, "%s%s NOT verified (reads unknown)", used ? ", " : "",
-                           aim_caller::CallerName(s.role));
-            if (n > 0)
-                used = (std::min)(sizeof(sites) - 1, used + static_cast<size_t>(n));
-        }
-        if (!map.stick_proven())
-            why = "the stick update's call";
-    }
-    const bool proven = frame && map.stick_proven();
-    if (!proven)
-        map.clear();
+    drive_install::CallerMapText(base, anchors, proof, sites, sizeof(sites));
     g_reachCallerMap = map;
     g_reachCallerMode.store(proven ? 2 : 0, std::memory_order_release);
     if (proven)
