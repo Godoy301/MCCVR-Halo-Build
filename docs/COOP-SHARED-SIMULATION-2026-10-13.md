@@ -52,7 +52,21 @@ The film's gameplay runs from tick 3 to tick 6880. Every replay below is compare
 | The same extra calls made between ticks | as the build as it was |
 | **The build with the rule below, Co-op safe on** | **0 objects differ** |
 
-## The two causes
+## What the film of the first session shows
+
+A longer film: 33,634 ticks (560 s), most of it flown in a Falcon.
+
+| Replay | Against the reference |
+|---|---|
+| The build as it was, Co-op safe on | The local player's aim differs for the seven ticks after boarding a Falcon's second seat (tick 347). A piece knocked off by a melee hit lands 0.19 world units away at tick 33619, and two characters' aim differs on the film's last tick, 33636: the session ended 17 ticks after the piece was made. |
+| The build with the effect and fire-eye rules | Only the seven ticks of seated aim differ |
+| **The build with all of the rule below, Co-op safe on** | **0 objects differ** |
+
+So both sessions ended after a melee hit knocked a piece off an enemy: 17 ticks later in the first, 657 ticks later in
+the second. How soon the game notices a difference was not measured; the second session's replay had also parted at a
+shot by then.
+
+## The three causes
 
 **An effect's place, moved inside a tick.** Reach's effect-location resolver is asked for a place both by the
 simulation, inside a tick, and by the frame, from another thread. The mod moved every place that lay near the stock
@@ -69,6 +83,13 @@ game's own at the end of that work also hides the fault. So this is not a value 
 nothing by itself, run inside a tick, changed what the game computed when combined with a call elsewhere in the
 same tick. It was not traced further than that, and it is the reason the rule below is a rule and not a list of
 known-bad calls.
+
+**A seat's aim, not rebased.** Reach rotates a seated player's aim by the vehicle's up frame unless the seat carries
+the third-person camera flag. The mod's first-person seat patch clears that flag on some seats, and a code patch
+then skips the rotation so those seats aim as they do in stock. Co-op safe already stops the flag being cleared, but
+the skip stayed in place. It is put back while the local player sits in a seat that natively lacks the flag, once
+the sampler has seen the seat: seven ticks late in this film, and never for another player sitting in such a seat.
+Nothing followed from those seven ticks here; a shot fired in them would have left along a different line.
 
 ## The rule
 
@@ -88,13 +109,15 @@ tick the mod asks nothing of the game and moves nothing the game reads.**
   The trace was not itself shown to change a replay; it is moved on the rule.
 - **Reach's hand and weapon world collision** (off by default) makes its own collision tests only from a game call
   that came from outside a tick.
+- **The seat aim keeps the game's own rebase** (Halo 3, ODST, Reach: `SeatAimFrameWanted`). No seat's camera flag is
+  cleared there, so the skip has nothing to undo.
 
 Alone in the game (Co-op safe off) nothing changes: there is one simulation and it is the game.
 
 ## What is proven, and what is not
 
-- Proven: with the rule, the ordinary Co-op safe replay of the second session's film is the game's own, object for
-  object, for all 6878 ticks.
+- Proven: with the rule, the ordinary Co-op safe replays of both sessions' films are the game's own, object for
+  object: all 6878 ticks of the second and all 33,634 ticks of the first.
 - Not proven by a replay: anything the film does not do. A replay runs no control pass, so the aim trace at the
   control pass, the written aim record and the hands' world collision are not exercised by it.
 - Not proven at all: a second machine. The film test shows this machine's simulation is the game's own; the
