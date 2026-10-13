@@ -2691,6 +2691,11 @@ namespace
         int32_t ignoredA,int32_t ignoredB,int32_t ignoredC,void* result,uint8_t& returned);
     bool ReachContactMeleeReady();
     void ReportReachContactMelee();
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    void ReachSimTraceFlush();   // reach_sim_trace.inl
+    void ReachSimProbeFrame(int32_t unit, uintptr_t caller);
+    void ReachSimMinimalInstall(uintptr_t base, size_t size);
+#endif
     // Reach trace-and-reaim (reach_sight_trace.inl).
     void ReachSightTraceTick(uint32_t unit);
     void ReachNoteCollisionCensus(uintptr_t caller, uint64_t flags, int32_t mode,
@@ -6450,6 +6455,15 @@ namespace
         uint8_t nativeResult=0;
         const uintptr_t caller=reinterpret_cast<uintptr_t>(_ReturnAddress());
         __try {
+#if HALOMCCVR_DEV_DIAGNOSTICS
+            if (g_config.dev_sim_bisect & 2)
+            {
+                if (const auto plain = reinterpret_cast<LegacyCollisionTestVectorFn>(g_reachWorldCollision.original))
+                    nativeResult = plain(flags, mode, start, vector, ignoredObjectA, ignoredObjectB, ignoredObjectC,
+                                         result);
+                __leave;
+            }
+#endif
             // Reach's crosshair query, re-aimed through the intent point from its own start
             // (ReachSightReaimCrosshairQuery: every build, fail closed). The census and the engine-trace witness
             // see the query as the game built it; the shot-lag witness sees what was traced.
@@ -21280,6 +21294,9 @@ namespace
         ReachUnitCameraPositionFn original = g_origReachUnitCameraPosition;
         const uint64_t stockResult =
             original ? original(unitIndex, out) : 0;
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        ReachSimProbeFrame(unitIndex, caller);   // dev: one of the mod's own calls between ticks (dev_sim_probe 4)
+#endif
         if (!out)
             return stockResult;
         const uintptr_t returnA = g_reachFiringOriginReturnA.load(
@@ -21434,6 +21451,14 @@ namespace
             GetTickCount64(), std::memory_order_release);
         __try
         {
+#if HALOMCCVR_DEV_DIAGNOSTICS
+            if (g_config.dev_sim_bisect & 4)
+            {
+                if (const ReachUnitCameraPositionFn plain = g_origReachUnitCameraPosition)
+                    result = plain(unitIndex, out);
+                __leave;
+            }
+#endif
             result = ReachUnitCameraPositionBody(unitIndex, out, caller);
         }
         __finally
@@ -21825,6 +21850,15 @@ namespace
             1, std::memory_order_acq_rel);
         __try
         {
+#if HALOMCCVR_DEV_DIAGNOSTICS
+            if (g_config.dev_sim_bisect & 8)
+            {
+                if (const ReachUnitAdjustFn plain = g_origReachUnitAdjust)
+                    plain(unitIndex, origin, direction, basisForward, barrelOffset, optionalCameraPoint,
+                          firesFromCamera, useUnitAim, collision, simulation);
+                __leave;
+            }
+#endif
             // The projectile transaction names its shooter here, before its aim_assist traces the crosshair: the
             // local player's fire only from here (shot_lag::FireMark; ReachMuzzleFireDetour opens the fire). Seated,
             // unitIndex is the occupant (the seated redirect below matches it to the occupation's unit).
@@ -22899,6 +22933,13 @@ namespace
             ReachEffectLocationFn original = g_reachOrigEffectLocation;
             if (!original)
                 return;
+#if HALOMCCVR_DEV_DIAGNOSTICS
+            if (g_config.dev_sim_bisect & 16)
+            {
+                original(effect, nodeDesignator, outMatrix);
+                return;
+            }
+#endif
             ReachEffectFpMarkerFn fpQuery = g_reachEffectFpMarkerQuery;
             if (!fpQuery || !effect || !outMatrix ||
                 !g_reachCamera.armed.load(std::memory_order_acquire) ||
@@ -26583,6 +26624,9 @@ namespace
         const uint64_t now=GetTickCount64();
         if(now-lastLogMs<2000) return;
         lastLogMs=now;
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        ReachSimTraceFlush();   // whatever title is up: a trace's last ticks are written after its game has gone
+#endif
         if(title==GameTitle::HaloReach){ReportReachContactMelee();ReportReachMuzzle();ReportReachSightTrace();ReportReachHeadRelative();ReportReachNavMarkers();ReportReachNavProjection();}
         if(title==GameTitle::Halo3) { ReportHalo3ContactMelee(); ReportHalo3WeaponHaptics(); ReportHalo3Avatar(); }
         if(title==GameTitle::Halo3ODST){ReportOdstContactMelee();ReportOdstMuzzle();ReportOdstWeaponHaptics();ReportOdstControllerFingers();}
@@ -28068,6 +28112,8 @@ namespace
     #include "reach_sight_trace.inl"
     #include "reach_fire_eye.inl"
     #include "legacy_sight_trace.inl"
+    // Dev builds only: every object's state per simulation tick, to a file (the file compiles to nothing otherwise).
+    #include "reach_sim_trace.inl"
     #include "reach_contact_melee_runtime.inl"
     #include "halo3_contact_melee_runtime.inl"
     #include "halo3_vehicle_gun_band.inl"
@@ -38046,6 +38092,15 @@ namespace
             // already-running proof (captured 2026-08-06: proof PASS
             // 08:54:38, gate open 6078 ms later, ~9 s of flat cinematic;
             // versus ~2 s on the same session's early-proof load).
+#if HALOMCCVR_DEV_DIAGNOSTICS
+            // The sim trace's reference mode: the recorder alone, in place of everything else (reach_sim_trace.inl).
+            if (g_config.dev_sim_minimal)
+            {
+                if (levelRunning)
+                    ReachSimMinimalInstall(base, size);
+                return;
+            }
+#endif
             if (ready && levelRunning)
                 InstallReachCameraCore(base, size, generation);
             return;

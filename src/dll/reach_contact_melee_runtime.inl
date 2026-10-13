@@ -140,10 +140,25 @@ __declspec(noinline) uint8_t __fastcall ReachContactUpdateDetour(uint32_t unit)
     uint8_t result=0;
     __try
     {
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        ReachSimTraceNote();   // dev: the tick's objects, before its first unit update
+        if(g_config.dev_sim_bisect&1)
+        {
+            if(g_reachContact.original) result=g_reachContact.original(unit);
+            __leave;
+        }
+        ++t_reachSimInUnitUpdate;
+#endif
         if(g_reachContact.original) result=g_reachContact.original(unit);
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        --t_reachSimInUnitUpdate;
+#endif
         ReachContactTick(unit);
         // Same native per-unit context: trace the local player's intent ray for trace-and-reaim.
         ReachSightTraceTick(unit);
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        ReachSimProbe(unit);   // dev: one of the mod's own calls on demand (dev_sim_probe)
+#endif
     }
     __finally { g_reachCamera.activeCallbacks.fetch_sub(1,std::memory_order_acq_rel); }
     return result;

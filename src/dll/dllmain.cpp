@@ -184,6 +184,10 @@ static DWORD WINAPI InitThread(LPVOID)
         LOG("DEV OVERRIDE: reach_sight_trace_flags = 0x%llX mode %d replaces the resolved crosshair-trace "
             "flags (Reach aim trace)",
             g_config.reach_sight_trace_flags, g_config.reach_sight_trace_mode);
+    if (g_config.dev_sim_trace || g_config.dev_sim_probe)
+        LOG("DEV OVERRIDE: dev_sim_trace = %d, dev_sim_probe = %d (Reach: every object's state per tick to a file; "
+            "the probe makes the mod's own calls for the local unit while a film replays)",
+            g_config.dev_sim_trace, g_config.dev_sim_probe);
     if (g_config.dev_synthetic_pad)
         DevPad_Start(dir.c_str());
 #endif

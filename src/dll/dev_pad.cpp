@@ -120,6 +120,8 @@ bool SetLive(const std::string& name, int value)
     // needs a level the camera rung has not been proven in (the value agreement never withdraws a proven
     // rung), so it still wants the key set before the level loads.
     else if (name == "first_person_rung_fault") g_config.first_person_rung_fault = value & 0xF;
+    else if (name == "dev_sim_trace") g_config.dev_sim_trace = value ? 1 : 0;
+    else if (name == "dev_sim_probe") g_config.dev_sim_probe = static_cast<int>(value & 0xFF);
     else return false;
     return true;
 }
