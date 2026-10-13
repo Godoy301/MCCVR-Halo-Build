@@ -155,7 +155,8 @@ uintptr_t T13Rip(uintptr_t base, size_t size, uint32_t insnRva, uint32_t dispOff
     if (static_cast<size_t>(insnRva) + length > size)
         return 0;
     int32_t disp = 0;
-    memcpy(&disp, reinterpret_cast<const void*>(base + insnRva + dispOffset), sizeof(disp));
+    if (!drive_install::Read(base + insnRva + dispOffset, &disp, sizeof(disp)))   // guarded, as every read after the plan
+        return 0;
     const uintptr_t target = base + insnRva + length + static_cast<intptr_t>(disp);
     return target >= base && target < base + size ? target : 0;
 }
@@ -182,8 +183,8 @@ uintptr_t T13CallTarget(uintptr_t base, size_t size, uint32_t callRva)
 {
     if (!callRva || static_cast<size_t>(callRva) + 5 > size)
         return 0;
-    const auto* p = reinterpret_cast<const uint8_t*>(base + callRva);
-    if (p[0] != 0xE8)
+    uint8_t p[5];
+    if (!drive_install::Read(base + callRva, p, sizeof(p)) || p[0] != 0xE8)
         return 0;
     int32_t rel = 0;
     memcpy(&rel, p + 1, sizeof(rel));
@@ -203,7 +204,10 @@ bool T13DispatcherSlot(uintptr_t base, uint32_t dispatcherRva, size_t prologueBy
     const PRUNTIME_FUNCTION function = RtlLookupFunctionEntry(base + callRva, &imageBase, nullptr);
     if (!function || imageBase != base || function->BeginAddress != dispatcherRva)
         return false;
-    return t13::DispatcherReturnSlot(reinterpret_cast<const uint8_t*>(base + dispatcherRva), prologueBytes, slot);
+    uint8_t prologue[32];
+    if (prologueBytes > sizeof(prologue) || !drive_install::Read(base + dispatcherRva, prologue, prologueBytes))
+        return false;
+    return t13::DispatcherReturnSlot(prologue, prologueBytes, slot);
 }
 
 // Dispatcher callers -> CallerTable (labels only, never a gate): each found call must be an E8 to the found

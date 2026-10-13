@@ -571,9 +571,12 @@ uint32_t LegacyDriveBindPitchLimits(int slot, uintptr_t base, uint32_t clampRva,
         why = "the accumulator's pitch clamp is missing, ambiguous or outside the control update";
         return 0;
     }
+    // The clamp's own bytes, which the plan found; read under a guard all the same (drive_install.h).
+    bool unread = false;
     const auto i32 = [&](uint8_t at) {
         int32_t v = 0;
-        memcpy(&v, reinterpret_cast<const void*>(base + clampRva + at), sizeof(v));
+        if (!drive_install::Read(base + clampRva + at, &v, sizeof(v)))
+            unread = true;
         return v;
     };
     seat_limit::PitchLimitSite s{};
@@ -583,6 +586,11 @@ uint32_t LegacyDriveBindPitchLimits(int slot, uintptr_t base, uint32_t clampRva,
     s.pitchAdd = i32(site.pitchAdd);
     s.loMax = i32(site.loMax);
     s.pitchStore = i32(site.pitchStore);
+    if (unread)
+    {
+        why = "the pitch clamp's bytes could not be read";
+        return 0;
+    }
     return seat_limit::ResolvePitchLimits(s, static_cast<int32_t>(kLegacyDriveSites[slot].angles),
                                           static_cast<int32_t>(kLegacyDriveSites[slot].stride), why);
 }

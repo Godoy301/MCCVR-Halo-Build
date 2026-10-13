@@ -4,8 +4,9 @@
 // and compared with what the operating system answers for the same addresses, its TLS index is taken from its PE
 // TLS directory, a pattern is found through one of "this mod's hooks" (a patch reported by the hook-patch
 // source), the address cache's file is really written, read back, replaced and refused on disk, the one line
-// that says which rung won is really formatted, and the hook watchdog is stepped as the cold worker steps it. It
-// maps no game code and opens no game file.
+// that says which rung won is really formatted, the proofs an install makes after its plan are run on a module
+// whose unwind info cannot be read (they must fail, not fault), and the hook watchdog is stepped as the cold
+// worker steps it. It maps no game code and opens no game file.
 //
 // Built twice by CMake: as a player build compiles the file (no fault injection: the dev key must do nothing) and
 // as a dev build does (HALOMCCVR_DEV_DIAGNOSTICS=1, ADDRCASCADE_FAULTS=1: each forced fault must show).
@@ -19,6 +20,7 @@
 
 #include "../src/common/config.h"
 #include "../src/dll/drive_cascade.h"
+#include "../src/dll/drive_install.h"
 #include "../src/dll/sigscan.h"
 
 #ifndef HALOMCCVR_DEV_DIAGNOSTICS
@@ -601,6 +603,96 @@ void TestCacheFile()
     RemoveDirectoryW(folder.c_str());
 }
 
+// ---- the installs' proofs after the plan (src/dll/drive_install.h) never fault -----------------------------------
+// A plan reads the module through checks: a page that cannot be read costs it one line, and it returns with that
+// line refused and everything else still set. What an install does next runs with no guard around it. Here the
+// dispatcher's unwind info lies on a page that cannot be read.
+void TestInstallProofsNeverFault()
+{
+    // A three-page "module" with a function table of its own: a dispatcher at +0x100 (two pushes and
+    // `sub rsp, 0xC0`: a 0xD0 frame) that calls +0x180 from +0x140; its unwind info alone on the third page.
+    auto* const image = static_cast<uint8_t*>(VirtualAlloc(nullptr, 0x3000, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE));
+    Check(image != nullptr, "three pages for a module of the test's own");
+    if (!image)
+        return;
+    const uintptr_t base = reinterpret_cast<uintptr_t>(image);
+    std::memset(image, 0xCC, 0x1000);
+    const uint8_t prologue[] = {0x48, 0x8B, 0xC4, 0x55, 0x53, 0x48, 0x81, 0xEC, 0xC0, 0x00, 0x00, 0x00};
+    std::memcpy(image + 0x100, prologue, sizeof(prologue));
+    image[0x140] = 0xE8;
+    const int32_t rel = 0x180 - 0x145;
+    std::memcpy(image + 0x141, &rel, sizeof(rel));
+    const uint8_t unwind[12] = {0x01, 12, 3, 0, 12, 0x11, 0xD0, 0, 0, 0, 0, 0};   // one ALLOC_LARGE of 0xD0
+    std::memcpy(image + 0x2000, unwind, sizeof(unwind));
+    static RUNTIME_FUNCTION table[1];
+    table[0].BeginAddress = 0x100;
+    table[0].EndAddress = 0x170;
+    table[0].UnwindData = 0x2000;
+    Check(RtlAddFunctionTable(table, 1, base) != 0, "the module's function table is the system's");
+
+    uint32_t frame = 0;
+    const char* why = nullptr;
+    Check(drive_install::ProveDispatcher(base, 0x3000, 0x100, 0x140, frame, why) && frame == 0xD8,
+          "with everything readable the dispatcher's frame is proven from the system's table");
+
+    DWORD old = 0;
+    Check(VirtualProtect(image + 0x2000, 0x1000, PAGE_NOACCESS, &old) != 0, "the unwind info's page can no longer be read");
+    // THE READ ITSELF IS GUARDED: without the guard this faults, on a thread that has none.
+    frame = 1;
+    why = nullptr;
+    Check(!drive_install::ProveDispatcher(base, 0x3000, 0x100, 0x140, frame, why) && frame == 0 && why != nullptr,
+          "unwind info that cannot be read is a failed proof, not a fault");
+
+    // AND NOTHING THE PLAN REFUSED IS READ AGAIN. The plan's result for such a module: the control update and
+    // the dispatcher found, the frame refused.
+    drive_sites::Callers callers;
+    callers.accumulatorCall = 0x140;
+    callers.dispatcher = 0x100;
+    callers.frame = 0;
+    aim_caller::CallerMap map;
+    drive_install::CallerMapProof proof =
+        drive_install::BuildCallerMap(base, 0x3000, 0x180, callers, drive_sites::kReachCallerAnchors, map);
+    Check(!proof.proven && proof.why && std::strstr(proof.why, "the plan did not prove") && !map.stick_proven(),
+          "a caller map whose frame the plan refused is not proven, and says that the plan did not prove it");
+    callers.frame = 0xD8;   // a plan that did prove it, on a module whose page has since gone
+    proof = drive_install::BuildCallerMap(base, 0x3000, 0x180, callers, drive_sites::kReachCallerAnchors, map);
+    Check(!proof.proven && proof.why != nullptr, "a frame that can no longer be read is not proven either, with no fault");
+    // Roles the plan refused: the map says so, not that the stick update's call failed.
+    callers.why = drive_sites::kRolesNotDistinct;
+    DWORD ignored = 0;
+    VirtualProtect(image + 0x2000, 0x1000, PAGE_READWRITE, &ignored);
+    proof = drive_install::BuildCallerMap(base, 0x3000, 0x180, callers, drive_sites::kReachCallerAnchors, map);
+    Check(!proof.proven && proof.why == drive_sites::kRolesNotDistinct,
+          "a map with no role left says what the plan refused: the roles, not the stick update's call");
+    VirtualProtect(image + 0x2000, 0x1000, PAGE_NOACCESS, &ignored);
+
+    // A pilot's drive.
+    const drive_sites::Anchor rows[1] = {{"ROW", 0x180, drive_sites::kAnywhere, "CC"}};
+    const uint32_t rowsFound[1] = {0x180};
+    drive_sites::Flight flight;
+    flight.entry = 0x180;
+    flight.call = 0x140;
+    flight.dispatcher = 0x100;
+    flight.tlsIndex = 0x1800;
+    flight.frame = 0;
+    drive_install::FlightDecision decision =
+        drive_install::DecideFlight(base, 0x3000, true, rows, rowsFound, flight, base + 0x1800, false, 1, 0);
+    Check(decision.rowsOk && decision.tlsOk && decision.callOk && !decision.frameOk && !decision.hook,
+          "a pilot's drive whose frame the plan refused is not hooked, and its unwind info is not read");
+    flight.frame = 0xD8;
+    decision = drive_install::DecideFlight(base, 0x3000, true, rows, rowsFound, flight, base + 0x1800, false, 1, 0);
+    Check(!decision.frameOk && !decision.hook && decision.frameWhy != nullptr,
+          "nor is one whose frame can no longer be read: a failed proof, no fault");
+    // A call on a page that cannot be read.
+    VirtualProtect(image, 0x1000, PAGE_NOACCESS, &ignored);
+    Check(drive_install::CallReturn(base, 0x3000, 0x140, 0x180) == 0, "a call that cannot be read lands nowhere");
+    VirtualProtect(image, 0x3000, PAGE_READWRITE, &ignored);
+    Check(drive_install::CallReturn(base, 0x3000, 0x140, 0x180) == base + 0x145, "and read again when it can be");
+
+    RtlDeleteFunctionTable(table);
+    VirtualFree(image, 0, MEM_RELEASE);
+}
+
 // The cold worker passes over a watch about every 50 ms.
 struct Worker
 {
@@ -721,6 +813,7 @@ int main(int argc, char** argv)
     TestOpenAndResolve();
     TestAnnounceAndFaults();
     TestCacheFile();
+    TestInstallProofsNeverFault();
     TestHookWatch();
 
     std::printf("drive_cascade_tests (%s build): %u checks, %u failures\n",

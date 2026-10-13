@@ -8,6 +8,11 @@
 // SAME code: what the tool prints as HOOK is what the install would do.
 //
 // Nothing here hooks, logs or writes: each function returns what was proven, and the caller says it.
+//
+// NO READ HERE MAY FAULT. The plan reads the module through checks (drive_resolve.h: Readable), so a page that
+// cannot be read costs it one line and it returns normally -- with that line refused and everything else it
+// found still set. What runs after the plan runs on the cold worker with no guard around it. So every read of
+// module memory below is guarded where it is made, and nothing the plan refused is read again.
 #include <windows.h>
 
 #include <cstdio>
@@ -35,22 +40,33 @@ inline bool Executable(uintptr_t address)
 // dispatcher and contains the call past the prolog; the unwind info and the prologue's own instructions decode
 // to one fixed frame). `entryFrame`: where the dispatcher's return sits relative to the called function's entry
 // rsp. `why`: the first failing proof.
+// It reads the function's table entry, its unwind info and the dispatcher's first bytes: under a guard, so a
+// page of them that cannot be read is a failed proof and not a fault.
 inline bool ProveDispatcher(uintptr_t base, size_t size, uint32_t dispatcherRva, uint32_t callRva, uint32_t& entryFrame,
                             const char*& why)
 {
     entryFrame = 0;
     why = nullptr;
-    DWORD64 imageBase = 0;
-    const PRUNTIME_FUNCTION function =
-        RtlLookupFunctionEntry(static_cast<DWORD64>(base + dispatcherRva), &imageBase, nullptr);
-    if (!function || imageBase != static_cast<DWORD64>(base))
+    __try
     {
-        why = "dispatcher .pdata entry";
+        DWORD64 imageBase = 0;
+        const PRUNTIME_FUNCTION function =
+            RtlLookupFunctionEntry(static_cast<DWORD64>(base + dispatcherRva), &imageBase, nullptr);
+        if (!function || imageBase != static_cast<DWORD64>(base))
+        {
+            why = "dispatcher .pdata entry";
+            return false;
+        }
+        return aim_caller::ProveDispatcherFrame(reinterpret_cast<const uint8_t*>(base), size, dispatcherRva,
+                                               function->BeginAddress, function->EndAddress, function->UnwindData,
+                                               callRva, entryFrame, why);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        entryFrame = 0;
+        why = "the dispatcher's bytes or unwind info could not be read";
         return false;
     }
-    return aim_caller::ProveDispatcherFrame(reinterpret_cast<const uint8_t*>(base), size, dispatcherRva,
-                                           function->BeginAddress, function->EndAddress, function->UnwindData, callRva,
-                                           entryFrame, why);
 }
 
 // A read of the loaded module that must not fault the install: false when the bytes cannot be read.
@@ -136,6 +152,8 @@ inline CallerMapProof BuildCallerMap(uintptr_t base, size_t size, uint32_t entry
             proof.why = proof.why ? proof.why : "the accumulator's call site";
         else if (!found.dispatcher)
             proof.why = proof.why ? proof.why : "the dispatcher prologue";
+        else if (!found.frame)   // the plan refused the frame: what it could not read is not read again here
+            proof.why = proof.why ? proof.why : "the dispatcher's frame, which the plan did not prove";
         else if (ProveDispatcher(base, size, found.dispatcher, found.accumulatorCall, frame, proof.why) &&
                  frame != found.frame)
         {
@@ -162,8 +180,10 @@ inline CallerMapProof BuildCallerMap(uintptr_t base, size_t size, uint32_t entry
     }
     if (!map.stick_proven())
     {
+        // What actually failed: the plan's own reason when it refused the roles (two at one call, or out of
+        // order), else the stick update's call.
         map.clear();
-        proof.why = "the stick update's call";
+        proof.why = found.why ? found.why : "the stick update's call";
         return proof;
     }
     proof.proven = true;
@@ -230,7 +250,8 @@ inline FlightDecision DecideFlight(uintptr_t base, size_t size, bool opened, con
     d.tlsOk = opened && found.tlsIndex && tlsIndexAddress && base + found.tlsIndex == tlsIndexAddress;
     d.callOk = d.rowsOk && CallReturn(base, size, found.call, found.entry) != 0;
     d.frameWhy = found.frameWhy;
-    d.frameOk = d.callOk && d.tlsOk && found.dispatcher &&
+    // A frame the plan refused is not proven again here: what it could not read is not read again.
+    d.frameOk = d.callOk && d.tlsOk && found.dispatcher && found.frame &&
                 ProveDispatcher(base, size, found.dispatcher, found.call, d.frame, d.frameWhy) && d.frame &&
                 d.frame == found.frame;
     for (int i = 0; d.frameOk && i < callers && i < drive_sites::kMaxCallers; ++i)

@@ -434,7 +434,10 @@ static bool AimCallerTickProofAt(uintptr_t base, size_t size, uintptr_t tlsIndex
     if (!found.getter || !found.increment || static_cast<size_t>(found.getter) + 0x20 > size ||
         static_cast<size_t>(found.increment) + 0x20 > size)
         return false;
-    const auto* g = reinterpret_cast<const uint8_t*>(base + found.getter);
+    // Both anchors' bytes, read under a guard (drive_install.h) though the plan found them.
+    uint8_t g[0x20], inc[0x20];
+    if (!drive_install::Read(base + found.getter, g, sizeof(g)) || !drive_install::Read(base + found.increment, inc, sizeof(inc)))
+        return false;
     int32_t disp = 0;
     memcpy(&disp, g + 2, sizeof(disp));
     if (g[0] != 0x8B || g[1] != 0x0D ||
@@ -443,7 +446,8 @@ static bool AimCallerTickProofAt(uintptr_t base, size_t size, uintptr_t tlsIndex
     uint32_t getterSlot = 0;
     memcpy(&getterSlot, g + 0x10, sizeof(getterSlot));
     const uint8_t getterField = g[0x1E];
-    const auto* inc = reinterpret_cast<const uint8_t*>(base + found.increment);
+    if ((a.incSlotOff != 0xFF && a.incSlotOff + sizeof(uint32_t) > sizeof(inc)) || a.incFieldOff >= sizeof(inc))
+        return false;
     uint32_t incSlot = getterSlot;
     if (a.incSlotOff != 0xFF)
         memcpy(&incSlot, inc + a.incSlotOff, sizeof(incSlot));
