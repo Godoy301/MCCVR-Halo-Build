@@ -1239,6 +1239,11 @@ if(BUILD_TESTING)
     add_test(NAME halomccvr_reticle_tint_pixels_tests COMMAND halomccvr_reticle_tint_pixels_tests)
     add_executable(halomccvr_mono_view_tests tests/mono_view_tests.cpp)
     add_test(NAME halomccvr_mono_view_tests COMMAND halomccvr_mono_view_tests)
+    # A player build reads every key it writes: compiled without the development flag whatever this build is.
+    add_executable(halomccvr_config_player_roundtrip_tests tests/config_player_roundtrip_tests.cpp
+        src/common/config.cpp)
+    target_compile_definitions(halomccvr_config_player_roundtrip_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    add_test(NAME halomccvr_config_player_roundtrip_tests COMMAND halomccvr_config_player_roundtrip_tests)
     add_executable(halomccvr_ce_hud_target_tests tests/haloce_hud_target_tests.cpp)
     target_include_directories(halomccvr_ce_hud_target_tests PRIVATE src/common src/dll)
     target_compile_definitions(halomccvr_ce_hud_target_tests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
