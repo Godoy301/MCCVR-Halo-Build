@@ -39035,6 +39035,9 @@ namespace
 
     std::atomic<bool> g_halo4RuntimeWeaponBoundsProven{false};
     std::atomic<bool> g_halo4VehicleIdentityProven{false};
+    // GetTickCount64 of Halo 4's last owned frame, or of the last worker pass that found it paused (a pause draws
+    // stock windows, and a paused game has not ended). For the unload gate (Game_TitleCoreState).
+    std::atomic<uint64_t> g_halo4LastFrameMs{0};
     std::atomic<uint64_t> g_halo4RuntimeWeaponBoundsReads{0};
     std::atomic<uint64_t> g_halo4RuntimeWeaponBoundsRefusals{0};
     uintptr_t g_halo4RenderModelTagIndexPointerSlot=0;
@@ -47490,6 +47493,8 @@ namespace
             if (heartbeatPaused && !paused)
                 pauseExitMs = nowMs;
             heartbeatPaused = paused;
+            if (paused || generation != heartbeatGeneration || serial != heartbeatSerial)
+                g_halo4LastFrameMs.store(nowMs, std::memory_order_release);
             if (generation != heartbeatGeneration)
             {
                 heartbeatGeneration = generation;
@@ -56884,6 +56889,26 @@ bool WaitForNativeDetourQuiescence(const void* const* functions,
         "were frozen and scanned %u times: a thread stood in a detour or its trampoline in %u of those, and the "
         "counter had become non-zero again by the end of %u (the cleanup line that follows names the hooks)",
         count,count==1?"":"s",looks,counterLooks,scans,threadScans,counterAfterScans);
+    return false;
+}
+
+bool Game_TitleCoreState(GameTitle title, GameTitleCoreState& out) noexcept
+{
+    out = {};
+    if (title == GameTitle::Halo4)
+    {
+        out.installed = g_halo4Camera.installed.load(std::memory_order_acquire);
+        out.tearingDown = &g_halo4Camera.teardownRequested;
+        out.lastFrameMs = &g_halo4LastFrameMs;
+        return true;
+    }
+    if (title == GameTitle::Halo2)
+    {
+        // Halo 2's game end has not been measured: the gate only waits for a teardown its core began itself.
+        out.installed = Halo2Observer6Dof_Installed();
+        out.tearingDown = Halo2Observer6Dof_TeardownRequested();
+        return true;
+    }
     return false;
 }
 

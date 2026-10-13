@@ -28,6 +28,14 @@ GameTitle TitleAdapter_GetActiveTitle() {return activeTitle;}
 uint32_t TitleAdapter_GetGeneration(GameTitle) {return activeGeneration;}
 const TitleDescriptor* TitleRegistry_Find(GameTitle) {return nullptr;}
 float Game_GetWorldScale() {return 0.5f;}
+// The title's camera core as the lane is told it (game.h GameTitleCoreState): no title says, unless a test does.
+static bool coreSays=false,coreInstalled=false;
+static std::atomic<bool> coreTearingDown{false};
+static unsigned pinned=0,unpinned=0;
+bool Game_TitleCoreState(GameTitle,GameTitleCoreState& out) noexcept
+{out={};if(!coreSays)return false;out.installed=coreInstalled;out.tearingDown=&coreTearingDown;return true;}
+void HostUnloadGate_Pin(HMODULE,std::atomic<bool>*,const std::atomic<uint64_t>*,const char*,bool) {++pinned;}
+void HostUnloadGate_Unpin(HMODULE) {++unpinned;}
 bool Game_ReadVehicleCameraOwner(GameTitle title,NativeVehicleCameraOwner& output) noexcept
 {output=owned;return ownedValid&&title==activeTitle;}
 #if HALOMCCVR_DEV_DIAGNOSTICS
@@ -241,6 +249,28 @@ template<unsigned I> void Run()
         "retirement removes exactly two drained hooks");
     Check(!r.attempted&&!r.ready&&!r.generation&&!r.marker,
         "retirement clears old generation so next title can initialize");
+    // A TITLE WHOSE CAMERA CORE SAYS WHEN ITS HOOKS ARE IN (game.h GameTitleCoreState): the lane lets go of the game
+    // DLL when the core is out, in the same title and generation, tells the unload gate, and takes nothing again
+    // while the core stays out. A title that does not say keeps the reference until the title changes.
+    {
+        HMODULE self=nullptr;
+        GetModuleHandleExW(0,nullptr,&self);   // a reference of the test's own for the lane to free
+        r.module=self;r.generation=activeGeneration;r.attempted=true;
+        const auto unpinnedBefore=unpinned;
+        coreSays=false;
+        NativeVehicleFirstPerson_Poll();
+        Check(r.module==self&&unpinned==unpinnedBefore,"a title that does not say: the reference is kept");
+        coreSays=true;coreInstalled=true;
+        NativeVehicleFirstPerson_Poll();
+        Check(r.module==self&&unpinned==unpinnedBefore,"the core installed: the reference is kept");
+        coreInstalled=false;
+        NativeVehicleFirstPerson_Poll();
+        Check(!r.module&&unpinned==unpinnedBefore+1,
+            "the core out in the same title and generation: the lane lets go and tells the gate");
+        NativeVehicleFirstPerson_Poll();
+        Check(!r.module&&!r.attempted&&unpinned==unpinnedBefore+1,"nothing is taken again while the core is out");
+        coreSays=false;
+    }
 }
 // CO-OP SAFE: the override answers the frame and never the simulation.
 template<unsigned I> void RunCoopSafe()

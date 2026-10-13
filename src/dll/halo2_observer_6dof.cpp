@@ -6985,6 +6985,11 @@ bool Halo2Observer6Dof_Installed() noexcept
     return g_installed.load(std::memory_order_acquire);
 }
 
+std::atomic<bool>* Halo2Observer6Dof_TeardownRequested() noexcept
+{
+    return &g_teardownRequested;
+}
+
 bool Halo2Observer6Dof_Armed() noexcept
 {
     return g_armed.load(std::memory_order_acquire);

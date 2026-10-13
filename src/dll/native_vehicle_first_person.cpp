@@ -3,6 +3,7 @@
 #include "game.h"
 #include "sigscan.h"
 #include "hook_quiescence.h"
+#include "host_unload_gate.h"
 #include "sight_layer.h"
 #if HALOMCCVR_DEV_DIAGNOSTICS
 #include "halo2_observer_6dof.h"
@@ -410,7 +411,9 @@ bool Retire(unsigned i)
         if (MH_RemoveHook(r.target[j])!=MH_OK) return false;
         r.target[j]=r.original[j]=nullptr;
     }
-    if (r.module) FreeLibrary(r.module);
+    // The reference goes last, and the unload gate is told after it has gone: a load of this DLL that was
+    // waiting for this teardown may go on, and finds the old image unloaded.
+    if (r.module) { const HMODULE held=r.module;FreeLibrary(held);HostUnloadGate_Unpin(held); }
     r.module=nullptr;r.base=0;r.generation=0;r.marker=r.markerInterpolated=nullptr;
     r.tlsIndex=nullptr;r.tickSlot=r.tickByte=0;
     r.trimIdentity.store(0);r.trimGeneration.store(0);r.trimSeat.store(-1);
@@ -533,16 +536,29 @@ void NativeVehicleFirstPerson_Poll()
     for (unsigned i=0;i<3;++i) {
         auto& r=runtime[i];const auto title=kBindings[i].title;
         const auto generation=TitleAdapter_GetGeneration(title);
-        if (r.module&&(active!=title||generation!=r.generation)) {
+        // THE REFERENCE IS HELD ONLY WHILE THE TITLE'S CAMERA CORE IS INSTALLED (game.h GameTitleCoreState). It used
+        // to be held until another title started, so a game that ended kept its DLL, MCC's reload for the menus took
+        // that old image, and a second game of the same title started in a module whose shutdown had already run
+        // (Halo 4: an access violation in halo4.dll a second into the load; Halo 2 the same way). The core's hooks
+        // are out before this lane lets go, since they need the image mapped while they are removed.
+        GameTitleCoreState core{};
+        const bool coreSays=Game_TitleCoreState(title,core);
+        if (r.module&&(active!=title||generation!=r.generation||(coreSays&&!core.installed))) {
             if (!Retire(i)) {
                 if (now>=r.reportAt) {r.reportAt=now+2000;LOG("Vehicle first person title=%u: cleanup pending; feature stock",unsigned(title));}
                 continue;
             }
         }
         if (active!=title||!generation) continue;
+        if (coreSays&&!core.installed) continue;
         if (!r.attempted&&g_config.vehicle_first_person) {
             const auto* descriptor=TitleRegistry_Find(title);
             if (!descriptor||!GetModuleHandleExW(0,descriptor->moduleName,&r.module)) continue;
+            // MCC's reload of this DLL at the game's end waits for the core's teardown and this lane's (the gate
+            // asks for it where the title's last frame is known), so the old image is gone when it maps.
+            if (coreSays&&core.tearingDown)
+                HostUnloadGate_Pin(r.module,core.tearingDown,core.lastFrameMs,descriptor->displayName,
+                                   core.lastFrameMs!=nullptr);
             r.base=reinterpret_cast<uintptr_t>(r.module);r.generation=generation;r.attempted=true;
             const auto* dos=reinterpret_cast<const IMAGE_DOS_HEADER*>(r.base);
             const auto* nt=reinterpret_cast<const IMAGE_NT_HEADERS64*>(r.base+dos->e_lfanew);
