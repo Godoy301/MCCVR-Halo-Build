@@ -15816,6 +15816,10 @@ namespace
             OdstHalo3FovMatch fovMatch{};
         } eyeInputs[2];
         const bool cutsceneTheater = VR_IsCutsceneTheaterActive();
+        // MONO RENDERING (mono_view_logic.h): one pass, drawn as the first eye, by a camera at the midpoint of the
+        // eyes with no cant and a frustum that covers either eye's. Both eyes' inputs are that camera's.
+        float monoFov[4]{};
+        const bool monoFrame = VR_MonoRenderThisFrame(GameTitle::Halo3ODST, monoFov) && !cutsceneTheater;
         bool eyeInputsValid = true;
         for (int eye = 0; eye < 2; ++eye)
         {
@@ -15823,6 +15827,15 @@ namespace
             eyeInputsValid = VR_GetEyeViewOffset(
                 eye, eyeInputs[eye].position, eyeInputs[eye].orientation) &&
                 VR_GetEyeFov(eye, fov) && eyeInputsValid;
+            if (monoFrame)
+            {
+                for (float& component : eyeInputs[eye].position)
+                    component = 0.0f;
+                eyeInputs[eye].orientation[0] = eyeInputs[eye].orientation[1] =
+                    eyeInputs[eye].orientation[2] = 0.0f;
+                eyeInputs[eye].orientation[3] = 1.0f;
+                memcpy(fov, monoFov, sizeof(fov));
+            }
             ApplyCutsceneTheaterEyeTransform(
                 cutsceneTheater,
                 g_config.cutscene_theater_depth,
@@ -15924,7 +15937,7 @@ namespace
         g_fpStereoSolveScope.twoHandAimActive = VR_IsTwoHandAiming();
         (void)VR_GetContactTrackingSnapshot(g_fpStereoSolveScope.anatomicalTracking);
         const int firstEye = g_config.right_eye_first ? 1 : 0;
-        for (int pass = 0; pass < 2; ++pass)
+        for (int pass = 0; pass < (monoFrame ? 1 : 2); ++pass)
         {
             const int eye = pass == 0 ? firstEye : 1 - firstEye;
             g_stereoEye.store(eye, std::memory_order_release);
@@ -16053,6 +16066,12 @@ namespace
             }
             g_odstRenderHalfFovX[eye].store(halfX, std::memory_order_relaxed);
             g_odstRenderHalfFovY[eye].store(halfY, std::memory_order_relaxed);
+            if (monoFrame)
+            {
+                // The one picture is the other eye's too: so is the frustum it was drawn with.
+                g_odstRenderHalfFovX[1 - eye].store(halfX, std::memory_order_relaxed);
+                g_odstRenderHalfFovY[1 - eye].store(halfY, std::memory_order_relaxed);
+            }
 
             memcpy(bytes + layout.rootSecondaryCompact, camera,
                    layout.compactSize);
@@ -16081,6 +16100,11 @@ namespace
         g_fpStereoSolveScope.armed = false;
         g_stereoEye.store(-1, std::memory_order_release);
         g_odstCamera.eyeView.store(nullptr, std::memory_order_release);
+        // A capture that missed keeps the last picture, mono or a pair, as it was.
+        if (monoFrame && capturesOk)
+            VR_NoteMonoFrameRendered(GameTitle::Halo3ODST, firstEye);
+        else if (!monoFrame)
+            VR_NoteStereoFrameRendered();
         memcpy(camera, savedCompact, layout.compactSize);
         memcpy(bytes + layout.rootCurrentDerived, savedDerived, layout.derivedSize);
         memcpy(bytes + layout.rootSecondaryCompact, savedSecondaryCompact,
