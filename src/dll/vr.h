@@ -736,19 +736,27 @@ void VR_Halo4NoteBoundRenderTargets(
 // capture's framing, and unless its blend writes coverage it is made without its alpha write
 // (halo4_reticle_alpha_logic.h); the game's own blend state is bound again when the scope ends. Any other draw
 // is not touched.
+// The scope is made around EVERY draw of every title, so the draw that is not touched pays one call and one
+// store: the end of the scope is tested here, and only a draw whose blend state was changed calls out again.
 class VrHalo4ReticleDrawScope
 {
 public:
     explicit VrHalo4ReticleDrawScope(ID3D11DeviceContext* context);
-    ~VrHalo4ReticleDrawScope();
+    ~VrHalo4ReticleDrawScope()
+    {
+        if (context_)
+            Restore();
+    }
     VrHalo4ReticleDrawScope(const VrHalo4ReticleDrawScope&) = delete;
     VrHalo4ReticleDrawScope& operator=(const VrHalo4ReticleDrawScope&) = delete;
 
 private:
+    void Restore();
+    // Set only by a draw whose blend state was changed; the rest are read only then.
     ID3D11DeviceContext* context_ = nullptr;
-    ID3D11BlendState* saved_ = nullptr;
-    FLOAT factor_[4]{};
-    UINT sampleMask_ = 0;
+    ID3D11BlendState* saved_;
+    FLOAT factor_[4];
+    UINT sampleMask_;
 };
 #if HALOMCCVR_DEV_DIAGNOSTICS
 // Dev A/B of the rule above: 0 the capture as the game draws it, 1 the rule, 2 no draw writes alpha.

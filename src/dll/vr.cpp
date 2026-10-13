@@ -23553,10 +23553,8 @@ VrHalo4ReticleDrawScope::VrHalo4ReticleDrawScope(ID3D11DeviceContext* context)
     sampleMask_ = sampleMask;
 }
 
-VrHalo4ReticleDrawScope::~VrHalo4ReticleDrawScope()
+void VrHalo4ReticleDrawScope::Restore()
 {
-    if (!context_)
-        return;
     context_->OMSetBlendState(saved_, factor_, sampleMask_);
     if (saved_)
         saved_->Release();
