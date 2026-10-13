@@ -227,14 +227,9 @@ static std::atomic<unsigned long long> g_reachSeatFrameUnknownMs{0};
 static void ReachSeatFrameBind(uintptr_t base, size_t size);
 static void ReachRecordDesiredAim(float gameYaw, float gamePitch);
 extern "C" void ReachPcApplyForUser(int user, const uint8_t* entryRsp);
-// What the control update's install resolves in the loaded module (drive_sites.h): the update itself, its callers
-// and, in a dev build, the sim tick counter the census reads.
-struct ReachControlFound
-{
-    drive_sites::ReachControl control;
-    drive_sites::Callers callers;
-    drive_sites::Tick tick;
-};
+// What the control update's install resolves in the loaded module (drive_sites.h: PlanReachControl): the update
+// itself, its callers and, in a dev build, the sim tick counter the census reads.
+using ReachControlFound = drive_sites::ReachControlPlan;
 // Which caller ran the accumulator (aim_caller_logic.h; defined beside ReachPcApplyForUser). Built at install,
 // before the hook is enabled, from what that resolution found.
 static bool ReachBuildCallerMap(uintptr_t base, size_t size, const ReachControlFound& resolved);
@@ -36145,14 +36140,10 @@ namespace
         {
             drive_cascade::Resolution<ReachControlFound> resolution;
             const drive_cascade::Drive drive{GameTitle::HaloReach, "control-update"};
+            // The plan is drive_sites.h's own function, the one the tests and the offline check run: with the sim
+            // tick's two anchors in a dev build, without them in a player build.
             const bool opened = drive_cascade::Resolve(base, size, drive, resolution, [](drive_resolve::Resolver& r) {
-                ReachControlFound f;
-                f.control = drive_sites::ResolveReachControl(r);
-                f.callers = drive_sites::ResolveCallers(r, drive_sites::kReachCallerAnchors, f.control.entry);
-#if HALOMCCVR_DEV_DIAGNOSTICS
-                f.tick = drive_sites::ResolveTick(r, drive_sites::kReachTickAnchors);
-#endif
-                return f;
+                return drive_sites::PlanReachControl<HALOMCCVR_DEV_DIAGNOSTICS != 0>(r);
             });
             const drive_sites::ReachControl& found = resolution.found.control;
             static addrcascade::TierReporter s_foundHow;

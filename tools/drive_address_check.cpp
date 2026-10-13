@@ -339,14 +339,14 @@ struct Outcome
 
 using RunFn = void (*)(Resolver&, Outcome&);
 
-// WHICH BUILD'S PLANS are run. An install's plan for a control update is its anchors and its caller map; a dev
-// build's goes on to the two tick anchors (the installs compile that line for dev builds only).
+// WHICH BUILD'S PLANS are run. A control update's plan is the installs' own function (drive_sites.h:
+// PlanReachControl, PlanLegacyControl): a dev build's install runs it with the two tick anchors, a player build's
+// without. Every other drive's plan is one function too, and the same in both builds.
 bool g_devPlans = false;
 
-drive_sites::Callers RunCallers(Resolver& r, const drive_sites::CallerAnchors& anchors, uint32_t entry, char* text,
-                               size_t size)
+// What a control update's caller map came to, in words.
+void DescribeCallers(const drive_sites::Callers& c, const drive_sites::CallerAnchors& anchors, char* text, size_t size)
 {
-    const drive_sites::Callers c = drive_sites::ResolveCallers(r, anchors, entry);
     const bool dispatcher = anchors.accumulatorCall.pattern != nullptr;
     int proven = 0, sites = 0;
     bool stick = false;
@@ -365,36 +365,36 @@ drive_sites::Callers RunCallers(Resolver& r, const drive_sites::CallerAnchors& a
     else
         std::snprintf(text, size, "caller map %s (by return address, %d of %d callers)", stick ? "proven" : "NOT proven",
                       proven, sites);
-    return c;
 }
 
 void RunReachControl(Resolver& r, Outcome& out)
 {
-    const drive_sites::ReachControl f = drive_sites::ResolveReachControl(r);
-    out.ok = f.ok;
-    out.hook = f.entry;
-    out.reachControl = f;
-    out.callers = RunCallers(r, drive_sites::kReachCallerAnchors, f.entry, out.detail, sizeof(out.detail));
-    if (g_devPlans)
-        (void)drive_sites::ResolveTick(r, drive_sites::kReachTickAnchors);
+    const drive_sites::ReachControlPlan plan =
+        g_devPlans ? drive_sites::PlanReachControl<true>(r) : drive_sites::PlanReachControl<false>(r);
+    out.ok = plan.control.ok;
+    out.hook = plan.control.entry;
+    out.reachControl = plan.control;
+    out.callers = plan.callers;
+    DescribeCallers(plan.callers, drive_sites::kReachCallerAnchors, out.detail, sizeof(out.detail));
 }
 
 void RunLegacy(Resolver& r, Outcome& out, int slot)
 {
-    const drive_sites::LegacyControl f = drive_sites::ResolveLegacyControl(r, slot);
+    const drive_sites::LegacyControlPlan plan =
+        g_devPlans ? drive_sites::PlanLegacyControl<true>(r, slot) : drive_sites::PlanLegacyControl<false>(r, slot);
+    const drive_sites::LegacyControl& f = plan.control;
     out.ok = f.ok;
     out.hook = f.entry;
     char callers[160];
     out.legacy = f;
-    out.callers = RunCallers(r, drive_sites::kLegacyCallerAnchors[slot], f.entry, callers, sizeof(callers));
+    out.callers = plan.callers;
+    DescribeCallers(plan.callers, drive_sites::kLegacyCallerAnchors[slot], callers, sizeof(callers));
     if (slot == 2)
         std::snprintf(out.detail, sizeof(out.detail), "%s; record unit load %s", callers,
                       f.recordUnitLoad ? "proven (seats may be written)" : "NOT proven (seats keep the stick servo)");
     else
         std::snprintf(out.detail, sizeof(out.detail), "%s; pitch clamp %s", callers,
                       f.pitchLimit ? "found" : "NOT found (a look-steered driver's reticle is not clamped in pitch)");
-    if (g_devPlans)
-        (void)drive_sites::ResolveTick(r, drive_sites::kLegacyTickAnchors[slot]);
 }
 void RunHalo3(Resolver& r, Outcome& out) { RunLegacy(r, out, 0); }
 void RunOdst(Resolver& r, Outcome& out) { RunLegacy(r, out, 1); }

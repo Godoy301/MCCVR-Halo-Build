@@ -277,23 +277,19 @@ struct Result
     uint32_t hook = 0;   // the function that would be hooked
 };
 
-// A control update's plan. `dev`: as a dev build's install runs it, with the two tick anchors after the caller
-// map (the installs compile that line for dev builds only); else as a player build's does.
+// A control update's plan: the installs' own function (drive_sites.h). `dev`: as a dev build's install runs it,
+// with the two tick anchors after the caller map; else as a player build's does.
 Result PlanReachControl(Resolver& r, bool dev)
 {
-    const drive_sites::ReachControl f = drive_sites::ResolveReachControl(r);
-    (void)drive_sites::ResolveCallers(r, drive_sites::kReachCallerAnchors, f.entry);
-    if (dev)
-        (void)drive_sites::ResolveTick(r, drive_sites::kReachTickAnchors);
-    return {f.ok, f.entry};
+    const drive_sites::ReachControlPlan f =
+        dev ? drive_sites::PlanReachControl<true>(r) : drive_sites::PlanReachControl<false>(r);
+    return {f.control.ok, f.control.entry};
 }
 Result PlanLegacy(Resolver& r, int slot, bool dev)
 {
-    const drive_sites::LegacyControl f = drive_sites::ResolveLegacyControl(r, slot);
-    (void)drive_sites::ResolveCallers(r, drive_sites::kLegacyCallerAnchors[slot], f.entry);
-    if (dev)
-        (void)drive_sites::ResolveTick(r, drive_sites::kLegacyTickAnchors[slot]);
-    return {f.ok, f.entry};
+    const drive_sites::LegacyControlPlan f =
+        dev ? drive_sites::PlanLegacyControl<true>(r, slot) : drive_sites::PlanLegacyControl<false>(r, slot);
+    return {f.control.ok, f.control.entry};
 }
 Result PlanReachControlPlayer(Resolver& r) { return PlanReachControl(r, false); }
 Result PlanReachControlDev(Resolver& r) { return PlanReachControl(r, true); }

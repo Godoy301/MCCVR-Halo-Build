@@ -627,14 +627,9 @@ bool LegacyDriveBuildCallerMap(int slot, uintptr_t base, size_t size, uint32_t e
     return true;
 }
 
-// What one title's install resolves in its module: the control update, its callers and, in a dev build, the sim
-// tick counter the census reads.
-struct LegacyDriveFound
-{
-    drive_sites::LegacyControl control;
-    drive_sites::Callers callers;
-    drive_sites::Tick tick;
-};
+// What one title's install resolves in its module (drive_sites.h: PlanLegacyControl): the control update, its
+// callers and, in a dev build, the sim tick counter the census reads.
+using LegacyDriveFound = drive_sites::LegacyControlPlan;
 // How each title's addresses were last found: said again only when that changes.
 addrcascade::TierReporter g_legacyDriveFoundHow[3];
 } // namespace
@@ -655,14 +650,10 @@ bool LegacyDriveInstall(GameTitle title, uintptr_t base, size_t size)
     // below trusts a recorded RVA.
     drive_cascade::Resolution<LegacyDriveFound> resolution;
     const drive_cascade::Drive drive{site.title, "control-update"};
+    // The plan is drive_sites.h's own function, the one the tests and the offline check run: with the sim tick's
+    // two anchors in a dev build, without them in a player build.
     const bool opened = drive_cascade::Resolve(base, size, drive, resolution, [slot](drive_resolve::Resolver& r) {
-        LegacyDriveFound f;
-        f.control = drive_sites::ResolveLegacyControl(r, slot);
-        f.callers = drive_sites::ResolveCallers(r, kLegacyCallerAnchors[slot], f.control.entry);
-#if HALOMCCVR_DEV_DIAGNOSTICS
-        f.tick = drive_sites::ResolveTick(r, drive_sites::kLegacyTickAnchors[slot]);
-#endif
-        return f;
+        return drive_sites::PlanLegacyControl<HALOMCCVR_DEV_DIAGNOSTICS != 0>(r, slot);
     });
     const drive_sites::LegacyControl& found = resolution.found.control;
     char driveName[32];

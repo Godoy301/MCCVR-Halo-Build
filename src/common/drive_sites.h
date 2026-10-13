@@ -811,6 +811,49 @@ inline LegacyControl ResolveLegacyControl(Resolver& r, int slot)
     return f;
 }
 
+// ---- A CONTROL UPDATE'S WHOLE PLAN, as its install runs it: the update, its caller map and -- in a dev build
+// only (WithTick) -- the sim tick counter the dev census reads. One function for each, run by the install, by the
+// tests and by the offline check, so that what those two check is the plan that ships and not one written beside
+// it. A player build's plan and a dev build's are two versions of the drive's tables: two lines apart, and
+// another plan hash. (The other drives' plans are one function already: ResolveHalo2Control, ResolveReachSabre,
+// ResolveHalo4Flight, ResolveT13.) A build that does not ask for the tick has none of its anchors in it.
+struct ReachControlPlan
+{
+    ReachControl control;
+    Callers callers;
+    Tick tick;
+};
+
+template <bool WithTick>
+inline ReachControlPlan PlanReachControl(Resolver& r)
+{
+    ReachControlPlan f;
+    f.control = ResolveReachControl(r);
+    f.callers = ResolveCallers(r, kReachCallerAnchors, f.control.entry);
+    if constexpr (WithTick)
+        f.tick = ResolveTick(r, kReachTickAnchors);
+    return f;
+}
+
+struct LegacyControlPlan
+{
+    LegacyControl control;
+    Callers callers;
+    Tick tick;
+};
+
+// `slot`: 0 Halo 3, 1 ODST, 2 Halo 4.
+template <bool WithTick>
+inline LegacyControlPlan PlanLegacyControl(Resolver& r, int slot)
+{
+    LegacyControlPlan f;
+    f.control = ResolveLegacyControl(r, slot);
+    f.callers = ResolveCallers(r, kLegacyCallerAnchors[slot], f.control.entry);
+    if constexpr (WithTick)
+        f.tick = ResolveTick(r, kLegacyTickAnchors[slot]);
+    return f;
+}
+
 // ---- Halo 4: the Broadsword's pilot. ENTRY, CALL, TLSIDX and PX are found by signature; the rest are the
 // instructions that read the fields the drive reads, resolved inside their function.
 // The pilot's controller: the function row 0 (ENTRY) is in.
