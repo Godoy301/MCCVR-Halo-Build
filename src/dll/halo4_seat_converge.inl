@@ -1124,9 +1124,20 @@ void InstallHalo4SeatConverge(uintptr_t base, size_t size, uint32_t generation)
     // (The trace's rate limiter is the stick call's thread's alone and needs no reset: a last trace it cannot
     // place against the clock never holds the next one back.)
     // The sampler's own state, under the sampler's flag: a view call of the last generation that was already past
-    // its checks may still be finishing.
+    // its checks may still be finishing. A view call holds the flag for well under a microsecond; one that never
+    // lets go is a thread that ended inside it, and this install then gives up instead of holding the worker (and
+    // every other title's installs and reports with it) for ever.
+    const uint64_t waitedFromMs = GetTickCount64();
     while (f.sampling.test_and_set(std::memory_order_acquire))
+    {
+        if (GetTickCount64() - waitedFromMs > 200)
+        {
+            LOG("SIGHT Halo 4 seat converge: the aim-camera sampler's state stayed in use for 200 ms at install; no "
+                "Halo 4 seat converges until the next install");
+            return;
+        }
         YieldProcessor();
+    }
     f.track.Reset();
     f.trackUnit = f.trackParent = UINT32_MAX;
     f.trackSeat = -1;
