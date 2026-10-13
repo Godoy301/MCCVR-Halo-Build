@@ -41,54 +41,25 @@
 #if HALOMCCVR_EXPERIMENTAL_REACH_RENDER_CANDIDATE
 namespace
 {
-// ADDR-HYGIENE: guarded. Every RVA and offset below is proven by the install before a hook exists: the entry and
-// the dispatcher's type-13 call are unique in the module, the call's rel32 lands on the entry, the dispatcher's
-// frame is proven from its unwind info and prologue, its stick-update caller calls the dispatcher, and the rest
-// match byte for byte at their RVAs (each is the instruction that reads the field this file reads). A miss: no
-// hook, one line naming what failed, the pilot keeps the stick servo. The whole Reach image is hash-pinned before
-// the camera core installs as well.
-struct ReachSabreAnchor
-{
-    const char* name;
-    uint32_t rva;
-    bool unique;
-    const char* pattern;
-};
-constexpr uint32_t kReachSabreEntryRva = 0x64828;
-constexpr uint32_t kReachSabreCallRva = 0x63607;        // the dispatcher's call of the controller
-constexpr uint32_t kReachSabreDispatcherRva = 0x6350C;
-constexpr ReachSabreAnchor kReachSabreAnchors[] = {
-    {"ENTRY", 0x64828, true,
-     "48 8B C4 55 53 56 57 41 54 41 55 41 56 41 57 48 8D A8 18 FF FF FF 48 81 EC A8 01 00 00 0F 29 70 A8 0F 29 78 98 "
-     "44 0F 29 40 88 44 0F 29 88 78 FF FF FF 44 0F 29 90 68 FF FF FF 44 0F 29 98 58 FF FF FF 44 0F 29 A0 48 FF FF FF "
-     "44 0F 29 A8 38 FF FF FF 44 0F 29 B0 28 FF FF FF 44 0F 29 B8 18 FF FF FF 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 45 F0 "
-     "65 48 8B 04 25 58 00 00 00 48 8D 35 ?? ?? ?? ?? 44 8B 05 ?? ?? ?? ?? 45 0F 57 C9 41 B9 10 00 00 00 41 BD D8 00 00 00"},
-    // The dispatcher: physics type == 13 -> the controller -> jmp past the accumulator's call.
-    {"CALL", 0x635D5, true,
-     "8B 08 E8 ?? ?? ?? ?? 83 F8 0D 75 ?? F3 0F 10 45 7F 0F 28 DF F3 0F 10 4D 77 0F 28 D6 8B 55 C7 8B CF "
-     "F3 0F 11 44 24 30 F3 0F 11 4C 24 28 4C 89 6C 24 20 E8 ?? ?? ?? ?? EB ??"},
-    // The record: player control = *(TLS + 0xD8) + user * 0x180; the controller works on +0x80 of it.
-    {"REC", 0x648B3, false,
-     "41 B9 10 00 00 00 41 BD D8 00 00 00 F3 0F 11 54 24 48 4E 8B 04 C0 48 63 C1 0F B7 CA F3 0F 11 5C 24 50 4F 8B 2C 28 "
-     "4C 8D 24 40 4C 89 45 A8 4B 8B 04 01 48 8D 14 49 49 C1 E4 07 48 89 54 24 68 49 8D 9D 80 00 00 00 49 03 DC"},
-    {"ANGPTR", 0x64C88, false, "4C 8D 7B 14"},   // the Euler output: player control + 0x94 (yaw, pitch, roll)
-    // The forced steer's stamp: direction vehicle +0xAC0 / +0xAC8, tick vehicle +0xABC.
-    {"STAMP", 0x64D6A, false, "F2 41 0F 10 85 C0 0A 00 00 41 8B 85 C8 0A 00 00 45 8B B5 BC 0A 00 00"},
-    // Its window: the tag block's +0xAC against game time (TLS + 0xA0: the tick at +0xC, seconds per tick at +8).
-    {"WIN", 0x64E58, false,
-     "F3 0F 10 84 BE AC 00 00 00 B9 A0 00 00 00 4A 8B 0C 21 8B 41 0C 41 2B C6 66 0F 6E C8 0F 5B C9 F3 0F 59 49 08 "
-     "0F 2F C1 0F 86 ?? ?? ?? ??"},
-    // The hull (0x51DE3C) reading the desired facing it steers by, vehicle +0x1E4 / +0x1E8 / +0x1EC ...
-    {"HX", 0x51E551, false,
-     "F3 0F 10 B6 E8 01 00 00 F3 0F 10 BE E4 01 00 00 0F 28 C6 0F 28 CF E8 ?? ?? ?? ?? F3 0F 59 FF F3 0F 11 45 C0 "
-     "F3 0F 59 F6 F3 0F 58 FE 0F 28 C7 E8 ?? ?? ?? ?? 0F 28 C8 F3 0F 10 86 EC 01 00 00 E8 ?? ?? ?? ?? F3 0F 10 B6 50 02 00 00"},
-    // ... and the craft's own forward, vehicle +0x50 / +0x54 / +0x58 (the nose, for the report).
-    {"HFWD", 0x51DF73, false,
-     "F3 0F 10 4E 54 F3 0F 10 46 50 F3 0F 59 C0 F3 0F 59 C9 F3 0F 58 C1 E8 ?? ?? ?? ?? 0F 28 C8 F3 0F 10 46 58"},
-};
-// The dispatcher's own callers: [0] the action / kit consumer (an extra call), [1] the stick update, [2] the path
-// with no unit. [1] must be proven (it is the update); the others read as unknown when they are not.
-constexpr uint32_t kReachSabreCallerRvas[3] = {0x5EE43, 0x62467, 0x628A3};
+// ADDR-HYGIENE: resolved (src/common/drive_sites.h: kReachSabreAnchors, ResolveReachSabre). No recorded RVA says
+// where anything is. Before a hook exists the install FINDS, in the module that is loaded: the controller's entry,
+// the dispatcher's type-13 call and the hull's read of the desired facing by their signatures (each exactly once;
+// the entry where a function starts); the dispatcher as the function that call sits in (.pdata), which must begin
+// with the dispatcher's own prologue; the dispatcher's callers by theirs; and every other row -- each the
+// instruction that reads a field this file reads, its displacement bytes exact -- inside the function it belongs
+// to. Then it proves, on what it found: the call's rel32 lands on the entry, the dispatcher's frame agrees between
+// its unwind info and its prologue, its stick-update caller calls the dispatcher, and the engine TLS index is the
+// module's own, the one the controller loads and the one this lane's readers use. A miss: no hook, one line naming
+// what failed, the pilot keeps the stick servo. The whole Reach image is hash-pinned before the camera core
+// installs as well.
+using drive_sites::kReachSabreAnchors;
+// Where the tables record the controller, for the line that is written when it could not be found.
+constexpr uint32_t kReachSabreEntryRecorded = kReachSabreAnchors[drive_sites::kReachSabreSites.entryRow].rva;
+// The dispatcher's own callers, as this file holds them (drive_sites::kReachSabreSites): [0] the action / kit
+// consumer (an extra call), [1] the stick update, [2] the path with no unit. [1] must be proven (it is the update);
+// the others read as unknown when they are not.
+static_assert(drive_sites::kReachSabreSites.order[1] == aim_caller::Caller::Stick &&
+              drive_sites::kReachSabreSites.order[2] == aim_caller::Caller::NoUnit);
 
 // The tag's forced-steer window (the type-13 block's +0xAC) as measured in the retail Sabre: one second. The game
 // re-stamps while the craft stays outside, so a craft whose tag gave another window is only handed back a little
@@ -108,6 +79,7 @@ struct ReachSabreDrive
 {
     // Install (worker). Read by the hook only while it is enabled.
     uintptr_t base = 0;
+    uint32_t entryRva = 0;            // where the install found the controller in this module
     uint32_t dispatcherFrame = 0;     // the dispatcher's own return address: controller entry rsp + this many bytes
     uintptr_t callerRet[3]{};
     std::atomic<uint32_t> generation{0};
@@ -378,39 +350,58 @@ bool ReachType13Install(uintptr_t base, size_t size, uint32_t generation)
             "reinstalled");
         return false;
     }
+    // WHERE EVERYTHING IS IN THIS MODULE (drive_sites.h): found by signature and by function, proven on what was
+    // found. Nothing below reads a recorded RVA.
+    drive_cascade::Resolution<drive_sites::ReachSabre> resolution;
+    const bool opened = drive_cascade::Resolve(
+        base, size, resolution, [](drive_resolve::Resolver& r) { return drive_sites::ResolveReachSabre(r); });
+    const drive_sites::Flight& found = resolution.found.flight;
+    static addrcascade::TierReporter s_foundHow;
+    if (opened)
+        drive_cascade::Announce("Reach Sabre direct drive", resolution.report, s_foundHow);
     char failed[96]{};
     size_t used = 0;
-    bool anchorsOk = size > kReachEngineTlsIndexRva + sizeof(uint32_t);
-    for (const ReachSabreAnchor& a : kReachSabreAnchors)
+    // The engine TLS index: the module's own, loaded by the controller itself (the resolution), and the one this
+    // lane's readers use (ReachSabreRead and the apply read it through kReachEngineTlsIndexRva).
+    bool anchorsOk = opened && found.tlsIndex && found.tlsIndex == kReachEngineTlsIndexRva;
+    if (opened && !anchorsOk)
+        used = static_cast<size_t>(snprintf(failed, sizeof(failed), "TLS-INDEX"));
+    for (size_t i = 0; i < drive_sites::kReachSabreRows; ++i)
     {
-        const bool ok = ReachColdExecutableAddress(base + a.rva) &&
-            (a.unique ? LegacyDriveUniqueAt(base, size, a.rva, a.pattern) : LegacyDriveBytesAt(base, size, a.rva, a.pattern));
-        if (ok)
+        const uint32_t at = resolution.found.rows[i];
+        if (at && ReachColdExecutableAddress(base + at))
             continue;
         anchorsOk = false;
-        const int n = snprintf(failed + used, sizeof(failed) - used, "%s%s", used ? "," : "", a.name);
+        const int n = snprintf(failed + used, sizeof(failed) - used, "%s%s", used ? "," : "", kReachSabreAnchors[i].name);
         if (n > 0 && used + static_cast<size_t>(n) < sizeof(failed))
             used += static_cast<size_t>(n);
     }
-    const bool callOk = anchorsOk && AimCallerCallReturn(base, size, kReachSabreCallRva, kReachSabreEntryRva) != 0;
+    const bool callOk = anchorsOk && AimCallerCallReturn(base, size, found.call, found.entry) != 0;
     // The frame through which the dispatcher's own return address is read from the controller's entry rsp: from the
-    // dispatcher's unwind info and its prologue, which must agree.
+    // dispatcher's unwind info and its prologue, which must agree -- in the loaded module's function table as in
+    // the .pdata the resolution read.
     uint32_t frame = 0;
-    const char* frameWhy = nullptr;
-    const bool frameOk = callOk &&
-        AimCallerProveDispatcher(base, size, kReachSabreDispatcherRva, kReachSabreCallRva, frame, frameWhy) && frame;
+    const char* frameWhy = found.frameWhy;
+    const bool frameOk = callOk && found.dispatcher &&
+        AimCallerProveDispatcher(base, size, found.dispatcher, found.call, frame, frameWhy) && frame &&
+        frame == found.frame;
     uintptr_t callerRet[3]{};
     for (int i = 0; frameOk && i < 3; ++i)
-        callerRet[i] = AimCallerCallReturn(base, size, kReachSabreCallerRvas[i], kReachSabreDispatcherRva);
+        callerRet[i] = AimCallerCallReturn(base, size, found.callerCall[i], found.dispatcher);
     if (!anchorsOk || !callOk || !frameOk || !callerRet[1])
     {
-        LOG("Reach Sabre direct drive: the pilot's controller +0x%X was NOT hooked (anchors failed: %s; dispatcher "
-            "call=%d frame=%d%s%s stick-update caller=%d); a Sabre's pilot keeps the stick servo, nothing else changes",
-            kReachSabreEntryRva, failed[0] ? failed : "none", callOk, frameOk, frameWhy ? ": " : "",
-            frameWhy ? frameWhy : "", callerRet[1] ? 1 : 0);
+        char first[280] = "";
+        if (opened)
+            drive_cascade::FirstFailure(resolution.report, first, sizeof(first));
+        LOG("Reach Sabre direct drive: the pilot's controller (recorded at +0x%X) was NOT hooked (%s; anchors failed: "
+            "%s; dispatcher call=%d frame=%d%s%s stick-update caller=%d); a Sabre's pilot keeps the stick servo, "
+            "nothing else changes",
+            kReachSabreEntryRecorded, opened ? first : (resolution.why ? resolution.why : "the module did not open"),
+            failed[0] ? failed : "none", callOk, frameOk, frameWhy ? ": " : "", frameWhy ? frameWhy : "",
+            callerRet[1] ? 1 : 0);
         return false;
     }
-    void* target = reinterpret_cast<void*>(base + kReachSabreEntryRva);
+    void* target = reinterpret_cast<void*>(base + found.entry);
     const MH_STATUS created = MH_CreateHook(target, reinterpret_cast<void*>(&ReachType13Detour), &g_reachT13Orig);
     if (created != MH_OK)
     {
@@ -421,6 +412,7 @@ bool ReachType13Install(uintptr_t base, size_t size, uint32_t generation)
     }
     // Everything the hook reads is set before it can run.
     d.base = base;
+    d.entryRva = found.entry;
     d.dispatcherFrame = frame;
     for (int i = 0; i < 3; ++i)
         d.callerRet[i] = callerRet[i];
@@ -441,7 +433,7 @@ bool ReachType13Install(uintptr_t base, size_t size, uint32_t generation)
         "are written to the record every other seat is written through (keys: aim_direct_drive, seat_direct_drive, "
         "reach_vehicle_aim 2), once a flight has shown that record to be what the craft steers by; at most %.0f "
         "deg/s; roll, and the game's own turn-back at the play space's edge, stay the game's",
-        kReachSabreEntryRva, frame, callerRet[0] ? 1 : 0, callerRet[2] ? 1 : 0,
+        found.entry, frame, callerRet[0] ? 1 : 0, callerRet[2] ? 1 : 0,
         static_cast<double>(kReachSabreMaxTurnDegPerSecond));
     return true;
 }
