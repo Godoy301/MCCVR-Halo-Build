@@ -1286,6 +1286,17 @@ void TestRememberedInProcess()
               "the same drive in a module at another base: nothing remembered of it there, searched");
         Check(onOther(there) && there.rungs.outcome.rung == Rung::Remembered && there.rungs.outcome.scans == 0,
               "and remembered there from then on");
+        // The same base, another build stamp (the module's PE timestamp one higher, as a patched DLL loaded where
+        // the old one stood): what was remembered is of another build, and is dropped.
+        uint32_t stamp = 0;
+        std::memcpy(&stamp, elsewhere.image + 0x80 + 8, sizeof(stamp));
+        ++stamp;
+        std::memcpy(elsewhere.image + 0x80 + 8, &stamp, sizeof(stamp));
+        Check(onOther(there) && !there.rungs.outcome.rememberedTried && there.rungs.outcome.rung != Rung::Remembered &&
+                  there.found.entry == RecordedModule::kEntryRva,
+              "the same base with another build stamp: nothing remembered of the old build is used");
+        Check(onOther(there) && there.rungs.outcome.rung == Rung::Remembered,
+              "and the new build's result is remembered in its turn");
         // A module that does not open leaves nothing remembered for the drive.
         Installed none;
         Check(!drive_cascade::Resolve(uintptr_t{0}, g_size, kHalo3, none,
