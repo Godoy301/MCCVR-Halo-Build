@@ -2,8 +2,11 @@
 // says, followed when the code before it grows, refused when its signature is ambiguous or gone, taken at its
 // recorded address when that is what tells several matches apart; an anchor that is resolved inside its function;
 // function starts and extents from .pdata, chained fragments included; the call, rip-operand and TLS proofs; the
-// reads through this mod's own hooks; and every forced fault.
+// reads through this mod's own hooks; and every forced fault. Then the rungs (src/common/drive_known.h): the known
+// addresses verified with no search, one failed line sending the whole drive to the search, what a search found
+// saved and verified the next time, and the address cache's text.
 #define DRIVE_RESOLVE_FAULTS 1
+#include "drive_known.h"
 #include "drive_resolve.h"
 
 #include <cstdio>
@@ -723,6 +726,328 @@ void TestReport()
     Check(many.Refuse("x") == 0 && many.report().lines[kMaxLines - 1].verdict == Verdict::AsRecorded,
           "refusing a line that was not stored touches no other line");
 }
+// ------------------------------------------------------------------------------------------------ the rungs
+// A small drive written as drive_sites.h writes them: a hooked function found by signature that must be where a
+// function starts, a field anchor inside it, a second signature, and a call derived from that one which must land
+// on the entry.
+struct Mini
+{
+    uint32_t entry = 0, field = 0, call = 0;
+    bool ok = false;
+};
+constexpr uint32_t kMiniEntry = 0x1200, kMiniField = 0x1260, kMiniCallSite = 0x2000;
+
+Mini MiniPlan(Resolver& r)
+{
+    Mini f;
+    f.entry = r.Unique("entry", kMiniEntry, kEntry);
+    if (f.entry && !r.IsFunctionStart(f.entry))
+        f.entry = r.Refuse("it is not where a function starts");
+    f.field = r.InFunction("field", kMiniField, kMiniEntry, f.entry, kField);
+    const uint32_t site = r.Unique("call site", kMiniCallSite, kOther);   // its E8 is the ninth byte
+    f.call = r.Derived("call", kMiniCallSite + 8, site ? site + 8 : 0);
+    if (f.call && !(f.entry && r.CallTarget(f.call) == f.entry))
+        f.call = r.Refuse("it does not call the entry");
+    f.ok = f.entry && f.field && f.call;
+    return f;
+}
+
+// The module that plan describes, with everything `shift` bytes later than the plan records it.
+void BuildMini(Module& m, uint32_t shift, uint32_t fieldAt = 0x60)
+{
+    PutFunction(m, kMiniEntry + shift, fieldAt);
+    m.Put(kMiniCallSite + shift, kOther);
+    m.Rel32(kMiniCallSite + shift + 9, kMiniCallSite + shift + 13, kMiniEntry + shift);
+}
+
+drive_known::Outcome RunMini(const Image& image, uint32_t faults, bool recordedBuild, const drive_known::Entry* saved,
+                             Mini& found, Report& report)
+{
+    const auto plan = [](Resolver& r) { return MiniPlan(r); };
+    return drive_known::RunTyped(image, faults, recordedBuild, saved, plan, found, report);
+}
+
+bool AllHow(const Report& report, How signatures)
+{
+    // The two signature lines (entry, call site) by `signatures`; the field by its offset or as known; the call derived.
+    return report.count == 4 && report.lines[0].how == signatures && report.lines[2].how == signatures &&
+           report.lines[3].how == How::Derived;
+}
+
+void TestRungRecorded()
+{
+    Module m;
+    BuildMini(m, 0);
+    m.Put(0x3000, kEntry);   // a second place with the entry's bytes: a search would have to tell them apart
+    const Image& image = m.Finish();
+    Mini found;
+    Report report;
+    drive_known::Outcome out = RunMini(image, 0, true, nullptr, found, report);
+    Check(out.rung == drive_known::Rung::Recorded && out.scans == 0 && report.scans == 0,
+          "on the recorded build the recorded addresses are verified with no search of the module at all");
+    Check(found.ok && found.entry == kMiniEntry && found.field == kMiniField && found.call == kMiniCallSite + 8 &&
+              report.Complete() && report.Count(Verdict::AsRecorded) == 4 && AllHow(report, How::Known),
+          "every line verified where it is recorded, and every derived proof made on those addresses");
+    // The search on the same module chooses the same addresses (the entry among two, by its record).
+    Resolver search(image, 0);
+    const Mini searched = MiniPlan(search);
+    Check(searched.entry == found.entry && searched.field == found.field && searched.call == found.call &&
+              search.report().lines[0].verdict == Verdict::RecordAmongSeveral && search.report().scans == 2,
+          "the search of that module chooses the same addresses, and needs two scans for them");
+    Check(search.report().plan == report.plan && report.plan != Report{}.plan,
+          "what was asked hashes the same whether it was verified or searched for");
+
+    // The same module when it is NOT known to be the recorded build: nothing is known, the search runs, and what
+    // it finds is worth saving even though nothing moved.
+    out = RunMini(image, 0, false, nullptr, found, report);
+    Check(out.rung == drive_known::Rung::Search && !out.recordedTried && !out.savedTried && out.scans == 2 && out.learn &&
+              found.ok && AllHow(report, How::Signature),
+          "a build that is not the recorded one is searched, and its addresses are worth saving");
+}
+
+void TestRungOneFailsWhole()
+{
+    // The recorded build by its stamp, but the field no longer stands at its recorded offset in the function.
+    Module m;
+    BuildMini(m, 0, 0x70);
+    const Image& image = m.Finish();
+    Mini found;
+    Report report;
+    const drive_known::Outcome out = RunMini(image, 0, true, nullptr, found, report);
+    Check(out.rung == drive_known::Rung::Search && out.recordedTried && found.ok && found.field == kMiniEntry + 0x70,
+          "one line that does not verify sends the whole drive to the search, which finds it");
+    Check(AllHow(report, How::Signature) && report.lines[1].how == How::FunctionExtent &&
+              report.lines[1].verdict == Verdict::Moved && out.scans == 3,
+          "the result in use is the search's alone: no line of it was taken from the failed rung");
+    Check(out.learn, "a site that moved on the recorded build is worth saving too");
+
+    // A function start that is not one fails rung 1 the same way a search would refuse it.
+    Module n;
+    n.Put(kMiniEntry, kEntry);
+    n.Put(kMiniEntry + 0x60, kField);
+    n.Function(kMiniEntry - 0x20, kMiniEntry + 0x100);   // the entry's bytes sit inside another function
+    n.Put(kMiniCallSite, kOther);
+    n.Rel32(kMiniCallSite + 9, kMiniCallSite + 13, kMiniEntry);
+    const drive_known::Outcome refused = RunMini(n.Finish(), 0, true, nullptr, found, report);
+    Check(refused.rung == drive_known::Rung::Search && refused.recordedTried && !found.ok && !found.entry &&
+              !report.Complete() && !refused.learn,
+          "bytes at the known address are not enough: the proofs are made on it, and a failed one is not learned");
+}
+
+void TestRungSaved()
+{
+    constexpr uint32_t kShift = 0x340;
+    Module m;
+    BuildMini(m, kShift);
+    m.Finish();
+    m.view.timeDateStamp = 0x68A0EDFC;
+    m.view.sizeOfImage = 0x04768000;
+    const Image& image = m.view;
+    Check(drive_known::Stamp(image) == 0x68A0EDFC04768000ull, "the stamp is the PE timestamp and the image size");
+    Mini found;
+    Report report;
+    // First launch on this build: nothing known, searched, worth saving.
+    drive_known::Outcome out = RunMini(image, 0, false, nullptr, found, report);
+    Check(out.rung == drive_known::Rung::Search && out.learn && out.scans == 2 && found.ok &&
+              found.entry == kMiniEntry + kShift && report.Count(Verdict::Moved) == 4,
+          "a moved build: found by search, every line reported moved");
+    drive_known::Entry entry;
+    Check(drive_known::MakeEntry(entry, "halo3.dll", "control-update", drive_known::Stamp(image), report) &&
+              entry.count == 4 && entry.plan == report.plan && entry.rvas[0] == kMiniEntry + kShift &&
+              entry.rvas[3] == kMiniCallSite + kShift + 8,
+          "what the search found becomes an entry: every line's address, the stamp, the plan");
+    // Second launch: verified at the saved addresses, no search.
+    Mini again;
+    Report second;
+    out = RunMini(image, 0, false, &entry, again, second);
+    Check(out.rung == drive_known::Rung::Saved && out.scans == 0 && out.savedTried && !out.savedRefused && !out.learn,
+          "the next launch verifies the saved addresses with no search of the module");
+    Check(again.ok && again.entry == found.entry && again.field == found.field && again.call == found.call &&
+              second.Complete() && second.Count(Verdict::Moved) == 4 && AllHow(second, How::Known) &&
+              second.lines[1].how == How::Known && drive_known::SameAddresses(second, report),
+          "and has the same addresses, each still reported as not where the tables record it");
+
+    // The same stamp, but the code is elsewhere now: the saved addresses do not verify, and the search runs.
+    Module other;
+    BuildMini(other, 0x400);
+    out = RunMini(other.Finish(), 0, false, &entry, again, second);
+    Check(out.rung == drive_known::Rung::Search && out.savedTried && out.savedRefused == drive_known::kSavedStale &&
+              again.ok && again.entry == kMiniEntry + 0x400 && out.learn && AllHow(second, How::Signature),
+          "stale saved addresses fall through to the search, whose result alone is used");
+    // Saved for another version of the drive's tables.
+    drive_known::Entry otherPlan = entry;
+    otherPlan.plan ^= 1;
+    out = RunMini(image, 0, false, &otherPlan, again, second);
+    Check(out.rung == drive_known::Rung::Search && out.savedRefused == drive_known::kSavedOtherPlan && again.ok,
+          "addresses saved for another version of the tables are not used, even where they verify");
+    drive_known::Entry shorter = entry;
+    --shorter.count;
+    out = RunMini(image, 0, false, &shorter, again, second);
+    Check(out.rung == drive_known::Rung::Search && out.savedRefused != nullptr && again.ok,
+          "nor an entry with another number of lines");
+    // A derived address that no longer follows from the verified ones.
+    drive_known::Entry bent = entry;
+    ++bent.rvas[3];
+    out = RunMini(image, 0, false, &bent, again, second);
+    Check(out.rung == drive_known::Rung::Search && out.savedRefused == drive_known::kSavedStale && again.ok,
+          "nor one whose derived addresses are not what follows from the verified ones");
+    // A saved field address outside its function.
+    drive_known::Entry outside = entry;
+    outside.rvas[1] = kMiniCallSite + kShift;
+    out = RunMini(image, 0, false, &outside, again, second);
+    Check(out.rung == drive_known::Rung::Search && out.savedRefused == drive_known::kSavedStale && again.ok,
+          "nor one whose field anchor is not inside its function");
+    // On the recorded build the recorded addresses come first, and an entry is not needed.
+    Module recorded;
+    BuildMini(recorded, 0);
+    out = RunMini(recorded.Finish(), 0, true, &entry, again, second);
+    Check(out.rung == drive_known::Rung::Recorded && !out.savedTried && out.scans == 0,
+          "on the recorded build the recorded addresses are tried first and suffice");
+}
+
+void TestRungFaults()
+{
+    Module m;
+    BuildMini(m, 0);
+    const Image& image = m.Finish();
+    Mini found;
+    Report report;
+    drive_known::Outcome out = RunMini(image, kFaultRecordWrong, true, nullptr, found, report);
+    Check(out.rung == drive_known::Rung::Search && out.recordedTried && found.ok && found.entry == kMiniEntry &&
+              report.Count(Verdict::Moved) == 4 && out.scans == 2,
+          "fault 0x04, the whole path: the recorded addresses do not verify, the search finds them, MOVED is reported");
+    out = RunMini(image, kFaultSignatureMissing, true, nullptr, found, report);
+    Check(out.rung == drive_known::Rung::Search && out.recordedTried && !found.ok && !out.learn,
+          "fault 0x01 fails the known addresses too, so the search shows it: nothing found, nothing learned");
+    out = RunMini(image, kFaultSignatureAmbiguous, true, nullptr, found, report);
+    Check(out.rung == drive_known::Rung::Search && found.ok && report.lines[0].verdict == Verdict::RecordAmongSeveral,
+          "fault 0x02 fails the known addresses too, so the search shows its tie-break");
+    out = RunMini(image, kFaultOffsetMoved, true, nullptr, found, report);
+    Check(out.rung == drive_known::Rung::Search && found.ok && report.lines[1].how == How::FunctionExtent,
+          "fault 0x20 fails the known offset, so the search inside the function shows");
+    out = RunMini(image, kFaultSavedStale, true, nullptr, found, report);
+    Check(out.rung == drive_known::Rung::Search && !out.recordedTried && out.savedTried &&
+              out.savedRefused == drive_known::kSavedStale && found.ok && out.scans == 2,
+          "fault 0x40: saved addresses that are stale do not verify, and the search finds everything");
+    out = RunMini(image, kFaultSearchToo, true, nullptr, found, report);
+    Check(out.rung == drive_known::Rung::Recorded && out.searchedToo && out.searchAgrees && out.scans == 2 && found.ok &&
+              AllHow(report, How::Known),
+          "self-test 0x80: the search is run beside a verified result, agrees, and changes nothing that is used");
+    out = RunMini(image, 0, true, nullptr, found, report);
+    Check(!out.searchedToo && out.scans == 0, "without it nothing is searched");
+}
+
+void TestCacheText()
+{
+    using namespace drive_known;
+    Module a, b;
+    BuildMini(a, 0x340);
+    BuildMini(b, 0x80);
+    Mini found;
+    Report first, second;
+    (void)RunMini(a.Finish(), 0, false, nullptr, found, first);
+    (void)RunMini(b.Finish(), 0, false, nullptr, found, second);
+    Entry halo3, halo4;
+    Check(MakeEntry(halo3, ModuleName(GameTitle::Halo3), "control-update", 0x68A0EDFC04768000ull, first) &&
+              MakeEntry(halo4, ModuleName(GameTitle::Halo4), "pilot-controller", 0x68A0E7BF04A3F000ull, second),
+          "two titles' drives as entries");
+    File file;
+    Check(Put(file, halo3) && Put(file, halo4) && file.count == 2, "both are held");
+    static char text[kMaxFileText];
+    const size_t length = Format(file, text, sizeof(text));
+    Check(length > 0 && std::strstr(text, "NOT a setting") && std::strstr(text, "Safe to DELETE") &&
+              std::strstr(text, "schema=1\r\n") &&
+              std::strstr(text, "entry halo3.dll 68A0EDFC04768000 control-update ") &&
+              std::strstr(text, " 4 1540,15A0,2340,2348\r\n"),
+          "the file's text: a head that says what it is, the schema, one line per entry");
+    File back;
+    Parse(text, length, back);
+    const Entry* h3 = Find(back, "halo3.dll", "control-update");
+    const Entry* h4 = Find(back, "halo4.dll", "pilot-controller");
+    Check(back.count == 2 && h3 && h4 && h3->stamp == halo3.stamp && h3->plan == halo3.plan && h3->count == 4 &&
+              !std::memcmp(h3->rvas, halo3.rvas, sizeof(uint32_t) * 4) && h4->stamp == halo4.stamp &&
+              h4->rvas[0] == kMiniEntry + 0x80,
+          "read back whole: two titles' entries coexist");
+    Check(!Find(back, "halo3.dll", "pilot-controller") && !Find(back, "haloreach.dll", "control-update"),
+          "a drive that was never saved has no entry");
+    // One title's drive is saved again (another build): its entry is replaced, the other title's is kept.
+    Entry newer = halo3;
+    newer.stamp = 0x7000000004800000ull;
+    newer.rvas[0] = 0x9999;
+    Check(Put(back, newer) && back.count == 2 && Find(back, "halo3.dll", "control-update")->stamp == newer.stamp &&
+              Find(back, "halo4.dll", "pilot-controller")->rvas[0] == kMiniEntry + 0x80,
+          "saving one drive again replaces its entry and keeps every other");
+
+    // What is not a whole, well-formed file of this schema holds nothing, or only its whole entries.
+    File none;
+    Parse(nullptr, 0, none);
+    Check(none.count == 0, "no text: nothing");
+    Parse(text, length - 2, none);   // the last line lost its newline: something cut the file short
+    Check(none.count == 1 && Find(none, "halo3.dll", "control-update") && !Find(none, "halo4.dll", "pilot-controller"),
+          "a file cut short keeps its whole entries and drops the cut one");
+    Parse(text, length / 2, none);
+    Check(none.count <= 1, "cut in the middle: at most the entries that are whole");
+    const char* const bad[] = {
+        "entry halo3.dll 68A0EDFC04768000 control-update 0123456789ABCDEF 4 1540,15A0,2340,2348\r\n",   // no schema
+        "schema=2\r\nentry halo3.dll 68A0EDFC04768000 control-update 0123456789ABCDEF 4 1540,15A0,2340,2348\r\n",
+        "schema=1\r\nentry halo3.dll 68A0EDFC04768000 control-update 0123456789ABCDEF 5 1540,15A0,2340,2348\r\n",
+        "schema=1\r\nentry halo3.dll 68A0EDFC04768000 control-update 0123456789ABCDEF 3 1540,15A0,2340,2348\r\n",
+        "schema=1\r\nentry halo3.dll 68A0EDFC04768000 control-update 0123456789ABCDEF 4 1540,15A0,,2348\r\n",
+        "schema=1\r\nentry halo3.dll 68A0EDFC04768000 control-update 0123456789ABCDEF 4 1540,15A0,0,2348\r\n",
+        "schema=1\r\nentry halo3.dll 68A0EDFC04768000 control-update 0123456789ABCDEF 4 1540,15A0,2340,123456789\r\n",
+        "schema=1\r\nentry halo3.dll 68A0EDFC04768000 control-update 0123456789ABCDEF 4 1540,15A0,2340,2348 x\r\n",
+        "schema=1\r\nentry halo3.dll 0 control-update 0123456789ABCDEF 4 1540,15A0,2340,2348\r\n",
+        "schema=1\r\nentry halo3.dll zz control-update 0123456789ABCDEF 4 1540,15A0,2340,2348\r\n",
+        "schema=1\r\nentry halo3.dll 68A0EDFC04768000 control-update 0123456789ABCDEF 0 \r\n",
+        "schema=1\r\nentry halo3.dll 68A0EDFC04768000 control-update 0123456789ABCDEF 999 1\r\n",
+        "schema=1\r\nentry a-module-name-that-is-far-too-long.dll 68A0EDFC04768000 control-update 1 1 1540\r\n",
+        "schema=1\r\nentry halo3.dll 68A0EDFC04768000\r\n",
+        "schema=1\r\nentry\r\n",
+        "schema=1\r\nsomething else entirely\r\n\r\n\x01\x02\x03\r\n",
+        "\xFF\xFE\x00\x00schema=1",
+    };
+    bool allIgnored = true;
+    for (const char* one : bad)
+    {
+        Parse(one, std::strlen(one), none);
+        allIgnored = allIgnored && none.count == 0;
+    }
+    Check(allIgnored, "no schema, another schema, a wrong count, a bad or zero or oversized address, trailing text, a "
+                      "zero stamp, an overlong name, a short line, garbage: each is ignored");
+    const char mixed[] = "# a comment\r\nschema=1\r\nnot an entry\r\n"
+                         "entry halo2.dll 68A0F0F202A38000 control-update 00000000000000AB 2 6C3DF0,6C3E5E\n"
+                         "entry halo2.dll broken\r\n";
+    Parse(mixed, sizeof(mixed) - 1, none);
+    Check(none.count == 1 && none.entries[0].count == 2 && none.entries[0].rvas[1] == 0x6C3E5E &&
+              none.entries[0].plan == 0xAB,
+          "a good entry among bad lines is taken (with either line ending)");
+
+    // Limits.
+    char small[64];
+    Check(Format(file, small, sizeof(small)) == 0 && Format(file, nullptr, 0) == 0, "text that does not fit is not written");
+    File full;
+    bool allPut = true;
+    for (uint32_t i = 0; i < kMaxEntries; ++i)
+    {
+        Entry e = halo3;
+        std::snprintf(e.id, sizeof(e.id), "drive-%u", i);
+        allPut = allPut && Put(full, e);
+    }
+    Entry extra = halo3;
+    std::snprintf(extra.id, sizeof(extra.id), "one-too-many");
+    Check(allPut && full.count == kMaxEntries && !Put(full, extra) && Format(full, text, sizeof(text)) > 0,
+          "a full file takes no more, and a full file's text fits");
+    Report incomplete = first;
+    incomplete.lines[2].verdict = Verdict::Missing;
+    Entry e;
+    Check(!MakeEntry(e, "halo3.dll", "control-update", 1, incomplete) && !MakeEntry(e, "halo3.dll", "two words", 1, first) &&
+              !MakeEntry(e, "", "control-update", 1, first) && !MakeEntry(e, "halo3.dll", "control-update", 0, first) &&
+              !MakeEntry(e, "halo3.dll", nullptr, 1, first),
+          "only a whole resolution, under one-word names and a real stamp, becomes an entry");
+    Check(!std::strcmp(ModuleName(GameTitle::HaloReach), "haloreach.dll") && !*ModuleName(GameTitle::None),
+          "each title's module by name");
+}
+
 } // namespace
 
 int main()
@@ -743,6 +1068,11 @@ int main()
     TestThroughOwnHooks();
     TestReadImage();
     TestReport();
+    TestRungRecorded();
+    TestRungOneFailsWhole();
+    TestRungSaved();
+    TestRungFaults();
+    TestCacheText();
     std::printf("drive resolve tests: %u checks, %u failures\n", checks, failures);
     return failures ? 1 : 0;
 }

@@ -5,7 +5,23 @@
 // instructions that use them. The tables that describe those places (drive_sites.h) record an RVA for each: a
 // measurement of one build. A recorded RVA is not where the code is after the game is patched, and hooking is
 // positional -- a hook placed on a stale address installs and reports success. So nothing here trusts a recorded
-// RVA to say where anything is. The rungs, in order:
+// RVA to say where anything is.
+//
+// THE KNOWN ADDRESSES FIRST. A resolution may be handed the address every signature is already known to stand at
+// (Known): the tables' recorded RVAs when the module is the very build they were measured on, or the RVAs an
+// earlier search found in this same build (drive_known.h decides which, and runs the rungs). It then compares the
+// bytes AT that address and searches nothing. That is a hint and never a shortcut past validation: the bytes must
+// match there, and every proof the search path makes about an address -- a function start is a .pdata function
+// start, an anchor lies in its function, a call lands where it must, the TLS index is the module's own -- is made
+// on it all the same, by the same plan. The one thing it does not do is count the matches in the whole module.
+// That count exists to tell one place from another when the address is NOT known; here the address is known for
+// exactly this module (its PE timestamp and image size), and the count was made when it became known: by the
+// offline check for the recorded build, by the search that produced a saved address. And the search itself takes
+// a signature whose bytes stand at its recorded address even among several matches, so on the recorded build the
+// two always choose the same address. If any one line fails, the whole resolution has failed and is run again by
+// search; the two are never mixed.
+//
+// THE SEARCH. The rungs, in order:
 //
 //   1. BY SIGNATURE. A hooked function, and every anchor whose bytes name one place, is searched for in the
 //      module's executable sections, and EVERY match is counted. Exactly one match is the address, wherever it is.
@@ -56,6 +72,11 @@ inline constexpr uint32_t kFaultRecordWrong = 0x04;          // every recorded R
 inline constexpr uint32_t kFaultTlsDirectory = 0x08;         // the PE TLS directory names another address
 inline constexpr uint32_t kFaultHookSilent = 0x10;           // a drive's watchdog is told its hook never ran
 inline constexpr uint32_t kFaultOffsetMoved = 0x20;          // no anchor stands at its recorded offset in its function
+inline constexpr uint32_t kFaultSavedStale = 0x40;           // the addresses saved from an earlier launch are stale
+inline constexpr uint32_t kFaultSearchToo = 0x80;            // a self-test, not a fault: the search is run as well
+// The bits that change what a resolution finds. A result made under one of them is not the game's.
+inline constexpr uint32_t kFaultsThatForce = kFaultSignatureMissing | kFaultSignatureAmbiguous | kFaultRecordWrong |
+                                             kFaultTlsDirectory | kFaultOffsetMoved | kFaultSavedStale;
 inline constexpr uint32_t kFaultRecordShift = 0x1000;
 
 #if DRIVE_RESOLVE_FAULTS
@@ -151,6 +172,9 @@ struct Image
     uint32_t functionCount = 0;
     // Where the PE TLS directory says the module's TLS index lives (0: not read). Filled by the owner of the image.
     uint32_t tlsIndexRva = 0;
+    // WHICH BUILD THIS IS, from the PE headers: the pair a set of known addresses is recorded or saved for.
+    uint32_t timeDateStamp = 0;
+    uint32_t sizeOfImage = 0;
     uint32_t (*original)(uintptr_t address, void* out, size_t size) = nullptr;
     void (*correct)(uintptr_t begin, size_t size, const uint8_t* bytes, const uint8_t* wild, size_t n, uintptr_t& first,
                     uint32_t& count) = nullptr;
@@ -205,6 +229,8 @@ inline bool ReadImage(const uint8_t* base, size_t size, Image& out, const char*&
     }
     out.base = base;
     out.size = static_cast<uint32_t>(size);
+    out.timeDateStamp = u32(pe + 8);
+    out.sizeOfImage = u32(optional + 56);
     for (uint32_t i = 0; i < sections; ++i)
     {
         const size_t at = table + static_cast<size_t>(i) * 40;
@@ -460,6 +486,7 @@ enum class How : uint8_t
     FunctionStart,     // the start of the function that holds another anchor (.pdata)
     Derived,           // computed from a found address
     TlsDirectory,      // read from the PE TLS directory
+    Known,             // its bytes compared at the address it is known to stand at; nothing searched
 };
 
 inline bool Found(Verdict v)
@@ -492,6 +519,7 @@ inline const char* HowText(How h)
     case How::FunctionStart: return "start of its function";
     case How::Derived: return "derived";
     case How::TlsDirectory: return "TLS directory";
+    case How::Known: return "verified at its known address";
     default: return "-";
     }
 }
@@ -514,6 +542,13 @@ struct Report
     Line lines[kMaxLines]{};
     uint32_t count = 0;
     uint32_t dropped = 0;   // lines beyond kMaxLines (the resolution itself is unaffected)
+    uint32_t scans = 0;     // searches run: of the module's code for a signature, or of one function's extent
+    // WHAT WAS ASKED: a hash of every line's name, recorded RVA and pattern, in order. Two resolutions of the same
+    // tables that took the same path have the same one, whatever they found.
+    uint64_t plan = 1469598103934665603ull;
+
+    // Every line was found: the whole drive resolved.
+    bool Complete() const { return count != 0 && dropped == 0 && NotFound() == 0; }
 
     uint32_t Count(Verdict v) const
     {
@@ -549,11 +584,27 @@ struct Report
     }
 };
 
+// --------------------------------------------------------------------------------------------- known addresses
+// Where a resolution's signatures are already known to stand (the file's head has why this is sound).
+enum class Source : uint8_t
+{
+    Search,     // nowhere: every signature is searched for, and every match counted
+    Recorded,   // at the tables' recorded RVAs: the module is the build they were measured on
+    Saved,      // at the RVAs an earlier search found in this same build
+};
+
+struct Known
+{
+    Source source = Source::Search;
+    const uint32_t* saved = nullptr;   // Saved: the RVA of every line, in the order the plan stores them
+    uint32_t savedCount = 0;
+};
+
 // -------------------------------------------------------------------------------------------------- resolver
 class Resolver
 {
 public:
-    Resolver(const Image& image, uint32_t faults) : im_(image), faults_(faults) {}
+    Resolver(const Image& image, uint32_t faults, Known known = {}) : im_(image), faults_(faults), known_(known) {}
 
     const Image& image() const { return im_; }
     const Report& report() const { return report_; }
@@ -568,6 +619,7 @@ public:
     // RUNG 1 and 2: by signature anywhere in the executable sections. The RVA found, or 0.
     uint32_t Unique(const char* name, uint32_t recordedRva, const char* pattern)
     {
+        Ask(1, name, recordedRva, 0, pattern);
         const uint32_t recorded = Recorded(recordedRva);
         Line line;
         line.name = name;
@@ -580,6 +632,25 @@ public:
             line.note = "its pattern does not compile";
             return Add(line);
         }
+        if (known_.source != Source::Search)
+        {
+            // THE KNOWN ADDRESS: the bytes there are compared, and nothing is searched. A forced "not found" or
+            // "ambiguous" is a fault of the search; it fails this rung so that the search runs and shows it.
+            line.how = How::Known;
+            const uint32_t at = KnownAt(recorded);
+            if (at && !Fault(faults_, kFaultSignatureMissing | kFaultSignatureAmbiguous) &&
+                InExecutable(im_, at, p.length) && MatchesAt(im_, p, at))
+            {
+                line.found = at;
+                line.verdict = at == recorded ? Verdict::AsRecorded : Verdict::Moved;
+            }
+            else
+            {
+                line.verdict = Verdict::Missing;
+            }
+            return Add(line);
+        }
+        ++report_.scans;
         Hits hits = CountExecutable(im_, p);
         if (Fault(faults_, kFaultSignatureMissing))
             hits = Hits{};
@@ -612,6 +683,7 @@ public:
     uint32_t InFunction(const char* name, uint32_t recordedRva, uint32_t functionRva, uint32_t viaFound,
                         const char* pattern)
     {
+        Ask(2, name, recordedRva, functionRva, pattern);
         const uint32_t recorded = Recorded(recordedRva), functionRecorded = Recorded(functionRva);
         Line line;
         line.name = name;
@@ -631,6 +703,23 @@ public:
             line.verdict = Verdict::NoFunction;
             return Add(line);
         }
+        if (known_.source == Source::Saved)
+        {
+            // THE SAVED ADDRESS: it must lie in this function and hold these bytes. Nothing is searched.
+            line.how = How::Known;
+            const uint32_t at = KnownAt(recorded);
+            if (at && !Fault(faults_, kFaultOffsetMoved) && at >= start && at < end && p.length <= end - at &&
+                InExecutable(im_, at, p.length) && MatchesAt(im_, p, at))
+            {
+                line.found = at;
+                line.verdict = at == recorded ? Verdict::AsRecorded : Verdict::Moved;
+            }
+            else
+            {
+                line.verdict = Verdict::Missing;
+            }
+            return Add(line);
+        }
         const uint32_t expected = start + (recorded - functionRecorded);
         if (!Fault(faults_, kFaultOffsetMoved) && expected >= start && InExecutable(im_, expected, p.length) &&
             MatchesAt(im_, p, expected))
@@ -640,8 +729,15 @@ public:
             line.verdict = expected == recorded ? Verdict::AsRecorded : Verdict::Moved;
             return Add(line);
         }
+        if (known_.source == Source::Recorded)
+        {
+            // On the recorded build the offset IS the known address: not there, this rung has failed.
+            line.verdict = Verdict::Missing;
+            return Add(line);
+        }
         // Not at its offset: the function changed around it. One match inside the function is still that anchor.
         line.how = How::FunctionExtent;
+        ++report_.scans;
         const Hits hits = CountIn(im_, p, start, end);
         line.matches = hits.count;
         if (hits.count == 1)
@@ -661,6 +757,7 @@ public:
     // the module begin like it.
     uint32_t FunctionStart(const char* name, uint32_t recordedRva, uint32_t viaFound, const char* pattern)
     {
+        Ask(3, name, recordedRva, 0, pattern);
         const uint32_t recorded = Recorded(recordedRva);
         Line line;
         line.name = name;
@@ -673,7 +770,13 @@ public:
             line.note = "its pattern does not compile";
             return Add(line);
         }
-        line.matches = CountExecutable(im_, p).count;
+        // How many places begin like it is said only where the module is searched anyway: the address does not
+        // come from that count.
+        if (known_.source == Source::Search)
+        {
+            ++report_.scans;
+            line.matches = CountExecutable(im_, p).count;
+        }
         const uint32_t start = viaFound ? FunctionStartOf(im_, viaFound) : 0;
         if (!start)
         {
@@ -695,6 +798,7 @@ public:
     // the table holds for it, as the cross-check.
     uint32_t Derived(const char* name, uint32_t recordedRva, uint32_t found)
     {
+        Ask(4, name, recordedRva, 0, nullptr);
         const uint32_t recorded = Recorded(recordedRva);
         Line line;
         line.name = name;
@@ -760,6 +864,7 @@ public:
     // index, or 0 with the line refused. `recordedRva`: where the table's build had it.
     uint32_t TlsIndex(const char* name, uint32_t recordedRva, uint32_t operandRva)
     {
+        Ask(5, name, recordedRva, 0, nullptr);
         const uint32_t recorded = Recorded(recordedRva);
         uint32_t directory = im_.tlsIndexRva;
         if (directory && Fault(faults_, kFaultTlsDirectory))
@@ -792,6 +897,42 @@ public:
     }
 
 private:
+    // Where the line about to be stored is known to stand: at its recorded RVA, or where an earlier search saved
+    // it. (A forced stale save reads every saved address kFaultRecordShift too high.)
+    uint32_t KnownAt(uint32_t recorded) const
+    {
+        if (known_.source == Source::Recorded)
+            return recorded;
+        if (Fault(faults_, kFaultSavedStale))
+            return recorded ? recorded + kFaultRecordShift : 0;
+        return report_.count < known_.savedCount ? known_.saved[report_.count] : 0;
+    }
+
+    // What the plan asks, into the report's hash: the table's own values, never what was found.
+    void Ask(uint8_t kind, const char* name, uint32_t recordedRva, uint32_t functionRva, const char* pattern)
+    {
+        uint64_t h = report_.plan;
+        const auto byte = [&h](uint8_t v) {
+            h ^= v;
+            h *= 1099511628211ull;
+        };
+        const auto word = [&byte](uint32_t v) {
+            for (int i = 0; i < 4; ++i)
+                byte(static_cast<uint8_t>(v >> (i * 8)));
+        };
+        const auto text = [&byte](const char* s) {
+            for (; s && *s; ++s)
+                byte(static_cast<uint8_t>(*s));
+            byte(0);
+        };
+        byte(kind);
+        text(name);
+        word(recordedRva);
+        word(functionRva);
+        text(pattern);
+        report_.plan = h;
+    }
+
     uint32_t Add(const Line& line)
     {
         lastStored_ = report_.count < kMaxLines;
@@ -804,6 +945,7 @@ private:
 
     const Image& im_;
     uint32_t faults_;
+    Known known_;
     Report report_{};
     bool lastStored_ = false;
 };
