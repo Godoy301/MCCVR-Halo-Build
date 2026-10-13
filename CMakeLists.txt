@@ -1167,6 +1167,13 @@ if(BUILD_TESTING)
     add_executable(halomccvr_drive_resolve_tests tests/drive_resolve_tests.cpp)
     target_include_directories(halomccvr_drive_resolve_tests PRIVATE src/common)
     add_test(NAME halomccvr_drive_resolve_tests COMMAND halomccvr_drive_resolve_tests)
+    # EVERY REAL PLAN of src/common/drive_sites.h -- the code that decides what each drive hooks -- run on an image
+    # synthesised from the tables themselves (each row's bytes at its recorded RVA, inside function extents
+    # generated from the rows, with a matching .pdata, calls and rip loads filled as the plan requires): as
+    # recorded, moved, and with one row broken at a time; then the proofs that are not rows. No game file.
+    add_executable(halomccvr_drive_sites_tests tests/drive_sites_tests.cpp)
+    target_include_directories(halomccvr_drive_sites_tests PRIVATE src/common)
+    add_test(NAME halomccvr_drive_sites_tests COMMAND halomccvr_drive_sites_tests)
     # The DLL's side of that resolution (src/dll/drive_cascade.cpp), as shipped, on a module that is really loaded
     # (the test's own executable): opened through VirtualQuery, its .pdata compared with the operating system's own
     # lookup, its TLS index taken from its PE TLS directory, a signature read through a hook patch, the address
