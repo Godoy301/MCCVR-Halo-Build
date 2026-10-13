@@ -25107,10 +25107,10 @@ void VR_NoteStereoFrameRendered(GameTitle title)
     g_monoPictureEye.store(-1, std::memory_order_release);
     const size_t slot = TitleRuntimeSlotIndex(title);
     if (slot < kTitleRuntimeSlotCount && g_monoRejections[slot].StereoRendered())
-        LOG("mono rendering (%s): the game's own renderer dropped single-pass frames and drew the pair that "
-            "followed, %u times running; it is left in stereo until the setting is switched off and on again or "
-            "the game is loaded anew",
-            DlssTitleName(title), mono_view::kMonoBlamesToRefuse);
+        LOG("mono rendering (%s): the game's own renderer kept dropping single-pass frames and drawing the pair "
+            "that followed; it is left in stereo until the setting is switched off and on again or the game is "
+            "loaded anew",
+            DlssTitleName(title));
 }
 // `title`'s renderer turned a single pass down: a frame dropped. A run of them asks for a probe pair.
 void VR_NoteMonoFrameRejected(GameTitle title)

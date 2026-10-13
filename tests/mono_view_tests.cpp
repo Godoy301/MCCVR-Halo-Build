@@ -151,17 +151,24 @@ int main()
         Check(!stalled.refused && stalled.blames == 0, "a probe that went missing first blames nothing when one is drawn");
         Check(frame(stalled, true, true, refusedNow) == Frame::Mono && stalled.dropRun == 0, "and mono is tried again");
 
-        // Mono that draws most of the time: short runs of drops never add up.
+        // Mono that draws most of the time: a few runs of drops do not add up to "cannot draw mono" ...
         MonoRejections flaky;
         refusedNow = false;
-        for (int round = 0; round < 50; ++round)
-        {
+        unsigned rounds = 0;
+        const auto round = [&] {
             for (unsigned i = 0; i < kMonoDropsBeforeProbe; ++i)
                 frame(flaky, false, true, refusedNow);
             frame(flaky, false, true, refusedNow);   // the probe: drawn, one blame
-            frame(flaky, true, true, refusedNow);    // then a mono frame is drawn: the blame is lifted
-        }
-        Check(!flaky.refused && !refusedNow, "a mono frame drawn between the blames lifts them");
+            frame(flaky, true, true, refusedNow);    // then a mono frame is drawn: the run of blames is over
+            ++rounds;
+        };
+        while (rounds + 1 < kMonoBlamesInAllToRefuse)
+            round();
+        Check(!flaky.refused && !refusedNow && flaky.blames == 0,
+              "a mono frame drawn between the blames ends their run");
+        // ... but a title that goes on dropping single passes in runs is left in stereo in the end.
+        round();
+        Check(flaky.refused && refusedNow, "runs of dropped single passes that keep coming are refused in all");
 
         // A pair that is not a probe (the setting off, the theatre) changes nothing.
         MonoRejections idle;

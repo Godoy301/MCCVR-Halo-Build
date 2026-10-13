@@ -145,13 +145,17 @@ inline MonoRefusal DecideMono(const MonoInput& in)
 // probe that goes missing itself says the title is dropping frames anyway: no blame, and mono is tried again.
 // kMonoBlamesToRefuse blames with no mono frame drawn between them leave the title in stereo, until the setting
 // is switched off and on again or the title is loaded anew. A title that cannot draw mono at all therefore costs
-// a dozen dropped frames with pairs between them, not a frozen picture.
+// a dozen dropped frames with pairs between them, not a frozen picture. A title that draws some single passes and
+// drops others in runs would never reach that count, and would go on dropping frames: kMonoBlamesInAllToRefuse
+// blames since the last reset, whatever was drawn between them, leave it in stereo as well.
 inline constexpr unsigned kMonoDropsBeforeProbe = 3;
 inline constexpr unsigned kMonoBlamesToRefuse = 4;
+inline constexpr unsigned kMonoBlamesInAllToRefuse = 12;
 struct MonoRejections
 {
     unsigned dropRun = 0;       // mono frames dropped in a row
     unsigned blames = 0;        // probes drawn at once after such a run, with no mono frame drawn since
+    unsigned blamesInAll = 0;   // the same, since the last reset
     bool probing = false;       // the next frame is to be drawn in stereo, as a probe
     bool probeAsked = false;    // a probe frame has been asked for and has not reported
     bool probeMissed = false;   // a probe frame was asked for and did not report before the next frame was asked
@@ -193,7 +197,11 @@ struct MonoRejections
         const bool blame = !probeMissed;
         probing = probeAsked = probeMissed = false;
         dropRun = 0;
-        if (!blame || ++blames < kMonoBlamesToRefuse)
+        if (!blame)
+            return false;
+        ++blames;
+        ++blamesInAll;
+        if (blames < kMonoBlamesToRefuse && blamesInAll < kMonoBlamesInAllToRefuse)
             return false;
         refused = true;
         return true;
