@@ -1152,6 +1152,12 @@ if(BUILD_TESTING)
         add_test(NAME ${halomccvr_addrcascade_target} COMMAND ${halomccvr_addrcascade_target})
     endforeach()
     target_compile_definitions(halomccvr_addrcascade_faults_tests PRIVATE ADDRCASCADE_FAULTS=1)
+    # Drive address resolution (src/common/drive_resolve.h) over synthetic images: found as recorded, followed
+    # when the code moved, refused when ambiguous or missing, told apart by the recorded address, resolved inside
+    # its function, read through this mod's own hooks, and every forced fault.
+    add_executable(halomccvr_drive_resolve_tests tests/drive_resolve_tests.cpp)
+    target_include_directories(halomccvr_drive_resolve_tests PRIVATE src/common)
+    add_test(NAME halomccvr_drive_resolve_tests COMMAND halomccvr_drive_resolve_tests)
     add_executable(halomccvr_dev_pad_script_tests tests/dev_pad_script_tests.cpp)
     target_include_directories(halomccvr_dev_pad_script_tests PRIVATE src/common)
     add_test(NAME halomccvr_dev_pad_script_tests COMMAND halomccvr_dev_pad_script_tests)
