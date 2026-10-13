@@ -41,61 +41,23 @@
 #if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA
 namespace
 {
-// ADDR-HYGIENE: guarded. Every RVA and offset below is proven by the install before a hook exists: the entry, the
-// dispatcher's type-13 call and the TLS index load are unique in the module, the call's rel32 lands on the entry,
-// the TLS index is the direct drive's own, the dispatcher's frame is proven from its unwind info and prologue, its
-// stick-update caller calls the dispatcher, and the rest match byte for byte at their RVAs (each is the instruction
-// that reads the field this file reads). A miss: no hook, one line naming what failed, the pilot keeps the stick
-// servo.
-struct Halo4FlightAnchor
-{
-    const char* name;
-    uint32_t rva;
-    bool unique;
-    const char* pattern;
-};
-constexpr uint32_t kHalo4FlightEntryRva = 0xAA524;
-constexpr uint32_t kHalo4FlightCallRva = 0xA892E;       // the dispatcher's call of the controller
-constexpr uint32_t kHalo4FlightDispatcherRva = 0xA8828;
-constexpr uint32_t kHalo4FlightTlsLoadRva = 0xAA5AD;    // `mov edx, [rip + disp32]`: the engine TLS index
-constexpr Halo4FlightAnchor kHalo4FlightAnchors[] = {
-    {"ENTRY", 0xAA524, true,
-     "48 8B C4 55 53 56 57 41 54 41 55 41 56 41 57 48 8D A8 38 FF FF FF 48 81 EC 88 01 00 00 0F 29 70 A8 0F 29 78 98 "
-     "44 0F 29 40 88 44 0F 29 88 78 FF FF FF 44 0F 29 90 68 FF FF FF 44 0F 29 98 58 FF FF FF 44 0F 29 A0 48 FF FF FF "
-     "44 0F 29 A8 38 FF FF FF 44 0F 29 B0 28 FF FF FF 44 0F 29 B8 18 FF FF FF 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 45 D8 "
-     "65 48 8B 04 25 58 00 00 00 48 8D 35 ?? ?? ?? ?? 44 8B CA 41 BC 01 00 00 00"},
-    // The dispatcher: the craft's run-time type == 13 -> the controller -> jmp to the post-block.
-    {"CALL", 0xA88FA, true,
-     "8B 4D C7 E8 ?? ?? ?? ?? 83 F8 0D 75 2E F3 0F 10 45 7F 41 0F 28 D8 F3 0F 10 75 77 0F 28 D7 8B 55 C7 8B CE "
-     "F3 0F 11 44 24 30 F3 0F 11 74 24 28 4C 89 64 24 20 E8 ?? ?? ?? ?? EB 58"},
-    // The dispatcher's object table (TLS + 0x18; an entry's kind byte 1 = a vehicle).
-    {"VEH", 0xA88C2, false,
-     "83 7D C7 FF 74 6D 0F B7 45 C7 BA 18 00 00 00 48 8D 0C 40 4A 8B 14 3A 48 8B 42 50 80 7C C8 04 01 75 51"},
-    // The TLS index load; player control at TLS + 0xB0.
-    {"TLSIDX", 0xAA5AD, true,
-     "8B 15 ?? ?? ?? ?? 45 0F 57 C9 41 B8 B0 00 00 00 F3 0F 11 54 24 58 F3 0F 11 5C 24 40 48 8B 14 D0"},
-    // The record: *(TLS + 0xB0) + 0x120 + user * 0x1F0 (the direct drive's record + 0x120).
-    {"RECSETUP", 0xAA5C9, false, "48 8B 14 D0 48 63 C1 48 69 D8 F0 01 00 00 49 8B 04 10 48 05 20 01 00 00"},
-    {"ANGPTR", 0xAA984, false, "4C 8D 7B 18"},   // the Euler output: the controller's record + 0x18
-    // The game's own steering: direction vehicle +0x1050 / +0x1058, stamp vehicle +0x104C.
-    {"REDIR", 0xAAA3B, false,
-     "E8 ?? ?? ?? ?? 83 F8 0D 75 23 F2 41 0F 10 85 50 10 00 00 41 8B 85 58 10 00 00 45 8B B5 4C 10 00 00"},
-    // Its window: the tag block's +0xCC against game time (TLS + 0x90: the tick at +0xC, seconds per tick at +8).
-    {"WIN", 0xAAB35, false,
-     "F3 0F 10 84 BE CC 00 00 00 B8 90 00 00 00 48 8B 0C 08 8B 41 0C 41 2B C6 66 0F 6E C8 0F 5B C9 F3 0F 59 49 08 "
-     "0F 2F C1 0F 86 ?? ?? ?? ??"},
-    // The craft's physics (0x6CACD8) reading the facing it steers by, vehicle +0x4BC / +0x4C0 / +0x4C4 ...
-    {"PX", 0x6CB43E, false,
-     "F3 41 0F 10 B6 C0 04 00 00 F3 41 0F 10 BE BC 04 00 00 0F 28 C6 0F 28 CF E8 ?? ?? ?? ?? F3 0F 59 FF 44 0F 28 C0 "
-     "F3 0F 59 F6 F3 0F 58 FE 0F 28 C7 E8 ?? ?? ?? ?? 0F 28 C8 F3 41 0F 10 86 C4 04 00 00 E8 ?? ?? ?? ?? "
-     "F3 41 0F 10 B6 28 05 00 00"},
-    // ... and the craft's own forward, vehicle +0x70 / +0x74 (the nose, for the report).
-    {"PFWD", 0x6CADEF, false, "F3 41 0F 10 4E 74 F3 41 0F 10 46 70"},
-};
-// The dispatcher's own callers: [0] the action / kit consumer and [1] the weapon's aim sway (extra calls), [2] the
-// stick update, [3] the path with no unit. [2] must be proven (it is the update); the others read as unknown when
-// they are not.
-constexpr uint32_t kHalo4FlightCallerRvas[4] = {0xA349E, 0xA7751, 0xA7774, 0xA7A01};
+// ADDR-HYGIENE: resolved (src/common/drive_sites.h: kHalo4FlightAnchors, ResolveHalo4Flight). No recorded RVA says
+// where anything is. Before a hook exists the install FINDS, in the module that is loaded: the controller's entry,
+// the dispatcher's type-13 call and the TLS index load by their signatures (each exactly once; the entry where a
+// function starts, the TLS load inside it); the dispatcher as the function that call sits in (.pdata), which must
+// begin with the dispatcher's own prologue; the dispatcher's callers by theirs; and every other row -- each the
+// instruction that reads a field this file reads, its displacement bytes exact -- inside the function it belongs
+// to. Then it proves, on what it found: the call's rel32 lands on the entry, the TLS index is the module's own and
+// the direct drive's, the dispatcher's frame agrees between its unwind info and its prologue, and its stick-update
+// caller calls the dispatcher. A miss: no hook, one line naming what failed, the pilot keeps the stick servo.
+using drive_sites::kHalo4FlightAnchors;
+// Where the tables record the controller, for the lines that are written before anything is resolved.
+constexpr uint32_t kHalo4FlightEntryRecorded = kHalo4FlightAnchors[drive_sites::kHalo4FlightSites.entryRow].rva;
+// The dispatcher's own callers, as this file holds them (drive_sites::kHalo4FlightSites): [0] the action / kit
+// consumer and [1] the weapon's aim sway (extra calls), [2] the stick update, [3] the path with no unit. [2] must be
+// proven (it is the update); the others read as unknown when they are not.
+static_assert(drive_sites::kHalo4FlightSites.order[2] == aim_caller::Caller::Stick &&
+              drive_sites::kHalo4FlightSites.order[3] == aim_caller::Caller::NoUnit);
 
 // The tag's steering window (the type-13 block's +0xCC): half a second for the campaign's craft, one second for the
 // Forge one, as measured. The longer is used for both: a craft with the shorter window is handed back half a second
@@ -118,6 +80,7 @@ struct Halo4FlightDrive
     void* target = nullptr;
     void* original = nullptr;
     uintptr_t base = 0;
+    uint32_t entryRva = 0;            // where the install found the controller in this module
     uint32_t dispatcherFrame = 0;     // the dispatcher's own return address: controller entry rsp + this many bytes
     uintptr_t callerRet[4]{};
     std::atomic<uint32_t> generation{0};
@@ -569,53 +532,61 @@ bool Halo4Type13Install(uintptr_t base, size_t size, uint32_t generation)
     const auto& st = g_legacyDrive[2];
     if (!st.installed.load(std::memory_order_acquire) || !st.tlsIndexAddress || st.base != base)
     {
-        LOG("Halo 4 Broadsword direct drive: the pilot's controller +0x%X was NOT hooked (the direct drive's own hook "
-            "is not installed on this module, so there is no record to write through); a Broadsword's pilot keeps "
-            "the stick servo", kHalo4FlightEntryRva);
+        LOG("Halo 4 Broadsword direct drive: the pilot's controller (recorded at +0x%X) was NOT hooked (the direct "
+            "drive's own hook is not installed on this module, so there is no record to write through); a "
+            "Broadsword's pilot keeps the stick servo", kHalo4FlightEntryRecorded);
         return false;
     }
+    // WHERE EVERYTHING IS IN THIS MODULE (drive_sites.h): found by signature and by function, proven on what was
+    // found. Nothing below reads a recorded RVA.
+    drive_cascade::Resolution<drive_sites::Halo4Flight> resolution;
+    const bool opened = drive_cascade::Resolve(
+        base, size, resolution, [](drive_resolve::Resolver& r) { return drive_sites::ResolveHalo4Flight(r); });
+    const drive_sites::Flight& found = resolution.found.flight;
+    static addrcascade::TierReporter s_foundHow;
+    if (opened)
+        drive_cascade::Announce("Halo 4 Broadsword direct drive", resolution.report, s_foundHow);
     char failed[96]{};
     size_t used = 0;
-    bool anchorsOk = true;
-    for (const Halo4FlightAnchor& a : kHalo4FlightAnchors)
+    bool anchorsOk = opened;
+    for (size_t i = 0; i < drive_sites::kHalo4FlightRows; ++i)
     {
-        const bool ok =
-            a.unique ? LegacyDriveUniqueAt(base, size, a.rva, a.pattern) : LegacyDriveBytesAt(base, size, a.rva, a.pattern);
-        if (ok)
+        if (resolution.found.rows[i])
             continue;
         anchorsOk = false;
-        const int n = snprintf(failed + used, sizeof(failed) - used, "%s%s", used ? "," : "", a.name);
+        const int n = snprintf(failed + used, sizeof(failed) - used, "%s%s", used ? "," : "", kHalo4FlightAnchors[i].name);
         if (n > 0 && used + static_cast<size_t>(n) < sizeof(failed))
             used += static_cast<size_t>(n);
     }
-    const bool callOk = anchorsOk && AimCallerCallReturn(base, size, kHalo4FlightCallRva, kHalo4FlightEntryRva) != 0;
-    // The controller's TLS index is the direct drive's own (so its record is the one written here).
-    bool tlsOk = false;
-    if (callOk)
-    {
-        int32_t disp = 0;
-        memcpy(&disp, reinterpret_cast<const void*>(base + kHalo4FlightTlsLoadRva + 2), sizeof(disp));
-        tlsOk = base + kHalo4FlightTlsLoadRva + 6 + static_cast<intptr_t>(disp) == st.tlsIndexAddress;
-    }
+    const bool callOk = anchorsOk && AimCallerCallReturn(base, size, found.call, found.entry) != 0;
+    // The controller's TLS index is the module's own (the resolution proved its load names it) and the direct
+    // drive's (so its record is the one written here).
+    const bool tlsOk = callOk && found.tlsIndex && base + found.tlsIndex == st.tlsIndexAddress;
     // The frame through which the dispatcher's own return address is read from the controller's entry rsp: from the
-    // dispatcher's unwind info and its prologue, which must agree.
+    // dispatcher's unwind info and its prologue, which must agree -- in the loaded module's function table as in
+    // the .pdata the resolution read.
     uint32_t frame = 0;
-    const char* frameWhy = nullptr;
-    const bool frameOk = tlsOk &&
-        AimCallerProveDispatcher(base, size, kHalo4FlightDispatcherRva, kHalo4FlightCallRva, frame, frameWhy) && frame;
+    const char* frameWhy = found.frameWhy;
+    const bool frameOk = tlsOk && found.dispatcher &&
+        AimCallerProveDispatcher(base, size, found.dispatcher, found.call, frame, frameWhy) && frame &&
+        frame == found.frame;
     uintptr_t callerRet[4]{};
     for (int i = 0; frameOk && i < 4; ++i)
-        callerRet[i] = AimCallerCallReturn(base, size, kHalo4FlightCallerRvas[i], kHalo4FlightDispatcherRva);
+        callerRet[i] = AimCallerCallReturn(base, size, found.callerCall[i], found.dispatcher);
     if (!anchorsOk || !callOk || !tlsOk || !frameOk || !callerRet[2])
     {
-        LOG("Halo 4 Broadsword direct drive: the pilot's controller +0x%X was NOT hooked (anchors failed: %s; "
-            "dispatcher call=%d tls=%d frame=%d%s%s stick-update caller=%d); a Broadsword's pilot keeps the stick "
-            "servo, nothing else changes",
-            kHalo4FlightEntryRva, failed[0] ? failed : "none", callOk, tlsOk, frameOk, frameWhy ? ": " : "",
-            frameWhy ? frameWhy : "", callerRet[2] ? 1 : 0);
+        char first[280] = "";
+        if (opened)
+            drive_cascade::FirstFailure(resolution.report, first, sizeof(first));
+        LOG("Halo 4 Broadsword direct drive: the pilot's controller (recorded at +0x%X) was NOT hooked (%s; anchors "
+            "failed: %s; dispatcher call=%d tls=%d frame=%d%s%s stick-update caller=%d); a Broadsword's pilot keeps "
+            "the stick servo, nothing else changes",
+            kHalo4FlightEntryRecorded, opened ? first : (resolution.why ? resolution.why : "the module did not open"),
+            failed[0] ? failed : "none", callOk, tlsOk, frameOk, frameWhy ? ": " : "", frameWhy ? frameWhy : "",
+            callerRet[2] ? 1 : 0);
         return false;
     }
-    void* target = reinterpret_cast<void*>(base + kHalo4FlightEntryRva);
+    void* target = reinterpret_cast<void*>(base + found.entry);
     const MH_STATUS created = MH_CreateHook(target, reinterpret_cast<void*>(&Halo4Type13Detour), &d.original);
     if (created != MH_OK)
     {
@@ -626,6 +597,7 @@ bool Halo4Type13Install(uintptr_t base, size_t size, uint32_t generation)
     }
     // Everything the hook reads is set before it can run.
     d.base = base;
+    d.entryRva = found.entry;
     d.dispatcherFrame = frame;
     for (int i = 0; i < 4; ++i)
         d.callerRet[i] = callerRet[i];
@@ -646,7 +618,7 @@ bool Halo4Type13Install(uintptr_t base, size_t size, uint32_t generation)
         "pitch are written to the direct drive's record (keys: aim_direct_drive, seat_direct_drive, reach_vehicle_aim "
         "2, and the first-person seat view), once a flight has shown that record to be what the craft steers by; at "
         "most %.0f deg/s; roll, and the game's own steering of the craft, stay the game's",
-        kHalo4FlightEntryRva, frame, callerRet[0] ? 1 : 0, callerRet[1] ? 1 : 0, callerRet[3] ? 1 : 0,
+        found.entry, frame, callerRet[0] ? 1 : 0, callerRet[1] ? 1 : 0, callerRet[3] ? 1 : 0,
         static_cast<double>(kHalo4FlightMaxTurnDegPerSecond));
     return true;
 }
