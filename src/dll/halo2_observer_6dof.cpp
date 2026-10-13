@@ -29,6 +29,10 @@
 #include "native_vehicle_first_person.h"
 #include "physical_crouch_camera.h"
 #include "sigscan.h"
+// Where the direct drive's code is in the loaded game DLL (halo2_direct_drive.inl): the tables and their
+// resolution, and the DLL's side.
+#include "../common/drive_sites.h"
+#include "drive_cascade.h"
 #include "seat_frame_reader.h"
 #include "seat_limit_publication.h"
 #include "../common/physical_crouch_native_read.h"
@@ -907,6 +911,7 @@ namespace
     struct Halo2DriveState
     {
         void* target = nullptr;
+        uint32_t entryRva = 0;         // where the install found the accumulator in this module
         uintptr_t slot = 0;            // the record's global pointer (from the prologue's rip load)
         uintptr_t controlReturn = 0;   // the control update's return address: the only call written after
         std::atomic<bool> installed{false}, armed{false};
