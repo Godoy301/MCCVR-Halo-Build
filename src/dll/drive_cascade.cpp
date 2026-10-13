@@ -73,6 +73,24 @@ bool WhollyReadable(uintptr_t begin, size_t size)
     return true;
 }
 
+// The module's own TLS index, from its PE TLS directory. Guarded on its own: a module whose directory cannot be
+// read loses the drives that need the index, not the one that does not (Halo 2's).
+void ReadTlsIndex(uintptr_t base, size_t size, drive_resolve::Image& image)
+{
+    __try
+    {
+        uint32_t index = 0;
+        uintptr_t rva = 0;
+        if (addrcascade::tls_index(reinterpret_cast<void*>(base), &index, &rva) && rva && rva < size &&
+            sizeof(uint32_t) <= size - rva)
+            image.tlsIndexRva = static_cast<uint32_t>(rva);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        image.tlsIndexRva = 0;
+    }
+}
+
 // The module as the resolution reads it. The caller guards this (the headers are read as they stand).
 bool Open(uintptr_t base, size_t size, drive_resolve::Image& image, const char*& why)
 {
@@ -113,12 +131,10 @@ bool Open(uintptr_t base, size_t size, drive_resolve::Image& image, const char*&
         image.functions = nullptr;
         image.functionCount = 0;
     }
-    // The module's own TLS index, from its PE TLS directory.
-    uint32_t index = 0;
-    uintptr_t rva = 0;
-    if (addrcascade::tls_index(reinterpret_cast<void*>(base), &index, &rva) && rva && rva < size &&
-        sizeof(uint32_t) <= size - rva)
-        image.tlsIndexRva = static_cast<uint32_t>(rva);
+    ReadTlsIndex(base, size, image);
+    // Outside the readable runs found above, every read asks the system first: a page that cannot be read costs
+    // the line that needed it, and the rest of the drive's resolution stands.
+    image.readable = &WhollyReadable;
     // Every compare and every count is of the game's own bytes, whatever this mod has hooked by now.
     image.original = &sig::CopyUnhooked;
     image.correct = &sig::CorrectLiveCountForHooks;
@@ -454,14 +470,14 @@ void HookWatch::Restart()
     everCalled_ = false;
 }
 
-bool HookWatch::Pass(const void* target, bool possible, bool called, uint64_t nowMs)
+bool HookWatch::Pass(uint64_t install, bool possible, bool called, uint64_t nowMs)
 {
-    if (target != target_)
+    if (install != install_)
     {
         Restart();
-        target_ = target;
+        install_ = install;
     }
-    if (!target)
+    if (!install)
         return false;
     everCalled_ = everCalled_ || called;
     if (!periodStartMs_)

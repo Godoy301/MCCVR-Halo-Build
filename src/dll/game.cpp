@@ -212,6 +212,8 @@ static std::atomic<int>                g_reachUnitCrouchState{-1};
 static std::atomic<unsigned long long> g_reachUnitCrouchMs{0};
 static void* g_reachPcTarget = nullptr;
 static uint32_t g_reachPcEntryRva = 0;   // where the install found the control update in this module
+static uint32_t g_reachPcInstalls = 0;   // how many times that hook has been installed (worker)
+static void ReachDriveForgetCalls();     // ... each of which is watched afresh (the hook watchdog)
 // The seat's frame for the Reach direct drive (seat_frame_reader.h): what the vehicle-tilt rebase 0x48ADB8 will do
 // to a seated record, read by ReachPcApplyForUser on the sim thread. Bound with the hook (ReachSeatFrameBind),
 // unbound when it is removed.
@@ -36197,6 +36199,8 @@ namespace
                 // The seat's frame (the vehicle-tilt rebase, read by the hook itself): bound while no hook can run.
                 ReachSeatFrameBind(base, size);
                 void* target = reinterpret_cast<void*>(base + found.entry);
+                ++g_reachPcInstalls;
+                ReachDriveForgetCalls();
                 const MH_STATUS created = MH_CreateHook(
                     target, reinterpret_cast<void*>(&ReachPlayerControlHook),
                     reinterpret_cast<void**>(&g_reachPcOrig));
@@ -36234,6 +36238,12 @@ namespace
                     "aiming", opened ? first : (resolution.why ? resolution.why : "the module did not open"),
                     entryOk ? 1 : 0, tlsOk ? 1 : 0, accOk ? 1 : 0, indexOk ? 1 : 0, found.tlsIndex,
                     static_cast<unsigned long long>(kReachEngineTlsIndexRva));
+                // NOT FOLLOWED, and said as what it is: the code may all have been found.
+                if (opened && found.tlsIndex && !indexOk)
+                    LOG("Reach direct-drive: NOT FOLLOWED. This game DLL keeps its engine TLS index at +0x%X, and "
+                        "this lane's run-time readers read it at the recorded +0x%llX: Reach's data moved. The drive "
+                        "is not hooked, even where every code site was found, until that constant is the module's",
+                        found.tlsIndex, static_cast<unsigned long long>(kReachEngineTlsIndexRva));
             }
         }
 #if HALOMCCVR_DEV_DIAGNOSTICS
@@ -53164,6 +53174,13 @@ bool Game_ReachSightReticleRange(float& outRangeM, bool& outHit)
 static aim_caller::CallerMap g_reachCallerMap;            // written at install, before the hook is enabled
 static std::atomic<uint8_t>  g_reachCallerMode{0};        // for the cold worker: 0 not proven, 2 by dispatcher
 static std::atomic<unsigned> g_reachRoleCalls[aim_caller::kCallerCount]{};
+// A new install of the control-update hook: nothing counted before it may read as a call of this one (the hook
+// watchdog, Game_ReachDirectDriveReport).
+static void ReachDriveForgetCalls()
+{
+    for (auto& role : g_reachRoleCalls)
+        role.store(0, std::memory_order_relaxed);
+}
 static std::atomic<unsigned> g_reachPutBacks{0}, g_reachPutBacksRefused{0};
 static std::atomic<uintptr_t> g_reachLastUnknownRet{0};
 #if HALOMCCVR_DEV_DIAGNOSTICS
@@ -53718,7 +53735,8 @@ void Game_ReachDirectDriveReport()
         bool called = false;
         for (int r = 0; r < aim_caller::kCallerCount && !called; ++r)
             called = g_reachRoleCalls[r].load(std::memory_order_relaxed) != 0;
-        if (s_watch.Pass(target, target && Game_ReachDirectDriveOnFoot(), called, now))
+        if (s_watch.Pass(drive_cascade::HookWatch::Install(target, g_reachPcInstalls),
+                         target && Game_ReachDirectDriveOnFoot(), called, now))
             drive_cascade::SayNeverCalled("REACHDRIVE", "the control update", g_reachPcEntryRva,
                                           "the player was in control and on foot, where the game runs it every frame");
     }

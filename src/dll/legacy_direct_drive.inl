@@ -185,6 +185,7 @@ struct LegacyDriveState
     void* target = nullptr;
     uintptr_t base = 0;
     uint32_t entryRva = 0;                  // where the install found the control update in this module
+    uint32_t installs = 0;                  // how many times the hook has been installed (worker)
     uintptr_t tlsIndexAddress = 0;
     // Which caller ran the accumulator (aim_caller_logic.h): written at install before the hook is enabled,
     // rewritten only after LegacyDriveRemove's quiescence. Not proven = every caller counts as the update.
@@ -775,6 +776,12 @@ bool LegacyDriveInstall(GameTitle title, uintptr_t base, size_t size)
     // A look-steered driver's pitch stops: the record's eased limits (Halo 3 and ODST).
     const char* pitchLimitWhy = nullptr;
     st.pitchLimitOffset = slot < 2 ? LegacyDriveBindPitchLimits(slot, base, found.pitchLimit, pitchLimitWhy) : 0;
+    // A NEW INSTALL is watched afresh (drive_cascade::HookWatch): nothing counted before it -- a moment ago, by
+    // the hook this one replaces -- may read as a call of this one.
+    ++st.installs;
+    st.calls.store(0, std::memory_order_relaxed);
+    for (auto& role : st.byRole)
+        role.store(0, std::memory_order_relaxed);
     const MH_STATUS created = MH_CreateHook(target, detour, orig);
     if (created != MH_OK || MH_EnableHook(target) != MH_OK)
     {
@@ -917,7 +924,8 @@ void LegacyDriveWatchPass(uint64_t nowMs)
         bool called = st.calls.load(std::memory_order_relaxed) != 0;
         for (int r = 0; r < aim_caller::kCallerCount && !called; ++r)
             called = st.byRole[r].load(std::memory_order_relaxed) != 0;
-        if (g_legacyDriveWatch[slot].Pass(target, target && LegacyDriveCallPossible(slot, nowMs), called, nowMs))
+        if (g_legacyDriveWatch[slot].Pass(drive_cascade::HookWatch::Install(target, st.installs),
+                                          target && LegacyDriveCallPossible(slot, nowMs), called, nowMs))
         {
             char drive[32];
             snprintf(drive, sizeof(drive), "DRIVE %s", kLegacyDriveSites[slot].name);

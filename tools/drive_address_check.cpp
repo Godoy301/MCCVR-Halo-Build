@@ -433,12 +433,14 @@ constexpr Drive kDrives[] = {
     {"halo3", "control-update", "Halo 3 control update (on foot and seats)", &RunHalo3, true, true, {}},
     {"halo3odst", "control-update", "ODST control update (on foot and seats)", &RunOdst, true, true, {}},
     {"haloreach", "control-update", "Reach control update (on foot and seats)", &RunReachControl, true, true, {}},
-    {"haloreach", "pilot-controller", "Reach Sabre / Seraph pilot controller", &RunReachSabre, true, true, {}},
-    {"haloreach", "pilot-observer", "Reach pilot controller, dev observer (dev builds only)", &RunT13Reach, true, true, {}},
+    // A pilot's drive needs every row, and its shortest rows (the four bytes that load the angles' address) are
+    // taken at their recorded offset or not at all: denied the offset, the drive is not hooked.
+    {"haloreach", "pilot-controller", "Reach Sabre / Seraph pilot controller", &RunReachSabre, true, false, {}},
+    {"haloreach", "pilot-observer", "Reach pilot controller, dev observer (dev builds only)", &RunT13Reach, true, false, {}},
     // Halo 4's record unit load stands three times in the control update: without its offset it is not found,
     // and only the seats lose direct drive.
     {"halo4", "control-update", "Halo 4 control update (on foot and seats)", &RunHalo4, true, true, {"record unit load"}},
-    {"halo4", "pilot-controller", "Halo 4 Broadsword pilot controller", &RunHalo4Flight, true, true, {}},
+    {"halo4", "pilot-controller", "Halo 4 Broadsword pilot controller", &RunHalo4Flight, true, false, {}},
     // The observer's IDLE and RECUNIT rows stand more than once in their functions: the observer stays off.
     {"halo4", "pilot-observer", "Halo 4 pilot controller, dev observer (dev builds only)", &RunT13Halo4, true, false,
      {"IDLE", "RECUNIT"}},
@@ -570,7 +572,8 @@ constexpr FaultCase kFaultCases[] = {
     {drive_resolve::kFaultTlsDirectory, "the PE TLS directory disagrees",
      "no drive that reads the engine TLS index is hooked; the rest are unchanged"},
     {drive_resolve::kFaultOffsetMoved, "no in-function anchor is at its recorded offset",
-     "each is found as the one match in its function; one with two matches there is not found"},
+     "a long one is found as the one match in its function; a short one, or one with two matches there, is not found, "
+     "and a drive that needs it is not hooked"},
     {drive_resolve::kFaultHookSilent, "a drive's watchdog is told its hook never ran",
      "nothing about the addresses changes (the watchdog is the DLL's)"},
     {drive_resolve::kFaultSavedStale, "the addresses saved from an earlier launch are stale",
@@ -629,6 +632,10 @@ const char* JudgeFault(const Drive& drive, const FaultCase& test, const Outcome&
         const drive_resolve::Line& now = faulted.report.lines[i];
         if (std::strcmp(was.name, now.name))
             return f == drive_resolve::kFaultOffsetMoved ? nullptr : "the resolution took another path";
+        // A short signature denied its offset is refused, as it must be: it is never searched for.
+        if (f == drive_resolve::kFaultOffsetMoved && now.verdict == Verdict::Refused &&
+            now.note == drive_resolve::kOffsetOnly)
+            continue;
         if (f == drive_resolve::kFaultOffsetMoved && Lost(drive, now.name))
         {
             if (now.found)
@@ -786,6 +793,7 @@ int main(int argc, char** argv)
     unsigned movedSites = 0, movedFollowed = 0, movedFailures = 0;
     unsigned loadedDrives = 0, loadedSites = 0, loadedFailures = 0;
     unsigned rungOne = 0, rungFailures = 0, rungScans = 0, savedLaunches = 0;
+    unsigned titlesWanted = 0, titlesNotChecked = 0;
     double rungOneMs = 0.0, searchMs = 0.0;
     constexpr uint32_t kMovedShift = 0x40;
     for (const TitleDll& entry : kTitles)
@@ -793,6 +801,7 @@ int main(int argc, char** argv)
         const char* const title = entry.dll;
         if (only && std::strcmp(only, title))
             continue;
+        ++titlesWanted;
         const std::string path = mcc + "\\" + title + "\\" + title + ".dll";
         Loaded module;
         std::string why;
@@ -802,6 +811,7 @@ int main(int argc, char** argv)
             const bool absent = GetFileAttributesW(Widen(path.c_str()).c_str()) == INVALID_FILE_ATTRIBUTES;
             std::printf("== %s.dll: NOT CHECKED (%s: %s)\n", title, absent ? "not installed" : why.c_str(), path.c_str());
             notAsRecorded += absent ? 0u : 1u;
+            ++titlesNotChecked;
             continue;
         }
         ++modules;
@@ -934,7 +944,10 @@ int main(int argc, char** argv)
                     if (!was.found)
                         continue;
                     ++total;
-                    if (now.found == was.found + kMovedShift && now.verdict == Verdict::Moved)
+                    // A proof is not an address: on the moved image it must have come to the same thing.
+                    if (was.how == drive_resolve::How::Proof ? now.found == was.found
+                                                             : now.found == was.found + kMovedShift &&
+                                                                   now.verdict == Verdict::Moved)
                         ++followed;
                     else
                         failure = now.name;
@@ -1081,10 +1094,22 @@ int main(int argc, char** argv)
     if (moved)
         std::printf("THE ADDRESS CACHE: on the moved build %u of %u drives were searched and saved by the first launch "
                     "and verified with no scan by the second\n", savedLaunches, drives);
+    std::printf("\nMODES RUN: the search's table and the rungs (always); the moved build: %s; the forced faults: %s; "
+                "each DLL as the loader maps it, through the DLL's own side: %s\n",
+                moved ? "yes" : "NO (--moved)", faults ? "yes" : "NO (--faults)",
+                loadedFolder.empty() ? "NO (--loaded <folder>)" : "yes");
     std::printf("\n%u game DLLs, %u drives, %u sites: %u not as recorded, %u drives that could not be hooked\n", modules,
                 drives, sites, notAsRecorded, unhooked);
     if (!modules)
         return 2;
+    // A title that was asked for and not checked is not a pass: the result below would cover only the rest.
+    if (titlesNotChecked)
+    {
+        std::printf("INCOMPLETE: %u of the %u titles asked for were NOT checked (no DLL, or one that does not read); what "
+                    "is printed above covers only the other %u\n",
+                    titlesNotChecked, titlesWanted, titlesWanted - titlesNotChecked);
+        return 3;
+    }
     if (faultFailures || movedFailures || loadedFailures || rungFailures)
         return 1;
     if (anyBuild)

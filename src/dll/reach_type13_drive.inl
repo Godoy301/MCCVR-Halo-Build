@@ -53,6 +53,10 @@ namespace
 // what failed, the pilot keeps the stick servo. The whole Reach image is hash-pinned before the camera core
 // installs as well.
 using drive_sites::kReachSabreAnchors;
+// ONE TLS INDEX: the tables' record of it and the constant this lane's run-time readers read through are the
+// same number, and stay so.
+static_assert(drive_sites::kReachTlsIndexRva == kReachEngineTlsIndexRva,
+              "the drive tables and Reach's run-time readers must name one engine TLS index");
 // Where the tables record the controller, for the line that is written when it could not be found.
 constexpr uint32_t kReachSabreEntryRecorded = kReachSabreAnchors[drive_sites::kReachSabreSites.entryRow].rva;
 // The dispatcher's own callers, as this file holds them (drive_sites::kReachSabreSites): [0] the action / kit
@@ -80,6 +84,7 @@ struct ReachSabreDrive
     // Install (worker). Read by the hook only while it is enabled.
     uintptr_t base = 0;
     uint32_t entryRva = 0;            // where the install found the controller in this module
+    uint32_t installs = 0;            // how many times the hook has been installed (worker)
     uint32_t dispatcherFrame = 0;     // the dispatcher's own return address: controller entry rsp + this many bytes
     uintptr_t callerRet[3]{};
     std::atomic<uint32_t> generation{0};
@@ -367,7 +372,15 @@ bool ReachType13Install(uintptr_t base, size_t size, uint32_t generation)
     // lane's readers use (ReachSabreRead and the apply read it through kReachEngineTlsIndexRva).
     bool anchorsOk = opened && found.tlsIndex && found.tlsIndex == kReachEngineTlsIndexRva;
     if (opened && !anchorsOk)
+    {
         used = static_cast<size_t>(snprintf(failed, sizeof(failed), "TLS-INDEX"));
+        // NOT FOLLOWED, and said as what it is: the code may all have been found.
+        if (found.tlsIndex)
+            LOG("Reach Sabre direct drive: NOT FOLLOWED. This game DLL keeps its engine TLS index at +0x%X, and this "
+                "lane's run-time readers read it at the recorded +0x%llX: Reach's data moved. The drive is not hooked, "
+                "even where every code site was found, until that constant is the module's",
+                found.tlsIndex, static_cast<unsigned long long>(kReachEngineTlsIndexRva));
+    }
     for (size_t i = 0; i < drive_sites::kReachSabreRows; ++i)
     {
         const uint32_t at = resolution.found.rows[i];
@@ -404,6 +417,10 @@ bool ReachType13Install(uintptr_t base, size_t size, uint32_t generation)
         return false;
     }
     void* target = reinterpret_cast<void*>(base + found.entry);
+    // A NEW INSTALL is watched afresh (drive_cascade::HookWatch): nothing counted before it -- a moment ago, by
+    // the hook this one replaces -- may read as a call of this one.
+    ++d.installs;
+    d.calls.store(0, std::memory_order_relaxed);
     const MH_STATUS created = MH_CreateHook(target, reinterpret_cast<void*>(&ReachType13Detour), &g_reachT13Orig);
     if (created != MH_OK)
     {
@@ -466,8 +483,8 @@ void ReachSabreDriveReport()
         // read and cleared.
         static drive_cascade::HookWatch s_watch;
         const void* target = g_reachT13Target;
-        if (s_watch.Pass(target, target && ReachSabrePilotingNow(now), d.calls.load(std::memory_order_relaxed) != 0,
-                         now))
+        if (s_watch.Pass(drive_cascade::HookWatch::Install(target, d.installs), target && ReachSabrePilotingNow(now),
+                         d.calls.load(std::memory_order_relaxed) != 0, now))
             drive_cascade::SayNeverCalled("Reach Sabre direct drive", "the pilot's controller", d.entryRva,
                                           "the player was piloting a Sabre or a Seraph, where the game runs it every "
                                           "frame");

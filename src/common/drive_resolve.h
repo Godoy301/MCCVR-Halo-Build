@@ -175,6 +175,11 @@ struct Image
     // WHICH BUILD THIS IS, from the PE headers: the pair a set of known addresses is recorded or saved for.
     uint32_t timeDateStamp = 0;
     uint32_t sizeOfImage = 0;
+    // Whether [address, address + size) can be read at all. A loaded module may hold pages that cannot (the
+    // owner of the image asks the system); null: everything inside the image can. Every read outside the
+    // executable runs asks it first, so a page that cannot be read costs the one line that needed it, not the
+    // resolution.
+    bool (*readable)(uintptr_t address, size_t size) = nullptr;
     uint32_t (*original)(uintptr_t address, void* out, size_t size) = nullptr;
     void (*correct)(uintptr_t begin, size_t size, const uint8_t* bytes, const uint8_t* wild, size_t n, uintptr_t& first,
                     uint32_t& count) = nullptr;
@@ -286,10 +291,17 @@ inline bool InExecutable(const Image& im, uint32_t rva, uint32_t length)
     return false;
 }
 
+// [rva, rva + length) lies in the image and can be read.
+inline bool Readable(const Image& im, uint32_t rva, uint32_t length)
+{
+    return InImage(im, rva, length) &&
+           (!im.readable || im.readable(reinterpret_cast<uintptr_t>(im.base + rva), length));
+}
+
 // The game's own bytes at [rva, rva + length), length <= kMaxPattern.
 inline bool ReadOriginal(const Image& im, uint32_t rva, uint8_t* out, uint32_t length)
 {
-    if (!InImage(im, rva, length) || length > kMaxPattern)
+    if (!Readable(im, rva, length) || length > kMaxPattern)
         return false;
     if (im.original)
         (void)im.original(reinterpret_cast<uintptr_t>(im.base + rva), out, length);
@@ -366,6 +378,27 @@ inline Hits CountIn(const Image& im, const Pattern& p, uint32_t begin, uint32_t 
     return hits;
 }
 
+// Every match inside [begin, end) that lies wholly in one of the module's executable runs: a function's extent
+// is searched only where the module can be read.
+inline Hits CountInExecutable(const Image& im, const Pattern& p, uint32_t begin, uint32_t end)
+{
+    Hits total;
+    for (uint32_t i = 0; i < im.executableCount && total.count < kCountCap; ++i)
+    {
+        const uint32_t runBegin = im.executable[i].rva, runEnd = runBegin + im.executable[i].size;
+        const uint32_t from = begin > runBegin ? begin : runBegin, to = end < runEnd ? end : runEnd;
+        if (from >= to)
+            continue;
+        const Hits part = CountIn(im, p, from, to);
+        if (part.count && (!total.count || part.first < total.first))
+            total.first = part.first;
+        total.count += part.count;
+    }
+    if (total.count > kCountCap)
+        total.count = kCountCap;
+    return total;
+}
+
 // Every match in the module's executable sections.
 inline Hits CountExecutable(const Image& im, const Pattern& p)
 {
@@ -411,12 +444,12 @@ inline bool PrimaryEntry(const Image& im, RuntimeFunction entry, RuntimeFunction
         if (entry.unwind & 1u)
         {
             const uint32_t at = entry.unwind & ~1u;
-            if (!InImage(im, at, sizeof(RuntimeFunction)))
+            if (!Readable(im, at, sizeof(RuntimeFunction)))
                 return false;
             std::memcpy(&entry, im.base + at, sizeof(entry));
             continue;
         }
-        if (!InImage(im, entry.unwind, 4))
+        if (!Readable(im, entry.unwind, 4))
             return false;
         const uint8_t* info = im.base + entry.unwind;
         if (!((info[0] >> 3) & 4u))   // UNW_FLAG_CHAININFO
@@ -426,7 +459,7 @@ inline bool PrimaryEntry(const Image& im, RuntimeFunction entry, RuntimeFunction
         }
         const uint32_t codes = (static_cast<uint32_t>(info[2]) + 1u) & ~1u;
         const uint32_t at = entry.unwind + 4u + codes * 2u;
-        if (!InImage(im, at, sizeof(RuntimeFunction)))
+        if (!Readable(im, at, sizeof(RuntimeFunction)))
             return false;
         std::memcpy(&entry, im.base + at, sizeof(entry));
     }
@@ -487,6 +520,7 @@ enum class How : uint8_t
     Derived,           // computed from a found address
     TlsDirectory,      // read from the PE TLS directory
     Known,             // its bytes compared at the address it is known to stand at; nothing searched
+    Proof,             // not an address: a proof about found addresses, which the drive needs to hold
 };
 
 inline bool Found(Verdict v)
@@ -509,6 +543,17 @@ inline const char* VerdictText(Verdict v)
     }
 }
 
+// What a line says when its signature is one that is taken at its recorded offset or not at all.
+inline constexpr char kOffsetOnly[] =
+    "it is not at its recorded offset in its function, and it is too short to be searched for there";
+
+// How many bytes a signature has (0: it does not compile).
+inline uint32_t PatternLength(const char* text)
+{
+    Pattern p;
+    return Compile(text, p) ? p.length : 0;
+}
+
 inline const char* HowText(How h)
 {
     switch (h)
@@ -520,6 +565,7 @@ inline const char* HowText(How h)
     case How::Derived: return "derived";
     case How::TlsDirectory: return "TLS directory";
     case How::Known: return "verified at its known address";
+    case How::Proof: return "proved";
     default: return "-";
     }
 }
@@ -680,10 +726,13 @@ public:
 
     // RUNG 3: an anchor in the function that holds `viaFound` (an anchor already found). `functionRva`: where that
     // function starts in the build the table was measured on.
+    // `offsetOnly`: the signature is too short to be told from another instruction by a search of the function
+    // (the four bytes of one lea, the seven of one mov): it is taken at its recorded offset or not at all. What
+    // such a line proves is a struct offset the drive reads through, and a wrong one would be believed.
     uint32_t InFunction(const char* name, uint32_t recordedRva, uint32_t functionRva, uint32_t viaFound,
-                        const char* pattern)
+                        const char* pattern, bool offsetOnly = false)
     {
-        Ask(2, name, recordedRva, functionRva, pattern);
+        Ask(offsetOnly ? 7 : 2, name, recordedRva, functionRva, pattern);
         const uint32_t recorded = Recorded(recordedRva), functionRecorded = Recorded(functionRva);
         Line line;
         line.name = name;
@@ -709,7 +758,8 @@ public:
             line.how = How::Known;
             const uint32_t at = KnownAt(recorded);
             if (at && !Fault(faults_, kFaultOffsetMoved) && at >= start && at < end && p.length <= end - at &&
-                InExecutable(im_, at, p.length) && MatchesAt(im_, p, at))
+                (!offsetOnly || at == start + (recorded - functionRecorded)) && InExecutable(im_, at, p.length) &&
+                MatchesAt(im_, p, at))
             {
                 line.found = at;
                 line.verdict = at == recorded ? Verdict::AsRecorded : Verdict::Moved;
@@ -720,9 +770,10 @@ public:
             }
             return Add(line);
         }
+        // The offset must land inside this function, not merely in some code.
         const uint32_t expected = start + (recorded - functionRecorded);
-        if (!Fault(faults_, kFaultOffsetMoved) && expected >= start && InExecutable(im_, expected, p.length) &&
-            MatchesAt(im_, p, expected))
+        if (!Fault(faults_, kFaultOffsetMoved) && expected >= start && expected < end && p.length <= end - expected &&
+            InExecutable(im_, expected, p.length) && MatchesAt(im_, p, expected))
         {
             line.found = expected;
             line.matches = 1;
@@ -735,10 +786,16 @@ public:
             line.verdict = Verdict::Missing;
             return Add(line);
         }
+        if (offsetOnly)
+        {
+            line.verdict = Verdict::Refused;
+            line.note = kOffsetOnly;
+            return Add(line);
+        }
         // Not at its offset: the function changed around it. One match inside the function is still that anchor.
         line.how = How::FunctionExtent;
         ++report_.scans;
-        const Hits hits = CountIn(im_, p, start, end);
+        const Hits hits = CountInExecutable(im_, p, start, end);
         line.matches = hits.count;
         if (hits.count == 1)
         {
@@ -806,6 +863,30 @@ public:
         line.found = found;
         line.how = How::Derived;
         line.verdict = !found ? Verdict::Missing : found == recorded ? Verdict::AsRecorded : Verdict::Moved;
+        return Add(line);
+    }
+
+    // A PROOF ABOUT FOUND ADDRESSES, as a line of its own, so that it counts: a drive is whole only if the proof
+    // held, and the report names the one that did not. `value`: what the proof established (a frame's size; 1
+    // for a plain yes), 0 when it failed, with `whyNot`. `recordedValue`: what the tables hold for it. Returns
+    // `value`.
+    uint32_t Proven(const char* name, uint32_t recordedValue, uint32_t value, const char* whyNot)
+    {
+        Ask(6, name, recordedValue, 0, nullptr);
+        Line line;
+        line.name = name;
+        line.recorded = Recorded(recordedValue);
+        line.found = value;
+        line.how = How::Proof;
+        if (value)
+        {
+            line.verdict = value == line.recorded ? Verdict::AsRecorded : Verdict::Moved;
+        }
+        else
+        {
+            line.verdict = Verdict::Refused;
+            line.note = whyNot ? whyNot : "the proof failed";
+        }
         return Add(line);
     }
 

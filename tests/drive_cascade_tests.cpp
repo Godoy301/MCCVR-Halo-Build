@@ -606,14 +606,14 @@ struct Worker
 {
     drive_cascade::HookWatch watch;
     uint64_t now = 1000000;
-    // Passes for `ms`, returns how many times the watch fired.
-    int Run(const void* target, bool possible, bool called, uint32_t ms)
+    // Passes for `ms`, returns how many times the watch fired. `install`: 0 for no hook.
+    int Run(uint64_t install, bool possible, bool called, uint32_t ms)
     {
         int fired = 0;
         for (uint32_t t = 0; t < ms; t += 50)
         {
             now += 50;
-            fired += watch.Pass(target, possible, called, now) ? 1 : 0;
+            fired += watch.Pass(install, possible, called, now) ? 1 : 0;
         }
         return fired;
     }
@@ -621,24 +621,30 @@ struct Worker
 
 void TestHookWatch()
 {
-    const int hookA = 0, hookB = 0;
+    const int somewhere = 0;
+    const uint64_t hookA = drive_cascade::HookWatch::Install(&somewhere, 1);
+    // The same address, installed again: another install.
+    const uint64_t hookB = drive_cascade::HookWatch::Install(&somewhere, 2);
+    Check(hookA && hookB && hookA != hookB && !drive_cascade::HookWatch::Install(nullptr, 3),
+          "an install is its address and its number; no hook is none");
     const uint32_t limitMs = drive_cascade::HookWatch::kPeriods * drive_cascade::HookWatch::kPeriodMs;
     {
         Worker w;
-        Check(w.Run(nullptr, true, false, 60000) == 0, "no hook: nothing to say");
+        Check(w.Run(0, true, false, 60000) == 0, "no hook: nothing to say");
     }
     {
         Worker w;
-        Check(w.Run(&hookA, true, false, limitMs - 200) == 0, "installed, possible, uncalled: silent before the limit");
-        Check(w.Run(&hookA, true, false, 400) == 1, "and said exactly once when the limit is reached");
-        Check(w.Run(&hookA, true, false, 60000) == 0, "and never again for that install");
-        Check(w.Run(&hookB, true, false, limitMs + 200) == 1, "a new install is watched afresh");
+        Check(w.Run(hookA, true, false, limitMs - 200) == 0, "installed, possible, uncalled: silent before the limit");
+        Check(w.Run(hookA, true, false, 400) == 1, "and said exactly once when the limit is reached");
+        Check(w.Run(hookA, true, false, 60000) == 0, "and never again for that install");
+        Check(w.Run(hookB, true, false, limitMs + 200) == 1,
+              "the same hook installed again is a new install, and is watched afresh");
     }
     {
         Worker w;
-        Check(w.Run(&hookA, false, false, 600000) == 0, "ten minutes of a menu, a load or a cutscene count for nothing");
-        Check(w.Run(&hookA, true, false, limitMs - 200) == 0, "and leave nothing behind for the play that follows");
-        Check(w.Run(&hookA, true, false, 400) == 1, "which is counted from its own beginning");
+        Check(w.Run(hookA, false, false, 600000) == 0, "ten minutes of a menu, a load or a cutscene count for nothing");
+        Check(w.Run(hookA, true, false, limitMs - 200) == 0, "and leave nothing behind for the play that follows");
+        Check(w.Run(hookA, true, false, 400) == 1, "which is counted from its own beginning");
     }
     {
         Worker w;
@@ -646,35 +652,39 @@ void TestHookWatch()
         // Play broken by a cutscene every eight seconds: never ten seconds of possible time in a row.
         for (int i = 0; i < 20; ++i)
         {
-            fired += w.Run(&hookA, true, false, 8000);
-            fired += w.Run(&hookA, false, false, 2100);
+            fired += w.Run(hookA, true, false, 8000);
+            fired += w.Run(hookA, false, false, 2100);
         }
         Check(fired == 0, "possible time is counted only in an unbroken run");
         // One pass in a period that found the call impossible spoils that period.
         Worker one;
-        fired = one.Run(&hookA, true, false, 7900);
-        fired += one.watch.Pass(&hookA, false, false, one.now += 50) ? 1 : 0;
-        fired += one.Run(&hookA, true, false, 6000);
+        fired = one.Run(hookA, true, false, 7900);
+        fired += one.watch.Pass(hookA, false, false, one.now += 50) ? 1 : 0;
+        fired += one.Run(hookA, true, false, 6000);
         Check(fired == 0, "a single pass that found the call impossible restarts the count");
     }
     {
         Worker w;
-        Check(w.Run(&hookA, true, false, 4000) == 0 && w.Run(&hookA, true, true, 50) == 0 && w.watch.everCalled(),
+        Check(w.Run(hookA, true, false, 4000) == 0 && w.Run(hookA, true, true, 50) == 0 && w.watch.everCalled(),
               "one call is seen");
-        Check(w.Run(&hookA, true, false, 600000) == 0, "a hook that was called once is never called dead");
+        Check(w.Run(hookA, true, false, 600000) == 0, "a hook that was called once is never called dead");
+        // Installed again a moment later: the call belonged to the hook before it. (The drive clears its counters
+        // when it installs, so `called` is false for the new one.)
+        Check(w.Run(hookB, true, false, limitMs + 200) == 1,
+              "an install that follows a called one is watched, and is said when it is never called");
     }
     {
         // A stalled worker: two passes a minute apart are one period, not thirty.
         Worker w;
-        int fired = w.watch.Pass(&hookA, true, false, w.now) ? 1 : 0;
-        fired += w.watch.Pass(&hookA, true, false, w.now += 60000) ? 1 : 0;
+        int fired = w.watch.Pass(hookA, true, false, w.now) ? 1 : 0;
+        fired += w.watch.Pass(hookA, true, false, w.now += 60000) ? 1 : 0;
         Check(fired == 0, "a worker that stalled for a minute counted one period");
     }
     {
         // The dev key's bit 4: the watchdog is told the hook never ran.
         addrcascade::set_fault_mask(0x10);
         Worker w;
-        const int fired = w.Run(&hookA, true, true, limitMs + 200);
+        const int fired = w.Run(hookA, true, true, limitMs + 200);
 #if HALOMCCVR_DEV_DIAGNOSTICS
         Check(fired == 1, "dev build, drive_fault 0x10: a hook that IS called is called dead, once");
         lines.clear();

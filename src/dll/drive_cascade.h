@@ -128,12 +128,20 @@ public:
     static constexpr uint32_t kPeriodMs = 2000;
     static constexpr uint32_t kSeconds = kPeriods * kPeriodMs / 1000;
 
-    // One pass of the cold worker. `target`: where the hook is installed (null: it is not; another address than
-    // at the last pass: a new install, and the watch starts again). `possible`: at this pass the game is in the
-    // state in which it calls the hooked code. `called`: the hook's own counters show a call. True exactly once
+    // The number that names one install of a hook: where it is, and which install of it this is (0: there is
+    // none). A hook removed and installed again at the same address is another install.
+    static uint64_t Install(const void* target, uint32_t count)
+    {
+        return target ? (static_cast<uint64_t>(count) << 48) ^ reinterpret_cast<uintptr_t>(target) : 0;
+    }
+
+    // One pass of the cold worker. `install`: the hook's install (Install; 0: it is not installed; another number
+    // than at the last pass: a new install, and the watch starts again). `possible`: at this pass the game is in
+    // the state in which it calls the hooked code. `called`: the hook's own counters show a call; the drive
+    // clears them when it installs, so a call counted before this install is not one of it. True exactly once
     // per install: the hook has stood through kPeriods periods in a row, every pass of which found its call
     // possible, and it has never been called.
-    bool Pass(const void* target, bool possible, bool called, uint64_t nowMs);
+    bool Pass(uint64_t install, bool possible, bool called, uint64_t nowMs);
 
     bool everCalled() const { return everCalled_; }
 
@@ -141,7 +149,7 @@ private:
     void Restart();
 
     addrcascade::HookWatchdog dog_{kPeriods};
-    const void* target_ = nullptr;
+    uint64_t install_ = 0;
     uint64_t periodStartMs_ = 0;
     bool periodPossible_ = false;
     bool everCalled_ = false;

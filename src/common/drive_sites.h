@@ -71,6 +71,14 @@ struct Anchor
     const char* pattern;
 };
 
+// A SHORT SIGNATURE IS TAKEN AT ITS RECORDED OFFSET ONLY. A row resolved inside its function is normally looked
+// for at its recorded offset from the function's start and, failing that, accepted as the one match inside the
+// function. For the one or two instructions that read a field -- fewer than kMinSearchedBytes bytes, down to the
+// four of `lea r15, [rbx+0x14]` -- a lone match somewhere in a changed function is no proof of which instruction
+// it is, and what the row proves is a struct offset. Those rows fail closed when they are not at their offset.
+inline constexpr uint32_t kMinSearchedBytes = 12;
+inline bool ShortSignature(const char* pattern) { return drive_resolve::PatternLength(pattern) < kMinSearchedBytes; }
+
 inline constexpr char kNotAFunctionStart[] = "it is not where a function starts (.pdata)";
 inline constexpr char kNotInItsFunction[] = "it is not inside the function it belongs to";
 inline constexpr char kItsFunctionNotFound[] = "the function it belongs to was not found";
@@ -93,7 +101,7 @@ inline uint32_t ResolveRow(Resolver& r, const Anchor& a, uint32_t via)
         return found && !r.SameFunction(found, drive_resolve::FunctionStartOf(r.image(), via))
             ? r.Refuse(kNotInItsFunction) : found;
     case Find::Within:
-        return r.InFunction(a.name, a.rva, a.where.functionRva, via, a.pattern);
+        return r.InFunction(a.name, a.rva, a.where.functionRva, via, a.pattern, ShortSignature(a.pattern));
     case Find::StartOf:
         return r.FunctionStart(a.name, a.rva, via, a.pattern);
     }
@@ -193,6 +201,7 @@ struct CallerAnchors
     Anchor dispatcher;
     CallSite sites[kMaxCallers];
     aim_caller::Action noUnitAction;
+    uint32_t frame = 0;   // dispatcher mode: the frame the recorded build's dispatcher proves (the cross-check)
 };
 
 struct Callers
@@ -216,9 +225,59 @@ inline uint32_t DispatcherFrame(const Resolver& r, uint32_t dispatcher, uint32_t
         why = "dispatcher .pdata entry";
         return 0;
     }
+    // What the proof reads -- the dispatcher's first bytes and its unwind info -- must be readable.
+    const uint32_t prologue = im.size - dispatcher < 64 ? im.size - dispatcher : 64;
+    if (dispatcher >= im.size || !drive_resolve::Readable(im, dispatcher, prologue) ||
+        !drive_resolve::Readable(im, entry->unwind, 4) ||
+        !drive_resolve::Readable(im, entry->unwind, 4u + 2u * im.base[entry->unwind + 2]))
+    {
+        why = "dispatcher bytes or unwind info cannot be read";
+        return 0;
+    }
     uint32_t frame = 0;
     return aim_caller::ProveDispatcherFrame(im.base, im.size, dispatcher, entry->begin, entry->end, entry->unwind,
                                             call, frame, why) ? frame : 0;
+}
+
+// THE ROLES ARE DIFFERENT CALLS. Two roles' signatures can differ in two or three bytes, and in a rebuilt game
+// one could match where the other's call is; the wrong call would then be taken for the update. So no two found
+// calls may be one instruction, and two that lie in one function must stand in the order the tables record them
+// in. (They cannot be required to lie in different functions: in Reach and Halo 4 the stick update and the
+// no-unit path are calls of ONE function.) `recorded[i]`: where the tables have call i. A role whose signature
+// lands on another role's site while that other role is not found at all is not caught by this.
+inline bool RolesDistinct(const Resolver& r, const uint32_t (&calls)[kMaxCallers], const uint32_t (&recorded)[kMaxCallers])
+{
+    for (int i = 0; i < kMaxCallers; ++i)
+        for (int j = i + 1; j < kMaxCallers; ++j)
+        {
+            if (!calls[i] || !calls[j])
+                continue;
+            if (calls[i] == calls[j])
+                return false;
+            const uint32_t fi = drive_resolve::FunctionStartOf(r.image(), calls[i]);
+            if (fi && fi == drive_resolve::FunctionStartOf(r.image(), calls[j]) &&
+                (calls[i] < calls[j]) != (recorded[i] < recorded[j]))
+                return false;
+        }
+    return true;
+}
+
+inline constexpr char kRolesNotDistinct[] =
+    "two roles were found at one call, or in another order than recorded inside one function";
+
+// The roles' proof as a line of its own. False: nothing of the map is proven, and `calls` is cleared.
+inline bool ProveRoles(Resolver& r, uint32_t (&calls)[kMaxCallers], const uint32_t (&recorded)[kMaxCallers])
+{
+    bool any = false;
+    for (const uint32_t call : calls)
+        any = any || call != 0;
+    if (!any)
+        return true;
+    if (r.Proven("caller roles", 1, RolesDistinct(r, calls, recorded) ? 1u : 0u, kRolesNotDistinct))
+        return true;
+    for (uint32_t& call : calls)
+        call = 0;
+    return false;
 }
 
 // `entry`: the found control update. In dispatcher mode nothing is resolved past the first proof that fails
@@ -243,14 +302,22 @@ inline Callers ResolveCallers(Resolver& r, const CallerAnchors& anchors, uint32_
             f.why = "the dispatcher prologue";
             return f;
         }
-        f.frame = DispatcherFrame(r, f.dispatcher, f.accumulatorCall, f.why);
+        // The frame is a line of the report: a map that needs it is not whole without it.
+        const uint32_t frame = DispatcherFrame(r, f.dispatcher, f.accumulatorCall, f.why);
+        f.frame = r.Proven("dispatcher's frame", anchors.frame, frame, f.why);
         if (!f.frame)
             return f;
         target = f.dispatcher;
     }
+    uint32_t recorded[kMaxCallers]{};
     for (int i = 0; i < kMaxCallers; ++i)
         if (anchors.sites[i].pattern)
+        {
             f.call[i] = ResolveCallSite(r, anchors.sites[i], target);
+            recorded[i] = anchors.sites[i].rva + anchors.sites[i].callOffset;
+        }
+    if (!ProveRoles(r, f.call, recorded))
+        f.why = kRolesNotDistinct;
     return f;
 }
 
@@ -354,7 +421,7 @@ inline constexpr CallerAnchors kReachCallerAnchors = {
       "F3 0F 10 55 88 4C 8D 4C 24 70 F3 0F 10 4D 84 41 8B CD F3 0F 11 7C 24 28 F3 0F 11 74 24 20 "
       "E8 ?? ?? ?? ??", 0x1E, aim_caller::Caller::NoUnit},
      {}},
-    aim_caller::Action::EndUpdate};
+    aim_caller::Action::EndUpdate, 0x100};
 
 // Dev census: the tick getter 0x5C410 and the increment in the tick function 0x575AC ([[TLS+0xA0]]+0xC).
 inline constexpr TickAnchors kReachTickAnchors{
@@ -420,19 +487,29 @@ inline Flight ResolveFlight(Resolver& r, const Anchor (&rows)[N], uint32_t (&fou
     f.dispatcher = r.FunctionStart(s.callers->dispatcher.name, s.callers->dispatcher.rva, f.call,
                                    s.callers->dispatcher.pattern);
     if (f.dispatcher)
-        f.frame = DispatcherFrame(r, f.dispatcher, f.call, f.frameWhy);
+    {
+        const uint32_t frame = DispatcherFrame(r, f.dispatcher, f.call, f.frameWhy);
+        f.frame = r.Proven("dispatcher's frame", s.callers->frame, frame, f.frameWhy);
+    }
     f.tlsIndex = r.TlsIndex("engine TLS index", s.tlsIndexRva,
                             found[s.tlsRow]
                                 ? r.RipTarget(found[s.tlsRow] + s.tlsLoadOffset, s.tlsDisplacement, s.tlsLength)
                                 : 0);
+    uint32_t recorded[kMaxCallers]{};
+    int stick = -1;
     for (int i = 0; i < kMaxCallers; ++i)
     {
         const CallSite* site = s.order[i] == aim_caller::Caller::Unknown ? nullptr : SiteOf(*s.callers, s.order[i]);
         if (site && f.dispatcher)
+        {
             f.callerCall[i] = ResolveCallSite(r, *site, f.dispatcher);
+            recorded[i] = site->rva + site->callOffset;
+        }
         if (s.order[i] == aim_caller::Caller::Stick)
-            f.stickCall = f.callerCall[i];
+            stick = i;
     }
+    // Roles that are not provably different calls prove nothing: no stick update, so no hook.
+    f.stickCall = ProveRoles(r, f.callerCall, recorded) && stick >= 0 ? f.callerCall[stick] : 0;
     f.ok = !f.missing && f.entry && f.call && f.dispatcher && f.frame && f.tlsIndex && f.stickCall;
     return f;
 }
@@ -610,7 +687,7 @@ inline constexpr CallerAnchors kLegacyCallerAnchors[3] = {
       {"no-unit path", "no-unit path's call", 0xA79E5,
        "F3 0F 10 55 F8 4C 8D 4D E0 F3 0F 10 4D F4 8B CB F3 0F 11 7C 24 28 F3 0F 11 74 24 20 "
        "E8 ?? ?? ?? ??", 0x1C, aim_caller::Caller::NoUnit}},
-     aim_caller::Action::EndUpdate},
+     aim_caller::Action::EndUpdate, 0x100},
 };
 // The primary call each site table records is the call inside one of its own rows.
 static_assert(SiteOf(kLegacyCallerAnchors[0], aim_caller::Caller::Stick)->rva +
@@ -722,8 +799,9 @@ inline LegacyControl ResolveLegacyControl(Resolver& r, int slot)
     f.ok = f.entry && f.tlsBlock && f.accumulator && f.tlsIndexLoad && f.tlsIndex;
 
     if (slot == 2)
+        // Seven bytes: at its recorded offset or not at all (offsetOnly).
         f.recordUnitLoad = r.InFunction("record unit load", kHalo4RecordUnitLoadRva, site.entryRva, f.accumulator,
-                                        kHalo4RecordUnitLoad);
+                                        kHalo4RecordUnitLoad, true);
     else
     {
         f.pitchLimit = r.Unique("pitch clamp", kLegacyPitchLimitSites[slot].rva, kLegacyPitchLimitSites[slot].pattern);
