@@ -848,6 +848,11 @@ bool Sight_TransportWanted(GameTitle title, bool seated)
     return g_config.shot_point_transport != 0 && (!seated || g_config.shot_point_transport_seated != 0);
 }
 
+bool Sight_FireEyeAsked(GameTitle title)
+{
+    return Sight_TransportWanted(title, false) && Sight_FireTimeChangesAllowed();
+}
+
 namespace
 {
 // Per title, every build: the start of the simulation tick in progress and the smoothed period (shot_lag).
@@ -968,8 +973,10 @@ bool Sight_LastShotPoint(SightLastShotPoint& out)
 const float* Sight_ShotPoint(GameTitle title, SightTransportSite site, const SightIntent& intent, bool seated,
                              const float* reference, float storage[3], const float* siteEye)
 {
-    // Every build (flat parity; the dev key shot_point_transport, default 1, is the A/B).
-    if (!reference || !storage || !Sight_TransportWanted(title, seated))
+    // Every build (flat parity; the dev key shot_point_transport, default 1, is the A/B). Never in a shared
+    // simulation: the shot stays the game's own there, and the transport's fire eye is not asked for
+    // (Sight_FireEyeAsked).
+    if (!reference || !storage || !Sight_TransportWanted(title, seated) || !Sight_FireTimeChangesAllowed())
         return reference;
     return Sight_ShotPointSample(title, site, SampleFromIntent(intent, seated), seated, reference, storage, siteEye);
 }
@@ -977,7 +984,7 @@ const float* Sight_ShotPoint(GameTitle title, SightTransportSite site, const Sig
 const float* Sight_ShotPointSample(GameTitle title, SightTransportSite site, const SightPointSample& sample,
                                    bool seated, const float* reference, float storage[3], const float* siteEye)
 {
-    if (!reference || !storage || !Sight_TransportWanted(title, seated))
+    if (!reference || !storage || !Sight_TransportWanted(title, seated) || !Sight_FireTimeChangesAllowed())
         return reference;
     float shift[3]{};
     shot_lag::FireEye fire = shot_lag::FireEye::Count;

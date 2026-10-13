@@ -184,6 +184,17 @@ static DWORD WINAPI InitThread(LPVOID)
         LOG("DEV OVERRIDE: reach_sight_trace_flags = 0x%llX mode %d replaces the resolved crosshair-trace "
             "flags (Reach aim trace)",
             g_config.reach_sight_trace_flags, g_config.reach_sight_trace_mode);
+    if (g_config.reach_sight_trace_site >= 0)
+        LOG("DEV OVERRIDE: reach_sight_trace_site = %d: Reach's aim trace is always made %s, whatever Co-op safe says",
+            g_config.reach_sight_trace_site,
+            g_config.reach_sight_trace_site ? "at the control pass" : "inside the unit's update");
+    if (g_config.reach_effect_move_rule >= 0)
+        LOG("DEV OVERRIDE: reach_effect_move_rule = %d: Reach moves an effect's place onto the gun %s, whatever "
+            "Co-op safe says",
+            g_config.reach_effect_move_rule,
+            g_config.reach_effect_move_rule == 0 ? "always"
+            : g_config.reach_effect_move_rule == 1 ? "only outside a simulation tick"
+            : g_config.reach_effect_move_rule == 2 ? "never" : "only for the player's own weapon effects");
     if (g_config.dev_sim_trace || g_config.dev_sim_probe)
         LOG("DEV OVERRIDE: dev_sim_trace = %d, dev_sim_probe = %d (Reach: every object's state per tick to a file; "
             "the probe makes the mod's own calls for the local unit while a film replays)",

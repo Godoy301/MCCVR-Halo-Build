@@ -892,6 +892,14 @@ struct Config
     // DEV BUILDS ONLY, test-only (never saved): trace length override in metres for a cost A/B.
     // 0 = the shipped 1 km.
     float reach_sight_trace_length_m = 0.0f;
+    // DEV BUILDS ONLY (not parsed otherwise): where the trace is made, for an A/B. -1 = by the rule (inside the
+    // unit's update when alone in the game, at the control pass when the simulation is shared); 0 = always inside
+    // the unit's update; 1 = always at the control pass.
+    int reach_sight_trace_site = -1;
+    // DEV BUILDS ONLY (not parsed otherwise): when Reach moves an effect's place onto the gun, for an A/B. -1 = by
+    // the rule (always when alone in the game; only outside a simulation tick when the simulation is shared);
+    // 0 = always; 1 = only outside a tick; 2 = never; 3 = only the player's own first-person weapon effects.
+    int reach_effect_move_rule = -1;
     // DEV BUILDS ONLY (not parsed otherwise): replace the resolved flags for an experiment. 0 = use them.
     unsigned long long reach_sight_trace_flags = 0;
     int reach_sight_trace_mode = 0;

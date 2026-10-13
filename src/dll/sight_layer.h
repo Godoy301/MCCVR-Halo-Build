@@ -346,9 +346,18 @@ shot_lag::Transport Sight_TransportIntent(GameTitle title, const SightIntent& in
                                           const float* siteEye, bool askEvaluator, float out[3], float shift[3],
                                           shot_lag::FireEye* fire = nullptr, float* fireAgeMs = nullptr,
                                           float* pointAgeMs = nullptr);
-// The point a local shot at `site` aims through: `reference` itself, or -- the keys on (Sight_TransportWanted) -- P'
-// in `storage` when the transport applies. `siteEye`: the eye the site holds (the crosshair query's start); a muzzle
-// shot has none and asks for the title's eye. Every outcome under the keys is counted (the dev SHOT LAG transport line).
+// A TITLE'S FIRE EYE IS MEASURED BY ASKING THE GAME: its own camera evaluator, inside the simulation tick -- inside the
+// native fire, and at rest for the answer's proof. True only where that may be asked: the keys want the transport on
+// foot (Sight_TransportWanted) AND one-machine changes are allowed (Sight_FireTimeChangesAllowed). In a simulation
+// another machine shares the shot is left as the game built it, so the eye would be measured for nothing; and the
+// ask is a call of the game's own that only this machine makes inside a tick, which is not without effect there
+// (docs/COOP-SHARED-SIMULATION-2026-10-13.md: a saved Reach co-op film replayed with and without it). The written
+// aim's own use of the keys (a title's record, composed between ticks) does not come through here.
+bool Sight_FireEyeAsked(GameTitle title);
+// The point a local shot at `site` aims through: `reference` itself, or -- the keys on (Sight_TransportWanted) and
+// one-machine changes allowed (every use of the point is a change to the shot inside its fire) -- P' in `storage`
+// when the transport applies. `siteEye`: the eye the site holds (the crosshair query's start); a muzzle shot has
+// none and asks for the title's eye. Every outcome under the keys is counted (the dev SHOT LAG transport line).
 const float* Sight_ShotPoint(GameTitle title, SightTransportSite site, const SightIntent& intent, bool seated,
                              const float* reference, float storage[3], const float* siteEye = nullptr);
 // The same for a site that built its point itself (Halo 2, CE: no published intent): `sample` is P and its camera.

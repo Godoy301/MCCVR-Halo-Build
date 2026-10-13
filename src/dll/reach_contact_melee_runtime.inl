@@ -8,6 +8,8 @@ using ReachContactDamageFn=void(__fastcall*)(uint32_t,int32_t,const void*,const 
 struct ReachContactRuntime
 {
     std::atomic<bool> enabled{false},faulted{false},processing{false};
+    // The per-unit update ran as the game's own (a shared simulation): the hands start afresh when it ends.
+    std::atomic<bool> stoodDown{false};
     std::atomic<uint64_t> queries{0},contacts{0},submitted[2]{},rejected{0},overflow{0},predicted{0};
     void* target=nullptr;
     void* damageTarget=nullptr;
@@ -97,6 +99,8 @@ void ReachContactTick(uint32_t unit)
     if(!g_reachContact.processing.compare_exchange_strong(expected,true,std::memory_order_acquire)) return;
     __try
     {
+        if(g_reachContact.stoodDown.exchange(false,std::memory_order_relaxed))
+            for(auto& hand:g_reachContact.hands) hand.Reset();
         const uint64_t now=GetTickCount64();
         const bool admit=!exclusive_input::Active() && Sight_PhysicalMelee() && g_enabled.load(std::memory_order_acquire) &&
             VR_IsStereoEnabled() && !g_reachCinematicLocked.load(std::memory_order_acquire) &&
@@ -147,6 +151,19 @@ __declspec(noinline) uint8_t __fastcall ReachContactUpdateDetour(uint32_t unit)
             if(g_reachContact.original) result=g_reachContact.original(unit);
             __leave;
         }
+        g_reachSimThread.store(GetCurrentThreadId(),std::memory_order_relaxed);   // dev: the effect census
+#endif
+        // A SHARED SIMULATION (sight_layer.h Sight_FireTimeChangesAllowed false): the update is the game's own and
+        // nothing of ours follows it inside the tick. Contact melee is stood down there, and the aim trace is made
+        // from the control pass, between ticks (reach_sight_trace.inl ReachSightTraceSite).
+        if(!Sight_FireTimeChangesAllowed() && ReachSightTraceSite()==ReachSightSite::ControlPass)
+        {
+            if(!g_reachContact.stoodDown.load(std::memory_order_relaxed))
+                g_reachContact.stoodDown.store(true,std::memory_order_relaxed);
+            if(g_reachContact.original) result=g_reachContact.original(unit);
+            __leave;
+        }
+#if HALOMCCVR_DEV_DIAGNOSTICS
         ++t_reachSimInUnitUpdate;
 #endif
         if(g_reachContact.original) result=g_reachContact.original(unit);

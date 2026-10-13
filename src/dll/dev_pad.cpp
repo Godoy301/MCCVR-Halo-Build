@@ -121,6 +121,11 @@ bool SetLive(const std::string& name, int value)
     // rung), so it still wants the key set before the level loads.
     else if (name == "first_person_rung_fault") g_config.first_person_rung_fault = value & 0xF;
     else if (name == "dev_sim_trace") g_config.dev_sim_trace = value ? 1 : 0;
+    // 0 inside the unit's update, 1 the control pass, anything else by the rule (-1).
+    else if (name == "reach_sight_trace_site") g_config.reach_sight_trace_site = value == 0 ? 0 : (value == 1 ? 1 : -1);
+    // 0 always, 1 only outside a tick, 2 never, 3 the player's own weapon effects only, anything else by the rule.
+    else if (name == "reach_effect_move_rule")
+        g_config.reach_effect_move_rule = value >= 0 && value <= 3 ? static_cast<int>(value) : -1;
     else if (name == "dev_sim_probe") g_config.dev_sim_probe = static_cast<int>(value & 0xFF);
     else return false;
     return true;
