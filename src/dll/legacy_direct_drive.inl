@@ -666,7 +666,7 @@ bool LegacyDriveInstall(GameTitle title, uintptr_t base, size_t size)
     });
     const drive_sites::LegacyControl& found = resolution.found.control;
     char driveName[32];
-    snprintf(driveName, sizeof(driveName), "DRIVE %s", site.name);
+    drive_cascade::LegacyName(site.name, driveName, sizeof(driveName));
     if (opened)
         drive_cascade::Announce(driveName, resolution, g_legacyDriveFoundHow[slot]);
     if (!drive_install::DecideLegacyControl(opened, found))

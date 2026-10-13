@@ -365,7 +365,7 @@ bool ReachType13Install(uintptr_t base, size_t size, uint32_t generation)
     const drive_sites::Flight& found = resolution.found.flight;
     static addrcascade::TierReporter s_foundHow;
     if (opened)
-        drive_cascade::Announce("Reach Sabre direct drive", resolution, s_foundHow);
+        drive_cascade::Announce(drive_cascade::kReachSabreName, resolution, s_foundHow);
     // THE DECISION (drive_install.h; the offline check runs the same function on haloreach.dll as the loader maps
     // it). The engine TLS index must be the module's own, loaded by the controller itself (the resolution), and
     // the one this lane's readers use (ReachSabreRead and the apply read it through kReachEngineTlsIndexRva);

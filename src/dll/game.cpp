@@ -36157,7 +36157,7 @@ namespace
             const drive_sites::ReachControl& found = resolution.found.control;
             static addrcascade::TierReporter s_foundHow;
             if (opened)
-                drive_cascade::Announce("Reach direct-drive", resolution, s_foundHow);
+                drive_cascade::Announce(drive_cascade::kReachName, resolution, s_foundHow);
             // THE DECISION (drive_install.h; the offline check runs the same function on haloreach.dll as the
             // loader maps it): each anchor on a page of code, and the module's TLS index the one this lane's
             // readers use -- the hook, the arm gate and the Sabre's controller all read it through that constant.

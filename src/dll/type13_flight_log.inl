@@ -624,7 +624,7 @@ bool ReachType13LogInstall(uintptr_t base, size_t size, uint32_t generation)
     const uint32_t (&rows)[drive_sites::kT13ReachRows] = resolution.found.rows;
     static addrcascade::TierReporter s_foundHow;
     if (opened)
-        drive_cascade::Announce("REACH SF: type-13 observer", resolution, s_foundHow);
+        drive_cascade::Announce(drive_cascade::kReachObserverName, resolution, s_foundHow);
     char failed[512] = "";
     const bool anchorsOk = opened && T13RowsFound(base, drive_sites::kT13ReachAnchors, rows, failed, sizeof(failed));
     // The dispatcher's type-13 call lands on the found entry: read again from the loaded module.
@@ -935,7 +935,7 @@ bool Halo4Type13LogInstall(uintptr_t base, size_t size, uint32_t generation)
     const uint32_t (&rows)[drive_sites::kT13Halo4Rows] = resolution.found.rows;
     static addrcascade::TierReporter s_foundHow;
     if (opened)
-        drive_cascade::Announce("H4 T13: type-13 observer", resolution, s_foundHow);
+        drive_cascade::Announce(drive_cascade::kHalo4ObserverName, resolution, s_foundHow);
     char failed[512] = "";
     const bool anchorsOk = opened && T13RowsFound(base, drive_sites::kT13Halo4Anchors, rows, failed, sizeof(failed));
     // The dispatcher's type-13 call lands on the found entry: read again from the loaded module.

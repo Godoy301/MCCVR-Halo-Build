@@ -1092,7 +1092,7 @@ bool InstallHalo2Drive(uintptr_t base, size_t size) noexcept
     const drive_sites::Halo2Control& found = resolution.found;
     static addrcascade::TierReporter s_foundHow;
     if (opened)
-        drive_cascade::Announce("Halo 2 DRIVE", resolution, s_foundHow);
+        drive_cascade::Announce(drive_cascade::kHalo2Name, resolution, s_foundHow);
     // THE DECISION (drive_install.h; the offline check runs the same function on the game DLL as the loader maps
     // it): every anchor found, the call site's rel32 landing on the entry, the record slot inside the module --
     // the last two read again from the loaded image at the places the resolution found.

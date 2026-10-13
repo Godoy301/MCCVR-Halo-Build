@@ -10,7 +10,7 @@
 //     if (!drive_cascade::Resolve(base, size, {GameTitle::HaloReach, "pilot-controller"}, found,
 //                                 [](drive_resolve::Resolver& r) { return ResolveReachSabre(r); }))
 //         ... not hooked: found.why, or the report's first line that was not found ...
-//     drive_cascade::Announce("Reach Sabre direct drive", found, reporter);
+//     drive_cascade::Announce(drive_cascade::kReachSabreName, found, reporter);
 //
 // THE RUNGS (drive_known.h): the known addresses first, each verified where it stands with no search of the
 // module -- the tables' recorded RVAs when the module is the build they were measured on, otherwise the RVAs a
@@ -19,6 +19,7 @@
 // uses is one that was verified or found in THIS module.
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <type_traits>
 
 #include "../common/addrcascade/AddressCascade.hpp"
@@ -34,6 +35,22 @@ struct Drive
     GameTitle title;
     const char* id;
 };
+
+// WHAT EACH DRIVE'S LINES BEGIN WITH IN THE LOG. Named once: an install says them, and the offline check
+// (tools/drive_address_check.cpp) says with them the very line an install writes for a game DLL.
+inline constexpr char kHalo2Name[] = "Halo 2 DRIVE";
+inline constexpr char kReachName[] = "Reach direct-drive";
+inline constexpr char kReachSabreName[] = "Reach Sabre direct drive";
+inline constexpr char kHalo4FlightName[] = "Halo 4 Broadsword direct drive";
+#if HALOMCCVR_DEV_DIAGNOSTICS
+inline constexpr char kReachObserverName[] = "REACH SF: type-13 observer";
+inline constexpr char kHalo4ObserverName[] = "H4 T13: type-13 observer";
+#endif
+// Halo 3's, ODST's and Halo 4's control update: `title` is the title's name in drive_sites::kLegacyDriveSites.
+inline void LegacyName(const char* title, char* out, size_t size)
+{
+    std::snprintf(out, size, "DRIVE %s", title);
+}
 
 // What a resolution went through, beyond its report.
 struct Rungs

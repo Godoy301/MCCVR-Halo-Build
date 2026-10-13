@@ -3,6 +3,11 @@
 //   halomccvr_drive_address_check --mcc "<the MCC install folder>" [--faults] [--moved] [--title <dll name>] [--brief]
 //                                 [--loaded <a scratch folder>]
 //
+// BOTH BUILDS' PLANS. A player build of the mod and a dev build do not ask the same of a control update: the dev
+// build's plan goes on to two tick anchors, and a dev build has two pilot observers besides. Those are different
+// versions of a drive's tables (another plan hash, another count of addresses), so everything below is done
+// twice: for the player build's plans, which are what ships, and for the dev build's.
+//
 // For each game DLL it lays the file out as an image (headers and sections at their RVAs, base relocations
 // applied, as the loader would), and runs every direct drive's own resolution on it: the same tables and the same
 // code the DLL runs at install (src/common/drive_sites.h, src/common/drive_resolve.h). Per site it prints the
@@ -27,17 +32,24 @@
 // something was inserted ahead of it, so that no recorded RVA is right -- and checks that every drive follows it:
 // every site found 0x40 above where it was, reported moved, and the drive hookable there. It is resolved twice,
 // as two launches would: the first finds the recorded addresses do not verify, searches, and saves what it found
-// (through the address cache's own text); the second verifies those saved addresses with no scan at all.
+// (through the address cache's own text); the second verifies those saved addresses with no scan at all. With
+// --loaded as well, the same two launches are made through the DLL's own side and a REAL FILE in the scratch
+// folder: written by the first, read back by the second, left as it was by the second.
 //
 // --loaded <folder> repeats the healthy resolution on each DLL AS THE WINDOWS LOADER MAPS IT, through the DLL's own
 // side of the resolution (src/dll/drive_cascade.cpp: the module opened by VirtualQuery, its .pdata where the
 // loader put it, its TLS directory as relocated). A copy of the file is made in that folder and mapped with
 // DONT_RESOLVE_DLL_REFERENCES: sections placed and relocations applied, no import resolved, none of its code run.
 // Every drive must resolve exactly as it did from the file, and at every site the function-table entry the
-// resolution read must be the one the operating system's own lookup answers with. The copy is deleted afterwards.
+// resolution read must be the one the operating system's own lookup answers with. The install's own decision is
+// then made on it (src/dll/drive_install.h), and the line the install logs is said by the DLL's own function
+// under the DLL's own name for the drive. A cache file is named for all of it, and on the recorded build must
+// never come to exist. The copy, and every file this check wrote, is deleted afterwards.
 //
 // The MCC folder comes from --mcc or the HALOMCCVR_MCC_DIR environment variable. With neither, the check is
-// SKIPPED (exit 77), so a machine without the game does not fail its tests. The DLL files are only read.
+// SKIPPED (exit 77), so a machine without the game does not fail its tests -- and has checked nothing: ctest
+// counts a skipped check among those that passed. ctest's own run is --moved --faults --brief, never --loaded.
+// The DLL files are only read.
 #include <Windows.h>
 
 #include <algorithm>
@@ -55,15 +67,20 @@
 #include "../src/dll/drive_cascade.h"
 #include "../src/dll/drive_install.h"
 
-// The DLL's side of the resolution logs through this (--loaded).
+// The DLL's side of the resolution logs through this (--loaded): each line is printed, and kept where a list is
+// named for it.
+static std::vector<std::string>* g_capture = nullptr;
+
 void Logf(const char* format, ...)
 {
+    char text[2048];
     va_list arguments;
     va_start(arguments, format);
-    std::printf("   | ");
-    std::vprintf(format, arguments);
-    std::printf("\n");
+    std::vsnprintf(text, sizeof(text), format, arguments);
     va_end(arguments);
+    std::printf("      | %s\n", text);
+    if (g_capture)
+        g_capture->emplace_back(text);
 }
 
 namespace
@@ -322,6 +339,10 @@ struct Outcome
 
 using RunFn = void (*)(Resolver&, Outcome&);
 
+// WHICH BUILD'S PLANS are run. An install's plan for a control update is its anchors and its caller map; a dev
+// build's goes on to the two tick anchors (the installs compile that line for dev builds only).
+bool g_devPlans = false;
+
 drive_sites::Callers RunCallers(Resolver& r, const drive_sites::CallerAnchors& anchors, uint32_t entry, char* text,
                                size_t size)
 {
@@ -354,7 +375,8 @@ void RunReachControl(Resolver& r, Outcome& out)
     out.hook = f.entry;
     out.reachControl = f;
     out.callers = RunCallers(r, drive_sites::kReachCallerAnchors, f.entry, out.detail, sizeof(out.detail));
-    (void)drive_sites::ResolveTick(r, drive_sites::kReachTickAnchors);
+    if (g_devPlans)
+        (void)drive_sites::ResolveTick(r, drive_sites::kReachTickAnchors);
 }
 
 void RunLegacy(Resolver& r, Outcome& out, int slot)
@@ -371,7 +393,8 @@ void RunLegacy(Resolver& r, Outcome& out, int slot)
     else
         std::snprintf(out.detail, sizeof(out.detail), "%s; pitch clamp %s", callers,
                       f.pitchLimit ? "found" : "NOT found (a look-steered driver's reticle is not clamped in pitch)");
-    (void)drive_sites::ResolveTick(r, drive_sites::kLegacyTickAnchors[slot]);
+    if (g_devPlans)
+        (void)drive_sites::ResolveTick(r, drive_sites::kLegacyTickAnchors[slot]);
 }
 void RunHalo3(Resolver& r, Outcome& out) { RunLegacy(r, out, 0); }
 void RunOdst(Resolver& r, Outcome& out) { RunLegacy(r, out, 1); }
@@ -527,30 +550,45 @@ struct Drive
     bool survivesOffsetFault;  // with every in-function anchor denied its offset it can still be hooked
     const char* lostToOffsetFault[3];   // the sites that fault must lose (two matches in their function)
     InstallFn install;                  // the install's own decision (null: a dev observer, which rides a drive's hook)
+    const char* logName;                // what its lines begin with in the log, as its install names it; or null for
+    int legacySlot;                     // ... a control update named from drive_sites::kLegacyDriveSites[legacySlot]
+    bool devOnly;                       // a dev build has it, a player build does not
 };
 
 constexpr Drive kDrives[] = {
-    {"halo2", "control-update", "Halo 2 control update (on foot and seats)", &RunHalo2, false, true, {}, &InstallHalo2},
-    {"halo3", "control-update", "Halo 3 control update (on foot and seats)", &RunHalo3, true, true, {}, &InstallHalo3},
-    {"halo3odst", "control-update", "ODST control update (on foot and seats)", &RunOdst, true, true, {}, &InstallOdst},
+    {"halo2", "control-update", "Halo 2 control update (on foot and seats)", &RunHalo2, false, true, {}, &InstallHalo2,
+     drive_cascade::kHalo2Name, -1, false},
+    {"halo3", "control-update", "Halo 3 control update (on foot and seats)", &RunHalo3, true, true, {}, &InstallHalo3,
+     nullptr, 0, false},
+    {"halo3odst", "control-update", "ODST control update (on foot and seats)", &RunOdst, true, true, {}, &InstallOdst,
+     nullptr, 1, false},
     {"haloreach", "control-update", "Reach control update (on foot and seats)", &RunReachControl, true, true, {},
-     &InstallReachControl},
+     &InstallReachControl, drive_cascade::kReachName, -1, false},
     // A pilot's drive needs every row, and its shortest rows (the four bytes that load the angles' address) are
     // taken at their recorded offset or not at all: denied the offset, the drive is not hooked.
     {"haloreach", "pilot-controller", "Reach Sabre / Seraph pilot controller", &RunReachSabre, true, false, {},
-     &InstallReachSabre},
+     &InstallReachSabre, drive_cascade::kReachSabreName, -1, false},
     {"haloreach", "pilot-observer", "Reach pilot controller, dev observer (dev builds only)", &RunT13Reach, true, false, {},
-     nullptr},
+     nullptr, drive_cascade::kReachObserverName, -1, true},
     // Halo 4's record unit load stands three times in the control update: without its offset it is not found,
     // and only the seats lose direct drive.
     {"halo4", "control-update", "Halo 4 control update (on foot and seats)", &RunHalo4, true, true, {"record unit load"},
-     &InstallHalo4},
+     &InstallHalo4, nullptr, 2, false},
     {"halo4", "pilot-controller", "Halo 4 Broadsword pilot controller", &RunHalo4Flight, true, false, {},
-     &InstallHalo4Flight},
+     &InstallHalo4Flight, drive_cascade::kHalo4FlightName, -1, false},
     // The observer's IDLE and RECUNIT rows stand more than once in their functions: the observer stays off.
     {"halo4", "pilot-observer", "Halo 4 pilot controller, dev observer (dev builds only)", &RunT13Halo4, true, false,
-     {"IDLE", "RECUNIT"}, nullptr},
+     {"IDLE", "RECUNIT"}, nullptr, drive_cascade::kHalo4ObserverName, -1, true},
 };
+
+// What the drive's lines begin with in the log: the name its install gives it.
+void LogName(const Drive& drive, char* out, size_t size)
+{
+    if (drive.logName)
+        std::snprintf(out, size, "%s", drive.logName);
+    else
+        drive_cascade::LegacyName(drive_sites::kLegacyDriveSites[drive.legacySlot].name, out, size);
+}
 
 struct TitleDll
 {
@@ -619,6 +657,49 @@ void RunRungs(const Loaded& module, const Drive& drive, uint32_t faults, bool re
     result.out.report = report;
     result.ms = Milliseconds(from, to);
 }
+
+// One drive through the DLL's own side (src/dll/drive_cascade.cpp), with whatever cache file is named: the image
+// opened as an install opens a module, the file read before and written after as an install's launch does.
+struct FileRun
+{
+    drive_cascade::Rungs rungs{};
+    Outcome out{};
+    double ms = 0.0;
+    bool opened = false;
+};
+
+FileRun RunThroughFile(const Loaded& module, GameTitle title, const Drive& drive)
+{
+    FileRun run;
+    RungContext context{&drive, Outcome{}, &run.out};
+    Report report{};
+    const char* why = nullptr;
+    LARGE_INTEGER from, to;
+    QueryPerformanceCounter(&from);
+    run.opened = drive_cascade::RunPlan(reinterpret_cast<uintptr_t>(module.base), module.size,
+                                        drive_cascade::Drive{title, drive.id}, &RungPlan, &RungKeep, &context, report,
+                                        run.rungs, why);
+    QueryPerformanceCounter(&to);
+    run.out.report = report;
+    run.ms = Milliseconds(from, to);
+    return run;
+}
+
+std::string ReadText(const std::wstring& path)
+{
+    std::string text;
+    const HANDLE handle = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr);
+    if (handle == INVALID_HANDLE_VALUE)
+        return text;
+    char buffer[4096];
+    DWORD read = 0;
+    while (ReadFile(handle, buffer, sizeof(buffer), &read, nullptr) && read)
+        text.append(buffer, read);
+    CloseHandle(handle);
+    return text;
+}
+
+bool Exists(const std::wstring& path) { return GetFileAttributesW(path.c_str()) != INVALID_FILE_ATTRIBUTES; }
 
 const char* RungText(drive_known::Rung rung)
 {
@@ -851,6 +932,22 @@ const char* CompareLoaded(const Outcome& file, const LoadedRun& run, const Repor
         return "the operating system's function table disagrees with the .pdata that was read";
     return nullptr;
 }
+// What one build's plans came to, over every title.
+struct Totals
+{
+    unsigned drives = 0, sites = 0, notAsRecorded = 0, unhooked = 0, faultChecks = 0, faultFailures = 0;
+    unsigned movedSites = 0, movedFollowed = 0, movedFailures = 0;
+    unsigned loadedDrives = 0, loadedSites = 0, loadedFailures = 0;
+    unsigned rungOne = 0, rungFailures = 0, rungScans = 0, savedLaunches = 0;
+    unsigned installDrives = 0, installHooks = 0;
+    unsigned fileDrives = 0, fileLaunches = 0, fileFailures = 0;
+    double rungOneMs = 0.0, searchMs = 0.0;
+    std::vector<std::string> lines;   // what an install logs for each mapped DLL, word for word
+};
+
+constexpr const char* kPlansOf[2] = {
+    "THE PLAYER BUILD'S PLANS (what ships)",
+    "THE DEV BUILD'S PLANS (two tick anchors more in each control update, and the two pilot observers)"};
 } // namespace
 
 int main(int argc, char** argv)
@@ -890,18 +987,36 @@ int main(int argc, char** argv)
     }
     if (mcc.empty())
     {
-        std::printf("drive address check: SKIPPED (no MCC folder: pass --mcc <folder> or set HALOMCCVR_MCC_DIR)\n");
+        std::printf("drive address check: SKIPPED (no MCC folder: pass --mcc <folder> or set HALOMCCVR_MCC_DIR). "
+                    "NOTHING was checked against a game DLL\n");
         return kExitSkipped;
     }
     addrcascade::set_logger([](const char* message) { std::printf("%s\n", message); });
 
-    unsigned drives = 0, sites = 0, notAsRecorded = 0, unhooked = 0, faultChecks = 0, faultFailures = 0, modules = 0;
-    unsigned movedSites = 0, movedFollowed = 0, movedFailures = 0;
-    unsigned loadedDrives = 0, loadedSites = 0, loadedFailures = 0;
-    unsigned rungOne = 0, rungFailures = 0, rungScans = 0, savedLaunches = 0;
-    unsigned titlesWanted = 0, titlesNotChecked = 0, installDrives = 0, installHooks = 0;
-    double rungOneMs = 0.0, searchMs = 0.0;
+    Totals totals[2];
+    unsigned modules = 0, titlesWanted = 0, titlesNotChecked = 0, unreadable = 0;
     constexpr uint32_t kMovedShift = 0x40;
+    // THE ADDRESS CACHE'S FILES, in the scratch folder. For each build's plans: one named while the recorded build's
+    // DLLs are resolved, which must never come to exist, and one the moved build's two launches go through. (The
+    // two builds' plans are two versions of a drive's tables, so each has its own.)
+    const bool withFiles = !loadedFolder.empty();
+    std::wstring recordedCache[2], movedCache[2];
+    if (withFiles)
+    {
+        const std::wstring folder = Widen(loadedFolder.c_str());
+        CreateDirectoryW(folder.c_str(), nullptr);
+        for (int v = 0; v < 2; ++v)
+        {
+            const std::wstring stem = folder + L"\\drivecheck-" + (v ? L"dev" : L"player");
+            recordedCache[v] = stem + L"-recorded-build-addresses.txt";
+            movedCache[v] = stem + L"-moved-build-addresses.txt";
+            DeleteFileW(recordedCache[v].c_str());
+            DeleteFileW(movedCache[v].c_str());
+        }
+    }
+    g_config.drive_address_cache = 1;
+    g_config.drive_fault = 0;
+    drive_cascade::SetCacheFile(nullptr);
     for (const TitleDll& entry : kTitles)
     {
         const char* const title = entry.dll;
@@ -916,281 +1031,361 @@ int main(int argc, char** argv)
             // A title that is not installed is not a failure; a DLL that is there and does not read is.
             const bool absent = GetFileAttributesW(Widen(path.c_str()).c_str()) == INVALID_FILE_ATTRIBUTES;
             std::printf("== %s.dll: NOT CHECKED (%s: %s)\n", title, absent ? "not installed" : why.c_str(), path.c_str());
-            notAsRecorded += absent ? 0u : 1u;
+            unreadable += absent ? 0u : 1u;
             ++titlesNotChecked;
             continue;
         }
         ++modules;
         const title_build::Match match =
             title_build::Compare(entry.title, module.timestamp, static_cast<uint32_t>(module.size));
+        const bool recordedBuild = match == title_build::Match::Known;
         std::printf("== %s.dll: PE timestamp 0x%08X, image 0x%08zX: %s; TLS index at +0x%X (PE TLS directory)\n", title,
                     module.timestamp, module.size,
-                    match == title_build::Match::Known ? "the build the tables were measured on (MCC 2025.08.16.178512.1)"
-                                                       : "NOT the build the tables were measured on",
+                    recordedBuild ? "the build the tables were measured on (MCC 2025.08.16.178512.1)"
+                                  : "NOT the build the tables were measured on",
                     module.image.tlsIndexRva);
         Loaded shifted;
         if (moved && !MoveImage(module, kMovedShift, shifted, why))
         {
             std::printf("   the moved image could not be built (%s)\n", why.c_str());
-            ++movedFailures;
+            ++totals[0].movedFailures;
+            ++totals[1].movedFailures;
+        }
+        HMODULE mapped = nullptr;
+        std::wstring mappedCopy;
+        if (withFiles)
+        {
+            mapped = MapCopy(Widen(path.c_str()), Widen(loadedFolder.c_str()), title, mappedCopy, why);
+            if (!mapped)
+                std::printf("   as the loader maps it: NOT CHECKED (%s)\n", why.c_str());
         }
         bool any = false;
-        HMODULE mapped = nullptr;
-        uintptr_t legacyTls = 0;   // Halo 4: where its control update drive reads the TLS index, on the mapped copy
-        std::wstring mappedCopy;
-        bool mapTried = false;
-        for (const Drive& drive : kDrives)
+        for (int variant = 0; variant < 2; ++variant)
         {
-            if (std::strcmp(drive.dll, title))
-                continue;
-            any = true;
-            ++drives;
-            const Outcome healthy = Run(module, drive, 0);
-            unsigned off = 0;
-            for (uint32_t i = 0; i < healthy.report.count; ++i)
-                off += healthy.report.lines[i].verdict == Verdict::AsRecorded ? 0u : 1u;
-            sites += healthy.report.count;
-            notAsRecorded += off;
-            unhooked += healthy.ok ? 0u : 1u;
-            std::printf("-- %s\n", drive.name);
-            if (!brief || off || !healthy.ok)
-                PrintReport(healthy.report);
-            if (healthy.hook)
-                std::printf("   %s +0x%X; %s\n", healthy.ok ? "HOOK at" : "NO HOOK, though its entry was found at",
-                            healthy.hook, healthy.detail);
-            else
-                std::printf("   %s; %s\n", healthy.ok ? "READY" : "NOT READY", healthy.detail);
-            std::printf("   %u sites, %u as recorded, %u moved, %u taken at the recorded address among several, %u not "
-                        "found\n",
-                        healthy.report.count, healthy.report.Count(Verdict::AsRecorded),
-                        healthy.report.Count(Verdict::Moved), healthy.report.Count(Verdict::RecordAmongSeveral),
-                        healthy.report.NotFound());
+            g_devPlans = variant == 1;
+            Totals& t = totals[variant];
+            uintptr_t legacyTls = 0;   // Halo 4: where its control update drive reads the TLS index, on the mapped copy
+            bool headed = false;
+            for (const Drive& drive : kDrives)
             {
-                // AS THE DLL RESOLVES IT: the known addresses first. On the recorded build that is rung 1 with no
-                // scan, and it must choose what the search above chose. Each is timed (the search three times).
-                const bool recordedBuild = match == title_build::Match::Known;
-                ByRungs fast;
-                RunRungs(module, drive, 0, recordedBuild, nullptr, fast);
-                double slowest = 0.0, quickest = 1.0e9;
-                unsigned scans = 0;
-                for (int pass = 0; pass < 3; ++pass)
+                if (std::strcmp(drive.dll, title) || (drive.devOnly && !g_devPlans))
+                    continue;
+                if (!headed)
+                    std::printf("== %s.dll, %s\n", title, kPlansOf[variant]);
+                headed = any = true;
+                ++t.drives;
+                char logName[64];
+                LogName(drive, logName, sizeof(logName));
+                const Outcome healthy = Run(module, drive, 0);
+                unsigned off = 0;
+                for (uint32_t i = 0; i < healthy.report.count; ++i)
+                    off += healthy.report.lines[i].verdict == Verdict::AsRecorded ? 0u : 1u;
+                t.sites += healthy.report.count;
+                t.notAsRecorded += off;
+                t.unhooked += healthy.ok ? 0u : 1u;
+                std::printf("-- %s\n", drive.name);
+                if (!brief || off || !healthy.ok)
+                    PrintReport(healthy.report);
+                if (healthy.hook)
+                    std::printf("   %s +0x%X; %s\n", healthy.ok ? "HOOK at" : "NO HOOK, though its entry was found at",
+                                healthy.hook, healthy.detail);
+                else
+                    std::printf("   %s; %s\n", healthy.ok ? "READY" : "NOT READY", healthy.detail);
+                std::printf("   %u sites, %u as recorded, %u moved, %u taken at the recorded address among several, %u "
+                            "not found; this version of its tables (the plan) is %016llX\n",
+                            healthy.report.count, healthy.report.Count(Verdict::AsRecorded),
+                            healthy.report.Count(Verdict::Moved), healthy.report.Count(Verdict::RecordAmongSeveral),
+                            healthy.report.NotFound(), static_cast<unsigned long long>(healthy.report.plan));
                 {
-                    ByRungs searched;
-                    RunRungs(module, drive, 0, false, nullptr, searched);
-                    slowest = searched.ms > slowest ? searched.ms : slowest;
-                    quickest = searched.ms < quickest ? searched.ms : quickest;
-                    scans = searched.rungs.scans;
-                }
-                const bool same = SameResult(fast.out, healthy);
-                const bool asMust = same && (!recordedBuild || !healthy.report.Complete() ||
-                                             (fast.rungs.rung == drive_known::Rung::Recorded && fast.rungs.scans == 0));
-                rungOne += fast.rungs.rung == drive_known::Rung::Recorded ? 1u : 0u;
-                rungScans += fast.rungs.scans;
-                rungFailures += asMust ? 0u : 1u;
-                rungOneMs += fast.ms;
-                searchMs += quickest;
-                std::printf("   by the rungs: %s, %u scans of the module, %.3f ms; the search alone: %u scans, %.1f ms "
-                            "(%.1f at most); the same addresses: %s%s\n",
-                            RungText(fast.rungs.rung), fast.rungs.scans, fast.ms, scans, quickest, slowest,
-                            same ? "yes" : "NO", asMust ? "" : " -- NOT AS IT MUST BE");
-            }
-            if (moved && shifted.base)
-            {
-                // The same drive on the image with every section kMovedShift higher: it must follow, site by site.
-                // Resolved as two launches of the DLL would: the stamp is the recorded build's, so the recorded
-                // addresses are tried and fail, the search finds everything and its addresses are saved; then
-                // the saved addresses are verified with no scan. The entry travels through the cache's own text.
-                ByRungs launchOne, launchTwo;
-                RunRungs(shifted, drive, 0, match == title_build::Match::Known, nullptr, launchOne);
-                const Outcome there = launchOne.out;
-                static drive_known::File file, back;
-                static char text[drive_known::kMaxFileText];
-                drive_known::Entry learned;
-                file = drive_known::File{};
-                const char* cacheFailure = nullptr;
-                if (healthy.report.Complete())
-                {
-                    if (launchOne.rungs.rung != drive_known::Rung::Search || !launchOne.rungs.learn)
-                        cacheFailure = "the first launch did not search and learn";
-                    else if (!drive_known::MakeEntry(learned, (std::string(title) + ".dll").c_str(), drive.id,
-                                                     drive_known::Stamp(shifted.image), launchOne.out.report) ||
-                             (drive_known::Put(file, learned), false))
-                        cacheFailure = "what the search found did not make an entry";
-                    else
+                    // AS THE DLL RESOLVES IT: the known addresses first. On the recorded build that is rung 1 with
+                    // no scan, and it must choose what the search above chose. Each is timed (the search three
+                    // times).
+                    ByRungs fast;
+                    RunRungs(module, drive, 0, recordedBuild, nullptr, fast);
+                    double slowest = 0.0, quickest = 1.0e9;
+                    unsigned scans = 0;
+                    for (int pass = 0; pass < 3; ++pass)
                     {
-                        const size_t length = drive_known::Format(file, text, sizeof(text));
-                        drive_known::Parse(text, length, back);
-                        const drive_known::Entry* held =
-                            drive_known::Find(back, (std::string(title) + ".dll").c_str(), drive.id);
-                        if (!length || !held || held->stamp != drive_known::Stamp(shifted.image))
-                            cacheFailure = "the entry did not come back out of the cache's text";
+                        ByRungs searched;
+                        RunRungs(module, drive, 0, false, nullptr, searched);
+                        slowest = searched.ms > slowest ? searched.ms : slowest;
+                        quickest = searched.ms < quickest ? searched.ms : quickest;
+                        scans = searched.rungs.scans;
+                    }
+                    const bool same = SameResult(fast.out, healthy);
+                    const bool asMust = same && (!recordedBuild || !healthy.report.Complete() ||
+                                                 (fast.rungs.rung == drive_known::Rung::Recorded && fast.rungs.scans == 0));
+                    t.rungOne += fast.rungs.rung == drive_known::Rung::Recorded ? 1u : 0u;
+                    t.rungScans += fast.rungs.scans;
+                    t.rungFailures += asMust ? 0u : 1u;
+                    t.rungOneMs += fast.ms;
+                    t.searchMs += quickest;
+                    std::printf("   by the rungs: %s, %u scans of the module, %.3f ms; the search alone: %u scans, %.1f "
+                                "ms (%.1f at most); the same addresses: %s%s\n",
+                                RungText(fast.rungs.rung), fast.rungs.scans, fast.ms, scans, quickest, slowest,
+                                same ? "yes" : "NO", asMust ? "" : " -- NOT AS IT MUST BE");
+                }
+                if (moved && shifted.base)
+                {
+                    // The same drive on the image with every section kMovedShift higher: it must follow, site by
+                    // site. Resolved as two launches of the DLL would: the stamp is the recorded build's, so the
+                    // recorded addresses are tried and fail, the search finds everything and its addresses are
+                    // saved; then the saved addresses are verified with no scan. The entry travels through the
+                    // cache's own text.
+                    ByRungs launchOne, launchTwo;
+                    RunRungs(shifted, drive, 0, recordedBuild, nullptr, launchOne);
+                    const Outcome there = launchOne.out;
+                    static drive_known::File file, back;
+                    static char text[drive_known::kMaxFileText];
+                    drive_known::Entry learned;
+                    file = drive_known::File{};
+                    const char* const moduleName = drive_known::ModuleName(entry.title);
+                    const uint64_t stamp = drive_known::Stamp(shifted.image);
+                    const char* cacheFailure = nullptr;
+                    if (healthy.report.Complete())
+                    {
+                        if (launchOne.rungs.rung != drive_known::Rung::Search || !launchOne.rungs.learn)
+                            cacheFailure = "the first launch did not search and learn";
+                        else if (!drive_known::MakeEntry(learned, moduleName, drive.id, stamp, launchOne.out.report))
+                            cacheFailure = "what the search found did not make an entry";
                         else
                         {
-                            RunRungs(shifted, drive, 0, match == title_build::Match::Known, held, launchTwo);
-                            if (launchTwo.rungs.rung != drive_known::Rung::Saved || launchTwo.rungs.scans != 0 ||
-                                !SameResult(launchTwo.out, launchOne.out))
-                                cacheFailure = "the second launch did not verify the saved addresses with no scan";
+                            drive_known::Put(file, learned);
+                            const size_t length = drive_known::Format(file, text, sizeof(text));
+                            drive_known::Parse(text, length, back);
+                            const char* refused = nullptr;
+                            const drive_known::Entry* const held =
+                                drive_known::Usable(back, moduleName, drive.id, stamp, refused);
+                            if (!length || !held)
+                                cacheFailure = "the entry did not come back out of the cache's text";
                             else
-                                ++savedLaunches;
+                            {
+                                RunRungs(shifted, drive, 0, recordedBuild, held, launchTwo);
+                                if (launchTwo.rungs.rung != drive_known::Rung::Saved || launchTwo.rungs.scans != 0 ||
+                                    !SameResult(launchTwo.out, launchOne.out))
+                                    cacheFailure = "the second launch did not verify the saved addresses with no scan";
+                                else
+                                    ++t.savedLaunches;
+                            }
+                        }
+                        std::printf("   moved build, two launches: first %s (%u scans, %.1f ms) and saved; second %s "
+                                    "(%u scans, %.3f ms)%s%s\n",
+                                    RungText(launchOne.rungs.rung), launchOne.rungs.scans, launchOne.ms,
+                                    RungText(launchTwo.rungs.rung), launchTwo.rungs.scans, launchTwo.ms,
+                                    cacheFailure ? " -- FAILED: " : "", cacheFailure ? cacheFailure : "");
+                        t.movedFailures += cacheFailure ? 1u : 0u;
+                    }
+                    if (healthy.report.Complete() && withFiles)
+                    {
+                        // THE SAME TWO LAUNCHES THROUGH THE DLL'S OWN SIDE AND A REAL FILE (src/dll/drive_cascade.cpp):
+                        // the moved image opened as an install opens a module, its entry written to a file in the
+                        // scratch folder by the first launch and read back from that file by the second.
+                        ++t.fileDrives;
+                        drive_cascade::SetCacheFile(movedCache[variant].c_str());
+                        const FileRun one = RunThroughFile(shifted, entry.title, drive);
+                        const std::string written = ReadText(movedCache[variant]);
+                        const FileRun two = RunThroughFile(shifted, entry.title, drive);
+                        const std::string after = ReadText(movedCache[variant]);
+                        drive_cascade::SetCacheFile(nullptr);
+                        drive_known::Parse(written.data(), written.size(), back);
+                        const char* refused = nullptr;
+                        const bool held = drive_known::Usable(back, moduleName, drive.id, stamp, refused) != nullptr;
+                        const char* const fileFailure =
+                            !one.opened || !two.opened ? "the moved image did not open through the DLL's own side"
+                            : one.rungs.outcome.rung != drive_known::Rung::Search || !one.rungs.outcome.learn
+                                  ? "the first launch did not search and learn"
+                            : !one.rungs.saved ? (one.rungs.notSaved ? one.rungs.notSaved : "the first launch wrote no file")
+                            : !held ? "the file the first launch wrote does not hold the entry"
+                            : two.rungs.outcome.rung != drive_known::Rung::Saved || two.rungs.outcome.scans != 0
+                                  ? "the second launch did not verify the file's addresses with no scan"
+                            : two.rungs.saved || two.rungs.outcome.learn || after != written
+                                  ? "the second launch wrote the file again"
+                            : !SameResult(one.out, launchOne.out) || !SameResult(two.out, launchOne.out)
+                                  ? "the launches through the file did not resolve as the launches without it"
+                            : nullptr;
+                        t.fileLaunches += fileFailure ? 0u : 1u;
+                        t.fileFailures += fileFailure ? 1u : 0u;
+                        std::printf("   moved build, the same two launches through the DLL's own side and a real file: "
+                                    "first %s (%u scans, %.1f ms), %s; second %s (%u scans, %.3f ms), the file left as "
+                                    "it was: %s%s%s\n",
+                                    RungText(one.rungs.outcome.rung), one.rungs.outcome.scans, one.ms,
+                                    one.rungs.saved ? "its entry written to the file" : "NOTHING written",
+                                    RungText(two.rungs.outcome.rung), two.rungs.outcome.scans, two.ms,
+                                    after == written ? "yes" : "NO", fileFailure ? " -- FAILED: " : "",
+                                    fileFailure ? fileFailure : "");
+                        if (!brief || fileFailure)
+                        {
+                            // What the DLL logs for each of the two.
+                            addrcascade::TierReporter first, second;
+                            drive_cascade::Announce(logName, one.out.report, one.rungs, first);
+                            drive_cascade::Announce(logName, two.out.report, two.rungs, second);
                         }
                     }
-                    std::printf("   moved build, two launches: first %s (%u scans, %.1f ms) and saved; second %s (%u "
-                                "scans, %.3f ms)%s%s\n",
-                                RungText(launchOne.rungs.rung), launchOne.rungs.scans, launchOne.ms,
-                                RungText(launchTwo.rungs.rung), launchTwo.rungs.scans, launchTwo.ms,
-                                cacheFailure ? " -- FAILED: " : "", cacheFailure ? cacheFailure : "");
-                    movedFailures += cacheFailure ? 1u : 0u;
-                }
-                unsigned followed = 0, total = 0;
-                const char* failure = there.ok == healthy.ok && there.report.count == healthy.report.count
-                    ? nullptr : "the drive did not resolve the same way";
-                for (uint32_t i = 0; !failure && i < there.report.count; ++i)
-                {
-                    const drive_resolve::Line& was = healthy.report.lines[i];
-                    const drive_resolve::Line& now = there.report.lines[i];
-                    if (!was.found)
-                        continue;
-                    ++total;
-                    // A proof is not an address: on the moved image it must have come to the same thing.
-                    if (was.how == drive_resolve::How::Proof ? now.found == was.found
-                                                             : now.found == was.found + kMovedShift &&
-                                                                   now.verdict == Verdict::Moved)
-                        ++followed;
-                    else
-                        failure = now.name;
-                }
-                movedSites += total;
-                movedFollowed += followed;
-                movedFailures += failure ? 1u : 0u;
-                char where[48];
-                if (there.hook)
-                    std::snprintf(where, sizeof(where), "%s +0x%X", there.ok ? "HOOK at" : "NO HOOK at", there.hook);
-                else
-                    std::snprintf(where, sizeof(where), "%s", there.ok ? "READY" : "NOT READY");
-                std::printf("   moved build (every section 0x%X higher): %s; %u of %u sites followed and reported "
-                            "MOVED%s%s\n",
-                            kMovedShift, where, followed, total, failure ? " -- NOT FOLLOWED: " : "",
-                            failure ? failure : "");
-            }
-            if (!loadedFolder.empty())
-            {
-                // The same drive on a copy of the DLL as the Windows loader maps it, through the DLL's own side.
-                if (!mapTried)
-                {
-                    mapTried = true;
-                    mapped = MapCopy(Widen(path.c_str()), Widen(loadedFolder.c_str()), title, mappedCopy, why);
-                    if (!mapped)
-                        std::printf("   as the loader maps it: NOT CHECKED (%s)\n", why.c_str());
-                }
-                ++loadedDrives;
-                if (!mapped)
-                {
-                    ++loadedFailures;
-                }
-                else
-                {
-                    const uintptr_t base = reinterpret_cast<uintptr_t>(mapped);
-                    const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
-                    const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS64*>(base + dos->e_lfanew);
-                    // By the rungs, as an install does it; then again with the self-test bit (this tool is built
-                    // as a dev build of the DLL's side), so the search runs beside the verified addresses.
-                    const drive_cascade::Drive key{entry.title, drive.id};
-                    drive_cascade::Rungs rungs{}, tested{};
-                    LoadedRun run, again;
-                    run.drive = again.drive = &drive;
-                    run.base = again.base = base;
-                    Report report{}, second{};
-                    const char* notOpened = nullptr;
-                    g_config.drive_fault = 0;
-                    LARGE_INTEGER from, to;
-                    QueryPerformanceCounter(&from);
-                    const bool opened = drive_cascade::RunPlan(base, nt->OptionalHeader.SizeOfImage, key, &LoadedThunk,
-                                                               &LoadedKeep, &run, report, rungs, notOpened);
-                    QueryPerformanceCounter(&to);
-                    g_config.drive_fault = static_cast<int>(drive_resolve::kFaultSearchToo);
-                    const char* ignored = nullptr;
-                    (void)drive_cascade::RunPlan(base, nt->OptionalHeader.SizeOfImage, key, &LoadedThunk, &LoadedKeep,
-                                                 &again, second, tested, ignored);
-                    g_config.drive_fault = 0;
-                    const char* failure = CompareLoaded(healthy, run, report, opened);
-                    if (!failure && healthy.report.Complete() &&
-                        !(rungs.recordedBuild && rungs.outcome.rung == drive_known::Rung::Recorded &&
-                          rungs.outcome.scans == 0))
-                        failure = "it was not verified at the recorded addresses with no scan";
-                    if (!failure && healthy.report.Complete() &&
-                        !(tested.outcome.searchedToo && tested.outcome.searchAgrees && SameResult(again.out, run.out)))
-                        failure = "the search beside the verified addresses did not agree with them";
-                    if (!failure && rungs.saved)
-                        failure = "the recorded build's own addresses were written to the cache";
-                    // THE INSTALL'S OWN DECISION on this module (drive_install.h: the code the DLL's install runs
-                    // once its plan has): what is printed below as its hook is what the install would do.
-                    char decided[420] = "its readiness is its plan's (a dev observer rides the drive's hook)";
-                    InstallVerdict verdict{run.out.ok, true};
-                    if (drive.install)
+                    unsigned followed = 0, total = 0;
+                    const char* failure = there.ok == healthy.ok && there.report.count == healthy.report.count
+                        ? nullptr : "the drive did not resolve the same way";
+                    for (uint32_t i = 0; !failure && i < there.report.count; ++i)
                     {
-                        verdict = drive.install(base, nt->OptionalHeader.SizeOfImage, run.out, legacyTls, decided,
-                                                sizeof(decided));
-                        ++installDrives;
-                        installHooks += verdict.hook && verdict.whole ? 1u : 0u;
+                        const drive_resolve::Line& was = healthy.report.lines[i];
+                        const drive_resolve::Line& now = there.report.lines[i];
+                        if (!was.found)
+                            continue;
+                        ++total;
+                        // A proof is not an address: on the moved image it must have come to the same thing.
+                        if (was.how == drive_resolve::How::Proof ? now.found == was.found
+                                                                 : now.found == was.found + kMovedShift &&
+                                                                       now.verdict == Verdict::Moved)
+                            ++followed;
+                        else
+                            failure = now.name;
                     }
-                    if (!std::strcmp(title, "halo4") && !std::strcmp(drive.id, "control-update"))
-                        legacyTls = base + run.out.legacy.tlsIndex;
-                    if (!failure && healthy.report.Complete() && !(verdict.hook && verdict.whole))
-                        failure = "the install's own decision is not a hook with everything proven";
-                    loadedSites += report.count;
-                    loadedFailures += failure ? 1u : 0u;
-                    std::printf("   as the loader maps it (base %p, through drive_cascade): %s; %s, %u scans, %.3f ms; "
-                                "%u of %u sites as from the file; the system's function table agrees at %u of %u; "
-                                "self-test: the search beside it (%u scans) %s%s%s%s%s\n",
-                                reinterpret_cast<void*>(base),
-                                run.out.hook ? (run.out.ok ? "HOOK at the same address" : "NO HOOK")
-                                             : (run.out.ok ? "READY" : "NOT READY"),
-                                RungText(rungs.outcome.rung), rungs.outcome.scans, Milliseconds(from, to),
-                                failure ? 0u : report.count, report.count, run.tableAgreed, run.tableChecked,
-                                tested.outcome.scans,
-                                tested.outcome.searchedToo ? (tested.outcome.searchAgrees ? "agrees" : "DISAGREES")
-                                                           : "did not run",
-                                failure ? " -- DIFFERS: " : "", failure ? failure : "",
-                                notOpened ? ": " : "", notOpened ? notOpened : "");
-                    std::printf("      THE INSTALL'S OWN DECISION there: %s (%s)\n",
-                                !drive.install ? (verdict.hook ? "READY" : "NOT READY")
-                                               : verdict.hook ? (verdict.whole ? "HOOK, with everything it proves"
-                                                                               : "HOOK, but its caller map is NOT proven")
-                                                              : "NO HOOK",
-                                decided);
+                    t.movedSites += total;
+                    t.movedFollowed += followed;
+                    t.movedFailures += failure ? 1u : 0u;
+                    char where[48];
+                    if (there.hook)
+                        std::snprintf(where, sizeof(where), "%s +0x%X", there.ok ? "HOOK at" : "NO HOOK at", there.hook);
+                    else
+                        std::snprintf(where, sizeof(where), "%s", there.ok ? "READY" : "NOT READY");
+                    std::printf("   moved build (every section 0x%X higher): %s; %u of %u sites followed and reported "
+                                "MOVED%s%s\n",
+                                kMovedShift, where, followed, total, failure ? " -- NOT FOLLOWED: " : "",
+                                failure ? failure : "");
                 }
-            }
-            if (!faults)
-                continue;
-            for (const FaultCase& test : kFaultCases)
-            {
-                ByRungs underFault;
-                RunRungs(module, drive, test.faults, match == title_build::Match::Known, nullptr, underFault);
-                const Outcome& faulted = underFault.out;
-                const char* failure = match == title_build::Match::Known
-                    ? JudgeFault(drive, test, healthy, faulted, underFault.rungs)
-                    : "the faults are judged on the recorded build only";
-                ++faultChecks;
-                faultFailures += failure ? 1u : 0u;
-                // What the fault made of the drive, in one line: its first site that is not as recorded.
-                const drive_resolve::Line* first = nullptr;
-                for (uint32_t i = 0; i < faulted.report.count && !first; ++i)
-                    if (faulted.report.lines[i].verdict != Verdict::AsRecorded)
-                        first = &faulted.report.lines[i];
-                char example[200] = "every site as recorded";
-                if (first)
-                    std::snprintf(example, sizeof(example), "e.g. %s: recorded +0x%X, found +0x%X, %u match(es), %s%s%s",
-                                  first->name, first->recorded, first->found, first->matches,
-                                  drive_resolve::VerdictText(first->verdict), first->note ? ": " : "",
-                                  first->note ? first->note : "");
-                std::printf("   fault 0x%02X (%s): %s; %u as recorded, %u moved, %u at the record among several, %u not "
-                            "found; %s -- %s%s\n",
-                            test.faults, test.what, faulted.ok ? "HOOKED" : "NOT hooked",
-                            faulted.report.Count(Verdict::AsRecorded), faulted.report.Count(Verdict::Moved),
-                            faulted.report.Count(Verdict::RecordAmongSeveral), faulted.report.NotFound(), example,
-                            failure ? "UNEXPECTED: " : "as it must", failure ? failure : "");
+                if (withFiles)
+                {
+                    // The same drive on a copy of the DLL as the Windows loader maps it, through the DLL's own side.
+                    ++t.loadedDrives;
+                    if (!mapped)
+                    {
+                        ++t.loadedFailures;
+                    }
+                    else
+                    {
+                        const uintptr_t base = reinterpret_cast<uintptr_t>(mapped);
+                        const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
+                        const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS64*>(base + dos->e_lfanew);
+                        // By the rungs, as an install does it, with a cache file named: on the recorded build
+                        // nothing is worth saving, and the file must never come to exist. Then again with the
+                        // self-test bit (this tool is built as a dev build of the DLL's side), so the search runs
+                        // beside the verified addresses.
+                        const drive_cascade::Drive key{entry.title, drive.id};
+                        drive_cascade::Rungs rungs{}, tested{};
+                        LoadedRun run, again;
+                        run.drive = again.drive = &drive;
+                        run.base = again.base = base;
+                        Report report{}, second{};
+                        const char* notOpened = nullptr;
+                        g_config.drive_fault = 0;
+                        drive_cascade::SetCacheFile(recordedCache[variant].c_str());
+                        LARGE_INTEGER from, to;
+                        QueryPerformanceCounter(&from);
+                        const bool opened = drive_cascade::RunPlan(base, nt->OptionalHeader.SizeOfImage, key, &LoadedThunk,
+                                                                   &LoadedKeep, &run, report, rungs, notOpened);
+                        QueryPerformanceCounter(&to);
+                        g_config.drive_fault = static_cast<int>(drive_resolve::kFaultSearchToo);
+                        const char* ignored = nullptr;
+                        (void)drive_cascade::RunPlan(base, nt->OptionalHeader.SizeOfImage, key, &LoadedThunk, &LoadedKeep,
+                                                     &again, second, tested, ignored);
+                        g_config.drive_fault = 0;
+                        addrcascade::set_fault_mask(0);
+                        drive_cascade::SetCacheFile(nullptr);
+                        const char* failure = CompareLoaded(healthy, run, report, opened);
+                        if (!failure && healthy.report.Complete() &&
+                            !(rungs.recordedBuild && rungs.outcome.rung == drive_known::Rung::Recorded &&
+                              rungs.outcome.scans == 0))
+                            failure = "it was not verified at the recorded addresses with no scan";
+                        if (!failure && healthy.report.Complete() &&
+                            !(tested.outcome.searchedToo && tested.outcome.searchAgrees && SameResult(again.out, run.out)))
+                            failure = "the search beside the verified addresses did not agree with them";
+                        // Nothing of the recorded build is worth saving, and nothing was: the rung's own word, and
+                        // the file itself.
+                        if (!failure && recordedBuild && healthy.report.Complete() &&
+                            (rungs.outcome.learn || rungs.saved || tested.outcome.learn || tested.saved))
+                            failure = "the recorded build's own addresses were held worth saving";
+                        if (!failure && recordedBuild && Exists(recordedCache[variant]))
+                            failure = "a cache file was written for the recorded build";
+                        // THE INSTALL'S OWN DECISION on this module (drive_install.h: the code the DLL's install
+                        // runs once its plan has): what is printed below as its hook is what the install would do.
+                        char decided[420] = "its readiness is its plan's (a dev observer rides the drive's hook)";
+                        InstallVerdict verdict{run.out.ok, true};
+                        if (drive.install)
+                        {
+                            verdict = drive.install(base, nt->OptionalHeader.SizeOfImage, run.out, legacyTls, decided,
+                                                    sizeof(decided));
+                            ++t.installDrives;
+                            t.installHooks += verdict.hook && verdict.whole ? 1u : 0u;
+                        }
+                        if (!std::strcmp(title, "halo4") && !std::strcmp(drive.id, "control-update"))
+                            legacyTls = base + run.out.legacy.tlsIndex;
+                        if (!failure && healthy.report.Complete() && !(verdict.hook && verdict.whole))
+                            failure = "the install's own decision is not a hook with everything proven";
+                        t.loadedSites += report.count;
+                        t.loadedFailures += failure ? 1u : 0u;
+                        std::printf("   as the loader maps it (base %p, through drive_cascade): %s; %s, %u scans, %.3f "
+                                    "ms; %u of %u sites as from the file; the system's function table agrees at %u of "
+                                    "%u; self-test: the search beside it (%u scans) %s%s%s%s%s\n",
+                                    reinterpret_cast<void*>(base),
+                                    run.out.hook ? (run.out.ok ? "HOOK at the same address" : "NO HOOK")
+                                                 : (run.out.ok ? "READY" : "NOT READY"),
+                                    RungText(rungs.outcome.rung), rungs.outcome.scans, Milliseconds(from, to),
+                                    failure ? 0u : report.count, report.count, run.tableAgreed, run.tableChecked,
+                                    tested.outcome.scans,
+                                    tested.outcome.searchedToo ? (tested.outcome.searchAgrees ? "agrees" : "DISAGREES")
+                                                               : "did not run",
+                                    failure ? " -- DIFFERS: " : "", failure ? failure : "",
+                                    notOpened ? ": " : "", notOpened ? notOpened : "");
+                        std::printf("      THE INSTALL'S OWN DECISION there: %s (%s)\n",
+                                    !drive.install ? (verdict.hook ? "READY" : "NOT READY")
+                                                   : verdict.hook ? (verdict.whole ? "HOOK, with everything it proves"
+                                                                                   : "HOOK, but its caller map is NOT proven")
+                                                                  : "NO HOOK",
+                                    decided);
+                        // WHAT THE INSTALL LOGS for this drive on this DLL: the DLL's own function, the DLL's own
+                        // name for the drive, the result just made.
+                        if (opened)
+                        {
+                            std::printf("      what its install logs:\n");
+                            addrcascade::TierReporter once;
+                            g_capture = &t.lines;
+                            drive_cascade::Announce(logName, report, rungs, once);
+                            g_capture = nullptr;
+                        }
+                    }
+                }
+                if (!faults)
+                    continue;
+                for (const FaultCase& test : kFaultCases)
+                {
+                    ByRungs underFault;
+                    RunRungs(module, drive, test.faults, recordedBuild, nullptr, underFault);
+                    const Outcome& faulted = underFault.out;
+                    const char* failure = recordedBuild ? JudgeFault(drive, test, healthy, faulted, underFault.rungs)
+                                                        : "the faults are judged on the recorded build only";
+                    ++t.faultChecks;
+                    t.faultFailures += failure ? 1u : 0u;
+                    // What the fault made of the drive, in one line: its first site that is not as recorded.
+                    const drive_resolve::Line* first = nullptr;
+                    for (uint32_t i = 0; i < faulted.report.count && !first; ++i)
+                        if (faulted.report.lines[i].verdict != Verdict::AsRecorded)
+                            first = &faulted.report.lines[i];
+                    char example[200] = "every site as recorded";
+                    if (first)
+                        std::snprintf(example, sizeof(example), "e.g. %s: recorded +0x%X, found +0x%X, %u match(es), %s%s%s",
+                                      first->name, first->recorded, first->found, first->matches,
+                                      drive_resolve::VerdictText(first->verdict), first->note ? ": " : "",
+                                      first->note ? first->note : "");
+                    if (!brief || failure)
+                        std::printf("   fault 0x%02X (%s): %s; %u as recorded, %u moved, %u at the record among several, "
+                                    "%u not found; %s -- %s%s\n",
+                                    test.faults, test.what, faulted.ok ? "HOOKED" : "NOT hooked",
+                                    faulted.report.Count(Verdict::AsRecorded), faulted.report.Count(Verdict::Moved),
+                                    faulted.report.Count(Verdict::RecordAmongSeveral), faulted.report.NotFound(), example,
+                                    failure ? "UNEXPECTED: " : "as it must", failure ? failure : "");
+                }
             }
         }
+        g_devPlans = false;
         if (mapped)
             FreeLibrary(mapped);
         if (!mappedCopy.empty())
@@ -1201,40 +1396,103 @@ int main(int argc, char** argv)
             VirtualFree(shifted.base, 0, MEM_RELEASE);
         VirtualFree(module.base, 0, MEM_RELEASE);
     }
+
+    // ------------------------------------------------------------------------------------------------ the summary
     if (faults)
     {
         std::printf("\nFAULTS (each forced on every drive):\n");
         for (const FaultCase& test : kFaultCases)
             std::printf("   0x%02X %s -> %s\n", test.faults, test.what, test.expect);
-        std::printf("   %u checks, %u unexpected\n", faultChecks, faultFailures);
     }
-    if (moved)
-        std::printf("\nMOVED BUILD (every section 0x%X higher, so no recorded RVA is right): %u of %u sites followed; %u "
-                    "drives did not follow\n", kMovedShift, movedFollowed, movedSites, movedFailures);
-    if (!loadedFolder.empty())
-        std::printf("\nAS THE LOADER MAPS THEM (a copy of each DLL mapped with its code not run, resolved through the "
-                    "DLL's own side): %u drives, %u sites; %u drives differed from the file\n",
-                    loadedDrives, loadedSites, loadedFailures);
-    std::printf("\nTHE RUNGS: %u of %u drives were verified at the recorded addresses with %u scans of the module in "
-                "all (%.2f ms together; the search alone takes %.0f ms for the same drives); %u did not resolve as "
-                "they must\n",
-                rungOne, drives, rungScans, rungOneMs, searchMs, rungFailures);
-    if (moved)
-        std::printf("THE ADDRESS CACHE: on the moved build %u of %u drives were searched and saved by the first launch "
-                    "and verified with no scan by the second\n", savedLaunches, drives);
-    if (!loadedFolder.empty())
-        std::printf("THE INSTALLS' OWN DECISIONS (src/dll/drive_install.h, the code each install runs after its plan, on "
-                    "the mapped copies): %u of %u player drives would be hooked with everything they prove\n",
-                    installHooks, installDrives);
-    else
-        std::printf("THE INSTALLS' OWN DECISIONS were NOT made: they are made on a module as the loader maps it "
-                    "(--loaded <folder>). What is printed above as HOOK is the plan's word alone\n");
-    std::printf("\nMODES RUN: the search's table and the rungs (always); the moved build: %s; the forced faults: %s; "
-                "each DLL as the loader maps it, through the DLL's own side: %s\n",
+    unsigned failures = 0, notAsRecorded = unreadable, unhooked = 0;
+    for (int v = 0; v < 2; ++v)
+    {
+        Totals& t = totals[v];
+        std::printf("\n%s: %u drives, %u sites: %u not as recorded, %u drives that could not be hooked\n", kPlansOf[v],
+                    t.drives, t.sites, t.notAsRecorded, t.unhooked);
+        std::printf("   THE RUNGS: %u of %u drives were verified at the recorded addresses with %u scans of the module "
+                    "in all (%.2f ms together; the search alone takes %.0f ms for the same drives); %u did not resolve "
+                    "as they must\n",
+                    t.rungOne, t.drives, t.rungScans, t.rungOneMs, t.searchMs, t.rungFailures);
+        if (faults)
+            std::printf("   FAULTS: %u checks, %u unexpected\n", t.faultChecks, t.faultFailures);
+        if (moved)
+        {
+            std::printf("   MOVED BUILD (every section 0x%X higher, so no recorded RVA is right): %u of %u sites "
+                        "followed; %u drives did not follow\n", kMovedShift, t.movedFollowed, t.movedSites, t.movedFailures);
+            std::printf("   THE ADDRESS CACHE, its text: on the moved build %u of %u drives were searched and saved by "
+                        "the first launch and verified with no scan by the second\n", t.savedLaunches, t.drives);
+        }
+        if (moved && withFiles)
+        {
+            // What the moved build's launches left on disk: one entry for each drive, no more.
+            const std::string text = ReadText(movedCache[v]);
+            static drive_known::File left;
+            drive_known::Parse(text.data(), text.size(), left);
+            const bool oneEach = left.count == t.fileLaunches && !Exists(movedCache[v] + L".tmp");
+            t.fileFailures += oneEach ? 0u : 1u;
+            std::printf("   THE ADDRESS CACHE, its file: through the DLL's own side %u of %u drives were searched and "
+                        "written to a real file by the first launch, and read back from it and verified with no scan "
+                        "by the second; the file holds %u entries in %zu bytes%s\n",
+                        t.fileLaunches, t.fileDrives, left.count, text.size(),
+                        oneEach ? "" : " -- NOT one for each drive, or a temporary file was left");
+            const size_t line = text.find("\r\nentry ");
+            if (line != std::string::npos)
+                std::printf("      its first entry: %.*s\n",
+                            static_cast<int>((std::min)(text.find("\r\n", line + 2) - line - 2, static_cast<size_t>(400))),
+                            text.c_str() + line + 2);
+        }
+        else
+        {
+            std::printf("   THE ADDRESS CACHE, its file: NOT written or read (that needs --moved and --loaded <folder>)\n");
+        }
+        if (withFiles)
+        {
+            const bool appeared = Exists(recordedCache[v]);
+            t.fileFailures += appeared ? 1u : 0u;
+            std::printf("   AS THE LOADER MAPS THEM (a copy of each DLL mapped with its code not run, resolved through "
+                        "the DLL's own side): %u drives, %u sites; %u drives differed from the file\n",
+                        t.loadedDrives, t.loadedSites, t.loadedFailures);
+            std::printf("   THE INSTALLS' OWN DECISIONS (src/dll/drive_install.h, the code each install runs after its "
+                        "plan, on the mapped copies): %u of %u drives would be hooked with everything they prove\n",
+                        t.installHooks, t.installDrives);
+            std::printf("   ON THE RECORDED BUILD NOTHING IS SAVED: with a cache file named for every one of those "
+                        "resolutions, %s\n",
+                        appeared ? "A FILE APPEARED -- it must not" : "no file came to exist");
+            std::printf("   WHAT AN INSTALL LOGS FOR THESE DLLS (drive_cascade::Announce, the DLL's own function and "
+                        "names, word for word):\n");
+            for (const std::string& said : t.lines)
+                std::printf("      %s\n", said.c_str());
+        }
+        else
+        {
+            std::printf("   THE INSTALLS' OWN DECISIONS were NOT made, and what an install logs was NOT said: both need "
+                        "a module as the loader maps it (--loaded <folder>). What is printed above as HOOK is the "
+                        "plan's word alone\n");
+        }
+        failures += t.faultFailures + t.movedFailures + t.loadedFailures + t.rungFailures + t.fileFailures;
+        notAsRecorded += t.notAsRecorded;
+        unhooked += t.unhooked;
+    }
+    if (withFiles)
+        for (int v = 0; v < 2; ++v)
+        {
+            DeleteFileW(recordedCache[v].c_str());
+            DeleteFileW(movedCache[v].c_str());
+        }
+    std::printf("\nMODES RUN: the search's table and the rungs, for both builds' plans (always); the moved build: %s; "
+                "the forced faults: %s; each DLL as the loader maps it, through the DLL's own side, with the installs' "
+                "own decisions, the cache's real file and the lines an install logs: %s\n",
                 moved ? "yes" : "NO (--moved)", faults ? "yes" : "NO (--faults)",
-                loadedFolder.empty() ? "NO (--loaded <folder>)" : "yes");
-    std::printf("\n%u game DLLs, %u drives, %u sites: %u not as recorded, %u drives that could not be hooked\n", modules,
-                drives, sites, notAsRecorded, unhooked);
+                withFiles ? "yes" : "NO (--loaded <folder>)");
+    std::printf("CTEST AND THIS CHECK: ctest runs it as `--moved --faults --brief`, and ONLY where the environment "
+                "variable HALOMCCVR_MCC_DIR names an MCC install; without it ctest reports the check SKIPPED and "
+                "counts it among the tests that passed, having read no game DLL. ctest never passes --loaded: the "
+                "DLL's own side on the mapped copies, the installs' own decisions, the cache's real file and the "
+                "lines an install logs are checked only by a run of this tool with --loaded <folder>\n");
+    std::printf("\n%u game DLLs; the player build's plans: %u drives, %u sites; the dev build's: %u drives, %u sites; "
+                "%u not as recorded, %u drives that could not be hooked\n",
+                modules, totals[0].drives, totals[0].sites, totals[1].drives, totals[1].sites, notAsRecorded, unhooked);
     if (!modules)
         return 2;
     // A title that was asked for and not checked is not a pass: the result below would cover only the rest.
@@ -1245,12 +1503,16 @@ int main(int argc, char** argv)
                     titlesNotChecked, titlesWanted, titlesWanted - titlesNotChecked);
         return 3;
     }
-    if (faultFailures || movedFailures || loadedFailures || rungFailures)
+    if (failures)
+    {
+        std::printf("FAILED: %u checks above did not come out as they must\n", failures);
         return 1;
+    }
     if (anyBuild)
         return 0;
     std::printf("%s\n", notAsRecorded || unhooked
                             ? "ACCEPTANCE FAILED: on the recorded build every site must resolve as recorded"
-                            : "ACCEPTANCE: every site of every drive resolves where the tables record it");
+                            : "ACCEPTANCE: every site of every drive resolves where the tables record it, for the "
+                              "player build's plans and for the dev build's");
     return notAsRecorded || unhooked ? 1 : 0;
 }

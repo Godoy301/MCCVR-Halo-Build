@@ -1201,7 +1201,11 @@ if(BUILD_TESTING)
     # With --loaded <scratch folder> it also maps a copy of each DLL as the Windows loader does (its code not run)
     # and resolves every drive on it through the DLL's own side of the resolution (src/dll/drive_cascade.cpp).
     # That side is built here as a dev build builds it, so the tool can run the search beside the verified addresses
-    # (the self-test bit of drive_fault) on each mapped copy.
+    # (the self-test bit of drive_fault) on each mapped copy. With --loaded it also makes each install's own
+    # decision on the mapped copy, says the line the install logs, and puts the address cache through a real
+    # file in that folder. Everything is done for the player build's plans and for the dev build's.
+    # The test below never passes --loaded, and where HALOMCCVR_MCC_DIR is not set it is SKIPPED, which ctest
+    # counts among the tests that passed: a green run there has read no game DLL.
     add_executable(halomccvr_drive_address_check tools/drive_address_check.cpp
         src/dll/drive_cascade.cpp src/dll/sigscan.cpp src/common/config.cpp
         src/common/addrcascade/AddressCascade.cpp)
