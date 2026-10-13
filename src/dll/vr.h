@@ -445,6 +445,9 @@ struct Halo4VrRenderSnapshot
     bool leftControllerValid = false;
     float leftControllerOrientation[4]{0.0f, 0.0f, 0.0f, 1.0f};
     float leftControllerPosition[3]{};
+    // MONO RENDERING (src/common/mono_view_logic.h): this frame is one pass. Both `eyes` are then the one camera:
+    // no offset, no cant, and the frustum that covers either eye. Last, so the offsets asserted below stand.
+    bool mono = false;
 };
 
 static_assert(sizeof(Halo4VrEyeSnapshot) == 0x30);

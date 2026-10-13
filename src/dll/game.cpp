@@ -45080,6 +45080,10 @@ namespace
         // OpenXR cover.  Sampling this once keeps both eyes in one camera mode
         // for the complete transaction and preserves the existing transition.
         const bool authoredTheater = VR_IsCutsceneTheaterActive();
+        // MONO RENDERING (mono_view_logic.h): the snapshot's two eyes are one camera, and one pass is drawn with
+        // it, as the eye the eye-order setting draws first. The theatre keeps its two eyes.
+        const bool monoFrame = snapshot.mono && !authoredTheater;
+        const int eyePasses = monoFrame ? 1 : 2;
 
         unsigned char savedObserver[kHalo4ObserverSnapshotBytes];
         if (!Halo4SafeRead(reinterpret_cast<const void*>(args.observer),
@@ -45517,7 +45521,7 @@ namespace
             Halo4BeginFloatingPair();
             if(!authoredTheater)Halo4RenderScope(element,view,window,args,savedObserver,controllerRoot,stock,calibration);
             const int firstEye = g_config.right_eye_first ? 1 : 0;
-            for (int pass = 0; pass < 2; ++pass)
+            for (int pass = 0; pass < eyePasses; ++pass)
             {
                 const int eye = pass == 0 ? firstEye : 1 - firstEye;
                 unsigned char eyeObserver[kHalo4ObserverSnapshotBytes];
@@ -45747,12 +45751,25 @@ namespace
         if (!restoreSucceeded)
             rejection = Halo4StereoRejection::RestoreFailed;
         else if (rejection == Halo4StereoRejection::None &&
-                 completedEyes == 2 && uncapturedEyes != 0)
+                 completedEyes == eyePasses && uncapturedEyes != 0)
             rejection = Halo4StereoRejection::EyeCaptureMissing;
 
-        if (restoreSucceeded && completedEyes == 2 && uncapturedEyes == 0 &&
+        if (restoreSucceeded && completedEyes == eyePasses && uncapturedEyes == 0 &&
             rejection == Halo4StereoRejection::None)
         {
+            if (monoFrame)
+            {
+                // The one picture is the other eye's too: so are the frustum it was drawn with and, for the
+                // present's pair check, its image and its frame serial.
+                const int drawnEye = g_config.right_eye_first ? 1 : 0;
+                halfFovX[1 - drawnEye] = halfFovX[drawnEye];
+                halfFovY[1 - drawnEye] = halfFovY[drawnEye];
+                VR_NoteMonoFrameRendered(GameTitle::Halo4, drawnEye);
+            }
+            else
+            {
+                VR_NoteStereoFrameRendered();
+            }
             for (int eye = 0; eye < 2; ++eye)
             {
                 g_halo4RenderHalfFovX[eye].store(
@@ -45805,6 +45822,8 @@ namespace
         if (rejection == Halo4StereoRejection::None)
             rejection = Halo4StereoRejection::TransactionException;
         Halo4NoteRejection(rejection, true);
+        if (monoFrame)
+            VR_NoteMonoFrameRejected(GameTitle::Halo4);
         return Halo4StereoResult::StartedFrameDropped;
     }
 
