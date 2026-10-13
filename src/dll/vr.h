@@ -994,6 +994,11 @@ bool VR_SupportInvocationReceiptTrustedForReticle(GameTitle title,
 
 // Latest OpenXR per-eye FOV angles: left, right, up, down (radians).
 bool VR_GetEyeFov(int eye, float outFov[4]);
+// MONO RENDERING (src/common/mono_view_logic.h). A title's render hook asks once a frame, before its eye passes.
+// True: draw the world ONCE, as eye 0, from the midpoint of the eyes (no eye offset, no cant) with a symmetric
+// frustum of these half-angle tangents, capture it, and call VR_NoteMonoFrameRendered. False: both eyes as usual.
+bool VR_MonoRenderThisFrame(float& coverTanX, float& coverTanY);
+void VR_NoteMonoFrameRendered();
 // Pixel aspect of Halo's main render surface. Halo lays native 2D HUD geometry
 // out for this shape, which can differ substantially from the headset's
 // tangent-space view aspect.

@@ -440,6 +440,12 @@ struct Config
     float screen_width_m = 4.0f;    // width of the virtual screen, in meters
     float screen_distance_m = 2.4f; // how far away the screen floats, in meters
 
+    // MONO RENDERING (mono_view_logic.h; Halo 3): 1 = the world is drawn once a frame, from between the eyes, and
+    // shown to both: no depth between the eyes, one pass of drawing instead of two. For maps with so much in view
+    // that two passes do not fit the headset's frame. Refused, with a log line, on canted displays, in the cutscene
+    // theatre and while DLSS is on. Followed live. (default 0)
+    bool mono_rendering = false;
+
     // Universal cutscene-only stereo theatre. A title enters it only after its
     // adapter proves the engine owns an authored camera and player camera
     // control is unavailable. Future title adapters inherit the same settings.
