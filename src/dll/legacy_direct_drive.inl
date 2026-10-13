@@ -282,7 +282,7 @@ struct LegacyDriveState
 #if HALOMCCVR_DEV_DIAGNOSTICS
     // Dev census (aim_caller::TickCensus): calls per sim tick and per caller, on foot vs seated.
     aim_caller::TickCensus census{};
-    uint32_t tickSlot = 0, tickField = 0;    // proven at install (AimCallerTickProof); 0 = unreadable
+    uint32_t tickSlot = 0, tickField = 0;    // proven at install (AimCallerTickProofAt); 0 = unreadable
     std::atomic<uint32_t> censusPutBacks{0};
     std::atomic<uint32_t> refusals[aim_caller::kRefusalCount]{};
     // Max |what an extra call added| (put back) and max |native - last write| on a stick call, deg as float

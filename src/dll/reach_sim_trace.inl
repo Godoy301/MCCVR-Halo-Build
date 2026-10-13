@@ -20,7 +20,7 @@
 
 #if HALOMCCVR_DEV_DIAGNOSTICS
 
-// ADDR-HYGIENE: dev-only. The tick ([[TLS + 0xA0]] + 0xC, the anchors AimCallerTickProof checks at install) and the
+// ADDR-HYGIENE: dev-only. The tick ([[TLS + 0xA0]] + 0xC, the anchors AimCallerTickProofAt checks at install) and the
 // object datum's fields (parent +0x14, position +0x44, the node block's size and offset +0x178 / +0x17A: read from
 // the pinned module's object-origin getters 0x471D38 / 0x471DC0) are read under SEH and only ever written to the
 // trace file. A wrong offset shows as two replays of one film that never agree.
