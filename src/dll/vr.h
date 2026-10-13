@@ -1095,6 +1095,9 @@ struct ReachVrRenderSnapshot
     float leftControllerPosition[3]{};
     VrPadState pad{};
     ReachVrEyeSnapshot eyes[2]{};
+    // MONO RENDERING (src/common/mono_view_logic.h): this frame is one pass. Both `eyes` are then the one camera:
+    // no offset, no cant, and the frustum that covers either eye.
+    bool mono = false;
     int64_t predictedDisplayTimeNs = 0;
     uint64_t trackingSpaceEpoch = 0;
 };

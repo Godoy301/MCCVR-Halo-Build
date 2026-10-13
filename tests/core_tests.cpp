@@ -5267,6 +5267,13 @@ int main()
               !invalidPass.writeLastWindow &&
               invalidPass.restoreLastWindowAfterPass,
             "Reach last-window policy fails closed for invalid passes and preserves the final result");
+        const ReachStereoPassPolicy monoLeftFirst = SelectReachMonoPassPolicy(false, 1);
+        const ReachStereoPassPolicy monoRightFirst = SelectReachMonoPassPolicy(true, 0);
+        Check(monoLeftFirst.valid && monoLeftFirst.eye == 0 && monoLeftFirst.writeLastWindow &&
+              monoLeftFirst.lastWindowInput == 1 && !monoLeftFirst.restoreLastWindowAfterPass &&
+              monoRightFirst.valid && monoRightFirst.eye == 1 && monoRightFirst.writeLastWindow &&
+              monoRightFirst.lastWindowInput == 0 && !monoRightFirst.restoreLastWindowAfterPass,
+            "Reach's one mono pass is the first eye and the frame's final window");
         Check(kReachRollbackLayout.workspaceSize == 0x2B0 &&
               kReachCameraPairDataSize == 0x2A8 &&
               kReachSecondaryDerivedOffset + kReachDerivedBlockSize ==

@@ -20536,6 +20536,9 @@ namespace
         FpExplicitPoseTargets fpTargets{};
         alignas(16) unsigned char headCenter[kReachCompactCameraBytes]{};
         ReachEyeRenderInput eyes[2]{};
+        // MONO RENDERING (mono_view_logic.h): this frame's snapshot is one camera for both `eyes`; one pass is
+        // drawn with it.
+        bool mono = false;
         ReachScopeFrame scope{};
     };
 
@@ -25655,6 +25658,10 @@ namespace
         const uint8_t originalLastWindow =
             *reinterpret_cast<uint8_t*>(playerView + kReachLastWindowFlagOffset);
         const bool rightFirst = g_config.right_eye_first;
+        // MONO RENDERING (mono_view_logic.h): the snapshot's two eyes are one camera, and one pass is drawn with
+        // it: as the first eye, and as the engine's final window. The theatre keeps its two eyes.
+        const bool monoFrame = g_reachOwnerScope.mono && !g_reachOwnerScope.cutsceneTheater;
+        const uint32_t eyePasses = monoFrame ? 1u : 2u;
         bool completed = false;
         bool transactionValid = true;
         uint32_t capturedEyes = 0;
@@ -25666,10 +25673,11 @@ namespace
             g_reachCamera.decoratorWindState : nullptr;
         __try
         {
-            for (uint32_t pass = 0; pass < 2; ++pass)
+            for (uint32_t pass = 0; pass < eyePasses; ++pass)
             {
-                const ReachStereoPassPolicy policy = SelectReachStereoPassPolicy(
-                    pass, rightFirst, originalLastWindow);
+                const ReachStereoPassPolicy policy = monoFrame
+                    ? SelectReachMonoPassPolicy(rightFirst, originalLastWindow)
+                    : SelectReachStereoPassPolicy(pass, rightFirst, originalLastWindow);
                 if (!policy.valid)
                 {
                     transactionValid = false;
@@ -25827,7 +25835,8 @@ namespace
                 __try
                 {
                     fpCameraScope.active = true;
-                    if (windState)
+                    // One pass advances the wind once, as the stock frame does: nothing to replay.
+                    if (windState && !monoFrame)
                     {
                         if (pass == 0) windReplay.Begin(windState, ReachWindCopy);
                         else if (windReplay.Replay(windState, ReachWindCopy))
@@ -25865,7 +25874,16 @@ namespace
                 g_reachRenderFovSerial[policy.eye].store(
                     access.preparedSerial, std::memory_order_release);
                 ++capturedEyes;
-                if (pass == 0)
+                if (monoFrame)
+                {
+                    // The one picture is the other eye's too: so are the frustum it was drawn with and, for the
+                    // present's pair check, its frame serial.
+                    const int otherEye = 1 - policy.eye;
+                    g_reachRenderHalfFovX[otherEye].store(rasterFov.horizontal, std::memory_order_relaxed);
+                    g_reachRenderHalfFovY[otherEye].store(rasterFov.vertical, std::memory_order_relaxed);
+                    g_reachRenderFovSerial[otherEye].store(access.preparedSerial, std::memory_order_release);
+                }
+                else if (pass == 0)
                 {
                     memcpy(reinterpret_cast<void*>(workspace), savedWorkspace,
                            kReachRenderScopeSnapshotSize);
@@ -25874,10 +25892,15 @@ namespace
                            savedPv, kReachPvSnapshotBytes);
                 }
             }
-            completed = transactionValid && capturedEyes == 2 &&
-                (committedOuterCameraEyes & 0x3u) == 0x3u;
+            const uint32_t requiredEyes = monoFrame ? (rightFirst ? 0x2u : 0x1u) : 0x3u;
+            completed = transactionValid && capturedEyes == eyePasses &&
+                (committedOuterCameraEyes & requiredEyes) == requiredEyes;
             if (completed)
             {
+                if (monoFrame)
+                    VR_NoteMonoFrameRendered(GameTitle::HaloReach, rightFirst ? 1 : 0);
+                else
+                    VR_NoteStereoFrameRendered();
                 const uint32_t completedGeneration =
                     g_reachCamera.generation.load(std::memory_order_relaxed);
                 PublishReachOuterCameraCommitPair(
@@ -25997,6 +26020,8 @@ namespace
         }
         if (!handled)
         {
+            if (g_reachOwnerScope.mono)
+                VR_NoteMonoFrameRejected(GameTitle::HaloReach);
             // Skip this frame, keep the core. ReachStereoTransaction restores
             // the workspace and player view in its own __finally, so an
             // incomplete attempt leaves no partial engine state behind, and the
@@ -32421,6 +32446,7 @@ namespace
             return g_reachOrigMainRenderView(
                 workspace, playerView, windowIndex);
         }
+        candidate.mono = tracking.mono;
 
         ReachVrRenderAccess access{};
         if (!VR_ReachBeginRenderAccess(epoch, prepared, access))

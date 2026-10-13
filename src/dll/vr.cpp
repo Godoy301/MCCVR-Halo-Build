@@ -15786,6 +15786,24 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                 return false;
             }
         }
+        // MONO RENDERING (mono_view_logic.h): one pass, by a camera at the midpoint of the eyes with a frustum
+        // that covers either. Both eyes' inputs are that camera's, so the title builds it by its own eye path.
+        // This snapshot is published in every title; only Reach's own frames ask.
+        if (TitleAdapter_GetActiveTitle() == GameTitle::HaloReach)
+        {
+            float monoFov[4]{};
+            if (VR_MonoRenderThisFrame(GameTitle::HaloReach, monoFov))
+            {
+                next.mono = true;
+                for (ReachVrEyeSnapshot& eye : next.eyes)
+                {
+                    eye.position[0] = eye.position[1] = eye.position[2] = 0.0f;
+                    eye.orientation[0] = eye.orientation[1] = eye.orientation[2] = 0.0f;
+                    eye.orientation[3] = 1.0f;
+                    memcpy(eye.fov, monoFov, sizeof(eye.fov));
+                }
+            }
+        }
 
         const uint32_t current =
             g_reachRenderSnapshotIndex.load(std::memory_order_seq_cst);
