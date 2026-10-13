@@ -303,6 +303,8 @@ bool Halo4Type13LogInstall(uintptr_t base, size_t size, uint32_t generation);
 #include "../common/aim_solve_logic.h"
 #include "../common/aim_write_logic.h"
 #include "../common/aim_caller_logic.h"
+#include "../common/drive_sites.h"
+#include "drive_cascade.h"
 #include "../common/seat_drive_policy.h"
 #include "../common/gun_slaved_seat_logic.h"
 #include "../common/seat_upstream_logic.h"
@@ -450,22 +452,26 @@ struct AimCallerTickAnchors
     uint8_t incFieldOff;
 };
 
-static bool AimCallerTickProof(uintptr_t base, size_t size, uintptr_t tlsIndexAddress, const AimCallerTickAnchors& a,
-                               uint32_t& slot, uint32_t& field)
+// The proof over the getter and the incrementer as the install's resolution FOUND them in this module
+// (drive_sites::ResolveTick: each by its own signature, once; 0: not found).
+static bool AimCallerTickProofAt(uintptr_t base, size_t size, uintptr_t tlsIndexAddress,
+                                 const drive_sites::TickAnchors& a, const drive_sites::Tick& found, uint32_t& slot,
+                                 uint32_t& field)
 {
     slot = field = 0;
-    if (!AimCallerUniqueAt(base, size, a.getterRva, a.getter) || !AimCallerUniqueAt(base, size, a.incRva, a.inc))
+    if (!found.getter || !found.increment || static_cast<size_t>(found.getter) + 0x20 > size ||
+        static_cast<size_t>(found.increment) + 0x20 > size)
         return false;
-    const auto* g = reinterpret_cast<const uint8_t*>(base + a.getterRva);
+    const auto* g = reinterpret_cast<const uint8_t*>(base + found.getter);
     int32_t disp = 0;
     memcpy(&disp, g + 2, sizeof(disp));
     if (g[0] != 0x8B || g[1] != 0x0D ||
-        base + a.getterRva + 6 + static_cast<intptr_t>(disp) != tlsIndexAddress)
+        base + found.getter + 6 + static_cast<intptr_t>(disp) != tlsIndexAddress)
         return false;
     uint32_t getterSlot = 0;
     memcpy(&getterSlot, g + 0x10, sizeof(getterSlot));
     const uint8_t getterField = g[0x1E];
-    const auto* inc = reinterpret_cast<const uint8_t*>(base + a.incRva);
+    const auto* inc = reinterpret_cast<const uint8_t*>(base + found.increment);
     uint32_t incSlot = getterSlot;
     if (a.incSlotOff != 0xFF)
         memcpy(&incSlot, inc + a.incSlotOff, sizeof(incSlot));
@@ -474,6 +480,18 @@ static bool AimCallerTickProof(uintptr_t base, size_t size, uintptr_t tlsIndexAd
     slot = getterSlot;
     field = getterField;
     return true;
+}
+
+// The same proof at the recorded RVAs (the Reach control update, until its install resolves them).
+static bool AimCallerTickProof(uintptr_t base, size_t size, uintptr_t tlsIndexAddress, const AimCallerTickAnchors& a,
+                               uint32_t& slot, uint32_t& field)
+{
+    slot = field = 0;
+    if (!AimCallerUniqueAt(base, size, a.getterRva, a.getter) || !AimCallerUniqueAt(base, size, a.incRva, a.inc))
+        return false;
+    const drive_sites::TickAnchors anchors{a.getterRva, a.getter, a.incRva, a.inc, a.incSlotOff, a.incFieldOff};
+    return AimCallerTickProofAt(base, size, tlsIndexAddress, anchors, drive_sites::Tick{a.getterRva, a.incRva}, slot,
+                                field);
 }
 
 // The tick through this (sim) thread's own TLS block: the same game-state copy as the record.

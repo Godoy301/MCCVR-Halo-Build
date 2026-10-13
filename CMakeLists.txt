@@ -328,6 +328,12 @@ if(HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA)
 endif()
 # Halo 3 / ODST / Halo 4 direct drive (legacy_direct_drive): the control-update detours.
 target_sources(halo3xr PRIVATE src/dll/legacy_player_control_hook.asm)
+# Where the direct drives' code is in the loaded game DLL (src/common/drive_sites.h, drive_resolve.h): the DLL's
+# side of the resolution, and the address-verification library it uses (the TLS directory read, the watchdog, the
+# reporter).
+target_sources(halo3xr PRIVATE
+    src/dll/drive_cascade.cpp
+    src/common/addrcascade/AddressCascade.cpp)
 # Halo 2 direct drive (halo2_direct_drive.inl): its control-update detour, with the observer it reads.
 if(HALOMCCVR_HALO2_OBSERVER_6DOF)
     target_sources(halo3xr PRIVATE src/dll/halo2_player_control_hook.asm)
