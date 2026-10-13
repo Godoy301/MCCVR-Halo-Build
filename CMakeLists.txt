@@ -1135,6 +1135,23 @@ if(BUILD_TESTING)
     add_executable(halomccvr_type13_flight_log_tests tests/type13_flight_log_tests.cpp)
     target_include_directories(halomccvr_type13_flight_log_tests PRIVATE src/common)
     add_test(NAME halomccvr_type13_flight_log_tests COMMAND halomccvr_type13_flight_log_tests)
+    # addrcascade (src/common/addrcascade): the address-verification library the direct drives resolve through.
+    # Its two source files are unmodified copies, so its tests compile them ALONE: of this project's folders only
+    # its own is on the include path, at /W4 /WX, with a consumer that includes nothing else of this project. One
+    # convenient #include of a project header would never fail in the DLL's build, where they all are.
+    # Built twice: as a player build sees it (ADDRCASCADE_FAULTS undefined, fault() a constant false) and as a dev
+    # build does (ADDRCASCADE_FAULTS=1).
+    foreach(halomccvr_addrcascade_flavour "" "_faults")
+        set(halomccvr_addrcascade_target "halomccvr_addrcascade${halomccvr_addrcascade_flavour}_tests")
+        add_executable(${halomccvr_addrcascade_target}
+            tests/addrcascade_tests.cpp src/common/addrcascade/AddressCascade.cpp)
+        target_include_directories(${halomccvr_addrcascade_target} PRIVATE src/common/addrcascade)
+        if(MSVC)
+            target_compile_options(${halomccvr_addrcascade_target} PRIVATE /W4 /WX)
+        endif()
+        add_test(NAME ${halomccvr_addrcascade_target} COMMAND ${halomccvr_addrcascade_target})
+    endforeach()
+    target_compile_definitions(halomccvr_addrcascade_faults_tests PRIVATE ADDRCASCADE_FAULTS=1)
     add_executable(halomccvr_dev_pad_script_tests tests/dev_pad_script_tests.cpp)
     target_include_directories(halomccvr_dev_pad_script_tests PRIVATE src/common)
     add_test(NAME halomccvr_dev_pad_script_tests COMMAND halomccvr_dev_pad_script_tests)
