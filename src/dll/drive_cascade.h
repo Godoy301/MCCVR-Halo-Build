@@ -1,8 +1,8 @@
 #pragma once
 // DRIVE CASCADE, the DLL's side: opens a loaded game module for the direct drives' address resolution
 // (src/common/drive_resolve.h, drive_known.h, drive_sites.h), runs a drive's resolution on it by the rungs under a
-// structured-exception guard, keeps the address cache's file, says once which rung won, and watches a hook that
-// is installed for calls that never come.
+// structured-exception guard, keeps the address cache's file, says at each install which rung won and what it
+// cost, and watches a hook that is installed for calls that never come.
 //
 // A drive's install does this, and nothing else decides where it hooks or reads:
 //
@@ -10,7 +10,7 @@
 //     if (!drive_cascade::Resolve(base, size, {GameTitle::HaloReach, "pilot-controller"}, found,
 //                                 [](drive_resolve::Resolver& r) { return ResolveReachSabre(r); }))
 //         ... not hooked: found.why, or the report's first line that was not found ...
-//     drive_cascade::Announce(drive_cascade::kReachSabreName, found, reporter);
+//     drive_cascade::Announce(drive_cascade::kReachSabreName, found);
 //
 // THE RUNGS (drive_known.h): the known addresses first, each verified where it stands with no search of the
 // module -- the tables' recorded RVAs when the module is the build they were measured on, otherwise the RVAs a
@@ -60,6 +60,10 @@ struct Rungs
     const char* savedRefused = nullptr;  // saved addresses were there for this drive and were not used: why
     bool saved = false;                  // what the search found was written to the cache
     const char* notSaved = nullptr;      // ... or why it was not, when it was worth saving
+    // WHAT THE RESOLUTION COST THE WORKER, in milliseconds: from opening the module to the end of the last rung,
+    // the cache's file included where it was opened. (How many times the whole module was searched is
+    // outcome.moduleScans.) Measured once per resolution, and said in the drive's one line.
+    double ms = 0.0;
 };
 
 // THE ADDRESS CACHE'S FILE: HaloMCCVR-drive-addresses.txt in the mod's own folder, beside its log and its
@@ -120,18 +124,19 @@ bool Resolve(uintptr_t base, size_t size, const Drive& drive, Resolution<Found>&
 // drive names when it is not hooked. "nothing" when every line was found.
 void FirstFailure(const drive_resolve::Report& report, char* out, size_t size);
 
-// WHICH RUNG WON. One line per drive: verified at the recorded addresses with no search; verified at the
-// addresses saved from an earlier launch of this build; found by search (how many moved, and whether they were
-// saved for the next launch); or which addresses were not found. It is said again only when that answer changes
-// (another build of the game DLL, another rung): a line that always appears carries no information. `drive`: the
-// drive's name as its own log lines begin.
-void Announce(const char* drive, const drive_resolve::Report& report, const Rungs& rungs,
-              addrcascade::TierReporter& reporter);
+// WHICH RUNG WON, AND WHAT IT COST. One line per install of a drive: verified at the recorded addresses with no
+// search; verified at the addresses saved from an earlier launch of this build; found by search (how many moved,
+// and whether they were saved for the next launch); or which addresses were not found. Each says what that
+// resolution cost the worker -- "(N scans, T ms)": how many times the whole module was searched, and the time
+// the resolution took -- which is why the line is said at every install and not only when the rung changes: the
+// cost of an install is what it reports, and no two are the same. An install is once per core of a title, never
+// per poll. `drive`: the drive's name as its own log lines begin.
+void Announce(const char* drive, const drive_resolve::Report& report, const Rungs& rungs);
 
 template <typename Found>
-void Announce(const char* drive, const Resolution<Found>& resolution, addrcascade::TierReporter& reporter)
+void Announce(const char* drive, const Resolution<Found>& resolution)
 {
-    Announce(drive, resolution.report, resolution.rungs, reporter);
+    Announce(drive, resolution.report, resolution.rungs);
 }
 
 // "INSTALLED" IS NOT "RUNNING". MinHook installs on any address and reports success; the only proof that an

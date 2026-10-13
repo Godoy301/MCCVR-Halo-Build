@@ -545,9 +545,8 @@ bool Halo4Type13Install(uintptr_t base, size_t size, uint32_t generation)
         base, size, drive_cascade::Drive{GameTitle::Halo4, "pilot-controller"}, resolution,
         [](drive_resolve::Resolver& r) { return drive_sites::ResolveHalo4Flight(r); });
     const drive_sites::Flight& found = resolution.found.flight;
-    static addrcascade::TierReporter s_foundHow;
     if (opened)
-        drive_cascade::Announce(drive_cascade::kHalo4FlightName, resolution, s_foundHow);
+        drive_cascade::Announce(drive_cascade::kHalo4FlightName, resolution);
     // THE DECISION (drive_install.h; the offline check runs the same function on halo4.dll as the loader maps it):
     // every row found; the dispatcher's call landing on the controller; the controller's TLS index the module's
     // own (the resolution proved its load names it) and the direct drive's (so its record is the one written

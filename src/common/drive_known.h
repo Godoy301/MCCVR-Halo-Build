@@ -378,6 +378,7 @@ struct Outcome
     bool savedLooked = false;           // the cache was asked for this drive's saved addresses (its file was opened)
     bool learn = false;                 // the search resolved the whole drive, at addresses worth saving
     uint32_t scans = 0;                 // searches run, over every rung that ran
+    uint32_t moduleScans = 0;           // ... of them, the searches of the whole module's code
     bool searchedToo = false;           // the self-test ran the search beside a rung 1 success
     bool searchAgrees = false;          // ... and it chose the same address for every line
 };
@@ -428,6 +429,7 @@ inline Outcome Run(const Image& image, uint32_t faults, bool recordedBuild, cons
         plan(resolver, context);
         out.recordedTried = true;
         out.scans += resolver.report().scans;
+        out.moduleScans += resolver.report().moduleScans;
         if (resolver.report().Complete())
         {
             keep(context);
@@ -460,6 +462,7 @@ inline Outcome Run(const Image& image, uint32_t faults, bool recordedBuild, cons
         out.savedTried = true;
         out.savedRefused = nullptr;
         out.scans += resolver.report().scans;
+        out.moduleScans += resolver.report().moduleScans;
         const Report& got = resolver.report();
         if (!got.Complete())
         {
@@ -503,6 +506,7 @@ inline Outcome Run(const Image& image, uint32_t faults, bool recordedBuild, cons
         keep(context);
         report = resolver.report();
         out.scans += report.scans;
+        out.moduleScans += report.moduleScans;
         out.rung = Rung::Search;
         // Worth remembering unless it is simply the recorded addresses on the recorded build, which rung 1 (a)
         // has without a file.
@@ -517,6 +521,7 @@ inline Outcome Run(const Image& image, uint32_t faults, bool recordedBuild, cons
         Resolver resolver(image, faults);
         plan(resolver, context);
         out.scans += resolver.report().scans;
+        out.moduleScans += resolver.report().moduleScans;
         out.searchedToo = true;
         out.searchAgrees = SameAddresses(report, resolver.report());
     }

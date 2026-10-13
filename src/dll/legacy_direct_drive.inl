@@ -630,8 +630,6 @@ bool LegacyDriveBuildCallerMap(int slot, uintptr_t base, size_t size, uint32_t e
 // What one title's install resolves in its module (drive_sites.h: PlanLegacyControl): the control update, its
 // callers and, in a dev build, the sim tick counter the census reads.
 using LegacyDriveFound = drive_sites::LegacyControlPlan;
-// How each title's addresses were last found: said again only when that changes.
-addrcascade::TierReporter g_legacyDriveFoundHow[3];
 } // namespace
 
 bool LegacyDriveInstall(GameTitle title, uintptr_t base, size_t size)
@@ -659,7 +657,7 @@ bool LegacyDriveInstall(GameTitle title, uintptr_t base, size_t size)
     char driveName[32];
     drive_cascade::LegacyName(site.name, driveName, sizeof(driveName));
     if (opened)
-        drive_cascade::Announce(driveName, resolution, g_legacyDriveFoundHow[slot]);
+        drive_cascade::Announce(driveName, resolution);
     if (!drive_install::DecideLegacyControl(opened, found))
     {
         char first[280] = "";

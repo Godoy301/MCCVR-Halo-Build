@@ -1217,9 +1217,8 @@ int main(int argc, char** argv)
                         if (!brief || fileFailure)
                         {
                             // What the DLL logs for each of the two.
-                            addrcascade::TierReporter first, second;
-                            drive_cascade::Announce(logName, one.out.report, one.rungs, first);
-                            drive_cascade::Announce(logName, two.out.report, two.rungs, second);
+                            drive_cascade::Announce(logName, one.out.report, one.rungs);
+                            drive_cascade::Announce(logName, two.out.report, two.rungs);
                         }
                     }
                     unsigned followed = 0, total = 0;
@@ -1353,9 +1352,8 @@ int main(int argc, char** argv)
                         if (opened)
                         {
                             std::printf("      what its install logs:\n");
-                            addrcascade::TierReporter once;
                             g_capture = &t.lines;
-                            drive_cascade::Announce(logName, report, rungs, once);
+                            drive_cascade::Announce(logName, report, rungs);
                             g_capture = nullptr;
                         }
                     }

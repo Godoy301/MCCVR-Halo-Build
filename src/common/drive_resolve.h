@@ -650,6 +650,7 @@ struct Report
     uint32_t count = 0;
     uint32_t dropped = 0;   // lines beyond kMaxLines (the resolution itself is unaffected)
     uint32_t scans = 0;     // searches run: of the module's code for a signature, or of one function's extent
+    uint32_t moduleScans = 0;   // ... of them, the searches of the whole module's code: the ones that cost
     // WHAT WAS ASKED: a hash of every line's name, recorded RVA and pattern, in order. Two resolutions of the same
     // tables that took the same path have the same one, whatever they found.
     uint64_t plan = 1469598103934665603ull;
@@ -773,6 +774,7 @@ public:
             return Add(line);
         }
         ++report_.scans;
+        ++report_.moduleScans;
         Hits hits = CountExecutable(im_, p);
         if (Fault(faults_, kFaultSignatureMissing))
             hits = Hits{};
@@ -927,6 +929,7 @@ public:
         if (known_.source == Source::Search)
         {
             ++report_.scans;
+            ++report_.moduleScans;
             line.matches = CountExecutable(im_, p).count;
         }
         const uint32_t start = viaFound ? FunctionStartOf(im_, viaFound) : 0;

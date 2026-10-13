@@ -805,7 +805,7 @@ void TestRungRecorded()
     Mini found;
     Report report;
     drive_known::Outcome out = RunMini(image, 0, true, nullptr, found, report);
-    Check(out.rung == drive_known::Rung::Recorded && out.scans == 0 && report.scans == 0,
+    Check(out.rung == drive_known::Rung::Recorded && out.scans == 0 && report.scans == 0 && out.moduleScans == 0,
           "on the recorded build the recorded addresses are verified with no search of the module at all");
     Check(found.ok && found.entry == kMiniEntry && found.field == kMiniField && found.call == kMiniCallSite + 8 &&
               report.Complete() && report.Count(Verdict::AsRecorded) == 4 && AllHow(report, How::Known),
@@ -841,6 +841,8 @@ void TestRungOneFailsWhole()
     Check(AllHow(report, How::Signature) && report.lines[1].how == How::FunctionExtent &&
               report.lines[1].verdict == Verdict::Moved && out.scans == 3,
           "the result in use is the search's alone: no line of it was taken from the failed rung");
+    Check(out.moduleScans == 2 && report.moduleScans == 2,
+          "of its three searches two were of the whole module (the signatures) and one of a single function");
     Check(out.learn, "a site that moved on the recorded build is worth saving too");
 
     // A function start that is not one fails rung 1 the same way a search would refuse it.

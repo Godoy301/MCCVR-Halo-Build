@@ -51,6 +51,27 @@ size_t Lines(const char* text)
         n += line.find(text) != std::string::npos ? 1u : 0u;
     return n;
 }
+
+// How many lines hold `before`, then a number with two decimals -- what a resolution took, in milliseconds, which
+// no test can know beforehand -- and then `after`.
+size_t Said(const char* before, const char* after)
+{
+    size_t n = 0;
+    for (const std::string& line : lines)
+    {
+        const size_t at = line.find(before);
+        if (at == std::string::npos)
+            continue;
+        size_t i = at + std::strlen(before), digits = 0;
+        for (; i < line.size() && line[i] >= '0' && line[i] <= '9'; ++i)
+            ++digits;
+        const auto digit = [&line](size_t k) { return k < line.size() && line[k] >= '0' && line[k] <= '9'; };
+        if (!digits || i >= line.size() || line[i] != '.' || !digit(i + 1) || !digit(i + 2))
+            continue;
+        n += line.compare(i + 3, std::strlen(after), after) == 0 ? 1u : 0u;
+    }
+    return n;
+}
 } // namespace
 
 void Logf(const char* format, ...)
@@ -296,18 +317,25 @@ void TestAnnounceAndFaults()
 {
     drive_cascade::SetCacheFile(nullptr);
     const uint32_t markerRva = Rva(g_marker);
-    addrcascade::TierReporter reporter;
     Resolved healthy;
     lines.clear();
     Check(Resolve(healthy, kHalo3, markerRva) && Whole(healthy) && healthy.rungs.outcome.learn && !healthy.rungs.saved,
           "a healthy resolution, with no cache file to save to");
-    drive_cascade::Announce("TEST DRIVE", healthy, reporter);
-    Check(Lines("TEST DRIVE: found by search: of its 2 addresses 2 are where the tables record them, 0 MOVED, 0 were "
-                "taken at the recorded address among several matches; NOT saved for the next launch (the mod's folder "
-                "is not known)") == 1,
-          "which rung won is said: found by search, and why it was not saved");
-    drive_cascade::Announce("TEST DRIVE", healthy, reporter);
-    Check(lines.size() == 1, "and not said again while nothing changed");
+    Check(healthy.rungs.outcome.moduleScans == 1 && healthy.rungs.outcome.scans == 1 && healthy.rungs.ms > 0.0 &&
+              healthy.rungs.ms < 60000.0,
+          "what it cost the worker is measured: one search of the whole module, and a time");
+    drive_cascade::Announce("TEST DRIVE", healthy);
+    Check(lines.size() == 1 &&
+              Said("TEST DRIVE: found by search (1 scans, ",
+                   " ms): of its 2 addresses 2 are where the tables record them, 0 MOVED, 0 were taken at the recorded "
+                   "address among several matches; NOT saved for the next launch (the mod's folder is not known)") == 1,
+          "which rung won is said with what it cost: found by search, one scan, its time, and why it was not saved");
+    char cost[80];
+    std::snprintf(cost, sizeof(cost), "TEST DRIVE: found by search (1 scans, %.2f ms): of its 2 addresses",
+                  healthy.rungs.ms);
+    Check(Lines(cost) == 1, "the time in the line is the time that was measured, in milliseconds to two decimals");
+    drive_cascade::Announce("TEST DRIVE", healthy);
+    Check(lines.size() == 2, "the line is said at every install: each one's cost is its own");
 
     // The dev key, in each flavour.
     struct Case
@@ -327,7 +355,7 @@ void TestAnnounceAndFaults()
         Resolved forced;
         lines.clear();
         const bool opened = Resolve(forced, kHalo3, markerRva);
-        drive_cascade::Announce("TEST DRIVE", forced, reporter);
+        drive_cascade::Announce("TEST DRIVE", forced);
         const drive_resolve::Verdict verdict = forced.report.lines[0].verdict;
         char what[160];
 #if HALOMCCVR_DEV_DIAGNOSTICS
@@ -354,53 +382,56 @@ void TestAnnounceAndFaults()
         Check(!forced.rungs.saved, what);
 #else
         std::snprintf(what, sizeof(what), "player build, drive_fault 0x%02X (%s): the key does nothing", c.mask, c.what);
-        Check(opened && Whole(forced) && verdict == drive_resolve::Verdict::AsRecorded && lines.empty(), what);
+        Check(opened && Whole(forced) && verdict == drive_resolve::Verdict::AsRecorded && lines.size() == 1 &&
+                  Said("TEST DRIVE: found by search (1 scans, ", " ms): of its 2 addresses 2 are where the tables record "
+                                                                 "them") == 1,
+              what);
 #endif
     }
     g_config.drive_fault = 0;
     Resolved again;
     lines.clear();
     Check(Resolve(again, kHalo3, markerRva) && Whole(again), "healthy again");
-    drive_cascade::Announce("TEST DRIVE", again, reporter);
-#if HALOMCCVR_DEV_DIAGNOSTICS
-    Check(Lines("TEST DRIVE: found by search: of its 2 addresses 2 are where the tables record them") == 1 &&
+    drive_cascade::Announce("TEST DRIVE", again);
+    Check(lines.size() == 1 &&
+              Said("TEST DRIVE: found by search (1 scans, ", " ms): of its 2 addresses 2 are where the tables record "
+                                                             "them") == 1 &&
               Lines("DEV fault injection") == 0,
-          "back to healthy is a change, and is said, without the forced-result line");
-#else
-    Check(lines.empty(), "player build: nothing changed, nothing said");
-#endif
+          "healthy again is said as any install is, without the forced-result line");
 
-    // THE LINE OF A RUNG THIS EXECUTABLE CANNOT REACH. It is no title's recorded build, so the line a player sees
-    // on today's game is said here from a result made by hand: the same report, verified at the recorded
-    // addresses.
+    // THE LINE OF A RUNG THIS EXECUTABLE CANNOT REACH (it is no title's recorded build), said from a result made
+    // by hand: the same report, verified at the recorded addresses, with a cost of the test's own choosing.
     {
         drive_cascade::Rungs rungs;
         rungs.recordedBuild = true;
         rungs.outcome.rung = Rung::Recorded;
         rungs.outcome.recordedTried = true;
-        addrcascade::TierReporter fresh;
+        rungs.ms = 0.114;
         lines.clear();
-        drive_cascade::Announce("TEST DRIVE", again.report, rungs, fresh);
+        drive_cascade::Announce("TEST DRIVE", again.report, rungs);
         Check(lines.size() == 1 &&
-                  Lines("TEST DRIVE: verified at the recorded addresses, all 2 of them, with no search (this game DLL "
-                        "is the build the tables were measured on)") == 1,
-              "the recorded build's one line, as formatted");
-        // The dev self-test's two lines.
+                  Lines("TEST DRIVE: verified at the recorded addresses, all 2 of them, with no search (0 scans, 0.11 "
+                        "ms) (this game DLL is the build the tables were measured on)") == 1,
+              "the recorded build's one line, as formatted: its scans, its milliseconds to two decimals");
+        // The dev self-test's two lines. The search it ran beside the verified addresses is in the count.
         rungs.outcome.searchedToo = true;
         rungs.outcome.searchAgrees = true;
+        rungs.outcome.moduleScans = 1;
+        rungs.ms = 18.4;
         lines.clear();
-        drive_cascade::Announce("TEST DRIVE", again.report, rungs, fresh);
+        drive_cascade::Announce("TEST DRIVE", again.report, rungs);
         const size_t agreed = Lines("DEV self-test (drive_fault 0x80): the search was run as well, and it chose the "
                                     "same address for every line");
+        const size_t counted = Lines("with no search (1 scans, 18.40 ms) (this game DLL");
         rungs.outcome.searchAgrees = false;
-        drive_cascade::Announce("TEST DRIVE", again.report, rungs, fresh);
+        drive_cascade::Announce("TEST DRIVE", again.report, rungs);
         const size_t disagreed = Lines("DEV self-test (drive_fault 0x80): the search was run as well, and it DISAGREES "
                                        "with the verified addresses");
 #if HALOMCCVR_DEV_DIAGNOSTICS
-        Check(agreed == 1 && disagreed == 1 && Lines("verified at the recorded addresses") == 2,
+        Check(agreed == 1 && disagreed == 1 && counted == 1 && Lines("verified at the recorded addresses") == 2,
               "dev build: the self-test says whether the search agrees, after the rung's own line");
 #else
-        Check(agreed == 0 && disagreed == 0 && Lines("verified at the recorded addresses") == 2,
+        Check(agreed == 0 && disagreed == 0 && counted == 1 && Lines("verified at the recorded addresses") == 2,
               "player build: there is no self-test line");
 #endif
     }
@@ -467,13 +498,13 @@ void TestCacheFile()
     // FIRST LAUNCH on a build no table describes: searched, and saved.
     Resolved first;
     lines.clear();
-    addrcascade::TierReporter reporter;
     Check(Resolve(first, kHalo3, markerRva) && Whole(first) && first.rungs.outcome.rung == Rung::Search &&
               first.rungs.outcome.scans == 1 && first.rungs.outcome.learn && first.rungs.saved && !first.rungs.notSaved,
           "first launch: found by search (one scan of the module), and saved");
-    drive_cascade::Announce("TEST DRIVE", first, reporter);
-    Check(Lines("TEST DRIVE: found by search: of its 2 addresses 2 are where the tables record them, 0 MOVED, 0 were "
-                "taken at the recorded address among several matches; saved for the next launch") == 1,
+    drive_cascade::Announce("TEST DRIVE", first);
+    Check(Said("TEST DRIVE: found by search (1 scans, ",
+               " ms): of its 2 addresses 2 are where the tables record them, 0 MOVED, 0 were taken at the recorded "
+               "address among several matches; saved for the next launch") == 1,
           "and says so");
     const std::string saved = ReadAll(cache);
     Check(Exists(cache) && !Exists(temporary) && saved.find("NOT a setting") != std::string::npos &&
@@ -488,9 +519,9 @@ void TestCacheFile()
               second.rungs.outcome.scans == 0 && second.report.scans == 0 && !second.rungs.saved &&
               second.report.lines[0].how == drive_resolve::How::Known,
           "second launch: verified at the saved addresses with zero scans of the module");
-    drive_cascade::Announce("TEST DRIVE", second, reporter);
-    Check(Lines("TEST DRIVE: verified at the addresses saved from an earlier launch of this game build, all 2 of them, "
-                "with no search (0 of them are not where the tables record them)") == 1,
+    drive_cascade::Announce("TEST DRIVE", second);
+    Check(Said("TEST DRIVE: verified at the addresses saved from an earlier launch of this game build, all 2 of them, "
+               "with no search (0 scans, ", " ms) (0 of them are not where the tables record them)") == 1,
           "and says so");
     Check(ReadAll(cache) == saved, "a launch that only verifies leaves the file as it was");
 
@@ -516,11 +547,10 @@ void TestCacheFile()
               "the file is given an entry of another build");
         Resolved r;
         lines.clear();
-        addrcascade::TierReporter fresh;
         Check(Resolve(r, kHalo3, markerRva) && Whole(r) && r.rungs.outcome.rung == Rung::Search &&
                   !r.rungs.outcome.savedTried && r.rungs.savedRefused && r.rungs.saved,
               "an entry of another build of the DLL is not tried: the drive is searched, and saved again");
-        drive_cascade::Announce("TEST DRIVE", r, fresh);
+        drive_cascade::Announce("TEST DRIVE", r);
         Check(Lines("the addresses saved earlier were not used (they are of another build of this game DLL)") == 1,
               "one line says the saved addresses were of another build");
         Check(ReadAll(cache) == both, "the file again holds this build's entry, and the other title's untouched");
@@ -533,12 +563,11 @@ void TestCacheFile()
         Check(aged != both && WriteAll(cache, aged), "the file is given an entry found under other rules of the search");
         Resolved r;
         lines.clear();
-        addrcascade::TierReporter fresh;
         Check(Resolve(r, kHalo3, markerRva) && Whole(r) && r.rungs.outcome.rung == Rung::Search &&
                   !r.rungs.outcome.savedTried && r.rungs.savedRefused == drive_known::kOtherRules && r.rungs.saved,
               "an entry found under other rules is not tried, though every address in it would verify: the drive is "
               "searched, and saved again");
-        drive_cascade::Announce("TEST DRIVE", r, fresh);
+        drive_cascade::Announce("TEST DRIVE", r);
         Check(Lines("the addresses saved earlier were not used (they were found under other rules of this mod's "
                     "search)") == 1,
               "one line says the saved addresses were found under other rules");
@@ -553,11 +582,10 @@ void TestCacheFile()
         Check(WriteAll(cache, damaged), "one digit of an entry in the file is changed");
         Resolved r;
         lines.clear();
-        addrcascade::TierReporter fresh;
         Check(Resolve(r, kHalo3, markerRva) && Whole(r) && r.rungs.outcome.rung == Rung::Search &&
                   !r.rungs.outcome.savedTried && !r.rungs.savedRefused && r.rungs.saved,
               "an entry whose checksum is not its own is not read at all: the drive is searched as on a first launch");
-        drive_cascade::Announce("TEST DRIVE", r, fresh);
+        drive_cascade::Announce("TEST DRIVE", r);
         Check(Lines("the addresses saved earlier were not used") == 0 && Lines("saved for the next launch") == 1,
               "nothing is said of it: there was no entry");
         Resolved halo3Again, halo4Again;
@@ -570,11 +598,10 @@ void TestCacheFile()
     {
         Resolved r;
         lines.clear();
-        addrcascade::TierReporter fresh;
         Check(Resolve(r, kHalo3, markerRva + 0x10) && Whole(r) && r.rungs.outcome.rung == Rung::Search &&
                   r.rungs.outcome.savedTried && r.rungs.savedRefused == drive_known::kSavedOtherPlan && r.rungs.saved,
               "an entry saved for another version of the tables is not used: the drive is searched, and saved again");
-        drive_cascade::Announce("TEST DRIVE", r, fresh);
+        drive_cascade::Announce("TEST DRIVE", r);
         Check(Lines("the addresses saved earlier were not used (they were saved for another version of this drive's "
                     "tables)") == 1 && Lines("MARKER MOVED from") == 1,
               "one line says so, and names what the search found moved");
@@ -619,11 +646,10 @@ void TestCacheFile()
         g_config.drive_address_cache = 0;
         Resolved r;
         lines.clear();
-        addrcascade::TierReporter fresh;
         Check(Resolve(r, kHalo3, markerRva) && Whole(r) && r.rungs.outcome.rung == Rung::Search &&
                   !r.rungs.outcome.savedTried && !r.rungs.savedRefused && !r.rungs.saved && r.rungs.notSaved,
               "drive_address_cache = 0: a good entry is not read, and the drive is searched");
-        drive_cascade::Announce("TEST DRIVE", r, fresh);
+        drive_cascade::Announce("TEST DRIVE", r);
         Check(Lines("NOT saved for the next launch (drive_address_cache = 0)") == 1, "the line says why nothing was saved");
         Check(ReadAll(cache) == before, "and the file is not written");
         DeleteFileW(cache.c_str());
@@ -641,11 +667,10 @@ void TestCacheFile()
         Check(CreateDirectoryW(temporary.c_str(), nullptr), "the temporary file's name is taken by a folder");
         Resolved r;
         lines.clear();
-        addrcascade::TierReporter fresh;
         Check(Resolve(r, kHalo3, markerRva + 0x20) && Whole(r) && r.rungs.outcome.rung == Rung::Search &&
                   r.rungs.outcome.learn && !r.rungs.saved && r.rungs.notSaved,
               "the drive is resolved all the same; only the saving failed");
-        drive_cascade::Announce("TEST DRIVE", r, fresh);
+        drive_cascade::Announce("TEST DRIVE", r);
         Check(Lines("NOT saved for the next launch (the file could not be written)") == 1, "the line says so");
         Check(ReadAll(cache) == before, "the old file is whole, byte for byte");
         RemoveDirectoryW(temporary.c_str());
@@ -665,9 +690,8 @@ void TestCacheFile()
             g_config.drive_fault = mask;
             Resolved forced;
             lines.clear();
-            addrcascade::TierReporter fresh;
             const bool resolved = Resolve(forced, kHalo3, markerRva) && Whole(forced);
-            drive_cascade::Announce("TEST DRIVE", forced, fresh);
+            drive_cascade::Announce("TEST DRIVE", forced);
             char what[200];
 #if HALOMCCVR_DEV_DIAGNOSTICS
             std::snprintf(what, sizeof(what), "dev build, drive_fault 0x%02X: a good entry is not read, the drive is "
@@ -754,18 +778,19 @@ void TestCacheFile()
         };
         drive_cascade::Resolution<WithRow> first, next;
         lines.clear();
-        addrcascade::TierReporter fresh;
         Check(at && resolve(first) && first.found.row == at && first.rungs.outcome.rung == Rung::Search &&
                   first.report.lines[1].how == drive_resolve::How::FunctionExtent && first.rungs.saved,
               "a row that is not at its recorded offset is found as the single match in its function, and saved");
         Check(at && resolve(next) && next.found.row == at && next.found.marker == markerRva &&
                   next.rungs.outcome.rung == Rung::Saved && next.rungs.outcome.scans == 1 && next.report.scans == 1,
               "the next launch verifies it with that one function searched again, and the module not searched");
-        drive_cascade::Announce("TEST DRIVE", next, fresh);
-        Check(Lines("TEST DRIVE: verified at the addresses saved from an earlier launch of this game build, all 2 of "
-                    "them, with no search of the module (1 of them are not where the tables record them; 1 of its "
-                    "functions were searched again, each for a line saved as the single match in it)") == 1,
-              "and its line says which search was made again");
+        drive_cascade::Announce("TEST DRIVE", next);
+        Check(Said("TEST DRIVE: verified at the addresses saved from an earlier launch of this game build, all 2 of "
+                   "them, with no search of the module (0 scans, ",
+                   " ms) (1 of them are not where the tables record them; 1 of its functions were searched again, each "
+                   "for a line saved as the single match in it)") == 1 &&
+                  next.rungs.outcome.moduleScans == 0,
+              "and its line says which search was made again: one function's, and none of the module");
     }
 
     drive_cascade::SetCacheFile(nullptr);
@@ -1043,6 +1068,14 @@ void TestRecordedBuildOpensNoFile()
               drive_cascade::CacheFileOpens() == opens && !first.rungs.outcome.savedLooked && !Exists(cache),
           "ON THE RECORDED BUILD WITH EVERYTHING VERIFYING THE CACHE'S FILE IS NEVER OPENED, at the first install "
           "or at the next");
+    // What a player's log holds for that install, through the DLL's own side: the rung, and what it cost.
+    lines.clear();
+    drive_cascade::Announce(drive_cascade::kHalo2Name, first);
+    drive_cascade::Announce(drive_cascade::kHalo2Name, again);
+    Check(lines.size() == 2 && first.rungs.outcome.moduleScans == 0 && first.rungs.ms > 0.0 &&
+              Said("Halo 2 DRIVE: verified at the recorded addresses, all 1 of them, with no search (0 scans, ",
+                   " ms) (this game DLL is the build the tables were measured on)") == 2,
+          "each install's line: verified at the recorded addresses, no scan of the module, and its time");
 
     // One byte of the recorded build no longer the game's: rung 1 (a) fails, and only then is the file opened.
     module.image[RecordedModule::kEntryRva + 3] ^= 0xFF;

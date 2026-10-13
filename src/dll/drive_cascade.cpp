@@ -322,6 +322,9 @@ bool RunPlan(uintptr_t base, size_t size, const Drive& drive, drive_known::PlanF
     static std::atomic<bool> s_sinkSet{false};
     if (!s_sinkSet.exchange(true))
         addrcascade::set_logger([](const char* message) { LOG("%s", message); });
+    // What this resolution costs the worker is measured whole, from here to its last rung.
+    LARGE_INTEGER from;
+    QueryPerformanceCounter(&from);
     report = drive_resolve::Report{};
     rungs = Rungs{};
     why = nullptr;
@@ -372,6 +375,10 @@ bool RunPlan(uintptr_t base, size_t size, const Drive& drive, drive_known::PlanF
         else if (!(rungs.saved = Store(entry)))
             rungs.notSaved = "the file could not be written";
     }
+    LARGE_INTEGER to, frequency;
+    QueryPerformanceCounter(&to);
+    QueryPerformanceFrequency(&frequency);
+    rungs.ms = static_cast<double>(to.QuadPart - from.QuadPart) * 1000.0 / static_cast<double>(frequency.QuadPart);
     return true;
 }
 
@@ -388,20 +395,17 @@ void FirstFailure(const drive_resolve::Report& report, char* out, size_t size)
     snprintf(out, size, "nothing");
 }
 
-void Announce(const char* drive, const drive_resolve::Report& report, const Rungs& rungs,
-              addrcascade::TierReporter& reporter)
+void Announce(const char* drive, const drive_resolve::Report& report, const Rungs& rungs)
 {
     using drive_known::Rung;
     using drive_resolve::Verdict;
     const drive_known::Outcome& outcome = rungs.outcome;
     const uint32_t recorded = report.Count(Verdict::AsRecorded), moved = report.Count(Verdict::Moved),
                    several = report.Count(Verdict::RecordAmongSeveral), lost = report.NotFound();
-    char tier[32];
-    snprintf(tier, sizeof(tier), "%u %u/%u/%u/%u %u%u%u%u", static_cast<unsigned>(outcome.rung), recorded, moved, several,
-             lost, rungs.saved ? 1u : 0u, outcome.searchedToo ? (outcome.searchAgrees ? 1u : 2u) : 0u,
-             outcome.recordedTried ? 1u : 0u, rungs.savedRefused ? 1u : 0u);
-    if (!reporter.changed(static_cast<uintptr_t>(report.Fingerprint()), tier))
-        return;
+    // WHAT THIS INSTALL'S RESOLUTION COST THE WORKER: its searches of the whole module (every rung that ran), and
+    // its time. It goes into the one line below, whichever that is.
+    char cost[48];
+    snprintf(cost, sizeof(cost), "(%u scans, %.2f ms)", outcome.moduleScans, rungs.ms);
 #if HALOMCCVR_DEV_DIAGNOSTICS
     if (const int forced = addrcascade::fault_mask() & static_cast<int>(drive_resolve::kFaultsThatForce))
         LOG("%s: DEV fault injection (drive_fault 0x%X) is forcing what the next line reports; it says nothing about "
@@ -409,8 +413,8 @@ void Announce(const char* drive, const drive_resolve::Report& report, const Rung
 #endif
     if (outcome.rung == Rung::Recorded)
     {
-        LOG("%s: verified at the recorded addresses, all %u of them, with no search (this game DLL is the build the "
-            "tables were measured on)", drive, report.count);
+        LOG("%s: verified at the recorded addresses, all %u of them, with no search %s (this game DLL is the build "
+            "the tables were measured on)", drive, report.count, cost);
     }
     else if (outcome.rung == Rung::Saved)
     {
@@ -418,12 +422,12 @@ void Announce(const char* drive, const drive_resolve::Report& report, const Rung
         // was placed by, applied whole (drive_resolve.h).
         if (report.scans)
             LOG("%s: verified at the addresses saved from an earlier launch of this game build, all %u of them, with "
-                "no search of the module (%u of them are not where the tables record them; %u of its functions were "
-                "searched again, each for a line saved as the single match in it)",
-                drive, report.count, moved, report.scans);
+                "no search of the module %s (%u of them are not where the tables record them; %u of its functions "
+                "were searched again, each for a line saved as the single match in it)",
+                drive, report.count, cost, moved, report.scans);
         else
             LOG("%s: verified at the addresses saved from an earlier launch of this game build, all %u of them, with "
-                "no search (%u of them are not where the tables record them)", drive, report.count, moved);
+                "no search %s (%u of them are not where the tables record them)", drive, report.count, cost, moved);
     }
     else
     {
@@ -459,9 +463,9 @@ void Announce(const char* drive, const drive_resolve::Report& report, const Rung
             snprintf(list + used, sizeof(list) - used, "; and %u more", unnamed);
         if (lost)
         {
-            LOG("%s: %ssearched: of its %u addresses %u are where the tables record them, %u MOVED, %u were taken at "
-                "the recorded address among several matches, %u were NOT found: %s",
-                drive, before, report.count, recorded, moved, several, lost, list);
+            LOG("%s: %ssearched %s: of its %u addresses %u are where the tables record them, %u MOVED, %u were taken "
+                "at the recorded address among several matches, %u were NOT found: %s",
+                drive, before, cost, report.count, recorded, moved, several, lost, list);
         }
         else
         {
@@ -472,9 +476,9 @@ void Announce(const char* drive, const drive_resolve::Report& report, const Rung
                 snprintf(saving, sizeof(saving), "NOT saved for the next launch (%s)", rungs.notSaved);
             else
                 snprintf(saving, sizeof(saving), "nothing to save");
-            LOG("%s: %sfound by search: of its %u addresses %u are where the tables record them, %u MOVED, %u were "
-                "taken at the recorded address among several matches%s%s; %s",
-                drive, before, report.count, recorded, moved, several, list[0] ? ": " : "", list, saving);
+            LOG("%s: %sfound by search %s: of its %u addresses %u are where the tables record them, %u MOVED, %u "
+                "were taken at the recorded address among several matches%s%s; %s",
+                drive, before, cost, report.count, recorded, moved, several, list[0] ? ": " : "", list, saving);
         }
     }
 #if HALOMCCVR_DEV_DIAGNOSTICS
