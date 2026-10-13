@@ -12,6 +12,11 @@
 // then hooks and reads exactly what the recorded addresses named. Any other verdict fails the check (exit 1).
 // On another build the same table says what moved and what was lost; --any-build prints it without failing.
 //
+// THE RUNGS (src/common/drive_known.h). That table is the SEARCH's, and its match counts are what make the known
+// addresses safe to verify without counting: it is printed first. Then each drive is resolved as the DLL resolves
+// it, the known addresses first: on the recorded build that must be rung 1 at the recorded addresses, with no
+// scan of the module, choosing the very addresses the search chose; the time each takes is printed.
+//
 // --faults repeats the whole resolution with each fault forced (drive_resolve.h, kFault...), and checks what each
 // must do: a signature that finds nothing leaves the drive unhooked; an ambiguous one is settled by the recorded
 // address; a wrong record is overruled by the search (the same addresses, reported as moved); ambiguous with a
@@ -20,7 +25,9 @@
 //
 // --moved builds a second image of each DLL in which every section sits 0x40 bytes higher -- the same code after
 // something was inserted ahead of it, so that no recorded RVA is right -- and checks that every drive follows it:
-// every site found 0x40 above where it was, reported moved, and the drive hookable there.
+// every site found 0x40 above where it was, reported moved, and the drive hookable there. It is resolved twice,
+// as two launches would: the first finds the recorded addresses do not verify, searches, and saves what it found
+// (through the address cache's own text); the second verifies those saved addresses with no scan at all.
 //
 // --loaded <folder> repeats the healthy resolution on each DLL AS THE WINDOWS LOADER MAPS IT, through the DLL's own
 // side of the resolution (src/dll/drive_cascade.cpp: the module opened by VirtualQuery, its .pdata where the
@@ -43,6 +50,8 @@
 #include "addrcascade/AddressCascade.hpp"
 #include "drive_sites.h"
 #include "title_build_identity.h"
+#include "config.h"
+#include "drive_known.h"
 #include "../src/dll/drive_cascade.h"
 
 // The DLL's side of the resolution logs through this (--loaded).
@@ -411,6 +420,7 @@ void RunT13Halo4(Resolver& r, Outcome& out)
 struct Drive
 {
     const char* dll;
+    const char* id;            // its name in the address cache, as the DLL's install gives it
     const char* name;
     RunFn run;
     bool readsTlsIndex;        // its resolution needs the engine TLS index
@@ -419,18 +429,19 @@ struct Drive
 };
 
 constexpr Drive kDrives[] = {
-    {"halo2", "Halo 2 control update (on foot and seats)", &RunHalo2, false, true, {}},
-    {"halo3", "Halo 3 control update (on foot and seats)", &RunHalo3, true, true, {}},
-    {"halo3odst", "ODST control update (on foot and seats)", &RunOdst, true, true, {}},
-    {"haloreach", "Reach control update (on foot and seats)", &RunReachControl, true, true, {}},
-    {"haloreach", "Reach Sabre / Seraph pilot controller", &RunReachSabre, true, true, {}},
-    {"haloreach", "Reach pilot controller, dev observer (dev builds only)", &RunT13Reach, true, true, {}},
+    {"halo2", "control-update", "Halo 2 control update (on foot and seats)", &RunHalo2, false, true, {}},
+    {"halo3", "control-update", "Halo 3 control update (on foot and seats)", &RunHalo3, true, true, {}},
+    {"halo3odst", "control-update", "ODST control update (on foot and seats)", &RunOdst, true, true, {}},
+    {"haloreach", "control-update", "Reach control update (on foot and seats)", &RunReachControl, true, true, {}},
+    {"haloreach", "pilot-controller", "Reach Sabre / Seraph pilot controller", &RunReachSabre, true, true, {}},
+    {"haloreach", "pilot-observer", "Reach pilot controller, dev observer (dev builds only)", &RunT13Reach, true, true, {}},
     // Halo 4's record unit load stands three times in the control update: without its offset it is not found,
     // and only the seats lose direct drive.
-    {"halo4", "Halo 4 control update (on foot and seats)", &RunHalo4, true, true, {"record unit load"}},
-    {"halo4", "Halo 4 Broadsword pilot controller", &RunHalo4Flight, true, true, {}},
+    {"halo4", "control-update", "Halo 4 control update (on foot and seats)", &RunHalo4, true, true, {"record unit load"}},
+    {"halo4", "pilot-controller", "Halo 4 Broadsword pilot controller", &RunHalo4Flight, true, true, {}},
     // The observer's IDLE and RECUNIT rows stand more than once in their functions: the observer stays off.
-    {"halo4", "Halo 4 pilot controller, dev observer (dev builds only)", &RunT13Halo4, true, false, {"IDLE", "RECUNIT"}},
+    {"halo4", "pilot-observer", "Halo 4 pilot controller, dev observer (dev builds only)", &RunT13Halo4, true, false,
+     {"IDLE", "RECUNIT"}},
 };
 
 struct TitleDll
@@ -442,6 +453,7 @@ constexpr TitleDll kTitles[] = {{"halo1", GameTitle::HaloCE},        {"halo2", G
                                 {"halo3", GameTitle::Halo3},         {"halo3odst", GameTitle::Halo3ODST},
                                 {"haloreach", GameTitle::HaloReach}, {"halo4", GameTitle::Halo4}};
 
+// THE SEARCH alone: every signature looked for in the whole module and every match counted.
 Outcome Run(const Loaded& module, const Drive& drive, uint32_t faults)
 {
     Outcome out;
@@ -449,6 +461,66 @@ Outcome Run(const Loaded& module, const Drive& drive, uint32_t faults)
     drive.run(r, out);
     out.report = r.report();
     return out;
+}
+
+double Milliseconds(const LARGE_INTEGER& from, const LARGE_INTEGER& to)
+{
+    LARGE_INTEGER frequency;
+    QueryPerformanceFrequency(&frequency);
+    return static_cast<double>(to.QuadPart - from.QuadPart) * 1000.0 / static_cast<double>(frequency.QuadPart);
+}
+
+// One drive as the DLL resolves it, by the rungs (drive_known.h): what came of it, which rung, and how long.
+struct ByRungs
+{
+    Outcome out{};
+    drive_known::Outcome rungs{};
+    double ms = 0.0;
+};
+
+struct RungContext
+{
+    const Drive* drive;
+    Outcome aside;
+    Outcome* out;
+};
+
+void RungPlan(Resolver& r, void* raw)
+{
+    auto* c = static_cast<RungContext*>(raw);
+    c->aside = Outcome{};
+    c->drive->run(r, c->aside);
+}
+
+void RungKeep(void* raw)
+{
+    auto* c = static_cast<RungContext*>(raw);
+    *c->out = c->aside;
+}
+
+void RunRungs(const Loaded& module, const Drive& drive, uint32_t faults, bool recordedBuild,
+              const drive_known::Entry* saved, ByRungs& result)
+{
+    result = ByRungs{};
+    RungContext context{&drive, Outcome{}, &result.out};
+    LARGE_INTEGER from, to;
+    QueryPerformanceCounter(&from);
+    Report report{};
+    result.rungs = drive_known::Run(module.image, faults, recordedBuild, saved, &RungPlan, &RungKeep, &context, report);
+    QueryPerformanceCounter(&to);
+    result.out.report = report;
+    result.ms = Milliseconds(from, to);
+}
+
+const char* RungText(drive_known::Rung rung)
+{
+    switch (rung)
+    {
+    case drive_known::Rung::Recorded: return "RUNG 1, verified at the recorded addresses";
+    case drive_known::Rung::Saved: return "RUNG 1, verified at the saved addresses";
+    case drive_known::Rung::Search: return "RUNG 2, the search";
+    default: return "no rung";
+    }
 }
 
 void PrintReport(const Report& report)
@@ -501,12 +573,34 @@ constexpr FaultCase kFaultCases[] = {
      "each is found as the one match in its function; one with two matches there is not found"},
     {drive_resolve::kFaultHookSilent, "a drive's watchdog is told its hook never ran",
      "nothing about the addresses changes (the watchdog is the DLL's)"},
+    {drive_resolve::kFaultSavedStale, "the addresses saved from an earlier launch are stale",
+     "verifying them fails, and every drive is hooked at the same addresses, found by search"},
+    {drive_resolve::kFaultSearchToo, "self-test: the search is run beside the verified addresses",
+     "every drive stays on rung 1, and the search chooses the same address for every line"},
 };
 
 // What a forced fault must do to one drive, judged against its healthy resolution. Returns the failure, or null.
-const char* JudgeFault(const Drive& drive, const FaultCase& test, const Outcome& healthy, const Outcome& faulted)
+// `rungs`: what the rungs went through under the fault (the module is the recorded build).
+const char* JudgeFault(const Drive& drive, const FaultCase& test, const Outcome& healthy, const Outcome& faulted,
+                       const drive_known::Outcome& rungs)
 {
     const uint32_t f = test.faults;
+    // WHICH RUNG. A fault of the search, of the record or of an offset must fail the known addresses first, so
+    // that the search runs and shows it; the watchdog's bit and the self-test leave rung 1 standing.
+    bool hasOffsetAnchor = false;   // a drive with no anchor at an offset in a function is untouched by that fault
+    for (uint32_t i = 0; i < healthy.report.count; ++i)
+        hasOffsetAnchor = hasOffsetAnchor || healthy.report.lines[i].how == drive_resolve::How::FunctionOffset;
+    const bool leavesRungOne = f == drive_resolve::kFaultHookSilent || f == drive_resolve::kFaultSearchToo ||
+                               (f == drive_resolve::kFaultTlsDirectory && !drive.readsTlsIndex) ||
+                               (f == drive_resolve::kFaultOffsetMoved && !hasOffsetAnchor);
+    if (leavesRungOne ? rungs.rung != drive_known::Rung::Recorded : rungs.rung != drive_known::Rung::Search)
+        return leavesRungOne ? "the drive left rung 1" : "the known addresses were still taken under the fault";
+    if (f == drive_resolve::kFaultSavedStale && !(rungs.savedTried && rungs.savedRefused && !rungs.recordedTried))
+        return "the stale saved addresses were not what was tried";
+    if (f == drive_resolve::kFaultSearchToo && !(rungs.searchedToo && rungs.searchAgrees))
+        return "the search beside rung 1 did not agree with it";
+    if (f != drive_resolve::kFaultSearchToo && rungs.searchedToo)
+        return "the search was run beside rung 1 without being asked";
     const bool missing = f == drive_resolve::kFaultSignatureMissing;
     const bool refused = f == (drive_resolve::kFaultSignatureAmbiguous | drive_resolve::kFaultRecordWrong);
     if (missing || refused)
@@ -557,6 +651,13 @@ const char* JudgeFault(const Drive& drive, const FaultCase& test, const Outcome&
     return nullptr;
 }
 
+// Whether two resolutions of a drive came to the same thing: hookable or not, the same hook, the same address for
+// every line.
+bool SameResult(const Outcome& a, const Outcome& b)
+{
+    return a.ok == b.ok && a.hook == b.hook && drive_known::SameAddresses(a.report, b.report);
+}
+
 std::wstring Widen(const char* text)
 {
     const int n = MultiByteToWideChar(CP_UTF8, 0, text, -1, nullptr, 0);
@@ -589,14 +690,23 @@ struct LoadedRun
 {
     const Drive* drive = nullptr;
     uintptr_t base = 0;
+    Outcome aside{};
     Outcome out{};
     unsigned tableChecked = 0, tableAgreed = 0;
 };
 
+void LoadedKeep(void* raw)
+{
+    auto* run = static_cast<LoadedRun*>(raw);
+    run->out = run->aside;
+}
+
 void LoadedThunk(Resolver& r, void* raw)
 {
     auto* run = static_cast<LoadedRun*>(raw);
-    run->drive->run(r, run->out);
+    run->aside = Outcome{};
+    run->drive->run(r, run->aside);
+    run->tableChecked = run->tableAgreed = 0;
     // At every site found: the .pdata entry the resolution reads is the operating system's own answer.
     const Report& report = r.report();
     for (uint32_t i = 0; i < report.count; ++i)
@@ -675,6 +785,8 @@ int main(int argc, char** argv)
     unsigned drives = 0, sites = 0, notAsRecorded = 0, unhooked = 0, faultChecks = 0, faultFailures = 0, modules = 0;
     unsigned movedSites = 0, movedFollowed = 0, movedFailures = 0;
     unsigned loadedDrives = 0, loadedSites = 0, loadedFailures = 0;
+    unsigned rungOne = 0, rungFailures = 0, rungScans = 0, savedLaunches = 0;
+    double rungOneMs = 0.0, searchMs = 0.0;
     constexpr uint32_t kMovedShift = 0x40;
     for (const TitleDll& entry : kTitles)
     {
@@ -736,10 +848,82 @@ int main(int argc, char** argv)
                         healthy.report.count, healthy.report.Count(Verdict::AsRecorded),
                         healthy.report.Count(Verdict::Moved), healthy.report.Count(Verdict::RecordAmongSeveral),
                         healthy.report.NotFound());
+            {
+                // AS THE DLL RESOLVES IT: the known addresses first. On the recorded build that is rung 1 with no
+                // scan, and it must choose what the search above chose. Each is timed (the search three times).
+                const bool recordedBuild = match == title_build::Match::Known;
+                ByRungs fast;
+                RunRungs(module, drive, 0, recordedBuild, nullptr, fast);
+                double slowest = 0.0, quickest = 1.0e9;
+                unsigned scans = 0;
+                for (int pass = 0; pass < 3; ++pass)
+                {
+                    ByRungs searched;
+                    RunRungs(module, drive, 0, false, nullptr, searched);
+                    slowest = searched.ms > slowest ? searched.ms : slowest;
+                    quickest = searched.ms < quickest ? searched.ms : quickest;
+                    scans = searched.rungs.scans;
+                }
+                const bool same = SameResult(fast.out, healthy);
+                const bool asMust = same && (!recordedBuild || !healthy.report.Complete() ||
+                                             (fast.rungs.rung == drive_known::Rung::Recorded && fast.rungs.scans == 0));
+                rungOne += fast.rungs.rung == drive_known::Rung::Recorded ? 1u : 0u;
+                rungScans += fast.rungs.scans;
+                rungFailures += asMust ? 0u : 1u;
+                rungOneMs += fast.ms;
+                searchMs += quickest;
+                std::printf("   by the rungs: %s, %u scans of the module, %.3f ms; the search alone: %u scans, %.1f ms "
+                            "(%.1f at most); the same addresses: %s%s\n",
+                            RungText(fast.rungs.rung), fast.rungs.scans, fast.ms, scans, quickest, slowest,
+                            same ? "yes" : "NO", asMust ? "" : " -- NOT AS IT MUST BE");
+            }
             if (moved && shifted.base)
             {
                 // The same drive on the image with every section kMovedShift higher: it must follow, site by site.
-                const Outcome there = Run(shifted, drive, 0);
+                // Resolved as two launches of the DLL would: the stamp is the recorded build's, so the recorded
+                // addresses are tried and fail, the search finds everything and its addresses are saved; then
+                // the saved addresses are verified with no scan. The entry travels through the cache's own text.
+                ByRungs launchOne, launchTwo;
+                RunRungs(shifted, drive, 0, match == title_build::Match::Known, nullptr, launchOne);
+                const Outcome there = launchOne.out;
+                static drive_known::File file, back;
+                static char text[drive_known::kMaxFileText];
+                drive_known::Entry learned;
+                file = drive_known::File{};
+                const char* cacheFailure = nullptr;
+                if (healthy.report.Complete())
+                {
+                    if (launchOne.rungs.rung != drive_known::Rung::Search || !launchOne.rungs.learn)
+                        cacheFailure = "the first launch did not search and learn";
+                    else if (!drive_known::MakeEntry(learned, (std::string(title) + ".dll").c_str(), drive.id,
+                                                     drive_known::Stamp(shifted.image), launchOne.out.report) ||
+                             !drive_known::Put(file, learned))
+                        cacheFailure = "what the search found did not make an entry";
+                    else
+                    {
+                        const size_t length = drive_known::Format(file, text, sizeof(text));
+                        drive_known::Parse(text, length, back);
+                        const drive_known::Entry* held =
+                            drive_known::Find(back, (std::string(title) + ".dll").c_str(), drive.id);
+                        if (!length || !held || held->stamp != drive_known::Stamp(shifted.image))
+                            cacheFailure = "the entry did not come back out of the cache's text";
+                        else
+                        {
+                            RunRungs(shifted, drive, 0, match == title_build::Match::Known, held, launchTwo);
+                            if (launchTwo.rungs.rung != drive_known::Rung::Saved || launchTwo.rungs.scans != 0 ||
+                                !SameResult(launchTwo.out, launchOne.out))
+                                cacheFailure = "the second launch did not verify the saved addresses with no scan";
+                            else
+                                ++savedLaunches;
+                        }
+                    }
+                    std::printf("   moved build, two launches: first %s (%u scans, %.1f ms) and saved; second %s (%u "
+                                "scans, %.3f ms)%s%s\n",
+                                RungText(launchOne.rungs.rung), launchOne.rungs.scans, launchOne.ms,
+                                RungText(launchTwo.rungs.rung), launchTwo.rungs.scans, launchTwo.ms,
+                                cacheFailure ? " -- FAILED: " : "", cacheFailure ? cacheFailure : "");
+                    movedFailures += cacheFailure ? 1u : 0u;
+                }
                 unsigned followed = 0, total = 0;
                 const char* failure = there.ok == healthy.ok && there.report.count == healthy.report.count
                     ? nullptr : "the drive did not resolve the same way";
@@ -788,22 +972,49 @@ int main(int argc, char** argv)
                     const uintptr_t base = reinterpret_cast<uintptr_t>(mapped);
                     const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
                     const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS64*>(base + dos->e_lfanew);
-                    LoadedRun run;
-                    run.drive = &drive;
-                    run.base = base;
-                    Report report{};
+                    // By the rungs, as an install does it; then again with the self-test bit (this tool is built
+                    // as a dev build of the DLL's side), so the search runs beside the verified addresses.
+                    const drive_cascade::Drive key{entry.title, drive.id};
+                    drive_cascade::Rungs rungs{}, tested{};
+                    LoadedRun run, again;
+                    run.drive = again.drive = &drive;
+                    run.base = again.base = base;
+                    Report report{}, second{};
                     const char* notOpened = nullptr;
-                    const bool opened = drive_cascade::RunPlan(base, nt->OptionalHeader.SizeOfImage, &LoadedThunk, &run,
-                                                               report, notOpened);
+                    g_config.drive_fault = 0;
+                    LARGE_INTEGER from, to;
+                    QueryPerformanceCounter(&from);
+                    const bool opened = drive_cascade::RunPlan(base, nt->OptionalHeader.SizeOfImage, key, &LoadedThunk,
+                                                               &LoadedKeep, &run, report, rungs, notOpened);
+                    QueryPerformanceCounter(&to);
+                    g_config.drive_fault = static_cast<int>(drive_resolve::kFaultSearchToo);
+                    const char* ignored = nullptr;
+                    (void)drive_cascade::RunPlan(base, nt->OptionalHeader.SizeOfImage, key, &LoadedThunk, &LoadedKeep,
+                                                 &again, second, tested, ignored);
+                    g_config.drive_fault = 0;
                     const char* failure = CompareLoaded(healthy, run, report, opened);
+                    if (!failure && healthy.report.Complete() &&
+                        !(rungs.recordedBuild && rungs.outcome.rung == drive_known::Rung::Recorded &&
+                          rungs.outcome.scans == 0))
+                        failure = "it was not verified at the recorded addresses with no scan";
+                    if (!failure && healthy.report.Complete() &&
+                        !(tested.outcome.searchedToo && tested.outcome.searchAgrees && SameResult(again.out, run.out)))
+                        failure = "the search beside the verified addresses did not agree with them";
+                    if (!failure && rungs.saved)
+                        failure = "the recorded build's own addresses were written to the cache";
                     loadedSites += report.count;
                     loadedFailures += failure ? 1u : 0u;
-                    std::printf("   as the loader maps it (base %p, through drive_cascade): %s; %u of %u sites as from "
-                                "the file; the system's function table agrees at %u of %u%s%s%s%s\n",
+                    std::printf("   as the loader maps it (base %p, through drive_cascade): %s; %s, %u scans, %.3f ms; "
+                                "%u of %u sites as from the file; the system's function table agrees at %u of %u; "
+                                "self-test: the search beside it (%u scans) %s%s%s%s%s\n",
                                 reinterpret_cast<void*>(base),
                                 run.out.hook ? (run.out.ok ? "HOOK at the same address" : "NO HOOK")
                                              : (run.out.ok ? "READY" : "NOT READY"),
+                                RungText(rungs.outcome.rung), rungs.outcome.scans, Milliseconds(from, to),
                                 failure ? 0u : report.count, report.count, run.tableAgreed, run.tableChecked,
+                                tested.outcome.scans,
+                                tested.outcome.searchedToo ? (tested.outcome.searchAgrees ? "agrees" : "DISAGREES")
+                                                           : "did not run",
                                 failure ? " -- DIFFERS: " : "", failure ? failure : "",
                                 notOpened ? ": " : "", notOpened ? notOpened : "");
                 }
@@ -812,8 +1023,12 @@ int main(int argc, char** argv)
                 continue;
             for (const FaultCase& test : kFaultCases)
             {
-                const Outcome faulted = Run(module, drive, test.faults);
-                const char* failure = JudgeFault(drive, test, healthy, faulted);
+                ByRungs underFault;
+                RunRungs(module, drive, test.faults, match == title_build::Match::Known, nullptr, underFault);
+                const Outcome& faulted = underFault.out;
+                const char* failure = match == title_build::Match::Known
+                    ? JudgeFault(drive, test, healthy, faulted, underFault.rungs)
+                    : "the faults are judged on the recorded build only";
                 ++faultChecks;
                 faultFailures += failure ? 1u : 0u;
                 // What the fault made of the drive, in one line: its first site that is not as recorded.
@@ -859,11 +1074,18 @@ int main(int argc, char** argv)
         std::printf("\nAS THE LOADER MAPS THEM (a copy of each DLL mapped with its code not run, resolved through the "
                     "DLL's own side): %u drives, %u sites; %u drives differed from the file\n",
                     loadedDrives, loadedSites, loadedFailures);
+    std::printf("\nTHE RUNGS: %u of %u drives were verified at the recorded addresses with %u scans of the module in "
+                "all (%.2f ms together; the search alone takes %.0f ms for the same drives); %u did not resolve as "
+                "they must\n",
+                rungOne, drives, rungScans, rungOneMs, searchMs, rungFailures);
+    if (moved)
+        std::printf("THE ADDRESS CACHE: on the moved build %u of %u drives were searched and saved by the first launch "
+                    "and verified with no scan by the second\n", savedLaunches, drives);
     std::printf("\n%u game DLLs, %u drives, %u sites: %u not as recorded, %u drives that could not be hooked\n", modules,
                 drives, sites, notAsRecorded, unhooked);
     if (!modules)
         return 2;
-    if (faultFailures || movedFailures || loadedFailures)
+    if (faultFailures || movedFailures || loadedFailures || rungFailures)
         return 1;
     if (anyBuild)
         return 0;

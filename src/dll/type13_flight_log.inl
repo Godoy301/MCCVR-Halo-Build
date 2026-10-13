@@ -115,10 +115,12 @@ struct T13Found
 
 // Finds a table in the loaded module. False: the module could not be read at all (resolution.why says why).
 template <size_t N>
-bool T13Resolve(uintptr_t base, size_t size, const drive_sites::Anchor (&rows)[N], const drive_sites::FlightSites& flight,
-                const drive_sites::T13Sites& sites, drive_cascade::Resolution<T13Found<N>>& resolution)
+bool T13Resolve(uintptr_t base, size_t size, GameTitle title, const drive_sites::Anchor (&rows)[N],
+                const drive_sites::FlightSites& flight, const drive_sites::T13Sites& sites,
+                drive_cascade::Resolution<T13Found<N>>& resolution)
 {
-    return drive_cascade::Resolve(base, size, resolution, [&](drive_resolve::Resolver& r) {
+    const drive_cascade::Drive drive{title, "pilot-observer"};
+    return drive_cascade::Resolve(base, size, drive, resolution, [&](drive_resolve::Resolver& r) {
         T13Found<N> f;
         f.t13 = drive_sites::ResolveT13(r, rows, f.rows, flight, sites);
         return f;
@@ -608,16 +610,17 @@ bool ReachType13LogInstall(uintptr_t base, size_t size, uint32_t generation)
     // No hook exists, so no detour can be observing: off until this install has proven it again.
     lane.enabled.store(false, std::memory_order_release);
     const uint64_t started = GetTickCount64();
-    // WHERE EVERYTHING IS IN THIS MODULE (drive_sites.h): found by signature and by function, proven on what was
-    // found. Nothing below reads a recorded RVA.
+    // WHERE EVERYTHING IS IN THIS MODULE (drive_sites.h, by the rungs of drive_known.h): verified at the addresses
+    // it is known to stand at, or found by search; every proof is made on those addresses either way. Nothing
+    // below trusts a recorded RVA.
     drive_cascade::Resolution<T13Found<drive_sites::kT13ReachRows>> resolution;
-    const bool opened = T13Resolve(base, size, drive_sites::kT13ReachAnchors, drive_sites::kT13ReachFlight,
-                                   drive_sites::kT13ReachSites, resolution);
+    const bool opened = T13Resolve(base, size, GameTitle::HaloReach, drive_sites::kT13ReachAnchors,
+                                   drive_sites::kT13ReachFlight, drive_sites::kT13ReachSites, resolution);
     const drive_sites::T13& found = resolution.found.t13;
     const uint32_t (&rows)[drive_sites::kT13ReachRows] = resolution.found.rows;
     static addrcascade::TierReporter s_foundHow;
     if (opened)
-        drive_cascade::Announce("REACH SF: type-13 observer", resolution.report, s_foundHow);
+        drive_cascade::Announce("REACH SF: type-13 observer", resolution, s_foundHow);
     char failed[512] = "";
     const bool anchorsOk = opened && T13RowsFound(base, drive_sites::kT13ReachAnchors, rows, failed, sizeof(failed));
     // The dispatcher's type-13 call lands on the found entry: read again from the loaded module.
@@ -918,16 +921,17 @@ bool Halo4Type13LogInstall(uintptr_t base, size_t size, uint32_t generation)
         return false;
     }
     const uint64_t started = GetTickCount64();
-    // WHERE EVERYTHING IS IN THIS MODULE (drive_sites.h): found by signature and by function, proven on what was
-    // found. Nothing below reads a recorded RVA.
+    // WHERE EVERYTHING IS IN THIS MODULE (drive_sites.h, by the rungs of drive_known.h): verified at the addresses
+    // it is known to stand at, or found by search; every proof is made on those addresses either way. Nothing
+    // below trusts a recorded RVA.
     drive_cascade::Resolution<T13Found<drive_sites::kT13Halo4Rows>> resolution;
-    const bool opened = T13Resolve(base, size, drive_sites::kT13Halo4Anchors, drive_sites::kT13Halo4Flight,
-                                   drive_sites::kT13Halo4Sites, resolution);
+    const bool opened = T13Resolve(base, size, GameTitle::Halo4, drive_sites::kT13Halo4Anchors,
+                                   drive_sites::kT13Halo4Flight, drive_sites::kT13Halo4Sites, resolution);
     const drive_sites::T13& found = resolution.found.t13;
     const uint32_t (&rows)[drive_sites::kT13Halo4Rows] = resolution.found.rows;
     static addrcascade::TierReporter s_foundHow;
     if (opened)
-        drive_cascade::Announce("H4 T13: type-13 observer", resolution.report, s_foundHow);
+        drive_cascade::Announce("H4 T13: type-13 observer", resolution, s_foundHow);
     char failed[512] = "";
     const bool anchorsOk = opened && T13RowsFound(base, drive_sites::kT13Halo4Anchors, rows, failed, sizeof(failed));
     // The dispatcher's type-13 call lands on the found entry: read again from the loaded module.

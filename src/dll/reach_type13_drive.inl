@@ -350,15 +350,17 @@ bool ReachType13Install(uintptr_t base, size_t size, uint32_t generation)
             "reinstalled");
         return false;
     }
-    // WHERE EVERYTHING IS IN THIS MODULE (drive_sites.h): found by signature and by function, proven on what was
-    // found. Nothing below reads a recorded RVA.
+    // WHERE EVERYTHING IS IN THIS MODULE (drive_sites.h, by the rungs of drive_known.h): verified at the addresses
+    // it is known to stand at, or found by search; every proof is made on those addresses either way. Nothing
+    // below trusts a recorded RVA.
     drive_cascade::Resolution<drive_sites::ReachSabre> resolution;
     const bool opened = drive_cascade::Resolve(
-        base, size, resolution, [](drive_resolve::Resolver& r) { return drive_sites::ResolveReachSabre(r); });
+        base, size, drive_cascade::Drive{GameTitle::HaloReach, "pilot-controller"}, resolution,
+        [](drive_resolve::Resolver& r) { return drive_sites::ResolveReachSabre(r); });
     const drive_sites::Flight& found = resolution.found.flight;
     static addrcascade::TierReporter s_foundHow;
     if (opened)
-        drive_cascade::Announce("Reach Sabre direct drive", resolution.report, s_foundHow);
+        drive_cascade::Announce("Reach Sabre direct drive", resolution, s_foundHow);
     char failed[96]{};
     size_t used = 0;
     // The engine TLS index: the module's own, loaded by the controller itself (the resolution), and the one this

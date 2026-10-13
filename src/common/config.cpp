@@ -1346,6 +1346,7 @@ void ConfigLoad(const wchar_t* path)
         if (!strcmp(key, "seat_fire_from_eye")) { g_config.seat_fire_from_eye = atoi(val) != 0; continue; }
         if (!strcmp(key, "aim_direct_drive"))
         { g_config.aim_direct_drive = atoi(val) != 0 ? 1 : 0; aimDirectDriveSeen = true; continue; }
+        if (!strcmp(key, "drive_address_cache")) { g_config.drive_address_cache = atoi(val) != 0 ? 1 : 0; continue; }
         if (!strcmp(key, "reach_direct_drive"))
         {
             g_config.reach_direct_drive=atoi(val);
@@ -1393,7 +1394,7 @@ void ConfigLoad(const wchar_t* path)
         if (!strcmp(key, "dev_sim_bisect")) { g_config.dev_sim_bisect=(int)strtol(val,nullptr,0)&0xFFFF; continue; }
         if (!strcmp(key, "reach_sight_fault")) { g_config.reach_sight_fault=(int)strtol(val,nullptr,0); continue; }
         if (!strcmp(key, "first_person_rung_fault")) { g_config.first_person_rung_fault=(int)strtol(val,nullptr,0)&0xF; continue; }
-        if (!strcmp(key, "drive_fault")) { g_config.drive_fault=(int)strtol(val,nullptr,0)&0x3F; continue; }
+        if (!strcmp(key, "drive_fault")) { g_config.drive_fault=(int)strtol(val,nullptr,0)&0xFF; continue; }
         if (!strcmp(key, "reach_sight_trace_length_m")) { g_config.reach_sight_trace_length_m=(float)atof(val); continue; }
         if (!strcmp(key, "reach_sight_trace_site"))
         {
@@ -2604,6 +2605,13 @@ void ConfigSave()
     fprintf(f, "# Replaces reach_direct_drive = 3 and legacy_direct_drive = 1. 0 = off. (default %d)\n",
             d.aim_direct_drive);
     fprintf(f, "aim_direct_drive = %d\n\n", g_config.aim_direct_drive);
+    fprintf(f, "# Direct drive finds the game's own aim code each time a game loads. 1 = when it had to search a\n");
+    fprintf(f, "# game DLL for that code (a game build newer than this mod knows), it remembers where it was in\n");
+    fprintf(f, "# HaloMCCVR-drive-addresses.txt beside this file, and later launches check those addresses\n");
+    fprintf(f, "# instead of searching again. That file is a cache, not a setting: every address in it is\n");
+    fprintf(f, "# checked before it is used, and it is safe to delete. 0 = never read or write that file.\n");
+    fprintf(f, "# (default %d)\n", d.drive_address_cache);
+    fprintf(f, "drive_address_cache = %d\n\n", g_config.drive_address_cache);
     fprintf(f, "# Every title (Reach also needs aim_direct_drive = 1), on foot and in vehicle seats: Halo 3,\n");
     fprintf(f, "# ODST and Reach; Halo CE and Halo 2 in their first-person seat view (vehicle_first_person = 1;\n");
     fprintf(f, "# Halo 2 where direct drive writes the seat, see seat_direct_drive); Halo 4 seats not yet.\n");

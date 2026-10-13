@@ -1169,9 +1169,10 @@ if(BUILD_TESTING)
     add_test(NAME halomccvr_drive_resolve_tests COMMAND halomccvr_drive_resolve_tests)
     # The DLL's side of that resolution (src/dll/drive_cascade.cpp), as shipped, on a module that is really loaded
     # (the test's own executable): opened through VirtualQuery, its .pdata compared with the operating system's own
-    # lookup, its TLS index taken from its PE TLS directory, a signature read through a hook patch, the line that
-    # says which rung won, and the hook watchdog as the cold worker steps it. Player flavour (the dev fault key
-    # must do nothing), then dev flavour (each forced fault must show).
+    # lookup, its TLS index taken from its PE TLS directory, a signature read through a hook patch, the address
+    # cache's file written, verified from, replaced, refused and left whole by a failed write on disk, the line
+    # that says which rung won, and the hook watchdog as the cold worker steps it. Player flavour (the dev fault
+    # key must do nothing), then dev flavour (each forced fault must show).
     foreach(halomccvr_drive_cascade_flavour "" "_dev")
         set(halomccvr_drive_cascade_target "halomccvr_drive_cascade${halomccvr_drive_cascade_flavour}_tests")
         add_executable(${halomccvr_drive_cascade_target} tests/drive_cascade_tests.cpp
@@ -1192,12 +1193,14 @@ if(BUILD_TESTING)
     # machine without the game does not fail its tests.
     # With --loaded <scratch folder> it also maps a copy of each DLL as the Windows loader does (its code not run)
     # and resolves every drive on it through the DLL's own side of the resolution (src/dll/drive_cascade.cpp).
+    # That side is built here as a dev build builds it, so the tool can run the search beside the verified addresses
+    # (the self-test bit of drive_fault) on each mapped copy.
     add_executable(halomccvr_drive_address_check tools/drive_address_check.cpp
-        src/dll/drive_cascade.cpp src/dll/sigscan.cpp
+        src/dll/drive_cascade.cpp src/dll/sigscan.cpp src/common/config.cpp
         src/common/addrcascade/AddressCascade.cpp)
     target_include_directories(halomccvr_drive_address_check PRIVATE src/common)
     target_compile_definitions(halomccvr_drive_address_check PRIVATE
-        NOMINMAX WIN32_LEAN_AND_MEAN ADDRCASCADE_FAULTS=1)
+        NOMINMAX WIN32_LEAN_AND_MEAN ADDRCASCADE_FAULTS=1 HALOMCCVR_DEV_DIAGNOSTICS=1)
     target_link_libraries(halomccvr_drive_address_check PRIVATE psapi)
     add_test(NAME halomccvr_drive_address_check COMMAND halomccvr_drive_address_check --moved --faults --brief)
     set_tests_properties(halomccvr_drive_address_check PROPERTIES SKIP_RETURN_CODE 77)

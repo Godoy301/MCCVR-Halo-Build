@@ -36170,7 +36170,8 @@ namespace
         if (!g_reachPcTarget)
         {
             drive_cascade::Resolution<ReachControlFound> resolution;
-            const bool opened = drive_cascade::Resolve(base, size, resolution, [](drive_resolve::Resolver& r) {
+            const drive_cascade::Drive drive{GameTitle::HaloReach, "control-update"};
+            const bool opened = drive_cascade::Resolve(base, size, drive, resolution, [](drive_resolve::Resolver& r) {
                 ReachControlFound f;
                 f.control = drive_sites::ResolveReachControl(r);
                 f.callers = drive_sites::ResolveCallers(r, drive_sites::kReachCallerAnchors, f.control.entry);
@@ -36182,7 +36183,7 @@ namespace
             const drive_sites::ReachControl& found = resolution.found.control;
             static addrcascade::TierReporter s_foundHow;
             if (opened)
-                drive_cascade::Announce("Reach direct-drive", resolution.report, s_foundHow);
+                drive_cascade::Announce("Reach direct-drive", resolution, s_foundHow);
             const bool entryOk = opened && found.entry && ReachColdExecutableAddress(base + found.entry);
             const bool tlsOk = opened && found.tlsBlock && ReachColdExecutableAddress(base + found.tlsBlock);
             const bool accOk = opened && found.accumulator && ReachColdExecutableAddress(base + found.accumulator);

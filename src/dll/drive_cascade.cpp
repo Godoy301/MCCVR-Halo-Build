@@ -3,13 +3,13 @@
 
 #include <cstdio>
 #include <cstring>
+#include <cwchar>
 
 #include "drive_cascade.h"
 #include "sigscan.h"
+#include "../common/config.h"
 #include "../common/log.h"
-#if HALOMCCVR_DEV_DIAGNOSTICS
-#include "../common/config.h"   // drive_fault: dev builds only
-#endif
+#include "../common/title_build_identity.h"
 
 namespace
 {
@@ -125,6 +125,35 @@ bool Open(uintptr_t base, size_t size, drive_resolve::Image& image, const char*&
     return true;
 }
 
+bool GuardedOpen(uintptr_t base, size_t size, drive_resolve::Image& image, const char*& why)
+{
+    __try
+    {
+        return Open(base, size, image, why);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        why = "a read of the module faulted";
+        return false;
+    }
+}
+
+bool GuardedRun(const drive_resolve::Image& image, uint32_t faults, bool recordedBuild, const drive_known::Entry* saved,
+                drive_known::PlanFn plan, drive_known::KeepFn keep, void* context, drive_resolve::Report& report,
+                drive_known::Outcome& outcome, const char*& why)
+{
+    __try
+    {
+        outcome = drive_known::Run(image, faults, recordedBuild, saved, plan, keep, context, report);
+        return true;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        why = "a read of the module faulted";
+        return false;
+    }
+}
+
 // The faults forced on a resolution. DEV BUILDS ONLY (config key drive_fault; drive_resolve.h: the kFault bits):
 // each forces what only a game build the tables were not measured on does, so the rung below it, or the refusal,
 // can be watched working in the running game. A player build has no key and none of the forcing code:
@@ -137,6 +166,87 @@ uint32_t Faults()
 #else
     return 0;
 #endif
+}
+
+// ------------------------------------------------------------------------------------------ the cache's file
+// Read and written where the drives are installed, on the cold worker. The lock is for a title whose install
+// runs on a worker of its own; the text buffer and the parsed file belong to whoever holds it.
+wchar_t g_cachePath[MAX_PATH] = L"";
+SRWLOCK g_cacheLock = SRWLOCK_INIT;
+char g_cacheText[drive_known::kMaxFileText];
+drive_known::File g_cacheFile;
+
+// Reads the file into g_cacheFile. What is missing or cannot be read holds nothing: a cold start.
+void ReadCacheLocked()
+{
+    g_cacheFile = drive_known::File{};
+    const HANDLE handle = CreateFileW(g_cachePath, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_DELETE, nullptr,
+                                      OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (handle == INVALID_HANDLE_VALUE)
+        return;
+    DWORD read = 0;
+    const BOOL ok = ReadFile(handle, g_cacheText, sizeof(g_cacheText), &read, nullptr);
+    CloseHandle(handle);
+    // A file that fills the buffer is larger than any this mod writes: it is not this mod's.
+    if (ok && read < sizeof(g_cacheText))
+        drive_known::Parse(g_cacheText, read, g_cacheFile);
+}
+
+// Writes g_cacheFile. NEVER IN PLACE: the text goes to a temporary file beside the cache, which then takes its
+// place in one step. Until that step the old file is whole, and a write that fails leaves it so.
+bool WriteCacheLocked()
+{
+    const size_t length = drive_known::Format(g_cacheFile, g_cacheText, sizeof(g_cacheText));
+    wchar_t temporary[MAX_PATH + 8];
+    if (!length || _snwprintf_s(temporary, _TRUNCATE, L"%ls.tmp", g_cachePath) < 0)
+        return false;
+    const HANDLE handle =
+        CreateFileW(temporary, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (handle == INVALID_HANDLE_VALUE)
+        return false;
+    DWORD written = 0;
+    const bool whole = WriteFile(handle, g_cacheText, static_cast<DWORD>(length), &written, nullptr) &&
+                       written == length && FlushFileBuffers(handle);
+    CloseHandle(handle);
+    if (whole && MoveFileExW(temporary, g_cachePath, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+        return true;
+    DeleteFileW(temporary);
+    return false;
+}
+
+inline constexpr char kOtherBuild[] = "they are of another build of this game DLL";
+
+// This drive's saved addresses for exactly this build of its module. `refused`: some were held, of another build.
+bool LookUp(const char* module, const char* id, uint64_t stamp, drive_known::Entry& entry, const char*& refused)
+{
+    bool have = false;
+    AcquireSRWLockExclusive(&g_cacheLock);
+    ReadCacheLocked();
+    if (const drive_known::Entry* held = drive_known::Find(g_cacheFile, module, id))
+    {
+        if (held->stamp == stamp)
+        {
+            entry = *held;
+            have = true;
+        }
+        else
+        {
+            refused = kOtherBuild;
+        }
+    }
+    ReleaseSRWLockExclusive(&g_cacheLock);
+    return have;
+}
+
+// Puts one drive's addresses into the file. The file is read again first, so every other drive's and every other
+// title's entry is kept.
+bool Store(const drive_known::Entry& entry)
+{
+    AcquireSRWLockExclusive(&g_cacheLock);
+    ReadCacheLocked();
+    const bool stored = drive_known::Put(g_cacheFile, entry) && WriteCacheLocked();
+    ReleaseSRWLockExclusive(&g_cacheLock);
+    return stored;
 }
 
 // One entry of the announced list: what a line that is not "as recorded" says.
@@ -163,8 +273,24 @@ int DescribeLine(const drive_resolve::Line& line, char* out, size_t size)
 
 namespace drive_cascade
 {
-bool RunPlan(uintptr_t base, size_t size, PlanThunk plan, void* context, drive_resolve::Report& report,
-             const char*& why)
+void SetCacheFile(const wchar_t* path)
+{
+    AcquireSRWLockExclusive(&g_cacheLock);
+    if (!path || _snwprintf_s(g_cachePath, _TRUNCATE, L"%ls", path) < 0)
+        g_cachePath[0] = 0;
+    ReleaseSRWLockExclusive(&g_cacheLock);
+}
+
+void SetCacheFolder(const wchar_t* folder)
+{
+    wchar_t path[MAX_PATH];
+    if (!folder || _snwprintf_s(path, _TRUNCATE, L"%lsHaloMCCVR-drive-addresses.txt", folder) < 0)
+        path[0] = 0;
+    SetCacheFile(path);
+}
+
+bool RunPlan(uintptr_t base, size_t size, const Drive& drive, drive_known::PlanFn plan, drive_known::KeepFn keep,
+             void* context, drive_resolve::Report& report, Rungs& rungs, const char*& why)
 {
     static bool s_sinkSet = false;
     if (!s_sinkSet)
@@ -173,23 +299,49 @@ bool RunPlan(uintptr_t base, size_t size, PlanThunk plan, void* context, drive_r
         addrcascade::set_logger([](const char* message) { LOG("%s", message); });
     }
     report = drive_resolve::Report{};
+    rungs = Rungs{};
     why = nullptr;
-    __try
-    {
-        drive_resolve::Image image;
-        if (!Open(base, size, image, why))
-            return false;
-        drive_resolve::Resolver resolver(image, Faults());
-        plan(resolver, context);
-        report = resolver.report();
-        return true;
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER)
+    drive_resolve::Image image;
+    if (!GuardedOpen(base, size, image, why))
+        return false;
+    const uint32_t faults = Faults();
+    // A forced fault neither reads nor writes the player's file: what it makes of a drive is not what the game
+    // DLL holds, and must never be found there by a later launch.
+    const uint32_t forcing = faults & drive_resolve::kFaultsThatForce;
+    const bool cacheOn = !forcing && g_config.drive_address_cache != 0 && g_cachePath[0] != 0;
+    const char* const module = drive_known::ModuleName(drive.title);
+    const uint64_t stamp = drive_known::Stamp(image);
+    rungs.recordedBuild =
+        title_build::Compare(drive.title, image.timeDateStamp, image.sizeOfImage) == title_build::Match::Known;
+    drive_known::Entry entry;
+    const char* otherBuild = nullptr;
+    const bool have = cacheOn && drive.id && LookUp(module, drive.id, stamp, entry, otherBuild);
+    if (!GuardedRun(image, faults, rungs.recordedBuild, have ? &entry : nullptr, plan, keep, context, report,
+                    rungs.outcome, why))
     {
         report = drive_resolve::Report{};
-        why = "a read of the module faulted";
+        rungs = Rungs{};
         return false;
     }
+    rungs.savedRefused = rungs.outcome.savedRefused ? rungs.outcome.savedRefused : otherBuild;
+    // LEARN AND SAVE: what the search found on a build the tables do not describe is the next launch's rung 1.
+    if (rungs.outcome.learn)
+    {
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        if (forcing)
+            rungs.notSaved = "a fault is being forced (drive_fault), and its result is not the game's";
+        else
+#endif
+        if (!g_config.drive_address_cache)
+            rungs.notSaved = "drive_address_cache = 0";
+        else if (!g_cachePath[0])
+            rungs.notSaved = "the mod's folder is not known";
+        else if (!drive_known::MakeEntry(entry, module, drive.id, stamp, report))
+            rungs.notSaved = "this drive has no name to save them under";
+        else if (!(rungs.saved = Store(entry)))
+            rungs.notSaved = "the file could not be written";
+    }
+    return true;
 }
 
 void FirstFailure(const drive_resolve::Report& report, char* out, size_t size)
@@ -205,49 +357,93 @@ void FirstFailure(const drive_resolve::Report& report, char* out, size_t size)
     snprintf(out, size, "nothing");
 }
 
-void Announce(const char* drive, const drive_resolve::Report& report, addrcascade::TierReporter& reporter)
+void Announce(const char* drive, const drive_resolve::Report& report, const Rungs& rungs,
+              addrcascade::TierReporter& reporter)
 {
+    using drive_known::Rung;
     using drive_resolve::Verdict;
+    const drive_known::Outcome& outcome = rungs.outcome;
     const uint32_t recorded = report.Count(Verdict::AsRecorded), moved = report.Count(Verdict::Moved),
                    several = report.Count(Verdict::RecordAmongSeveral), lost = report.NotFound();
     char tier[32];
-    snprintf(tier, sizeof(tier), "%u/%u/%u/%u", recorded, moved, several, lost);
+    snprintf(tier, sizeof(tier), "%u %u/%u/%u/%u %u%u%u%u", static_cast<unsigned>(outcome.rung), recorded, moved, several,
+             lost, rungs.saved ? 1u : 0u, outcome.searchedToo ? (outcome.searchAgrees ? 1u : 2u) : 0u,
+             outcome.recordedTried ? 1u : 0u, rungs.savedRefused ? 1u : 0u);
     if (!reporter.changed(static_cast<uintptr_t>(report.Fingerprint()), tier))
         return;
 #if HALOMCCVR_DEV_DIAGNOSTICS
-    if (const int forced = addrcascade::fault_mask())
+    if (const int forced = addrcascade::fault_mask() & static_cast<int>(drive_resolve::kFaultsThatForce))
         LOG("%s: DEV fault injection (drive_fault 0x%X) is forcing what the next line reports; it says nothing about "
             "this game build", drive, static_cast<unsigned>(forced));
 #endif
-    if (!moved && !several && !lost)
+    if (outcome.rung == Rung::Recorded)
     {
-        LOG("%s: all %u of its addresses were found by search where the tables record them", drive, recorded);
-        return;
+        LOG("%s: verified at the recorded addresses, all %u of them, with no search (this game DLL is the build the "
+            "tables were measured on)", drive, report.count);
     }
-    // Name the ones that are not as recorded, as many as fit.
-    char list[720] = "";
-    size_t used = 0;
-    uint32_t named = 0, unnamed = 0;
-    for (uint32_t i = 0; i < report.count; ++i)
+    else if (outcome.rung == Rung::Saved)
     {
-        const drive_resolve::Line& line = report.lines[i];
-        if (line.verdict == Verdict::AsRecorded)
-            continue;
-        char one[200];
-        const int length = DescribeLine(line, one, sizeof(one));
-        if (length <= 0 || used + static_cast<size_t>(length) + 3 >= sizeof(list) - 24)
+        LOG("%s: verified at the addresses saved from an earlier launch of this game build, all %u of them, with no "
+            "search (%u of them are not where the tables record them)", drive, report.count, moved);
+    }
+    else
+    {
+        // What the known addresses came to first.
+        char before[240] = "";
+        size_t length = 0;
+        if (outcome.recordedTried)
+            length += static_cast<size_t>(snprintf(before, sizeof(before), "the recorded addresses did not all verify "
+                                                                          "in this game DLL; "));
+        if (rungs.savedRefused && length < sizeof(before))
+            snprintf(before + length, sizeof(before) - length, "the addresses saved earlier were not used (%s); ",
+                     rungs.savedRefused);
+        // Name the ones that are not as recorded, as many as fit.
+        char list[720] = "";
+        size_t used = 0;
+        uint32_t named = 0, unnamed = 0;
+        for (uint32_t i = 0; i < report.count; ++i)
         {
-            ++unnamed;
-            continue;
+            const drive_resolve::Line& line = report.lines[i];
+            if (line.verdict == Verdict::AsRecorded)
+                continue;
+            char one[200];
+            const int text = DescribeLine(line, one, sizeof(one));
+            if (text <= 0 || used + static_cast<size_t>(text) + 3 >= sizeof(list) - 24)
+            {
+                ++unnamed;
+                continue;
+            }
+            used += static_cast<size_t>(snprintf(list + used, sizeof(list) - used, "%s%s", named ? "; " : "", one));
+            ++named;
         }
-        used += static_cast<size_t>(snprintf(list + used, sizeof(list) - used, "%s%s", named ? "; " : "", one));
-        ++named;
+        if (unnamed)
+            snprintf(list + used, sizeof(list) - used, "; and %u more", unnamed);
+        if (lost)
+        {
+            LOG("%s: %ssearched: of its %u addresses %u are where the tables record them, %u MOVED, %u were taken at "
+                "the recorded address among several matches, %u were NOT found: %s",
+                drive, before, report.count, recorded, moved, several, lost, list);
+        }
+        else
+        {
+            char saving[160];
+            if (rungs.saved)
+                snprintf(saving, sizeof(saving), "saved for the next launch");
+            else if (rungs.notSaved)
+                snprintf(saving, sizeof(saving), "NOT saved for the next launch (%s)", rungs.notSaved);
+            else
+                snprintf(saving, sizeof(saving), "nothing to save");
+            LOG("%s: %sfound by search: of its %u addresses %u are where the tables record them, %u MOVED, %u were "
+                "taken at the recorded address among several matches%s%s; %s",
+                drive, before, report.count, recorded, moved, several, list[0] ? ": " : "", list, saving);
+        }
     }
-    if (unnamed)
-        snprintf(list + used, sizeof(list) - used, "; and %u more", unnamed);
-    LOG("%s: of its %u addresses, found by search, %u are where the tables record them, %u MOVED, %u were taken at the "
-        "recorded address among several matches, %u were NOT found: %s",
-        drive, report.count, recorded, moved, several, lost, list);
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    if (outcome.searchedToo)
+        LOG("%s: DEV self-test (drive_fault 0x%X): the search was run as well, and it %s", drive,
+            static_cast<unsigned>(drive_resolve::kFaultSearchToo),
+            outcome.searchAgrees ? "chose the same address for every line" : "DISAGREES with the verified addresses");
+#endif
 }
 
 void HookWatch::Restart()

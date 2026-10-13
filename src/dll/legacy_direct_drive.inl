@@ -685,10 +685,12 @@ bool LegacyDriveInstall(GameTitle title, uintptr_t base, size_t size)
     const auto& site = kLegacyDriveSites[slot];
     if (st.target)
         return true;
-    // WHERE EVERYTHING IS IN THIS MODULE (drive_sites.h): found by signature, proven on what was found. Nothing
-    // below reads a recorded RVA.
+    // WHERE EVERYTHING IS IN THIS MODULE (drive_sites.h, by the rungs of drive_known.h): verified at the addresses
+    // it is known to stand at, or found by search; every proof is made on those addresses either way. Nothing
+    // below trusts a recorded RVA.
     drive_cascade::Resolution<LegacyDriveFound> resolution;
-    const bool opened = drive_cascade::Resolve(base, size, resolution, [slot](drive_resolve::Resolver& r) {
+    const drive_cascade::Drive drive{site.title, "control-update"};
+    const bool opened = drive_cascade::Resolve(base, size, drive, resolution, [slot](drive_resolve::Resolver& r) {
         LegacyDriveFound f;
         f.control = drive_sites::ResolveLegacyControl(r, slot);
         f.callers = drive_sites::ResolveCallers(r, kLegacyCallerAnchors[slot], f.control.entry);
@@ -701,7 +703,7 @@ bool LegacyDriveInstall(GameTitle title, uintptr_t base, size_t size)
     char driveName[32];
     snprintf(driveName, sizeof(driveName), "DRIVE %s", site.name);
     if (opened)
-        drive_cascade::Announce(driveName, resolution.report, g_legacyDriveFoundHow[slot]);
+        drive_cascade::Announce(driveName, resolution, g_legacyDriveFoundHow[slot]);
     if (!opened || !found.ok)
     {
         char first[280] = "";

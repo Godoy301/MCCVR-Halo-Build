@@ -1082,15 +1082,17 @@ bool InstallHalo2Drive(uintptr_t base, size_t size) noexcept
     auto& st = g_halo2Drive;
     if (st.target)
         return true;
-    // WHERE EVERYTHING IS IN THIS MODULE (drive_sites.h): found by signature, proven on what was found. Nothing
-    // below reads a recorded RVA.
+    // WHERE EVERYTHING IS IN THIS MODULE (drive_sites.h, by the rungs of drive_known.h): verified at the addresses
+    // it is known to stand at, or found by search; every proof is made on those addresses either way. Nothing
+    // below trusts a recorded RVA.
     drive_cascade::Resolution<drive_sites::Halo2Control> resolution;
     const bool opened = drive_cascade::Resolve(
-        base, size, resolution, [](drive_resolve::Resolver& r) { return drive_sites::ResolveHalo2Control(r); });
+        base, size, drive_cascade::Drive{GameTitle::Halo2, "control-update"}, resolution,
+        [](drive_resolve::Resolver& r) { return drive_sites::ResolveHalo2Control(r); });
     const drive_sites::Halo2Control& found = resolution.found;
     static addrcascade::TierReporter s_foundHow;
     if (opened)
-        drive_cascade::Announce("Halo 2 DRIVE", resolution.report, s_foundHow);
+        drive_cascade::Announce("Halo 2 DRIVE", resolution, s_foundHow);
     const bool entryOk = opened && found.entry != 0;
     const bool strideOk = opened && found.stride != 0;
     const bool yawOk = opened && found.yaw != 0;

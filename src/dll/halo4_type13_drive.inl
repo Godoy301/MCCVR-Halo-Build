@@ -537,15 +537,17 @@ bool Halo4Type13Install(uintptr_t base, size_t size, uint32_t generation)
             "Broadsword's pilot keeps the stick servo", kHalo4FlightEntryRecorded);
         return false;
     }
-    // WHERE EVERYTHING IS IN THIS MODULE (drive_sites.h): found by signature and by function, proven on what was
-    // found. Nothing below reads a recorded RVA.
+    // WHERE EVERYTHING IS IN THIS MODULE (drive_sites.h, by the rungs of drive_known.h): verified at the addresses
+    // it is known to stand at, or found by search; every proof is made on those addresses either way. Nothing
+    // below trusts a recorded RVA.
     drive_cascade::Resolution<drive_sites::Halo4Flight> resolution;
     const bool opened = drive_cascade::Resolve(
-        base, size, resolution, [](drive_resolve::Resolver& r) { return drive_sites::ResolveHalo4Flight(r); });
+        base, size, drive_cascade::Drive{GameTitle::Halo4, "pilot-controller"}, resolution,
+        [](drive_resolve::Resolver& r) { return drive_sites::ResolveHalo4Flight(r); });
     const drive_sites::Flight& found = resolution.found.flight;
     static addrcascade::TierReporter s_foundHow;
     if (opened)
-        drive_cascade::Announce("Halo 4 Broadsword direct drive", resolution.report, s_foundHow);
+        drive_cascade::Announce("Halo 4 Broadsword direct drive", resolution, s_foundHow);
     char failed[96]{};
     size_t used = 0;
     bool anchorsOk = opened;

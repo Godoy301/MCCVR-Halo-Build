@@ -12,6 +12,7 @@
 #include "game.h"
 #include "native_fault_probe.h"
 #include "dev_pad.h"
+#include "drive_cascade.h"
 #include "telemetry_recorder.h"
 
 #ifndef HALOMCCVR_BUILD_COMMIT
@@ -163,6 +164,8 @@ static DWORD WINAPI InitThread(LPVOID)
     LOG("MCC edition: %s (%ls)", DetectMccEdition(hostExe), hostExe);
     LOG("Native fault evidence: %s (HaloMCCVR-native-faults.log; observe only, exceptions retain native handling)",
         NativeFaultProbe_Init(dir.c_str(),HALOMCCVR_BUILD_COMMIT)?"enabled":"unavailable");
+    // The direct drives' address cache lives beside the log and the settings (drive_cascade.h).
+    drive_cascade::SetCacheFolder(dir.c_str());
     const std::wstring primaryConfig = dir + L"halomccvr.cfg";
     const std::wstring legacyConfig = dir + L"halo3xr.cfg";
     ConfigLoadMigrating(primaryConfig.c_str(), legacyConfig.c_str());

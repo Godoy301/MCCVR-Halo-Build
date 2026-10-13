@@ -858,6 +858,13 @@ struct Config
     // old files that set those are still read, as aliases that can only turn it on. (default 1: direct drive is
     // the aim path everything else builds on; no release ever shipped this key, so no saved file holds an old 0)
     int aim_direct_drive = 1;
+    // EVERY TITLE WITH DIRECT DRIVE: 1 = the address cache (src/common/drive_known.h). When a drive had to search
+    // its game DLL for its code -- a game build the mod's tables were not measured on -- what it found is written
+    // to HaloMCCVR-drive-addresses.txt in the mod's folder, and the next launch on that build verifies those
+    // addresses instead of searching again. The file is a cache, not a setting: every address is verified
+    // before it is used, another game build or another version of the mod's tables makes an entry dead, and
+    // deleting it costs one search. 0 = the file is neither read nor written. (default 1)
+    int drive_address_cache = 1;
     // EVERY TITLE, live from F1 > Weapon & aim > "Converged aim" (Reach's also needs direct drive; with it off
     // Reach keeps its own convergence), on foot and in Halo 3, ODST and Reach seats (reach_vehicle_aim):
     // CONVERGED AIM (1). The game traces the ray from your eye along the controller and bends the aim so the
@@ -927,7 +934,14 @@ struct Config
     // with the instruction a drive anchors on: no drive that reads the engine TLS index is hooked. Bit 4 (0x10)
     // = a hook's watchdog is told the hook never ran: it must say so once, after its ten seconds of possible
     // time. Bit 5 (0x20) = no short field anchor stands at its recorded offset in its function: each must be the
-    // one match inside that function. Read when a drive is installed; 0 for every other run.
+    // one match inside that function. Bit 6 (0x40) = the addresses saved from an earlier launch are stale: the
+    // resolution behaves as on a build that is not the recorded one, verifying them fails, and the search must
+    // find everything. Bit 7 (0x80) = a self-test, not a fault: where the known addresses verified, the search
+    // is run as well and the log says whether the two agree; what is used does not change. With bits 0, 1, 2
+    // or 5 the known addresses fail first, so the whole path shows: not verified, searched, reported. While
+    // any bit that changes what a resolution finds is set (every bit but 0x10 and 0x80) the address cache's
+    // file is neither read nor written, so a forced result can never reach a later launch. Read when a drive
+    // is installed; 0 for every other run.
     int drive_fault = 0;
     // Diagnostic: log the distinct (caller, flags, mode) of Reach's own collision_test_vector calls,
     // to identify the flags a bullet's flight test uses. Leave at 0 for play.

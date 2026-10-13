@@ -4,11 +4,14 @@
 // One table per drive: the function it hooks, the instructions that prove the fields it reads, the call sites
 // that name its callers. Every RVA here is a measurement of the retail Steam build of MCC 2025.08.16.178512.1
 // (the Store modules are byte-identical: docs/MCC-EDITIONS-EVIDENCE.md), and none is trusted to say where anything
-// is. Each drive's Resolve function finds its sites in the image it is given (drive_resolve.h: by signature
-// anywhere in the executable sections, by function for the short field anchors, by derivation for the rest) and
-// makes the address-level proofs on what it FOUND: a call's rel32 lands on the found entry, an anchor lies in the
-// function that is hooked, the dispatcher's frame agrees between its unwind info and its prologue, the engine TLS
-// index is the module's own. The recorded RVA is the cross-check that says "as recorded" or "moved".
+// is. Each drive's Resolve function resolves its sites in the image it is given -- verified at the addresses they
+// are already known to stand at, or found by search (drive_resolve.h: by signature anywhere in the executable
+// sections, by function for the short field anchors, by derivation for the rest; drive_known.h: which of the
+// two, and in what order) -- and makes the address-level proofs on those addresses either way: a call's rel32
+// lands on the entry, an anchor lies in the function that is hooked, the dispatcher's frame agrees between its
+// unwind info and its prologue, the engine TLS index is the module's own. A Resolve function does not know
+// which rung it is run on: it asks the same things in the same order, which is what lets a saved resolution be
+// verified line for line. The recorded RVA is the cross-check that says "as recorded" or "moved".
 //
 // The DLL, the unit tests and the offline check against the real game DLLs (tools/drive_address_check.cpp) all
 // include this one file: there is no second copy of any pattern.

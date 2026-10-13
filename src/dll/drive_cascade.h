@@ -1,34 +1,66 @@
 #pragma once
 // DRIVE CASCADE, the DLL's side: opens a loaded game module for the direct drives' address resolution
-// (src/common/drive_resolve.h, src/common/drive_sites.h), runs a drive's resolution on it under a structured-exception
-// guard, says once how the addresses were found, and watches a hook that is installed for calls that never come.
+// (src/common/drive_resolve.h, drive_known.h, drive_sites.h), runs a drive's resolution on it by the rungs under a
+// structured-exception guard, keeps the address cache's file, says once which rung won, and watches a hook that
+// is installed for calls that never come.
 //
 // A drive's install does this, and nothing else decides where it hooks or reads:
 //
 //     drive_cascade::Resolution<drive_sites::ReachSabre> found;
-//     if (!drive_cascade::Resolve(base, size, found, [](drive_resolve::Resolver& r) { return ResolveReachSabre(r); }))
+//     if (!drive_cascade::Resolve(base, size, {GameTitle::HaloReach, "pilot-controller"}, found,
+//                                 [](drive_resolve::Resolver& r) { return ResolveReachSabre(r); }))
 //         ... not hooked: found.why, or the report's first line that was not found ...
-//     drive_cascade::Announce("Reach Sabre direct drive", found.report, reporter);
+//     drive_cascade::Announce("Reach Sabre direct drive", found, reporter);
 //
-// Every address the install then uses is one the resolution FOUND in this module; the recorded RVAs of the tables
-// are only what it is compared with.
+// THE RUNGS (drive_known.h): the known addresses first, each verified where it stands with no search of the
+// module -- the tables' recorded RVAs when the module is the build they were measured on, otherwise the RVAs a
+// search of this same build saved -- and only when one of them fails, the search. What the search finds on a
+// build the tables do not describe is saved, so the next launch starts from it. Every address the install then
+// uses is one that was verified or found in THIS module.
 #include <cstddef>
 #include <cstdint>
 #include <type_traits>
 
 #include "../common/addrcascade/AddressCascade.hpp"
+#include "../common/drive_known.h"
 #include "../common/drive_resolve.h"
+#include "../common/runtime_types.h"
 
 namespace drive_cascade
 {
-using PlanThunk = void (*)(drive_resolve::Resolver& resolver, void* context);
+// Which drive: the title whose game DLL it is in, and its name in the address cache (one word).
+struct Drive
+{
+    GameTitle title;
+    const char* id;
+};
+
+// What a resolution went through, beyond its report.
+struct Rungs
+{
+    drive_known::Outcome outcome{};
+    bool recordedBuild = false;          // the module is the build the drive's tables were measured on
+    const char* savedRefused = nullptr;  // saved addresses were there for this drive and were not used: why
+    bool saved = false;                  // what the search found was written to the cache
+    const char* notSaved = nullptr;      // ... or why it was not, when it was worth saving
+};
+
+// THE ADDRESS CACHE'S FILE: HaloMCCVR-drive-addresses.txt in the mod's own folder, beside its log and its
+// settings. `folder` ends with a separator. Until this is called there is no file and nothing is read or saved.
+// It is a cache and not a setting: written by the mod, verified before every use, safe to delete. The setting
+// drive_address_cache = 0 turns both the reading and the writing off.
+void SetCacheFolder(const wchar_t* folder);
+// The same for a file named outright (tests).
+void SetCacheFile(const wchar_t* path);
 
 // Opens the module at `base` (its headers, the readable runs of its executable sections, its .pdata, the TLS
 // index its PE TLS directory names; every byte read as the game has it, through this mod's own enabled hooks)
-// and runs `plan` on it. False when the module could not be opened or a read faulted: `why` says which, the
-// report is empty, and the drive must not be hooked.
-bool RunPlan(uintptr_t base, size_t size, PlanThunk plan, void* context, drive_resolve::Report& report,
-             const char*& why);
+// and runs `plan` on it by the rungs. `keep` is called for the run whose result is the one in use. False when
+// the module could not be opened or a read faulted: `why` says which, the report is empty, and the drive must
+// not be hooked. Reads and writes the cache's file: call it only where a file may be read (the installs' own
+// cold worker thread), never from a detour.
+bool RunPlan(uintptr_t base, size_t size, const Drive& drive, drive_known::PlanFn plan, drive_known::KeepFn keep,
+             void* context, drive_resolve::Report& report, Rungs& rungs, const char*& why);
 
 // What one drive's resolution produced.
 template <typename Found>
@@ -36,35 +68,50 @@ struct Resolution
 {
     Found found{};
     drive_resolve::Report report{};
+    Rungs rungs{};
     const char* why = nullptr;   // the module did not open, or a read faulted
 };
 
 // Runs `plan` (Found (drive_resolve::Resolver&)) on the module. False: nothing was resolved (out.why).
 template <typename Found, typename Plan>
-bool Resolve(uintptr_t base, size_t size, Resolution<Found>& out, Plan&& plan)
+bool Resolve(uintptr_t base, size_t size, const Drive& drive, Resolution<Found>& out, Plan&& plan)
 {
     struct Context
     {
         std::remove_reference_t<Plan>* plan;
+        Found aside;
         Found* found;
-    } context{&plan, &out.found};
-    return RunPlan(base, size,
-                   [](drive_resolve::Resolver& resolver, void* raw) {
-                       auto* c = static_cast<Context*>(raw);
-                       *c->found = (*c->plan)(resolver);
-                   },
-                   &context, out.report, out.why);
+    } context{&plan, Found{}, &out.found};
+    return RunPlan(
+        base, size, drive,
+        [](drive_resolve::Resolver& resolver, void* raw) {
+            auto* c = static_cast<Context*>(raw);
+            c->aside = (*c->plan)(resolver);
+        },
+        [](void* raw) {
+            auto* c = static_cast<Context*>(raw);
+            *c->found = c->aside;
+        },
+        &context, out.report, out.rungs, out.why);
 }
 
 // The first line of a report that was not found, as "<name>: <verdict>[: <the proof that failed>]" -- what a
 // drive names when it is not hooked. "nothing" when every line was found.
 void FirstFailure(const drive_resolve::Report& report, char* out, size_t size);
 
-// WHICH RUNG WON. One line per drive saying how its addresses were found -- all where the tables record them, or
-// which moved (from where to where), which were taken at the recorded address among several matches, which were
-// not found -- and it is said again only when that answer changes (another build of the game DLL, another rung):
-// a line that always appears carries no information. `drive`: the drive's name as its own log lines begin.
-void Announce(const char* drive, const drive_resolve::Report& report, addrcascade::TierReporter& reporter);
+// WHICH RUNG WON. One line per drive: verified at the recorded addresses with no search; verified at the
+// addresses saved from an earlier launch of this build; found by search (how many moved, and whether they were
+// saved for the next launch); or which addresses were not found. It is said again only when that answer changes
+// (another build of the game DLL, another rung): a line that always appears carries no information. `drive`: the
+// drive's name as its own log lines begin.
+void Announce(const char* drive, const drive_resolve::Report& report, const Rungs& rungs,
+              addrcascade::TierReporter& reporter);
+
+template <typename Found>
+void Announce(const char* drive, const Resolution<Found>& resolution, addrcascade::TierReporter& reporter)
+{
+    Announce(drive, resolution.report, resolution.rungs, reporter);
+}
 
 // "INSTALLED" IS NOT "RUNNING". MinHook installs on any address and reports success; the only proof that an
 // address was the right one is the hook being called. One HookWatch per hook, passed over by the cold worker on
