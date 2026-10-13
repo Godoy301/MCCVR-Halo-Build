@@ -387,6 +387,10 @@ struct LegacyDriveState
     uint32_t stintKey = 0;
     bool stintPitchFailCounted = false;
     std::atomic<uint64_t> seatYawWriteMs{0}, seatPitchWriteMs{0}, seatLimitedMs{0};
+    // Halo 4: when the Broadsword pilot's flight controller last had its record written, or held for the game's own
+    // steering, by halo4_type13_drive.inl. That seat is written on that file's own proof of the record, armed here
+    // or not (LegacyDriveSeatAxes).
+    std::atomic<uint64_t> flightMs{0};
     // THE SEAT'S STOPS for the reticle (seat_limit_publication.h): after each seat write, the latch's stops on the axes
     // it read, in the record's frame, with that frame. Cleared by every update that did not end in a seat write.
     SeatStopsPublication stops{};
@@ -1036,10 +1040,11 @@ seat_drive::Axes LegacyDriveSeatAxes(GameTitle title)
     if (slot < 0)
         return axes;
     const auto& st = g_legacyDrive[slot];
-    if (!st.armed.load(std::memory_order_acquire))
-        return axes;
     const uint64_t now = GetTickCount64();
     const auto fresh = [now](uint64_t at) { return at && now >= at && now - at <= 150; };
+    // A flight controller's pilot (flightMs) is written on its own proof of the record, armed here or not.
+    if (!st.armed.load(std::memory_order_acquire) && !fresh(st.flightMs.load(std::memory_order_acquire)))
+        return axes;
     axes.yaw = fresh(st.seatYawWriteMs.load(std::memory_order_acquire));
     axes.pitch = fresh(st.seatPitchWriteMs.load(std::memory_order_acquire));
     return axes;

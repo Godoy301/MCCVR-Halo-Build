@@ -11,10 +11,10 @@
 // a slew cap), the forced-steer/redirect windows, the roll mode, the time arguments, the tag limits, Halo
 // 4's biped physics mode and runtime type override, and which dispatcher callers run in a tick.
 //
-// REACH: the controller's one hook is the direct drive's (reach_type13_drive.inl, every build). With type13_log = 1
-// its detour calls this file's observer around the native call (T13ReachBefore / T13ReachAfter), before the drive
-// writes anything; with 0 the observer is never made ready and is never called. HALO 4: this file's own hook, and
-// nothing is hooked unless type13_log = 1 (read at startup): a 0 run carries no detour, so it is a true control.
+// Each controller's one hook is the direct drive's (reach_type13_drive.inl, halo4_type13_drive.inl, every build).
+// With type13_log = 1 its detour calls this file's observer around the native call (T13ReachBefore / T13ReachAfter,
+// T13Halo4Before / T13Halo4After), before the drive writes anything; with 0 the observer is never made ready and is
+// never called.
 // The observers write NOTHING to the game. The native runs unchanged (through CallNativeWithSpareSlots:
 // seven arguments, three of them on the stack; tools/audit_caller_area.py 64828:11:v and aa524:11:v clean,
 // 6 slots a violation at entry+0x38); they read under SEH before and after it, and push POD events into a
@@ -57,9 +57,7 @@ struct T13Lane
 {
     explicit T13Lane(uint8_t laneTitle) : title(laneTitle), producer(laneTitle) {}
     const uint8_t title;                     // 0 Reach, 1 Halo 4 (the events' title)
-    // Install (worker). Read by the hook only while enabled (released after they are set).
-    void* target = nullptr;
-    void* original = nullptr;                // Halo 4's trampoline (Reach's is g_reachT13Orig)
+    // Install (worker). Read by the observer only while enabled (released after they are set).
     uintptr_t base = 0;
     std::atomic<uint32_t> generation{0};
     uintptr_t ctrlRet = 0;                   // the controller's return address in the dispatcher
@@ -67,8 +65,7 @@ struct T13Lane
     t13::CallerTable<4> callers{};
     uintptr_t pages = 0, instances = 0;      // the tag globals (pages: u64[16]; instances: u64 pointer)
     const uint32_t* tlsIndex = nullptr;
-    std::atomic<bool> enabled{false};
-    std::atomic<uint32_t> callbacks{0};      // Halo 4's quiescence counter (Reach holds g_reachCamera's)
+    std::atomic<bool> enabled{false};        // proven and ready (the controller's own hook decides whether it runs)
     // Sim thread.
     t13::OwnerClaim owner;
     std::atomic<bool> busy{false};
@@ -815,7 +812,7 @@ constexpr const char* kT13Halo4CallerNames[4] = {"alt+A34A3", "sway+A7756", "mai
 bool T13Halo4Admitted()
 {
     const auto& lane = g_t13Halo4;
-    return lane.enabled.load(std::memory_order_acquire) && g_config.type13_log &&
+    return Halo4Type13HookEnabled() && lane.enabled.load(std::memory_order_acquire) && g_config.type13_log &&
            !g_halo4Camera.teardownRequested.load(std::memory_order_acquire) &&
            g_halo4Camera.generation.load(std::memory_order_acquire) == lane.generation.load(std::memory_order_acquire) &&
            TitleAdapter_GetActiveTitle() == GameTitle::Halo4;
@@ -997,61 +994,40 @@ void T13Halo4After(T13Call& call)
     T13Observe(lane, call, T13Halo4ReadTag);
 }
 
-// Same shape as ReachType13Detour, on the lane's own quiescence counter (as legacy drive's hook).
-__declspec(noinline) void Halo4Type13Detour(int user, uint32_t vehicle, float yawD, float pitchD, const void* input,
-                                            float dtA, float dtB)
-{
-    const auto* entry = static_cast<const uintptr_t*>(_AddressOfReturnAddress());
-    auto& lane = g_t13Halo4;
-    volatile bool observing = false;
-    lane.callbacks.fetch_add(1, std::memory_order_acq_rel);
-    __try
-    {
-        const auto native = reinterpret_cast<T13ControllerFn>(lane.original);
-        if (!native)
-            return;
-        T13Call call{};
-        observing = T13Halo4Before(user, vehicle, yawD, pitchD, input, dtA, dtB, entry, call);
-        CallNativeWithSpareSlots(native, user, vehicle, yawD, pitchD, input, dtA, dtB);
-        if (observing)
-        {
-            observing = false;
-            T13Halo4After(call);
-        }
-    }
-    __finally
-    {
-        if (observing)
-            T13Release(lane);
-        lane.callbacks.fetch_sub(1, std::memory_order_acq_rel);
-    }
-}
+// The observer is called from the controller's one detour, Halo4Type13Detour (halo4_type13_drive.inl): Before, the
+// native, After. Each read has its own __except.
 } // namespace
 
 // Worker, inside InstallHalo4CameraCore after InstallHalo4VehicleInput (the module size, cold observation and
-// g_halo4EngineTlsIndex are established).
+// g_halo4EngineTlsIndex are established), BEFORE the controller's hook is installed: the observer is proven and
+// made ready here, and creates no hook of its own.
 bool Halo4Type13LogInstall(uintptr_t base, size_t size, uint32_t generation)
 {
     auto& lane = g_t13Halo4;
     if (!g_config.type13_log)
     {
-        // As Reach's: a 0 run never carries the detour (Halo4Type13LogRemove has nothing to remove).
-        LOG("H4 T13: type13_log 0: type-13 pilot controller +0x%X not hooked (no detour)", kT13Halo4EntryRva);
+        lane.enabled.store(false, std::memory_order_release);
+        LOG("H4 T13: type13_log 0: the type-13 pilot controller +0x%X is not observed", kT13Halo4EntryRva);
         return false;
     }
-    if (lane.target)
+    if (Halo4Type13HookEnabled())
     {
-        if (lane.base == base)
+        // The controller's hook is live: the observer keeps what it proved on that module, and nothing of it is
+        // rebuilt under a running detour.
+        if (lane.base == base && lane.tlsIndex)
         {
             lane.generation.store(generation, std::memory_order_release);
-            return true;
+            return lane.enabled.load(std::memory_order_acquire);
         }
-        LOG("H4 T13: the type-13 log hook is still installed on another module; not reinstalled");
+        lane.enabled.store(false, std::memory_order_release);
+        LOG("H4 T13: the controller's hook is live on another module; the observer stays off");
         return false;
     }
+    // The hook admits nothing, so no detour can be observing: off until this install has proven it again.
+    lane.enabled.store(false, std::memory_order_release);
     if (!g_halo4EngineTlsIndex)
     {
-        LOG("H4 T13: type-13 pilot controller +0x%X NOT hooked (the camera core's TLS index is unresolved); the "
+        LOG("H4 T13: type-13 pilot controller +0x%X NOT observed (the camera core's TLS index is unresolved); the "
             "log-only lane is off", kT13Halo4EntryRva);
         return false;
     }
@@ -1071,8 +1047,8 @@ bool Halo4Type13LogInstall(uintptr_t base, size_t size, uint32_t generation)
                         instances == T13Rip(base, size, 0x6CAD8A, 3, 7);
     if (!anchorsOk || !callOk || !tlsOk || !pagesOk || !instOk)
     {
-        LOG("H4 T13: type-13 pilot controller +0x%X NOT hooked (anchors failed: %s; dispatcher call=%d tls=%d "
-            "pages=%d instances=%d); the log-only lane is off, the Broadsword stays exactly as before",
+        LOG("H4 T13: type-13 pilot controller +0x%X NOT observed (anchors failed: %s; dispatcher call=%d tls=%d "
+            "pages=%d instances=%d); the log-only lane is off",
             kT13Halo4EntryRva, failed[0] ? failed : "none", callOk, tlsOk, pagesOk, instOk);
         return false;
     }
@@ -1080,14 +1056,7 @@ bool Halo4Type13LogInstall(uintptr_t base, size_t size, uint32_t generation)
     T13Callers(base, size, kT13Halo4DispatcherRva, kT13Halo4CallerRvas, lane, callerOk);
     uint32_t slot = 0;
     const bool frameOk = T13DispatcherSlot(base, kT13Halo4DispatcherRva, 26, kT13Halo4CallRva, slot);
-    void* target = reinterpret_cast<void*>(base + kT13Halo4EntryRva);
-    const MH_STATUS created = MH_CreateHook(target, reinterpret_cast<void*>(&Halo4Type13Detour), &lane.original);
-    if (created != MH_OK)
-    {
-        lane.original = nullptr;
-        LOG("H4 T13: type-13 log hook FAILED (create=%d); the lane is off", static_cast<int>(created));
-        return false;
-    }
+    // Everything the observer reads is set before it can be admitted; a fresh owner, producer and counters.
     lane.base = base;
     lane.ctrlRet = base + kT13Halo4CallRva + 5;
     lane.dispSlot = frameOk ? slot : 0;
@@ -1096,46 +1065,16 @@ bool Halo4Type13LogInstall(uintptr_t base, size_t size, uint32_t generation)
     lane.tlsIndex = g_halo4EngineTlsIndex;
     lane.generation.store(generation, std::memory_order_release);
     T13ResetForInstall(lane);
-    if (MH_EnableHook(target) != MH_OK)
-    {
-        MH_RemoveHook(target);
-        lane.original = nullptr;
-        LOG("H4 T13: type-13 log hook FAILED to enable; removed, the lane is off");
-        return false;
-    }
-    lane.target = target;
     lane.enabled.store(true, std::memory_order_release);
-    LOG("H4 T13: type-13 pilot controller +0x%X hooked LOG-ONLY in %llu ms (writes nothing; type13_log %d); "
-        "dispatcher return at entry rsp+0x%X %s; caller labels alt %d sway %d main %d nounit %d",
+    LOG("H4 T13: type-13 pilot controller +0x%X observed LOG-ONLY, proven in %llu ms (the observer writes nothing; "
+        "the hook is the direct drive's; type13_log %d); dispatcher return at entry rsp+0x%X %s; caller labels alt "
+        "%d sway %d main %d nounit %d",
         kT13Halo4EntryRva, static_cast<unsigned long long>(GetTickCount64() - started), g_config.type13_log,
         lane.dispSlot * 8u, frameOk ? "(derived from the dispatcher prologue)" : "UNAVAILABLE (caller attribution off)",
         callerOk[0], callerOk[1], callerOk[2], callerOk[3]);
     return true;
 }
 
-// Worker, inside RemoveHalo4CameraCore before RemoveHalo4VehicleInput: admission off, disable without
-// touching foreign bytes, prove quiescence (callback count + frozen-thread ingress scan of the detour and the
-// trampoline), then remove; the trampoline is forgotten only after MH_RemoveHook.
-bool Halo4Type13LogRemove()
-{
-    auto& lane = g_t13Halo4;
-    lane.enabled.store(false, std::memory_order_release);
-    if (!lane.target)
-        return true;
-    const MH_STATUS disabled = MCCVR_DisableHookForRetirement(lane.target);
-    if (disabled != MH_OK && disabled != MH_ERROR_DISABLED && disabled != MH_ERROR_NOT_CREATED)
-        return false;
-    const void* functions[]{reinterpret_cast<const void*>(&Halo4Type13Detour)};
-    const void* trampolines[]{lane.original};
-    if (!WaitForNativeDetourQuiescence(functions, trampolines, 1, lane.callbacks))
-        return false;
-    const MH_STATUS removed = MH_RemoveHook(lane.target);
-    if (removed != MH_OK && removed != MH_ERROR_NOT_CREATED)
-        return false;
-    lane.target = nullptr;
-    lane.original = nullptr;
-    return true;
-}
 #endif // HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA
 
 // ============================================================================================================

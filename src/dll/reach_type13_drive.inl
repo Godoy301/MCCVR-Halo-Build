@@ -15,7 +15,8 @@
 // desired facing (vehicle +0x1E4, the vector the hull steers by) is that forward, one tick later. No seat frame
 // applies and there is no seat limit to respect.
 //
-// WHAT A FLIGHT WAITS FOR (a stint: one craft flown without a break):
+// WHAT A FLIGHT WAITS FOR (a stint: one craft flown without a break; a reload, which may reuse the craft's handle,
+// starts another):
 //   * THE LINK. That the record written here is what the hull steers by is measured, not assumed: on each new game
 //     tick the craft's desired facing has to equal the forward of the record as the previous call left it, for
 //     kReachSabreLinkTicks ticks running. Until then nothing is written and the drive's heartbeat is not stamped,
@@ -97,6 +98,9 @@ constexpr uint32_t kReachSabreLinkTicks = 20;
 constexpr uint32_t kReachSabreLinkMissTicks = 3;
 constexpr float kReachSabreLinkAgreeDeg = 0.5f;
 constexpr float kReachSabreMaxTurnDegPerSecond = 80.0f;
+// A flight's calls come once a rendered frame: a silence this long is a death, a reload or a pause, and the next
+// call starts a flight afresh.
+constexpr uint64_t kReachSabreGapMs = 250;
 
 using ReachSabreControllerFn = void (*)(int, uint32_t, float, float, const void*, float, float);
 
@@ -112,6 +116,7 @@ struct ReachSabreDrive
     uint32_t seenReset = 0;
     uint32_t vehicle = UINT32_MAX;    // the stint's craft
     int32_t lastTick = INT32_MIN;
+    uint64_t lastCallMs = 0;
     uint32_t agree = 0, misses = 0;
     bool proven = false;
     bool haveEnd = false;
@@ -236,7 +241,9 @@ void ReachSabreAfterController(int user, uint32_t vehicle, float dtA, const uint
         d.state.store(0, std::memory_order_relaxed);
         return;
     }
-    if (vehicle != d.vehicle)
+    const uint64_t now = GetTickCount64();
+    // A new flight: another craft, the game's tick gone back (a reload) or a silence (a death, a pause).
+    if (vehicle != d.vehicle || s.tick < d.lastTick || now - d.lastCallMs > kReachSabreGapMs)
     {
         d.vehicle = vehicle;
         d.lastTick = s.tick;      // judged from the next tick on: nothing is known of the record before this call
@@ -245,6 +252,7 @@ void ReachSabreAfterController(int user, uint32_t vehicle, float dtA, const uint
         d.haveEnd = false;
         d.stints.fetch_add(1, std::memory_order_relaxed);
     }
+    d.lastCallMs = now;
     // The link, once a game tick: the tick that just ran steered by the record as the previous call left it.
     if (s.tick != d.lastTick)
     {

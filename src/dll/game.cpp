@@ -281,13 +281,22 @@ void AimTraceDev_Flush();   // a seat's aim, poll by poll (defined beside the ai
 #endif
 void Halo3SeatViewArm(int32_t unit);
 void Halo3SeatViewDisarm();
+// The hook on Halo 4's type-13 pilot controller halo4+0xAA524 (the Broadsword; halo4_type13_drive.inl): the game's
+// own controller, then the hand's aim written to the direct drive's record. Installed and removed inside Halo 4's
+// camera core. Halo4FlightPilotLive: the input thread's word that this craft's pilot is being written.
+#if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA
+bool Halo4Type13Install(uintptr_t base, size_t size, uint32_t generation);
+bool Halo4Type13Remove();
+bool Halo4Type13HookEnabled();
+bool Halo4FlightPilotLive(uint32_t vehicle);
+#endif
+void Halo4FlightDriveReport();
 #if HALOMCCVR_DEV_DIAGNOSTICS
-// DEV BUILDS ONLY: the log-only hooks on the type-13 pilot controllers (type13_flight_log.inl): the cold
-// worker's report, and Halo 4's install/remove inside its camera core.
+// DEV BUILDS ONLY: the log-only observers of the type-13 pilot controllers (type13_flight_log.inl), which the
+// controllers' detours feed when type13_log = 1: the cold worker's report, and Halo 4's own readiness.
 void Type13LogReport();
 #if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA
 bool Halo4Type13LogInstall(uintptr_t base, size_t size, uint32_t generation);
-bool Halo4Type13LogRemove();
 #endif
 #endif
 #include "../common/aim_servo_logic.h"
@@ -47126,10 +47135,8 @@ namespace
             false, std::memory_order_release);
         g_halo4Camera.teardownRequested.store(true, std::memory_order_release);
         g_halo4Camera.armed.store(false, std::memory_order_release);
-#if HALOMCCVR_DEV_DIAGNOSTICS
-        if(!Halo4Type13LogRemove())
-        { LOG("Halo 4 teardown: the type-13 log hook needs cleanup retry; retaining native module"); return false; }
-#endif
+        if(!Halo4Type13Remove())
+        { LOG("Halo 4 teardown: the Broadsword pilot controller's hook needs cleanup retry; retaining native module"); return false; }
         if(!RemoveHalo4VehicleInput())
         { LOG("Halo 4 teardown: vehicle input readers need cleanup retry; retaining native module"); return false; }
         if(!LegacyDriveRemove(GameTitle::Halo4))
@@ -47543,10 +47550,14 @@ namespace
         (void)LegacyDriveInstall(GameTitle::Halo4,base,size);
         (void)InstallHalo4VehicleInput(base,size,generation);
 #if HALOMCCVR_DEV_DIAGNOSTICS
-        // DEV BUILDS ONLY: the log-only observer on the Broadsword's pilot controller +0xAA524, called by the
-        // dispatcher instead of the accumulator legacy drive hooks (type13_flight_log.inl). Writes nothing.
+        // DEV BUILDS ONLY: the log-only observer of the Broadsword's pilot controller (type13_flight_log.inl), made
+        // ready before that controller's hook, below, can run. Writes nothing.
         (void)Halo4Type13LogInstall(base,size,generation);
 #endif
+        // The Broadsword's pilot controller +0xAA524, which the dispatcher calls instead of the accumulator the
+        // direct drive hooks (halo4_type13_drive.inl). Its own anchors decide; a miss leaves that pilot on the stick
+        // servo and nothing else changes.
+        (void)Halo4Type13Install(base,size,generation);
         (void)InstallHalo4Muzzle(base,size,generation);
         // Optional and feature-local: a refusal leaves the game's own tracker and nothing else changes.
         (void)InstallHalo4HeadRelative(base,size,generation);
@@ -48568,6 +48579,7 @@ namespace
             Halo4SeatSightReport();   // SIGHT Halo 4 seat eye / seated trace, SHOT Halo 4 seated
 #endif
             LegacyDriveReport();
+            Halo4FlightDriveReport();   // the Broadsword pilot's own line
             GunAimReport();   // DRIVE Halo 3 gun-slaved seat (the gun camera's offset), SEAT LIMIT Halo 3 gun band
             Halo3HeadRelativeReport();   // TRACKER HEAD Halo 3: the switch, by the head / the game's own
             Halo3TrackerHudHeightReport();   // TRACKER HUD HEIGHT Halo 3: the blips moved with the HUD height / not
@@ -53813,6 +53825,7 @@ bool Halo4TrackerAimReference(float& yaw) noexcept
 #include "type13_flight_log.inl"
 #endif
 #include "reach_type13_drive.inl"
+#include "halo4_type13_drive.inl"
 
 // THE FIRE-TICK EYE, Halo 3 on foot (sight_layer.h Sight_SetFireEyeSource; in every build:
 // the dev key shot_point_transport, default 1, is the A/B): the eye the shot leaves from at this fire, from the unit's
@@ -55664,6 +55677,9 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
             uint32_t seatKey = 0;
             // An air vehicle has no rotational limit: its seats never clamp the reticle.
             bool seatAircraft = false;
+            // Halo 4: this seat is the pilot's of a craft whose flight controller the drive is writing
+            // (halo4_type13_drive.inl).
+            bool halo4FlightPilot = false;
             if (!halo4Aim)
             {
                 driveSeated = followedVehicleFrame || Halo3VehicleFpActive();
@@ -55765,6 +55781,8 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
                     seatFacts.driver = true;
                     seatFacts.look_steered = true;
                     seatKey = seat_drive::SeatKey(static_cast<int>(seat.parent), seat.seat, false);
+                    halo4FlightPilot = Halo4FlightPilotLive(seat.parent);
+                    seatAircraft = halo4FlightPilot;
                 }
             }
 #endif
@@ -55774,8 +55792,10 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
             // Halo 4: with the roles unmapped, a gunner's or passenger's pitch stop cannot be told from a driver's
             // autolevel, so nothing could hold a written pitch at the stop (the latch must stay off a driver's
             // pitch). Its seats write the heading only; the pitch stays on the servo, which steers through the
-            // accumulator and so keeps every limit.
-            if (halo4Aim)
+            // accumulator and so keeps every limit. THE EXCEPTION is the pilot of a craft with its own flight
+            // controller (the Broadsword): that controller has no pitch stop and never runs the accumulator, so
+            // while the flight drive is writing that pilot both axes are the hand's.
+            if (halo4Aim && !halo4FlightPilot)
                 seatAxes.pitch = false;
             if (!driveSeated)
                 gunSlavedSeat = gunCameraSeat = false;
