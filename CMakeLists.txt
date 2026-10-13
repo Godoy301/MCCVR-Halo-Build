@@ -1190,11 +1190,15 @@ if(BUILD_TESTING)
     # again with each fault forced. It needs the MCC install folder (--mcc <folder>, or the HALOMCCVR_MCC_DIR
     # environment variable) and only reads the DLLs. With neither it exits 77, which ctest reports as skipped: a
     # machine without the game does not fail its tests.
+    # With --loaded <scratch folder> it also maps a copy of each DLL as the Windows loader does (its code not run)
+    # and resolves every drive on it through the DLL's own side of the resolution (src/dll/drive_cascade.cpp).
     add_executable(halomccvr_drive_address_check tools/drive_address_check.cpp
+        src/dll/drive_cascade.cpp src/dll/sigscan.cpp
         src/common/addrcascade/AddressCascade.cpp)
     target_include_directories(halomccvr_drive_address_check PRIVATE src/common)
     target_compile_definitions(halomccvr_drive_address_check PRIVATE
         NOMINMAX WIN32_LEAN_AND_MEAN ADDRCASCADE_FAULTS=1)
+    target_link_libraries(halomccvr_drive_address_check PRIVATE psapi)
     add_test(NAME halomccvr_drive_address_check COMMAND halomccvr_drive_address_check --moved --faults --brief)
     set_tests_properties(halomccvr_drive_address_check PROPERTIES SKIP_RETURN_CODE 77)
     add_executable(halomccvr_dev_pad_script_tests tests/dev_pad_script_tests.cpp)

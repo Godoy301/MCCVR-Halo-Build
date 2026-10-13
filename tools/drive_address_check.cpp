@@ -1,6 +1,7 @@
 // THE OFFLINE CHECK OF THE DIRECT DRIVES' ADDRESSES, against the game's own DLL files. No game, no headset.
 //
 //   halomccvr_drive_address_check --mcc "<the MCC install folder>" [--faults] [--moved] [--title <dll name>] [--brief]
+//                                 [--loaded <a scratch folder>]
 //
 // For each game DLL it lays the file out as an image (headers and sections at their RVAs, base relocations
 // applied, as the loader would), and runs every direct drive's own resolution on it: the same tables and the same
@@ -21,11 +22,19 @@
 // something was inserted ahead of it, so that no recorded RVA is right -- and checks that every drive follows it:
 // every site found 0x40 above where it was, reported moved, and the drive hookable there.
 //
+// --loaded <folder> repeats the healthy resolution on each DLL AS THE WINDOWS LOADER MAPS IT, through the DLL's own
+// side of the resolution (src/dll/drive_cascade.cpp: the module opened by VirtualQuery, its .pdata where the
+// loader put it, its TLS directory as relocated). A copy of the file is made in that folder and mapped with
+// DONT_RESOLVE_DLL_REFERENCES: sections placed and relocations applied, no import resolved, none of its code run.
+// Every drive must resolve exactly as it did from the file, and at every site the function-table entry the
+// resolution read must be the one the operating system's own lookup answers with. The copy is deleted afterwards.
+//
 // The MCC folder comes from --mcc or the HALOMCCVR_MCC_DIR environment variable. With neither, the check is
 // SKIPPED (exit 77), so a machine without the game does not fail its tests. The DLL files are only read.
 #include <Windows.h>
 
 #include <algorithm>
+#include <cstdarg>
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -34,6 +43,18 @@
 #include "addrcascade/AddressCascade.hpp"
 #include "drive_sites.h"
 #include "title_build_identity.h"
+#include "../src/dll/drive_cascade.h"
+
+// The DLL's side of the resolution logs through this (--loaded).
+void Logf(const char* format, ...)
+{
+    va_list arguments;
+    va_start(arguments, format);
+    std::printf("   | ");
+    std::vprintf(format, arguments);
+    std::printf("\n");
+    va_end(arguments);
+}
 
 namespace
 {
@@ -544,11 +565,74 @@ std::wstring Widen(const char* text)
         MultiByteToWideChar(CP_UTF8, 0, text, -1, wide.data(), n);
     return wide;
 }
+
+// --loaded: a copy of the DLL file, mapped as the Windows loader maps an image. DONT_RESOLVE_DLL_REFERENCES places
+// the sections and applies the relocations, and stops there: no import is resolved and nothing of the DLL runs.
+HMODULE MapCopy(const std::wstring& source, const std::wstring& folder, const char* title, std::wstring& copy,
+                std::string& why)
+{
+    CreateDirectoryW(folder.c_str(), nullptr);
+    copy = folder + L"\\" + Widen(title) + L".drivecheck.dll";
+    if (!CopyFileW(source.c_str(), copy.c_str(), FALSE))
+    {
+        why = "the copy could not be made";
+        return nullptr;
+    }
+    const HMODULE module = LoadLibraryExW(copy.c_str(), nullptr, DONT_RESOLVE_DLL_REFERENCES);
+    if (!module)
+        why = "the copy could not be mapped";
+    return module;
+}
+
+// One drive's resolution on the mapped copy, through drive_cascade::RunPlan.
+struct LoadedRun
+{
+    const Drive* drive = nullptr;
+    uintptr_t base = 0;
+    Outcome out{};
+    unsigned tableChecked = 0, tableAgreed = 0;
+};
+
+void LoadedThunk(Resolver& r, void* raw)
+{
+    auto* run = static_cast<LoadedRun*>(raw);
+    run->drive->run(r, run->out);
+    // At every site found: the .pdata entry the resolution reads is the operating system's own answer.
+    const Report& report = r.report();
+    for (uint32_t i = 0; i < report.count; ++i)
+    {
+        const uint32_t at = report.lines[i].found;
+        if (!at)
+            continue;
+        DWORD64 imageBase = 0;
+        const PRUNTIME_FUNCTION os = RtlLookupFunctionEntry(run->base + at, &imageBase, nullptr);
+        const drive_resolve::RuntimeFunction* ours = drive_resolve::EntryAt(r.image(), at);
+        ++run->tableChecked;
+        if (os && imageBase == run->base ? (ours && ours->begin == os->BeginAddress && ours->end == os->EndAddress)
+                                         : ours == nullptr)
+            ++run->tableAgreed;
+    }
+}
+
+// The drive on the mapped copy against the same drive on the file: null when they are the same, else what differs.
+const char* CompareLoaded(const Outcome& file, const LoadedRun& run, const Report& report, bool opened)
+{
+    if (!opened)
+        return "the mapped module did not open";
+    if (run.out.ok != file.ok || run.out.hook != file.hook || report.count != file.report.count)
+        return "the drive did not resolve the same way";
+    for (uint32_t i = 0; i < report.count; ++i)
+        if (report.lines[i].found != file.report.lines[i].found || report.lines[i].verdict != file.report.lines[i].verdict)
+            return report.lines[i].name;
+    if (run.tableAgreed != run.tableChecked)
+        return "the operating system's function table disagrees with the .pdata that was read";
+    return nullptr;
+}
 } // namespace
 
 int main(int argc, char** argv)
 {
-    std::string mcc;
+    std::string mcc, loadedFolder;
     const char* only = nullptr;
     bool faults = false, brief = false, anyBuild = false, moved = false;
     for (int i = 1; i < argc; ++i)
@@ -565,10 +649,12 @@ int main(int argc, char** argv)
             brief = true;
         else if (!std::strcmp(argv[i], "--any-build"))
             anyBuild = true;
+        else if (!std::strcmp(argv[i], "--loaded") && i + 1 < argc)
+            loadedFolder = argv[++i];
         else
         {
             std::printf("usage: %s --mcc <MCC install folder> [--faults] [--moved] [--title <dll name>] [--brief] "
-                        "[--any-build]\n", argv[0]);
+                        "[--any-build] [--loaded <scratch folder>]\n", argv[0]);
             return 2;
         }
     }
@@ -588,6 +674,7 @@ int main(int argc, char** argv)
 
     unsigned drives = 0, sites = 0, notAsRecorded = 0, unhooked = 0, faultChecks = 0, faultFailures = 0, modules = 0;
     unsigned movedSites = 0, movedFollowed = 0, movedFailures = 0;
+    unsigned loadedDrives = 0, loadedSites = 0, loadedFailures = 0;
     constexpr uint32_t kMovedShift = 0x40;
     for (const TitleDll& entry : kTitles)
     {
@@ -620,6 +707,9 @@ int main(int argc, char** argv)
             ++movedFailures;
         }
         bool any = false;
+        HMODULE mapped = nullptr;
+        std::wstring mappedCopy;
+        bool mapTried = false;
         for (const Drive& drive : kDrives)
         {
             if (std::strcmp(drive.dll, title))
@@ -678,6 +768,46 @@ int main(int argc, char** argv)
                             kMovedShift, where, followed, total, failure ? " -- NOT FOLLOWED: " : "",
                             failure ? failure : "");
             }
+            if (!loadedFolder.empty())
+            {
+                // The same drive on a copy of the DLL as the Windows loader maps it, through the DLL's own side.
+                if (!mapTried)
+                {
+                    mapTried = true;
+                    mapped = MapCopy(Widen(path.c_str()), Widen(loadedFolder.c_str()), title, mappedCopy, why);
+                    if (!mapped)
+                        std::printf("   as the loader maps it: NOT CHECKED (%s)\n", why.c_str());
+                }
+                ++loadedDrives;
+                if (!mapped)
+                {
+                    ++loadedFailures;
+                }
+                else
+                {
+                    const uintptr_t base = reinterpret_cast<uintptr_t>(mapped);
+                    const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
+                    const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS64*>(base + dos->e_lfanew);
+                    LoadedRun run;
+                    run.drive = &drive;
+                    run.base = base;
+                    Report report{};
+                    const char* notOpened = nullptr;
+                    const bool opened = drive_cascade::RunPlan(base, nt->OptionalHeader.SizeOfImage, &LoadedThunk, &run,
+                                                               report, notOpened);
+                    const char* failure = CompareLoaded(healthy, run, report, opened);
+                    loadedSites += report.count;
+                    loadedFailures += failure ? 1u : 0u;
+                    std::printf("   as the loader maps it (base %p, through drive_cascade): %s; %u of %u sites as from "
+                                "the file; the system's function table agrees at %u of %u%s%s%s%s\n",
+                                reinterpret_cast<void*>(base),
+                                run.out.hook ? (run.out.ok ? "HOOK at the same address" : "NO HOOK")
+                                             : (run.out.ok ? "READY" : "NOT READY"),
+                                failure ? 0u : report.count, report.count, run.tableAgreed, run.tableChecked,
+                                failure ? " -- DIFFERS: " : "", failure ? failure : "",
+                                notOpened ? ": " : "", notOpened ? notOpened : "");
+                }
+            }
             if (!faults)
                 continue;
             for (const FaultCase& test : kFaultCases)
@@ -705,6 +835,10 @@ int main(int argc, char** argv)
                             failure ? "UNEXPECTED: " : "as it must", failure ? failure : "");
             }
         }
+        if (mapped)
+            FreeLibrary(mapped);
+        if (!mappedCopy.empty())
+            DeleteFileW(mappedCopy.c_str());
         if (!any)
             std::printf("-- no direct drive: nothing in this title's game DLL is hooked or resolved for one\n");
         if (shifted.base)
@@ -721,11 +855,15 @@ int main(int argc, char** argv)
     if (moved)
         std::printf("\nMOVED BUILD (every section 0x%X higher, so no recorded RVA is right): %u of %u sites followed; %u "
                     "drives did not follow\n", kMovedShift, movedFollowed, movedSites, movedFailures);
+    if (!loadedFolder.empty())
+        std::printf("\nAS THE LOADER MAPS THEM (a copy of each DLL mapped with its code not run, resolved through the "
+                    "DLL's own side): %u drives, %u sites; %u drives differed from the file\n",
+                    loadedDrives, loadedSites, loadedFailures);
     std::printf("\n%u game DLLs, %u drives, %u sites: %u not as recorded, %u drives that could not be hooked\n", modules,
                 drives, sites, notAsRecorded, unhooked);
     if (!modules)
         return 2;
-    if (faultFailures || movedFailures)
+    if (faultFailures || movedFailures || loadedFailures)
         return 1;
     if (anyBuild)
         return 0;
