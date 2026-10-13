@@ -636,9 +636,6 @@ namespace
     std::atomic<bool> g_writeUp{true};         // F7
     std::atomic<bool> g_positional{true};      // M2: 6DOF head translation on by default; F6 toggles
     std::atomic<int> g_stereoEye{-1};           // M2: -1 mono, 0 left, 1 right
-    // The eye pass now running is a mono frame's only pass (mono_view_logic.h). What is done once a frame, in the
-    // pass the eye-order setting draws first, is done in this one whichever eye that setting names.
-    std::atomic<bool> g_monoEyePass{false};
 
     // World scale: Halo world units per real meter (1 wu ~= 3.05 m), so ~0.33
     // gives roughly 1:1 leaning. Offset is clamped so a bad value can't fling
@@ -3118,8 +3115,7 @@ namespace
                 return true;
 
             const int eye = g_stereoEye.load(std::memory_order_relaxed);
-            const int captureEye =
-                g_monoEyePass.load(std::memory_order_relaxed) ? 0 : (g_config.right_eye_first ? 1 : 0);
+            const int captureEye = g_config.right_eye_first ? 1 : 0;
             if (eye < 0 || eye == captureEye)
             {
                 if (!VR_ShouldCaptureAuthoredReticleThisFrame())
@@ -12092,16 +12088,16 @@ namespace
         (void)VR_GetContactTrackingSnapshot(g_fpStereoSolveScope.anatomicalTracking);
         BeginHalo3AvatarPair(saved);
         // MONO RENDERING (mono_view_logic.h): the world once, from between the eyes, for both of them. The one
-        // pass is eye 0's in every book that is kept per eye; its camera has no eye offset and no cant, and its
-        // frustum covers either eye's.
-        float monoTanX = 0.0f, monoTanY = 0.0f;
-        const bool monoFrame = VR_MonoRenderThisFrame(monoTanX, monoTanY) && !cutsceneTheater;
+        // pass is drawn as the eye the eye-order setting draws first, so what is done once a frame in that pass
+        // (the crosshair's capture) is done in it; its camera has no eye offset and no cant, and its frustum
+        // covers either eye's.
+        float monoFov[4]{};
+        const bool monoFrame = VR_MonoRenderThisFrame(GameTitle::Halo3, monoFov) && !cutsceneTheater;
         __try {
-        g_monoEyePass.store(monoFrame, std::memory_order_relaxed);
         const int firstEye = g_config.right_eye_first ? 1 : 0;
         for (int pass = 0; pass < (monoFrame ? 1 : 2); ++pass)
         {
-            const int eye = monoFrame ? 0 : (pass == 0 ? firstEye : 1 - firstEye);
+            const int eye = pass == 0 ? firstEye : 1 - firstEye;
             g_stereoEye = eye;
             VR_BeginRasterEye(eye);
             memcpy(camera, saved, sizeof(saved));
@@ -12175,8 +12171,8 @@ namespace
                 float immersiveTangentY = tanf(0.92502f);
                 if (monoFrame)
                 {
-                    immersiveTangentX = monoTanX;
-                    immersiveTangentY = monoTanY;
+                    immersiveTangentX = tanf(monoFov[1]);
+                    immersiveTangentY = tanf(monoFov[2]);
                 }
                 else if (VR_GetEyeFov(eye, eyeFov))
                 {
@@ -12355,9 +12351,10 @@ namespace
             VR_EndRasterEye();
         }
         if (monoFrame)
-            VR_NoteMonoFrameRendered();
+            VR_NoteMonoFrameRendered(GameTitle::Halo3, firstEye);
+        else
+            VR_NoteStereoFrameRendered();
         } __finally {
-            g_monoEyePass.store(false, std::memory_order_relaxed);
             EndHalo3AvatarPair();
             g_fpStereoSolveScope.armed = false;
         }

@@ -514,11 +514,18 @@ namespace
     std::atomic<bool> g_stereoEnabled{false};
     int g_renderEye = 0;
     bool g_eyeHasImage[2] = {false, false};
-    // MONO RENDERING (mono_view_logic.h). The latest picture of the world was drawn once, from between the eyes:
-    // it (eye 0's) is shown to both eyes, and the layers registered to the world are parked far. It stays so for
-    // every present until a second eye's pass begins again, so a frame presented without a new render shows the
-    // same one picture and never an old second eye. The render thread.
-    std::atomic<bool> g_monoPicture{false};
+    // MONO RENDERING (mono_view_logic.h). The latest picture of the world was drawn once, from between the eyes, as
+    // this eye (-1: the latest picture is a pair): it is shown to both eyes, and the layers registered to the world
+    // are parked far. It stays so for every present until a pass for the other eye begins again, so a frame
+    // presented without a new render shows the same one picture and never an old second eye. It counts only in
+    // the title that drew it. The render thread.
+    std::atomic<int> g_monoPictureEye{-1};
+    std::atomic<int> g_monoPictureTitle{-1};
+    // Per title: the run of single passes its renderer turned down (mono_view::MonoRejections), the module
+    // generation that run belongs to, and the setting as last seen (off and on again gives every title a new try).
+    mono_view::MonoRejections g_monoRejections[kTitleRuntimeSlotCount];
+    uint32_t g_monoRejectionsGeneration[kTitleRuntimeSlotCount]{};
+    bool g_monoRejectionsAsked = false;
 #if HALOMCCVR_HALO2_STEREO6DOF
     constexpr uint64_t kHalo2SynchronousReservationBit = uint64_t{1} << 63;
     // One eye is complete when the engine's FINISHED frame for it has been
@@ -17054,11 +17061,13 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         static std::vector<XrCompositionLayerBaseHeader*> layers;
         projectionViews.clear();
         layers.clear();
-        // The world's latest picture was drawn once, from between the eyes (mono_view_logic.h). Only the title
-        // that draws that way: the mark is cleared by a second eye's pass, which another title's own stereo
-        // path need not make, so a picture left from Halo 3 is never taken for another title's.
-        const bool monoFrame = g_monoPicture.load(std::memory_order_acquire) &&
-            TitleAdapter_GetActiveTitle() == GameTitle::Halo3;
+        // The world's latest picture was drawn once, from between the eyes, as eye `monoEye`
+        // (mono_view_logic.h). Only in the title that drew it: a picture left from one title is never taken
+        // for another's.
+        const int monoEye = g_monoPictureEye.load(std::memory_order_acquire);
+        const bool monoFrame = (monoEye == 0 || monoEye == 1) &&
+            g_monoPictureTitle.load(std::memory_order_acquire) ==
+                static_cast<int>(TitleAdapter_GetActiveTitle());
         g_nativeTheatreCaptionReady=false;
         const bool nativeSubtitleReady=fs.shouldRender && comfortFadeAlpha<=0.01f &&
             !Menu_IsOpen() && PrepareNativeSubtitle(nativeSubtitleQuad);
@@ -17756,7 +17765,7 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                                 ? CutsceneTheaterImageIndex(
                                       targetEye,
                                       g_config.cutscene_theater_flip_depth)
-                                : (monoFrame ? 0u : targetEye);
+                                : (monoFrame ? static_cast<uint32_t>(monoEye) : targetEye);
                             const bool haveImage = ceImages || reachImages ||
                                 (!reachTitle && (!halo4Title || halo4Images) &&
                                  (!halo2Title || halo2Images) &&
@@ -22115,9 +22124,13 @@ void VR_BeginRasterEye(int eye)
         g_rasterRedirected[eye] = false;
         g_dlssKicked[eye].Reset();
     }
-    // A second eye's pass: the world is being drawn for each eye again (mono_view_logic.h).
-    if (eye == 1)
-        g_monoPicture.store(false, std::memory_order_release);
+    // A pass for the other eye: the world is being drawn for each eye again (mono_view_logic.h).
+    if (eye == 0 || eye == 1)
+    {
+        const int monoEye = g_monoPictureEye.load(std::memory_order_relaxed);
+        if (monoEye >= 0 && monoEye != eye)
+            g_monoPictureEye.store(-1, std::memory_order_release);
+    }
     if (eye < 0 || eye > 1 || !g_gameSwapchain || !g_device)
         return;
     // Eye caches are created lazily when Halo binds its final scene-color RTV.
@@ -24907,14 +24920,32 @@ bool VR_GetLeftControllerPose(float outQuat[4], float outPos[3])
     return ok;
 }
 
-// MONO RENDERING (mono_view_logic.h): asked by a title's render hook once a frame, before its eye passes. True:
-// draw the world once, as eye 0, from the midpoint of the eyes looking the way the head looks, with the cover
-// given, then call VR_NoteMonoFrameRendered. The render thread.
-bool VR_MonoRenderThisFrame(float& coverTanX, float& coverTanY)
+// MONO RENDERING (mono_view_logic.h): asked once for a frame of `title`, by whoever builds that frame's eye
+// cameras, before its eye passes. True: draw the world once, as the eye the eye-order setting draws first, from
+// the midpoint of the eyes looking the way the head looks, with the symmetric frustum `coverFov` (left, right, up,
+// down; radians), then call VR_NoteMonoFrameRendered. The render thread.
+bool VR_MonoRenderThisFrame(GameTitle title, float coverFov[4])
 {
+    const size_t slot = TitleRuntimeSlotIndex(title);
+    if (g_config.mono_rendering != g_monoRejectionsAsked)
+    {
+        g_monoRejectionsAsked = g_config.mono_rendering;
+        for (mono_view::MonoRejections& rejections : g_monoRejections)
+            rejections.Reset();
+    }
+    if (slot < kTitleRuntimeSlotCount)
+    {
+        const uint32_t generation = TitleAdapter_GetGeneration(title);
+        if (generation != g_monoRejectionsGeneration[slot])
+        {
+            g_monoRejectionsGeneration[slot] = generation;
+            g_monoRejections[slot].Reset();
+        }
+    }
     mono_view::MonoInput in;
     in.asked = g_config.mono_rendering;
-    in.titleSupported = TitleAdapter_GetActiveTitle() == GameTitle::Halo3;
+    in.titleSupported = slot < kTitleRuntimeSlotCount && TitleAdapter_GetActiveTitle() == title;
+    in.rejected = slot < kTitleRuntimeSlotCount && g_monoRejections[slot].refused;
     float tanX = 0.0f, tanY = 0.0f;
     if (in.asked && in.titleSupported && g_views.size() >= 2)
     {
@@ -24931,36 +24962,84 @@ bool VR_MonoRenderThisFrame(float& coverTanX, float& coverTanY)
         in.upscaler = VR_DlssWantsEyeCamera();
     }
     const mono_view::MonoRefusal refusal = mono_view::DecideMono(in);
-    // A line when the answer changes, at most one a second.
+    // A line when the answer or the title changes, at most one a second.
     static int logged = -1;
+    static int loggedTitle = -1;
     static uint64_t loggedMs = 0;
     const uint64_t now = GetTickCount64();
-    if (static_cast<int>(refusal) != logged && now - loggedMs >= 1000)
+    if ((static_cast<int>(refusal) != logged || static_cast<int>(title) != loggedTitle) && now - loggedMs >= 1000)
     {
         logged = static_cast<int>(refusal);
+        loggedTitle = static_cast<int>(title);
         loggedMs = now;
         if (refusal == mono_view::MonoRefusal::None)
-            LOG("mono rendering: on. The world is drawn once a frame, from between the eyes, and shown to both "
-                "(cover %.1f x %.1f deg each way); the crosshair and the scope are parked at %.0f m so they do "
-                "not double",
-                atanf(tanX) * 57.2958f, atanf(tanY) * 57.2958f, mono_view::kMonoFlatDistanceM);
+            LOG("mono rendering (%s): on. The world is drawn once a frame, from between the eyes, and shown to "
+                "both (cover %.1f x %.1f deg each way); the crosshair and the scope are parked at %.0f m so they "
+                "do not double",
+                DlssTitleName(title), atanf(tanX) * 57.2958f, atanf(tanY) * 57.2958f,
+                mono_view::kMonoFlatDistanceM);
         else if (in.asked)
-            LOG("mono rendering: asked for, and this frame is drawn in stereo: %s",
+            LOG("mono rendering (%s): asked for, and this frame is drawn in stereo: %s", DlssTitleName(title),
                 mono_view::MonoRefusalName(refusal));
         else
-            LOG("mono rendering: off; the world is drawn once for each eye");
+            LOG("mono rendering (%s): off; the world is drawn once for each eye", DlssTitleName(title));
     }
     if (refusal != mono_view::MonoRefusal::None)
         return false;
-    coverTanX = tanX;
-    coverTanY = tanY;
+    const float halfX = atanf(tanX), halfY = atanf(tanY);
+    coverFov[0] = -halfX;
+    coverFov[1] = halfX;
+    coverFov[2] = halfY;
+    coverFov[3] = -halfY;
     return true;
 }
-// The one pass of a mono frame has been drawn and captured as eye 0: its picture is both eyes' for this frame.
-void VR_NoteMonoFrameRendered()
+// The one pass of a mono frame of `title` has been drawn and captured as `eye`: its picture is both eyes' for this
+// frame. What the present asks of a pair before it shows one (an image for each eye, each eye's frame serial) is
+// answered for the other eye by this one's.
+void VR_NoteMonoFrameRendered(GameTitle title, int eye)
 {
-    g_eyeHasImage[1] = g_eyeHasImage[0];
-    g_monoPicture.store(g_eyeHasImage[0], std::memory_order_release);
+    if (eye != 0 && eye != 1)
+        return;
+    const int other = 1 - eye;
+    const size_t slot = TitleRuntimeSlotIndex(title);
+    if (slot < kTitleRuntimeSlotCount)
+        g_monoRejections[slot].Rendered();
+    bool have = true;
+#if HALOMCCVR_EXPERIMENTAL_REACH_RENDER_CANDIDATE
+    if (title == GameTitle::HaloReach)
+    {
+        // Reach's eyes are its own capture textures, each with the serial of the frame it holds.
+        g_reachEyeSerial[other].store(g_reachEyeSerial[eye].load(std::memory_order_acquire),
+                                      std::memory_order_release);
+    }
+    else
+#endif
+    {
+        g_eyeHasImage[other] = g_eyeHasImage[eye];
+        have = g_eyeHasImage[eye];
+#if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA
+        if (title == GameTitle::Halo4)
+            g_halo4EyeSerial[other].store(g_halo4EyeSerial[eye].load(std::memory_order_acquire),
+                                          std::memory_order_release);
+#endif
+    }
+    g_monoPictureTitle.store(static_cast<int>(title), std::memory_order_release);
+    g_monoPictureEye.store(have ? eye : -1, std::memory_order_release);
+}
+// A pair was drawn: the latest picture is two eyes' again.
+void VR_NoteStereoFrameRendered()
+{
+    g_monoPictureEye.store(-1, std::memory_order_release);
+}
+// `title`'s renderer turned a single pass down. One is a frame dropped; a run of them leaves the title in stereo
+// (mono_view::MonoRejections), and says so once.
+void VR_NoteMonoFrameRejected(GameTitle title)
+{
+    const size_t slot = TitleRuntimeSlotIndex(title);
+    if (slot < kTitleRuntimeSlotCount && g_monoRejections[slot].Rejected())
+        LOG("mono rendering (%s): %u single passes in a row were turned down by the game's own renderer; it is "
+            "left in stereo until the setting is switched off and on again or the game is loaded anew",
+            DlssTitleName(title), mono_view::kMonoRejectionsToRefuse);
 }
 
 bool VR_GetEyeFov(int eye, float outFov[4])

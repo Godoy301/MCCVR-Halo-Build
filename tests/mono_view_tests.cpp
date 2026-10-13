@@ -95,10 +95,32 @@ int main()
         in.upscaler = true;
         Check(DecideMono(in) == MonoRefusal::Upscaler, "an upscaler per eye keeps stereo");
         in.upscaler = false;
+        in.rejected = true;
+        Check(DecideMono(in) == MonoRefusal::Rejected, "a title that turned single passes down keeps stereo");
+        in.rejected = false;
         in.eyeCantDeg = std::nanf("");
         Check(DecideMono(in) == MonoRefusal::Canted, "a non-finite cant is refused");
         for (int r = 0; r < static_cast<int>(MonoRefusal::Count); ++r)
             Check(MonoRefusalName(static_cast<MonoRefusal>(r))[0] != '?', "every refusal has a name");
+    }
+
+    // A title whose renderer turns single passes down.
+    {
+        MonoRejections rejections;
+        bool refusedEarly = false;
+        for (unsigned i = 0; i + 1 < kMonoRejectionsToRefuse; ++i)
+            refusedEarly = rejections.Rejected() || refusedEarly;
+        Check(!refusedEarly && !rejections.refused, "a short run of dropped frames is not a refusal");
+        rejections.Rendered();
+        for (unsigned i = 0; i + 1 < kMonoRejectionsToRefuse; ++i)
+            refusedEarly = rejections.Rejected() || refusedEarly;
+        Check(!refusedEarly && !rejections.refused, "a frame that is drawn ends the run");
+        Check(rejections.Rejected() && rejections.refused, "the full run refuses, and says so on that rejection");
+        Check(!rejections.Rejected() && rejections.refused, "once refused it stays refused, and says nothing more");
+        rejections.Rendered();
+        Check(rejections.refused, "a later frame does not lift the refusal");
+        rejections.Reset();
+        Check(!rejections.refused && rejections.run == 0, "the setting switched off and on again gives a new try");
     }
 
     // A crosshair 3 m away, a little right and up of the midpoint of the eyes; eyes 64 mm apart.
