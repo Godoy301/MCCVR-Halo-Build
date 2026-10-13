@@ -3,7 +3,7 @@
 // the module is opened through VirtualQuery and its own headers, its .pdata is read where the loader mapped it
 // and compared with what the operating system answers for the same addresses, its TLS index is taken from its PE
 // TLS directory, a pattern is found through one of "this mod's hooks" (a patch reported by the hook-patch
-// source), the address cache's file is really written, read back, replaced and refused on disk, the one line
+// source), the address cache's file is really written, read back, replaced, refused and found damaged on disk, the one line
 // that says which rung won is really formatted, the proofs an install makes after its plan are run on a module
 // whose unwind info cannot be read (they must fail, not fault), and the hook watchdog is stepped as the cold
 // worker steps it. It maps no game code and opens no game file.
@@ -87,6 +87,7 @@ uint32_t Rva(const void* p) { return static_cast<uint32_t>(reinterpret_cast<uint
 // on, so nothing is ever verified at recorded addresses: each resolution is a search, or saved addresses.
 constexpr drive_cascade::Drive kHalo3{GameTitle::Halo3, "control-update"};
 constexpr drive_cascade::Drive kHalo4{GameTitle::Halo4, "pilot-controller"};
+constexpr drive_cascade::Drive kReach{GameTitle::HaloReach, "control-update"};
 
 // One of "this mod's hooks", as the hook-patch source reports it: the five bytes at the marker's start are
 // overwritten in the loaded image, and what stood there is what a scan must read.
@@ -397,6 +398,20 @@ bool WriteAll(const std::wstring& path, const std::string& text)
 
 bool Exists(const std::wstring& path) { return GetFileAttributesW(path.c_str()) != INVALID_FILE_ATTRIBUTES; }
 
+// The cache file's text with one drive's entry changed and the file written out again as the mod writes it, so
+// that the entry's checksum is its own: what a file left by another build of the game, or by another version of
+// this mod, holds.
+std::string Rewritten(const std::string& text, const char* module, const char* id, void (*change)(drive_known::Entry&))
+{
+    static drive_known::File file;
+    static char out[drive_known::kMaxFileText];
+    drive_known::Parse(text.data(), text.size(), file);
+    for (uint32_t i = 0; i < file.count; ++i)
+        if (!std::strcmp(file.entries[i].module, module) && !std::strcmp(file.entries[i].id, id))
+            change(file.entries[i]);
+    return std::string(out, drive_known::Format(file, out, sizeof(out)));
+}
+
 void TestCacheFile()
 {
     const uint32_t markerRva = Rva(g_marker);
@@ -425,7 +440,7 @@ void TestCacheFile()
           "and says so");
     const std::string saved = ReadAll(cache);
     Check(Exists(cache) && !Exists(temporary) && saved.find("NOT a setting") != std::string::npos &&
-              saved.find("Safe to DELETE") != std::string::npos && saved.find("schema=1\r\n") != std::string::npos &&
+              saved.find("Safe to DELETE") != std::string::npos && saved.find("schema=2\r\n") != std::string::npos &&
               saved.find("entry halo3.dll ") != std::string::npos && saved.find(" control-update ") != std::string::npos,
           "the file is beside the mod's log, says what it is, and holds the drive's entry; no temporary file is left");
 
@@ -456,12 +471,12 @@ void TestCacheFile()
               again3.rungs.outcome.scans + again4.rungs.outcome.scans == 0,
           "and each is verified from it at its next launch, with no search");
 
-    // ANOTHER BUILD'S ENTRY (the stamp differs): ignored, said, searched, and replaced.
+    // ANOTHER BUILD'S ENTRY (the stamp differs): not tried, said, searched, and replaced.
     {
-        const size_t at = both.find("entry halo3.dll ") + 16;
-        std::string stale = both;
-        stale[at] = stale[at] == '1' ? '2' : '1';   // the first digit of the stamp
-        Check(WriteAll(cache, stale), "the file is given an entry of another build");
+        const std::string stale = Rewritten(both, "halo3.dll", "control-update",
+                                            [](drive_known::Entry& e) { e.stamp ^= 1ull << 32; });
+        Check(stale != both && stale.size() == both.size() && WriteAll(cache, stale),
+              "the file is given an entry of another build");
         Resolved r;
         lines.clear();
         addrcascade::TierReporter fresh;
@@ -472,6 +487,46 @@ void TestCacheFile()
         Check(Lines("the addresses saved earlier were not used (they are of another build of this game DLL)") == 1,
               "one line says the saved addresses were of another build");
         Check(ReadAll(cache) == both, "the file again holds this build's entry, and the other title's untouched");
+    }
+
+    // FOUND UNDER OTHER RULES OF THE SEARCH: not tried, said, searched, and replaced.
+    {
+        const std::string aged =
+            Rewritten(both, "halo3.dll", "control-update", [](drive_known::Entry& e) { ++e.rules; });
+        Check(aged != both && WriteAll(cache, aged), "the file is given an entry found under other rules of the search");
+        Resolved r;
+        lines.clear();
+        addrcascade::TierReporter fresh;
+        Check(Resolve(r, kHalo3, markerRva) && Whole(r) && r.rungs.outcome.rung == Rung::Search &&
+                  !r.rungs.outcome.savedTried && r.rungs.savedRefused == drive_known::kOtherRules && r.rungs.saved,
+              "an entry found under other rules is not tried, though every address in it would verify: the drive is "
+              "searched, and saved again");
+        drive_cascade::Announce("TEST DRIVE", r, fresh);
+        Check(Lines("the addresses saved earlier were not used (they were found under other rules of this mod's "
+                    "search)") == 1,
+              "one line says the saved addresses were found under other rules");
+        Check(ReadAll(cache) == both, "the file again holds an entry under this mod's rules, and the other title's untouched");
+    }
+
+    // A DAMAGED ENTRY (one digit of it changed, so its checksum is no longer its own): as if it were not there.
+    {
+        const size_t at = both.find("entry halo3.dll ") + 16;
+        std::string damaged = both;
+        damaged[at] = damaged[at] == '1' ? '2' : '1';   // the first digit of the stamp
+        Check(WriteAll(cache, damaged), "one digit of an entry in the file is changed");
+        Resolved r;
+        lines.clear();
+        addrcascade::TierReporter fresh;
+        Check(Resolve(r, kHalo3, markerRva) && Whole(r) && r.rungs.outcome.rung == Rung::Search &&
+                  !r.rungs.outcome.savedTried && !r.rungs.savedRefused && r.rungs.saved,
+              "an entry whose checksum is not its own is not read at all: the drive is searched as on a first launch");
+        drive_cascade::Announce("TEST DRIVE", r, fresh);
+        Check(Lines("the addresses saved earlier were not used") == 0 && Lines("saved for the next launch") == 1,
+              "nothing is said of it: there was no entry");
+        Resolved halo3Again, halo4Again;
+        Check(Resolve(halo3Again, kHalo3, markerRva) && halo3Again.rungs.outcome.rung == Rung::Saved &&
+                  Resolve(halo4Again, kHalo4, markerRva) && halo4Again.rungs.outcome.rung == Rung::Saved,
+              "the drive's entry is whole again, and the other title's was kept through it");
     }
 
     // ANOTHER VERSION OF THE DRIVE'S TABLES (the plan differs): verified bytes are not enough; searched, replaced.
@@ -503,7 +558,7 @@ void TestCacheFile()
                   !r.rungs.outcome.savedTried && r.rungs.saved,
               "a corrupted, empty, truncated or foreign-schema file is a cold start: searched, and saved");
         const std::string after = ReadAll(cache);
-        Check(after.find("schema=1\r\n") != std::string::npos && after.find("entry halo3.dll ") != std::string::npos &&
+        Check(after.find("schema=2\r\n") != std::string::npos && after.find("entry halo3.dll ") != std::string::npos &&
                   after.back() == '\n',
               "and the file is whole again");
     }
@@ -595,6 +650,62 @@ void TestCacheFile()
         Check(ReadAll(cache) == before, "player build: nothing written");
 #endif
         g_config.drive_fault = 0;
+    }
+
+    // A LINE SAVED AS THE SINGLE MATCH IN ITS FUNCTION: the next launch searches that one function again, and
+    // says so.
+    {
+        DWORD64 imageBase = 0;
+        const PRUNTIME_FUNCTION entry = RtlLookupFunctionEntry(reinterpret_cast<DWORD64>(&Framed), &imageBase, nullptr);
+        const uint32_t start = entry ? entry->BeginAddress : 0, end = entry ? entry->EndAddress : 0;
+        // Twelve bytes of the framed function's own body that stand in it once. The plan records them four bytes
+        // further on, where they are not: the search finds them off their offset, as the function's single match.
+        const auto* const code = reinterpret_cast<const uint8_t*>(g_base);
+        uint32_t at = 0;
+        for (uint32_t candidate = start + 4; start && candidate + 16 <= end && !at; ++candidate)
+        {
+            uint32_t matches = 0;
+            for (uint32_t other = start; other + 12 <= end; ++other)
+                matches += !std::memcmp(code + other, code + candidate, 12) ? 1u : 0u;
+            if (matches == 1)
+                at = candidate;
+        }
+        Check(at != 0, "the framed function holds twelve bytes that stand in it once");
+        std::string row;
+        char byte[4];
+        for (uint32_t i = 0; at && i < 12; ++i)
+        {
+            std::snprintf(byte, sizeof(byte), "%02X", code[at + i]);
+            row += i ? " " : "";
+            row += byte;
+        }
+        struct WithRow
+        {
+            uint32_t marker = 0, row = 0;
+        };
+        const auto resolve = [&](drive_cascade::Resolution<WithRow>& out) {
+            static const std::string marker = MarkerPattern();
+            return drive_cascade::Resolve(g_base, g_size, kReach, out, [&](drive_resolve::Resolver& r) {
+                WithRow f;
+                f.marker = r.Unique("MARKER", markerRva, marker.c_str());
+                f.row = r.InFunction("ROW", at + 4, start, start, row.c_str());
+                return f;
+            });
+        };
+        drive_cascade::Resolution<WithRow> first, next;
+        lines.clear();
+        addrcascade::TierReporter fresh;
+        Check(at && resolve(first) && first.found.row == at && first.rungs.outcome.rung == Rung::Search &&
+                  first.report.lines[1].how == drive_resolve::How::FunctionExtent && first.rungs.saved,
+              "a row that is not at its recorded offset is found as the single match in its function, and saved");
+        Check(at && resolve(next) && next.found.row == at && next.found.marker == markerRva &&
+                  next.rungs.outcome.rung == Rung::Saved && next.rungs.outcome.scans == 1 && next.report.scans == 1,
+              "the next launch verifies it with that one function searched again, and the module not searched");
+        drive_cascade::Announce("TEST DRIVE", next, fresh);
+        Check(Lines("TEST DRIVE: verified at the addresses saved from an earlier launch of this game build, all 2 of "
+                    "them, with no search of the module (1 of them are not where the tables record them; 1 of its "
+                    "functions were searched again, each for a line saved as the single match in it)") == 1,
+              "and its line says which search was made again");
     }
 
     drive_cascade::SetCacheFile(nullptr);

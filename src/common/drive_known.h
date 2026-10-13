@@ -8,8 +8,8 @@
 //     (b) Otherwise the RVAs an earlier search found in exactly this build, read back from the address cache.
 //     Every signature's bytes must stand at its known address, and the drive's own plan makes every proof on
 //     those addresses that it makes on searched ones (drive_resolve.h has what that is, and why leaving out the
-//     count of matches is sound). ONE line that fails, and the whole drive goes to rung 2: the two are never
-//     mixed.
+//     count of matches is sound). A saved address is moreover taken only under the rule the search placed it by.
+//     ONE line that fails, and the whole drive goes to rung 2: the two are never mixed.
 //   RUNG 2, THE SEARCH (drive_resolve.h), as if nothing were known.
 //   LEARN. When the search resolved the whole drive and the answer is not simply "the recorded addresses, on the
 //     recorded build", the addresses are worth remembering: the caller saves them, and the next launch on this
@@ -17,10 +17,19 @@
 //
 // THE ADDRESS CACHE is a hint, never a setting and never a shortcut past validation. An entry is one drive's
 // addresses for one module build (the stamp: PE TimeDateStamp and SizeOfImage, the pair a debugger matches a PDB
-// by) and one version of that drive's tables (the plan hash: every name, recorded RVA and pattern the drive asks
-// for). A patched game has another stamp and an updated mod another plan, so either makes an entry dead by
-// construction; and an entry that is used is still verified byte for byte, so a wrong one costs a few comparisons
-// and falls through to the search. Deleting the file is a cold start, nothing more.
+// by), one version of that drive's tables (the plan hash: every name, recorded RVA and pattern the drive asks
+// for) and one version of the search's rules (drive_resolve::kRulesVersion). A patched game has another stamp, an
+// updated mod another plan or other rules, so each of them makes an entry dead by construction. With every
+// address the entry holds HOW the search placed it, and the address is verified under that same rule (a row found
+// at its recorded offset is taken only there, a signature found among several only at its recorded address), so
+// a saved address is accepted where the search that saved it would take it again. An entry that does not verify
+// costs a few comparisons and falls through to the search. Deleting the file is a cold start, nothing more.
+//
+// Each entry ends in a checksum over all of it, with a constant salt. That guards against STALE AND DAMAGED
+// files: one cut short, one a tool rewrote, one a hand changed in passing. It does not stop a person who edits
+// an entry on purpose and computes the checksum again, and nothing here pretends it does. What stands between
+// such a file and the game is the verification: every address must hold its row's bytes, in its function, with
+// every proof of the drive's plan made on it.
 //
 // This file is the engine-free part: the rungs, and the cache's text. It reads and writes no file (the DLL's side
 // does, src/dll/drive_cascade.cpp; the tests and the offline check use the same text functions).
@@ -39,7 +48,7 @@ using drive_resolve::Report;
 using drive_resolve::Resolver;
 
 // ------------------------------------------------------------------------------------------------- the cache
-inline constexpr uint32_t kSchema = 1;
+inline constexpr uint32_t kSchema = 2;
 inline constexpr uint32_t kMaxModule = 24;
 inline constexpr uint32_t kMaxId = 32;
 inline constexpr uint32_t kMaxEntries = 16;   // one per drive of a module; there are nine drives
@@ -51,9 +60,49 @@ struct Entry
     char id[kMaxId]{};           // the drive, without spaces: "control-update"
     uint64_t stamp = 0;          // the module build they are of
     uint64_t plan = 0;           // the version of the drive's tables they answer (Report::plan)
+    uint32_t rules = 0;          // the version of the search's rules that found them (drive_resolve::kRulesVersion)
     uint32_t count = 0;
     uint32_t rvas[drive_resolve::kMaxLines]{};   // every line's address, in the plan's order
+    uint8_t placed[drive_resolve::kMaxLines]{};  // how the search placed each one (drive_resolve::Placement)
 };
+
+inline bool IsPlacement(uint8_t code)
+{
+    return code == 'U' || code == 'R' || code == 'O' || code == 'X' || code == 'S' || code == 'D';
+}
+
+// The checksum an entry is written with and read against: FNV-1a over every field, started from a salted basis
+// so that it is this file's and not the plain hash of a line. The head of this file has what it guards against,
+// and what it does not.
+inline uint64_t Checksum(const Entry& entry)
+{
+    uint64_t h = 1469598103934665603ull ^ 0x48414C4F4D435652ull;
+    const auto byte = [&h](uint8_t v) {
+        h ^= v;
+        h *= 1099511628211ull;
+    };
+    const auto number = [&byte](uint64_t v) {
+        for (int i = 0; i < 8; ++i)
+            byte(static_cast<uint8_t>(v >> (i * 8)));
+    };
+    const auto text = [&byte](const char* s, size_t capacity) {
+        for (size_t i = 0; i < capacity && s[i]; ++i)
+            byte(static_cast<uint8_t>(s[i]));
+        byte(0);
+    };
+    text(entry.module, sizeof(entry.module));
+    text(entry.id, sizeof(entry.id));
+    number(entry.stamp);
+    number(entry.plan);
+    number(entry.rules);
+    number(entry.count);
+    for (uint32_t i = 0; i < entry.count && i < drive_resolve::kMaxLines; ++i)
+    {
+        number(entry.rvas[i]);
+        byte(entry.placed[i]);
+    }
+    return h;
+}
 
 struct File
 {
@@ -93,8 +142,9 @@ inline bool Word(const char* text, size_t capacity)
     return length < capacity;
 }
 
-// A whole resolution as an entry. False when it is not one that may be saved (a line missing, a name that is not
-// a word).
+// A whole resolution as an entry. False when it is not one that may be saved: a line missing, a name that is not
+// a word, or a report that is not a SEARCH's (only a search says how each line was placed; lines that were
+// verified at known addresses say nothing new).
 inline bool MakeEntry(Entry& entry, const char* module, const char* id, uint64_t stamp, const Report& report)
 {
     entry = Entry{};
@@ -104,9 +154,18 @@ inline bool MakeEntry(Entry& entry, const char* module, const char* id, uint64_t
     std::snprintf(entry.id, sizeof(entry.id), "%s", id);
     entry.stamp = stamp;
     entry.plan = report.plan;
+    entry.rules = drive_resolve::kRulesVersion;
     entry.count = report.count;
     for (uint32_t i = 0; i < report.count; ++i)
+    {
         entry.rvas[i] = report.lines[i].found;
+        entry.placed[i] = static_cast<uint8_t>(drive_resolve::PlacementOf(report.lines[i]));
+        if (!IsPlacement(entry.placed[i]))
+        {
+            entry = Entry{};
+            return false;
+        }
+    }
     return true;
 }
 
@@ -117,6 +176,24 @@ inline const Entry* Find(const File& file, const char* module, const char* id)
         if (!std::strcmp(file.entries[i].module, module) && !std::strcmp(file.entries[i].id, id))
             return &file.entries[i];
     return nullptr;
+}
+
+inline constexpr char kOtherBuild[] = "they are of another build of this game DLL";
+inline constexpr char kOtherRules[] = "they were found under other rules of this mod's search";
+
+// The entry that may be tried for a drive in the module build `stamp`: held for it, of that build, and found
+// under the rules this mod searches by now. Null, with `refused`, when one is held and is not that.
+inline const Entry* Usable(const File& file, const char* module, const char* id, uint64_t stamp, const char*& refused)
+{
+    refused = nullptr;
+    const Entry* const held = Find(file, module, id);
+    if (!held)
+        return nullptr;
+    if (held->stamp != stamp)
+        refused = kOtherBuild;
+    else if (held->rules != drive_resolve::kRulesVersion)
+        refused = kOtherRules;
+    return refused ? nullptr : held;
 }
 
 // Puts a drive's addresses in, in place of whatever was held for that drive of that module (an older build's are
@@ -135,8 +212,9 @@ inline bool Put(File& file, const Entry& entry)
     return true;
 }
 
-// The longest line the file holds: an entry with every line, eight hex digits and a comma each.
-inline constexpr size_t kMaxLineText = 160 + static_cast<size_t>(drive_resolve::kMaxLines) * 9;
+// The longest line the file holds: an entry with every line (a letter, eight hex digits and a comma each), its
+// head and its checksum.
+inline constexpr size_t kMaxLineText = 200 + static_cast<size_t>(drive_resolve::kMaxLines) * 10;
 // Room for the head and a full file.
 inline constexpr size_t kMaxFileText = 1024 + static_cast<size_t>(kMaxEntries) * kMaxLineText;
 
@@ -160,23 +238,26 @@ inline size_t Format(const File& file, char* out, size_t capacity)
               "# It holds where the direct drives' code was found in a game DLL that is not the build the mod's own\r\n"
               "# tables were measured on, so that the next launch can check those addresses instead of searching the\r\n"
               "# whole DLL for them again. Every address is checked again before it is used.\r\n"
+              "# Each entry ends in a checksum; one that no longer matches it is ignored and searched for again.\r\n"
               "# Safe to DELETE at any time: the next launch searches once and writes it again.\r\n");
     put("schema=%u\r\n", kSchema);
     for (uint32_t i = 0; i < file.count; ++i)
     {
         const Entry& e = file.entries[i];
-        put("entry %s %016llX %s %016llX %u ", e.module, static_cast<unsigned long long>(e.stamp), e.id,
-            static_cast<unsigned long long>(e.plan), e.count);
+        // entry <module> <stamp> <drive> <plan> <rules> <count> <placement><rva>,... <checksum>
+        put("entry %s %016llX %s %016llX %u %u ", e.module, static_cast<unsigned long long>(e.stamp), e.id,
+            static_cast<unsigned long long>(e.plan), e.rules, e.count);
         for (uint32_t k = 0; k < e.count; ++k)
-            put(k ? ",%X" : "%X", e.rvas[k]);
-        put("%s", "\r\n");
+            put(k ? ",%c%X" : "%c%X", IsPlacement(e.placed[k]) ? e.placed[k] : '?', e.rvas[k]);
+        put(" %016llX\r\n", static_cast<unsigned long long>(Checksum(e)));
     }
     return fits ? used : 0;
 }
 
-// Reads a file's text. Only whole, well-formed entries of this schema are taken: a line that is cut short, has
-// another count of addresses than it says, or follows a schema line of another number is skipped, and a file with
-// no schema line holds nothing. Never fails: what cannot be read is a cold start.
+// Reads a file's text. Only whole, well-formed entries of this schema whose checksum is their own are taken: a
+// line that is cut short, was changed, has another count of addresses than it says, or follows a schema line of
+// another number is skipped, and a file with no schema line holds nothing. Never fails: what cannot be read is a
+// cold start.
 inline void Parse(const char* text, size_t size, File& out)
 {
     out = File{};
@@ -206,7 +287,7 @@ inline void Parse(const char* text, size_t size, File& out)
         }
         if (schema != kSchema || std::strncmp(line, "entry ", 6))
             continue;
-        // entry <module> <stamp> <drive> <plan> <count> <rva,rva,...>
+        // entry <module> <stamp> <drive> <plan> <rules> <count> <placement><rva>,... <checksum>
         Entry e;
         char* cursor = line + 6;
         const auto word = [&cursor](char* into, size_t capacity) {
@@ -235,21 +316,27 @@ inline void Parse(const char* text, size_t size, File& out)
             cursor = after;
             return true;
         };
-        uint64_t count = 0;
+        uint64_t count = 0, rules = 0, checksum = 0;
         if (!word(e.module, sizeof(e.module)) || !number(16, e.stamp) || *cursor++ != ' ' ||
-            !word(e.id, sizeof(e.id)) || !number(16, e.plan) || *cursor++ != ' ' || !number(10, count) ||
-            *cursor++ != ' ' || !e.stamp || !count || count > drive_resolve::kMaxLines ||
-            !Word(e.module, kMaxModule) || !Word(e.id, kMaxId))
+            !word(e.id, sizeof(e.id)) || !number(16, e.plan) || *cursor++ != ' ' || !number(10, rules) ||
+            *cursor++ != ' ' || !number(10, count) || *cursor++ != ' ' || !e.stamp || rules > 0xFFFFFFFFull ||
+            !count || count > drive_resolve::kMaxLines || !Word(e.module, kMaxModule) || !Word(e.id, kMaxId))
             continue;
+        e.rules = static_cast<uint32_t>(rules);
         e.count = static_cast<uint32_t>(count);
         bool good = true;
         for (uint32_t k = 0; good && k < e.count; ++k)
         {
             uint64_t rva = 0;
-            good = number(16, rva) && rva != 0 && rva <= 0xFFFFFFFFull && (k + 1 == e.count ? *cursor == 0 : *cursor++ == ',');
+            e.placed[k] = static_cast<uint8_t>(*cursor);
+            good = IsPlacement(e.placed[k]);
+            if (good)
+                ++cursor;
+            good = good && number(16, rva) && rva != 0 && rva <= 0xFFFFFFFFull &&
+                   *cursor++ == (k + 1 == e.count ? ' ' : ',');
             e.rvas[k] = static_cast<uint32_t>(rva);
         }
-        if (good)
+        if (good && number(16, checksum) && *cursor == 0 && checksum == Checksum(e))
             (void)Put(out, e);
     }
 }
@@ -294,8 +381,8 @@ inline bool SameAddresses(const Report& a, const Report& b)
 }
 
 // One drive, by the rungs. `recordedBuild`: the module is the build the drive's tables were measured on. `saved`:
-// the cache's entry for this drive in exactly this build of the module, or null. `report` is the report of the
-// rung in use.
+// the cache's entry for this drive in exactly this build of the module (Usable), or null. `report` is the report
+// of the rung in use.
 inline Outcome Run(const Image& image, uint32_t faults, bool recordedBuild, const Entry* saved, PlanFn plan, KeepFn keep,
                    void* context, Report& report)
 {
@@ -303,11 +390,17 @@ inline Outcome Run(const Image& image, uint32_t faults, bool recordedBuild, cons
     using drive_resolve::Source;
     Outcome out;
     report = Report{};
+    // Addresses found under other rules are not tried at all: what those rules accepted is not known here.
+    if (saved && saved->rules != drive_resolve::kRulesVersion)
+    {
+        out.savedRefused = kOtherRules;
+        saved = nullptr;
+    }
     // A forced stale save stands for a build that is not the recorded one and whose saved addresses are wrong.
     const bool stale = drive_resolve::Fault(faults, drive_resolve::kFaultSavedStale);
     if (recordedBuild && !stale)
     {
-        Resolver resolver(image, faults, Known{Source::Recorded, nullptr, 0});
+        Resolver resolver(image, faults, Known{Source::Recorded, nullptr, 0, nullptr});
         plan(resolver, context);
         out.recordedTried = true;
         out.scans += resolver.report().scans;
@@ -320,9 +413,11 @@ inline Outcome Run(const Image& image, uint32_t faults, bool recordedBuild, cons
     }
     if (out.rung == Rung::None && (saved || stale))
     {
-        Resolver resolver(image, faults, Known{Source::Saved, saved ? saved->rvas : nullptr, saved ? saved->count : 0});
+        Resolver resolver(image, faults, Known{Source::Saved, saved ? saved->rvas : nullptr, saved ? saved->count : 0,
+                                               saved ? saved->placed : nullptr});
         plan(resolver, context);
         out.savedTried = true;
+        out.savedRefused = nullptr;
         out.scans += resolver.report().scans;
         const Report& got = resolver.report();
         if (!got.Complete())
@@ -335,10 +430,17 @@ inline Outcome Run(const Image& image, uint32_t faults, bool recordedBuild, cons
         }
         else
         {
-            // What follows from the verified addresses must be what followed from them when they were saved.
+            // What follows from the verified addresses must be what followed from them when they were saved,
+            // and each line must be of the kind the entry says it was placed as. (A line verified at its saved
+            // address has had its placement applied where it was verified.)
             for (uint32_t i = 0; i < got.count && !out.savedRefused; ++i)
-                if (got.lines[i].found != saved->rvas[i])
+            {
+                const drive_resolve::Line& line = got.lines[i];
+                if (line.found != saved->rvas[i] ||
+                    (line.how != drive_resolve::How::Known &&
+                     static_cast<uint8_t>(drive_resolve::PlacementOf(line)) != saved->placed[i]))
                     out.savedRefused = kSavedStale;
+            }
         }
         if (!out.savedRefused)
         {

@@ -230,28 +230,17 @@ bool WriteCacheLocked()
     return false;
 }
 
-inline constexpr char kOtherBuild[] = "they are of another build of this game DLL";
-
-// This drive's saved addresses for exactly this build of its module. `refused`: some were held, of another build.
+// This drive's saved addresses for exactly this build of its module, found under the rules this mod searches by.
+// `refused`: some were held, and are of another build or of other rules.
 bool LookUp(const char* module, const char* id, uint64_t stamp, drive_known::Entry& entry, const char*& refused)
 {
-    bool have = false;
     AcquireSRWLockExclusive(&g_cacheLock);
     ReadCacheLocked();
-    if (const drive_known::Entry* held = drive_known::Find(g_cacheFile, module, id))
-    {
-        if (held->stamp == stamp)
-        {
-            entry = *held;
-            have = true;
-        }
-        else
-        {
-            refused = kOtherBuild;
-        }
-    }
+    const drive_known::Entry* const usable = drive_known::Usable(g_cacheFile, module, id, stamp, refused);
+    if (usable)
+        entry = *usable;
     ReleaseSRWLockExclusive(&g_cacheLock);
-    return have;
+    return usable != nullptr;
 }
 
 // Puts one drive's addresses into the file. The file is read again first, so every other drive's and every other
@@ -330,8 +319,8 @@ bool RunPlan(uintptr_t base, size_t size, const Drive& drive, drive_known::PlanF
     rungs.recordedBuild =
         title_build::Compare(drive.title, image.timeDateStamp, image.sizeOfImage) == title_build::Match::Known;
     drive_known::Entry entry;
-    const char* otherBuild = nullptr;
-    const bool have = cacheOn && drive.id && LookUp(module, drive.id, stamp, entry, otherBuild);
+    const char* notUsable = nullptr;
+    const bool have = cacheOn && drive.id && LookUp(module, drive.id, stamp, entry, notUsable);
     if (!GuardedRun(image, faults, rungs.recordedBuild, have ? &entry : nullptr, plan, keep, context, report,
                     rungs.outcome, why))
     {
@@ -339,7 +328,7 @@ bool RunPlan(uintptr_t base, size_t size, const Drive& drive, drive_known::PlanF
         rungs = Rungs{};
         return false;
     }
-    rungs.savedRefused = rungs.outcome.savedRefused ? rungs.outcome.savedRefused : otherBuild;
+    rungs.savedRefused = rungs.outcome.savedRefused ? rungs.outcome.savedRefused : notUsable;
     // LEARN AND SAVE: what the search found on a build the tables do not describe is the next launch's rung 1.
     if (rungs.outcome.learn)
     {
@@ -399,8 +388,16 @@ void Announce(const char* drive, const drive_resolve::Report& report, const Rung
     }
     else if (outcome.rung == Rung::Saved)
     {
-        LOG("%s: verified at the addresses saved from an earlier launch of this game build, all %u of them, with no "
-            "search (%u of them are not where the tables record them)", drive, report.count, moved);
+        // A line saved as the single match in its function has had that function searched again: the rule it
+        // was placed by, applied whole (drive_resolve.h).
+        if (report.scans)
+            LOG("%s: verified at the addresses saved from an earlier launch of this game build, all %u of them, with "
+                "no search of the module (%u of them are not where the tables record them; %u of its functions were "
+                "searched again, each for a line saved as the single match in it)",
+                drive, report.count, moved, report.scans);
+        else
+            LOG("%s: verified at the addresses saved from an earlier launch of this game build, all %u of them, with "
+                "no search (%u of them are not where the tables record them)", drive, report.count, moved);
     }
     else
     {

@@ -4,13 +4,15 @@
 // function starts and extents from .pdata, chained fragments included; the call, rip-operand and TLS proofs; the
 // reads through this mod's own hooks; and every forced fault. Then the rungs (src/common/drive_known.h): the known
 // addresses verified with no search, one failed line sending the whole drive to the search, what a search found
-// saved and verified the next time, and the address cache's text.
+// saved and verified the next time, a saved address taken only as the search placed it, and the address cache's
+// text with its rules version and checksum.
 #define DRIVE_RESOLVE_FAULTS 1
 #include "drive_known.h"
 #include "drive_resolve.h"
 
 #include <cstdio>
 #include <cstring>
+#include <string>
 #include <vector>
 
 namespace
@@ -856,6 +858,9 @@ void TestRungSaved()
               entry.count == 4 && entry.plan == report.plan && entry.rvas[0] == kMiniEntry + kShift &&
               entry.rvas[3] == kMiniCallSite + kShift + 8,
           "what the search found becomes an entry: every line's address, the stamp, the plan");
+    Check(entry.rules == kRulesVersion && entry.placed[0] == 'U' && entry.placed[1] == 'O' && entry.placed[2] == 'U' &&
+              entry.placed[3] == 'D',
+          "and, with each address, how the search placed it, under the rules it searched by");
     // Second launch: verified at the saved addresses, no search.
     Mini again;
     Report second;
@@ -866,6 +871,9 @@ void TestRungSaved()
               second.Complete() && second.Count(Verdict::Moved) == 4 && AllHow(second, How::Known) &&
               second.lines[1].how == How::Known && drive_known::SameAddresses(second, report),
           "and has the same addresses, each still reported as not where the tables record it");
+    drive_known::Entry notASearch;
+    Check(!drive_known::MakeEntry(notASearch, "halo3.dll", "control-update", drive_known::Stamp(image), second),
+          "a result that was only verified does not become an entry: only a search says how each line was placed");
 
     // The same stamp, but the code is elsewhere now: the saved addresses do not verify, and the search runs.
     Module other;
@@ -885,6 +893,13 @@ void TestRungSaved()
     out = RunMini(image, 0, false, &shorter, again, second);
     Check(out.rung == drive_known::Rung::Search && out.savedRefused != nullptr && again.ok,
           "nor an entry with another number of lines");
+    // Found under other rules of the search.
+    drive_known::Entry otherRules = entry;
+    ++otherRules.rules;
+    out = RunMini(image, 0, false, &otherRules, again, second);
+    Check(out.rung == drive_known::Rung::Search && !out.savedTried && out.savedRefused == drive_known::kOtherRules &&
+              again.ok,
+          "addresses found under other rules of the search are not tried at all, though each of them would verify");
     // A derived address that no longer follows from the verified ones.
     drive_known::Entry bent = entry;
     ++bent.rvas[3];
@@ -903,6 +918,180 @@ void TestRungSaved()
     out = RunMini(recorded.Finish(), 0, true, &entry, again, second);
     Check(out.rung == drive_known::Rung::Recorded && !out.savedTried && out.scans == 0,
           "on the recorded build the recorded addresses are tried first and suffice");
+}
+
+// A SAVED ADDRESS IS TAKEN ONLY AS THE SEARCH THAT SAVED IT WOULD TAKE IT AGAIN. Each entry here is one a search
+// made, or that entry with one address or one placement changed; an entry has no checksum until it is written to
+// a file, so what is refused here is refused by the verification alone.
+void TestSavedPlacement()
+{
+    using drive_known::Entry;
+    using drive_known::kSavedStale;
+    using drive_known::MakeEntry;
+    using drive_known::Rung;
+    constexpr uint32_t kShift = 0x340, kEntryAt = kMiniEntry + kShift, kSecondSite = 0x3000;
+    Mini found, again;
+    Report report, second;
+    drive_known::Outcome out;
+
+    // AN IN-FUNCTION ROW SAVED "AT ITS RECORDED OFFSET" IS TAKEN ONLY THERE. The field's bytes stand at the offset
+    // and once more, later in the same function.
+    {
+        Module m;
+        BuildMini(m, kShift);
+        m.Put(kEntryAt + 0xC0, kField);
+        const Image& image = m.Finish();
+        out = RunMini(image, 0, false, nullptr, found, report);
+        Entry entry;
+        Check(out.rung == Rung::Search && found.ok && found.field == kMiniField + kShift &&
+                  MakeEntry(entry, "halo3.dll", "control-update", 1, report) && entry.placed[1] == 'O',
+              "a field found at its recorded offset is saved as placed there");
+        out = RunMini(image, 0, false, &entry, again, second);
+        Check(out.rung == Rung::Saved && out.scans == 0 && again.field == found.field,
+              "and is verified there with no search");
+        Entry elsewhere = entry;
+        elsewhere.rvas[1] = kEntryAt + 0xC0;   // the same bytes, inside the same function
+        out = RunMini(image, 0, false, &elsewhere, again, second);
+        Check(out.rung == Rung::Search && out.savedRefused == kSavedStale && again.field == found.field,
+              "a row saved at its recorded offset is accepted only there: the same bytes elsewhere in the function are not it");
+        elsewhere.placed[1] = 'X';   // ... nor by saying it was the function's single match
+        out = RunMini(image, 0, false, &elsewhere, again, second);
+        Check(out.rung == Rung::Search && out.savedRefused == kSavedStale && again.field == found.field,
+              "nor as the function's single match while the bytes stand at the offset, where the search looks first");
+    }
+
+    // A ROW SAVED AS "THE SINGLE MATCH IN ITS FUNCTION" HAS THAT FUNCTION SEARCHED AGAIN.
+    {
+        Module m;
+        BuildMini(m, kShift, 0x68);   // the field is not at its recorded offset (0x60)
+        const Image& image = m.Finish();
+        out = RunMini(image, 0, false, nullptr, found, report);
+        Entry entry;
+        Check(out.rung == Rung::Search && found.ok && found.field == kEntryAt + 0x68 &&
+                  report.lines[1].how == How::FunctionExtent &&
+                  MakeEntry(entry, "halo3.dll", "control-update", 1, report) && entry.placed[1] == 'X',
+              "a field found as the single match in its function is saved as placed so");
+        out = RunMini(image, 0, false, &entry, again, second);
+        Check(out.rung == Rung::Saved && out.scans == 1 && second.scans == 1 && second.lines[1].matches == 1 &&
+                  again.field == found.field,
+              "it is verified with its function searched again, and nothing else searched");
+        Entry asOffset = entry;
+        asOffset.placed[1] = 'O';
+        out = RunMini(image, 0, false, &asOffset, again, second);
+        Check(out.rung == Rung::Search && out.savedRefused == kSavedStale && again.ok,
+              "the same address saved as \"at its offset\" is not accepted: it is not at its offset");
+        // The same code with those bytes twice in the function: the search refuses, and so does the saved address.
+        Module twice;
+        BuildMini(twice, kShift, 0x68);
+        twice.Put(kEntryAt + 0xC0, kField);
+        Resolver search(twice.Finish(), 0);
+        const Mini searched = MiniPlan(search);
+        Check(!searched.field && search.report().lines[1].verdict == Verdict::Ambiguous,
+              "two matches in the function and none at the offset: the search refuses the row");
+        out = RunMini(twice.Finish(), 0, false, &entry, again, second);
+        Check(out.rung == Rung::Search && out.savedRefused == kSavedStale && !again.field && !again.ok,
+              "and a saved address that is one of the two is not accepted where the search refuses");
+        Entry later = entry;
+        later.rvas[1] = kEntryAt + 0xC0;
+        out = RunMini(twice.Finish(), 0, false, &later, again, second);
+        Check(out.rung == Rung::Search && out.savedRefused == kSavedStale && !again.field,
+              "nor the other of the two");
+    }
+
+    // A SIGNATURE WITH TWO MATCHES IN THE MODULE. The call site's bytes stand twice, and both calls land on the
+    // entry, so every proof of the plan holds at either.
+    {
+        // One of the two stands at the recorded address: the search takes that one, and saves it as placed so.
+        Module m;
+        BuildMini(m, 0);
+        m.Put(kSecondSite, kOther);
+        m.Rel32(kSecondSite + 9, kSecondSite + 13, kMiniEntry);
+        const Image& image = m.Finish();
+        out = RunMini(image, 0, false, nullptr, found, report);
+        Entry entry;
+        Check(out.rung == Rung::Search && found.ok && found.call == kMiniCallSite + 8 &&
+                  report.lines[2].verdict == Verdict::RecordAmongSeveral &&
+                  MakeEntry(entry, "halo3.dll", "control-update", 1, report) && entry.placed[2] == 'R',
+              "of two matches the search takes the one at the recorded address, and saves it as placed so");
+        out = RunMini(image, 0, false, &entry, again, second);
+        Check(out.rung == Rung::Saved && out.scans == 0 && again.call == found.call, "which is verified there");
+        Entry other = entry;
+        other.rvas[2] = kSecondSite;
+        other.rvas[3] = kSecondSite + 8;
+        out = RunMini(image, 0, false, &other, again, second);
+        Check(out.rung == Rung::Search && out.savedRefused == kSavedStale && again.call == found.call,
+              "A SAVED ADDRESS THAT IS THE SECOND MATCH is not accepted for a row taken at its recorded address");
+        other.placed[2] = 'U';
+        out = RunMini(image, 0, false, &other, again, second);
+        Check(out.rung == Rung::Search && out.savedRefused == kSavedStale && again.call == found.call,
+              "nor as \"the single match\": the bytes stand at the recorded address, where the search takes them");
+    }
+    {
+        // Neither stands at the recorded address: the search refuses the row, and there is nothing to save.
+        Module m;
+        BuildMini(m, kShift);
+        m.Put(kSecondSite, kOther);
+        m.Rel32(kSecondSite + 9, kSecondSite + 13, kEntryAt);
+        const Image& image = m.Finish();
+        out = RunMini(image, 0, false, nullptr, found, report);
+        Entry none;
+        Check(out.rung == Rung::Search && !found.ok && report.lines[2].verdict == Verdict::Ambiguous && !out.learn &&
+                  !MakeEntry(none, "halo3.dll", "control-update", 1, report),
+              "two matches and none at the recorded address: the search refuses, and nothing is saved");
+        // What a search found in the same code while the bytes stood there once, with its third line moved to the
+        // second match.
+        Module once;
+        BuildMini(once, kShift);
+        Report single;
+        (void)RunMini(once.Finish(), 0, false, nullptr, found, single);
+        Entry entry;
+        Check(MakeEntry(entry, "halo3.dll", "control-update", 1, single) && entry.placed[2] == 'U',
+              "the same code with one match: found, and saved as the single match");
+        Entry other = entry;
+        other.rvas[2] = kSecondSite;
+        other.rvas[3] = kSecondSite + 8;
+        other.placed[2] = 'R';
+        out = RunMini(image, 0, false, &other, again, second);
+        Check(out.rung == Rung::Search && out.savedRefused == kSavedStale && !again.ok,
+              "the second match saved as \"taken at the recorded address\" is not accepted: it is not at that address");
+        // THE LIMIT, STATED. An entry that says "the single match in the module" for one of two matches, neither
+        // of them at the recorded address, is taken at its word: the bytes stand at the saved address, they do
+        // not stand at the recorded one, and only counting the whole module's matches -- the search itself --
+        // could tell. No search writes such an entry (it refuses the row, above); a file holds one only if it was
+        // edited and its checksum computed again, or if the DLL's bytes changed under the same PE timestamp and
+        // image size. Everything the plan proves about the address is still proved on it.
+        other.placed[2] = 'U';
+        out = RunMini(image, 0, false, &other, again, second);
+        Check(out.rung == Rung::Saved && out.scans == 0 && again.call == kSecondSite + 8,
+              "the limit: a second match saved as \"the single match\", with none at the recorded address, is taken "
+              "at the entry's word (only the search's count could tell)");
+    }
+
+    // EVERY LINE MUST BE OF THE KIND THE ENTRY SAYS IT WAS PLACED AS.
+    {
+        Module m;
+        BuildMini(m, kShift);
+        const Image& image = m.Finish();
+        (void)RunMini(image, 0, false, nullptr, found, report);
+        Entry entry;
+        Check(MakeEntry(entry, "halo3.dll", "control-update", 1, report), "a searched drive as an entry");
+        struct Odd
+        {
+            uint32_t line;
+            uint8_t placed;
+        };
+        const Odd odds[] = {{0, 'O'}, {0, 'S'}, {1, 'U'}, {1, 'D'}, {2, 'X'}, {3, 'U'}, {3, 'S'}, {0, 0}, {1, '?'}};
+        bool allRefused = true;
+        for (const Odd& odd : odds)
+        {
+            Entry bent = entry;
+            bent.placed[odd.line] = odd.placed;
+            out = RunMini(image, 0, false, &bent, again, second);
+            allRefused = allRefused && out.rung == Rung::Search && out.savedRefused == kSavedStale && again.ok;
+        }
+        Check(allRefused, "a signature saved as an in-function row, an in-function row saved as a signature, a derived "
+                          "address saved as a searched one, a line with no placement: none is accepted");
+    }
 }
 
 void TestRungFaults()
@@ -937,6 +1126,32 @@ void TestRungFaults()
     Check(!out.searchedToo && out.scans == 0, "without it nothing is searched");
 }
 
+// `text` with its one `from` replaced by `to`.
+std::string Swap(const std::string& text, const char* from, const char* to)
+{
+    const size_t at = text.find(from);
+    Check(at != std::string::npos && text.find(from, at + 1) == std::string::npos, "a test edit finds its one place");
+    return at == std::string::npos ? text : text.substr(0, at) + to + text.substr(at + std::strlen(from));
+}
+
+// A file that holds just this entry, written as the mod writes it: its checksum is its own, whatever it holds.
+std::string FileOf(const drive_known::Entry& entry)
+{
+    static drive_known::File file;
+    static char text[drive_known::kMaxFileText];
+    file = drive_known::File{};
+    file.entries[0] = entry;
+    file.count = 1;
+    return std::string(text, drive_known::Format(file, text, sizeof(text)));
+}
+
+uint32_t EntriesIn(const std::string& text)
+{
+    static drive_known::File file;
+    drive_known::Parse(text.data(), text.size(), file);
+    return file.count;
+}
+
 void TestCacheText()
 {
     using namespace drive_known;
@@ -955,21 +1170,82 @@ void TestCacheText()
     Check(Put(file, halo3) && Put(file, halo4) && file.count == 2, "both are held");
     static char text[kMaxFileText];
     const size_t length = Format(file, text, sizeof(text));
+    char rows[64];
+    std::snprintf(rows, sizeof(rows), " %u 4 U1540,O15A0,U2340,D2348 ", kRulesVersion);
     Check(length > 0 && std::strstr(text, "NOT a setting") && std::strstr(text, "Safe to DELETE") &&
-              std::strstr(text, "schema=1\r\n") &&
-              std::strstr(text, "entry halo3.dll 68A0EDFC04768000 control-update ") &&
-              std::strstr(text, " 4 1540,15A0,2340,2348\r\n"),
-          "the file's text: a head that says what it is, the schema, one line per entry");
+              std::strstr(text, "ends in a checksum") && std::strstr(text, "schema=2\r\n") &&
+              std::strstr(text, "entry halo3.dll 68A0EDFC04768000 control-update ") && std::strstr(text, rows),
+          "the file's text: a head that says what it is, the schema, and a line per entry with the search's rules "
+          "and, for every address, how it was placed");
     File back;
     Parse(text, length, back);
     const Entry* h3 = Find(back, "halo3.dll", "control-update");
     const Entry* h4 = Find(back, "halo4.dll", "pilot-controller");
     Check(back.count == 2 && h3 && h4 && h3->stamp == halo3.stamp && h3->plan == halo3.plan && h3->count == 4 &&
-              !std::memcmp(h3->rvas, halo3.rvas, sizeof(uint32_t) * 4) && h4->stamp == halo4.stamp &&
-              h4->rvas[0] == kMiniEntry + 0x80,
+              h3->rules == kRulesVersion && !std::memcmp(h3->rvas, halo3.rvas, sizeof(uint32_t) * 4) &&
+              !std::memcmp(h3->placed, halo3.placed, 4) && Checksum(*h3) == Checksum(halo3) &&
+              h4->stamp == halo4.stamp && h4->rvas[0] == kMiniEntry + 0x80,
           "read back whole: two titles' entries coexist");
     Check(!Find(back, "halo3.dll", "pilot-controller") && !Find(back, "haloreach.dll", "control-update"),
           "a drive that was never saved has no entry");
+
+    // WHICH ENTRY MAY BE TRIED: one of this build of the module, found under the rules the search has now.
+    const char* refused = "?";
+    Check(h3 && Usable(back, "halo3.dll", "control-update", halo3.stamp, refused) == h3 && !refused,
+          "an entry of this build of the DLL, found under these rules, may be tried");
+    Check(!Usable(back, "halo3.dll", "control-update", halo3.stamp ^ 0x100000000ull, refused) && refused == kOtherBuild,
+          "one of another build of the DLL may not, and the reason is given");
+    Entry aged = halo3;
+    ++aged.rules;
+    const std::string agedText = FileOf(aged);
+    File agedFile;
+    Parse(agedText.data(), agedText.size(), agedFile);
+    Check(agedFile.count == 1 && agedFile.entries[0].rules == kRulesVersion + 1 &&
+              !Usable(agedFile, "halo3.dll", "control-update", halo3.stamp, refused) && refused == kOtherRules,
+          "AN ENTRY UNDER ANOTHER RULES VERSION IS IGNORED: whole and well-formed as it is, it may not be tried");
+    Check(!Usable(back, "haloreach.dll", "control-update", halo3.stamp, refused) && !refused,
+          "a drive with no entry: nothing to try, and nothing refused");
+
+    // A DAMAGED CHECKSUM IS IGNORED. One character of an entry changed, anywhere in it, and that entry is not
+    // read; the other title's still is.
+    {
+        const std::string whole(text, length);
+        const size_t line = whole.find("entry halo3.dll ");
+        const size_t lineEnd = whole.find("\r\n", line);
+        const size_t rowsAt = whole.find(rows, line);
+        struct Damage
+        {
+            size_t at;
+            const char* what;
+        };
+        const Damage damages[] = {
+            {line + 16, "the stamp"},
+            {whole.find(" control-update ", line) + 16, "the plan"},
+            {rowsAt + 1, "the rules"},
+            {whole.find(" 4 U1540", line) + 1, "the count"},
+            {whole.find("U1540", line) + 1, "an address"},
+            {whole.find(",O15A0", line) + 1, "how a line was placed"},
+            {lineEnd - 1, "the checksum itself"},
+        };
+        bool allDropped = line != std::string::npos && rowsAt != std::string::npos && lineEnd != std::string::npos;
+        for (const Damage& damage : damages)
+        {
+            std::string damaged = whole;
+            char& c = damaged[damage.at];
+            c = c == 'O' ? 'X' : c == '1' ? '2' : '1';
+            File got;
+            Parse(damaged.data(), damaged.size(), got);
+            const bool dropped = damaged != whole && got.count == 1 && !Find(got, "halo3.dll", "control-update") &&
+                                 Find(got, "halo4.dll", "pilot-controller");
+            if (!dropped)
+                std::printf("      still read with %s changed\n", damage.what);
+            allDropped = allDropped && dropped;
+        }
+        Check(allDropped, "A DAMAGED CHECKSUM IS IGNORED: with one character changed in its stamp, its plan, its rules, "
+                          "its count, an address, a placement or the checksum itself, an entry is not read, and the "
+                          "other title's still is");
+    }
+
     // One title's drive is saved again (another build): its entry is replaced, the other title's is kept.
     Entry newer = halo3;
     newer.stamp = 0x7000000004800000ull;
@@ -987,39 +1263,68 @@ void TestCacheText()
           "a file cut short keeps its whole entries and drops the cut one");
     Parse(text, length / 2, none);
     Check(none.count <= 1, "cut in the middle: at most the entries that are whole");
-    const char* const bad[] = {
-        "entry halo3.dll 68A0EDFC04768000 control-update 0123456789ABCDEF 4 1540,15A0,2340,2348\r\n",   // no schema
-        "schema=2\r\nentry halo3.dll 68A0EDFC04768000 control-update 0123456789ABCDEF 4 1540,15A0,2340,2348\r\n",
-        "schema=1\r\nentry halo3.dll 68A0EDFC04768000 control-update 0123456789ABCDEF 5 1540,15A0,2340,2348\r\n",
-        "schema=1\r\nentry halo3.dll 68A0EDFC04768000 control-update 0123456789ABCDEF 3 1540,15A0,2340,2348\r\n",
-        "schema=1\r\nentry halo3.dll 68A0EDFC04768000 control-update 0123456789ABCDEF 4 1540,15A0,,2348\r\n",
-        "schema=1\r\nentry halo3.dll 68A0EDFC04768000 control-update 0123456789ABCDEF 4 1540,15A0,0,2348\r\n",
-        "schema=1\r\nentry halo3.dll 68A0EDFC04768000 control-update 0123456789ABCDEF 4 1540,15A0,2340,123456789\r\n",
-        "schema=1\r\nentry halo3.dll 68A0EDFC04768000 control-update 0123456789ABCDEF 4 1540,15A0,2340,2348 x\r\n",
-        "schema=1\r\nentry halo3.dll 0 control-update 0123456789ABCDEF 4 1540,15A0,2340,2348\r\n",
-        "schema=1\r\nentry halo3.dll zz control-update 0123456789ABCDEF 4 1540,15A0,2340,2348\r\n",
-        "schema=1\r\nentry halo3.dll 68A0EDFC04768000 control-update 0123456789ABCDEF 0 \r\n",
-        "schema=1\r\nentry halo3.dll 68A0EDFC04768000 control-update 0123456789ABCDEF 999 1\r\n",
-        "schema=1\r\nentry a-module-name-that-is-far-too-long.dll 68A0EDFC04768000 control-update 1 1 1540\r\n",
-        "schema=1\r\nentry halo3.dll 68A0EDFC04768000\r\n",
-        "schema=1\r\nentry\r\n",
-        "schema=1\r\nsomething else entirely\r\n\r\n\x01\x02\x03\r\n",
-        "\xFF\xFE\x00\x00schema=1",
+
+    // Written as the mod writes an entry, checksum and all, and still not one: each is refused on its own ground,
+    // not by its checksum.
+    Entry zeroStamp = halo3, zeroAddress = halo3, noLines = halo3;
+    zeroStamp.stamp = 0;
+    zeroAddress.rvas[2] = 0;
+    noLines.count = 0;
+    Check(EntriesIn(FileOf(halo3)) == 1 && EntriesIn(FileOf(zeroStamp)) == 0 && EntriesIn(FileOf(zeroAddress)) == 0 &&
+              EntriesIn(FileOf(noLines)) == 0,
+          "a zero stamp, a zero address, no lines at all: not an entry, though its checksum is its own");
+    // Text that is not an entry as the mod writes one.
+    const std::string good = FileOf(halo3);
+    const std::string edits[] = {
+        good.substr(good.find("entry halo3.dll")),                                     // no schema line above it
+        Swap(good, "schema=2", "schema=1"),                                   // the schema before this one
+        Swap(good, "schema=2", "schema=3"),
+        Swap(good, " 4 U1540", " 5 U1540"),                                   // more lines promised than there are
+        Swap(good, " 4 U1540", " 3 U1540"),                                   // fewer
+        Swap(good, ",O15A0,", ",,"),                                          // a line with nothing in it
+        Swap(good, ",O15A0,", ",15A0,"),                                      // an address with no placement
+        Swap(good, ",O15A0,", ",Q15A0,"),                                     // a placement that is none
+        Swap(good, "D2348", "D123456789"),                                    // an address that is not 32 bits
+        Swap(good, "D2348 ", "D2348 x "),                                     // something before the checksum
+        good.substr(0, good.size() - 2) + " x\r\n",                           // something after it
+        good.substr(0, good.size() - 19) + "\r\n",                            // no checksum
+        Swap(good, "halo3.dll", "a-module-name-that-is-far-too-long.dll"),
+        Swap(good, "68A0EDFC04768000", "zz"),
+        "schema=2\r\nentry halo3.dll 68A0EDFC04768000\r\n",
+        "schema=2\r\nentry\r\n",
+        "schema=2\r\nsomething else entirely\r\n\r\n\x01\x02\x03\r\n",
+        "\xFF\xFEschema=2",
     };
     bool allIgnored = true;
-    for (const char* one : bad)
+    for (const std::string& one : edits)
     {
-        Parse(one, std::strlen(one), none);
-        allIgnored = allIgnored && none.count == 0;
+        const bool ignored = EntriesIn(one) == 0;
+        if (!ignored)
+            std::printf("      read as an entry: %s\n", one.c_str());
+        allIgnored = allIgnored && ignored;
     }
-    Check(allIgnored, "no schema, another schema, a wrong count, a bad or zero or oversized address, trailing text, a "
-                      "zero stamp, an overlong name, a short line, garbage: each is ignored");
-    const char mixed[] = "# a comment\r\nschema=1\r\nnot an entry\r\n"
-                         "entry halo2.dll 68A0F0F202A38000 control-update 00000000000000AB 2 6C3DF0,6C3E5E\n"
-                         "entry halo2.dll broken\r\n";
-    Parse(mixed, sizeof(mixed) - 1, none);
+    Check(allIgnored, "no schema, another schema, a wrong count, an empty, unplaced, misplaced or oversized address, text "
+                      "around the checksum, no checksum, an overlong name, a stamp that is no number, a short line, "
+                      "garbage: each is ignored");
+    // A good entry among bad lines, with a bare line feed for its ending.
+    Entry halo2;
+    std::snprintf(halo2.module, sizeof(halo2.module), "halo2.dll");
+    std::snprintf(halo2.id, sizeof(halo2.id), "control-update");
+    halo2.stamp = 0x68A0F0F202A38000ull;
+    halo2.plan = 0xAB;
+    halo2.rules = kRulesVersion;
+    halo2.count = 2;
+    halo2.rvas[0] = 0x6C3DF0;
+    halo2.rvas[1] = 0x6C3E5E;
+    halo2.placed[0] = 'U';
+    halo2.placed[1] = 'O';
+    std::string halo2Line = FileOf(halo2);
+    halo2Line = halo2Line.substr(halo2Line.find("entry halo2.dll"));
+    halo2Line.erase(halo2Line.size() - 2, 1);   // its "\r\n" becomes "\n"
+    const std::string mixed = "# a comment\r\nschema=2\r\nnot an entry\r\n" + halo2Line + "entry halo2.dll broken\r\n";
+    Parse(mixed.data(), mixed.size(), none);
     Check(none.count == 1 && none.entries[0].count == 2 && none.entries[0].rvas[1] == 0x6C3E5E &&
-              none.entries[0].plan == 0xAB,
+              none.entries[0].plan == 0xAB && none.entries[0].placed[1] == 'O',
           "a good entry among bad lines is taken (with either line ending)");
 
     // Limits.
@@ -1037,6 +1342,35 @@ void TestCacheText()
     std::snprintf(extra.id, sizeof(extra.id), "one-too-many");
     Check(allPut && full.count == kMaxEntries && !Put(full, extra) && Format(full, text, sizeof(text)) > 0,
           "a full file takes no more, and a full file's text fits");
+    {
+        // The longest entry there can be, sixteen times over.
+        Entry big;
+        std::memset(big.module, 'm', kMaxModule - 1);
+        std::memset(big.id, 'd', kMaxId - 1);
+        big.stamp = ~0ull;
+        big.plan = ~0ull;
+        big.rules = ~0u;
+        big.count = kMaxLines;
+        for (uint32_t i = 0; i < kMaxLines; ++i)
+        {
+            big.rvas[i] = 0xFFFFFFFFu - i;
+            big.placed[i] = 'U';
+        }
+        static File biggest, biggestBack;
+        biggest = File{};
+        for (uint32_t i = 0; i < kMaxEntries; ++i)
+        {
+            biggest.entries[i] = big;
+            biggest.entries[i].id[0] = static_cast<char>('A' + i);
+        }
+        biggest.count = kMaxEntries;
+        const size_t bigLength = Format(biggest, text, sizeof(text));
+        Parse(text, bigLength, biggestBack);
+        Check(bigLength > 0 && biggestBack.count == kMaxEntries && biggestBack.entries[kMaxEntries - 1].count == kMaxLines &&
+                  biggestBack.entries[0].rvas[kMaxLines - 1] == 0xFFFFFFFFu - (kMaxLines - 1) &&
+                  biggestBack.entries[3].rules == ~0u && biggestBack.entries[3].id[0] == 'D',
+              "the longest entry there can be fits a line, and a file full of them fits the file's text");
+    }
     Report incomplete = first;
     incomplete.lines[2].verdict = Verdict::Missing;
     Entry e;
@@ -1071,6 +1405,7 @@ int main()
     TestRungRecorded();
     TestRungOneFailsWhole();
     TestRungSaved();
+    TestSavedPlacement();
     TestRungFaults();
     TestCacheText();
     std::printf("drive resolve tests: %u checks, %u failures\n", checks, failures);

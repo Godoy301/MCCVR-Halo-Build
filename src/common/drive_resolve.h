@@ -21,6 +21,17 @@
 // two always choose the same address. If any one line fails, the whole resolution has failed and is run again by
 // search; the two are never mixed.
 //
+// A SAVED ADDRESS IS TAKEN ONLY AS THE SEARCH THAT SAVED IT WOULD TAKE IT AGAIN. With each address the cache holds
+// how the search placed it (Placement), and the verification applies that rule, never a looser one: a signature
+// taken at its recorded address among several matches is accepted only there; an in-function row found at its
+// recorded offset only at that offset; one found as the single match in its function only if the function,
+// searched again, holds it once and not at the offset. One rule cannot be applied again without the search
+// itself: that a signature saved as the module's single match, at an address other than its recorded one, has no
+// OTHER match anywhere in the module. There the entry's own word stands for the count -- an entry of exactly this
+// module build, these tables and these rules, with its checksum intact (drive_known.h) -- after the two checks
+// that can be made in place: the bytes stand at the saved address, and they do not stand at the recorded one,
+// where the search would have taken them instead.
+//
 // THE SEARCH. The rungs, in order:
 //
 //   1. BY SIGNATURE. A hooked function, and every anchor whose bytes name one place, is searched for in the
@@ -65,6 +76,11 @@
 
 namespace drive_resolve
 {
+// THE SEARCH'S RULES, NUMBERED. Bump this whenever what the search accepts changes: which of several matches it
+// takes, where it looks for an in-function row, what it refuses. Saved addresses are only as good as the rules
+// that found them, so an entry written under another number is discarded (drive_known.h).
+inline constexpr uint32_t kRulesVersion = 1;
+
 // ADDR-HYGIENE: structural -- fault-injection bits and the shift a forced fault applies, not addresses of anything.
 inline constexpr uint32_t kFaultSignatureMissing = 0x01;     // every signature search finds nothing
 inline constexpr uint32_t kFaultSignatureAmbiguous = 0x02;   // every signature search finds one match too many
@@ -583,6 +599,38 @@ struct Line
 
 inline constexpr uint32_t kMaxLines = 112;
 
+// HOW THE SEARCH PLACED A LINE: what it established about the address when it found it. Saved with the address,
+// so that verifying a saved address applies the rule that placed it and no weaker one. The values are the
+// letters the address cache's file holds.
+enum class Placement : uint8_t
+{
+    None = 0,
+    Unique = 'U',    // by signature: the single match in the module's code
+    Record = 'R',    // by signature: one of several matches, taken because it stands at the recorded address
+    Offset = 'O',    // in its function: at its recorded offset from the function's start
+    Extent = 'X',    // in its function: not at that offset, the single match inside the function
+    Start = 'S',     // the start of the function that holds another line
+    Follows = 'D',   // not searched for: it follows from other lines (a derived address, the TLS index, a proof)
+};
+
+// None for a line that was not found, or that no search placed (one verified at a known address).
+inline Placement PlacementOf(const Line& line)
+{
+    if (!Found(line.verdict))
+        return Placement::None;
+    switch (line.how)
+    {
+    case How::Signature: return line.verdict == Verdict::RecordAmongSeveral ? Placement::Record : Placement::Unique;
+    case How::FunctionOffset: return Placement::Offset;
+    case How::FunctionExtent: return Placement::Extent;
+    case How::FunctionStart: return Placement::Start;
+    case How::Derived:
+    case How::TlsDirectory:
+    case How::Proof: return Placement::Follows;
+    default: return Placement::None;
+    }
+}
+
 struct Report
 {
     Line lines[kMaxLines]{};
@@ -644,6 +692,7 @@ struct Known
     Source source = Source::Search;
     const uint32_t* saved = nullptr;   // Saved: the RVA of every line, in the order the plan stores them
     uint32_t savedCount = 0;
+    const uint8_t* placed = nullptr;   // Saved: how the search placed each of them (Placement), in the same order
 };
 
 // -------------------------------------------------------------------------------------------------- resolver
@@ -684,7 +733,21 @@ public:
             // "ambiguous" is a fault of the search; it fails this rung so that the search runs and shows it.
             line.how = How::Known;
             const uint32_t at = KnownAt(recorded);
-            if (at && !Fault(faults_, kFaultSignatureMissing | kFaultSignatureAmbiguous) &&
+            // A SAVED address is taken only as the search that saved it would take it again. Saved as one of
+            // several matches: only at the recorded address. Saved as the single match: at the recorded address,
+            // or elsewhere only while these bytes do NOT also stand at the recorded address -- there the search
+            // would have taken that one. (That no third place holds them is the entry's word: the file's head.)
+            bool placedAsSearched = known_.source == Source::Recorded;
+            if (known_.source == Source::Saved)
+            {
+                const Placement placed = SavedPlacement();
+                if (placed == Placement::Record)
+                    placedAsSearched = at == recorded;
+                else if (placed == Placement::Unique)
+                    placedAsSearched =
+                        at == recorded || !(InExecutable(im_, recorded, p.length) && MatchesAt(im_, p, recorded));
+            }
+            if (at && placedAsSearched && !Fault(faults_, kFaultSignatureMissing | kFaultSignatureAmbiguous) &&
                 InExecutable(im_, at, p.length) && MatchesAt(im_, p, at))
             {
                 line.found = at;
@@ -754,12 +817,31 @@ public:
         }
         if (known_.source == Source::Saved)
         {
-            // THE SAVED ADDRESS: it must lie in this function and hold these bytes. Nothing is searched.
+            // THE SAVED ADDRESS, taken as the search that saved it would take it again and no more loosely. A row
+            // saved "at its recorded offset" is taken only there. One saved as "the single match in its function"
+            // is taken only if these bytes do not stand at the offset (where the search looks first) and the
+            // function, searched again, holds them exactly once: a function is small, so that rule is applied
+            // whole. A row too short to be searched for is never taken anywhere but at its offset.
             line.how = How::Known;
             const uint32_t at = KnownAt(recorded);
-            if (at && !Fault(faults_, kFaultOffsetMoved) && at >= start && at < end && p.length <= end - at &&
-                (!offsetOnly || at == start + (recorded - functionRecorded)) && InExecutable(im_, at, p.length) &&
-                MatchesAt(im_, p, at))
+            const uint32_t offset = start + (recorded - functionRecorded);
+            const Placement placed = SavedPlacement();
+            bool placedAsSearched = false;
+            if (placed == Placement::Offset)
+            {
+                placedAsSearched = at == offset;
+            }
+            else if (placed == Placement::Extent && !offsetOnly &&
+                     !(offset >= start && offset < end && p.length <= end - offset &&
+                       InExecutable(im_, offset, p.length) && MatchesAt(im_, p, offset)))
+            {
+                ++report_.scans;
+                const Hits hits = CountInExecutable(im_, p, start, end);
+                line.matches = hits.count;
+                placedAsSearched = hits.count == 1 && hits.first == at;
+            }
+            if (at && placedAsSearched && !Fault(faults_, kFaultOffsetMoved) && at >= start && at < end &&
+                p.length <= end - at && InExecutable(im_, at, p.length) && MatchesAt(im_, p, at))
             {
                 line.found = at;
                 line.verdict = at == recorded ? Verdict::AsRecorded : Verdict::Moved;
@@ -987,6 +1069,13 @@ private:
         if (Fault(faults_, kFaultSavedStale))
             return recorded ? recorded + kFaultRecordShift : 0;
         return report_.count < known_.savedCount ? known_.saved[report_.count] : 0;
+    }
+
+    // How the search placed the saved line about to be verified (None: the entry does not say).
+    Placement SavedPlacement() const
+    {
+        return known_.placed && report_.count < known_.savedCount ? static_cast<Placement>(known_.placed[report_.count])
+                                                                  : Placement::None;
     }
 
     // What the plan asks, into the report's hash: the table's own values, never what was found.
