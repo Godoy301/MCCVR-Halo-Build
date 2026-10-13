@@ -1121,6 +1121,69 @@ void TestSavedPlacement()
     }
 }
 
+// THE SAVED ADDRESSES ARE ASKED FOR ONLY WHEN THEY ARE NEEDED. Asking is opening a file, which on a synced or a
+// network folder can keep the worker waiting: a drive that verifies at the recorded addresses must not ask.
+struct Asked
+{
+    const drive_known::Entry* entry = nullptr;
+    const char* refuse = nullptr;
+    unsigned times = 0;
+};
+const drive_known::Entry* AskSaved(void* raw, const char*& refused)
+{
+    auto* const asked = static_cast<Asked*>(raw);
+    ++asked->times;
+    refused = asked->refuse;
+    return asked->entry;
+}
+
+void TestSavedAskedOnlyWhenNeeded()
+{
+    using drive_known::Rung;
+    Module m;
+    BuildMini(m, 0);
+    const Image& image = m.Finish();
+    const auto plan = [](Resolver& r) { return MiniPlan(r); };
+    Mini found;
+    Report report;
+    Asked asked;
+    drive_known::Earlier earlier;
+    earlier.look = &AskSaved;
+    earlier.lookContext = &asked;
+
+    drive_known::Outcome out = drive_known::RunTyped(image, 0, true, earlier, plan, found, report);
+    Check(out.rung == Rung::Recorded && found.ok && out.scans == 0 && asked.times == 0 && !out.savedLooked,
+          "on the recorded build with everything verifying, the saved addresses are never asked for");
+    out = drive_known::RunTyped(image, 0, false, earlier, plan, found, report);
+    Check(out.rung == Rung::Search && found.ok && asked.times == 1 && out.savedLooked && !out.savedTried &&
+              !out.savedRefused,
+          "on a build that is not the recorded one they are asked for once; none held, so the drive is searched");
+    drive_known::Entry entry;
+    Check(drive_known::MakeEntry(entry, "halo3.dll", "control-update", 1, report), "what that search found, as an entry");
+    asked = Asked{&entry};
+    out = drive_known::RunTyped(image, 0, false, earlier, plan, found, report);
+    Check(out.rung == Rung::Saved && out.scans == 0 && asked.times == 1 && found.ok,
+          "with an entry held they are asked for once, and verified with no search");
+
+    // The recorded build with one line that does not verify: rung 1 (a) fails first, and only then are they asked for.
+    Module moved;
+    BuildMini(moved, 0, 0x70);
+    asked = Asked{};
+    out = drive_known::RunTyped(moved.Finish(), 0, true, earlier, plan, found, report);
+    Check(out.recordedTried && out.rung == Rung::Search && asked.times == 1 && out.savedLooked && found.ok,
+          "on the recorded build they are asked for only once the recorded addresses have failed to verify");
+    // What the cache refused is what is reported.
+    asked = Asked{nullptr, drive_known::kOtherBuild};
+    out = drive_known::RunTyped(image, 0, false, earlier, plan, found, report);
+    Check(out.rung == Rung::Search && asked.times == 1 && !out.savedTried && out.savedRefused == drive_known::kOtherBuild,
+          "an entry the cache holds and may not hand over is reported with its reason");
+    // A forced stale save stands for saved addresses that are wrong: the cache is not asked for the real ones.
+    asked = Asked{&entry};
+    out = drive_known::RunTyped(image, kFaultSavedStale, true, earlier, plan, found, report);
+    Check(out.rung == Rung::Search && asked.times == 0 && out.savedTried && out.savedRefused == drive_known::kSavedStale,
+          "fault 0x40 does not ask the cache");
+}
+
 void TestRungFaults()
 {
     Module m;
@@ -1475,6 +1538,7 @@ int main()
     TestRungOneFailsWhole();
     TestRungSaved();
     TestSavedPlacement();
+    TestSavedAskedOnlyWhenNeeded();
     TestRungFaults();
     TestCacheText();
     std::printf("drive resolve tests: %u checks, %u failures\n", checks, failures);

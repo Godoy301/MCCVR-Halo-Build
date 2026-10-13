@@ -6,6 +6,7 @@
 //     (a) The tables' recorded RVAs, when the module IS the build they were measured on (its PE timestamp and
 //         image size; title_build_identity.h).
 //     (b) Otherwise the RVAs an earlier search found in exactly this build, read back from the address cache.
+//         The cache is asked only at this point: while (a) holds, its file is never opened.
 //     Every signature's bytes must stand at its known address, and the drive's own plan makes every proof on
 //     those addresses that it makes on searched ones (drive_resolve.h has what that is, and why leaving out the
 //     count of matches is sound). A saved address is moreover taken only under the rule the search placed it by.
@@ -374,6 +375,7 @@ struct Outcome
     bool recordedTried = false;         // rung 1 (a) was tried (and failed, when `rung` is not Recorded)
     bool savedTried = false;            // rung 1 (b) was tried
     const char* savedRefused = nullptr; // ... and why its addresses were not used
+    bool savedLooked = false;           // the cache was asked for this drive's saved addresses (its file was opened)
     bool learn = false;                 // the search resolved the whole drive, at addresses worth saving
     uint32_t scans = 0;                 // searches run, over every rung that ran
     bool searchedToo = false;           // the self-test ran the search beside a rung 1 success
@@ -397,22 +399,27 @@ inline bool SameAddresses(const Report& a, const Report& b)
     return true;
 }
 
-// One drive, by the rungs. `recordedBuild`: the module is the build the drive's tables were measured on. `saved`:
-// the cache's entry for this drive in exactly this build of the module (Usable), or null. `report` is the report
-// of the rung in use.
-inline Outcome Run(const Image& image, uint32_t faults, bool recordedBuild, const Entry* saved, PlanFn plan, KeepFn keep,
-                   void* context, Report& report)
+// WHAT IS ALREADY KNOWN ABOUT A DRIVE'S ADDRESSES IN THIS MODULE, beyond what the tables record.
+struct Earlier
+{
+    // The cache's entry for this drive in exactly this build of the module (Usable): in hand, or how to get it.
+    // `look` is called at most once, and only when the entry is needed -- never while rung 1 (a) holds, so on
+    // the recorded build a healthy resolution does not open the cache's file at all. It returns the entry or
+    // null; `refused`: one was held and may not be tried, and why.
+    const Entry* saved = nullptr;
+    const Entry* (*look)(void* context, const char*& refused) = nullptr;
+    void* lookContext = nullptr;
+};
+
+// One drive, by the rungs. `recordedBuild`: the module is the build the drive's tables were measured on.
+// `earlier`: what else is known of its addresses. `report` is the report of the rung in use.
+inline Outcome Run(const Image& image, uint32_t faults, bool recordedBuild, const Earlier& earlier, PlanFn plan,
+                   KeepFn keep, void* context, Report& report)
 {
     using drive_resolve::Known;
     using drive_resolve::Source;
     Outcome out;
     report = Report{};
-    // Addresses found under other rules are not tried at all: what those rules accepted is not known here.
-    if (saved && saved->rules != drive_resolve::kRulesVersion)
-    {
-        out.savedRefused = kOtherRules;
-        saved = nullptr;
-    }
     // A forced stale save stands for a build that is not the recorded one and whose saved addresses are wrong.
     const bool stale = drive_resolve::Fault(faults, drive_resolve::kFaultSavedStale);
     if (recordedBuild && !stale)
@@ -426,6 +433,23 @@ inline Outcome Run(const Image& image, uint32_t faults, bool recordedBuild, cons
             keep(context);
             report = resolver.report();
             out.rung = Rung::Recorded;
+        }
+    }
+    // THE SAVED ADDRESSES ARE ASKED FOR ONLY NOW, when rung 1 (a) has not settled it: asking is opening a file.
+    const Entry* saved = nullptr;
+    if (out.rung == Rung::None)
+    {
+        saved = earlier.saved;
+        if (!saved && earlier.look && !stale)
+        {
+            out.savedLooked = true;
+            saved = earlier.look(earlier.lookContext, out.savedRefused);
+        }
+        // Addresses found under other rules are not tried at all: what those rules accepted is not known here.
+        if (saved && saved->rules != drive_resolve::kRulesVersion)
+        {
+            out.savedRefused = kOtherRules;
+            saved = nullptr;
         }
     }
     if (out.rung == Rung::None && (saved || stale))
@@ -499,9 +523,18 @@ inline Outcome Run(const Image& image, uint32_t faults, bool recordedBuild, cons
     return out;
 }
 
+// The same with the cache's entry in hand, or with none (null).
+inline Outcome Run(const Image& image, uint32_t faults, bool recordedBuild, const Entry* saved, PlanFn plan, KeepFn keep,
+                   void* context, Report& report)
+{
+    Earlier earlier;
+    earlier.saved = saved;
+    return Run(image, faults, recordedBuild, earlier, plan, keep, context, report);
+}
+
 // The same for a plan that is a callable: Found (Resolver&).
 template <typename Found, typename Plan>
-inline Outcome RunTyped(const Image& image, uint32_t faults, bool recordedBuild, const Entry* saved, Plan& plan,
+inline Outcome RunTyped(const Image& image, uint32_t faults, bool recordedBuild, const Earlier& earlier, Plan& plan,
                         Found& found, Report& report)
 {
     struct Context
@@ -511,7 +544,7 @@ inline Outcome RunTyped(const Image& image, uint32_t faults, bool recordedBuild,
         Found* found;
     } context{&plan, Found{}, &found};
     return Run(
-        image, faults, recordedBuild, saved,
+        image, faults, recordedBuild, earlier,
         [](Resolver& resolver, void* raw) {
             auto* c = static_cast<Context*>(raw);
             c->aside = (*c->plan)(resolver);
@@ -521,5 +554,14 @@ inline Outcome RunTyped(const Image& image, uint32_t faults, bool recordedBuild,
             *c->found = c->aside;
         },
         &context, report);
+}
+
+template <typename Found, typename Plan>
+inline Outcome RunTyped(const Image& image, uint32_t faults, bool recordedBuild, const Entry* saved, Plan& plan,
+                        Found& found, Report& report)
+{
+    Earlier earlier;
+    earlier.saved = saved;
+    return RunTyped(image, faults, recordedBuild, earlier, plan, found, report);
 }
 } // namespace drive_known

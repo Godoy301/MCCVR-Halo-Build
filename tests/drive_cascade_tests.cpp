@@ -20,6 +20,7 @@
 #include <vector>
 
 #include "../src/common/config.h"
+#include "../src/common/title_build_identity.h"
 #include "../src/dll/drive_cascade.h"
 #include "../src/dll/drive_install.h"
 #include "../src/dll/sigscan.h"
@@ -935,6 +936,145 @@ void TestUnreadableFunctionTable()
     VirtualFree(image, 0, MEM_RELEASE);
 }
 
+// ---- a module that IS a title's recorded build -------------------------------------------------------------------
+// This executable is no title's recorded build, so nothing above reaches rung 1 (a) through the DLL's side. This
+// module does: a few pages with PE headers that carry Halo 2's recorded PE timestamp and image size (the rest of
+// that size is reserved and never touched), and a "drive" of one signature that must be where a function starts.
+struct RecordedModule
+{
+    uint8_t* image = nullptr;
+    uintptr_t base = 0;
+    size_t size = 0;
+
+    RecordedModule()
+    {
+        const title_build::Identity* const known = title_build::Known(GameTitle::Halo2);
+        size = known ? known->sizeOfImage : 0;
+        image = size ? static_cast<uint8_t*>(VirtualAlloc(nullptr, size, MEM_RESERVE, PAGE_NOACCESS)) : nullptr;
+        if (!image || !VirtualAlloc(image, 0x5000, MEM_COMMIT, PAGE_READWRITE))
+            return;
+        base = reinterpret_cast<uintptr_t>(image);
+        const auto put16 = [this](size_t at, uint16_t v) { std::memcpy(image + at, &v, sizeof(v)); };
+        const auto put32 = [this](size_t at, uint32_t v) { std::memcpy(image + at, &v, sizeof(v)); };
+        const size_t nt = 0x80, optional = nt + 24, sections = optional + 240;
+        put16(0, 0x5A4D);
+        put32(0x3C, static_cast<uint32_t>(nt));
+        put32(nt, 0x00004550u);
+        put16(nt + 4, 0x8664);
+        put16(nt + 6, 3);
+        put32(nt + 8, known->peTimestamp);
+        put16(nt + 20, 240);
+        put16(optional, 0x20B);
+        put32(optional + 56, known->sizeOfImage);
+        put32(optional + 108, 16);
+        put32(sections + 8, 0x2000);
+        put32(sections + 12, 0x1000);
+        put32(sections + 36, 0x60000020u);
+        put32(sections + 40 + 8, 0x1000);
+        put32(sections + 40 + 12, 0x3000);
+        put32(sections + 40 + 36, 0x40000040u);
+        put32(sections + 80 + 8, 0x1000);
+        put32(sections + 80 + 12, 0x4000);
+        put32(sections + 80 + 36, 0x40000040u);
+        put32(optional + 112 + 3 * 8, 0x4000);
+        put32(optional + 112 + 3 * 8 + 4, 24);
+        std::memset(image + 0x1000, 0xCC, 0x2000);
+        std::memcpy(image + kEntryRva, kEntryBytes, sizeof(kEntryBytes));
+        const RUNTIME_FUNCTION entries[2] = {{kEntryRva, kEntryRva + 0x100, 0x3000}, {0x1200, 0x1280, 0x3004}};
+        std::memcpy(image + 0x4000, entries, sizeof(entries));
+        image[0x3000] = 0x01;
+        image[0x3004] = 0x01;
+    }
+    ~RecordedModule()
+    {
+        if (image)
+            VirtualFree(image, 0, MEM_RELEASE);
+    }
+
+    static constexpr uint32_t kEntryRva = 0x1100;
+    static constexpr uint8_t kEntryBytes[16] = {0x48, 0x89, 0x5C, 0x24, 0x08, 0x57, 0x48, 0x83,
+                                                0xEC, 0x40, 0x8B, 0xDA, 0x48, 0x8B, 0xF9, 0x33};
+    static constexpr char kEntryPattern[] = "48 89 5C 24 08 57 48 83 EC 40 8B DA 48 8B F9 33";
+
+    struct Found
+    {
+        uint32_t entry = 0;
+    };
+    // The drive's plan: the hooked function by its signature, which must be where a function starts.
+    static Found Plan(drive_resolve::Resolver& r)
+    {
+        Found f;
+        f.entry = r.Unique("ENTRY", kEntryRva, kEntryPattern);
+        if (f.entry && !r.IsFunctionStart(f.entry))
+            f.entry = r.Refuse("it is not where a function starts");
+        return f;
+    }
+    bool Resolve(drive_cascade::Resolution<Found>& out) const
+    {
+        return drive_cascade::Resolve(base, size, drive_cascade::Drive{GameTitle::Halo2, "control-update"}, out,
+                                      [](drive_resolve::Resolver& r) { return Plan(r); });
+    }
+};
+
+// ON THE RECORDED BUILD, WITH EVERYTHING VERIFYING, THE CACHE'S FILE IS NEVER OPENED.
+void TestRecordedBuildOpensNoFile()
+{
+    RecordedModule module;
+    Check(module.base != 0, "a module with Halo 2's recorded PE timestamp and image size");
+    if (!module.base)
+        return;
+    wchar_t temp[MAX_PATH];
+    GetTempPathW(MAX_PATH, temp);
+    const std::wstring folder = std::wstring(temp) + L"halomccvr_drive_cascade_recorded_" +
+                                std::to_wstring(GetCurrentProcessId()) + L"\\";
+    CreateDirectoryW(folder.c_str(), nullptr);
+    const std::wstring cache = folder + L"HaloMCCVR-drive-addresses.txt";
+    DeleteFileW(cache.c_str());
+    drive_cascade::SetCacheFolder(folder.c_str());
+    g_config.drive_address_cache = 1;
+    g_config.drive_fault = 0;
+
+    drive_cascade::Resolution<RecordedModule::Found> first, again;
+    uint32_t opens = drive_cascade::CacheFileOpens();
+    Check(module.Resolve(first) && first.rungs.recordedBuild && first.rungs.outcome.rung == Rung::Recorded &&
+              first.found.entry == RecordedModule::kEntryRva && first.rungs.outcome.scans == 0 && first.report.Complete(),
+          "through the DLL's side it is the recorded build, and its drive is verified at the recorded address");
+    Check(module.Resolve(again) && again.rungs.outcome.rung == Rung::Recorded &&
+              drive_cascade::CacheFileOpens() == opens && !first.rungs.outcome.savedLooked && !Exists(cache),
+          "ON THE RECORDED BUILD WITH EVERYTHING VERIFYING THE CACHE'S FILE IS NEVER OPENED, at the first install "
+          "or at the next");
+
+    // One byte of the recorded build no longer the game's: rung 1 (a) fails, and only then is the file opened.
+    module.image[RecordedModule::kEntryRva + 3] ^= 0xFF;
+    drive_cascade::Resolution<RecordedModule::Found> broken;
+    opens = drive_cascade::CacheFileOpens();
+    Check(module.Resolve(broken) && broken.rungs.outcome.recordedTried && broken.rungs.outcome.rung == Rung::Search &&
+              broken.rungs.outcome.savedLooked && !broken.found.entry && drive_cascade::CacheFileOpens() == opens + 1,
+          "when the recorded addresses do not verify, the file is opened once, to ask for saved ones");
+    module.image[RecordedModule::kEntryRva + 3] ^= 0xFF;
+
+    // The same module as another build (its PE timestamp one higher): asked for, searched, saved, and found there
+    // by the install after.
+    uint32_t stamp = 0;
+    std::memcpy(&stamp, module.image + 0x80 + 8, sizeof(stamp));
+    ++stamp;
+    std::memcpy(module.image + 0x80 + 8, &stamp, sizeof(stamp));
+    drive_cascade::Resolution<RecordedModule::Found> other, next;
+    opens = drive_cascade::CacheFileOpens();
+    Check(module.Resolve(other) && !other.rungs.recordedBuild && other.rungs.outcome.rung == Rung::Search &&
+              other.rungs.outcome.savedLooked && other.rungs.saved && Exists(cache) &&
+              drive_cascade::CacheFileOpens() == opens + 3,
+          "on another build the file is opened to ask (once), and to save what the search found (read, then written)");
+    opens = drive_cascade::CacheFileOpens();
+    Check(module.Resolve(next) && next.rungs.outcome.rung == Rung::Saved && next.rungs.outcome.scans == 0 &&
+              drive_cascade::CacheFileOpens() == opens + 1,
+          "and the install after opens it once, and verifies what it holds");
+
+    drive_cascade::SetCacheFile(nullptr);
+    DeleteFileW(cache.c_str());
+    RemoveDirectoryW(folder.c_str());
+}
+
 // The cold worker passes over a watch about every 50 ms.
 struct Worker
 {
@@ -1057,6 +1197,7 @@ int main(int argc, char** argv)
     TestCacheFile();
     TestInstallProofsNeverFault();
     TestUnreadableFunctionTable();
+    TestRecordedBuildOpensNoFile();
     TestHookWatch();
 
     std::printf("drive_cascade_tests (%s build): %u checks, %u failures\n",

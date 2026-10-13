@@ -941,6 +941,7 @@ struct Totals
     unsigned rungOne = 0, rungFailures = 0, rungScans = 0, savedLaunches = 0;
     unsigned installDrives = 0, installHooks = 0;
     unsigned fileDrives = 0, fileLaunches = 0, fileFailures = 0;
+    unsigned recordedOpens = 0;   // opens of the cache's file while the recorded build's drives were resolved
     double rungOneMs = 0.0, searchMs = 0.0;
     std::vector<std::string> lines;   // what an install logs for each mapped DLL, word for word
 };
@@ -1278,6 +1279,7 @@ int main(int argc, char** argv)
                         const char* notOpened = nullptr;
                         g_config.drive_fault = 0;
                         drive_cascade::SetCacheFile(recordedCache[variant].c_str());
+                        const uint32_t opensBefore = drive_cascade::CacheFileOpens();
                         LARGE_INTEGER from, to;
                         QueryPerformanceCounter(&from);
                         const bool opened = drive_cascade::RunPlan(base, nt->OptionalHeader.SizeOfImage, key, &LoadedThunk,
@@ -1290,6 +1292,8 @@ int main(int argc, char** argv)
                         g_config.drive_fault = 0;
                         addrcascade::set_fault_mask(0);
                         drive_cascade::SetCacheFile(nullptr);
+                        const uint32_t fileOpens = drive_cascade::CacheFileOpens() - opensBefore;
+                        t.recordedOpens += recordedBuild ? fileOpens : 0u;
                         const char* failure = CompareLoaded(healthy, run, report, opened);
                         if (!failure && healthy.report.Complete() &&
                             !(rungs.recordedBuild && rungs.outcome.rung == drive_known::Rung::Recorded &&
@@ -1305,6 +1309,9 @@ int main(int argc, char** argv)
                             failure = "the recorded build's own addresses were held worth saving";
                         if (!failure && recordedBuild && Exists(recordedCache[variant]))
                             failure = "a cache file was written for the recorded build";
+                        // ... and not even opened: asking for saved addresses is for a drive rung 1 (a) left open.
+                        if (!failure && recordedBuild && healthy.report.Complete() && fileOpens)
+                            failure = "the cache's file was opened for a drive that verified at the recorded addresses";
                         // THE INSTALL'S OWN DECISION on this module (drive_install.h: the code the DLL's install
                         // runs once its plan has): what is printed below as its hook is what the install would do.
                         char decided[420] = "its readiness is its plan's (a dev observer rides the drive's hook)";
@@ -1457,8 +1464,9 @@ int main(int argc, char** argv)
                         "plan, on the mapped copies): %u of %u drives would be hooked with everything they prove\n",
                         t.installHooks, t.installDrives);
             std::printf("   ON THE RECORDED BUILD NOTHING IS SAVED: with a cache file named for every one of those "
-                        "resolutions, %s\n",
-                        appeared ? "A FILE APPEARED -- it must not" : "no file came to exist");
+                        "resolutions, %s, and the file was opened %u times (it must be 0: nothing asks for saved "
+                        "addresses while the recorded ones verify)\n",
+                        appeared ? "A FILE APPEARED -- it must not" : "no file came to exist", t.recordedOpens);
             std::printf("   WHAT AN INSTALL LOGS FOR THESE DLLS (drive_cascade::Announce, the DLL's own function and "
                         "names, word for word):\n");
             for (const std::string& said : t.lines)

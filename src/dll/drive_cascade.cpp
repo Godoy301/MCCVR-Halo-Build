@@ -147,13 +147,13 @@ bool GuardedOpen(uintptr_t base, size_t size, drive_resolve::Image& image, const
     }
 }
 
-bool GuardedRun(const drive_resolve::Image& image, uint32_t faults, bool recordedBuild, const drive_known::Entry* saved,
-                drive_known::PlanFn plan, drive_known::KeepFn keep, void* context, drive_resolve::Report& report,
-                drive_known::Outcome& outcome, const char*& why)
+bool GuardedRun(const drive_resolve::Image& image, uint32_t faults, bool recordedBuild,
+                const drive_known::Earlier& earlier, drive_known::PlanFn plan, drive_known::KeepFn keep, void* context,
+                drive_resolve::Report& report, drive_known::Outcome& outcome, const char*& why)
 {
     __try
     {
-        outcome = drive_known::Run(image, faults, recordedBuild, saved, plan, keep, context, report);
+        outcome = drive_known::Run(image, faults, recordedBuild, earlier, plan, keep, context, report);
         return true;
     }
     __except (EXCEPTION_EXECUTE_HANDLER)
@@ -186,11 +186,15 @@ wchar_t g_cachePath[MAX_PATH] = L"";
 SRWLOCK g_cacheLock = SRWLOCK_INIT;
 char g_cacheText[drive_known::kMaxFileText];
 drive_known::File g_cacheFile;
+// Every open of the file, to read or to write: an open may wait on a synced or a network folder, so there must
+// be none that is not needed (drive_cascade::CacheFileOpens).
+std::atomic<uint32_t> g_cacheOpens{0};
 
 // Reads the file into g_cacheFile. What is missing or cannot be read holds nothing: a cold start.
 void ReadCacheLocked()
 {
     g_cacheFile = drive_known::File{};
+    g_cacheOpens.fetch_add(1, std::memory_order_relaxed);
     const HANDLE handle = CreateFileW(g_cachePath, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_DELETE, nullptr,
                                       OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (handle == INVALID_HANDLE_VALUE)
@@ -211,6 +215,7 @@ bool WriteCacheLocked()
     wchar_t temporary[MAX_PATH + 8];
     if (!length || _snwprintf_s(temporary, _TRUNCATE, L"%ls.tmp", g_cachePath) < 0)
         return false;
+    g_cacheOpens.fetch_add(1, std::memory_order_relaxed);
     const HANDLE handle =
         CreateFileW(temporary, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (handle == INVALID_HANDLE_VALUE)
@@ -251,6 +256,22 @@ bool Store(const drive_known::Entry& entry)
     return stored;
 }
 
+// What asking the cache for one drive's saved addresses needs, and where the answer is kept while the rungs run.
+struct Asking
+{
+    const char* module;
+    const char* id;
+    uint64_t stamp;
+    drive_known::Entry entry;
+};
+
+// drive_known::Earlier::look: opens and reads the file. Called by the rungs only when the entry is needed.
+const drive_known::Entry* AskCache(void* raw, const char*& refused)
+{
+    auto* const asking = static_cast<Asking*>(raw);
+    return LookUp(asking->module, asking->id, asking->stamp, asking->entry, refused) ? &asking->entry : nullptr;
+}
+
 // One entry of the announced list: what a line that is not "as recorded" says.
 int DescribeLine(const drive_resolve::Line& line, char* out, size_t size)
 {
@@ -282,6 +303,8 @@ void SetCacheFile(const wchar_t* path)
         g_cachePath[0] = 0;
     ReleaseSRWLockExclusive(&g_cacheLock);
 }
+
+uint32_t CacheFileOpens() { return g_cacheOpens.load(std::memory_order_relaxed); }
 
 void SetCacheFolder(const wchar_t* folder)
 {
@@ -315,17 +338,23 @@ bool RunPlan(uintptr_t base, size_t size, const Drive& drive, drive_known::PlanF
     const uint64_t stamp = drive_known::Stamp(image);
     rungs.recordedBuild =
         title_build::Compare(drive.title, image.timeDateStamp, image.sizeOfImage) == title_build::Match::Known;
-    drive_known::Entry entry;
-    const char* notUsable = nullptr;
-    const bool have = cacheOn && drive.id && LookUp(module, drive.id, stamp, entry, notUsable);
-    if (!GuardedRun(image, faults, rungs.recordedBuild, have ? &entry : nullptr, plan, keep, context, report,
-                    rungs.outcome, why))
+    // The cache is not opened here. The rungs ask for this drive's entry when they need it, which they do not
+    // while the recorded addresses verify: a healthy install on the recorded build opens no file.
+    Asking asking{module, drive.id, stamp, {}};
+    drive_known::Earlier earlier;
+    if (cacheOn && drive.id)
+    {
+        earlier.look = &AskCache;
+        earlier.lookContext = &asking;
+    }
+    if (!GuardedRun(image, faults, rungs.recordedBuild, earlier, plan, keep, context, report, rungs.outcome, why))
     {
         report = drive_resolve::Report{};
         rungs = Rungs{};
         return false;
     }
-    rungs.savedRefused = rungs.outcome.savedRefused ? rungs.outcome.savedRefused : notUsable;
+    rungs.savedRefused = rungs.outcome.savedRefused;
+    drive_known::Entry entry;
     // LEARN AND SAVE: what the search found on a build the tables do not describe is the next launch's rung 1.
     if (rungs.outcome.learn)
     {

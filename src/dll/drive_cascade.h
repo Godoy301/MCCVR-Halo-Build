@@ -69,6 +69,10 @@ struct Rungs
 void SetCacheFolder(const wchar_t* folder);
 // The same for a file named outright (tests).
 void SetCacheFile(const wchar_t* path);
+// How many times the cache's file has been opened, to read or to write, since the process started. It is opened
+// only when a drive's saved addresses are needed or are being saved: never for a drive that verified at the
+// recorded addresses. (The tests and the offline check count on it.)
+uint32_t CacheFileOpens();
 
 // Opens the module at `base` (its headers, the readable runs of its executable sections, its .pdata, the TLS
 // index its PE TLS directory names; every byte read as the game has it, through this mod's own enabled hooks)
