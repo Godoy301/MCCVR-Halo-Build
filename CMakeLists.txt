@@ -1158,6 +1158,19 @@ if(BUILD_TESTING)
     add_executable(halomccvr_drive_resolve_tests tests/drive_resolve_tests.cpp)
     target_include_directories(halomccvr_drive_resolve_tests PRIVATE src/common)
     add_test(NAME halomccvr_drive_resolve_tests COMMAND halomccvr_drive_resolve_tests)
+    # THE OFFLINE CHECK of the direct drives' addresses against the game's own DLL files
+    # (tools/drive_address_check.cpp): each DLL laid out as an image, every drive's own resolution run on it from
+    # the same tables the DLL uses (src/common/drive_sites.h), then again on a copy with every section moved, and
+    # again with each fault forced. It needs the MCC install folder (--mcc <folder>, or the HALOMCCVR_MCC_DIR
+    # environment variable) and only reads the DLLs. With neither it exits 77, which ctest reports as skipped: a
+    # machine without the game does not fail its tests.
+    add_executable(halomccvr_drive_address_check tools/drive_address_check.cpp
+        src/common/addrcascade/AddressCascade.cpp)
+    target_include_directories(halomccvr_drive_address_check PRIVATE src/common)
+    target_compile_definitions(halomccvr_drive_address_check PRIVATE
+        NOMINMAX WIN32_LEAN_AND_MEAN ADDRCASCADE_FAULTS=1)
+    add_test(NAME halomccvr_drive_address_check COMMAND halomccvr_drive_address_check --moved --faults --brief)
+    set_tests_properties(halomccvr_drive_address_check PROPERTIES SKIP_RETURN_CODE 77)
     add_executable(halomccvr_dev_pad_script_tests tests/dev_pad_script_tests.cpp)
     target_include_directories(halomccvr_dev_pad_script_tests PRIVATE src/common)
     add_test(NAME halomccvr_dev_pad_script_tests COMMAND halomccvr_dev_pad_script_tests)
