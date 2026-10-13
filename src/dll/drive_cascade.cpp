@@ -178,8 +178,10 @@ uint32_t Faults()
 }
 
 // ------------------------------------------------------------------------------------------ the cache's file
-// Read and written where the drives are installed, on the cold worker. The lock is for a title whose install
-// runs on a worker of its own; the text buffer and the parsed file belong to whoever holds it.
+// Read and written where the drives are installed. Every install is reached from the one cold worker thread
+// (the module poll's), so nothing contends for the lock today: that worker takes it, alone, and so do the tests.
+// It is kept so that the text buffer and the parsed file below stay whole if an install is ever reached from a
+// second thread; they belong to whoever holds it.
 wchar_t g_cachePath[MAX_PATH] = L"";
 SRWLOCK g_cacheLock = SRWLOCK_INIT;
 char g_cacheText[drive_known::kMaxFileText];
@@ -292,7 +294,8 @@ void SetCacheFolder(const wchar_t* folder)
 bool RunPlan(uintptr_t base, size_t size, const Drive& drive, drive_known::PlanFn plan, drive_known::KeepFn keep,
              void* context, drive_resolve::Report& report, Rungs& rungs, const char*& why)
 {
-    // Installs run on more than one worker: the library's log sink is set by exactly one of them.
+    // Every caller is the one cold worker thread, so it sets the library's log sink once. The atomic keeps that
+    // true if an install is ever reached from a second thread; nothing relies on there being one today.
     static std::atomic<bool> s_sinkSet{false};
     if (!s_sinkSet.exchange(true))
         addrcascade::set_logger([](const char* message) { LOG("%s", message); });
