@@ -434,27 +434,6 @@ uint32_t LegacyDriveSeatUnit(int slot, const LegacyDriveState& st, uintptr_t pc)
     return seat_frame::kNone;
 }
 
-// The pattern matches at exactly base + rva (not merely somewhere).
-bool LegacyDriveBytesAt(uintptr_t base, size_t size, uint32_t rva, const char* pattern)
-{
-    size_t bytes = 0;
-    for (const char* p = pattern; *p; ++p)
-        if (*p != ' ' && (p == pattern || p[-1] == ' '))
-            ++bytes;
-    if (!bytes || rva + bytes > size)
-        return false;
-    return sig::Find(base + rva, bytes, pattern) == base + rva;
-}
-
-bool LegacyDriveUniqueAt(uintptr_t base, size_t size, uint32_t rva, const char* pattern)
-{
-    const uintptr_t first = sig::Find(base, size, pattern);
-    if (first != base + rva)
-        return false;
-    const uintptr_t next = first + 1;
-    return next >= base + size || !sig::Find(next, static_cast<size_t>(base + size - next), pattern);
-}
-
 // The unique match of `pattern` anywhere in the module, or 0 (none, or more than one).
 uintptr_t LegacyDriveUniqueAnywhere(uintptr_t base, size_t size, const char* pattern)
 {
