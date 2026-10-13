@@ -516,13 +516,14 @@ namespace
     bool g_eyeHasImage[2] = {false, false};
     // MONO RENDERING (mono_view_logic.h). The latest picture of the world was drawn once, from between the eyes, as
     // this eye (-1: the latest picture is a pair): it is shown to both eyes, and the layers registered to the world
-    // are parked far. It stays so for every present until a pass for the other eye begins again, so a frame
-    // presented without a new render shows the same one picture and never an old second eye. It counts only in
-    // the title that drew it. The render thread.
+    // are parked far. It stays so for every present until a pass for the other eye begins again (or, in a title
+    // whose eyes are drawn outside the raster-eye scope, until a pair is complete), so a frame presented without a
+    // new render shows the same one picture and never an old second eye. It counts only in the title that drew
+    // it. The render thread.
     std::atomic<int> g_monoPictureEye{-1};
     std::atomic<int> g_monoPictureTitle{-1};
-    // Per title: the run of single passes its renderer turned down (mono_view::MonoRejections), the module
-    // generation that run belongs to, and the setting as last seen (off and on again gives every title a new try).
+    // Per title: what its renderer has made of single passes (mono_view::MonoRejections), the module generation
+    // that belongs to, and the setting as last seen (off and on again gives every title a new try).
     mono_view::MonoRejections g_monoRejections[kTitleRuntimeSlotCount];
     uint32_t g_monoRejectionsGeneration[kTitleRuntimeSlotCount]{};
     bool g_monoRejectionsAsked = false;
@@ -17928,7 +17929,16 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                                         if(g_weaponAccessory.model==&weapon_model::kGenericReloadModel &&
                                             !g_config.weapon_unknown_reload_visual) g_weaponAccessory={};
                                         const auto& view=projectionViews[targetEye];
-                                        const auto& p=view.pose.position;const auto& q=view.pose.orientation;
+                                        XrVector3f p=view.pose.position;const auto& q=view.pose.orientation;
+                                        // A mono frame's picture was drawn from the midpoint of the eyes. What is
+                                        // laid into it is drawn from there too, or it alone would have disparity
+                                        // and double beside the hand it belongs to.
+                                        if(monoFrame&&projectionViews.size()==2)
+                                        {
+                                            const XrVector3f& a=projectionViews[0].pose.position;
+                                            const XrVector3f& b=projectionViews[1].pose.position;
+                                            p={(a.x+b.x)*0.5f,(a.y+b.y)*0.5f,(a.z+b.z)*0.5f};
+                                        }
                                         weapon_accessory::Constants constants{};
                                         if(weapon_accessory::Projection(g_weaponAccessory,
                                             {{p.x,p.y,p.z},{q.x,q.y,q.z,q.w}},view.fov.angleLeft,
@@ -22184,7 +22194,12 @@ void VR_BeginRasterEye(int eye)
     {
         const int monoEye = g_monoPictureEye.load(std::memory_order_relaxed);
         if (monoEye >= 0 && monoEye != eye)
+        {
             g_monoPictureEye.store(-1, std::memory_order_release);
+            // This eye was answered for by the other's picture; what its own image holds is from before the
+            // mono frames. It counts again once this pass is captured.
+            g_eyeHasImage[eye] = false;
+        }
     }
     if (eye < 0 || eye > 1 || !g_gameSwapchain || !g_device)
         return;
@@ -25041,6 +25056,9 @@ bool VR_MonoRenderThisFrame(GameTitle title, float coverFov[4])
     }
     if (refusal != mono_view::MonoRefusal::None)
         return false;
+    // After a run of dropped mono frames one frame is drawn as a pair, to see whether the title draws it.
+    if (g_monoRejections[slot].Next() != mono_view::MonoRejections::Frame::Mono)
+        return false;
     const float halfX = atanf(tanX), halfY = atanf(tanY);
     coverFov[0] = -halfX;
     coverFov[1] = halfX;
@@ -25058,7 +25076,7 @@ void VR_NoteMonoFrameRendered(GameTitle title, int eye)
     const int other = 1 - eye;
     const size_t slot = TitleRuntimeSlotIndex(title);
     if (slot < kTitleRuntimeSlotCount)
-        g_monoRejections[slot].Rendered();
+        g_monoRejections[slot].MonoRendered();
     bool have = true;
 #if HALOMCCVR_EXPERIMENTAL_REACH_RENDER_CANDIDATE
     if (title == GameTitle::HaloReach)
@@ -25081,20 +25099,25 @@ void VR_NoteMonoFrameRendered(GameTitle title, int eye)
     g_monoPictureTitle.store(static_cast<int>(title), std::memory_order_release);
     g_monoPictureEye.store(have ? eye : -1, std::memory_order_release);
 }
-// A pair was drawn: the latest picture is two eyes' again.
-void VR_NoteStereoFrameRendered()
+// `title` drew a pair: the latest picture is two eyes' again. When that pair was the probe after a run of
+// dropped mono frames, it is the evidence that the title draws pairs and not single passes
+// (mono_view::MonoRejections); enough of it leaves the title in stereo, said once.
+void VR_NoteStereoFrameRendered(GameTitle title)
 {
     g_monoPictureEye.store(-1, std::memory_order_release);
+    const size_t slot = TitleRuntimeSlotIndex(title);
+    if (slot < kTitleRuntimeSlotCount && g_monoRejections[slot].StereoRendered())
+        LOG("mono rendering (%s): the game's own renderer dropped single-pass frames and drew the pair that "
+            "followed, %u times running; it is left in stereo until the setting is switched off and on again or "
+            "the game is loaded anew",
+            DlssTitleName(title), mono_view::kMonoBlamesToRefuse);
 }
-// `title`'s renderer turned a single pass down. One is a frame dropped; a run of them leaves the title in stereo
-// (mono_view::MonoRejections), and says so once.
+// `title`'s renderer turned a single pass down: a frame dropped. A run of them asks for a probe pair.
 void VR_NoteMonoFrameRejected(GameTitle title)
 {
     const size_t slot = TitleRuntimeSlotIndex(title);
-    if (slot < kTitleRuntimeSlotCount && g_monoRejections[slot].Rejected())
-        LOG("mono rendering (%s): %u single passes in a row were turned down by the game's own renderer; it is "
-            "left in stereo until the setting is switched off and on again or the game is loaded anew",
-            DlssTitleName(title), mono_view::kMonoRejectionsToRefuse);
+    if (slot < kTitleRuntimeSlotCount)
+        g_monoRejections[slot].MonoRejected();
 }
 
 bool VR_GetEyeFov(int eye, float outFov[4])

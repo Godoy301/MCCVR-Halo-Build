@@ -30,9 +30,9 @@
 //
 // WHERE IT IS REFUSED (MonoRefusal): displays whose eyes do not look the same way (canted: an eye's frustum is
 // then not a sub-rectangle of a straight-ahead picture), while a cutscene is shown as a stereo theatre, while an
-// upscaler reconstructs each eye from its own history, and in a title whose renderer has turned down a run of
-// single passes (MonoRejections: the player gets the stereo picture back instead of none). Refused, the frame is
-// drawn in stereo as before.
+// upscaler reconstructs each eye from its own history, and in a title whose renderer drops single passes that it
+// then draws as pairs (MonoRejections: the player gets the stereo picture back instead of none). Refused, the
+// frame is drawn in stereo as before.
 //
 // No Windows or OpenXR calls here; the unit test is tests/mono_view_tests.cpp.
 
@@ -91,7 +91,7 @@ enum class MonoRefusal
     Canted,        // the eyes do not look the same way
     Theatre,       // a cutscene is being shown as a stereo theatre
     Upscaler,      // each eye is being reconstructed from its own history
-    Rejected,      // this title's renderer turned down a run of single passes
+    Rejected,      // this title's renderer drops single passes that it then draws as pairs
     Count
 };
 inline const char* MonoRefusalName(MonoRefusal r)
@@ -138,26 +138,67 @@ inline MonoRefusal DecideMono(const MonoInput& in)
     return MonoRefusal::None;
 }
 
-// A title's renderer can turn a single pass down (its own checks on a frame fail). One such frame is a frame
-// dropped, as in stereo; a run of them is a title that cannot be drawn this way, and it is left in stereo until
-// the setting is switched off and on again or the title is loaded anew. A frame that is drawn ends a run.
-inline constexpr unsigned kMonoRejectionsToRefuse = 30;
+// A title's renderer can turn a single pass down (its own checks on a frame fail). Such a frame is dropped, as a
+// stereo frame is when its checks fail, and most such drops have nothing to do with mono. So mono is BLAMED only
+// on evidence. After kMonoDropsBeforeProbe mono frames dropped in a row, the next frame is drawn in stereo as a
+// PROBE. A probe that is drawn at once says the title could draw this frame and mono could not: one blame. A
+// probe that goes missing itself says the title is dropping frames anyway: no blame, and mono is tried again.
+// kMonoBlamesToRefuse blames with no mono frame drawn between them leave the title in stereo, until the setting
+// is switched off and on again or the title is loaded anew. A title that cannot draw mono at all therefore costs
+// a dozen dropped frames with pairs between them, not a frozen picture.
+inline constexpr unsigned kMonoDropsBeforeProbe = 3;
+inline constexpr unsigned kMonoBlamesToRefuse = 4;
 struct MonoRejections
 {
-    unsigned run = 0;
+    unsigned dropRun = 0;       // mono frames dropped in a row
+    unsigned blames = 0;        // probes drawn at once after such a run, with no mono frame drawn since
+    bool probing = false;       // the next frame is to be drawn in stereo, as a probe
+    bool probeAsked = false;    // a probe frame has been asked for and has not reported
+    bool probeMissed = false;   // a probe frame was asked for and did not report before the next frame was asked
     bool refused = false;
-    void Rendered() noexcept { run = 0; }
-    // True on the rejection that makes the refusal.
-    bool Rejected() noexcept
+
+    enum class Frame { Mono, Probe, Refused };
+    // Asked once for each frame that would otherwise be mono, before it is drawn.
+    Frame Next() noexcept
     {
         if (refused)
+            return Frame::Refused;
+        if (!probing)
+            return Frame::Mono;
+        if (probeAsked)
+            probeMissed = true;
+        probeAsked = true;
+        return Frame::Probe;
+    }
+    void MonoRendered() noexcept
+    {
+        dropRun = 0;
+        blames = 0;
+    }
+    void MonoRejected() noexcept
+    {
+        if (refused || probing)
+            return;
+        if (++dropRun >= kMonoDropsBeforeProbe)
+        {
+            probing = true;
+            probeAsked = probeMissed = false;
+        }
+    }
+    // A pair was drawn. True on the one that makes the refusal.
+    bool StereoRendered() noexcept
+    {
+        if (!probing || !probeAsked)
             return false;
-        if (++run < kMonoRejectionsToRefuse)
+        const bool blame = !probeMissed;
+        probing = probeAsked = probeMissed = false;
+        dropRun = 0;
+        if (!blame || ++blames < kMonoBlamesToRefuse)
             return false;
         refused = true;
         return true;
     }
-    void Reset() noexcept { run = 0; refused = false; }
+    void Reset() noexcept { *this = MonoRejections{}; }
 };
 
 // A layer registered to a point of the world, moved to where it has no disparity: out along the ray from the

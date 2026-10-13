@@ -12093,6 +12093,7 @@ namespace
         // covers either eye's.
         float monoFov[4]{};
         const bool monoFrame = VR_MonoRenderThisFrame(GameTitle::Halo3, monoFov) && !cutsceneTheater;
+        bool monoCaptured = false;
         __try {
         const int firstEye = g_config.right_eye_first ? 1 : 0;
         for (int pass = 0; pass < (monoFrame ? 1 : 2); ++pass)
@@ -12347,13 +12348,14 @@ namespace
                 g_prepareView(view, 0);
             g_origRenderView(view);
             g_eyeFpView.store(nullptr, std::memory_order_release);
-            VR_CaptureRenderedEye(eye);
+            monoCaptured = VR_CaptureRenderedEye(eye);
             VR_EndRasterEye();
         }
-        if (monoFrame)
+        // A capture that missed keeps the last picture, mono or a pair, as it was.
+        if (monoFrame && monoCaptured)
             VR_NoteMonoFrameRendered(GameTitle::Halo3, firstEye);
-        else
-            VR_NoteStereoFrameRendered();
+        else if (!monoFrame)
+            VR_NoteStereoFrameRendered(GameTitle::Halo3);
         } __finally {
             EndHalo3AvatarPair();
             g_fpStereoSolveScope.armed = false;
@@ -16104,7 +16106,7 @@ namespace
         if (monoFrame && capturesOk)
             VR_NoteMonoFrameRendered(GameTitle::Halo3ODST, firstEye);
         else if (!monoFrame)
-            VR_NoteStereoFrameRendered();
+            VR_NoteStereoFrameRendered(GameTitle::Halo3ODST);
         memcpy(camera, savedCompact, layout.compactSize);
         memcpy(bytes + layout.rootCurrentDerived, savedDerived, layout.derivedSize);
         memcpy(bytes + layout.rootSecondaryCompact, savedSecondaryCompact,
@@ -25900,7 +25902,7 @@ namespace
                 if (monoFrame)
                     VR_NoteMonoFrameRendered(GameTitle::HaloReach, rightFirst ? 1 : 0);
                 else
-                    VR_NoteStereoFrameRendered();
+                    VR_NoteStereoFrameRendered(GameTitle::HaloReach);
                 const uint32_t completedGeneration =
                     g_reachCamera.generation.load(std::memory_order_relaxed);
                 PublishReachOuterCameraCommitPair(
@@ -32443,6 +32445,9 @@ namespace
                 observedPrimary.renderBounds, tracking,
                 candidate.eyes, cullCover))
         {
+            // The eye inputs are where a mono frame differs: one refused here is a single pass turned down.
+            if (tracking.mono)
+                VR_NoteMonoFrameRejected(GameTitle::HaloReach);
             return g_reachOrigMainRenderView(
                 workspace, playerView, windowIndex);
         }
@@ -32481,6 +32486,8 @@ namespace
             currentPrepared.Serial() != candidate.preparedSerial ||
             access.preparedSerial != candidate.preparedSerial)
         {
+            if (candidate.mono)
+                VR_NoteMonoFrameRejected(GameTitle::HaloReach);
             VR_ReachEndRenderAccess(access);
             return g_reachOrigMainRenderView(
                 workspace, playerView, windowIndex);
@@ -45083,9 +45090,10 @@ namespace
     // the eye/observer cleanup below.
     Halo4StereoResult Halo4StereoTransaction(
         uintptr_t element, uintptr_t view, uint32_t window,
-        const Halo4SetupArgs& args, bool& frameStarted)
+        const Halo4SetupArgs& args, bool& frameStarted, bool& monoFrameOut)
     {
         frameStarted = false;
+        monoFrameOut = false;
         Halo4VrRenderSnapshot snapshot{};
         if (!VR_Halo4GetRenderSnapshot(snapshot))
         {
@@ -45110,6 +45118,9 @@ namespace
         // it, as the eye the eye-order setting draws first. The theatre keeps its two eyes.
         const bool monoFrame = snapshot.mono && !authoredTheater;
         const int eyePasses = monoFrame ? 1 : 2;
+        // Read once: the pass below and what is published for it name the same eye.
+        const int firstEye = g_config.right_eye_first ? 1 : 0;
+        monoFrameOut = monoFrame;
 
         unsigned char savedObserver[kHalo4ObserverSnapshotBytes];
         if (!Halo4SafeRead(reinterpret_cast<const void*>(args.observer),
@@ -45546,7 +45557,6 @@ namespace
             // inside each eye's current ordered record sequence.
             Halo4BeginFloatingPair();
             if(!authoredTheater)Halo4RenderScope(element,view,window,args,savedObserver,controllerRoot,stock,calibration);
-            const int firstEye = g_config.right_eye_first ? 1 : 0;
             for (int pass = 0; pass < eyePasses; ++pass)
             {
                 const int eye = pass == 0 ? firstEye : 1 - firstEye;
@@ -45787,14 +45797,13 @@ namespace
             {
                 // The one picture is the other eye's too: so are the frustum it was drawn with and, for the
                 // present's pair check, its image and its frame serial.
-                const int drawnEye = g_config.right_eye_first ? 1 : 0;
-                halfFovX[1 - drawnEye] = halfFovX[drawnEye];
-                halfFovY[1 - drawnEye] = halfFovY[drawnEye];
-                VR_NoteMonoFrameRendered(GameTitle::Halo4, drawnEye);
+                halfFovX[1 - firstEye] = halfFovX[firstEye];
+                halfFovY[1 - firstEye] = halfFovY[firstEye];
+                VR_NoteMonoFrameRendered(GameTitle::Halo4, firstEye);
             }
             else
             {
-                VR_NoteStereoFrameRendered();
+                VR_NoteStereoFrameRendered(GameTitle::Halo4);
             }
             for (int eye = 0; eye < 2; ++eye)
             {
@@ -45848,8 +45857,6 @@ namespace
         if (rejection == Halo4StereoRejection::None)
             rejection = Halo4StereoRejection::TransactionException;
         Halo4NoteRejection(rejection, true);
-        if (monoFrame)
-            VR_NoteMonoFrameRejected(GameTitle::Halo4);
         return Halo4StereoResult::StartedFrameDropped;
     }
 
@@ -45919,11 +45926,12 @@ namespace
 
         Halo4StereoResult result = Halo4StereoResult::NotStarted;
         bool frameStarted = false;
+        bool monoFrame = false;
         bool transactionException = false;
         __try
         {
             result = Halo4StereoTransaction(
-                element, view, window, args, frameStarted);
+                element, view, window, args, frameStarted, monoFrame);
         }
         __except (EXCEPTION_EXECUTE_HANDLER)
         {
@@ -45938,6 +45946,10 @@ namespace
             Halo4NoteRejection(
                 Halo4StereoRejection::TransactionException, frameStarted);
         }
+        // A mono frame that did not complete, whether its checks failed, its pass faulted or it never started, is
+        // a single pass turned down (mono_view::MonoRejections sorts out whether mono was the reason).
+        if (monoFrame && result != Halo4StereoResult::Complete)
+            VR_NoteMonoFrameRejected(GameTitle::Halo4);
         if (result == Halo4StereoResult::NotStarted)
         {
             // Ownership never began, so the untouched stock wrapper is safe.
