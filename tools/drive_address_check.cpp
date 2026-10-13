@@ -44,7 +44,10 @@
 // resolution read must be the one the operating system's own lookup answers with. The install's own decision is
 // then made on it (src/dll/drive_install.h), and the line the install logs is said by the DLL's own function
 // under the DLL's own name for the drive. A cache file is named for all of it, and on the recorded build must
-// never come to exist. The copy, and every file this check wrote, is deleted afterwards.
+// never come to exist, nor be opened. Each mapped DLL is then resolved once more as a build that is not the
+// recorded one would go (for no title, so that nothing is known of it): the first install searches it, and the
+// same process installing the drive again must verify what it remembered with no scan; both are timed. The copy,
+// and every file this check wrote, is deleted afterwards.
 //
 // The MCC folder comes from --mcc or the HALOMCCVR_MCC_DIR environment variable. With neither, the check is
 // SKIPPED (exit 77), so a machine without the game does not fail its tests -- and has checked nothing: ctest
@@ -668,8 +671,12 @@ struct FileRun
     bool opened = false;
 };
 
-FileRun RunThroughFile(const Loaded& module, GameTitle title, const Drive& drive)
+// `nextLaunch`: as a new process, with nothing remembered of the drive (false: the same process installing it
+// again, as at the next level).
+FileRun RunThroughFile(const Loaded& module, GameTitle title, const Drive& drive, bool nextLaunch = true)
 {
+    if (nextLaunch)
+        drive_cascade::ForgetResolutions();
     FileRun run;
     RungContext context{&drive, Outcome{}, &run.out};
     Report report{};
@@ -708,6 +715,7 @@ const char* RungText(drive_known::Rung rung)
     case drive_known::Rung::Recorded: return "RUNG 1, verified at the recorded addresses";
     case drive_known::Rung::Saved: return "RUNG 1, verified at the saved addresses";
     case drive_known::Rung::Search: return "RUNG 2, the search";
+    case drive_known::Rung::Remembered: return "RUNG 1, verified as this process already resolved it";
     default: return "no rung";
     }
 }
@@ -942,6 +950,9 @@ struct Totals
     unsigned installDrives = 0, installHooks = 0;
     unsigned fileDrives = 0, fileLaunches = 0, fileFailures = 0;
     unsigned recordedOpens = 0;   // opens of the cache's file while the recorded build's drives were resolved
+    // Each mapped DLL resolved as a build that is not the recorded one: searched once, then installed again.
+    unsigned unrecordedDrives = 0, unrecordedAsMust = 0, unrecordedScans = 0;
+    double unrecordedSearchMs = 0.0, unrecordedRepeatMs = 0.0;
     double rungOneMs = 0.0, searchMs = 0.0;
     std::vector<std::string> lines;   // what an install logs for each mapped DLL, word for word
 };
@@ -1187,6 +1198,11 @@ int main(int argc, char** argv)
                         const std::string written = ReadText(movedCache[variant]);
                         const FileRun two = RunThroughFile(shifted, entry.title, drive);
                         const std::string after = ReadText(movedCache[variant]);
+                        // And the same process installing the drive again, as at the next level: what it resolved
+                        // is remembered, so nothing is searched and the file is not opened.
+                        const uint32_t opensBeforeThird = drive_cascade::CacheFileOpens();
+                        const FileRun three = RunThroughFile(shifted, entry.title, drive, false);
+                        const uint32_t thirdOpens = drive_cascade::CacheFileOpens() - opensBeforeThird;
                         drive_cascade::SetCacheFile(nullptr);
                         drive_known::Parse(written.data(), written.size(), back);
                         const char* refused = nullptr;
@@ -1203,6 +1219,10 @@ int main(int argc, char** argv)
                                   ? "the second launch wrote the file again"
                             : !SameResult(one.out, launchOne.out) || !SameResult(two.out, launchOne.out)
                                   ? "the launches through the file did not resolve as the launches without it"
+                            : !three.opened || three.rungs.outcome.rung != drive_known::Rung::Remembered ||
+                                      three.rungs.outcome.scans != 0 || thirdOpens || !SameResult(three.out, launchOne.out)
+                                  ? "installed again in the same launch, it was not verified from memory with no scan and "
+                                    "no file"
                             : nullptr;
                         t.fileLaunches += fileFailure ? 0u : 1u;
                         t.fileFailures += fileFailure ? 1u : 0u;
@@ -1214,11 +1234,15 @@ int main(int argc, char** argv)
                                     RungText(two.rungs.outcome.rung), two.rungs.outcome.scans, two.ms,
                                     after == written ? "yes" : "NO", fileFailure ? " -- FAILED: " : "",
                                     fileFailure ? fileFailure : "");
+                        std::printf("   moved build, installed again in that second launch (the next level): %s (%u "
+                                    "scans, %.3f ms; the file opened %u times)\n",
+                                    RungText(three.rungs.outcome.rung), three.rungs.outcome.scans, three.ms, thirdOpens);
                         if (!brief || fileFailure)
                         {
-                            // What the DLL logs for each of the two.
+                            // What the DLL logs for each of the three.
                             drive_cascade::Announce(logName, one.out.report, one.rungs);
                             drive_cascade::Announce(logName, two.out.report, two.rungs);
+                            drive_cascade::Announce(logName, three.out.report, three.rungs);
                         }
                     }
                     unsigned followed = 0, total = 0;
@@ -1277,6 +1301,7 @@ int main(int argc, char** argv)
                         Report report{}, second{};
                         const char* notOpened = nullptr;
                         g_config.drive_fault = 0;
+                        drive_cascade::ForgetResolutions();
                         drive_cascade::SetCacheFile(recordedCache[variant].c_str());
                         const uint32_t opensBefore = drive_cascade::CacheFileOpens();
                         LARGE_INTEGER from, to;
@@ -1355,6 +1380,46 @@ int main(int argc, char** argv)
                             g_capture = &t.lines;
                             drive_cascade::Announce(logName, report, rungs);
                             g_capture = nullptr;
+                        }
+                        // AS A BUILD THAT IS NOT THE RECORDED ONE WOULD GO, on this same mapped DLL: the drive is
+                        // resolved for no title, so nothing is recorded for the module and no cache file is
+                        // named. The first install searches it, as the loader maps it; the same process
+                        // installing the drive again must verify what it remembered, with no scan.
+                        {
+                            const drive_cascade::Drive unrecorded{GameTitle::None, drive.id};
+                            drive_cascade::Rungs searched{}, repeated{};
+                            LoadedRun firstInstall, nextInstall;
+                            firstInstall.drive = nextInstall.drive = &drive;
+                            firstInstall.base = nextInstall.base = base;
+                            Report searchedReport{}, repeatedReport{};
+                            const char* unused = nullptr;
+                            drive_cascade::ForgetResolutions();
+                            const bool first = drive_cascade::RunPlan(base, nt->OptionalHeader.SizeOfImage, unrecorded,
+                                                                      &LoadedThunk, &LoadedKeep, &firstInstall,
+                                                                      searchedReport, searched, unused);
+                            const bool next = drive_cascade::RunPlan(base, nt->OptionalHeader.SizeOfImage, unrecorded,
+                                                                     &LoadedThunk, &LoadedKeep, &nextInstall,
+                                                                     repeatedReport, repeated, unused);
+                            drive_cascade::ForgetResolutions();
+                            const bool asMust =
+                                first && next && searched.outcome.rung == drive_known::Rung::Search &&
+                                repeated.outcome.rung == drive_known::Rung::Remembered && repeated.outcome.scans == 0 &&
+                                firstInstall.out.ok == run.out.ok && firstInstall.out.hook == run.out.hook &&
+                                nextInstall.out.ok == run.out.ok && nextInstall.out.hook == run.out.hook &&
+                                drive_known::SameAddresses(searchedReport, report) &&
+                                drive_known::SameAddresses(repeatedReport, report);
+                            t.unrecordedDrives += 1;
+                            t.unrecordedAsMust += asMust ? 1u : 0u;
+                            t.unrecordedScans += searched.outcome.moduleScans;
+                            t.unrecordedSearchMs += searched.ms;
+                            t.unrecordedRepeatMs += repeated.ms;
+                            t.loadedFailures += asMust || !healthy.report.Complete() ? 0u : 1u;
+                            std::printf("      as a build that is not the recorded one would go, on this mapped DLL: "
+                                        "first install %s (%u scans of the module, %.2f ms); installed again in the "
+                                        "same process %s (%u scans, %.2f ms)%s\n",
+                                        RungText(searched.outcome.rung), searched.outcome.moduleScans, searched.ms,
+                                        RungText(repeated.outcome.rung), repeated.outcome.moduleScans, repeated.ms,
+                                        asMust ? "" : " -- NOT AS IT MUST BE");
                         }
                     }
                 }
@@ -1465,6 +1530,12 @@ int main(int argc, char** argv)
                         "resolutions, %s, and the file was opened %u times (it must be 0: nothing asks for saved "
                         "addresses while the recorded ones verify)\n",
                         appeared ? "A FILE APPEARED -- it must not" : "no file came to exist", t.recordedOpens);
+            std::printf("   AS A BUILD THAT IS NOT THE RECORDED ONE, on the same mapped DLLs and through the DLL's "
+                        "own side: the first install of the %u drives searched (%u scans of a module, %.1f ms "
+                        "together); installed again in the same process, %u of %u were verified from what it "
+                        "remembered with no scan (%.2f ms together)\n",
+                        t.unrecordedDrives, t.unrecordedScans, t.unrecordedSearchMs, t.unrecordedAsMust,
+                        t.unrecordedDrives, t.unrecordedRepeatMs);
             std::printf("   WHAT AN INSTALL LOGS FOR THESE DLLS (drive_cascade::Announce, the DLL's own function and "
                         "names, word for word):\n");
             for (const std::string& said : t.lines)

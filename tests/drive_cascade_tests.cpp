@@ -6,8 +6,12 @@
 // source), the address cache's file is really written, read back, replaced, refused and found damaged on disk, the one line
 // that says which rung won is really formatted, the proofs an install makes after its plan are run on a module
 // whose unwind info cannot be read (they must fail, not fault), a module whose function table cannot be read is
-// opened all the same, and the hook watchdog is stepped as the cold worker steps it. It maps no game code and
-// opens no game file.
+// opened all the same, a drive installed a second time in the same module is verified from memory with no search
+// and no file, and the hook watchdog is stepped as the cold worker steps it. It maps no game code and opens no
+// game file.
+//
+// Each resolution below stands for a launch of its own unless it says otherwise: the helpers forget what the
+// process resolved before (drive_cascade::ForgetResolutions), as a new process has nothing to remember.
 //
 // Built twice by CMake: as a player build compiles the file (no fault injection: the dev key must do nothing) and
 // as a dev build does (HALOMCCVR_DEV_DIAGNOSTICS=1, ADDRCASCADE_FAULTS=1: each forced fault must show).
@@ -206,6 +210,7 @@ Found Plan(drive_resolve::Resolver& r, uint32_t markerRecorded, const std::strin
 
 bool Run(drive_cascade::Resolution<Found>& out, uint32_t markerRecorded, const std::string& pattern, uintptr_t framed)
 {
+    drive_cascade::ForgetResolutions();
     return drive_cascade::Resolve(g_base, g_size, kHalo3, out, [&](drive_resolve::Resolver& r) {
         return Plan(r, markerRecorded, pattern, framed);
     });
@@ -303,6 +308,7 @@ using Resolved = drive_cascade::Resolution<Simple>;
 bool Resolve(Resolved& out, const drive_cascade::Drive& drive, uint32_t recorded)
 {
     static const std::string pattern = MarkerPattern();
+    drive_cascade::ForgetResolutions();
     return drive_cascade::Resolve(g_base, g_size, drive, out, [&](drive_resolve::Resolver& r) {
         Simple f;
         f.marker = r.Unique("MARKER", recorded, pattern.c_str());
@@ -769,6 +775,7 @@ void TestCacheFile()
         };
         const auto resolve = [&](drive_cascade::Resolution<WithRow>& out) {
             static const std::string marker = MarkerPattern();
+            drive_cascade::ForgetResolutions();
             return drive_cascade::Resolve(g_base, g_size, kReach, out, [&](drive_resolve::Resolver& r) {
                 WithRow f;
                 f.marker = r.Unique("MARKER", markerRva, marker.c_str());
@@ -941,6 +948,7 @@ void TestUnreadableFunctionTable()
         uint32_t functions = 0;
     };
     const auto resolve = [&](drive_cascade::Resolution<Probe>& out) {
+        drive_cascade::ForgetResolutions();
         return drive_cascade::Resolve(base, kSize, kHalo3, out, [](drive_resolve::Resolver& r) {
             Probe f;
             f.entry = r.Unique("ENTRY", 0x1100, "48 89 5C 24 08 57 48 83 EC 40 8B DA 48 8B F9 33");
@@ -1034,8 +1042,11 @@ struct RecordedModule
             f.entry = r.Refuse("it is not where a function starts");
         return f;
     }
-    bool Resolve(drive_cascade::Resolution<Found>& out) const
+    // `nextLaunch`: as a new process, with nothing remembered (false: the same process installing the drive again).
+    bool Resolve(drive_cascade::Resolution<Found>& out, bool nextLaunch = true) const
     {
+        if (nextLaunch)
+            drive_cascade::ForgetResolutions();
         return drive_cascade::Resolve(base, size, drive_cascade::Drive{GameTitle::Halo2, "control-update"}, out,
                                       [](drive_resolve::Resolver& r) { return Plan(r); });
     }
@@ -1077,6 +1088,13 @@ void TestRecordedBuildOpensNoFile()
                    " ms) (this game DLL is the build the tables were measured on)") == 2,
           "each install's line: verified at the recorded addresses, no scan of the module, and its time");
 
+    // The same process installing it again, as at the next level: rung 1 (a) again. It needs nothing remembered.
+    drive_cascade::Resolution<RecordedModule::Found> sameProcess;
+    Check(module.Resolve(sameProcess, false) && sameProcess.rungs.outcome.rung == Rung::Recorded &&
+              !sameProcess.rungs.outcome.rememberedTried && drive_cascade::CacheFileOpens() == opens,
+          "installed again in the same process it is verified at the recorded addresses again: nothing is remembered "
+          "for a drive rung 1 (a) settles");
+
     // One byte of the recorded build no longer the game's: rung 1 (a) fails, and only then is the file opened.
     module.image[RecordedModule::kEntryRva + 3] ^= 0xFF;
     drive_cascade::Resolution<RecordedModule::Found> broken;
@@ -1084,6 +1102,23 @@ void TestRecordedBuildOpensNoFile()
     Check(module.Resolve(broken) && broken.rungs.outcome.recordedTried && broken.rungs.outcome.rung == Rung::Search &&
               broken.rungs.outcome.savedLooked && !broken.found.entry && drive_cascade::CacheFileOpens() == opens + 1,
           "when the recorded addresses do not verify, the file is opened once, to ask for saved ones");
+    // REFUSED ON THE RECORDED BUILD, AND INSTALLED AGAIN: no search and no file the second time, and the refusal
+    // said again.
+    drive_cascade::Resolution<RecordedModule::Found> refusedAgain;
+    opens = drive_cascade::CacheFileOpens();
+    lines.clear();
+    Check(module.Resolve(refusedAgain, false) && refusedAgain.rungs.outcome.recordedTried &&
+              refusedAgain.rungs.outcome.rung == Rung::Remembered && refusedAgain.rungs.outcome.scans == 0 &&
+              refusedAgain.rungs.outcome.moduleScans == 0 && !refusedAgain.found.entry &&
+              drive_cascade::CacheFileOpens() == opens && broken.rungs.outcome.moduleScans == 1,
+          "a drive refused on the recorded build, installed again: zero scans (the first took one) and the file not "
+          "opened");
+    drive_cascade::Announce(drive_cascade::kHalo2Name, refusedAgain);
+    Check(lines.size() == 1 &&
+              Said("Halo 2 DRIVE: as this session already resolved it in this module, with no search (0 scans, ",
+                   " ms): 0 of its 1 addresses verified again where they stand, 1 were NOT found then and are not "
+                   "searched for again in this module: ENTRY NOT FOUND") == 1,
+          "and its line says the refusal again, with what this install cost");
     module.image[RecordedModule::kEntryRva + 3] ^= 0xFF;
 
     // The same module as another build (its PE timestamp one higher): asked for, searched, saved, and found there
@@ -1105,6 +1140,205 @@ void TestRecordedBuildOpensNoFile()
 
     drive_cascade::SetCacheFile(nullptr);
     DeleteFileW(cache.c_str());
+    RemoveDirectoryW(folder.c_str());
+}
+
+// ---- what this process already resolved ---------------------------------------------------------------------------
+// A drive is installed again whenever its title's core is. The second install of a drive in the same module
+// verifies what the first came to: no search, no file -- whether that was a whole drive, a drive with a line it
+// can do without missing, or a refusal.
+uint32_t g_testGeneration = 1;
+uint32_t TestGeneration(GameTitle) { return g_testGeneration; }
+
+void TestRememberedInProcess()
+{
+    const uint32_t markerRva = Rva(g_marker);
+    static const std::string marker = MarkerPattern();
+    static std::string absent;   // the marker with its first byte changed: a signature that is nowhere in this image
+    absent = marker;
+    absent[0] = absent[0] == '0' ? '1' : '0';
+    struct Parts
+    {
+        uint32_t marker = 0, option = 0, tls = 0;
+    };
+    using Installed = drive_cascade::Resolution<Parts>;
+    enum class Kind
+    {
+        Whole,           // every line is in the image
+        OptionMissing,   // one line more, which is not in the image and which the drive can do without
+        Refused,         // its one signature is not in the image
+    };
+    // One install of the drive, in this process: nothing is forgotten first.
+    const auto install = [&](Installed& out, Kind kind, uint32_t recorded) {
+        return drive_cascade::Resolve(g_base, g_size, kHalo3, out, [&](drive_resolve::Resolver& r) {
+            Parts f;
+            f.marker = r.Unique("MARKER", recorded, kind == Kind::Refused ? absent.c_str() : marker.c_str());
+            if (kind == Kind::OptionMissing)
+                f.option = r.Unique("OPTION", recorded + 0x100, absent.c_str());
+            f.tls = r.TlsIndex("TLS index", Rva(&_tls_index), Rva(&_tls_index));
+            return f;
+        });
+    };
+    wchar_t temp[MAX_PATH];
+    GetTempPathW(MAX_PATH, temp);
+    const std::wstring folder = std::wstring(temp) + L"halomccvr_drive_cascade_remembered_" +
+                                std::to_wstring(GetCurrentProcessId()) + L"\\";
+    CreateDirectoryW(folder.c_str(), nullptr);
+    const std::wstring cache = folder + L"HaloMCCVR-drive-addresses.txt";
+    DeleteFileW(cache.c_str());
+    drive_cascade::SetCacheFolder(folder.c_str());
+    g_config.drive_address_cache = 1;
+    g_config.drive_fault = 0;
+    drive_cascade::ForgetResolutions();
+
+    struct Case
+    {
+        Kind kind;
+        const char* name;
+        uint32_t firstScans;   // searches of the whole module at the first install
+        const char* line;      // what the second install's line says after its cost
+    };
+    const Case cases[] = {
+        {Kind::Whole, "whole", 1, " ms): all 2 of its addresses verified again where they stand"},
+        {Kind::OptionMissing, "an optional line missing", 2,
+         " ms): 2 of its 3 addresses verified again where they stand, 1 were NOT found then and are not searched for "
+         "again in this module: OPTION NOT FOUND"},
+        {Kind::Refused, "refused", 1,
+         " ms): 1 of its 2 addresses verified again where they stand, 1 were NOT found then and are not searched for "
+         "again in this module: MARKER NOT FOUND"},
+    };
+    for (const Case& c : cases)
+    {
+        Installed first, second, third;
+        char what[220];
+        // The first install. (What is remembered from the case before is of another plan, and is no use to it.)
+        const bool firstOk = install(first, c.kind, markerRva) && first.rungs.outcome.rung == Rung::Search &&
+                             first.rungs.outcome.moduleScans == c.firstScans;
+        std::snprintf(what, sizeof(what), "%s: the first install of the drive in this module is a search (%u scans)",
+                      c.name, c.firstScans);
+        Check(firstOk, what);
+        // The second and the third, as at the next two levels.
+        const uint32_t opens = drive_cascade::CacheFileOpens();
+        lines.clear();
+        const bool secondOk = install(second, c.kind, markerRva) && install(third, c.kind, markerRva);
+        std::snprintf(what, sizeof(what), "%s: THE SECOND INSTALL OF THE SAME IMAGE DOES ZERO SCANS, and so does the "
+                                          "third", c.name);
+        Check(secondOk && second.rungs.outcome.rung == Rung::Remembered && second.rungs.outcome.scans == 0 &&
+                  second.rungs.outcome.moduleScans == 0 && third.rungs.outcome.rung == Rung::Remembered &&
+                  third.rungs.outcome.scans == 0 && third.rungs.outcome.moduleScans == 0,
+              what);
+        std::snprintf(what, sizeof(what), "%s: and opens no file", c.name);
+        Check(drive_cascade::CacheFileOpens() == opens && !second.rungs.outcome.savedLooked && !second.rungs.saved, what);
+        std::snprintf(what, sizeof(what), "%s: it comes to what the first came to, line for line", c.name);
+        Check(drive_known::SameReport(second.report, first.report) && second.found.marker == first.found.marker &&
+                  second.found.option == first.found.option && second.found.tls == first.found.tls &&
+                  (c.kind == Kind::Refused ? second.found.marker == 0 : second.found.marker == markerRva),
+              what);
+        char firstLine[200], secondLine[200];
+        drive_cascade::FirstFailure(first.report, firstLine, sizeof(firstLine));
+        drive_cascade::FirstFailure(second.report, secondLine, sizeof(secondLine));
+        drive_cascade::Announce("TEST DRIVE", second);
+        std::snprintf(what, sizeof(what), "%s: its line says so, with what this install cost, and what was not found "
+                                          "is named again", c.name);
+        Check(lines.size() == 1 && !std::strcmp(firstLine, secondLine) &&
+                  Said("TEST DRIVE: as this session already resolved it in this module, with no search (0 scans, ",
+                       c.line) == 1,
+              what);
+    }
+
+    // NOT STICKY. What is remembered is of one module instance; anything else resolves the drive afresh.
+    {
+        Installed r, after;
+        // The cases above left a refusal remembered. MCC unloads the DLL and loads it again at the same base: the
+        // title's module generation changes, and the drive is searched for again.
+        drive_cascade::SetModuleGenerationSource(&TestGeneration);
+        Check(install(r, Kind::Refused, markerRva) && r.rungs.outcome.rung == Rung::Search,
+              "a module generation where none was known before: another module instance, searched");
+        Check(install(r, Kind::Refused, markerRva) && r.rungs.outcome.rung == Rung::Remembered,
+              "the same generation again: remembered");
+        ++g_testGeneration;
+        Check(install(r, Kind::Refused, markerRva) && r.rungs.outcome.rung == Rung::Search &&
+                  !r.rungs.outcome.rememberedTried && r.rungs.outcome.moduleScans == 1 && !r.found.marker,
+              "A REFUSAL IS NOT CARRIED OVER A RELOAD OF THE DLL: the same base and build, another generation, and "
+              "the drive is searched for again");
+        Check(install(after, Kind::Refused, markerRva) && after.rungs.outcome.rung == Rung::Remembered,
+              "and remembered again from there");
+        drive_cascade::SetModuleGenerationSource(nullptr);
+        g_testGeneration = 1;
+        drive_cascade::ForgetResolutions();
+
+        // Another plan (another version of the drive's tables: the marker recorded elsewhere).
+        Check(install(r, Kind::Whole, markerRva) && r.rungs.outcome.rung != Rung::Remembered &&
+                  install(r, Kind::Whole, markerRva) && r.rungs.outcome.rung == Rung::Remembered,
+              "a whole drive: resolved once (from the file the cases above left), then remembered");
+        Check(install(r, Kind::Whole, markerRva + 0x10) && r.rungs.outcome.rememberedTried &&
+                  r.rungs.outcome.rung != Rung::Remembered && r.found.marker == markerRva,
+              "a plan that asks for other lines than were remembered: resolved afresh");
+        // Another module at another base, for the same drive.
+        RecordedModule elsewhere;
+        drive_cascade::Resolution<RecordedModule::Found> there;
+        const auto onOther = [&](drive_cascade::Resolution<RecordedModule::Found>& out) {
+            return drive_cascade::Resolve(elsewhere.base, elsewhere.size, kHalo3, out,
+                                          [](drive_resolve::Resolver& q) { return RecordedModule::Plan(q); });
+        };
+        Check(elsewhere.base && onOther(there) && !there.rungs.outcome.rememberedTried &&
+                  there.rungs.outcome.rung == Rung::Search && there.found.entry == RecordedModule::kEntryRva,
+              "the same drive in a module at another base: nothing remembered of it there, searched");
+        Check(onOther(there) && there.rungs.outcome.rung == Rung::Remembered && there.rungs.outcome.scans == 0,
+              "and remembered there from then on");
+        // A module that does not open leaves nothing remembered for the drive.
+        Installed none;
+        Check(!drive_cascade::Resolve(uintptr_t{0}, g_size, kHalo3, none,
+                                      [](drive_resolve::Resolver&) { return Parts{}; }) &&
+                  onOther(there) && !there.rungs.outcome.rememberedTried &&
+                  there.rungs.outcome.rung != Rung::Remembered && there.found.entry == RecordedModule::kEntryRva,
+              "a module that did not open: what was remembered for the drive is dropped, and the next install "
+              "starts from the other rungs");
+    }
+
+    // WITH THE CACHE OFF it is the only thing that keeps a second install from searching.
+    {
+        drive_cascade::ForgetResolutions();
+        g_config.drive_address_cache = 0;
+        Installed first, second;
+        const uint32_t opens = drive_cascade::CacheFileOpens();
+        Check(install(first, Kind::Whole, markerRva + 0x20) && first.rungs.outcome.rung == Rung::Search &&
+                  first.rungs.notSaved && install(second, Kind::Whole, markerRva + 0x20) &&
+                  second.rungs.outcome.rung == Rung::Remembered && second.rungs.outcome.scans == 0 &&
+                  drive_cascade::CacheFileOpens() == opens,
+              "drive_address_cache = 0: nothing is saved, no file is opened, and the second install still does zero "
+              "scans");
+        g_config.drive_address_cache = 1;
+    }
+
+    // THE DEV KEY: while any bit is set, what is remembered is neither used nor replaced.
+    {
+        drive_cascade::ForgetResolutions();
+        Installed healthy, forced, after;
+        Check(install(healthy, Kind::Whole, markerRva) && install(healthy, Kind::Whole, markerRva) &&
+                  healthy.rungs.outcome.rung == Rung::Remembered,
+              "a whole drive, remembered");
+        g_config.drive_fault = 0x10;
+        const bool resolved = install(forced, Kind::Whole, markerRva);
+        g_config.drive_fault = 0;
+        const bool then = install(after, Kind::Whole, markerRva);
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        Check(resolved && forced.rungs.outcome.rung == Rung::Search && !forced.rungs.outcome.rememberedTried &&
+                  forced.rungs.outcome.moduleScans == 1,
+              "dev build, drive_fault 0x10: what was remembered is not used, and the drive is searched");
+        Check(then && after.rungs.outcome.rung == Rung::Remembered && after.rungs.outcome.scans == 0,
+              "dev build: and with the key cleared what was remembered before it still serves");
+#else
+        Check(resolved && forced.rungs.outcome.rung == Rung::Remembered && then &&
+                  after.rungs.outcome.rung == Rung::Remembered,
+              "player build: the dev key does nothing, and the drive is verified from what was remembered");
+#endif
+    }
+
+    drive_cascade::ForgetResolutions();
+    drive_cascade::SetCacheFile(nullptr);
+    DeleteFileW(cache.c_str());
+    DeleteFileW((cache + L".tmp").c_str());
     RemoveDirectoryW(folder.c_str());
 }
 
@@ -1231,6 +1465,7 @@ int main(int argc, char** argv)
     TestInstallProofsNeverFault();
     TestUnreadableFunctionTable();
     TestRecordedBuildOpensNoFile();
+    TestRememberedInProcess();
     TestHookWatch();
 
     std::printf("drive_cascade_tests (%s build): %u checks, %u failures\n",

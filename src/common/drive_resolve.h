@@ -32,6 +32,14 @@
 // that can be made in place: the bytes stand at the saved address, and they do not stand at the recorded one,
 // where the search would have taken them instead.
 //
+// WHAT THIS PROCESS ALREADY RESOLVED IN THIS VERY MODULE is known too (Source::Remembered): the report of an
+// earlier resolution of the same module instance, handed back line for line. A drive is installed again whenever
+// its title's core is, and the module it resolves in has not changed in between. A line that was found is
+// verified where it was found: its bytes must still stand there. A line that was NOT found is not searched for
+// again: the search that did not find it searched this module. What follows from other lines is worked out again.
+// Nothing is scanned. If the plan then comes to anything but what was remembered, the remembered report is void
+// and the caller resolves afresh; so a result is only ever repeated whole, never patched.
+//
 // THE SEARCH. The rungs, in order:
 //
 //   1. BY SIGNATURE. A hooked function, and every anchor whose bytes name one place, is searched for in the
@@ -699,6 +707,7 @@ enum class Source : uint8_t
     Search,     // nowhere: every signature is searched for, and every match counted
     Recorded,   // at the tables' recorded RVAs: the module is the build they were measured on
     Saved,      // at the RVAs an earlier search found in this same build
+    Remembered, // as an earlier resolution of this very module instance left every line, found or not
 };
 
 struct Known
@@ -707,6 +716,7 @@ struct Known
     const uint32_t* saved = nullptr;   // Saved: the RVA of every line, in the order the plan stores them
     uint32_t savedCount = 0;
     const uint8_t* placed = nullptr;   // Saved: how the search placed each of them (Placement), in the same order
+    const Report* remembered = nullptr;   // Remembered: the report of that earlier resolution
 };
 
 // -------------------------------------------------------------------------------------------------- resolver
@@ -741,6 +751,8 @@ public:
             line.note = "its pattern does not compile";
             return Add(line);
         }
+        if (known_.source == Source::Remembered)
+            return Add(Again(line, p, false, 0, 0));
         if (known_.source != Source::Search)
         {
             // THE KNOWN ADDRESS: the bytes there are compared, and nothing is searched. A forced "not found" or
@@ -825,6 +837,8 @@ public:
         }
         const uint32_t start = viaFound ? FunctionStartOf(im_, viaFound) : 0;
         const uint32_t end = start ? FunctionEndOf(im_, start) : 0;
+        if (known_.source == Source::Remembered)
+            return Add(Again(line, p, true, start, end));
         if (!start || !end || recorded < functionRecorded)
         {
             line.verdict = Verdict::NoFunction;
@@ -931,6 +945,10 @@ public:
             ++report_.scans;
             ++report_.moduleScans;
             line.matches = CountExecutable(im_, p).count;
+        }
+        else if (const Line* const was = Was())
+        {
+            line.matches = was->matches;   // what the search that is remembered counted; nothing is counted again
         }
         const uint32_t start = viaFound ? FunctionStartOf(im_, viaFound) : 0;
         if (!start)
@@ -1085,6 +1103,38 @@ private:
         if (Fault(faults_, kFaultSavedStale))
             return recorded ? recorded + kFaultRecordShift : 0;
         return report_.count < known_.savedCount ? known_.saved[report_.count] : 0;
+    }
+
+    // REMEMBERED: the line an earlier resolution of this very module stored at the place about to be stored.
+    const Line* Was() const
+    {
+        return known_.source == Source::Remembered && known_.remembered && report_.count < known_.remembered->count
+                   ? &known_.remembered->lines[report_.count]
+                   : nullptr;
+    }
+
+    // That line, taken again. One that was found is verified where it was found: its bytes must still stand
+    // there, and inside the function it belongs to (`inFunction`: [start, end)). One that was NOT found is not
+    // searched for again: it is stored as it was, with the verdict it had. No such line, or bytes that are no
+    // longer there: a line not found, which makes this resolution differ from the remembered one.
+    Line Again(Line line, const Pattern& p, bool inFunction, uint32_t start, uint32_t end) const
+    {
+        const Line* const was = Was();
+        line.how = How::Known;
+        line.verdict = Verdict::Missing;
+        if (!was)
+            return line;
+        if (Found(was->verdict))
+        {
+            const uint32_t at = was->found;
+            const bool there = at && InExecutable(im_, at, p.length) && MatchesAt(im_, p, at) &&
+                               (!inFunction || (start && end && at >= start && at < end && p.length <= end - at));
+            if (!there)
+                return line;
+        }
+        Line again = *was;
+        again.name = line.name;
+        return again;
     }
 
     // How the search placed the saved line about to be verified (None: the entry does not say).

@@ -4,7 +4,8 @@
 // function starts and extents from .pdata, chained fragments included; the call, rip-operand and TLS proofs; the
 // reads through this mod's own hooks; and every forced fault. Then the rungs (src/common/drive_known.h): the known
 // addresses verified with no search, one failed line sending the whole drive to the search, what a search found
-// saved and verified the next time, a saved address taken only as the search placed it, and the address cache's
+// saved and verified the next time, a saved address taken only as the search placed it, what the process already
+// resolved in a module verified again with no search (complete, incomplete or refused), and the address cache's
 // text with its rules version and checksum.
 #define DRIVE_RESOLVE_FAULTS 1
 #include "drive_known.h"
@@ -1186,6 +1187,136 @@ void TestSavedAskedOnlyWhenNeeded()
           "fault 0x40 does not ask the cache");
 }
 
+// WHAT THE PROCESS ALREADY RESOLVED IN THIS MODULE. A drive is installed again at every level; the second install
+// of the same image must search nothing, whatever the first came to.
+constexpr char kAbsent[] = "0F 1F 84 00 11 22 33 44 55 66 77 88 99 AA BB C0";   // stands in no test module
+
+// The Mini drive with one line more, which it can do without.
+Mini MiniPlanWithOption(Resolver& r)
+{
+    const Mini f = MiniPlan(r);
+    (void)r.Unique("option", 0x2800, kAbsent);
+    return f;
+}
+
+void TestRemembered()
+{
+    using drive_known::Earlier;
+    using drive_known::Rung;
+    constexpr uint32_t kShift = 0x340;
+    const auto plan = [](Resolver& r) { return MiniPlan(r); };
+    const auto withOption = [](Resolver& r) { return MiniPlanWithOption(r); };
+    Mini first, again;
+    Report report, second;
+    drive_known::Outcome out;
+
+    // COMPLETE.
+    {
+        Module m;
+        BuildMini(m, kShift);
+        const Image& image = m.Finish();
+        out = drive_known::RunTyped(image, 0, false, Earlier{}, plan, first, report);
+        Check(out.rung == Rung::Search && out.moduleScans == 2 && first.ok && report.Complete(),
+              "the first install of a drive in a module: searched, two scans of the module");
+        Earlier earlier;
+        earlier.remembered = &report;
+        out = drive_known::RunTyped(image, 0, false, earlier, plan, again, second);
+        Check(out.rung == Rung::Remembered && out.rememberedTried && out.scans == 0 && out.moduleScans == 0 &&
+                  !out.savedLooked && !out.learn,
+              "COMPLETE: the second install of the same image does zero scans, and asks for no saved addresses");
+        Check(again.ok && again.entry == first.entry && again.field == first.field && again.call == first.call &&
+                  drive_known::SameReport(second, report) && second.Fingerprint() == report.Fingerprint(),
+              "and comes to the same result, address for address, read the same way");
+
+        // Under a forced fault what was remembered is not used: a fault's result is not the module's.
+        out = drive_known::RunTyped(image, kFaultRecordWrong, false, earlier, plan, again, second);
+        Check(!out.rememberedTried && out.rung == Rung::Search && again.ok && out.moduleScans == 2,
+              "under a forced fault what was remembered is not used");
+        out = drive_known::RunTyped(image, kFaultSearchToo, false, earlier, plan, again, second);
+        Check(!out.rememberedTried && out.rung == Rung::Search, "nor under the self-test bit");
+
+        // The same bytes elsewhere: what was remembered does not hold, and the drive is resolved afresh.
+        Module other;
+        BuildMini(other, 0x400);
+        out = drive_known::RunTyped(other.Finish(), 0, false, earlier, plan, again, second);
+        Check(out.rememberedTried && out.rung == Rung::Search && again.ok && again.entry == kMiniEntry + 0x400 &&
+                  out.moduleScans == 2,
+              "bytes that no longer stand where they were remembered: it is void, and the drive is resolved afresh");
+        // A plan that asks for other lines than were remembered.
+        out = drive_known::RunTyped(image, 0, false, earlier, withOption, again, second);
+        Check(out.rememberedTried && out.rung == Rung::Search && again.ok && second.count == 5,
+              "a plan that asks for other lines than were remembered: resolved afresh");
+    }
+
+    // AN OPTIONAL LINE MISSING.
+    {
+        Module m;
+        BuildMini(m, kShift);
+        out = drive_known::RunTyped(m.Finish(), 0, false, Earlier{}, withOption, first, report);
+        Check(out.rung == Rung::Search && out.moduleScans == 3 && first.ok && !report.Complete() &&
+                  report.NotFound() == 1 && !out.learn,
+              "a drive with a line it can do without, which is not in the module: usable, never whole, nothing to save");
+        Earlier earlier;
+        earlier.remembered = &report;
+        out = drive_known::RunTyped(m.Finish(), 0, false, earlier, withOption, again, second);
+        Check(out.rung == Rung::Remembered && out.scans == 0 && out.moduleScans == 0 && again.ok &&
+                  again.entry == first.entry && drive_known::SameReport(second, report) &&
+                  second.lines[4].verdict == Verdict::Missing,
+              "AN OPTIONAL LINE MISSING: the second install does zero scans; the line that was not found is not "
+              "searched for again");
+        // ... not even where it would now be found: this module was searched, and is not searched again. (A real
+        // reload of the DLL is another module instance, whose owner hands nothing remembered: below.)
+        m.Put(0x2800, kAbsent);
+        out = drive_known::RunTyped(m.Finish(), 0, false, earlier, withOption, again, second);
+        Check(out.rung == Rung::Remembered && out.scans == 0 && second.lines[4].verdict == Verdict::Missing,
+              "what was not found in this module is not looked for again in it");
+        out = drive_known::RunTyped(m.Finish(), 0, false, Earlier{}, withOption, again, second);
+        Check(out.rung == Rung::Search && second.Complete() && second.lines[4].found == 0x2800,
+              "with nothing remembered (another module instance) it is searched for, and found");
+    }
+
+    // REFUSED: a mandatory line is not in the module.
+    {
+        Module m;
+        PutFunction(m, kMiniEntry + kShift);   // the entry and its field; no call site anywhere
+        const Image& image = m.Finish();
+        out = drive_known::RunTyped(image, 0, false, Earlier{}, plan, first, report);
+        Check(out.rung == Rung::Search && out.moduleScans == 2 && !first.ok && !first.call && first.entry &&
+                  report.NotFound() == 2,
+              "a drive whose mandatory line is not in the module: refused, after two scans of the module");
+        Earlier earlier;
+        earlier.remembered = &report;
+        out = drive_known::RunTyped(image, 0, false, earlier, plan, again, second);
+        Check(out.rung == Rung::Remembered && out.scans == 0 && out.moduleScans == 0 && !again.ok && !again.call &&
+                  again.entry == first.entry && drive_known::SameReport(second, report) &&
+                  second.lines[2].verdict == Verdict::Missing && !std::strcmp(second.lines[2].name, "call site"),
+              "REFUSED: the second install does zero scans, and is refused again by the same line");
+    }
+
+    // ON THE RECORDED BUILD rung 1 (a) comes first and needs nothing remembered; where it fails, what was
+    // remembered serves.
+    {
+        Module m;
+        BuildMini(m, 0);
+        (void)drive_known::RunTyped(m.Finish(), 0, false, Earlier{}, plan, first, report);
+        Earlier earlier;
+        earlier.remembered = &report;
+        out = drive_known::RunTyped(m.Finish(), 0, true, earlier, plan, again, second);
+        Check(out.rung == Rung::Recorded && !out.rememberedTried && out.scans == 0 && again.ok,
+              "on the recorded build the recorded addresses are verified first, and nothing remembered is needed");
+        Module moved;
+        BuildMini(moved, 0, 0x70);   // the field is not at its recorded offset: rung 1 (a) fails
+        out = drive_known::RunTyped(moved.Finish(), 0, true, Earlier{}, plan, first, report);
+        Check(out.recordedTried && out.rung == Rung::Search && out.scans == 3 && first.ok,
+              "the recorded build with one line that does not verify there: searched");
+        earlier.remembered = &report;
+        out = drive_known::RunTyped(moved.Finish(), 0, true, earlier, plan, again, second);
+        Check(out.recordedTried && out.rung == Rung::Remembered && out.scans == 0 && out.moduleScans == 0 && again.ok &&
+                  again.field == first.field && second.lines[1].how == How::FunctionExtent,
+              "and its second install does zero scans: rung 1 (a) fails as before, and what was remembered holds");
+    }
+}
+
 void TestRungFaults()
 {
     Module m;
@@ -1541,6 +1672,7 @@ int main()
     TestRungSaved();
     TestSavedPlacement();
     TestSavedAskedOnlyWhenNeeded();
+    TestRemembered();
     TestRungFaults();
     TestCacheText();
     std::printf("drive resolve tests: %u checks, %u failures\n", checks, failures);

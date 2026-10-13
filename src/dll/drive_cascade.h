@@ -13,10 +13,11 @@
 //     drive_cascade::Announce(drive_cascade::kReachSabreName, found);
 //
 // THE RUNGS (drive_known.h): the known addresses first, each verified where it stands with no search of the
-// module -- the tables' recorded RVAs when the module is the build they were measured on, otherwise the RVAs a
-// search of this same build saved -- and only when one of them fails, the search. What the search finds on a
-// build the tables do not describe is saved, so the next launch starts from it. Every address the install then
-// uses is one that was verified or found in THIS module.
+// module -- the tables' recorded RVAs when the module is the build they were measured on, otherwise what this
+// process already resolved in this very module, otherwise the RVAs a search of this same build saved -- and only
+// when one of them fails, the search. What the search finds on a build the tables do not describe is saved, so
+// the next launch starts from it. Every address the install then uses is one that was verified or found in THIS
+// module.
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -73,6 +74,23 @@ struct Rungs
 void SetCacheFolder(const wchar_t* folder);
 // The same for a file named outright (tests).
 void SetCacheFile(const wchar_t* path);
+// WHAT THIS PROCESS ALREADY RESOLVED. A drive is installed again whenever its title's core is -- at a level
+// boundary, after a pause -- and the module it resolves in is the same one as before. So the last resolution of
+// each drive is kept in memory with the module instance it was made in (its base, its build stamp and the
+// title's module generation), and the next install of that drive in that module verifies it in place instead of
+// resolving afresh: complete, incomplete or refused, it costs no search and opens no file. A line that was not
+// found is not searched for again in that module. Another base, stamp or generation, a plan that asks for other
+// lines, a module that does not open, or one address that no longer holds its bytes, and it is dropped and the
+// drive resolved afresh; a refusal is therefore never carried over a real reload of the DLL. Nothing of it
+// outlives the process, and none of it is used or kept while a dev fault is set.
+//
+// Which image of a title's DLL is loaded: a number that changes when MCC unloads the DLL and loads it again, even
+// at the same base (the title adapter's module generation). Until a source is named, a module instance is told
+// from another by its base and build stamp alone.
+void SetModuleGenerationSource(uint32_t (*generationOf)(GameTitle title));
+// Forgets every remembered resolution, as a new process would have none (the tests and the offline check).
+void ForgetResolutions();
+
 // How many times the cache's file has been opened, to read or to write, since the process started. It is opened
 // only when a drive's saved addresses are needed or are being saved: never for a drive that verified at the
 // recorded addresses. (The tests and the offline check count on it.)
@@ -125,8 +143,9 @@ bool Resolve(uintptr_t base, size_t size, const Drive& drive, Resolution<Found>&
 void FirstFailure(const drive_resolve::Report& report, char* out, size_t size);
 
 // WHICH RUNG WON, AND WHAT IT COST. One line per install of a drive: verified at the recorded addresses with no
-// search; verified at the addresses saved from an earlier launch of this build; found by search (how many moved,
-// and whether they were saved for the next launch); or which addresses were not found. Each says what that
+// search; as this session already resolved it in this module; verified at the addresses saved from an earlier
+// launch of this build; found by search (how many moved, and whether they were saved for the next launch); or
+// which addresses were not found, which a repeat says again and does not pass over. Each says what that
 // resolution cost the worker -- "(N scans, T ms)": how many times the whole module was searched, and the time
 // the resolution took -- which is why the line is said at every install and not only when the rung changes: the
 // cost of an install is what it reports, and no two are the same. An install is once per core of a title, never

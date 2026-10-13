@@ -13,6 +13,7 @@
 #include "native_fault_probe.h"
 #include "dev_pad.h"
 #include "drive_cascade.h"
+#include "title_adapter.h"
 #include "telemetry_recorder.h"
 
 #ifndef HALOMCCVR_BUILD_COMMIT
@@ -166,6 +167,9 @@ static DWORD WINAPI InitThread(LPVOID)
         NativeFaultProbe_Init(dir.c_str(),HALOMCCVR_BUILD_COMMIT)?"enabled":"unavailable");
     // The direct drives' address cache lives beside the log and the settings (drive_cascade.h).
     drive_cascade::SetCacheFolder(dir.c_str());
+    // What a drive resolved in a module is remembered for that image of it only: the title adapter's module
+    // generation changes when MCC unloads a game DLL and loads it again, even at the same base.
+    drive_cascade::SetModuleGenerationSource(&TitleAdapter_GetGeneration);
     const std::wstring primaryConfig = dir + L"halomccvr.cfg";
     const std::wstring legacyConfig = dir + L"halo3xr.cfg";
     ConfigLoadMigrating(primaryConfig.c_str(), legacyConfig.c_str());

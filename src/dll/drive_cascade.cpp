@@ -256,6 +256,82 @@ bool Store(const drive_known::Entry& entry)
     return stored;
 }
 
+// ----------------------------------------------------------------------- what this process already resolved
+// The last resolution of each drive, with the module instance it was made in (drive_cascade.h). Taken and left by
+// the one cold worker; the lock is for the same reason as the cache's.
+struct Remembered
+{
+    bool held;
+    GameTitle title;
+    char id[drive_known::kMaxId];
+    uintptr_t base;
+    uint64_t stamp;
+    uint32_t generation;
+    // The report, kept as its bytes: with no initialiser of its own the whole table is zero until something is
+    // remembered, and costs the DLL's file nothing.
+    alignas(drive_resolve::Report) unsigned char report[sizeof(drive_resolve::Report)];
+};
+static_assert(std::is_trivially_copyable_v<drive_resolve::Report>, "a report is remembered as its bytes");
+Remembered g_remembered[12];   // one for each drive of each title; there are nine. Zero: nothing is held
+SRWLOCK g_rememberedLock = SRWLOCK_INIT;
+std::atomic<uint32_t (*)(GameTitle)> g_generationOf{nullptr};
+
+Remembered* RememberedFor(const drive_cascade::Drive& drive)
+{
+    for (Remembered& slot : g_remembered)
+        if (slot.held && slot.title == drive.title && !std::strcmp(slot.id, drive.id))
+            return &slot;
+    return nullptr;
+}
+
+// What is remembered of `drive` in exactly this module instance, copied out. What is remembered of it in another
+// instance describes a module that is gone, and is dropped.
+bool Recall(const drive_cascade::Drive& drive, uintptr_t base, uint64_t stamp, uint32_t generation,
+            drive_resolve::Report& out)
+{
+    bool have = false;
+    AcquireSRWLockExclusive(&g_rememberedLock);
+    if (Remembered* const slot = RememberedFor(drive))
+    {
+        have = slot->base == base && slot->stamp == stamp && slot->generation == generation;
+        if (have)
+            std::memcpy(&out, slot->report, sizeof(out));
+        else
+            slot->held = false;
+    }
+    ReleaseSRWLockExclusive(&g_rememberedLock);
+    return have;
+}
+
+void Remember(const drive_cascade::Drive& drive, uintptr_t base, uint64_t stamp, uint32_t generation,
+              const drive_resolve::Report& report)
+{
+    AcquireSRWLockExclusive(&g_rememberedLock);
+    Remembered* slot = RememberedFor(drive);
+    for (Remembered& unused : g_remembered)
+        if (!slot && !unused.held)
+            slot = &unused;
+    if (slot && drive_known::Word(drive.id, drive_known::kMaxId))
+    {
+        slot->held = true;
+        slot->title = drive.title;
+        snprintf(slot->id, sizeof(slot->id), "%s", drive.id);
+        slot->base = base;
+        slot->stamp = stamp;
+        slot->generation = generation;
+        std::memcpy(slot->report, &report, sizeof(report));
+    }
+    ReleaseSRWLockExclusive(&g_rememberedLock);
+}
+
+void Forget(const drive_cascade::Drive& drive)
+{
+    AcquireSRWLockExclusive(&g_rememberedLock);
+    if (Remembered* const slot = RememberedFor(drive))
+        slot->held = false;
+    ReleaseSRWLockExclusive(&g_rememberedLock);
+}
+
 // What asking the cache for one drive's saved addresses needs, and where the answer is kept while the rungs run.
 struct Asking
 {
@@ -292,6 +368,32 @@ int DescribeLine(const drive_resolve::Line& line, char* out, size_t size)
         return snprintf(out, size, "%s %s", line.name, drive_resolve::VerdictText(line.verdict));
     }
 }
+
+// The lines of a report that are named in its one line, as many as fit: those not found (`lostOnly`), or every
+// one that is not simply where the tables record it.
+void ListLines(const drive_resolve::Report& report, bool lostOnly, char* list, size_t size)
+{
+    size_t used = 0;
+    uint32_t named = 0, unnamed = 0;
+    list[0] = 0;
+    for (uint32_t i = 0; i < report.count; ++i)
+    {
+        const drive_resolve::Line& line = report.lines[i];
+        if (lostOnly ? drive_resolve::Found(line.verdict) : line.verdict == drive_resolve::Verdict::AsRecorded)
+            continue;
+        char one[200];
+        const int text = DescribeLine(line, one, sizeof(one));
+        if (text <= 0 || used + static_cast<size_t>(text) + 3 >= size - 24)
+        {
+            ++unnamed;
+            continue;
+        }
+        used += static_cast<size_t>(snprintf(list + used, size - used, "%s%s", named ? "; " : "", one));
+        ++named;
+    }
+    if (unnamed)
+        snprintf(list + used, size - used, "; and %u more", unnamed);
+}
 } // namespace
 
 namespace drive_cascade
@@ -305,6 +407,19 @@ void SetCacheFile(const wchar_t* path)
 }
 
 uint32_t CacheFileOpens() { return g_cacheOpens.load(std::memory_order_relaxed); }
+
+void SetModuleGenerationSource(uint32_t (*generationOf)(GameTitle title))
+{
+    g_generationOf.store(generationOf, std::memory_order_relaxed);
+}
+
+void ForgetResolutions()
+{
+    AcquireSRWLockExclusive(&g_rememberedLock);
+    for (Remembered& slot : g_remembered)
+        slot.held = false;
+    ReleaseSRWLockExclusive(&g_rememberedLock);
+}
 
 void SetCacheFolder(const wchar_t* folder)
 {
@@ -330,7 +445,12 @@ bool RunPlan(uintptr_t base, size_t size, const Drive& drive, drive_known::PlanF
     why = nullptr;
     drive_resolve::Image image;
     if (!GuardedOpen(base, size, image, why))
+    {
+        // A module that does not open is not this drive's module as it was remembered: start afresh next time.
+        if (drive.id)
+            Forget(drive);
         return false;
+    }
     const uint32_t faults = Faults();
     // While ANY bit of the dev key is set the player's file is neither read nor written. What a forced fault
     // makes of a drive is not what the game DLL holds and must never be found there by a later launch; and a
@@ -350,11 +470,30 @@ bool RunPlan(uintptr_t base, size_t size, const Drive& drive, drive_known::PlanF
         earlier.look = &AskCache;
         earlier.lookContext = &asking;
     }
+    // WHAT THIS PROCESS ALREADY RESOLVED IN THIS VERY MODULE (drive_cascade.h): handed to the rungs, which verify
+    // it in place before they ask the cache or search. Not while a dev fault is set: what a fault makes of a
+    // drive is neither remembered nor allowed to hide behind what was.
+    const auto generationOf = g_generationOf.load(std::memory_order_relaxed);
+    const uint32_t generation = generationOf ? generationOf(drive.title) : 0;
+    drive_resolve::Report remembered;
+    if (!faults && drive.id && Recall(drive, base, stamp, generation, remembered))
+        earlier.remembered = &remembered;
     if (!GuardedRun(image, faults, rungs.recordedBuild, earlier, plan, keep, context, report, rungs.outcome, why))
     {
         report = drive_resolve::Report{};
         rungs = Rungs{};
+        if (drive.id)
+            Forget(drive);
         return false;
+    }
+    // REMEMBER WHAT IT CAME TO, whole or not, for the next install of this drive in this module. Rung 1 (a) needs
+    // no memory -- it comes first and costs as little -- so a drive it settled leaves none behind.
+    if (!faults && drive.id)
+    {
+        if (rungs.outcome.rung == drive_known::Rung::Recorded)
+            Forget(drive);
+        else if (rungs.outcome.rung != drive_known::Rung::Remembered)
+            Remember(drive, base, stamp, generation, report);
     }
     rungs.savedRefused = rungs.outcome.savedRefused;
     drive_known::Entry entry;
@@ -416,6 +555,20 @@ void Announce(const char* drive, const drive_resolve::Report& report, const Rung
         LOG("%s: verified at the recorded addresses, all %u of them, with no search %s (this game DLL is the build "
             "the tables were measured on)", drive, report.count, cost);
     }
+    else if (outcome.rung == Rung::Remembered)
+    {
+        // The same result as the install before, said again with what THIS install cost. What was not found is
+        // named again: a drive that is refused is refused in so many words at every install.
+        char list[720];
+        ListLines(report, true, list, sizeof(list));
+        if (lost)
+            LOG("%s: as this session already resolved it in this module, with no search %s: %u of its %u addresses "
+                "verified again where they stand, %u were NOT found then and are not searched for again in this "
+                "module: %s", drive, cost, report.count - lost, report.count, lost, list);
+        else
+            LOG("%s: as this session already resolved it in this module, with no search %s: all %u of its "
+                "addresses verified again where they stand", drive, cost, report.count);
+    }
     else if (outcome.rung == Rung::Saved)
     {
         // A line saved as the single match in its function has had that function searched again: the rule it
@@ -441,26 +594,8 @@ void Announce(const char* drive, const drive_resolve::Report& report, const Rung
             snprintf(before + length, sizeof(before) - length, "the addresses saved earlier were not used (%s); ",
                      rungs.savedRefused);
         // Name the ones that are not as recorded, as many as fit.
-        char list[720] = "";
-        size_t used = 0;
-        uint32_t named = 0, unnamed = 0;
-        for (uint32_t i = 0; i < report.count; ++i)
-        {
-            const drive_resolve::Line& line = report.lines[i];
-            if (line.verdict == Verdict::AsRecorded)
-                continue;
-            char one[200];
-            const int text = DescribeLine(line, one, sizeof(one));
-            if (text <= 0 || used + static_cast<size_t>(text) + 3 >= sizeof(list) - 24)
-            {
-                ++unnamed;
-                continue;
-            }
-            used += static_cast<size_t>(snprintf(list + used, sizeof(list) - used, "%s%s", named ? "; " : "", one));
-            ++named;
-        }
-        if (unnamed)
-            snprintf(list + used, sizeof(list) - used, "; and %u more", unnamed);
+        char list[720];
+        ListLines(report, false, list, sizeof(list));
         if (lost)
         {
             LOG("%s: %ssearched %s: of its %u addresses %u are where the tables record them, %u MOVED, %u were taken "

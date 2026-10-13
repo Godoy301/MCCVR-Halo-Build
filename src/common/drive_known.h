@@ -5,8 +5,13 @@
 //   RUNG 1, THE KNOWN ADDRESSES, VERIFIED IN PLACE. No search of the module at all.
 //     (a) The tables' recorded RVAs, when the module IS the build they were measured on (its PE timestamp and
 //         image size; title_build_identity.h).
+//     (m) Otherwise what this same process already resolved in this very module, where it has: a drive is
+//         installed again at every level, and what was found in a module -- and what was NOT found in it -- does
+//         not change while that module stays loaded. Every found line is verified where it stands; a line that
+//         was not found is not searched for again. This one alone may repeat a result that is incomplete, or a
+//         refusal: it adds nothing to what the drive came to, and takes nothing away. In memory only.
 //     (b) Otherwise the RVAs an earlier search found in exactly this build, read back from the address cache.
-//         The cache is asked only at this point: while (a) holds, its file is never opened.
+//         The cache is asked only at this point: while (a) or (m) holds, its file is never opened.
 //     Every signature's bytes must stand at its known address, and the drive's own plan makes every proof on
 //     those addresses that it makes on searched ones (drive_resolve.h has what that is, and why leaving out the
 //     count of matches is sound). A saved address is moreover taken only under the rule the search placed it by.
@@ -366,6 +371,7 @@ enum class Rung : uint8_t
     Recorded,   // rung 1 (a): verified at the tables' recorded addresses
     Saved,      // rung 1 (b): verified at the addresses saved from an earlier search of this build
     Search,     // rung 2
+    Remembered, // rung 1 (m): as this process already resolved it in this very module, verified in place
 };
 
 // What one drive's resolution went through.
@@ -373,6 +379,7 @@ struct Outcome
 {
     Rung rung = Rung::None;             // the rung whose result is the one in use
     bool recordedTried = false;         // rung 1 (a) was tried (and failed, when `rung` is not Recorded)
+    bool rememberedTried = false;       // rung 1 (m) was tried (and did not hold, when `rung` is not Remembered)
     bool savedTried = false;            // rung 1 (b) was tried
     const char* savedRefused = nullptr; // ... and why its addresses were not used
     bool savedLooked = false;           // the cache was asked for this drive's saved addresses (its file was opened)
@@ -389,6 +396,18 @@ using KeepFn = void (*)(void* context);                       // that result is 
 inline constexpr char kSavedStale[] = "this game DLL does not have that code at them";
 inline constexpr char kSavedOtherPlan[] = "they were saved for another version of this drive's tables";
 
+// Whether a resolution came to exactly what another did: the same plan, the same lines found at the same
+// addresses, the same lines not found, each with the verdict it had.
+inline bool SameReport(const Report& a, const Report& b)
+{
+    if (a.count != b.count || a.dropped != b.dropped || a.plan != b.plan)
+        return false;
+    for (uint32_t i = 0; i < a.count; ++i)
+        if (a.lines[i].found != b.lines[i].found || a.lines[i].verdict != b.lines[i].verdict)
+            return false;
+    return true;
+}
+
 // Whether two resolutions chose the same address for every line.
 inline bool SameAddresses(const Report& a, const Report& b)
 {
@@ -403,6 +422,9 @@ inline bool SameAddresses(const Report& a, const Report& b)
 // WHAT IS ALREADY KNOWN ABOUT A DRIVE'S ADDRESSES IN THIS MODULE, beyond what the tables record.
 struct Earlier
 {
+    // What this process already resolved for this drive in this very module instance -- the whole report, found
+    // lines and lines not found alike -- or null. The caller answers for it being this module instance.
+    const Report* remembered = nullptr;
     // The cache's entry for this drive in exactly this build of the module (Usable): in hand, or how to get it.
     // `look` is called at most once, and only when the entry is needed -- never while rung 1 (a) holds, so on
     // the recorded build a healthy resolution does not open the cache's file at all. It returns the entry or
@@ -437,7 +459,25 @@ inline Outcome Run(const Image& image, uint32_t faults, bool recordedBuild, cons
             out.rung = Rung::Recorded;
         }
     }
-    // THE SAVED ADDRESSES ARE ASKED FOR ONLY NOW, when rung 1 (a) has not settled it: asking is opening a file.
+    // WHAT THIS PROCESS ALREADY RESOLVED IN THIS VERY MODULE, verified line for line where it stands. Nothing is
+    // searched. It is taken only if the plan comes to exactly what was remembered, and never under a forced
+    // fault, whose results are not the module's. What it repeats may be incomplete, or a refusal: that is what
+    // the drive came to in this module, and it is said again as it was.
+    if (out.rung == Rung::None && earlier.remembered && !faults)
+    {
+        Resolver resolver(image, 0, Known{Source::Remembered, nullptr, 0, nullptr, earlier.remembered});
+        plan(resolver, context);
+        out.rememberedTried = true;
+        out.scans += resolver.report().scans;
+        out.moduleScans += resolver.report().moduleScans;
+        if (SameReport(resolver.report(), *earlier.remembered))
+        {
+            keep(context);
+            report = resolver.report();
+            out.rung = Rung::Remembered;
+        }
+    }
+    // THE SAVED ADDRESSES ARE ASKED FOR ONLY NOW, when neither has settled it: asking is opening a file.
     const Entry* saved = nullptr;
     if (out.rung == Rung::None)
     {
