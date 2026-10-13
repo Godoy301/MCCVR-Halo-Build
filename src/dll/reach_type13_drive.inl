@@ -438,12 +438,38 @@ bool ReachType13Install(uintptr_t base, size_t size, uint32_t generation)
     return true;
 }
 
+// Cold worker: the game must be calling the pilot's controller right now. The player is in control of Reach
+// (DriveWatchPlayerInControl), and the seat sampler -- the vehicle camera lane's, nothing this hook produces -- has
+// a fresh sample of this generation that names the pilot's seat of a physics-type-13 craft. (It names a seat only
+// while the first-person seat view is on: with vehicle_first_person off this is never true, and the watch below
+// never counts.)
+static bool ReachSabrePilotingNow(uint64_t nowMs)
+{
+    if (!DriveWatchPlayerInControl(GameTitle::HaloReach, nowMs) || !Game_ReachDirectDriveSeated())
+        return false;
+    ReachVehicleId identity = ReachVehicleId::Unknown;
+    int seat = -1;
+    return ReachCurrentSeat(identity, seat) && ReachVehicleExpectedPhysicsType(identity) == 13 &&
+           ReachVehicleSeatIsDriver(identity, seat);
+}
+
 // Cold worker, with the direct drive's own report: what the pilot's detour did in the last window.
 void ReachSabreDriveReport()
 {
     auto& d = g_reachSabre;
     static unsigned long long s_last = 0;
     const unsigned long long now = GetTickCount64();
+    {
+        // "INSTALLED" IS NOT "RUNNING" (drive_cascade.h: HookWatch), on every loop, before the counters below are
+        // read and cleared.
+        static drive_cascade::HookWatch s_watch;
+        const void* target = g_reachT13Target;
+        if (s_watch.Pass(target, target && ReachSabrePilotingNow(now), d.calls.load(std::memory_order_relaxed) != 0,
+                         now))
+            drive_cascade::SayNeverCalled("Reach Sabre direct drive", "the pilot's controller", d.entryRva,
+                                          "the player was piloting a Sabre or a Seraph, where the game runs it every "
+                                          "frame");
+    }
     if (now - s_last < 2000)
         return;
     s_last = now;

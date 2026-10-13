@@ -266,6 +266,18 @@ bool LegacyDriveInstall(GameTitle title, uintptr_t base, size_t size);
 bool LegacyDriveRemove(GameTitle title);
 bool LegacyDriveLive(GameTitle title);
 void LegacyDriveReport();
+// THE PLAYER IS IN CONTROL OF `title`, as the direct drives' hook watchdogs ask it (drive_cascade.h: HookWatch):
+// it is the active title, in the Gameplay runtime mode, and its camera hook's cinematic-control publication of
+// this generation, no older than a second, says the player has control (not an authored camera, not unread).
+// Nothing here is produced by a direct-drive hook, which is what lets it say when such a hook SHOULD be running.
+static bool DriveWatchPlayerInControl(GameTitle title, uint64_t nowMs)
+{
+    if (TitleAdapter_GetActiveTitle() != title || TitleAdapter_GetRuntimeMode() != RuntimeMode::Gameplay)
+        return false;
+    const CinematicControlPublication cine = TitleAdapter_GetCinematicControlPublication(title);
+    return cine.generation == TitleAdapter_GetGeneration(title) && cine.heartbeatMs && nowMs >= cine.heartbeatMs &&
+           nowMs - cine.heartbeatMs <= 1000 && cine.state == CinematicControlState::PlayerControlled;
+}
 // The Halo 4 tracker lane's run-time proof (halo4_head_relative.inl) compares the game's heading with this: the aim
 // yaw this mod's direct drive is WRITING into the game's own aim, on foot. False when the drive is not live or
 // nothing that fresh was published. Defined after legacy_direct_drive.inl.
@@ -53695,6 +53707,20 @@ void Game_ReachDirectDriveReport()
     ReachSabreDriveReport();   // the type-13 pilot's own line, on its own two seconds
     static unsigned long long s_last = 0;
     const unsigned long long now = GetTickCount64();
+    {
+        // "INSTALLED" IS NOT "RUNNING" (drive_cascade.h: HookWatch), on every loop, before the counters below are
+        // read and cleared. Possible: fresh on-foot, player-controlled Reach (Game_ReachDirectDriveOnFoot -- the
+        // camera lane's publications, nothing this hook produces), where the game runs the control update on every
+        // frame. Called: any call the detour itself counted (a pilot's update handed on by the Sabre's hook is not).
+        static drive_cascade::HookWatch s_watch;
+        const void* target = g_reachPcTarget;
+        bool called = false;
+        for (int r = 0; r < aim_caller::kCallerCount && !called; ++r)
+            called = g_reachRoleCalls[r].load(std::memory_order_relaxed) != 0;
+        if (s_watch.Pass(target, target && Game_ReachDirectDriveOnFoot(), called, now))
+            drive_cascade::SayNeverCalled("REACHDRIVE", "the control update", g_reachPcEntryRva,
+                                          "the player was in control and on foot, where the game runs it every frame");
+    }
     if (now - s_last < 1000) return;
     s_last = now;
     unsigned roles[aim_caller::kCallerCount]{};

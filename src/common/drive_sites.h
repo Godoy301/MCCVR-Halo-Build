@@ -292,6 +292,8 @@ inline Tick ResolveTick(Resolver& r, const TickAnchors& a)
 // REACH: the per-user control update haloreach+0x6375C -- the accumulator of player_control.desired_angles --
 // on foot and in every seat but a type-13 pilot's.
 // ======================================================================================================
+// ADDR-HYGIENE: resolved (ResolveReachControl, ResolveCallers, ResolveTick). Every RVA in this section is the
+// recorded half of a resolution; the install hooks and reads only what was found in the loaded module.
 // Where the module's TLS index sits in the recorded build. The live address is the PE TLS directory's.
 inline constexpr uint32_t kReachTlsIndexRva = 0x00C17B18;
 
@@ -360,6 +362,9 @@ inline constexpr TickAnchors kReachTickAnchors{
 // THE TYPE-13 PILOT CONTROLLERS: Reach's Sabre / Seraph (haloreach+0x64828) and Halo 4's Broadsword
 // (halo4+0xAA524). The title's dispatcher calls the controller INSTEAD of the control update for such a pilot.
 // ======================================================================================================
+// ADDR-HYGIENE: resolved (ResolveFlight; ResolveReachSabre here, ResolveHalo4Flight after Halo 4's control
+// update). Every RVA is the recorded half of a resolution, and a row that reads a field is found inside the
+// function it belongs to.
 // What a pilot controller's drive resolves beyond its rows.
 struct FlightSites
 {
@@ -497,6 +502,9 @@ inline ReachSabre ResolveReachSabre(Resolver& r)
 //      ODST     0x113AB8         +0xD8      0x2C0             +0xD4 / +0xD8
 //      Halo 4   0xA8B34          +0xB0      0x1F0             +0x138 / +0x13C
 // ======================================================================================================
+// ADDR-HYGIENE: resolved (ResolveLegacyControl, ResolveCallers, ResolveTick). Every RVA in this section is the
+// recorded half of a resolution. The TLS slot, stride and angle offsets of the table above stand in the
+// patterns' own bytes: a build that changed one stops its pattern matching, and the drive is not hooked.
 struct LegacyDriveSite
 {
     GameTitle title;
@@ -626,6 +634,8 @@ inline constexpr TickAnchors kLegacyTickAnchors[3] = {
 // rbx = user * 0x1F0), from which the hook tells on foot from seated on the sim thread itself. The same seven
 // bytes stand three times in the control update, so it is taken only at its recorded offset in that function:
 // not there, Halo 4 seats are never written.
+// ADDR-HYGIENE: guarded. The offset is the displacement of the instruction below, which ResolveLegacyControl
+// finds inside the control update (InFunction) before the hook reads it.
 inline constexpr uint32_t kHalo4RecordUnitOffset = 0x120;
 inline constexpr uint32_t kHalo4RecordUnitLoadRva = 0xA8C15;
 inline constexpr char kHalo4RecordUnitLoad[] = "8B 8C 1F 20 01 00 00";
@@ -791,6 +801,7 @@ inline Halo4Flight ResolveHalo4Flight(Resolver& r)
 // HALO 2: the accumulator halo2+0x6C3DF0, void (int user, float dyaw, float dpitch). Its record is
 // *[the rip slot the prologue loads] + user * 0xB8: desired yaw +0x38, pitch +0x3C.
 // ======================================================================================================
+// ADDR-HYGIENE: resolved (ResolveHalo2Control). Every RVA in this section is the recorded half of a resolution.
 // Five exact-byte anchors, each unique in the module: the entry prologue (it also carries the record slot's
 // disp32), the stride block, the yaw and the pitch accumulators (all inside the accumulator), and the per-user
 // control update's call site, whose rel32 must land on the entry (its return address is the only one written
@@ -849,6 +860,8 @@ inline Halo2Control ResolveHalo2Control(Resolver& r)
 // DEV BUILDS ONLY: the log-only observer of the type-13 pilot controllers (src/dll/type13_flight_log.inl). Its
 // tables prove every field it reads, the pilot drives' own among them. Nothing in a player build refers to them.
 // ======================================================================================================
+// ADDR-HYGIENE: dev-only, resolved (ResolveT13). Every RVA in this section is the recorded half of a
+// resolution.
 // A global the observer reads, named by a rip-relative instruction inside a row.
 struct RipSite
 {

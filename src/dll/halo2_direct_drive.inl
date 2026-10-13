@@ -1205,6 +1205,12 @@ bool RemoveHalo2Drive() noexcept
 }
 
 // Cold worker, with the observer's telemetry.
+//
+// NO HOOK WATCHDOG HERE (drive_cascade.h: HookWatch), deliberately. A watchdog may count only time in which the
+// hooked code must have been called. Halo 2 skips this update while its director holds the player (a cinematic),
+// and the only word this mod has of that is this hook's own heartbeat (controlMs): nothing independent says when
+// the game must be calling it, so a level's opening cinematic would be counted against a healthy address. A hook
+// that is never called shows as no "Halo 2 DRIVE: armed=" line while playing on foot.
 void ReportHalo2Drive() noexcept
 {
     auto& st = g_halo2Drive;

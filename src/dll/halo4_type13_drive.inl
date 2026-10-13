@@ -649,6 +649,12 @@ bool Halo4Type13Remove()
 }
 
 // Cold worker, with the direct drive's own report: what the pilot's detour did in the last window.
+//
+// NO HOOK WATCHDOG HERE (drive_cascade.h: HookWatch), deliberately. A watchdog may count only time in which the
+// hooked code must have been called, and for this hook that is "the player pilots a Broadsword" -- which nothing
+// but the hook itself knows: Halo 4's vehicles and seat roles are not mapped, and the aim provider learns of a
+// flight from Halo4FlightPilotLive, that is from this hook. "Seated" alone would count every other vehicle against
+// a healthy address. A controller that is never called shows as no "DRIVE Halo 4 Broadsword" line during a flight.
 void Halo4FlightDriveReport()
 {
     auto& d = g_halo4Flight;

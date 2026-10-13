@@ -885,6 +885,47 @@ void LegacyDrivePublish(GameTitle title, float yaw, float pitch, float aimYaw, f
     st.seq.fetch_add(1, std::memory_order_release);
 }
 
+namespace
+{
+// "INSTALLED" IS NOT "RUNNING" (drive_cascade.h: HookWatch): one watch per title's control-update hook, passed over
+// by the cold worker on every loop (LegacyDriveReport).
+drive_cascade::HookWatch g_legacyDriveWatch[3];
+
+// Cold worker: the game must be calling this title's control update right now. The player is in control of the
+// title (DriveWatchPlayerInControl), and the aim provider's publication for the drive -- made on the input thread
+// from the game's own camera and aim, nothing this hook produces -- is no older than 250 ms, valid and on foot: a
+// live unit whose look the stick moves, which the game runs this update for once per rendered frame.
+bool LegacyDriveCallPossible(int slot, uint64_t nowMs)
+{
+    const auto& st = g_legacyDrive[slot];
+    if (!DriveWatchPlayerInControl(kLegacyDriveSites[slot].title, nowMs))
+        return false;
+    const uint64_t setMs = st.setMs.load(std::memory_order_relaxed);
+    return st.setValid.load(std::memory_order_relaxed) && !st.setSeated.load(std::memory_order_relaxed) && setMs &&
+           nowMs >= setMs && nowMs - setMs <= 250;
+}
+
+// Cold worker, every loop: the watch on each title's hook. Any call the detour counted, whatever its caller.
+void LegacyDriveWatchPass(uint64_t nowMs)
+{
+    for (int slot = 0; slot < 3; ++slot)
+    {
+        auto& st = g_legacyDrive[slot];
+        const void* target = st.installed.load(std::memory_order_acquire) ? st.target : nullptr;
+        bool called = st.calls.load(std::memory_order_relaxed) != 0;
+        for (int r = 0; r < aim_caller::kCallerCount && !called; ++r)
+            called = st.byRole[r].load(std::memory_order_relaxed) != 0;
+        if (g_legacyDriveWatch[slot].Pass(target, target && LegacyDriveCallPossible(slot, nowMs), called, nowMs))
+        {
+            char drive[32];
+            snprintf(drive, sizeof(drive), "DRIVE %s", kLegacyDriveSites[slot].name);
+            drive_cascade::SayNeverCalled(drive, "the control update", st.entryRva,
+                                          "the player was in control and on foot, where the game runs it every frame");
+        }
+    }
+}
+} // namespace
+
 // Input thread: the hook is armed on a validated record and ran within 150 ms -- the servo stands down.
 bool LegacyDriveLive(GameTitle title)
 {
@@ -2462,6 +2503,7 @@ void LegacyDriveReport()
 {
     static uint64_t s_last = 0;
     const uint64_t now = GetTickCount64();
+    LegacyDriveWatchPass(now);   // every loop, before the counters below are read and cleared
     if (now - s_last < 2000)
         return;
     s_last = now;
