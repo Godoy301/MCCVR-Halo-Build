@@ -12,6 +12,10 @@
 // no hook). Then the proofs that are not rows: a caller whose call goes elsewhere, a dispatcher whose unwind
 // info and prologue disagree, roles that are one call or out of order, a short anchor off its offset, a page
 // that cannot be read.
+//
+// A control update has TWO plans: a player build's stops at the caller map, a dev build's goes on to the two tick
+// anchors. They are two versions of the drive's tables, and the player build's is the one that ships: each is run
+// through all of the above, and what one of them saved the other must not take.
 #define DRIVE_RESOLVE_FAULTS 1
 #include "drive_known.h"
 #include "drive_sites.h"
@@ -273,23 +277,32 @@ struct Result
     uint32_t hook = 0;   // the function that would be hooked
 };
 
-Result PlanReachControl(Resolver& r)
+// A control update's plan. `dev`: as a dev build's install runs it, with the two tick anchors after the caller
+// map (the installs compile that line for dev builds only); else as a player build's does.
+Result PlanReachControl(Resolver& r, bool dev)
 {
     const drive_sites::ReachControl f = drive_sites::ResolveReachControl(r);
     (void)drive_sites::ResolveCallers(r, drive_sites::kReachCallerAnchors, f.entry);
-    (void)drive_sites::ResolveTick(r, drive_sites::kReachTickAnchors);
+    if (dev)
+        (void)drive_sites::ResolveTick(r, drive_sites::kReachTickAnchors);
     return {f.ok, f.entry};
 }
-Result PlanLegacy(Resolver& r, int slot)
+Result PlanLegacy(Resolver& r, int slot, bool dev)
 {
     const drive_sites::LegacyControl f = drive_sites::ResolveLegacyControl(r, slot);
     (void)drive_sites::ResolveCallers(r, drive_sites::kLegacyCallerAnchors[slot], f.entry);
-    (void)drive_sites::ResolveTick(r, drive_sites::kLegacyTickAnchors[slot]);
+    if (dev)
+        (void)drive_sites::ResolveTick(r, drive_sites::kLegacyTickAnchors[slot]);
     return {f.ok, f.entry};
 }
-Result PlanHalo3(Resolver& r) { return PlanLegacy(r, 0); }
-Result PlanOdst(Resolver& r) { return PlanLegacy(r, 1); }
-Result PlanHalo4(Resolver& r) { return PlanLegacy(r, 2); }
+Result PlanReachControlPlayer(Resolver& r) { return PlanReachControl(r, false); }
+Result PlanReachControlDev(Resolver& r) { return PlanReachControl(r, true); }
+Result PlanHalo3Player(Resolver& r) { return PlanLegacy(r, 0, false); }
+Result PlanHalo3Dev(Resolver& r) { return PlanLegacy(r, 0, true); }
+Result PlanOdstPlayer(Resolver& r) { return PlanLegacy(r, 1, false); }
+Result PlanOdstDev(Resolver& r) { return PlanLegacy(r, 1, true); }
+Result PlanHalo4Player(Resolver& r) { return PlanLegacy(r, 2, false); }
+Result PlanHalo4Dev(Resolver& r) { return PlanLegacy(r, 2, true); }
 Result PlanReachSabre(Resolver& r)
 {
     const drive_sites::ReachSabre f = drive_sites::ResolveReachSabre(r);
@@ -355,18 +368,26 @@ struct Plan
     void (*build)(Synth&);
     uint32_t code;       // the synthetic code reaches this far
     uint32_t tlsIndex;   // 0: the drive reads none
-    bool player;         // a drive a player build installs (the rest: the dev observers)
+    bool player;         // a plan a player build runs (the rest: a dev build's version of one, and the dev observers)
 };
 
 const Plan kPlans[] = {
     {"Halo 2 control update", &PlanHalo2, &BuildHalo2, 0x6D0000, 0, true},
-    {"Halo 3 control update", &PlanHalo3, &BuildHalo3, 0x380000, drive_sites::kLegacyDriveSites[0].tlsIndexRva, true},
-    {"ODST control update", &PlanOdst, &BuildOdst, 0x3C0000, drive_sites::kLegacyDriveSites[1].tlsIndexRva, true},
-    {"Reach control update", &PlanReachControl, &BuildReachControl, 0x70000, drive_sites::kReachTlsIndexRva, true},
+    {"Halo 3 control update", &PlanHalo3Player, &BuildHalo3, 0x380000, drive_sites::kLegacyDriveSites[0].tlsIndexRva, true},
+    {"ODST control update", &PlanOdstPlayer, &BuildOdst, 0x3C0000, drive_sites::kLegacyDriveSites[1].tlsIndexRva, true},
+    {"Reach control update", &PlanReachControlPlayer, &BuildReachControl, 0x70000, drive_sites::kReachTlsIndexRva, true},
     {"Reach Sabre pilot controller", &PlanReachSabre, &BuildReachSabre, 0x530000, drive_sites::kReachTlsIndexRva, true},
-    {"Halo 4 control update", &PlanHalo4, &BuildHalo4, 0xB0000, drive_sites::kLegacyDriveSites[2].tlsIndexRva, true},
+    {"Halo 4 control update", &PlanHalo4Player, &BuildHalo4, 0xB0000, drive_sites::kLegacyDriveSites[2].tlsIndexRva, true},
     {"Halo 4 Broadsword pilot controller", &PlanHalo4Flight, &BuildHalo4Flight, 0x6D0000,
      drive_sites::kLegacyDriveSites[2].tlsIndexRva, true},
+    {"Halo 3 control update (dev build)", &PlanHalo3Dev, &BuildHalo3, 0x380000,
+     drive_sites::kLegacyDriveSites[0].tlsIndexRva, false},
+    {"ODST control update (dev build)", &PlanOdstDev, &BuildOdst, 0x3C0000, drive_sites::kLegacyDriveSites[1].tlsIndexRva,
+     false},
+    {"Reach control update (dev build)", &PlanReachControlDev, &BuildReachControl, 0x70000,
+     drive_sites::kReachTlsIndexRva, false},
+    {"Halo 4 control update (dev build)", &PlanHalo4Dev, &BuildHalo4, 0xB0000,
+     drive_sites::kLegacyDriveSites[2].tlsIndexRva, false},
     {"Reach pilot observer (dev)", &PlanT13Reach, &BuildT13Reach, 0x530000, drive_sites::kReachTlsIndexRva, false},
     {"Halo 4 pilot observer (dev)", &PlanT13Halo4, &BuildT13Halo4, 0x6D0000, drive_sites::kLegacyDriveSites[2].tlsIndexRva,
      false},
@@ -488,6 +509,61 @@ void TestPlan(const Plan& plan)
     Check(hookedWithoutEntry == 0, "a broken hooked function means no hook");
     std::printf("  %-36s %2u lines, %2u rows broken one at a time; %u of them leave the plan resolved (optional rows)\n",
                 plan.name, healthy.count, rows, optional);
+}
+
+// ---- a control update's two plans ------------------------------------------------------------------------------------
+// The player build's plan is the dev build's without its two tick anchors: the same addresses for the lines they
+// share, and another version of the drive's tables. The two builds keep their saved addresses under the same
+// module and drive, so what one saved the other finds -- and must not take.
+void TestPlayerAndDevPlans()
+{
+    const Plan* dev = nullptr;
+    unsigned pairs = 0;
+    for (const Plan& player : kPlans)
+    {
+        if (!player.player)
+            continue;
+        dev = nullptr;
+        for (const Plan& other : kPlans)
+            if (!other.player && other.build == player.build)
+                dev = &other;
+        if (!dev)
+            continue;   // a drive whose plan is the same in both builds
+        ++pairs;
+        g_plan = dev->name;
+        Synth moved(player.code, ImageSize(player), 0x40);
+        player.build(moved);
+        const Image& image = moved.Finish(player.tlsIndex);
+        Resolver asPlayer(image, 0), asDev(image, 0);
+        const Result shipped = player.run(asPlayer), withTick = dev->run(asDev);
+        const Report& a = asPlayer.report();
+        const Report& b = asDev.report();
+        bool sameLines = a.count + 2 == b.count;
+        for (uint32_t i = 0; sameLines && i < a.count; ++i)
+            sameLines = a.lines[i].found == b.lines[i].found && !std::strcmp(a.lines[i].name, b.lines[i].name);
+        Check(shipped.ok && withTick.ok && shipped.hook == withTick.hook && a.Complete() && b.Complete() && sameLines,
+              "the player build's plan is the dev build's without its two tick anchors: the same hook, the same "
+              "address for every line they share");
+        Check(a.plan != b.plan, "and another version of the drive's tables: its plan hashes differently");
+        drive_known::Entry byPlayer, byDev;
+        const bool made = drive_known::MakeEntry(byPlayer, "test.dll", "control-update", 0x1234, a) &&
+                          drive_known::MakeEntry(byDev, "test.dll", "control-update", 0x1234, b);
+        Result result;
+        Report report;
+        drive_known::Outcome out = ByRungs(*dev, image, 0, false, &byPlayer, result, report);
+        Check(made && out.rung == drive_known::Rung::Search && out.savedTried &&
+                  out.savedRefused == drive_known::kSavedOtherPlan && result.ok && result.hook == shipped.hook,
+              "what a player build saved is not taken by a dev build: another version of the tables, searched again");
+        out = ByRungs(player, image, 0, false, &byDev, result, report);
+        Check(made && out.rung == drive_known::Rung::Search && out.savedRefused == drive_known::kSavedOtherPlan &&
+                  result.ok && result.hook == shipped.hook,
+              "nor what a dev build saved by a player build, and the reason given is the same");
+        out = ByRungs(player, image, 0, false, &byPlayer, result, report);
+        Check(made && out.rung == drive_known::Rung::Saved && out.scans == 0 && result.ok && result.hook == shipped.hook,
+              "each takes its own with no scan");
+    }
+    g_plan = "the two builds' plans";
+    Check(pairs == 4, "four control updates have a plan of each build");
 }
 
 // ---- proofs that are not rows ----------------------------------------------------------------------------------------
@@ -665,6 +741,7 @@ int main()
     std::printf("the real plans of drive_sites.h, on images synthesised from its tables:\n");
     for (const Plan& plan : kPlans)
         TestPlan(plan);
+    TestPlayerAndDevPlans();
     TestProofs();
     std::printf("drive sites tests: %u checks, %u failures\n", checks, failures);
     return failures ? 1 : 0;

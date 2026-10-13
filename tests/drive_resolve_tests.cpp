@@ -913,6 +913,13 @@ void TestRungSaved()
     out = RunMini(image, 0, false, &shorter, again, second);
     Check(out.rung == drive_known::Rung::Search && out.savedRefused != nullptr && again.ok,
           "nor an entry with another number of lines");
+    drive_known::Entry shortest = entry;
+    shortest.count = 2;   // no address for the third line, a signature
+    out = RunMini(image, 0, false, &shortest, again, second);
+    Check(out.rung == drive_known::Rung::Search && out.savedTried && out.savedRefused == drive_known::kSavedOtherPlan &&
+              again.ok,
+          "an entry that holds no address for a line that is asked for is of another version of the tables, and the "
+          "reason given is that, not that the game DLL changed");
     // Found under other rules of the search.
     drive_known::Entry otherRules = entry;
     ++otherRules.rules;

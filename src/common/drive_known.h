@@ -439,7 +439,13 @@ inline Outcome Run(const Image& image, uint32_t faults, bool recordedBuild, cons
         const Report& got = resolver.report();
         if (!got.Complete())
         {
-            out.savedRefused = kSavedStale;
+            // Which line failed first? One the entry holds an address for: that address did not verify. One past
+            // the entry's last: the entry is of another version of the tables, with fewer lines than are asked
+            // for now (a player build's, read by a dev build).
+            uint32_t first = 0;
+            while (first < got.count && drive_resolve::Found(got.lines[first].verdict))
+                ++first;
+            out.savedRefused = saved && first >= saved->count ? kSavedOtherPlan : kSavedStale;
         }
         else if (!saved || got.plan != saved->plan || got.count != saved->count)
         {
