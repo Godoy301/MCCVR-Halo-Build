@@ -228,15 +228,18 @@ static bool ReachBuildCallerMap(uintptr_t base, size_t size);
 // in place by the install's exact-byte anchors before the hook exists.
 static constexpr size_t kReachPlayerControlTlsOffset = 0xD8;
 static constexpr size_t kReachPlayerControlStride    = 0x180;
-#if HALOMCCVR_DEV_DIAGNOSTICS
-// DEV BUILDS ONLY: the log-only hook on Reach's type-13 pilot controller haloreach+0x64828 (the Sabre; defined
-// in type13_flight_log.inl). Declared here because the Reach teardown (DisableAndRemoveReachHooks and
-// ScanForReachDetourIngress) retires it with every other Reach detour. The target is worker-owned like
-// g_reachPcTarget; the trampoline is forgotten only after MH_RemoveHook.
+// The hook on Reach's type-13 pilot controller haloreach+0x64828 (the Sabre; reach_type13_drive.inl): the game's
+// own controller, then the direct drive's apply. Declared here because the Reach teardown
+// (DisableAndRemoveReachHooks and ScanForReachDetourIngress) retires it with every other Reach detour. The target is
+// worker-owned like g_reachPcTarget; the trampoline is forgotten only after MH_RemoveHook.
 void ReachType13Detour(int user, uint32_t vehicle, float yawD, float pitchD, const void* input, float dtA, float dtB);
 static void* g_reachT13Target = nullptr;
 static void* g_reachT13Orig = nullptr;
 static std::atomic<bool> g_reachT13Enabled{false};
+bool ReachType13Install(uintptr_t base, size_t size, uint32_t generation);
+void ReachSabreDriveReport();
+#if HALOMCCVR_DEV_DIAGNOSTICS
+// DEV BUILDS ONLY: the log-only observer that detour feeds when type13_log = 1 (type13_flight_log.inl).
 bool ReachType13LogInstall(uintptr_t base, size_t size, uint32_t generation);
 #endif
 #endif
@@ -33162,8 +33165,7 @@ namespace
     {
         g_reachIngressScanWhy = "";
         static bool rangesResolved = false;
-        // Dev builds add the log-only type-13 controller detour (type13_flight_log.inl) as the last entry.
-        static ReachDetourCodeRange ranges[20 + (HALOMCCVR_DEV_DIAGNOSTICS ? 1 : 0)]{};
+        static ReachDetourCodeRange ranges[21]{};
         if (!rangesResolved)
         {
             const void* functions[] = {
@@ -33191,9 +33193,8 @@ namespace
                 // ResolveReachDetourCodeRange needs (without one, every Reach teardown would fail).
                 reinterpret_cast<const void*>(&ReachPlayerControlHook),
                 reinterpret_cast<const void*>(&ReachFirstPersonRenderGateEnter),
-#if HALOMCCVR_DEV_DIAGNOSTICS
+                // The type-13 pilot controller's detour (reach_type13_drive.inl).
                 reinterpret_cast<const void*>(&ReachType13Detour),
-#endif
             };
             static_assert(_countof(functions) == _countof(ranges));
             bool resolved = true;
@@ -33230,9 +33231,7 @@ namespace
             g_reachHudAnchorBasisTarget,
             g_reachPcTarget,
             g_reachFirstPersonRenderGateTarget,   // its C++ entry (ranges, after direct drive's)
-#if HALOMCCVR_DEV_DIAGNOSTICS
             g_reachT13Target,
-#endif
         };
         void* const trampolines[] = {
             reinterpret_cast<void*>(g_reachOrigMainRenderView),
@@ -33255,9 +33254,7 @@ namespace
             reinterpret_cast<void*>(g_reachOrigHudAnchorBasis),
             g_reachPcOrig,
             reinterpret_cast<void*>(g_origReachFirstPersonRenderGate),
-#if HALOMCCVR_DEV_DIAGNOSTICS
             g_reachT13Orig,
-#endif
         };
         static_assert(_countof(targets) == _countof(ranges));
         static_assert(_countof(trampolines) == _countof(ranges));
@@ -33403,15 +33400,11 @@ namespace
         g_reachHeldAtLimitMs.store(0, std::memory_order_release);
         ReachDriveDisarm();
         g_reachDriveResetSeq.fetch_add(1, std::memory_order_acq_rel);
-#if HALOMCCVR_DEV_DIAGNOSTICS
-        // The log-only type-13 controller detour becomes a pure pass-through before any disable.
+        // The type-13 pilot controller's detour only runs the game's controller from here on, before any disable.
         g_reachT13Enabled.store(false, std::memory_order_release);
-#endif
         bool disabledAll = true;
         void* const targets[] = {
-#if HALOMCCVR_DEV_DIAGNOSTICS
             g_reachT13Target,
-#endif
             g_reachPcTarget,
             g_reachHudAnchorBasisTarget,
             g_reachWorldCollision.target,
@@ -33448,7 +33441,6 @@ namespace
             return false;
 
         bool removedAll = true;
-#if HALOMCCVR_DEV_DIAGNOSTICS
         if (g_reachT13Target)
         {
             // Quiescence is proven above (callbacks and the ingress scan cover the detour and its trampoline);
@@ -33462,10 +33454,10 @@ namespace
             else
             {
                 removedAll = false;
-                LOG("REACH SF cleanup: type-13 log hook remove failed (%d)", static_cast<int>(status));
+                LOG("Reach Sabre direct drive cleanup: the pilot controller's hook remove failed (%d)",
+                    static_cast<int>(status));
             }
         }
-#endif
         if (g_reachPcTarget)
         {
             // Clearing the target lets the next title session reinstall on ITS module; the install
@@ -36206,11 +36198,14 @@ namespace
             }
         }
 #if HALOMCCVR_DEV_DIAGNOSTICS
-        // DEV BUILDS ONLY: the log-only observer on the type-13 pilot controller +0x64828, which the dispatcher
-        // calls INSTEAD of the accumulator above for a Sabre/Seraph pilot (type13_flight_log.inl). Its own
-        // anchors decide; a miss leaves only that lane off, and it writes nothing to the game either way.
+        // DEV BUILDS ONLY: the log-only observer of the type-13 pilot controller (type13_flight_log.inl), made ready
+        // before that controller's hook, below, can run. Its own anchors decide; a miss leaves only the observer off.
         (void)ReachType13LogInstall(base, size, generation);
 #endif
+        // The type-13 pilot controller +0x64828, which the dispatcher calls INSTEAD of the accumulator above for a
+        // Sabre/Seraph pilot (reach_type13_drive.inl). Its own anchors decide; a miss leaves that pilot on the
+        // stick servo and nothing else changes.
+        (void)ReachType13Install(base, size, generation);
 
         // Reach game brightness. The exact homologue of the Halo 3/ODST screen
         // colour/gamma publisher, pinned by RVA inside the already whole-image-
@@ -53233,13 +53228,27 @@ static void ReachSeatFrameBind(uintptr_t base, size_t size)
             "every seat on the stick servo: why 0x400)", why ? why : "unknown", seat_frame::kReachReader.gateRva);
 }
 
+// A caller of the apply that is not the accumulator's hook: the type-13 pilot's controller (reach_type13_drive.inl),
+// which the dispatcher runs instead of the accumulator. The accumulator's caller map does not see it, so it names
+// the update's action itself. Its record is that controller's own Euler output, in world angles at any roll, which
+// the caller proves per flight against the facing the craft steers by: no seat frame is applied, there is no seat
+// limit to latch and none to publish, and the angles written are never claimed as converged ones (what a craft's
+// guns follow is not measured).
+struct ReachApplySite
+{
+    aim_caller::Action action = aim_caller::Action::StepAndWrite;
+    float maxStepRad = 0.0f;                    // > 0: the written direction moves at most this far per update
+    std::atomic<uint32_t>* capped = nullptr;    // counts the writes that limit shortened
+};
+
 // Runs on the SIM thread from the naked detour, AFTER native 0x6375C updated desired_angles (stick
-// delta + clamps). Overwrites the pair with the published VR aim, but only for the first local player,
+// delta + clamps) -- or, with a `site`, after the type-13 pilot's controller did. Overwrites the pair with the
+// published VR aim, but only for the first local player,
 // only while armed, only for a fresh aim, and only when THIS thread's TLS resolves to the MASTER
 // address the engine-thread arm-gate validated. SEH-guarded; skips on stale/NaN/out-of-range.
 // Only the STICK call writes (g_reachCallerMap): the impulse call has the last stick write put back, and the
 // no-unit call ends the update; every call, whatever its caller, stamps the heartbeat first.
-extern "C" void ReachPcApplyForUser(int user, const uint8_t* entryRsp)
+static void ReachPcApply(int user, const uint8_t* entryRsp, const ReachApplySite* site)
 {
     // Sim thread, first local player only: the seat-limit guard's memory of what it wrote last update, the
     // last stick write (put back over an impulse) and the stick sequence. Reset whenever the drive is reset
@@ -53333,18 +53342,23 @@ extern "C" void ReachPcApplyForUser(int user, const uint8_t* entryRsp)
                 g_reachCensus.restart(g_reachCallerMap.dispatcher_mode());
 #endif
             }
-            const uintptr_t ret = entryRsp ? *reinterpret_cast<const uintptr_t*>(entryRsp) : 0;
-            const uintptr_t dispatcherRet = aim_caller::DispatcherReturn(g_reachCallerMap, entryRsp, ret);
-            const aim_caller::Caller caller = g_reachCallerMap.classify(ret, dispatcherRet);
-            action = aim_caller::ActionFor(g_reachCallerMap, caller);
-            g_reachRoleCalls[static_cast<int>(caller)].fetch_add(1, std::memory_order_relaxed);
-            if (caller == aim_caller::Caller::Unknown && g_reachCallerMap.stick_proven())
-                g_reachLastUnknownRet.store(dispatcherRet, std::memory_order_relaxed);
+            if (site)
+                action = site->action;
+            else
+            {
+                const uintptr_t ret = entryRsp ? *reinterpret_cast<const uintptr_t*>(entryRsp) : 0;
+                const uintptr_t dispatcherRet = aim_caller::DispatcherReturn(g_reachCallerMap, entryRsp, ret);
+                const aim_caller::Caller caller = g_reachCallerMap.classify(ret, dispatcherRet);
+                action = aim_caller::ActionFor(g_reachCallerMap, caller);
+                g_reachRoleCalls[static_cast<int>(caller)].fetch_add(1, std::memory_order_relaxed);
+                if (caller == aim_caller::Caller::Unknown && g_reachCallerMap.stick_proven())
+                    g_reachLastUnknownRet.store(dispatcherRet, std::memory_order_relaxed);
 #if HALOMCCVR_DEV_DIAGNOSTICS
-            uint32_t simTick = 0;
-            const bool tickOk = AimCallerReadTick(tls, g_reachTickSlot, g_reachTickField, simTick);
-            g_reachCensus.note(tickOk, simTick, caller, drivenSeated);
+                uint32_t simTick = 0;
+                const bool tickOk = AimCallerReadTick(tls, g_reachTickSlot, g_reachTickField, simTick);
+                g_reachCensus.note(tickOk, simTick, caller, drivenSeated);
 #endif
+            }
         }
         const aim_caller::Context context{drivenSeated != false, 0u, 0u, true};
         if (user == 0 && action == aim_caller::Action::RestoreOnly)
@@ -53422,7 +53436,7 @@ extern "C" void ReachPcApplyForUser(int user, const uint8_t* entryRsp)
             // to the state write, freezing for an update and handing back again.
             seat_frame_rt::Live seatFrame{};
             bool seatFrameRead = false;
-            if (user == 0 && armed && same &&
+            if (user == 0 && armed && same && !site &&
                 (drivenSeated ||
                  g_reachVehicleInputSnapshot.load(std::memory_order_acquire) ==
                      ReachVehicleInputSnapshot(TitleAdapter_GetGeneration(GameTitle::HaloReach),
@@ -53475,7 +53489,11 @@ extern "C" void ReachPcApplyForUser(int user, const uint8_t* entryRsp)
                 // left hands the seat to the stick servo from the next poll (Game_ReachDirectDriveAimWhy 0x400).
                 float target[2]{yaw, pitch};
                 bool frameOk = true;
-                if (drivenSeated && user == 0)
+                if (site)
+                {
+                    // A flight controller's record is in world angles (ReachApplySite): no seat frame applies.
+                }
+                else if (drivenSeated && user == 0)
                     frameOk = seatFrameRead && seat_frame_rt::ToRecord(seatFrame, target[0], target[1], pair[0]);
                 else if (drivenSeated)
                     frameOk = false;   // only the first local player's seat frame is read
@@ -53487,7 +53505,7 @@ extern "C" void ReachPcApplyForUser(int user, const uint8_t* entryRsp)
                 // the hand -- so that axis is written as the hand's; its yaw still latches.
                 if (!frameOk)
                     s_seatLimit.reset();
-                else if (drivenSeated)
+                else if (drivenSeated && !site)
                 {
                     const float native[2]{pair[0], pair[1]};
                     const bool latch[2]{true, drivenPitchLatch};
@@ -53506,7 +53524,7 @@ extern "C" void ReachPcApplyForUser(int user, const uint8_t* entryRsp)
                 // seat's (its latch and stops read the record back). Not while the zoom lens looks along the game's
                 // aim -- it does unless the converged ray is in effect (reach_scope.inl) -- because the lens is
                 // drawn, and nothing drawn is led.
-                if (frameOk && !drivenSeated && user == 0 && Sight_AimLeadOn())
+                if (frameOk && !drivenSeated && !site && user == 0 && Sight_AimLeadOn())
                 {
                     const bool lensOnRecord = VR_IsScopeActive() &&
                         !(g_config.scope_converge && g_config.converged_aim && drivenConverged);
@@ -53514,6 +53532,23 @@ extern "C" void ReachPcApplyForUser(int user, const uint8_t* entryRsp)
                                          Sight_TickPeriodUs(GameTitle::HaloReach, 16667), lensOnRecord, target[0],
                                          target[1]);
                     led = true;
+                }
+                // A SITE'S TURN RATE (ReachApplySite): the written direction moves at most maxStepRad from the
+                // record as the game's controller left it this update, along the straight line to the target.
+                if (site && site->maxStepRad > 0.0f)
+                {
+                    const float dy = std::remainder(target[0] - pair[0], 6.28318531f);
+                    const float dp = target[1] - pair[1];
+                    const float across = dy * std::cos(pair[1]);
+                    const float angle = std::sqrt(across * across + dp * dp);
+                    if (std::isfinite(angle) && angle > site->maxStepRad)
+                    {
+                        const float part = site->maxStepRad / angle;
+                        target[0] = pair[0] + dy * part;
+                        target[1] = pair[1] + dp * part;
+                        if (site->capped)
+                            site->capped->fetch_add(1, std::memory_order_relaxed);
+                    }
                 }
                 // Keep yaw on the branch the game's value is on, then inside the game's own [0, 2*pi]: Reach
                 // packs the yaw into its player action as 13 bits over [0, 2*pi] and CLAMPS an out-of-range
@@ -53526,7 +53561,7 @@ extern "C" void ReachPcApplyForUser(int user, const uint8_t* entryRsp)
                     pair[0] = y;
                     pair[1] = aim_write::clamp_pitch(target[1], 1.45f);
                     wrote = 1;
-                    if (drivenSeated)
+                    if (drivenSeated && !site)
                     {
                         const float written[2]{pair[0], pair[1]};
                         s_seatLimit.wrote(written);
@@ -53566,13 +53601,13 @@ extern "C" void ReachPcApplyForUser(int user, const uint8_t* entryRsp)
             if (user == 0)
             {
                 const converge::ReachUpdateStamps stamps =
-                    converge::ReachStampUpdate(wrote != 0, drivenConverged, limited != 0);
+                    converge::ReachStampUpdate(wrote != 0, drivenConverged && !site, limited != 0);
                 g_reachWrittenConvergedMs.store(stamps.converged ? tick : 0, std::memory_order_release);
                 g_reachHeldAtLimitMs.store(stamps.heldAtLimit ? tick : 0, std::memory_order_release);
-                if (!(wrote && drivenSeated))
+                if (!(wrote && drivenSeated) || site)
                     g_reachSeatStops.clear();
 #if HALOMCCVR_DEV_DIAGNOSTICS
-                if (wrote && drivenSeated)
+                if (wrote && drivenSeated && !site)
                 {
                     // Reach's "polls" are its seated stick updates (two atomics each, dev builds only).
                     converge::NaturalEvents natural;
@@ -53612,6 +53647,12 @@ extern "C" void ReachPcApplyForUser(int user, const uint8_t* entryRsp)
         ReachSightTraceControlPass();
 }
 
+// The accumulator's naked detour (reach_player_control_hook.asm) calls this.
+extern "C" void ReachPcApplyForUser(int user, const uint8_t* entryRsp)
+{
+    ReachPcApply(user, entryRsp, nullptr);
+}
+
 // Input thread: the stops Reach's last seated write knew (the seat-limit latch's), under 100 ms old, while the drive is
 // armed. The seat limit reticle's source for Reach.
 static bool ReachSeatStops(seat_limit::Stops& stops, float& recordYaw)
@@ -53625,6 +53666,7 @@ static bool ReachSeatStops(seat_limit::Stops& stops, float& recordYaw)
 // stick calls -- the updates, one per rendered frame (~120 at 120 fps), not the sim's 60 Hz ticks.
 void Game_ReachDirectDriveReport()
 {
+    ReachSabreDriveReport();   // the type-13 pilot's own line, on its own two seconds
     static unsigned long long s_last = 0;
     const unsigned long long now = GetTickCount64();
     if (now - s_last < 1000) return;
@@ -53770,6 +53812,7 @@ bool Halo4TrackerAimReference(float& yaw) noexcept
 #if HALOMCCVR_DEV_DIAGNOSTICS
 #include "type13_flight_log.inl"
 #endif
+#include "reach_type13_drive.inl"
 
 // THE FIRE-TICK EYE, Halo 3 on foot (sight_layer.h Sight_SetFireEyeSource; in every build:
 // the dev key shot_point_transport, default 1, is the A/B): the eye the shot leaves from at this fire, from the unit's

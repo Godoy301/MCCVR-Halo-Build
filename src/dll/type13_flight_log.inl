@@ -11,10 +11,13 @@
 // a slew cap), the forced-steer/redirect windows, the roll mode, the time arguments, the tag limits, Halo
 // 4's biped physics mode and runtime type override, and which dispatcher callers run in a tick.
 //
-// Nothing is hooked unless type13_log = 1 (read at startup): a 0 run carries no detour, so it is a true control.
-// The detours write NOTHING to the game. They run the native unchanged (through CallNativeWithSpareSlots:
+// REACH: the controller's one hook is the direct drive's (reach_type13_drive.inl, every build). With type13_log = 1
+// its detour calls this file's observer around the native call (T13ReachBefore / T13ReachAfter), before the drive
+// writes anything; with 0 the observer is never made ready and is never called. HALO 4: this file's own hook, and
+// nothing is hooked unless type13_log = 1 (read at startup): a 0 run carries no detour, so it is a true control.
+// The observers write NOTHING to the game. The native runs unchanged (through CallNativeWithSpareSlots:
 // seven arguments, three of them on the stack; tools/audit_caller_area.py 64828:11:v and aa524:11:v clean,
-// 6 slots a violation at entry+0x38), read under SEH before and after it, and push POD events into a
+// 6 slots a violation at entry+0x38); they read under SEH before and after it, and push POD events into a
 // lock-free single-producer ring (src/common/type13_flight_log.h); the cold worker formats every line. Only
 // one owner thread observes a lane (claimed by compare_exchange, taken over after 500 ms of silence), and a
 // busy flag keeps the producer single-threaded even across a takeover. The worker takes the same flag, only
@@ -453,8 +456,8 @@ constexpr const char* kT13ReachCallerNames[4] = {"alt+5EE48", "main+6246C", "nou
 bool T13ReachAdmitted()
 {
     const auto& lane = g_t13Reach;
-    return g_reachT13Enabled.load(std::memory_order_acquire) && g_config.type13_log &&
-           !g_reachCamera.teardownRequested.load(std::memory_order_acquire) &&
+    return g_reachT13Enabled.load(std::memory_order_acquire) && lane.enabled.load(std::memory_order_acquire) &&
+           g_config.type13_log && !g_reachCamera.teardownRequested.load(std::memory_order_acquire) &&
            g_reachCamera.generation.load(std::memory_order_acquire) == lane.generation.load(std::memory_order_acquire);
 }
 
@@ -625,58 +628,35 @@ void T13ReachAfter(T13Call& call)
 }
 } // namespace
 
-// MinHook's relay jumps here, so _AddressOfReturnAddress() is the native's own entry rsp. The callback count
-// spans the whole call, the native included (as ReachUnitCameraPositionHook): the teardown's quiescence
-// proof and ScanForReachDetourIngress cover it. The native call is inside __try/__finally only; each read
-// has its own __except.
-__declspec(noinline) void ReachType13Detour(int user, uint32_t vehicle, float yawD, float pitchD, const void* input,
-                                            float dtA, float dtB)
-{
-    const auto* entry = static_cast<const uintptr_t*>(_AddressOfReturnAddress());
-    volatile bool observing = false;
-    g_reachCamera.activeCallbacks.fetch_add(1, std::memory_order_acq_rel);
-    __try
-    {
-        const auto native = reinterpret_cast<T13ControllerFn>(g_reachT13Orig);
-        if (!native)
-            return;
-        T13Call call{};
-        observing = T13ReachBefore(user, vehicle, yawD, pitchD, input, dtA, dtB, entry, call);
-        CallNativeWithSpareSlots(native, user, vehicle, yawD, pitchD, input, dtA, dtB);
-        if (observing)
-        {
-            observing = false;
-            T13ReachAfter(call);   // releases the busy flag
-        }
-    }
-    __finally
-    {
-        if (observing)
-            T13Release(g_t13Reach);
-        g_reachCamera.activeCallbacks.fetch_sub(1, std::memory_order_acq_rel);
-    }
-}
+// The observer is called from the controller's one detour, ReachType13Detour (reach_type13_drive.inl): Before, the
+// native, After. Each read has its own __except.
 
-// Worker, inside InstallReachCameraCore (whole-image-hashed module, g_reachCamera.base/generation set).
+// Worker, inside InstallReachCameraCore (whole-image-hashed module, g_reachCamera.base/generation set), BEFORE the
+// controller's hook is installed: the observer is proven and made ready here, and creates no hook of its own.
 bool ReachType13LogInstall(uintptr_t base, size_t size, uint32_t generation)
 {
     auto& lane = g_t13Reach;
     if (!g_config.type13_log)
     {
-        // Read at startup only, so a 0 run never carries the detour: it is the true control arm.
-        LOG("REACH SF: type13_log 0: type-13 pilot controller +0x%X not hooked (no detour)", kT13ReachEntryRva);
+        lane.enabled.store(false, std::memory_order_release);
+        LOG("REACH SF: type13_log 0: the type-13 pilot controller +0x%X is not observed", kT13ReachEntryRva);
         return false;
     }
     if (g_reachT13Target)
     {
-        if (lane.base == base)
+        // The controller's hook outlived a cleanup and may be running: the observer keeps what it proved on that
+        // module, and nothing of it is rebuilt under a live detour.
+        if (lane.base == base && lane.tlsIndex)
         {
             lane.generation.store(generation, std::memory_order_release);
-            return true;
+            return lane.enabled.load(std::memory_order_acquire);
         }
-        LOG("REACH SF: the type-13 log hook is still installed on another module; not reinstalled");
+        lane.enabled.store(false, std::memory_order_release);
+        LOG("REACH SF: the controller's hook is still installed on another module; the observer stays off");
         return false;
     }
+    // No hook exists, so no detour can be observing: off until this install has proven it again.
+    lane.enabled.store(false, std::memory_order_release);
     const uint64_t started = GetTickCount64();
     char failed[512];
     const bool anchorsOk = T13AnchorsMatch(base, size, kT13ReachAnchors, failed, sizeof(failed));
@@ -692,8 +672,8 @@ bool ReachType13LogInstall(uintptr_t base, size_t size, uint32_t generation)
                         instances == T13Rip(base, size, 0x4AC1E4, 3, 7);
     if (!anchorsOk || !callOk || !tlsOk || !pagesOk || !instOk)
     {
-        LOG("REACH SF: type-13 pilot controller +0x%X NOT hooked (anchors failed: %s; dispatcher call=%d tls=%d "
-            "pages=%d instances=%d); the log-only lane is off, the Sabre stays exactly as before",
+        LOG("REACH SF: type-13 pilot controller +0x%X NOT observed (anchors failed: %s; dispatcher call=%d tls=%d "
+            "pages=%d instances=%d); the log-only lane is off",
             kT13ReachEntryRva, failed[0] ? failed : "none", callOk, tlsOk, pagesOk, instOk);
         return false;
     }
@@ -701,15 +681,7 @@ bool ReachType13LogInstall(uintptr_t base, size_t size, uint32_t generation)
     T13Callers(base, size, kT13ReachDispatcherRva, kT13ReachCallerRvas, lane, callerOk);
     uint32_t slot = 0;
     const bool frameOk = T13DispatcherSlot(base, kT13ReachDispatcherRva, 25, kT13ReachCallRva, slot);
-    void* target = reinterpret_cast<void*>(base + kT13ReachEntryRva);
-    const MH_STATUS created = MH_CreateHook(target, reinterpret_cast<void*>(&ReachType13Detour), &g_reachT13Orig);
-    if (created != MH_OK)
-    {
-        g_reachT13Orig = nullptr;
-        LOG("REACH SF: type-13 log hook FAILED (create=%d); the lane is off", static_cast<int>(created));
-        return false;
-    }
-    // Everything the hook reads is set before it can run; a fresh owner, producer and counters.
+    // Everything the observer reads is set before it can be admitted; a fresh owner, producer and counters.
     lane.base = base;
     lane.ctrlRet = base + kT13ReachCallRva + 5;
     lane.dispSlot = frameOk ? slot : 0;
@@ -718,17 +690,10 @@ bool ReachType13LogInstall(uintptr_t base, size_t size, uint32_t generation)
     lane.tlsIndex = reinterpret_cast<const uint32_t*>(tls);
     lane.generation.store(generation, std::memory_order_release);
     T13ResetForInstall(lane);
-    if (MH_EnableHook(target) != MH_OK)
-    {
-        MH_RemoveHook(target);
-        g_reachT13Orig = nullptr;
-        LOG("REACH SF: type-13 log hook FAILED to enable; removed, the lane is off");
-        return false;
-    }
-    g_reachT13Target = target;
-    g_reachT13Enabled.store(true, std::memory_order_release);
-    LOG("REACH SF: type-13 pilot controller +0x%X hooked LOG-ONLY in %llu ms (writes nothing; type13_log %d); "
-        "dispatcher return at entry rsp+0x%X %s; caller labels alt %d main %d nounit? %d",
+    lane.enabled.store(true, std::memory_order_release);
+    LOG("REACH SF: type-13 pilot controller +0x%X observed LOG-ONLY, proven in %llu ms (the observer writes "
+        "nothing; the hook is the direct drive's; type13_log %d); dispatcher return at entry rsp+0x%X %s; caller "
+        "labels alt %d main %d nounit? %d",
         kT13ReachEntryRva, static_cast<unsigned long long>(GetTickCount64() - started), g_config.type13_log,
         lane.dispSlot * 8u, frameOk ? "(derived from the dispatcher prologue)" : "UNAVAILABLE (caller attribution off)",
         callerOk[0], callerOk[1], callerOk[2]);
