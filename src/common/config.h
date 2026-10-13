@@ -916,6 +916,19 @@ struct Config
     // a first-person game camera reads "not first person" (the value agreement with the view model must
     // then withdraw the rung). Read at launch; 0 for every other run.
     int first_person_rung_fault = 0;
+    // DEV BUILDS ONLY (not parsed and compiled out otherwise; never saved): fault injection for the direct drives'
+    // address resolution, every title (src/common/drive_resolve.h, src/dll/drive_cascade.cpp). Each bit forces one
+    // thing that only happens on a game build the tables were not measured on, so the rung below it -- or the
+    // refusal -- can be watched working through the real install path. Bit 0 (0x01) = every signature search
+    // finds nothing: no drive is hooked, each says what was not found. Bit 1 (0x02) = every signature search
+    // finds one match too many: each is taken at its recorded address, and says so. Bit 2 (0x04) = every recorded
+    // RVA is wrong: the search must win, and each address is reported MOVED. Bits 1 and 2 together = ambiguous
+    // with no record to settle it: no drive is hooked. Bit 3 (0x08) = the module's PE TLS directory disagrees
+    // with the instruction a drive anchors on: no drive that reads the engine TLS index is hooked. Bit 4 (0x10)
+    // = a hook's watchdog is told the hook never ran: it must say so once, after its ten seconds of possible
+    // time. Bit 5 (0x20) = no short field anchor stands at its recorded offset in its function: each must be the
+    // one match inside that function. Read when a drive is installed; 0 for every other run.
+    int drive_fault = 0;
     // Diagnostic: log the distinct (caller, flags, mode) of Reach's own collision_test_vector calls,
     // to identify the flags a bullet's flight test uses. Leave at 0 for play.
     int reach_collision_census = 0;

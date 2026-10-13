@@ -14,6 +14,7 @@
 // are only what it is compared with.
 #include <cstddef>
 #include <cstdint>
+#include <type_traits>
 
 #include "../common/addrcascade/AddressCascade.hpp"
 #include "../common/drive_resolve.h"
@@ -44,7 +45,7 @@ bool Resolve(uintptr_t base, size_t size, Resolution<Found>& out, Plan&& plan)
 {
     struct Context
     {
-        Plan* plan;
+        std::remove_reference_t<Plan>* plan;
         Found* found;
     } context{&plan, &out.found};
     return RunPlan(base, size,
@@ -66,32 +67,41 @@ void FirstFailure(const drive_resolve::Report& report, char* out, size_t size);
 void Announce(const char* drive, const drive_resolve::Report& report, addrcascade::TierReporter& reporter);
 
 // "INSTALLED" IS NOT "RUNNING". MinHook installs on any address and reports success; the only proof that an
-// address was the right one is the hook being called. One HookWatch per hook, stepped by the cold worker from the
-// drive's own two-second report. It counts only periods in which the call was POSSIBLE -- the drive's own word
-// that the game is in the state its hook serves -- and starts again from nothing whenever it was not, so a menu,
-// a load or a cutscene never counts against a healthy address. Log-only: a drive whose hook does not run already
-// leaves the aim to the stick servo through its heartbeat.
+// address was the right one is the hook being called. One HookWatch per hook, passed over by the cold worker on
+// every one of its loops, from the drive's own report. It counts only periods in which the call was POSSIBLE at
+// every pass -- the drive's own word, from something its hook does not produce, that the game is in the state the
+// hooked code serves -- and starts again from nothing whenever it was not, so a menu, a load or a cutscene never
+// counts against a healthy address. Log-only: a drive whose hook does not run already leaves the aim to the stick
+// servo through its heartbeat.
 class HookWatch
 {
 public:
-    // The periods of possible, uncalled time after which the hook is called dead: ~10 s at the two seconds per
-    // step the drives' reports run at.
+    // The possible, uncalled time after which the hook is called dead: kPeriods periods of kPeriodMs in a row.
     static constexpr uint32_t kPeriods = 5;
-    static constexpr uint32_t kPeriodSeconds = 2;
+    static constexpr uint32_t kPeriodMs = 2000;
+    static constexpr uint32_t kSeconds = kPeriods * kPeriodMs / 1000;
 
-    // A new install (the hook is on other code now): the watch starts again.
-    void Restart();
+    // One pass of the cold worker. `target`: where the hook is installed (null: it is not; another address than
+    // at the last pass: a new install, and the watch starts again). `possible`: at this pass the game is in the
+    // state in which it calls the hooked code. `called`: the hook's own counters show a call. True exactly once
+    // per install: the hook has stood through kPeriods periods in a row, every pass of which found its call
+    // possible, and it has never been called.
+    bool Pass(const void* target, bool possible, bool called, uint64_t nowMs);
 
-    // `installed`: the hook exists. `possible`: the game was, through this whole period, in the state in which it
-    // calls the hooked function. `calls`: how many calls the hook counted in the period. True exactly once: the
-    // hook has been installed through kPeriods possible periods in a row and has never been called.
-    bool Step(bool installed, bool possible, uint32_t calls);
-
-    uint32_t SecondsCounted() const { return dog_.counted() * kPeriodSeconds; }
     bool everCalled() const { return everCalled_; }
 
 private:
+    void Restart();
+
     addrcascade::HookWatchdog dog_{kPeriods};
+    const void* target_ = nullptr;
+    uint64_t periodStartMs_ = 0;
+    bool periodPossible_ = false;
     bool everCalled_ = false;
 };
+
+// The one line a watch writes when it fires. `drive`: the drive's name as its own log lines begin (it names the
+// title). `what`: the hooked code. `rva`: where in the title's module the hook is. `state`: the state the game
+// was seen in all that time, in which it calls that code.
+void SayNeverCalled(const char* drive, const char* what, uint32_t rva, const char* state);
 } // namespace drive_cascade

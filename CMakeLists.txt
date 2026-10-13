@@ -366,6 +366,9 @@ target_compile_definitions(halo3xr PRIVATE
     HALOMCCVR_HALO2_OBSERVER_6DOF=$<BOOL:${HALOMCCVR_HALO2_OBSERVER_6DOF}>
     HALOMCCVR_HALO2_RENDER_PROBE=$<BOOL:${HALOMCCVR_HALO2_RENDER_PROBE}>
     HALOMCCVR_DEV_DIAGNOSTICS=$<BOOL:${HALOMCCVR_DEV_DIAGNOSTICS}>
+    # Fault injection for the direct drives' address resolution (config key drive_fault): dev builds only. A player
+    # build leaves it undefined, and the forcing code is not compiled (addrcascade::fault, drive_resolve::Fault).
+    $<$<BOOL:${HALOMCCVR_DEV_DIAGNOSTICS}>:ADDRCASCADE_FAULTS=1>
     HALOMCCVR_HALO2_ANNIVERSARY_STEREO=$<BOOL:${HALOMCCVR_HALO2_ANNIVERSARY_STEREO}>
     HALOMCCVR_BUILD_COMMIT="${HALOMCCVR_BUILD_COMMIT}"
     HALOMCCVR_BUILD_ODST="${HALOMCCVR_BUILD_ODST}"
@@ -1164,6 +1167,23 @@ if(BUILD_TESTING)
     add_executable(halomccvr_drive_resolve_tests tests/drive_resolve_tests.cpp)
     target_include_directories(halomccvr_drive_resolve_tests PRIVATE src/common)
     add_test(NAME halomccvr_drive_resolve_tests COMMAND halomccvr_drive_resolve_tests)
+    # The DLL's side of that resolution (src/dll/drive_cascade.cpp), as shipped, on a module that is really loaded
+    # (the test's own executable): opened through VirtualQuery, its .pdata compared with the operating system's own
+    # lookup, its TLS index taken from its PE TLS directory, a signature read through a hook patch, the line that
+    # says which rung won, and the hook watchdog as the cold worker steps it. Player flavour (the dev fault key
+    # must do nothing), then dev flavour (each forced fault must show).
+    foreach(halomccvr_drive_cascade_flavour "" "_dev")
+        set(halomccvr_drive_cascade_target "halomccvr_drive_cascade${halomccvr_drive_cascade_flavour}_tests")
+        add_executable(${halomccvr_drive_cascade_target} tests/drive_cascade_tests.cpp
+            src/dll/drive_cascade.cpp src/dll/sigscan.cpp src/common/config.cpp
+            src/common/addrcascade/AddressCascade.cpp)
+        target_include_directories(${halomccvr_drive_cascade_target} PRIVATE src/common src/dll)
+        target_compile_definitions(${halomccvr_drive_cascade_target} PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+        target_link_libraries(${halomccvr_drive_cascade_target} PRIVATE psapi)
+        add_test(NAME ${halomccvr_drive_cascade_target} COMMAND ${halomccvr_drive_cascade_target})
+    endforeach()
+    target_compile_definitions(halomccvr_drive_cascade_dev_tests PRIVATE
+        HALOMCCVR_DEV_DIAGNOSTICS=1 ADDRCASCADE_FAULTS=1)
     # THE OFFLINE CHECK of the direct drives' addresses against the game's own DLL files
     # (tools/drive_address_check.cpp): each DLL laid out as an image, every drive's own resolution run on it from
     # the same tables the DLL uses (src/common/drive_sites.h), then again on a copy with every section moved, and
