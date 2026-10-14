@@ -3380,7 +3380,7 @@ void ConfigSave()
     fprintf(f, "# Ghosting diagnostic: 1 renders the right eye first.\n");
     fprintf(f, "# (default %d)\n", d.right_eye_first ? 1 : 0);
     fprintf(f, "right_eye_first = %d\n", g_config.right_eye_first ? 1 : 0);
-    fprintf(f, "# Halo 3: the mod's hooks are installed again after a pause and at each level. 1 = an install re-uses\n");
+    fprintf(f, "# Halo 3: the mod's hooks are installed again at each new level. 1 = an install re-uses\n");
     fprintf(f, "# what an earlier one found in the same load of the game's DLL and searches it only for what is new.\n");
     fprintf(f, "# 0 = every install searches all of it again. (default %d)\n", d.install_search_memory);
     fprintf(f, "install_search_memory = %d\n", g_config.install_search_memory);
