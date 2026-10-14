@@ -202,8 +202,23 @@ void CacheProbe()
 void CacheProbe() {}
 #endif
 
-// Reads the file into g_cacheFile. What is missing or cannot be read holds nothing: a cold start.
-void ReadCacheLocked()
+// What a read of the file came to. "There is no file" and "there is a file that was not read" are two things:
+// the first is a cold start and the file may be written; the second is somebody's file, whose other entries a
+// write would destroy.
+enum class CacheRead : uint8_t
+{
+    NoFile,       // there is none: nothing is held, and one may be written
+    Read,         // read (whatever it holds: text that is not a cache holds nothing, and is replaced by a write)
+    Unreadable,   // it is there and could not be opened or read (another program holds it, no right to it)
+    TooLarge,     // it is there and is larger than any file this mod writes: not this mod's
+};
+
+constexpr char kFileUnreadable[] = "the file is there and could not be read";
+constexpr char kFileTooLarge[] = "the file is there and is larger than any this mod writes";
+constexpr char kFileNotWritten[] = "the file could not be written";
+
+// Reads the file into g_cacheFile. Whatever it comes to, g_cacheFile holds only what was read and understood.
+CacheRead ReadCacheLocked()
 {
     g_cacheFile = drive_known::File{};
     g_cacheOpens.fetch_add(1, std::memory_order_relaxed);
@@ -211,13 +226,21 @@ void ReadCacheLocked()
     const HANDLE handle = CreateFileW(g_cachePath, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_DELETE, nullptr,
                                       OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (handle == INVALID_HANDLE_VALUE)
-        return;
+    {
+        const DWORD error = GetLastError();
+        return error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND ? CacheRead::NoFile
+                                                                             : CacheRead::Unreadable;
+    }
     DWORD read = 0;
     const BOOL ok = ReadFile(handle, g_cacheText, sizeof(g_cacheText), &read, nullptr);
     CloseHandle(handle);
+    if (!ok)
+        return CacheRead::Unreadable;
     // A file that fills the buffer is larger than any this mod writes: it is not this mod's.
-    if (ok && read < sizeof(g_cacheText))
-        drive_known::Parse(g_cacheText, read, g_cacheFile);
+    if (read >= sizeof(g_cacheText))
+        return CacheRead::TooLarge;
+    drive_known::Parse(g_cacheText, read, g_cacheFile);
+    return CacheRead::Read;
 }
 
 // Writes g_cacheFile. NEVER IN PLACE: the text goes to a temporary file beside the cache, which then takes its
@@ -258,7 +281,7 @@ bool LookUp(const char* module, const char* id, uint64_t stamp, drive_known::Ent
     AcquireSRWLockExclusive(&g_cacheLock);
     __try
     {
-        ReadCacheLocked();
+        (void)ReadCacheLocked();   // a file that was not read holds no entry: the drive is searched for
         if (const drive_known::Entry* const usable = drive_known::Usable(g_cacheFile, module, id, stamp, refused))
         {
             entry = *usable;
@@ -273,23 +296,32 @@ bool LookUp(const char* module, const char* id, uint64_t stamp, drive_known::Ent
 }
 
 // Puts one drive's addresses into the file. The file is read again first, so every other drive's and every other
-// title's entry is kept (a file that is full lets its oldest dead entry give way: drive_known::Put). False when
-// the file could not be written.
-bool Store(const drive_known::Entry& entry)
+// title's entry is kept (a file that is full lets its oldest dead entry give way: drive_known::Put). Null when
+// it is saved; else why it is not. A FILE THAT IS THERE AND WAS NOT READ IS NOT WRITTEN: the entries it holds
+// are not known, and writing would replace them all with this one.
+const char* Store(const drive_known::Entry& entry)
 {
-    bool stored = false;
+    const char* failed = nullptr;
     AcquireSRWLockExclusive(&g_cacheLock);
     __try
     {
-        ReadCacheLocked();
-        drive_known::Put(g_cacheFile, entry);
-        stored = WriteCacheLocked();
+        const CacheRead read = ReadCacheLocked();
+        if (read == CacheRead::Unreadable)
+            failed = kFileUnreadable;
+        else if (read == CacheRead::TooLarge)
+            failed = kFileTooLarge;
+        else
+        {
+            drive_known::Put(g_cacheFile, entry);
+            if (!WriteCacheLocked())
+                failed = kFileNotWritten;
+        }
     }
     __finally
     {
         ReleaseSRWLockExclusive(&g_cacheLock);
     }
-    return stored;
+    return failed;
 }
 
 // ----------------------------------------------------------------------- what this process already resolved
@@ -559,8 +591,8 @@ bool RunPlan(uintptr_t base, size_t size, const Drive& drive, drive_known::PlanF
             rungs.notSaved = "the mod's folder is not known";
         else if (!drive_known::MakeEntry(entry, module, drive.id, stamp, report))
             rungs.notSaved = "this drive has no name to save them under";
-        else if (!(rungs.saved = Store(entry)))
-            rungs.notSaved = "the file could not be written";
+        else
+            rungs.saved = (rungs.notSaved = Store(entry)) == nullptr;
     }
     LARGE_INTEGER to, frequency;
     QueryPerformanceCounter(&to);

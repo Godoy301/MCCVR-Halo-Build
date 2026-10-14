@@ -806,6 +806,128 @@ void TestCacheFile()
     RemoveDirectoryW(folder.c_str());
 }
 
+// ---- a cache file that is there and could not be read is left as it is ------------------------------------------
+// "There is no file" is a cold start. "There is a file, and it was not read" is not: the other drives' and the
+// other titles' entries are in it, and a write would replace them all with one.
+#if HALOMCCVR_DEV_DIAGNOSTICS
+// Another program that has the cache's file open only while this mod reads it. A dev build calls the probe before
+// each open of the file: at open number g_holdAtOpen it takes the file and shares nothing, and at the open after
+// that it lets go.
+const wchar_t* g_holdPath = nullptr;
+HANDLE g_holding = INVALID_HANDLE_VALUE;
+int g_holdAtOpen = 0, g_holdOpens = 0;
+void HoldingProbe()
+{
+    ++g_holdOpens;
+    if (g_holdOpens == g_holdAtOpen)
+    {
+        g_holding = CreateFileW(g_holdPath, GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_EXISTING, 0, nullptr);
+    }
+    else if (g_holding != INVALID_HANDLE_VALUE)
+    {
+        CloseHandle(g_holding);
+        g_holding = INVALID_HANDLE_VALUE;
+    }
+}
+#endif
+
+void TestUnreadCacheFileIsNotReplaced()
+{
+    const uint32_t markerRva = Rva(g_marker);
+    wchar_t temp[MAX_PATH];
+    GetTempPathW(MAX_PATH, temp);
+    const std::wstring folder = std::wstring(temp) + L"halomccvr_drive_cascade_unread_" +
+                                std::to_wstring(GetCurrentProcessId()) + L"\\";
+    CreateDirectoryW(folder.c_str(), nullptr);
+    const std::wstring cache = folder + L"HaloMCCVR-drive-addresses.txt";
+    const std::wstring temporary = cache + L".tmp";
+    DeleteFileW(cache.c_str());
+    drive_cascade::SetCacheFolder(folder.c_str());
+    g_config.drive_address_cache = 1;
+    g_config.drive_fault = 0;
+    Resolved halo3, halo4;
+    Check(Resolve(halo3, kHalo3, markerRva) && halo3.rungs.saved && Resolve(halo4, kHalo4, markerRva) &&
+              halo4.rungs.saved,
+          "a file with two titles' entries");
+    const std::string before = ReadAll(cache);
+    Check(before.find("entry halo3.dll ") != std::string::npos && before.find("entry halo4.dll ") != std::string::npos,
+          "both are in it");
+
+    // ANOTHER PROGRAM HOLDS THE FILE and shares nothing: it cannot be opened for reading.
+    {
+        const HANDLE held =
+            CreateFileW(cache.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_EXISTING, 0, nullptr);
+        Check(held != INVALID_HANDLE_VALUE, "the file is held by another handle that shares nothing");
+        Resolved r;
+        lines.clear();
+        const bool resolved = Resolve(r, kHalo3, markerRva);
+        CloseHandle(held);
+        Check(resolved && Whole(r) && r.rungs.outcome.rung == Rung::Search && r.rungs.outcome.learn && !r.rungs.saved &&
+                  r.rungs.notSaved && !std::strcmp(r.rungs.notSaved, "the file is there and could not be read"),
+              "the drive is resolved by search; what it found is NOT saved, because the file could not be read");
+        drive_cascade::Announce("TEST DRIVE", r);
+        Check(Lines("NOT saved for the next launch (the file is there and could not be read)") == 1,
+              "its line says so, once");
+        Check(ReadAll(cache) == before && !Exists(temporary),
+              "THE FILE IS AS IT WAS: every other drive's and title's entry is still in it");
+    }
+
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    // HELD ONLY WHILE IT IS READ BEFORE A SAVE, and let go before the save's write. To take that failed read for
+    // an empty file would put one entry in the place of them all, and the write would go through.
+    {
+        g_holdPath = cache.c_str();
+        g_holdAtOpen = 2;   // the look-up's read goes through; the read that a save begins with does not
+        g_holdOpens = 0;
+        drive_cascade::SetCacheProbe(&HoldingProbe);
+        Resolved r;
+        lines.clear();
+        const bool resolved = Resolve(r, kHalo3, markerRva + 0x10);   // other tables: searched, and worth saving
+        drive_cascade::SetCacheProbe(nullptr);
+        const bool stillHeld = g_holding != INVALID_HANDLE_VALUE;
+        if (stillHeld)
+            CloseHandle(g_holding);
+        g_holding = INVALID_HANDLE_VALUE;
+        Check(resolved && Whole(r) && r.rungs.outcome.rung == Rung::Search && r.rungs.outcome.learn && !r.rungs.saved &&
+                  r.rungs.notSaved && !std::strcmp(r.rungs.notSaved, "the file is there and could not be read") &&
+                  stillHeld && g_holdOpens == 2,
+              "dev build: a file held only while it is read before a save: nothing is saved, and no write is tried");
+        Check(ReadAll(cache) == before && !Exists(temporary),
+              "dev build: EVERY ENTRY IS STILL IN THE FILE, though a write would have gone through");
+    }
+#endif
+
+    // A FILE LARGER THAN ANY THIS MOD WRITES: not this mod's. It is left alone too.
+    {
+        std::string large = before;
+        while (large.size() <= drive_known::kMaxFileText)
+            large += "# a line this mod did not write\r\n";
+        Check(WriteAll(cache, large), "the file is made larger than any this mod writes");
+        Resolved r;
+        lines.clear();
+        Check(Resolve(r, kHalo3, markerRva) && Whole(r) && r.rungs.outcome.rung == Rung::Search &&
+                  !r.rungs.outcome.savedTried && r.rungs.outcome.learn && !r.rungs.saved && r.rungs.notSaved &&
+                  !std::strcmp(r.rungs.notSaved, "the file is there and is larger than any this mod writes"),
+              "nothing is taken from it, the drive is searched for, and what it found is NOT saved");
+        drive_cascade::Announce("TEST DRIVE", r);
+        Check(Lines("NOT saved for the next launch (the file is there and is larger than any this mod writes)") == 1,
+              "its line says why");
+        Check(ReadAll(cache) == large && !Exists(temporary), "and the file is as it was");
+    }
+
+    // NO FILE is a cold start, as ever: one is written.
+    {
+        DeleteFileW(cache.c_str());
+        Resolved r;
+        Check(Resolve(r, kHalo3, markerRva) && r.rungs.saved && !r.rungs.notSaved && Exists(cache),
+              "with no file there, one is written");
+    }
+
+    drive_cascade::SetCacheFile(nullptr);
+    DeleteFileW(cache.c_str());
+    RemoveDirectoryW(folder.c_str());
+}
+
 // ---- the installs' proofs after the plan (src/dll/drive_install.h) never fault -----------------------------------
 // A plan reads the module through checks: a page that cannot be read costs it one line, and it returns with that
 // line refused and everything else still set. What an install does next runs with no guard around it. Here the
@@ -1561,6 +1683,7 @@ int main(int argc, char** argv)
     TestOpenAndResolve();
     TestAnnounceAndFaults();
     TestCacheFile();
+    TestUnreadCacheFileIsNotReplaced();
     TestInstallProofsNeverFault();
     TestUnreadableFunctionTable();
     TestRecordedBuildOpensNoFile();

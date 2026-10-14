@@ -70,8 +70,10 @@ struct Rungs
 
 // THE ADDRESS CACHE'S FILE: HaloMCCVR-drive-addresses.txt in the mod's own folder, beside its log and its
 // settings. `folder` ends with a separator. Until this is called there is no file and nothing is read or saved.
-// It is a cache and not a setting: written by the mod, verified before every use, safe to delete. The setting
-// drive_address_cache = 0 turns both the reading and the writing off.
+// It is a cache and not a setting: written by the mod, verified before every use, safe to delete. A file that is
+// there and could not be read (another program has it open), or that is larger than any this mod writes, is
+// left as it is: nothing is taken from it and nothing is saved over it, and the drive's line says so. The
+// setting drive_address_cache = 0 turns both the reading and the writing off.
 void SetCacheFolder(const wchar_t* folder);
 // The same for a file named outright (tests).
 void SetCacheFile(const wchar_t* path);
