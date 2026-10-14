@@ -730,6 +730,17 @@ void VR_Halo4NoteBoundRenderTargets(
     ID3D11DeviceContext* context, UINT count,
     ID3D11RenderTargetView* const* rtvs);
 void VR_Halo4PrepareAuthoredReticleDraw(ID3D11DeviceContext* context);
+// Halo 4 (halo4_scene_copy_logic.h): the source a whole-resource copy is to read. While an eye is drawn, a copy
+// out of the game's scene colour texture reads that eye's image; any other copy reads what it named. Called from
+// the CopyResource hook, on whichever thread copies.
+ID3D11Resource* VR_RedirectSceneCopySource(ID3D11DeviceContext* context, ID3D11Resource* destination,
+                                           ID3D11Resource* source);
+// How many copies were given an eye's image since the last call (the worker's status line).
+uint64_t VR_TakeHalo4SceneCopyCount();
+#if HALOMCCVR_DEV_DIAGNOSTICS
+// Dev A/B: false leaves every copy as the game made it (the stock, blacked-out behaviour).
+void VR_DevSetHalo4SceneCopy(bool on);
+#endif
 #if HALOMCCVR_DEV_DIAGNOSTICS
 // For the pixel shader census (dev_ps_census.inl). What a resource is to this mod: 0 other, 1 the game's scene
 // colour (the target the eyes are drawn in place of), 2 / 3 the image of eye 0 / 1, 4 the crosshair capture.

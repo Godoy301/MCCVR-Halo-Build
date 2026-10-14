@@ -47610,7 +47610,7 @@ namespace
             "HUD=%s (%llu native affine writes, curvature=%s), pause=%s, "
             "helmet=%s/config-%s (%llu exact shaders, %llu suppressed binds; "
             "full frontend root), screen-fx=%s (%llu motion-suck shaders, "
-            "%llu suppressed binds); "
+            "%llu suppressed binds; %llu frame copies taken from the eye being drawn); "
             "every unavailable feature stays stock",
             g_halo4Restoration.effectsInstalled.load(
                 std::memory_order_acquire) ?
@@ -47631,7 +47631,8 @@ namespace
             D3D_Halo4ScreenEffectShaderPathAvailable() ?
                 "exact-bridge-LIVE" : "StockFallback",
             static_cast<unsigned long long>(motionSuckShaders),
-            static_cast<unsigned long long>(motionSuckSuppressions));
+            static_cast<unsigned long long>(motionSuckSuppressions),
+            static_cast<unsigned long long>(VR_TakeHalo4SceneCopyCount()));
 
         const uint64_t collisionQueries =
             g_halo4WorldCollision.queries.exchange(

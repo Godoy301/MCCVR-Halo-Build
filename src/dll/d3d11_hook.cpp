@@ -112,7 +112,7 @@ static std::atomic<bool> g_halo4AuthoredReticleDrawPathAvailable{false};
 #if HALOMCCVR_EXPERIMENTAL_REACH_RENDER_CANDIDATE
 typedef void(STDMETHODCALLTYPE* DrawIndexedFn)(ID3D11DeviceContext*, UINT, UINT, INT);
 #endif
-#if HALOMCCVR_EXPERIMENTAL_ODST_BRINGUP
+#if HALOMCCVR_EXPERIMENTAL_ODST_BRINGUP || HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA
 typedef void(STDMETHODCALLTYPE* CopyResourceFn)(ID3D11DeviceContext*,
     ID3D11Resource*, ID3D11Resource*);
 #endif
@@ -703,7 +703,7 @@ static DrawIndexedFn g_origDrawIndexed = nullptr;
 // blocking GPU readback and file I/O to a render hot hook would be unsafe.
 constexpr bool kEnableReachDrawIndexedDiagnostic = false;
 #endif
-#if HALOMCCVR_EXPERIMENTAL_ODST_BRINGUP
+#if HALOMCCVR_EXPERIMENTAL_ODST_BRINGUP || HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA
 static CopyResourceFn g_origCopyResource = nullptr;
 #endif
 
@@ -1790,15 +1790,22 @@ static void STDMETHODCALLTYPE DrawIndexedHook(ID3D11DeviceContext* context,
 }
 #endif
 
-#if HALOMCCVR_EXPERIMENTAL_ODST_BRINGUP
+#if HALOMCCVR_EXPERIMENTAL_ODST_BRINGUP || HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA
+// A copy out of the game's scene colour texture, made while an eye is drawn, reads that eye's image: ODST's
+// native HUD phase, and Halo 4's full-screen HUD materials that draw the frame again (halo4_scene_copy_logic.h).
 static void STDMETHODCALLTYPE CopyResourceHook(ID3D11DeviceContext* context,
     ID3D11Resource* destination, ID3D11Resource* source)
 {
 #if HALOMCCVR_DEV_DIAGNOSTICS
     dev_ps_census::NoteCopy(destination, source, "whole copy");
 #endif
-    g_origCopyResource(context, destination,
-                       VR_RedirectNativeHudCopySource(source));
+#if HALOMCCVR_EXPERIMENTAL_ODST_BRINGUP
+    source = VR_RedirectNativeHudCopySource(source);
+#endif
+#if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA
+    source = VR_RedirectSceneCopySource(context, destination, source);
+#endif
+    g_origCopyResource(context, destination, source);
 }
 #endif
 
@@ -2284,7 +2291,7 @@ bool InstallD3D11Hooks()
             static_cast<int>(halo4PixelShaderSet));
     }
 #endif
-#if HALOMCCVR_EXPERIMENTAL_ODST_BRINGUP
+#if HALOMCCVR_EXPERIMENTAL_ODST_BRINGUP || HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA
     ok = ok && MH_CreateHook(contextVtbl[47], (void*)&CopyResourceHook,
                              (void**)&g_origCopyResource) == MH_OK;
 #endif

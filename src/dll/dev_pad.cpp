@@ -16,6 +16,7 @@
 #include "../common/config.h"
 #include "../common/roomscale_recenter_logic.h"
 #include "../common/log.h"
+#include "vr.h"
 
 #include <algorithm>
 #include <atomic>
@@ -124,6 +125,9 @@ bool SetLive(const std::string& name, int value)
     // The pixel shader census (dev_ps_census.inl): pause or resume it, and bind no pixel shader in place of
     // the numbered one (0 = none).
     else if (name == "dev_ps_census") g_config.dev_ps_census = value ? 1 : 0;
+    // Halo 4's copies of its finished picture (halo4_scene_copy_logic.h): 1 taken from the eye being drawn
+    // (what every build does), 0 left as the game makes them.
+    else if (name == "halo_four_scene_copy") VR_DevSetHalo4SceneCopy(value != 0);
     else if (name == "dev_ps_blank") D3D_DevSetBlankPixelShader(value);
     else return false;
     return true;
