@@ -190,11 +190,24 @@ drive_known::File g_cacheFile;
 // be none that is not needed (drive_cascade::CacheFileOpens).
 std::atomic<uint32_t> g_cacheOpens{0};
 
+// DEV BUILDS ONLY: the tests' probe (drive_cascade::SetCacheProbe), called with the lock held before each open.
+#if HALOMCCVR_DEV_DIAGNOSTICS
+std::atomic<void (*)()> g_cacheProbe{nullptr};
+void CacheProbe()
+{
+    if (const auto probe = g_cacheProbe.load(std::memory_order_relaxed))
+        probe();
+}
+#else
+void CacheProbe() {}
+#endif
+
 // Reads the file into g_cacheFile. What is missing or cannot be read holds nothing: a cold start.
 void ReadCacheLocked()
 {
     g_cacheFile = drive_known::File{};
     g_cacheOpens.fetch_add(1, std::memory_order_relaxed);
+    CacheProbe();
     const HANDLE handle = CreateFileW(g_cachePath, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_DELETE, nullptr,
                                       OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (handle == INVALID_HANDLE_VALUE)
@@ -216,6 +229,7 @@ bool WriteCacheLocked()
     if (!length || _snwprintf_s(temporary, _TRUNCATE, L"%ls.tmp", g_cachePath) < 0)
         return false;
     g_cacheOpens.fetch_add(1, std::memory_order_relaxed);
+    CacheProbe();
     const HANDLE handle =
         CreateFileW(temporary, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (handle == INVALID_HANDLE_VALUE)
@@ -230,17 +244,32 @@ bool WriteCacheLocked()
     return false;
 }
 
+// THE LOCK IS RELEASED WHATEVER HAPPENS UNDER IT (LookUp, Store). LookUp runs inside the rungs, and the rungs run
+// under their caller's structured-exception guard: an exception that left here with the lock still held would
+// be swallowed there, and the next resolution -- of any drive, of any title -- would wait on the lock for ever,
+// with the worker that installs and reports everything. Hence the __finally; and hence nothing in these two
+// functions has a destructor, which a function with __try may not.
+
 // This drive's saved addresses for exactly this build of its module, found under the rules this mod searches by.
 // `refused`: some were held, and are of another build or of other rules.
 bool LookUp(const char* module, const char* id, uint64_t stamp, drive_known::Entry& entry, const char*& refused)
 {
+    bool have = false;
     AcquireSRWLockExclusive(&g_cacheLock);
-    ReadCacheLocked();
-    const drive_known::Entry* const usable = drive_known::Usable(g_cacheFile, module, id, stamp, refused);
-    if (usable)
-        entry = *usable;
-    ReleaseSRWLockExclusive(&g_cacheLock);
-    return usable != nullptr;
+    __try
+    {
+        ReadCacheLocked();
+        if (const drive_known::Entry* const usable = drive_known::Usable(g_cacheFile, module, id, stamp, refused))
+        {
+            entry = *usable;
+            have = true;
+        }
+    }
+    __finally
+    {
+        ReleaseSRWLockExclusive(&g_cacheLock);
+    }
+    return have;
 }
 
 // Puts one drive's addresses into the file. The file is read again first, so every other drive's and every other
@@ -248,11 +277,18 @@ bool LookUp(const char* module, const char* id, uint64_t stamp, drive_known::Ent
 // the file could not be written.
 bool Store(const drive_known::Entry& entry)
 {
+    bool stored = false;
     AcquireSRWLockExclusive(&g_cacheLock);
-    ReadCacheLocked();
-    drive_known::Put(g_cacheFile, entry);
-    const bool stored = WriteCacheLocked();
-    ReleaseSRWLockExclusive(&g_cacheLock);
+    __try
+    {
+        ReadCacheLocked();
+        drive_known::Put(g_cacheFile, entry);
+        stored = WriteCacheLocked();
+    }
+    __finally
+    {
+        ReleaseSRWLockExclusive(&g_cacheLock);
+    }
     return stored;
 }
 
@@ -407,6 +443,18 @@ void SetCacheFile(const wchar_t* path)
 }
 
 uint32_t CacheFileOpens() { return g_cacheOpens.load(std::memory_order_relaxed); }
+
+#if HALOMCCVR_DEV_DIAGNOSTICS
+void SetCacheProbe(void (*probe)()) { g_cacheProbe.store(probe, std::memory_order_relaxed); }
+
+bool CacheLockHeld()
+{
+    if (!TryAcquireSRWLockExclusive(&g_cacheLock))
+        return true;
+    ReleaseSRWLockExclusive(&g_cacheLock);
+    return false;
+}
+#endif
 
 void SetModuleGenerationSource(uint32_t (*generationOf)(GameTitle title))
 {

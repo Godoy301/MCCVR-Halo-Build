@@ -1353,6 +1353,94 @@ void TestRememberedInProcess()
     RemoveDirectoryW(folder.c_str());
 }
 
+#if HALOMCCVR_DEV_DIAGNOSTICS
+// ---- the cache's lock is released whatever happens under it ------------------------------------------------------
+// The cache is asked from inside the rungs, which run under a structured-exception guard: an exception that left
+// the cache's code with its lock held would be swallowed there, and the next resolution of any drive would wait
+// on that lock for ever. A dev build's probe raises one, with the lock held, at the open the test chooses.
+int g_probeCountdown = 0;   // the probe raises at this open from now (0: never)
+bool g_probeRaised = false;
+void RaisingProbe()
+{
+    if (g_probeCountdown && --g_probeCountdown == 0)
+    {
+        g_probeRaised = true;
+        RaiseException(0xE0C0FFEE, 0, 0, nullptr);
+    }
+}
+
+Resolved g_lockResolved;
+bool g_lockResolvedOk = false;
+void ResolveForLockTest() { g_lockResolvedOk = Resolve(g_lockResolved, kHalo3, Rva(g_marker)); }
+
+// Runs `call` under a guard of the test's own. (Nothing in this function has a destructor.)
+bool Faulted(void (*call)())
+{
+    __try
+    {
+        call();
+        return false;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return true;
+    }
+}
+
+void TestCacheLockReleased()
+{
+    wchar_t temp[MAX_PATH];
+    GetTempPathW(MAX_PATH, temp);
+    const std::wstring folder = std::wstring(temp) + L"halomccvr_drive_cascade_lock_" +
+                                std::to_wstring(GetCurrentProcessId()) + L"\\";
+    CreateDirectoryW(folder.c_str(), nullptr);
+    const std::wstring cache = folder + L"HaloMCCVR-drive-addresses.txt";
+    DeleteFileW(cache.c_str());
+    drive_cascade::SetCacheFolder(folder.c_str());
+    g_config.drive_address_cache = 1;
+    g_config.drive_fault = 0;
+    drive_cascade::SetCacheProbe(&RaisingProbe);
+    Check(!drive_cascade::CacheLockHeld(), "the cache's lock is free to begin with");
+
+    // AN EXCEPTION WHILE THE CACHE IS ASKED, inside the rungs: their guard swallows it and the drive is not
+    // resolved -- and the lock must not have stayed held.
+    g_probeRaised = false;
+    g_probeCountdown = 1;   // the first open: the look-up's read
+    const bool faulted = Faulted(&ResolveForLockTest);
+    Check(g_probeRaised && !faulted && !g_lockResolvedOk && g_lockResolved.why != nullptr,
+          "an exception while the cache is asked is swallowed by the resolution's guard: the drive is not resolved");
+    const bool heldAfterAsk = drive_cascade::CacheLockHeld();
+    Check(!heldAfterAsk, "THE CACHE'S LOCK IS NOT LEFT HELD by an exception raised while it was asked");
+    if (heldAfterAsk)
+    {
+        // The next resolution would wait for ever. Leave the rest be.
+        drive_cascade::SetCacheProbe(nullptr);
+        return;
+    }
+    Check(Resolve(g_lockResolved, kHalo3, Rva(g_marker)) && Whole(g_lockResolved) && g_lockResolved.rungs.saved,
+          "the next resolution is not kept waiting: it asks the cache, searches and saves");
+
+    // AN EXCEPTION WHILE THE FILE IS BEING SAVED (outside the rungs' guard: it reaches the caller).
+    DeleteFileW(cache.c_str());
+    g_probeRaised = false;
+    g_probeCountdown = 2;   // the second open: the read that a save begins with
+    const bool saveFaulted = Faulted(&ResolveForLockTest);
+    const bool heldAfterSave = drive_cascade::CacheLockHeld();
+    Check(g_probeRaised && saveFaulted && !heldAfterSave,
+          "nor by one raised while the file was being saved, which goes on to the caller");
+    drive_cascade::SetCacheProbe(nullptr);
+    g_probeCountdown = 0;
+    if (!heldAfterSave)
+        Check(Resolve(g_lockResolved, kHalo3, Rva(g_marker)) && Whole(g_lockResolved) && g_lockResolved.rungs.saved,
+              "and the resolution after that saves as ever");
+
+    drive_cascade::SetCacheFile(nullptr);
+    DeleteFileW(cache.c_str());
+    DeleteFileW((cache + L".tmp").c_str());
+    RemoveDirectoryW(folder.c_str());
+}
+#endif
+
 // The cold worker passes over a watch about every 50 ms.
 struct Worker
 {
@@ -1477,6 +1565,9 @@ int main(int argc, char** argv)
     TestUnreadableFunctionTable();
     TestRecordedBuildOpensNoFile();
     TestRememberedInProcess();
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    TestCacheLockReleased();
+#endif
     TestHookWatch();
 
     std::printf("drive_cascade_tests (%s build): %u checks, %u failures\n",

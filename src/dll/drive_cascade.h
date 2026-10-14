@@ -97,6 +97,14 @@ void ForgetResolutions();
 // recorded addresses. (The tests and the offline check count on it.)
 uint32_t CacheFileOpens();
 
+#if HALOMCCVR_DEV_DIAGNOSTICS
+// DEV BUILDS ONLY, for the tests. `probe` is called each time the cache's file is about to be opened, to read or
+// to write, with the cache's lock held (null takes it away): a test raises an exception from it, to see that the
+// lock is not left held. CacheLockHeld: whether the lock is held at this moment.
+void SetCacheProbe(void (*probe)());
+bool CacheLockHeld();
+#endif
+
 // Opens the module at `base` (its headers, the readable runs of its executable sections, its .pdata, the TLS
 // index its PE TLS directory names; every byte read as the game has it, through this mod's own enabled hooks)
 // and runs `plan` on it by the rungs. `keep` is called for the run whose result is the one in use. False when
