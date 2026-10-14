@@ -22008,6 +22008,56 @@ void VR_InvalidateHalo4PreparedFrame()
 }
 #endif
 
+#if HALOMCCVR_DEV_DIAGNOSTICS
+int VR_DevResourceRole(ID3D11Resource* resource)
+{
+    if (!resource)
+        return 0;
+    if (resource == g_eyeCache[0])
+        return 2;
+    if (resource == g_eyeCache[1])
+        return 3;
+    if (resource == g_authoredReticleTexture)
+        return 4;
+    if (g_sceneColorRtv)
+    {
+        ID3D11Resource* scene = nullptr;
+        g_sceneColorRtv->GetResource(&scene);
+        const bool same = scene == resource;
+        if (scene)
+            scene->Release();
+        if (same)
+            return 1;
+    }
+    return 0;
+}
+
+void VR_DevDescribeResource(ID3D11Resource* resource, char* out, size_t outSize)
+{
+    static const char* const names[] = {"other", "THE GAME'S SCENE COLOUR", "EYE IMAGE 0", "EYE IMAGE 1",
+                                        "crosshair capture"};
+    if (!resource)
+    {
+        snprintf(out, outSize, "none");
+        return;
+    }
+    D3D11_RESOURCE_DIMENSION kind = D3D11_RESOURCE_DIMENSION_UNKNOWN;
+    resource->GetType(&kind);
+    if (kind != D3D11_RESOURCE_DIMENSION_TEXTURE2D)
+    {
+        snprintf(out, outSize, "not a 2D texture (kind %d) %p", static_cast<int>(kind), static_cast<void*>(resource));
+        return;
+    }
+    D3D11_TEXTURE2D_DESC desc{};
+    static_cast<ID3D11Texture2D*>(resource)->GetDesc(&desc);
+    snprintf(out, outSize, "%s %p %ux%u fmt %d mips %u samples %u bind %X", names[VR_DevResourceRole(resource)],
+             static_cast<void*>(resource), desc.Width, desc.Height, static_cast<int>(desc.Format), desc.MipLevels,
+             desc.SampleDesc.Count, desc.BindFlags);
+}
+
+int VR_DevRasterEye() { return g_rasterEye.load(std::memory_order_relaxed); }
+#endif
+
 bool VR_CaptureBackbufferEye(int eye)
 {
     if (eye < 0 || eye > 1 || !g_context || !g_gameBackbufferDescValid ||

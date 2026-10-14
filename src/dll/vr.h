@@ -730,6 +730,15 @@ void VR_Halo4NoteBoundRenderTargets(
     ID3D11DeviceContext* context, UINT count,
     ID3D11RenderTargetView* const* rtvs);
 void VR_Halo4PrepareAuthoredReticleDraw(ID3D11DeviceContext* context);
+#if HALOMCCVR_DEV_DIAGNOSTICS
+// For the pixel shader census (dev_ps_census.inl). What a resource is to this mod: 0 other, 1 the game's scene
+// colour (the target the eyes are drawn in place of), 2 / 3 the image of eye 0 / 1, 4 the crosshair capture.
+int VR_DevResourceRole(ID3D11Resource* resource);
+// That role's name, the resource's address and its shape, as text.
+void VR_DevDescribeResource(ID3D11Resource* resource, char* out, size_t outSize);
+// The eye being drawn now, or -1.
+int VR_DevRasterEye();
+#endif
 // The optional H4 hooks pass through completely after a fatal reticle-resource
 // failure, leaving the stock CUI reticle visible without affecting camera,
 // theatre, stereo, or OpenXR ownership.

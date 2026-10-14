@@ -38,6 +38,7 @@
 #include "../common/coop_probe_logic.h"
 #include "../common/log.h"
 #include "../common/runtime_types.h"
+#include "dev_ps_census.inl"
 
 // We can't hook "the game's swapchain" directly because it doesn't exist yet
 // when we're injected. Instead we create a throwaway D3D11 device + swapchain
@@ -343,6 +344,9 @@ static void STDMETHODCALLTYPE Halo2DrawIndexedCensusHook(
     Halo2HudDrawMutation mutation = BeginHalo2HudDraw(context);
     if(mutation.kind==Halo2HudDrawMutation::Kind::Hidden) return;
     VR_Halo4PrepareAuthoredReticleDraw(context);
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    dev_ps_census::OnDraw(context, indexCount, true);
+#endif
     {
         BloomDrawScope bloom(context);
         g_origHalo2DrawIndexed(context, indexCount, startIndex, baseVertex);
@@ -359,6 +363,9 @@ static void STDMETHODCALLTYPE Halo2DrawCensusHook(
     Halo2HudDrawMutation mutation = BeginHalo2HudDraw(context);
     if(mutation.kind==Halo2HudDrawMutation::Kind::Hidden) return;
     VR_Halo4PrepareAuthoredReticleDraw(context);
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    dev_ps_census::OnDraw(context, vertexCount, false);
+#endif
     {
         BloomDrawScope bloom(context);
         g_origHalo2Draw(context, vertexCount, startVertex);
@@ -458,6 +465,13 @@ static void STDMETHODCALLTYPE PixelShaderSetHook(
     ID3D11ClassInstance* const* classInstances, UINT classInstanceCount)
 {
     Bloom_ObserveShader(context,shader,classInstanceCount);
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    if (dev_ps_census::OnBind(shader))
+    {
+        g_origPixelShaderSet(context, nullptr, classInstances, classInstanceCount);
+        return;
+    }
+#endif
     const bool suppressMotionSuck =
         halo4_screen_effect_shader::ShouldSuppress(
             g_halo4ScreenEffectShaderPathAvailable.load(
@@ -509,6 +523,9 @@ static HRESULT STDMETHODCALLTYPE CreatePixelShaderHook(
 #if HALOMCCVR_HALO2_STEREO6DOF
     const uint64_t hash =
         halo2_hud_shader::MigotoFnv1(bytecode, bytecodeLength);
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    dev_ps_census::OnCreate(*shader, bytecode, bytecodeLength, hash);
+#endif
     const halo2_hud_shader::Role role =
         halo2_hud_shader::Classify(hash);
     const bool newlyRegistered = RegisterHalo2PixelShader(*shader, role);
@@ -1777,6 +1794,9 @@ static void STDMETHODCALLTYPE DrawIndexedHook(ID3D11DeviceContext* context,
 static void STDMETHODCALLTYPE CopyResourceHook(ID3D11DeviceContext* context,
     ID3D11Resource* destination, ID3D11Resource* source)
 {
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    dev_ps_census::NoteCopy(destination, source, "whole copy");
+#endif
     g_origCopyResource(context, destination,
                        VR_RedirectNativeHudCopySource(source));
 }
@@ -2267,6 +2287,9 @@ bool InstallD3D11Hooks()
 #if HALOMCCVR_EXPERIMENTAL_ODST_BRINGUP
     ok = ok && MH_CreateHook(contextVtbl[47], (void*)&CopyResourceHook,
                              (void**)&g_origCopyResource) == MH_OK;
+#endif
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    dev_ps_census::CreateHooks(deviceVtbl, contextVtbl);
 #endif
 #if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA
     // Slot 34 is the alternate OM RTV/UAV setter and slot 110 is ClearState.

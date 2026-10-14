@@ -995,6 +995,12 @@ struct Config
     // mod folder press its buttons (tools/Send-MccPad.ps1; the language is src/common/dev_pad_script.h).
     // Read once at startup. Leave at 0 to play.
     int dev_synthetic_pad = 0;
+    // Dev builds: the pixel shader census (src/dll/dev_ps_census.inl). 1 = in Halo 4, each pixel shader's first
+    // small draw (a full-screen pass or a HUD quad) is logged with its target, blend state and textures, its
+    // disassembly is written beside the log, and once a second the log says which of them drew and which copies
+    // touched the game's scene colour or an eye's image. Read at startup (it creates three more hooks); the pad's
+    // `set dev_ps_census` pauses and resumes it. (default 0)
+    int dev_ps_census = 0;
 
     // Halo Reach, SEATED, direct drive (reach_direct_drive = 3): the same trace-and-reaim aim in vehicles.
     // The write drives the seat's look (desired_angles), and Reach aims every seat's weapon from it: it

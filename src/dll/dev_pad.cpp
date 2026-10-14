@@ -8,6 +8,7 @@
 // window, which is why the harness holds the foreground (through the polite gate) while a script runs.
 
 #include "dev_pad.h"
+#include "d3d11_hook.h"
 
 #if HALOMCCVR_DEV_DIAGNOSTICS
 #include "../common/dev_pad_script.h"
@@ -120,6 +121,10 @@ bool SetLive(const std::string& name, int value)
     // needs a level the camera rung has not been proven in (the value agreement never withdraws a proven
     // rung), so it still wants the key set before the level loads.
     else if (name == "first_person_rung_fault") g_config.first_person_rung_fault = value & 0xF;
+    // The pixel shader census (dev_ps_census.inl): pause or resume it, and bind no pixel shader in place of
+    // the numbered one (0 = none).
+    else if (name == "dev_ps_census") g_config.dev_ps_census = value ? 1 : 0;
+    else if (name == "dev_ps_blank") D3D_DevSetBlankPixelShader(value);
     else return false;
     return true;
 }
