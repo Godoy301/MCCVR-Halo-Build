@@ -386,6 +386,7 @@ struct Outcome
     bool learn = false;                 // the search resolved the whole drive, at addresses worth saving
     uint32_t scans = 0;                 // searches run, over every rung that ran
     uint32_t moduleScans = 0;           // ... of them, the searches of the whole module's code
+    const char* refused = nullptr;      // the resolution is refused whole, on whichever rung: why (kTooManyLines)
     bool searchedToo = false;           // the self-test ran the search beside a rung 1 success
     bool searchAgrees = false;          // ... and it chose the same address for every line
 };
@@ -393,6 +394,9 @@ struct Outcome
 using PlanFn = void (*)(Resolver& resolver, void* context);   // runs the drive's plan; its result is kept aside
 using KeepFn = void (*)(void* context);                       // that result is the one in use
 
+// A plan that asks for more lines than a report holds (drive_resolve::kMaxLines). Not a state a real drive is in:
+// the largest plan fits with room, and a test holds every plan to that.
+inline constexpr char kTooManyLines[] = "its plan asks for more lines than a report holds";
 inline constexpr char kSavedStale[] = "this game DLL does not have that code at them";
 inline constexpr char kSavedOtherPlan[] = "they were saved for another version of this drive's tables";
 
@@ -443,12 +447,26 @@ inline Outcome Run(const Image& image, uint32_t faults, bool recordedBuild, cons
     using drive_resolve::Source;
     Outcome out;
     report = Report{};
+    // A PLAN THAT ASKS FOR MORE LINES THAN A REPORT HOLDS IS REFUSED, on whichever rung it shows, and nothing of
+    // it is kept: the lines the report dropped were answered "not found" on that rung, and the rest can be
+    // neither verified whole, remembered, saved nor said. The rungs do not go on from there.
+    const auto tooLong = [&out, &report](const Report& got) {
+        if (!got.dropped)
+            return false;
+        out.rung = Rung::None;
+        out.learn = false;
+        out.refused = kTooManyLines;
+        report = got;
+        return true;
+    };
     // A forced stale save stands for a build that is not the recorded one and whose saved addresses are wrong.
     const bool stale = drive_resolve::Fault(faults, drive_resolve::kFaultSavedStale);
     if (recordedBuild && !stale)
     {
         Resolver resolver(image, faults, Known{Source::Recorded, nullptr, 0, nullptr});
         plan(resolver, context);
+        if (tooLong(resolver.report()))
+            return out;
         out.recordedTried = true;
         out.scans += resolver.report().scans;
         out.moduleScans += resolver.report().moduleScans;
@@ -467,6 +485,8 @@ inline Outcome Run(const Image& image, uint32_t faults, bool recordedBuild, cons
     {
         Resolver resolver(image, 0, Known{Source::Remembered, nullptr, 0, nullptr, earlier.remembered});
         plan(resolver, context);
+        if (tooLong(resolver.report()))
+            return out;
         out.rememberedTried = true;
         out.scans += resolver.report().scans;
         out.moduleScans += resolver.report().moduleScans;
@@ -499,6 +519,8 @@ inline Outcome Run(const Image& image, uint32_t faults, bool recordedBuild, cons
         Resolver resolver(image, faults, Known{Source::Saved, saved ? saved->rvas : nullptr, saved ? saved->count : 0,
                                                saved ? saved->placed : nullptr});
         plan(resolver, context);
+        if (tooLong(resolver.report()))
+            return out;
         out.savedTried = true;
         out.savedRefused = nullptr;
         out.scans += resolver.report().scans;
@@ -543,6 +565,8 @@ inline Outcome Run(const Image& image, uint32_t faults, bool recordedBuild, cons
     {
         Resolver resolver(image, faults);
         plan(resolver, context);
+        if (tooLong(resolver.report()))
+            return out;
         keep(context);
         report = resolver.report();
         out.scans += report.scans;

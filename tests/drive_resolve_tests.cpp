@@ -739,15 +739,23 @@ void TestReport()
     Check(std::strcmp(VerdictText(Verdict::Moved), "MOVED") == 0 && std::strcmp(HowText(How::Signature), "signature") == 0 &&
               Found(Verdict::RecordAmongSeveral) && !Found(Verdict::Ambiguous) && !Found(Verdict::Refused),
           "verdicts read as text, and only three of them are a find");
-    // More lines than the report holds: the resolution goes on, the overflow is counted.
+    // More lines than the report holds: a line it cannot hold is counted, is not looked for, and is NOT found.
     Resolver many(m.Finish(), 0);
     uint32_t found = 0;
     for (uint32_t i = 0; i < kMaxLines + 5; ++i)
         found += many.Unique("entry", 0x1200, kEntry) == 0x1200 ? 1u : 0u;
-    Check(found == kMaxLines + 5 && many.report().count == kMaxLines && many.report().dropped == 5,
-          "lines beyond the report's size are counted, not lost, and the answers stay right");
+    Check(found == kMaxLines && many.report().count == kMaxLines && many.report().dropped == 5 &&
+              many.report().scans == kMaxLines && !many.report().Complete(),
+          "a line beyond the report's size is counted, is not searched for, and is not found: a plan is given no "
+          "address that its report does not show");
     Check(many.Refuse("x") == 0 && many.report().lines[kMaxLines - 1].verdict == Verdict::AsRecorded,
           "refusing a line that was not stored touches no other line");
+    Check(many.InFunction("field", 0x1260, 0x1200, 0x1200, kField) == 0 &&
+              many.FunctionStart("start", 0x1200, 0x1200, kEntry) == 0 &&
+              many.Derived("derived", 0x1200, 0x1200) == 0 && many.Proven("proof", 1, 1, nullptr) == 0 &&
+              many.TlsIndex("tls", 0x10, 0x10) == 0 &&
+              many.report().dropped == 10 && many.report().scans == kMaxLines,
+          "whatever kind of line it is");
 }
 // ------------------------------------------------------------------------------------------------ the rungs
 // A small drive written as drive_sites.h writes them: a hooked function found by signature that must be where a
@@ -1317,6 +1325,67 @@ void TestRemembered()
     }
 }
 
+// A PLAN THAT ASKS FOR MORE LINES THAN A REPORT HOLDS is refused, the same on every rung, and nothing of it is
+// kept. (No real plan is near it: tests/drive_sites_tests.cpp holds each to three quarters of a report.)
+struct Long
+{
+    uint32_t found = 0;   // how many of its lines came back with an address
+};
+Long LongPlan(Resolver& r, uint32_t lines)
+{
+    Long f;
+    for (uint32_t i = 0; i < lines; ++i)
+        f.found += r.Unique("entry", kMiniEntry, kEntry) ? 1u : 0u;
+    return f;
+}
+
+void TestPlanTooLong()
+{
+    using drive_known::Earlier;
+    using drive_known::Rung;
+    Module m;
+    PutFunction(m, kMiniEntry);
+    const Image& image = m.Finish();
+    const auto fits = [](Resolver& r) { return LongPlan(r, kMaxLines); };
+    const auto tooLong = [](Resolver& r) { return LongPlan(r, kMaxLines + 1); };
+    Long found;
+    Report report, searched;
+    drive_known::Outcome out = drive_known::RunTyped(image, 0, true, Earlier{}, fits, found, report);
+    Check(out.rung == Rung::Recorded && !out.refused && found.found == kMaxLines && report.Complete(),
+          "a plan of exactly as many lines as a report holds is whole");
+    out = drive_known::RunTyped(image, 0, false, Earlier{}, fits, found, searched);
+    drive_known::Entry entry;
+    Check(out.rung == Rung::Search && searched.Complete() &&
+              drive_known::MakeEntry(entry, "halo3.dll", "control-update", 1, searched),
+          "by search too, and it can be saved");
+
+    struct Case
+    {
+        const char* rung;
+        bool recordedBuild;
+        const drive_known::Entry* saved;
+        const Report* remembered;
+    };
+    const Case cases[] = {{"at the recorded addresses", true, nullptr, nullptr},
+                          {"from what was remembered", false, nullptr, &searched},
+                          {"at saved addresses", false, &entry, nullptr},
+                          {"by search", false, nullptr, nullptr}};
+    for (const Case& c : cases)
+    {
+        Earlier earlier;
+        earlier.saved = c.saved;
+        earlier.remembered = c.remembered;
+        found.found = 4242;   // nothing must be kept: this is still here afterwards
+        out = drive_known::RunTyped(image, 0, c.recordedBuild, earlier, tooLong, found, report);
+        char what[160];
+        std::snprintf(what, sizeof(what), "one line more than a report holds, %s: refused whole with its own reason, "
+                                          "nothing kept, nothing to save", c.rung);
+        Check(out.rung == Rung::None && out.refused == drive_known::kTooManyLines && !out.learn &&
+                  found.found == 4242 && report.dropped == 1 && report.count == kMaxLines && !report.Complete(),
+              what);
+    }
+}
+
 void TestRungFaults()
 {
     Module m;
@@ -1673,6 +1742,7 @@ int main()
     TestSavedPlacement();
     TestSavedAskedOnlyWhenNeeded();
     TestRemembered();
+    TestPlanTooLong();
     TestRungFaults();
     TestCacheText();
     std::printf("drive resolve tests: %u checks, %u failures\n", checks, failures);

@@ -421,6 +421,9 @@ void TestPlan(const Plan& plan)
     Check(searched.ok && searched.hook != 0, "the plan resolves on the image its tables describe");
     Check(healthy.Complete() && healthy.Count(Verdict::AsRecorded) == healthy.count,
           "the search finds every line, each where it is recorded");
+    // A plan that outgrew a report would be refused whole (drive_known::kTooManyLines): none may come near it.
+    Check(healthy.dropped == 0 && healthy.count * 4 <= kMaxLines * 3,
+          "the plan fits a report with a quarter of it to spare");
     if (!healthy.Complete())
     {
         for (uint32_t i = 0; i < healthy.count; ++i)

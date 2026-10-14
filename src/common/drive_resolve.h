@@ -656,7 +656,10 @@ struct Report
 {
     Line lines[kMaxLines]{};
     uint32_t count = 0;
-    uint32_t dropped = 0;   // lines beyond kMaxLines (the resolution itself is unaffected)
+    // Lines the plan asked for beyond kMaxLines. None of them is looked for and none is found, on any rung; and
+    // a resolution that has one is refused whole (drive_known::Run): what a report cannot hold can be neither
+    // verified, remembered, saved nor said.
+    uint32_t dropped = 0;
     uint32_t scans = 0;     // searches run: of the module's code for a signature, or of one function's extent
     uint32_t moduleScans = 0;   // ... of them, the searches of the whole module's code: the ones that cost
     // WHAT WAS ASKED: a hash of every line's name, recorded RVA and pattern, in order. Two resolutions of the same
@@ -739,6 +742,8 @@ public:
     uint32_t Unique(const char* name, uint32_t recordedRva, const char* pattern)
     {
         Ask(1, name, recordedRva, 0, pattern);
+        if (Over())
+            return 0;
         const uint32_t recorded = Recorded(recordedRva);
         Line line;
         line.name = name;
@@ -823,6 +828,8 @@ public:
                         const char* pattern, bool offsetOnly = false)
     {
         Ask(offsetOnly ? 7 : 2, name, recordedRva, functionRva, pattern);
+        if (Over())
+            return 0;
         const uint32_t recorded = Recorded(recordedRva), functionRecorded = Recorded(functionRva);
         Line line;
         line.name = name;
@@ -926,6 +933,8 @@ public:
     uint32_t FunctionStart(const char* name, uint32_t recordedRva, uint32_t viaFound, const char* pattern)
     {
         Ask(3, name, recordedRva, 0, pattern);
+        if (Over())
+            return 0;
         const uint32_t recorded = Recorded(recordedRva);
         Line line;
         line.name = name;
@@ -972,6 +981,8 @@ public:
     uint32_t Derived(const char* name, uint32_t recordedRva, uint32_t found)
     {
         Ask(4, name, recordedRva, 0, nullptr);
+        if (Over())
+            return 0;
         const uint32_t recorded = Recorded(recordedRva);
         Line line;
         line.name = name;
@@ -989,6 +1000,8 @@ public:
     uint32_t Proven(const char* name, uint32_t recordedValue, uint32_t value, const char* whyNot)
     {
         Ask(6, name, recordedValue, 0, nullptr);
+        if (Over())
+            return 0;
         Line line;
         line.name = name;
         line.recorded = Recorded(recordedValue);
@@ -1062,6 +1075,8 @@ public:
     uint32_t TlsIndex(const char* name, uint32_t recordedRva, uint32_t operandRva)
     {
         Ask(5, name, recordedRva, 0, nullptr);
+        if (Over())
+            return 0;
         const uint32_t recorded = Recorded(recordedRva);
         uint32_t directory = im_.tlsIndexRva;
         if (directory && Fault(faults_, kFaultTlsDirectory))
@@ -1169,6 +1184,18 @@ private:
         report_.plan = h;
     }
 
+    // A LINE THE REPORT CANNOT HOLD is not looked for and is not found, the same on every rung: a plan must not
+    // be given an address that its report does not show. True when the report is full; the line is then counted
+    // as dropped, and the caller answers 0.
+    bool Over()
+    {
+        if (report_.count < kMaxLines)
+            return false;
+        ++report_.dropped;
+        lastStored_ = false;
+        return true;
+    }
+
     uint32_t Add(const Line& line)
     {
         lastStored_ = report_.count < kMaxLines;
@@ -1176,7 +1203,7 @@ private:
             report_.lines[report_.count++] = line;
         else
             ++report_.dropped;
-        return Found(line.verdict) ? line.found : 0;
+        return lastStored_ && Found(line.verdict) ? line.found : 0;
     }
 
     const Image& im_;

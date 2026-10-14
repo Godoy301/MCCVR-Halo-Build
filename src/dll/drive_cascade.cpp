@@ -566,6 +566,17 @@ bool RunPlan(uintptr_t base, size_t size, const Drive& drive, drive_known::PlanF
             Forget(drive);
         return false;
     }
+    // A plan too long for a report is refused whole, with its own reason, as a module that did not open is:
+    // nothing of it is kept, remembered or saved.
+    if (rungs.outcome.refused)
+    {
+        why = rungs.outcome.refused;
+        report = drive_resolve::Report{};
+        rungs = Rungs{};
+        if (drive.id)
+            Forget(drive);
+        return false;
+    }
     // REMEMBER WHAT IT CAME TO, whole or not, for the next install of this drive in this module. Rung 1 (a) needs
     // no memory -- it comes first and costs as little -- so a drive it settled leaves none behind.
     if (!faults && drive.id)

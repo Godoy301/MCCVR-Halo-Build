@@ -110,9 +110,9 @@ bool CacheLockHeld();
 // Opens the module at `base` (its headers, the readable runs of its executable sections, its .pdata, the TLS
 // index its PE TLS directory names; every byte read as the game has it, through this mod's own enabled hooks)
 // and runs `plan` on it by the rungs. `keep` is called for the run whose result is the one in use. False when
-// the module could not be opened or a read faulted: `why` says which, the report is empty, and the drive must
-// not be hooked. Reads and writes the cache's file: call it only where a file may be read (the installs' own
-// cold worker thread), never from a detour.
+// the module could not be opened, a read faulted, or the plan asks for more lines than a report holds: `why`
+// says which, the report is empty, and the drive must not be hooked. Reads and writes the cache's file: call it
+// only where a file may be read (the installs' own cold worker thread), never from a detour.
 bool RunPlan(uintptr_t base, size_t size, const Drive& drive, drive_known::PlanFn plan, drive_known::KeepFn keep,
              void* context, drive_resolve::Report& report, Rungs& rungs, const char*& why);
 
@@ -123,7 +123,7 @@ struct Resolution
     Found found{};
     drive_resolve::Report report{};
     Rungs rungs{};
-    const char* why = nullptr;   // the module did not open, or a read faulted
+    const char* why = nullptr;   // the module did not open, a read faulted, or the plan is too long for a report
 };
 
 // Runs `plan` (Found (drive_resolve::Resolver&)) on the module. False: nothing was resolved (out.why).

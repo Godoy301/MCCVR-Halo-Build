@@ -1563,6 +1563,58 @@ void TestCacheLockReleased()
 }
 #endif
 
+// ---- a plan that asks for more lines than a report holds --------------------------------------------------------
+// Refused through the DLL's side as a module that does not open is: not resolved, with its own reason, nothing
+// found, nothing remembered, nothing saved.
+void TestPlanTooLongIsRefused()
+{
+    const uint32_t markerRva = Rva(g_marker);
+    static const std::string marker = MarkerPattern();
+    struct Count
+    {
+        uint32_t found = 0;
+    };
+    const auto resolve = [&](drive_cascade::Resolution<Count>& out, uint32_t asked) {
+        return drive_cascade::Resolve(g_base, g_size, kHalo3, out, [&](drive_resolve::Resolver& r) {
+            Count f;
+            for (uint32_t i = 0; i < asked; ++i)
+                f.found += r.Unique("MARKER", markerRva, marker.c_str()) ? 1u : 0u;
+            return f;
+        });
+    };
+    wchar_t temp[MAX_PATH];
+    GetTempPathW(MAX_PATH, temp);
+    const std::wstring folder = std::wstring(temp) + L"halomccvr_drive_cascade_toolong_" +
+                                std::to_wstring(GetCurrentProcessId()) + L"\\";
+    CreateDirectoryW(folder.c_str(), nullptr);
+    const std::wstring cache = folder + L"HaloMCCVR-drive-addresses.txt";
+    DeleteFileW(cache.c_str());
+    drive_cascade::SetCacheFolder(folder.c_str());
+    g_config.drive_address_cache = 1;
+    g_config.drive_fault = 0;
+    drive_cascade::ForgetResolutions();
+
+    drive_cascade::Resolution<Count> tooLong, again;
+    tooLong.found.found = 4242;
+    Check(!resolve(tooLong, drive_resolve::kMaxLines + 1) && tooLong.why == drive_known::kTooManyLines &&
+              tooLong.report.count == 0 && tooLong.found.found == 4242 && !tooLong.rungs.saved && !Exists(cache),
+          "one line more than a report holds: the drive is not resolved, the reason is its own, and nothing of it is "
+          "found or saved");
+    Check(!resolve(again, drive_resolve::kMaxLines + 1) && again.why == drive_known::kTooManyLines,
+          "the next install is refused the same way");
+    drive_cascade::Resolution<Count> fits;
+    Check(resolve(fits, drive_resolve::kMaxLines) && !fits.why && !fits.rungs.outcome.rememberedTried &&
+              fits.rungs.outcome.rung == Rung::Search,
+          "nothing of the refused plan was remembered: the same drive with a plan that fits starts from a search");
+    Check(fits.found.found == drive_resolve::kMaxLines && fits.report.Complete() && fits.rungs.saved,
+          "a plan of exactly as many lines as a report holds resolves, and is saved");
+
+    drive_cascade::ForgetResolutions();
+    drive_cascade::SetCacheFile(nullptr);
+    DeleteFileW(cache.c_str());
+    RemoveDirectoryW(folder.c_str());
+}
+
 // The cold worker passes over a watch about every 50 ms.
 struct Worker
 {
@@ -1688,6 +1740,7 @@ int main(int argc, char** argv)
     TestUnreadableFunctionTable();
     TestRecordedBuildOpensNoFile();
     TestRememberedInProcess();
+    TestPlanTooLongIsRefused();
 #if HALOMCCVR_DEV_DIAGNOSTICS
     TestCacheLockReleased();
 #endif
