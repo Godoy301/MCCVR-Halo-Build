@@ -1384,7 +1384,9 @@ int main(int argc, char** argv)
                         // AS A BUILD THAT IS NOT THE RECORDED ONE WOULD GO, on this same mapped DLL: the drive is
                         // resolved for no title, so nothing is recorded for the module and no cache file is
                         // named. The first install searches it, as the loader maps it; the same process
-                        // installing the drive again must verify what it remembered, with no scan.
+                        // installing the drive again must verify what it remembered, with no scan. (A drive
+                        // the search did not find whole is not believed from one search: its next install
+                        // searches again, drive_known::kFreshSearches times, and that is as it must be too.)
                         {
                             const drive_cascade::Drive unrecorded{GameTitle::None, drive.id};
                             drive_cascade::Rungs searched{}, repeated{};
@@ -1408,18 +1410,24 @@ int main(int argc, char** argv)
                                 nextInstall.out.ok == run.out.ok && nextInstall.out.hook == run.out.hook &&
                                 drive_known::SameAddresses(searchedReport, report) &&
                                 drive_known::SameAddresses(repeatedReport, report);
+                            const bool searchedAgain = first && next && !searchedReport.Complete() &&
+                                                       repeated.outcome.rung == drive_known::Rung::Search &&
+                                                       repeated.searchedAgain == 1;
                             t.unrecordedDrives += 1;
                             t.unrecordedAsMust += asMust ? 1u : 0u;
                             t.unrecordedScans += searched.outcome.moduleScans;
                             t.unrecordedSearchMs += searched.ms;
                             t.unrecordedRepeatMs += repeated.ms;
-                            t.loadedFailures += asMust || !healthy.report.Complete() ? 0u : 1u;
+                            t.loadedFailures += asMust || searchedAgain || !healthy.report.Complete() ? 0u : 1u;
                             std::printf("      as a build that is not the recorded one would go, on this mapped DLL: "
                                         "first install %s (%u scans of the module, %.2f ms); installed again in the "
                                         "same process %s (%u scans, %.2f ms)%s\n",
                                         RungText(searched.outcome.rung), searched.outcome.moduleScans, searched.ms,
                                         RungText(repeated.outcome.rung), repeated.outcome.moduleScans, repeated.ms,
-                                        asMust ? "" : " -- NOT AS IT MUST BE");
+                                        asMust ? ""
+                                        : searchedAgain ? " -- searched again: the first search did not find the whole "
+                                                          "drive, and one search is not believed"
+                                                        : " -- NOT AS IT MUST BE");
                         }
                     }
                 }

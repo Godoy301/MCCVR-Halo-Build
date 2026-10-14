@@ -66,6 +66,13 @@ struct Rungs
     // searched is outcome.moduleScans.) Measured once per resolution, and said in the drive's one line. It is
     // not the cost of the install that asked for it: see Announce.
     double ms = 0.0;
+    // A RESULT THAT IS NOT WHOLE IS NOT BELIEVED FROM ONE SEARCH (drive_known::kFreshSearches).
+    // `searchedAgain`: this resolution was a fresh one made because what the process remembered of the drive in
+    // this module was not whole, and which of the kFreshSearches it was (0: it was not).
+    // `searches`: when a result that is not whole was repeated without a search, how many searches of this
+    // module had come to it (0: it was not).
+    uint32_t searchedAgain = 0;
+    uint32_t searches = 0;
 };
 
 // THE ADDRESS CACHE'S FILE: HaloMCCVR-drive-addresses.txt in the mod's own folder, beside its log and its
@@ -81,11 +88,18 @@ void SetCacheFile(const wchar_t* path);
 // boundary, after a pause -- and the module it resolves in is the same one as before. So the last resolution of
 // each drive is kept in memory with the module instance it was made in (its base, its build stamp and the
 // title's module generation), and the next install of that drive in that module verifies it in place instead of
-// resolving afresh: complete, incomplete or refused, it costs no search and opens no file. A line that was not
-// found is not searched for again in that module. Another base, stamp or generation, a plan that asks for other
-// lines, a module that does not open, or one address that no longer holds its bytes, and it is dropped and the
-// drive resolved afresh; a refusal is therefore never carried over a real reload of the DLL. Nothing of it
-// outlives the process, and none of it is used or kept while a dev fault is set.
+// resolving afresh: it costs no search and opens no file.
+//
+// A WHOLE result is repeated from the next install on. A result that is NOT whole -- a line missing, a refusal --
+// is not believed from one search: the next installs resolve the drive afresh, drive_known::kFreshSearches times
+// in that module instance, and a search that now finds everything takes its place. Only a miss that those
+// searches repeat is taken for the module's own; from then on it is repeated without a search, the lines that
+// were not found are not searched for again in that module, and the drive's line says so.
+//
+// Another base, stamp or generation, a plan that asks for other lines, a module that does not open, or one
+// address that no longer holds its bytes, and what is remembered is dropped and the drive resolved afresh; a
+// refusal is therefore never carried over a real reload of the DLL. Nothing of it outlives the process, and none
+// of it is used or kept while a dev fault is set.
 //
 // Which image of a title's DLL is loaded: a number that changes when MCC unloads the DLL and loads it again, even
 // at the same base (the title adapter's module generation). Until a source is named, a module instance is told
@@ -157,9 +171,11 @@ void FirstFailure(const drive_resolve::Report& report, char* out, size_t size);
 // recorded addresses with no search; as this session already resolved it in this module; verified at the
 // addresses saved from an earlier launch of this build; found by search (how many moved, and whether they were
 // saved for the next launch); or which addresses were not found, which a repeat says again and does not pass
-// over. Each says what resolving that drive's addresses cost the worker -- "(address resolution: N scans, T
-// ms)": how many times the whole module was searched for them, and the time RunPlan took -- which is why the
-// line is said at every install and not only when the rung changes: no two cost the same.
+// over. A drive whose result was not whole says which of its fresh searches this was ("searched again, N of
+// 3"), and after the last of them that what is missing is "not searched again in this module". Each says what
+// resolving that drive's addresses cost the worker -- "(address resolution: N scans, T ms)": how many times
+// the whole module was searched for them, and the time RunPlan took -- which is why the line is said at every
+// install and not only when the rung changes: no two cost the same.
 //
 // IT IS THE COST OF THE ADDRESS RESOLUTION, NOT OF THE INSTALL. An install goes on to bind other things in its
 // own code -- the seat frame reader, the occupant's aim vector -- and those search the whole module themselves,

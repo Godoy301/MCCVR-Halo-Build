@@ -9,7 +9,10 @@
 //         installed again at every level, and what was found in a module -- and what was NOT found in it -- does
 //         not change while that module stays loaded. Every found line is verified where it stands; a line that
 //         was not found is not searched for again. This one alone may repeat a result that is incomplete, or a
-//         refusal: it adds nothing to what the drive came to, and takes nothing away. In memory only.
+//         refusal: it adds nothing to what the drive came to, and takes nothing away. In memory only. Its owner
+//         does not hand over a result that is not whole until the drive has been searched for afresh
+//         kFreshSearches more times in that module (RepeatRemembered): one search can miss for a reason that was
+//         true only then.
 //     (b) Otherwise the RVAs an earlier search found in exactly this build, read back from the address cache.
 //         The cache is asked only at this point: while (a) or (m) holds, its file is never opened.
 //     Every signature's bytes must stand at its known address, and the drive's own plan makes every proof on
@@ -399,6 +402,21 @@ using KeepFn = void (*)(void* context);                       // that result is 
 inline constexpr char kTooManyLines[] = "its plan asks for more lines than a report holds";
 inline constexpr char kSavedStale[] = "this game DLL does not have that code at them";
 inline constexpr char kSavedOtherPlan[] = "they were saved for another version of this drive's tables";
+
+// HOW OFTEN A RESULT THAT IS NOT WHOLE IS SEARCHED FOR AGAIN in one module instance before it is taken for that
+// module's own and only repeated. A first search can miss a line for a reason that was true only at that moment:
+// bytes over an anchor changed by something this mod cannot read through (another program's patch, later taken
+// away), or a page of the module that could not be read just then (a search steps over what it cannot read). A
+// miss repeated from memory alone would never heal, and a required line would mean no hook for as long as the
+// DLL stays loaded. A whole result needs no second look: it is verified in place at every install.
+inline constexpr uint32_t kFreshSearches = 3;
+
+// Whether what is remembered of a drive is to be repeated (verified in place, nothing searched), or the drive
+// resolved afresh. `searchedAgain`: the fresh searches already made for it in this module instance.
+inline bool RepeatRemembered(const Report& remembered, uint32_t searchedAgain)
+{
+    return remembered.Complete() || searchedAgain >= kFreshSearches;
+}
 
 // Whether a resolution came to exactly what another did: the same plan, the same lines found at the same
 // addresses, the same lines not found, each with the verdict it had.

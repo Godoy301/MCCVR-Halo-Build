@@ -36,7 +36,9 @@
 // earlier resolution of the same module instance, handed back line for line. A drive is installed again whenever
 // its title's core is, and the module it resolves in has not changed in between. A line that was found is
 // verified where it was found: its bytes must still stand there. A line that was NOT found is not searched for
-// again: the search that did not find it searched this module. What follows from other lines is worked out again.
+// again: the search that did not find it searched this module (and whoever hands the report over has had the
+// module searched afresh a few times before handing over one that is not whole: drive_known::RepeatRemembered).
+// What follows from other lines is worked out again.
 // Nothing is scanned. If the plan then comes to anything but what was remembered, the remembered report is void
 // and the caller resolves afresh; so a result is only ever repeated whole, never patched.
 //

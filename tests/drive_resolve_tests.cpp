@@ -1272,8 +1272,9 @@ void TestRemembered()
                   second.lines[4].verdict == Verdict::Missing,
               "AN OPTIONAL LINE MISSING: the second install does zero scans; the line that was not found is not "
               "searched for again");
-        // ... not even where it would now be found: this module was searched, and is not searched again. (A real
-        // reload of the DLL is another module instance, whose owner hands nothing remembered: below.)
+        // ... not even where it would now be found: what is handed over as remembered is repeated, not looked
+        // into. (Whether to hand it over is its owner's: a result that is not whole only after the module has been
+        // searched afresh a few times, TestRepeatRemembered; and nothing at all for another module instance.)
         m.Put(0x2800, kAbsent);
         out = drive_known::RunTyped(m.Finish(), 0, false, earlier, withOption, again, second);
         Check(out.rung == Rung::Remembered && out.scans == 0 && second.lines[4].verdict == Verdict::Missing,
@@ -1323,6 +1324,29 @@ void TestRemembered()
                   again.field == first.field && second.lines[1].how == How::FunctionExtent,
               "and its second install does zero scans: rung 1 (a) fails as before, and what was remembered holds");
     }
+}
+
+// A RESULT THAT IS NOT WHOLE IS NOT BELIEVED FROM ONE SEARCH: when what is remembered is repeated, and when the
+// drive is resolved afresh. (The repeating itself is above; the counting is the DLL's, tests/drive_cascade_tests.)
+void TestRepeatRemembered()
+{
+    Module m;
+    BuildMini(m, 0x340);
+    const auto plan = [](Resolver& r) { return MiniPlan(r); };
+    const auto withOption = [](Resolver& r) { return MiniPlanWithOption(r); };
+    Mini found;
+    Report whole, missing;
+    (void)drive_known::RunTyped(m.Finish(), 0, false, drive_known::Earlier{}, plan, found, whole);
+    (void)drive_known::RunTyped(m.Finish(), 0, false, drive_known::Earlier{}, withOption, found, missing);
+    Check(whole.Complete() && !missing.Complete(), "a whole result, and one with a line missing");
+    Check(drive_known::kFreshSearches == 3, "a result that is not whole is searched for afresh three times");
+    Check(drive_known::RepeatRemembered(whole, 0) && drive_known::RepeatRemembered(whole, 7),
+          "a whole result is repeated from the first: it is verified in place");
+    Check(!drive_known::RepeatRemembered(missing, 0) && !drive_known::RepeatRemembered(missing, 1) &&
+              !drive_known::RepeatRemembered(missing, 2),
+          "a result that is not whole is not repeated while fresh searches remain: the drive is searched for again");
+    Check(drive_known::RepeatRemembered(missing, 3) && drive_known::RepeatRemembered(missing, 4),
+          "after the last of them the miss is the module's own, and is repeated");
 }
 
 // A PLAN THAT ASKS FOR MORE LINES THAN A REPORT HOLDS is refused, the same on every rung, and nothing of it is
@@ -1742,6 +1766,7 @@ int main()
     TestSavedPlacement();
     TestSavedAskedOnlyWhenNeeded();
     TestRemembered();
+    TestRepeatRemembered();
     TestPlanTooLong();
     TestRungFaults();
     TestCacheText();

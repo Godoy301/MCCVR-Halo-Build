@@ -335,6 +335,7 @@ struct Remembered
     uintptr_t base;
     uint64_t stamp;
     uint32_t generation;
+    uint32_t searchedAgain;   // a result that is not whole: the fresh searches already made for it in this module
     // The report, kept as its bytes: with no initialiser of its own the whole table is zero until something is
     // remembered, and costs the DLL's file nothing.
     alignas(drive_resolve::Report) unsigned char report[sizeof(drive_resolve::Report)];
@@ -355,24 +356,30 @@ Remembered* RememberedFor(const drive_cascade::Drive& drive)
 // What is remembered of `drive` in exactly this module instance, copied out. What is remembered of it in another
 // instance describes a module that is gone, and is dropped.
 bool Recall(const drive_cascade::Drive& drive, uintptr_t base, uint64_t stamp, uint32_t generation,
-            drive_resolve::Report& out)
+            drive_resolve::Report& out, uint32_t& searchedAgain)
 {
     bool have = false;
+    searchedAgain = 0;
     AcquireSRWLockExclusive(&g_rememberedLock);
     if (Remembered* const slot = RememberedFor(drive))
     {
         have = slot->base == base && slot->stamp == stamp && slot->generation == generation;
         if (have)
+        {
             std::memcpy(&out, slot->report, sizeof(out));
+            searchedAgain = slot->searchedAgain;
+        }
         else
+        {
             slot->held = false;
+        }
     }
     ReleaseSRWLockExclusive(&g_rememberedLock);
     return have;
 }
 
 void Remember(const drive_cascade::Drive& drive, uintptr_t base, uint64_t stamp, uint32_t generation,
-              const drive_resolve::Report& report)
+              const drive_resolve::Report& report, uint32_t searchedAgain)
 {
     AcquireSRWLockExclusive(&g_rememberedLock);
     Remembered* slot = RememberedFor(drive);
@@ -387,6 +394,7 @@ void Remember(const drive_cascade::Drive& drive, uintptr_t base, uint64_t stamp,
         slot->base = base;
         slot->stamp = stamp;
         slot->generation = generation;
+        slot->searchedAgain = searchedAgain;
         std::memcpy(slot->report, &report, sizeof(report));
     }
     ReleaseSRWLockExclusive(&g_rememberedLock);
@@ -556,8 +564,18 @@ bool RunPlan(uintptr_t base, size_t size, const Drive& drive, drive_known::PlanF
     const auto generationOf = g_generationOf.load(std::memory_order_relaxed);
     const uint32_t generation = generationOf ? generationOf(drive.title) : 0;
     drive_resolve::Report remembered;
-    if (!faults && drive.id && Recall(drive, base, stamp, generation, remembered))
+    uint32_t searchedAgain = 0;
+    const bool recalled = !faults && drive.id && Recall(drive, base, stamp, generation, remembered, searchedAgain);
+    // A WHOLE result is verified in place. One that is NOT whole is not believed from one search: the drive is
+    // resolved afresh, kFreshSearches times in this module instance, before the miss is taken for the module's
+    // own and only repeated (drive_known.h). The cache is not asked on those fresh searches: whatever it holds
+    // did not serve this drive at its first resolution here, only a whole result is ever written to it, and the
+    // search that runs instead needs nothing known. (The recorded addresses are tried first all the same.)
+    const bool again = recalled && !drive_known::RepeatRemembered(remembered, searchedAgain);
+    if (recalled && !again)
         earlier.remembered = &remembered;
+    if (again)
+        earlier.look = nullptr;
     if (!GuardedRun(image, faults, rungs.recordedBuild, earlier, plan, keep, context, report, rungs.outcome, why))
     {
         report = drive_resolve::Report{};
@@ -584,8 +602,14 @@ bool RunPlan(uintptr_t base, size_t size, const Drive& drive, drive_known::PlanF
         if (rungs.outcome.rung == drive_known::Rung::Recorded)
             Forget(drive);
         else if (rungs.outcome.rung != drive_known::Rung::Remembered)
-            Remember(drive, base, stamp, generation, report);
+        {
+            // A fresh search that is still not whole counts towards kFreshSearches; one that now finds
+            // everything takes the old result's place, and nothing more is counted.
+            Remember(drive, base, stamp, generation, report, again && !report.Complete() ? searchedAgain + 1 : 0);
+        }
     }
+    rungs.searchedAgain = again && rungs.outcome.rung == drive_known::Rung::Search ? searchedAgain + 1 : 0;
+    rungs.searches = rungs.outcome.rung == drive_known::Rung::Remembered && !report.Complete() ? 1 + searchedAgain : 0;
     rungs.savedRefused = rungs.outcome.savedRefused;
     drive_known::Entry entry;
     // LEARN AND SAVE: what the search found on a build the tables do not describe is the next launch's rung 1.
@@ -651,13 +675,16 @@ void Announce(const char* drive, const drive_resolve::Report& report, const Rung
     else if (outcome.rung == Rung::Remembered)
     {
         // The same result as the install before, said again with what THIS install cost. What was not found is
-        // named again: a drive that is refused is refused in so many words at every install.
+        // named again: a drive that is refused is refused in so many words at every install. A result that is
+        // not whole is repeated only once the module has been searched afresh kFreshSearches times
+        // (rungs.searches: how many searches came to it), and its line says that it is not searched again.
         char list[720];
         ListLines(report, true, list, sizeof(list));
         if (lost)
             LOG("%s: as this session already resolved it in this module, with no search %s: %u of its %u addresses "
-                "verified again where they stand, %u were NOT found then and are not searched for again in this "
-                "module: %s", drive, cost, report.count - lost, report.count, lost, list);
+                "verified again where they stand, %u were NOT found by its %u searches of this module and are not "
+                "searched again in this module: %s",
+                drive, cost, report.count - lost, report.count, lost, rungs.searches, list);
         else
             LOG("%s: as this session already resolved it in this module, with no search %s: all %u of its "
                 "addresses verified again where they stand", drive, cost, report.count);
@@ -689,11 +716,16 @@ void Announce(const char* drive, const drive_resolve::Report& report, const Rung
         // Name the ones that are not as recorded, as many as fit.
         char list[720];
         ListLines(report, false, list, sizeof(list));
+        // A drive whose remembered result was not whole is resolved afresh a few times before the miss is
+        // believed (drive_known::kFreshSearches): its line says which of those this was.
+        char again[40] = "";
+        if (rungs.searchedAgain)
+            snprintf(again, sizeof(again), " again, %u of %u", rungs.searchedAgain, drive_known::kFreshSearches);
         if (lost)
         {
-            LOG("%s: %ssearched %s: of its %u addresses %u are where the tables record them, %u MOVED, %u were taken "
-                "at the recorded address among several matches, %u were NOT found: %s",
-                drive, before, cost, report.count, recorded, moved, several, lost, list);
+            LOG("%s: %ssearched%s %s: of its %u addresses %u are where the tables record them, %u MOVED, %u were "
+                "taken at the recorded address among several matches, %u were NOT found: %s",
+                drive, before, again, cost, report.count, recorded, moved, several, lost, list);
         }
         else
         {
@@ -704,9 +736,13 @@ void Announce(const char* drive, const drive_resolve::Report& report, const Rung
                 snprintf(saving, sizeof(saving), "NOT saved for the next launch (%s)", rungs.notSaved);
             else
                 snprintf(saving, sizeof(saving), "nothing to save");
-            LOG("%s: %sfound by search %s: of its %u addresses %u are where the tables record them, %u MOVED, %u "
-                "were taken at the recorded address among several matches%s%s; %s",
-                drive, before, cost, report.count, recorded, moved, several, list[0] ? ": " : "", list, saving);
+            char foundAgain[64] = "";
+            if (rungs.searchedAgain)
+                snprintf(foundAgain, sizeof(foundAgain), "searched%s, and found", again);
+            LOG("%s: %s%s %s: of its %u addresses %u are where the tables record them, %u MOVED, %u were taken at "
+                "the recorded address among several matches%s%s; %s",
+                drive, before, rungs.searchedAgain ? foundAgain : "found by search", cost, report.count, recorded,
+                moved, several, list[0] ? ": " : "", list, saving);
         }
     }
 #if HALOMCCVR_DEV_DIAGNOSTICS
