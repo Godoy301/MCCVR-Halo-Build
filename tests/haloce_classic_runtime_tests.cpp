@@ -400,6 +400,12 @@ int main()
         run(Fault::MissingView);
         tracking.mono=false;
         check(HaloCE_TakeMonoDrops()==0,"a mono frame has no second pass to miss");
+        const auto dropsBefore=classicMonoDrops.load();
+        tracking.mono=true;
+        run(Fault::ChangedTick);
+        tracking.mono=false;
+        check(classicMonoDrops.load()==dropsBefore+1&&HaloCE_TakeMonoDrops()==1&&HaloCE_TakeMonoDrops()==0,
+            "a dropped mono frame is counted and reported to the present once");
         nativeFrames=nativeViews=nativeBlits=0;
         run(Fault::None);
         check(nativeFrames==2&&HaloCE_AcquirePair(context.Get(),serial,7,pair)&&pair.monoEye==-1&&

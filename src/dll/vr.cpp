@@ -655,6 +655,9 @@ namespace
     // Stage 3AM: full-resolution GPU->CPU validation is bounded capture-source
     // discovery, never steady-state telemetry. A source fallback rearms it.
     std::atomic<bool> g_halo2HeavyValidationRetired{false};
+    // The eye images are in a format the pixel check cannot read, so the capture source is never learned for them:
+    // it stays on its default, for stereo and mono alike (VR_Halo2CaptureSourceSettled).
+    std::atomic<bool> g_halo2HeavyValidationUnreadable{false};
     std::atomic<int> g_halo2HeavyValidationSource{-1};
     std::atomic<unsigned> g_halo2HeavyValidationChecks{0};
     std::atomic<bool> g_halo2PrePairHasImage{false};
@@ -7534,10 +7537,13 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         {
             return;
         }
-        if (g_eyeCacheDesc.Format != DXGI_FORMAT_R8G8B8A8_UNORM &&
-            g_eyeCacheDesc.Format != DXGI_FORMAT_R8G8B8A8_UNORM_SRGB &&
-            g_eyeCacheDesc.Format != DXGI_FORMAT_B8G8R8A8_UNORM &&
-            g_eyeCacheDesc.Format != DXGI_FORMAT_B8G8R8A8_UNORM_SRGB)
+        const bool readableFormat =
+            g_eyeCacheDesc.Format == DXGI_FORMAT_R8G8B8A8_UNORM ||
+            g_eyeCacheDesc.Format == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB ||
+            g_eyeCacheDesc.Format == DXGI_FORMAT_B8G8R8A8_UNORM ||
+            g_eyeCacheDesc.Format == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB;
+        g_halo2HeavyValidationUnreadable.store(!readableFormat, std::memory_order_release);
+        if (!readableFormat)
         {
             static bool loggedFormat = false;
             if (!loggedFormat)
@@ -20667,8 +20673,21 @@ bool VR_Halo2CompleteSynchronousMonoPair(
 
 bool VR_Halo2CaptureSourceSettled()
 {
-    return g_halo2HeavyValidationRetired.load(std::memory_order_acquire) &&
+    const bool settled =
+        (g_halo2HeavyValidationRetired.load(std::memory_order_acquire) ||
+         g_halo2HeavyValidationUnreadable.load(std::memory_order_acquire)) &&
         !g_halo2EyeDumpDueMs.load(std::memory_order_acquire);
+    // Said once each time mono starts waiting, so the setting never looks ignored. The render thread.
+    static bool saidWaiting = false;
+    if (settled || !g_config.mono_rendering)
+        saidWaiting = false;
+    else if (!saidWaiting)
+    {
+        saidWaiting = true;
+        LOG("mono rendering (Halo 2): waiting until the mod has learned where the game leaves each eye's picture "
+            "(it compares the two eyes); drawn in stereo until then");
+    }
+    return settled;
 }
 
 bool VR_Halo2ClaimSynchronousPairForPresentation(

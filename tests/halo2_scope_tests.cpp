@@ -90,12 +90,13 @@ static bool ReadEngineProjection(StereoScope& scope,int)
 static void Native(uintptr_t,uintptr_t,uintptr_t,uintptr_t,uintptr_t,uintptr_t,uintptr_t,uintptr_t,uintptr_t,
     uintptr_t,uintptr_t,uintptr_t,uintptr_t,uintptr_t,uintptr_t,uintptr_t,uintptr_t,uintptr_t,uintptr_t)
 {++draws;memset(cameraBytes,0xDA,sizeof(cameraBytes));latch=91;Phase();}
-static void Run(bool eligible=true,bool mono=false)
+static void Run(bool eligible=true,bool mono=false,int first=0)
 {
-    // A mono frame is one pass, as the eye drawn first (eye 0 here): that eye alone completes it.
+    // A mono frame is one pass, as the eye drawn first: that eye alone completes it.
     StereoScope owned{};auto* scope=&owned;scope->mono=mono;
-    if(mono)scope->completedEyeMask=eligible?1:0;else if(!eligible)scope->completedEyeMask=1;
-    const int firstEye=0;
+    const uint8_t firstMask=static_cast<uint8_t>(1u<<first);
+    if(mono)scope->completedEyeMask=eligible?firstMask:0;else if(!eligible)scope->completedEyeMask=1;
+    const int firstEye=first;
     const uintptr_t moduleBase=reinterpret_cast<uintptr_t>(&latch)-kHalo2ClassicSceneTargetLatchRva;
     auto original=&Native;
     uintptr_t argument01=1,argument02=2,argument03=3,argument04=4,argument05=5,argument06=6,argument07=7,
@@ -104,7 +105,7 @@ static void Run(bool eligible=true,bool mono=false)
 #include "../src/dll/halo2_classic_scope_pass.inl"
     Check(latch==31&&!memcmp(cameraBytes,savedCamera,sizeof(cameraBytes)),"classic optional camera and prior latch restore exactly");
     Check(!active&&!scopeFlag,"classic optional flags end even after exception");
-    Check(scope->completedEyeMask==(mono?(eligible?1:0):(eligible?3:1))&&!scope->invalidated,
+    Check(scope->completedEyeMask==(mono?(eligible?firstMask:0):(eligible?3:1))&&!scope->invalidated,
         "optional faults preserve completed real eyes");
 }
 static void Reset(){latch=31;memset(cameraBytes,0xC3,sizeof(cameraBytes));memcpy(savedCamera,cameraBytes,sizeof(cameraBytes));writeOk=restoreOk=true;}
@@ -132,6 +133,7 @@ int main()
     Reset();classic::Run(false);Check(!draws&&!ends,"incomplete real pair cannot start lens");
     Reset();classic::Run(true,true);Check(draws==1&&ends==1&&image,"a mono frame's one completed eye starts the lens");
     Reset();classic::Run(false,true);Check(!draws&&!ends,"a mono frame whose one eye did not complete cannot start lens");
+    Reset();classic::Run(true,true,1);Check(draws==1&&ends==1&&image,"a mono frame drawn as the right eye starts the lens");
     Reset();anniversary::Run(false);Check(!draws&&!ends,"failed Anniversary real pair cannot start lens");
     Reset();anniversary::Run(true,false);Check(!draws&&!ends,"missing native latch refuses optional pass");
     printf("Halo 2 scope: %u checks passed\n",checks);
