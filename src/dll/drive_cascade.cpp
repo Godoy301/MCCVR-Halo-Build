@@ -541,10 +541,12 @@ void Announce(const char* drive, const drive_resolve::Report& report, const Rung
     const drive_known::Outcome& outcome = rungs.outcome;
     const uint32_t recorded = report.Count(Verdict::AsRecorded), moved = report.Count(Verdict::Moved),
                    several = report.Count(Verdict::RecordAmongSeveral), lost = report.NotFound();
-    // WHAT THIS INSTALL'S RESOLUTION COST THE WORKER: its searches of the whole module (every rung that ran), and
-    // its time. It goes into the one line below, whichever that is.
-    char cost[48];
-    snprintf(cost, sizeof(cost), "(%u scans, %.2f ms)", outcome.moduleScans, rungs.ms);
+    // WHAT RESOLVING THIS DRIVE'S ADDRESSES COST THE WORKER at this install: its searches of the whole module
+    // (every rung that ran), and its time. It goes into the one line below, whichever that is, and is labelled
+    // as what it is: whatever else the install binds afterwards searches the module in its own code and is in
+    // neither number.
+    char cost[72];
+    snprintf(cost, sizeof(cost), "(address resolution: %u scans, %.2f ms)", outcome.moduleScans, rungs.ms);
 #if HALOMCCVR_DEV_DIAGNOSTICS
     if (const int forced = addrcascade::fault_mask() & static_cast<int>(drive_resolve::kFaultsThatForce))
         LOG("%s: DEV fault injection (drive_fault 0x%X) is forcing what the next line reports; it says nothing about "

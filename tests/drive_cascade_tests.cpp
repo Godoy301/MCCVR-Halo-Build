@@ -332,12 +332,12 @@ void TestAnnounceAndFaults()
           "what it cost the worker is measured: one search of the whole module, and a time");
     drive_cascade::Announce("TEST DRIVE", healthy);
     Check(lines.size() == 1 &&
-              Said("TEST DRIVE: found by search (1 scans, ",
+              Said("TEST DRIVE: found by search (address resolution: 1 scans, ",
                    " ms): of its 2 addresses 2 are where the tables record them, 0 MOVED, 0 were taken at the recorded "
                    "address among several matches; NOT saved for the next launch (the mod's folder is not known)") == 1,
           "which rung won is said with what it cost: found by search, one scan, its time, and why it was not saved");
-    char cost[80];
-    std::snprintf(cost, sizeof(cost), "TEST DRIVE: found by search (1 scans, %.2f ms): of its 2 addresses",
+    char cost[120];
+    std::snprintf(cost, sizeof(cost), "TEST DRIVE: found by search (address resolution: 1 scans, %.2f ms): of its 2 addresses",
                   healthy.rungs.ms);
     Check(Lines(cost) == 1, "the time in the line is the time that was measured, in milliseconds to two decimals");
     drive_cascade::Announce("TEST DRIVE", healthy);
@@ -389,7 +389,7 @@ void TestAnnounceAndFaults()
 #else
         std::snprintf(what, sizeof(what), "player build, drive_fault 0x%02X (%s): the key does nothing", c.mask, c.what);
         Check(opened && Whole(forced) && verdict == drive_resolve::Verdict::AsRecorded && lines.size() == 1 &&
-                  Said("TEST DRIVE: found by search (1 scans, ", " ms): of its 2 addresses 2 are where the tables record "
+                  Said("TEST DRIVE: found by search (address resolution: 1 scans, ", " ms): of its 2 addresses 2 are where the tables record "
                                                                  "them") == 1,
               what);
 #endif
@@ -400,7 +400,7 @@ void TestAnnounceAndFaults()
     Check(Resolve(again, kHalo3, markerRva) && Whole(again), "healthy again");
     drive_cascade::Announce("TEST DRIVE", again);
     Check(lines.size() == 1 &&
-              Said("TEST DRIVE: found by search (1 scans, ", " ms): of its 2 addresses 2 are where the tables record "
+              Said("TEST DRIVE: found by search (address resolution: 1 scans, ", " ms): of its 2 addresses 2 are where the tables record "
                                                              "them") == 1 &&
               Lines("DEV fault injection") == 0,
           "healthy again is said as any install is, without the forced-result line");
@@ -416,7 +416,7 @@ void TestAnnounceAndFaults()
         lines.clear();
         drive_cascade::Announce("TEST DRIVE", again.report, rungs);
         Check(lines.size() == 1 &&
-                  Lines("TEST DRIVE: verified at the recorded addresses, all 2 of them, with no search (0 scans, 0.11 "
+                  Lines("TEST DRIVE: verified at the recorded addresses, all 2 of them, with no search (address resolution: 0 scans, 0.11 "
                         "ms) (this game DLL is the build the tables were measured on)") == 1,
               "the recorded build's one line, as formatted: its scans, its milliseconds to two decimals");
         // The dev self-test's two lines. The search it ran beside the verified addresses is in the count.
@@ -428,7 +428,7 @@ void TestAnnounceAndFaults()
         drive_cascade::Announce("TEST DRIVE", again.report, rungs);
         const size_t agreed = Lines("DEV self-test (drive_fault 0x80): the search was run as well, and it chose the "
                                     "same address for every line");
-        const size_t counted = Lines("with no search (1 scans, 18.40 ms) (this game DLL");
+        const size_t counted = Lines("with no search (address resolution: 1 scans, 18.40 ms) (this game DLL");
         rungs.outcome.searchAgrees = false;
         drive_cascade::Announce("TEST DRIVE", again.report, rungs);
         const size_t disagreed = Lines("DEV self-test (drive_fault 0x80): the search was run as well, and it DISAGREES "
@@ -508,7 +508,7 @@ void TestCacheFile()
               first.rungs.outcome.scans == 1 && first.rungs.outcome.learn && first.rungs.saved && !first.rungs.notSaved,
           "first launch: found by search (one scan of the module), and saved");
     drive_cascade::Announce("TEST DRIVE", first);
-    Check(Said("TEST DRIVE: found by search (1 scans, ",
+    Check(Said("TEST DRIVE: found by search (address resolution: 1 scans, ",
                " ms): of its 2 addresses 2 are where the tables record them, 0 MOVED, 0 were taken at the recorded "
                "address among several matches; saved for the next launch") == 1,
           "and says so");
@@ -527,7 +527,7 @@ void TestCacheFile()
           "second launch: verified at the saved addresses with zero scans of the module");
     drive_cascade::Announce("TEST DRIVE", second);
     Check(Said("TEST DRIVE: verified at the addresses saved from an earlier launch of this game build, all 2 of them, "
-               "with no search (0 scans, ", " ms) (0 of them are not where the tables record them)") == 1,
+               "with no search (address resolution: 0 scans, ", " ms) (0 of them are not where the tables record them)") == 1,
           "and says so");
     Check(ReadAll(cache) == saved, "a launch that only verifies leaves the file as it was");
 
@@ -793,7 +793,7 @@ void TestCacheFile()
               "the next launch verifies it with that one function searched again, and the module not searched");
         drive_cascade::Announce("TEST DRIVE", next);
         Check(Said("TEST DRIVE: verified at the addresses saved from an earlier launch of this game build, all 2 of "
-                   "them, with no search of the module (0 scans, ",
+                   "them, with no search of the module (address resolution: 0 scans, ",
                    " ms) (1 of them are not where the tables record them; 1 of its functions were searched again, each "
                    "for a line saved as the single match in it)") == 1 &&
                   next.rungs.outcome.moduleScans == 0,
@@ -1084,7 +1084,7 @@ void TestRecordedBuildOpensNoFile()
     drive_cascade::Announce(drive_cascade::kHalo2Name, first);
     drive_cascade::Announce(drive_cascade::kHalo2Name, again);
     Check(lines.size() == 2 && first.rungs.outcome.moduleScans == 0 && first.rungs.ms > 0.0 &&
-              Said("Halo 2 DRIVE: verified at the recorded addresses, all 1 of them, with no search (0 scans, ",
+              Said("Halo 2 DRIVE: verified at the recorded addresses, all 1 of them, with no search (address resolution: 0 scans, ",
                    " ms) (this game DLL is the build the tables were measured on)") == 2,
           "each install's line: verified at the recorded addresses, no scan of the module, and its time");
 
@@ -1115,7 +1115,7 @@ void TestRecordedBuildOpensNoFile()
           "opened");
     drive_cascade::Announce(drive_cascade::kHalo2Name, refusedAgain);
     Check(lines.size() == 1 &&
-              Said("Halo 2 DRIVE: as this session already resolved it in this module, with no search (0 scans, ",
+              Said("Halo 2 DRIVE: as this session already resolved it in this module, with no search (address resolution: 0 scans, ",
                    " ms): 0 of its 1 addresses verified again where they stand, 1 were NOT found then and are not "
                    "searched for again in this module: ENTRY NOT FOUND") == 1,
           "and its line says the refusal again, with what this install cost");
@@ -1241,7 +1241,7 @@ void TestRememberedInProcess()
         std::snprintf(what, sizeof(what), "%s: its line says so, with what this install cost, and what was not found "
                                           "is named again", c.name);
         Check(lines.size() == 1 && !std::strcmp(firstLine, secondLine) &&
-                  Said("TEST DRIVE: as this session already resolved it in this module, with no search (0 scans, ",
+                  Said("TEST DRIVE: as this session already resolved it in this module, with no search (address resolution: 0 scans, ",
                        c.line) == 1,
               what);
     }

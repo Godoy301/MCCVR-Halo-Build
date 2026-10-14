@@ -1,8 +1,8 @@
 #pragma once
 // DRIVE CASCADE, the DLL's side: opens a loaded game module for the direct drives' address resolution
 // (src/common/drive_resolve.h, drive_known.h, drive_sites.h), runs a drive's resolution on it by the rungs under a
-// structured-exception guard, keeps the address cache's file, says at each install which rung won and what it
-// cost, and watches a hook that is installed for calls that never come.
+// structured-exception guard, keeps the address cache's file, says at each install which rung won and what the
+// resolution cost, and watches a hook that is installed for calls that never come.
 //
 // A drive's install does this, and nothing else decides where it hooks or reads:
 //
@@ -61,9 +61,10 @@ struct Rungs
     const char* savedRefused = nullptr;  // saved addresses were there for this drive and were not used: why
     bool saved = false;                  // what the search found was written to the cache
     const char* notSaved = nullptr;      // ... or why it was not, when it was worth saving
-    // WHAT THE RESOLUTION COST THE WORKER, in milliseconds: from opening the module to the end of the last rung,
-    // the cache's file included where it was opened. (How many times the whole module was searched is
-    // outcome.moduleScans.) Measured once per resolution, and said in the drive's one line.
+    // WHAT THIS ADDRESS RESOLUTION COST THE WORKER, in milliseconds: RunPlan from opening the module to the end
+    // of the last rung, the cache's file included where it was opened. (How many times the whole module was
+    // searched is outcome.moduleScans.) Measured once per resolution, and said in the drive's one line. It is
+    // not the cost of the install that asked for it: see Announce.
     double ms = 0.0;
 };
 
@@ -142,14 +143,19 @@ bool Resolve(uintptr_t base, size_t size, const Drive& drive, Resolution<Found>&
 // drive names when it is not hooked. "nothing" when every line was found.
 void FirstFailure(const drive_resolve::Report& report, char* out, size_t size);
 
-// WHICH RUNG WON, AND WHAT IT COST. One line per install of a drive: verified at the recorded addresses with no
-// search; as this session already resolved it in this module; verified at the addresses saved from an earlier
-// launch of this build; found by search (how many moved, and whether they were saved for the next launch); or
-// which addresses were not found, which a repeat says again and does not pass over. Each says what that
-// resolution cost the worker -- "(N scans, T ms)": how many times the whole module was searched, and the time
-// the resolution took -- which is why the line is said at every install and not only when the rung changes: the
-// cost of an install is what it reports, and no two are the same. An install is once per core of a title, never
-// per poll. `drive`: the drive's name as its own log lines begin.
+// WHICH RUNG WON, AND WHAT THE ADDRESS RESOLUTION COST. One line per install of a drive: verified at the
+// recorded addresses with no search; as this session already resolved it in this module; verified at the
+// addresses saved from an earlier launch of this build; found by search (how many moved, and whether they were
+// saved for the next launch); or which addresses were not found, which a repeat says again and does not pass
+// over. Each says what resolving that drive's addresses cost the worker -- "(address resolution: N scans, T
+// ms)": how many times the whole module was searched for them, and the time RunPlan took -- which is why the
+// line is said at every install and not only when the rung changes: no two cost the same.
+//
+// IT IS THE COST OF THE ADDRESS RESOLUTION, NOT OF THE INSTALL. An install goes on to bind other things in its
+// own code -- the seat frame reader, the occupant's aim vector -- and those search the whole module themselves,
+// at every install, with their own scans. None of that is counted or timed here.
+//
+// An install is once per core of a title, never per poll. `drive`: the drive's name as its own log lines begin.
 void Announce(const char* drive, const drive_resolve::Report& report, const Rungs& rungs);
 
 template <typename Found>

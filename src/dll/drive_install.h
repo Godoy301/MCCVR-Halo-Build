@@ -9,10 +9,15 @@
 //
 // Nothing here hooks, logs or writes: each function returns what was proven, and the caller says it.
 //
-// NO READ HERE MAY FAULT. The plan reads the module through checks (drive_resolve.h: Readable), so a page that
-// cannot be read costs it one line and it returns normally -- with that line refused and everything else it
+// NO READ IN THIS FILE MAY FAULT. The plan reads the module through checks (drive_resolve.h: Readable), so a page
+// that cannot be read costs it one line and it returns normally -- with that line refused and everything else it
 // found still set. What runs after the plan runs on the cold worker with no guard around it. So every read of
-// module memory below is guarded where it is made, and nothing the plan refused is read again.
+// module memory in the functions below is guarded where it is made, and nothing the plan refused is read again.
+//
+// That is this file's rule and covers these functions only. An install binds more than they decide, in its own
+// code and after them -- the seat frame reader (seat_frame_reader.h: Bind), the occupant's aim vector
+// (legacy_direct_drive.inl: LegacyDriveBindUnitAim) -- and those read the module with no guard of their own, as
+// they did before these decisions were gathered here.
 #include <windows.h>
 
 #include <cstdio>
