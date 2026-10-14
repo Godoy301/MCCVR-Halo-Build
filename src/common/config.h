@@ -1602,6 +1602,16 @@ struct Config
     // move to the right lens. See docs/CONTINUATION.md "KNOWN MAJOR BUG".
     bool right_eye_first = false;
 
+    // INSTALL SEARCH MEMORY (sigscan.h, ImageMemoScope; Halo 3): 1 = within one load of the game's DLL, an install
+    // of the hooks answers the searches an earlier install already made from what that one found, and searches
+    // only for what is new. Halo 3's hooks are installed again after any pause of two seconds and at each level's
+    // start, and each install asked about fifty searches of the whole DLL. 0 = every install searches again. Read
+    // when an install begins. (default 1)
+    int install_search_memory = 1;
+    // Dev builds: every remembered answer is searched for as well, and the install's line counts the ones the
+    // search did not confirm. The proof of the memory against a running game; it costs every search. (default 0)
+    int dev_install_search_check = 0;
+
     // C-TITLE-1: per-title weapon/hand/HUD/crosshair profiles. Every supported
     // game - and Halo 2's Anniversary and Classic renderers separately - keeps
     // its OWN copy of the tunables in TitleTunables, exactly like the per-vehicle

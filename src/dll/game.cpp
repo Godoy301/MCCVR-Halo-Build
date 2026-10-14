@@ -16953,7 +16953,87 @@ namespace
         return true;
     }
 
+    // ONE INSTALL OF A TITLE'S HOOKS, INSIDE THE SCANNER'S MEMORY OF THIS LOAD OF ITS DLL (sigscan.h, ImageMemoScope).
+    //
+    // A title whose hooks are installed more than once in one load of its DLL asks the same searches of the same
+    // image at every install, and about half of them are "is there a second match", which read the image to its
+    // end. While one of these lives, the scanner answers a search it has already made in this load of the DLL from
+    // what it found then: the first install pays for the searches and the later ones for a compare at each place.
+    // install_search_memory = 0 makes every install search again.
+    //
+    // One line per install says what it asked of the image and how long the install took, so a session's log holds
+    // the first install and the later ones side by side. An install that neither searched nor finished writes
+    // nothing: a title that is asked again until it is ready does not fill the log. `memo` is the title's own, one
+    // for the life of the process. The worker thread's alone, as the installs are.
+    class InstallSearches
+    {
+    public:
+        InstallSearches(const char* title, sig::ImageMemo& memo, uintptr_t base, size_t size, uint32_t generation)
+            : title_(title), use_(g_config.install_search_memory != 0), check_(Checking()),
+              scope_(memo, base, size, generation, use_, check_)
+        {
+            QueryPerformanceCounter(&begun_);
+        }
+        InstallSearches(const InstallSearches&) = delete;
+        InstallSearches& operator=(const InstallSearches&) = delete;
+        // The install came to its end: its line is written even when every answer was a remembered one.
+        void Finished() { finished_ = true; }
+        ~InstallSearches()
+        {
+            const sig::ImageMemoCounts& counts = scope_.Counts();
+            const uint32_t made = counts.searched + counts.searchedAgain;
+            if (!made && !finished_)
+                return;
+            LARGE_INTEGER frequency{}, ended{};
+            QueryPerformanceFrequency(&frequency);
+            QueryPerformanceCounter(&ended);
+            const double elapsedMs = frequency.QuadPart > 0
+                ? static_cast<double>(ended.QuadPart - begun_.QuadPart) * 1000.0 /
+                      static_cast<double>(frequency.QuadPart)
+                : 0.0;
+            char checked[96]{};
+            if (check_)
+                snprintf(checked, sizeof(checked), "; CHECK: %u remembered answers were NOT confirmed by a search",
+                         counts.disagreed);
+            LOG("%s install: %u searches of the game's DLL were made and %u were answered from this load's earlier "
+                "searches (%u remembered places no longer stood and were searched for again, %u could not be "
+                "kept); the install took %.1f ms%s; install_search_memory = %d%s",
+                title_, made, counts.remembered, counts.searchedAgain, counts.notHeld, elapsedMs,
+                finished_ ? "" : " and did not finish", use_ ? 1 : 0, checked);
+        }
+
+    private:
+        static bool Checking()
+        {
+#if HALOMCCVR_DEV_DIAGNOSTICS
+            return g_config.dev_install_search_check != 0;
+#else
+            return false;
+#endif
+        }
+        const char* title_;
+        bool use_;
+        bool check_;
+        bool finished_ = false;
+        LARGE_INTEGER begun_{};
+        sig::ImageMemoScope scope_;
+    };
+
+    bool InstallHookBody(uintptr_t base, size_t size, uint32_t runtimeGeneration);
+
+    // Halo 3's hooks are installed again after any two seconds without a camera (a pause) and at each level's
+    // start, within one load of halo3.dll.
     bool InstallHook(uintptr_t base, size_t size, uint32_t runtimeGeneration)
+    {
+        static sig::ImageMemo s_searches;
+        InstallSearches searches("Halo 3", s_searches, base, size, runtimeGeneration);
+        const bool prepared = InstallHookBody(base, size, runtimeGeneration);
+        if (prepared)
+            searches.Finished();
+        return prepared;
+    }
+
+    bool InstallHookBody(uintptr_t base, size_t size, uint32_t runtimeGeneration)
     {
         if (!runtimeGeneration)
             return false;
