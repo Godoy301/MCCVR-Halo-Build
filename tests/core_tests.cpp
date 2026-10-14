@@ -7098,6 +7098,22 @@ int main()
             "H2 still rejects a repeated, backwards, missing, or wrapped serial "
             "after the first Complete, because those are what a stale or reused "
             "eye actually looks like");
+        Check(Halo2EyePassesComplete(false, 0, 2, 2, 3) &&
+                  Halo2EyePassesComplete(false, 1, 2, 2, 3),
+            "H2 MONO: a pair is two passes that completed both eyes, whichever "
+            "eye went first");
+        Check(Halo2EyePassesComplete(true, 0, 1, 1, 1) &&
+                  Halo2EyePassesComplete(true, 1, 1, 1, 2),
+            "H2 MONO: a mono frame is one pass that completed the eye drawn first");
+        Check(!Halo2EyePassesComplete(false, 0, 1, 1, 1) &&
+                  !Halo2EyePassesComplete(true, 0, 2, 2, 3) &&
+                  !Halo2EyePassesComplete(true, 0, 1, 1, 2) &&
+                  !Halo2EyePassesComplete(true, 1, 1, 1, 1) &&
+                  !Halo2EyePassesComplete(true, 0, 1, 0, 1) &&
+                  !Halo2EyePassesComplete(true, 0, 1, 1, 0),
+            "H2 MONO: a pair short of an eye, a mono frame with a second pass, "
+            "the wrong eye, an unreturned pass or an uncompleted eye is never "
+            "complete");
         Check(!Halo2StructuralFailureRequiresQuarantine(
                   0, false, false, false, false),
             "A clean zero-eye H2 failure retains its one stock replay");
