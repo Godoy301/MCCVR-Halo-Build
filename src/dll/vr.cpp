@@ -15990,8 +15990,9 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
     }
 #endif
 
-    // MONO RENDERING (mono_view_logic.h): Halo 2's and Halo CE's renderers have no single-pass path. Said once for
-    // each, the first time a frame of it is prepared with the setting on, so the setting never looks ignored.
+    // MONO RENDERING (mono_view_logic.h): Halo 2's renderers and Halo CE's Anniversary renderer have no single-pass
+    // path. Said once for each title, the first time a frame of it is prepared with the setting on, so the setting
+    // never looks ignored.
     void NoteMonoAskedInTitleWithoutIt() noexcept
     {
         if (!g_config.mono_rendering)
@@ -15999,13 +16000,21 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         const GameTitle title = TitleAdapter_GetActiveTitle();
         if (title != GameTitle::Halo2 && title != GameTitle::HaloCE)
             return;
+        // CE's Classic renderer draws a single pass; only its Anniversary renderer, once seen, has none.
+        if (title == GameTitle::HaloCE && HaloCE_ObservedRenderer() != 1)
+            return;
         static bool said[kTitleRuntimeSlotCount]{};
         const size_t slot = TitleRuntimeSlotIndex(title);
         if (slot >= kTitleRuntimeSlotCount || said[slot])
             return;
         said[slot] = true;
-        LOG("mono rendering (%s): asked for, and not available in this game: its renderer has no single-pass path, "
-            "so it is drawn in stereo", DlssTitleName(title));
+        if (title == GameTitle::HaloCE)
+            LOG("mono rendering (%s): asked for, and not available with the Anniversary graphics: that renderer has "
+                "no single-pass path, so it is drawn in stereo (the Classic graphics draw it once)",
+                DlssTitleName(title));
+        else
+            LOG("mono rendering (%s): asked for, and not available in this game: its renderer has no single-pass "
+                "path, so it is drawn in stereo", DlssTitleName(title));
     }
 
 #if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA
@@ -16881,6 +16890,10 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                     ce.eyes[eye].fov[0]=fov.angleLeft; ce.eyes[eye].fov[1]=fov.angleRight;
                     ce.eyes[eye].fov[2]=fov.angleUp; ce.eyes[eye].fov[3]=fov.angleDown;
                 }
+                // MONO RENDERING: asked once for this prepared frame. Only the Classic renderer has a single pass;
+                // its cover is CE's own (BuildCover), so the one VR_MonoRenderThisFrame offers is not used.
+                float monoFov[4]{};
+                ce.mono=HaloCE_ObservedRenderer()==0&&VR_MonoRenderThisFrame(GameTitle::HaloCE,monoFov);
             }
             HaloCE_PublishTracking(ce,enabled);
         }
@@ -17057,6 +17070,17 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                 previousSerial=ceLease.pair.key.serial;previousEpoch=ceLease.pair.depthHistoryEpoch;
                 previousSpace=ceLease.pair.key.spaceEpoch;previousGeneration=ceLease.pair.key.generation;
             }
+            // MONO RENDERING (mono_view::MonoRejections): the mono frames Classic dropped, then what the latest
+            // frame CE completed is, once for each new one. A pair re-presented from an earlier frame is not news.
+            static uint64_t monoReportedSerial=0;
+            for(uint64_t drops=std::min<uint64_t>(HaloCE_TakeMonoDrops(),mono_view::kMonoDropsBeforeProbe);
+                drops;--drops)
+                VR_NoteMonoFrameRejected(GameTitle::HaloCE);
+            if(ceImages&&ceLease.pair.key.serial!=monoReportedSerial) {
+                monoReportedSerial=ceLease.pair.key.serial;
+                if(ceLease.pair.monoEye>=0) VR_NoteMonoFrameRendered(GameTitle::HaloCE,ceLease.pair.monoEye);
+                else VR_NoteStereoFrameRendered(GameTitle::HaloCE);
+            }
         }
         float comfortFadeAlpha = UpdatePauseTransition();
 
@@ -17119,11 +17143,13 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         layers.clear();
         // The world's latest picture was drawn once, from between the eyes, as eye `monoEye`
         // (mono_view_logic.h). Only in the title that drew it: a picture left from one title is never taken
-        // for another's.
-        const int monoEye = g_monoPictureEye.load(std::memory_order_acquire);
+        // for another's. Halo CE's pair says itself what it is (EyeCache::Completed::monoEye), so a pair it
+        // re-presents from an earlier frame is shown as what it was drawn as.
+        const int monoEye = ceTitle ? (ceImages ? ceLease.pair.monoEye : -1)
+                                    : g_monoPictureEye.load(std::memory_order_acquire);
         const bool monoFrame = (monoEye == 0 || monoEye == 1) &&
-            g_monoPictureTitle.load(std::memory_order_acquire) ==
-                static_cast<int>(TitleAdapter_GetActiveTitle());
+            (ceTitle || g_monoPictureTitle.load(std::memory_order_acquire) ==
+                static_cast<int>(TitleAdapter_GetActiveTitle()));
         g_nativeTheatreCaptionReady=false;
         const bool nativeSubtitleReady=fs.shouldRender && comfortFadeAlpha<=0.01f &&
             !Menu_IsOpen() && PrepareNativeSubtitle(nativeSubtitleQuad);
@@ -25087,6 +25113,11 @@ void VR_NoteMonoFrameRendered(GameTitle title, int eye)
     }
     else
 #endif
+    if (title == GameTitle::HaloCE)
+    {
+        // CE's own eye cache hands the one picture out for both eyes (halo_ce::EyeCache::Completed::monoEye).
+    }
+    else
     {
         g_eyeHasImage[other] = g_eyeHasImage[eye];
         have = g_eyeHasImage[eye];
