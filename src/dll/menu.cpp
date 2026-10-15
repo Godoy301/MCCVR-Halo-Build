@@ -1239,6 +1239,17 @@ namespace
                                     "OFF keeps every seat there on the stick. Halo 2 reads the role off the seat\n"
                                     "itself. Halo CE's hand aims every seat either way.");
             }
+            bool halo4Seats = g_config.halo4_seat_converge != 0;
+            if (ImGui::Checkbox("Halo 4: converged aim in seats (experimental)", &halo4Seats))
+            { g_config.halo4_seat_converge = halo4Seats ? 1 : 0; changed = true; }
+            ImGui::TextDisabled("EXPERIMENTAL. ON: in a Halo 4 seat the game traces your aim, and the seat's aim is\n"
+                                "bent so the line the game itself aims that seat along passes through the point\n"
+                                "you point at; the crosshair sits on that point. With Co-op safe shots on, that\n"
+                                "line starts at the game's own seat camera, as on every other player's game, and\n"
+                                "only the aim you send is changed. The gun turns its shot onto the point as far as\n"
+                                "the game lets it. Needs Converged aim and the first-person seat view. Halo 4\n"
+                                "seats write the heading; up/down still turns at the stick's rate. OFF: Halo 4\n"
+                                "seats keep the fixed-distance aim. Live.");
         }
         ImGui::Spacing();
         ImGui::Separator();
@@ -1491,7 +1502,7 @@ namespace
                                 "default, shots leave your eye.");
             ImGui::TextDisabled("Both cover vehicle seats too. Every seat you aim from converges (Halo 3, ODST,\n"
                                 "Halo CE and Halo 2 in first-person seats; Reach and Halo 2 with Direct drive;\n"
-                                "Halo 4 seats not yet). With Direct drive, seats have\n"
+                                "Halo 4 seats with their switch on the Vehicles page). With Direct drive, seats have\n"
                                 "their aim written too (Vehicles > Aim in seats says which); a seat first checks\n"
                                 "its own aim, about a second after you sit down.");
             changed |= vr_menu::SliderFloat("Aim lead (game ticks)", &g_config.aim_lead_ticks, 0.0f, 3.0f, "%.2f");
@@ -1532,16 +1543,6 @@ namespace
                                     "proven while you stand still). OFF: the view's eye carried one tick (A/B).");
                 ImGui::Unindent();
             }
-            ImGui::Spacing();
-            bool halo4Seats = g_config.halo4_seat_converge != 0;
-            if (ImGui::Checkbox("Halo 4: converged aim in vehicle seats (dev, stage 1)", &halo4Seats))
-            { g_config.halo4_seat_converge = halo4Seats ? 1 : 0; changed = true; }
-            ImGui::TextDisabled("DEV BUILD ONLY, and it has not run in a game yet. ON: a Halo 4 seat is traced and\n"
-                                "its aim bent through the traced point once every proof holds (the SIGHT Halo 4 seat\n"
-                                "lines say which one does not). It needs the first-person seat view, Converged aim,\n"
-                                "and Co-op safe shots (Advanced page) OFF: with that on, the game aims the seat from\n"
-                                "its own chase camera and this stage stands down. OFF: seats keep the fixed-distance\n"
-                                "aim. Live.");
 #endif
         }
         ImGui::Spacing();

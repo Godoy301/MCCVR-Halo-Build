@@ -1132,6 +1132,12 @@ if(BUILD_TESTING)
     add_executable(halomccvr_halo4_seat_aim_logic_tests tests/halo4_seat_aim_logic_tests.cpp)
     target_include_directories(halomccvr_halo4_seat_aim_logic_tests PRIVATE src/common)
     add_test(NAME halomccvr_halo4_seat_aim_logic_tests COMMAND halomccvr_halo4_seat_aim_logic_tests)
+    # Halo 4 seated convergence (src/common/halo4_seat_converge_logic.h): the solve's start and its carry, the
+    # fixed point over a model of the game's following camera and the rate it is reached at, the start held
+    # across a gap in the samples, the reasons a poll does not solve, and the witness's line-against-point measure.
+    add_executable(halomccvr_halo4_seat_converge_tests tests/halo4_seat_converge_tests.cpp)
+    target_include_directories(halomccvr_halo4_seat_converge_tests PRIVATE src/common)
+    add_test(NAME halomccvr_halo4_seat_converge_tests COMMAND halomccvr_halo4_seat_converge_tests)
     add_executable(halomccvr_type13_flight_log_tests tests/type13_flight_log_tests.cpp)
     target_include_directories(halomccvr_type13_flight_log_tests PRIVATE src/common)
     add_test(NAME halomccvr_type13_flight_log_tests COMMAND halomccvr_type13_flight_log_tests)

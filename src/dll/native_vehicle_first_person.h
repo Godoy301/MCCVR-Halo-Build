@@ -27,6 +27,9 @@ bool NativeVehicleFirstPerson_SeatViewOwned(GameTitle title,uint32_t parent,int 
 // seat camera for the line its crosshair test starts on, and every other machine computes that from the game's
 // own chase camera.
 void NativeVehicleFirstPerson_SetStockOnThisThread(bool stock) noexcept;
+// The calling thread is inside a simulation tick (1), outside one (0), or that cannot be told (-1): the title's own
+// in-tick byte, where this override resolved it (Halo 4). A read; nothing else.
+int NativeVehicleFirstPerson_InSimulationTick(GameTitle title) noexcept;
 bool Game_ReadVehicleCameraOwner(GameTitle title, NativeVehicleCameraOwner& owner) noexcept;
 #if HALOMCCVR_DEV_DIAGNOSTICS
 void Game_Halo4CameraOwnerReport() noexcept;   // dev: why Game_ReadVehicleCameraOwner refused Halo 4 seats

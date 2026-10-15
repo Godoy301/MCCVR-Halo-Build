@@ -302,6 +302,7 @@ bool Halo4Type13LogRemove();
 // [assess-only end]
 #endif
 #include "../common/halo4_seat_aim_logic.h"
+#include "../common/halo4_seat_converge_logic.h"
 #include "../common/log.h"
 #include "../common/config.h"
 #include "../common/cutscene_theater_logic.h"
@@ -41872,7 +41873,10 @@ namespace
     #include "halo4_head_relative.inl"
     // The sound listener follows the head instead of the aim (the same evidence class, the same head sample).
     #include "halo4_sound_listener.inl"
-    // Dev builds only: Halo 4 seated convergence, stages 0-1 (the file compiles to nothing otherwise).
+    // Halo 4 seated convergence (every build; the player key halo4_seat_converge): the aim-camera sample, the
+    // seated trace and the solve's start.
+    #include "halo4_seat_converge.inl"
+    // Dev builds only: the Halo 4 seat witnesses (the file compiles to nothing otherwise).
     #include "halo4_seat_sight.inl"
     // Flat parity's fire eye, Halo 4 on foot: measured, proven at rest (every build).
     #include "halo4_fire_eye.inl"
@@ -46836,6 +46840,9 @@ namespace
         if(!RemoveHalo4SeatSight())
         { LOG("Halo 4 teardown: the dev seat witnesses need cleanup retry; retaining native dependencies");return false; }
 #endif
+        // Seated convergence owns no hook: it stops sampling now, and the muzzle and direct-drive detours that
+        // call into it are drained below.
+        RemoveHalo4SeatConverge();
 #if HALOMCCVR_DEV_DIAGNOSTICS
         if(!RemoveHalo4ImpactWitness())
         { LOG("Halo 4 teardown: the dev AS SEEN witness needs cleanup retry; retaining native dependencies");return false; }
@@ -47286,6 +47293,7 @@ namespace
         // The same for the sound listener: it binds or refuses on its own, and neither gates the other.
         (void)InstallHalo4SoundListener(base,size,generation);
         InstallHalo4FireEye(base,size,generation);   // flat parity's measured fire eye (halo4_fire_eye.inl)
+        InstallHalo4SeatConverge(base,size,generation);   // after the muzzle lane: its view detour carries the sample
 #if HALOMCCVR_DEV_DIAGNOSTICS
         InstallHalo4SeatSight(base,size,generation);   // after the muzzle lane: its bindings and view detour
         (void)InstallHalo4ImpactWitness(base,size);    // AS SEEN (dev): after the muzzle lane, whose aim names the shooter
@@ -48297,8 +48305,11 @@ namespace
 #endif
             Sight_ReportEngineRays();
             Sight_ReportShots();
+#if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA
+            Halo4SeatConvergeReport();   // SIGHT Halo 4 seat converge: solved polls, and why not
+#endif
 #if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA && HALOMCCVR_DEV_DIAGNOSTICS
-            Halo4SeatSightReport();   // SIGHT Halo 4 seat eye / seated trace, SHOT Halo 4 seated
+            Halo4SeatSightReport();   // SIGHT Halo 4 seat eye, SHOT Halo 4 seated
 #endif
             LegacyDriveReport();
             GunAimReport();   // DRIVE Halo 3 gun-slaved seat (the gun camera's offset), SEAT LIMIT Halo 3 gun band
@@ -54702,13 +54713,26 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
     // reason; converge_policy.h). Every one is our code's or a state convergence does not apply to: no natural
     // in-game limit is among them. Nothing below decides on it.
     converge::ConvergeOff convergeWhy = converge::ConvergeOff::None;
+#if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA
+    // Halo 4 seated convergence (halo4_seat_converge.inl): this poll's seat, its rendered eye, and the point of
+    // the simulation's own aim line the solve starts from.
+    Halo4SeatConvergePoll halo4Seat{};
+    if (halo4Aim && aimFrame.traceReaim)
+    {
+        const float cosIntentPitch = cosf(intentPitch);
+        const float seatRayDir[3]{cosIntentPitch * cosf(intentYaw), cosIntentPitch * sinf(intentYaw),
+                                  sinf(intentPitch)};
+        (void)Halo4SeatConvergePrepare(halo4Seat, seatRayDir);
+    }
+    float halo4SeatPoint[3]{};
+    bool halo4SeatPointValid = false;
+#endif
 #if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA && HALOMCCVR_DEV_DIAGNOSTICS
-    // Halo 4 seated convergence (dev; halo4_seat_sight.inl): this poll's seat, eyes and proofs.
+    // The dev seat witnesses (halo4_seat_sight.inl): the render eye against the simulation's, the seat's class and
+    // the shot's line. They decide nothing.
     Halo4SeatSightPoll halo4SeatSight{};
     if (halo4Aim && aimFrame.traceReaim)
         (void)Halo4SeatSightPrepare(halo4SeatSight, halo4AimForward);
-    float halo4SeatPoint[3]{};
-    bool halo4SeatPointValid = false;
 #endif
 #if HALOMCCVR_DEV_DIAGNOSTICS
     // [assess-only begin]
@@ -54743,8 +54767,9 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
         {
 #if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA
             // Halo 4: the rendered centre camera and the body/aim frame before the HMD pose is composed
-            // onto it (the frame the engine aims from). On foot only: the trace itself refuses a seated
-            // unit (Halo4SightTraceTick), so a seat never has a fresh range.
+            // onto it (the frame the engine aims from). These are the ON-FOOT eyes: the on-foot trace refuses a
+            // seated unit (Halo4SightTraceTick), so with them a seat has no range and keeps the fixed-distance
+            // steer -- what a seat does while halo4_seat_converge is off.
             BoneMatrix center{}, body{};
             sightEyes = sightTitle == GameTitle::Halo4 &&
                 LegacySight(sightTitle).flags.load(std::memory_order_acquire) &&
@@ -54757,27 +54782,26 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
             else if (sightTitle == GameTitle::Halo4)
                 convergeWhy = LegacySight(sightTitle).flags.load(std::memory_order_acquire)
                     ? converge::ConvergeOff::RayStale : converge::ConvergeOff::NoTraceFlags;
-#if HALOMCCVR_DEV_DIAGNOSTICS
-            // SEATED (dev): never the on-foot eyes -- in a seat the controller root is the placed head, not the
-            // point the game's aim line starts from. The seated intent ray (the rendered head, the game's own
-            // seat eye, the vehicle named) lets the seated trace run; it bends nothing until every proof holds.
-            if (halo4SeatSight.seated)
+            // SEATED, with halo4_seat_converge on: never the on-foot eyes. The seated intent ray starts at the
+            // rendered head and names the vehicle, so the seated trace runs (halo4_seat_converge.inl); its engine
+            // eye is the point of the simulation's own aim line for the seat that the aim is solved from. It bends
+            // nothing until every fact of the poll holds (halo4_seat_converge::DecidePoll).
+            if (halo4Seat.seated)
             {
-                sightEyes = halo4SeatSight.ray && sightTitle == GameTitle::Halo4 &&
+                sightEyes = halo4Seat.ray && sightTitle == GameTitle::Halo4 &&
                     LegacySight(sightTitle).flags.load(std::memory_order_acquire);
                 sightSeated = true;
-                sightSolve = halo4SeatSight.solve;
+                sightSolve = halo4Seat.solve;
+                // (Every fact holding with nothing bent is a dev build measuring with the key off.)
                 convergeWhy = sightSolve ? converge::ConvergeOff::None
-                                         : Halo4SeatSightOffReason(halo4SeatSight.why);
-                if (!sightEyes && sightSolve)
-                    convergeWhy = converge::ConvergeOff::NoTraceFlags;
-                sightVehicle = static_cast<int32_t>(halo4SeatSight.parent);
-                sightUnit = static_cast<int32_t>(halo4SeatSight.unit);
-                memcpy(sightHead, halo4SeatSight.head, sizeof(sightHead));
-                memcpy(sightEye, halo4SeatSight.eye, sizeof(sightEye));
-                sightEyeStampUs = 0;   // the seat's eye, not the controller root's
+                    : halo4Seat.why == halo4_seat_converge::Why::Solved ? converge::ConvergeOff::SeatNotImplemented
+                    : halo4_seat_converge::OffReason(halo4Seat.why);
+                sightVehicle = static_cast<int32_t>(halo4Seat.parent);
+                sightUnit = static_cast<int32_t>(halo4Seat.unit);
+                memcpy(sightHead, halo4Seat.head, sizeof(sightHead));
+                memcpy(sightEye, halo4Seat.eye, sizeof(sightEye));
+                sightEyeStampUs = 0;   // the seat's own start, not the controller root's
             }
-#endif
 #endif
         }
         else
@@ -54933,7 +54957,7 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
                                                       toPoint[2] * toPoint[2]);
                     if (std::isfinite(toPointWu) && toPointWu > 0.0f)
                         limitTargetRangeWu = toPointWu;
-#if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA && HALOMCCVR_DEV_DIAGNOSTICS
+#if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA
                     // The point the aim was bent through, for the Halo 4 seat's claim below.
                     if (sightTitle == GameTitle::Halo4)
                     {
@@ -54958,20 +54982,26 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
             }
         }
     }
-#if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA && HALOMCCVR_DEV_DIAGNOSTICS
-    // HALO 4 SEATED CLAIM (stage 1, halo4_seat_sight.inl). The aim is bent so the game's seat eye line passes
-    // through the point, and the converged aim is claimed exactly as a Halo 3 seat's is: whether the
-    // SHOT follows is the native seated assist's -- it turns the shot from the barrel by at most 21 deg, and only
+#if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA
+    // HALO 4 SEATED CLAIM (halo4_seat_converge.inl). The aim is bent so the simulation's own aim line for the
+    // seat passes through the point, and the converged aim is claimed exactly as a Halo 3 seat's is: whether the
+    // SHOT follows is the native seated assist's -- it turns the shot from its own line by at most 21 deg, and only
     // for an aiming unit that carries the player -- and a gun the assist cannot bring onto the point fires where
-    // it can, as in flat Halo, with the game's tracers showing it. The assist's verdict (capped, unassisted,
-    // unknown, a slaved turret) is COUNTED for the dev line only (Halo4SeatSightClaimWitness); the claim is
-    // withheld only when the point itself is not a finite position (our code: SeatedClaimFacts::pointFinite).
-    if (sightSeatedConverged && sightSeatedTitle == GameTitle::Halo4 && halo4SeatSight.seated)
-    {
+    // it can, as in flat Halo, with the game's tracers showing it. The claim is withheld only when the point
+    // itself is not a finite position (our code: SeatedClaimFacts::pointFinite).
+    const bool halo4SeatBent = sightSeatedConverged && sightSeatedTitle == GameTitle::Halo4 && halo4Seat.seated;
+    if (halo4SeatBent)
         sightSeatedPointFinite = halo4SeatPointValid;
-        if (halo4SeatPointValid)
-            Halo4SeatSightClaimWitness(halo4SeatSight, halo4SeatPoint);
-    }
+    // What became of this seated poll, for the lane's own line; and the point, for its fire witness.
+    Halo4SeatConvergeEndPoll(halo4Seat, halo4SeatBent && halo4SeatPointValid,
+                             halo4SeatBent ? converge::ConvergeOff::NoRange : convergeWhy,
+                             halo4SeatPointValid ? halo4SeatPoint : nullptr);
+#endif
+#if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA && HALOMCCVR_DEV_DIAGNOSTICS
+    // The assist's verdict on the converged aim (capped, unassisted, unknown, a slaved turret), COUNTED for the dev
+    // line only (Halo4SeatSightClaimWitness), where the dev proofs of the render eye hold: it decides nothing.
+    if (halo4SeatBent && halo4SeatPointValid && halo4SeatSight.seated && halo4SeatSight.solve)
+        Halo4SeatSightClaimWitness(halo4SeatSight, halo4SeatPoint);
     // [assess-only begin]
     // DEV ASSESSMENT ONLY (honest_reticle_assess = 2): where the shot really goes for a seat whose proofs hold,
     // composed from the shot's own line toward the point on the game's aim (Halo4SeatSightHonestAlongAim);
@@ -55748,11 +55778,11 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
     // OccupiedTurretSeat's state is another title's.
     // (No seat at all in the free-camera frame: a seat state left over from the death must not count.)
     bool turretSeat = !halo4Aim && !freeCamera && (OccupiedTurretSeat() || gunSlavedServo);
-#if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA && HALOMCCVR_DEV_DIAGNOSTICS
-    // Stage 1 (dev key halo4_seat_converge): a Halo 4 slaved-turret seat (seat flag bit 7, whose aim camera IS
-    // the turret marker's line) is a turret here too -- for the servo's PARKING only (its pitch is on this servo);
-    // its reticle stays on the converged point like every other seat's.
-    if (halo4Aim && halo4SeatSight.turret)
+#if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA
+    // With halo4_seat_converge on: a Halo 4 seat whose camera is on its gun (seat flag bit 7: the frame's aim, which
+    // this servo closes on, is the gun's own marker line) is a turret here too -- for the servo's PARKING only
+    // (its pitch is on this servo); its reticle stays on the converged point like every other seat's.
+    if (halo4Aim && halo4Seat.turret)
         turretSeat = true;
 #endif
 

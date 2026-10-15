@@ -1350,6 +1350,7 @@ void ConfigLoad(const wchar_t* path)
         if (!strcmp(key, "seat_direct_drive")) { g_config.seat_direct_drive = atoi(val) != 0 ? 1 : 0; continue; }
         if (!strcmp(key, "seat_aim_through_barrel")) { g_config.seat_aim_through_barrel = atoi(val) != 0; continue; }
         if (!strcmp(key, "seat_fire_from_eye")) { g_config.seat_fire_from_eye = atoi(val) != 0; continue; }
+        if (!strcmp(key, "halo4_seat_converge")) { g_config.halo4_seat_converge = atoi(val) != 0 ? 1 : 0; continue; }
         if (!strcmp(key, "aim_direct_drive"))
         { g_config.aim_direct_drive = atoi(val) != 0 ? 1 : 0; aimDirectDriveSeen = true; continue; }
         if (!strcmp(key, "reach_direct_drive"))
@@ -1371,7 +1372,6 @@ void ConfigLoad(const wchar_t* path)
         if (!strcmp(key, "reach_sight_trace_mode")) { g_config.reach_sight_trace_mode=(int)strtol(val,nullptr,0); continue; }
         if (!strcmp(key, "reach_collision_census")) { g_config.reach_collision_census=atoi(val); continue; }
         if (!strcmp(key, "sight_ray_census")) { g_config.sight_ray_census=atoi(val); continue; }
-        if (!strcmp(key, "halo4_seat_converge")) { g_config.halo4_seat_converge=atoi(val)!=0?1:0; continue; }
         if (!strcmp(key, "seated_inherit_compensation")) { g_config.seated_inherit_compensation=atoi(val)!=0?1:0; continue; }
         if (!strcmp(key, "shot_point_transport")) { g_config.shot_point_transport=atoi(val)!=0?1:0; continue; }
         if (!strcmp(key, "shot_point_transport_seated")) { g_config.shot_point_transport_seated=atoi(val)!=0?1:0; continue; }
@@ -2481,9 +2481,6 @@ void ConfigSave()
     fprintf(f, "# DEV BUILD ONLY. Log the game's own queries that start at the eye along the aim (Halo 4,\n");
     fprintf(f, "# Halo 2). Leave at 0.\n");
     fprintf(f, "sight_ray_census = %d\n\n", g_config.sight_ray_census);
-    fprintf(f, "# DEV BUILD ONLY. Halo 4 seated convergence (stage 1): 1 = a seat converges like Halo 3's while\n");
-    fprintf(f, "# every proof holds, and stays converged where the native assist cannot bring the shot on. 0 = seats as before.\n");
-    fprintf(f, "halo4_seat_converge = %d\n\n", g_config.halo4_seat_converge);
     fprintf(f, "# DEV BUILD ONLY. Halo 3 seated shots: 1 = aim so the round, which inherits its vehicle's sideways\n");
     fprintf(f, "# velocity, still flies at the reticle's point. 0 = aim straight at it (rounds lead along your travel).\n");
     fprintf(f, "seated_inherit_compensation = %d\n\n", g_config.seated_inherit_compensation);
@@ -2585,6 +2582,17 @@ void ConfigSave()
     fprintf(f, "# something low and near can then be pulled down onto it. Needs converged_aim. Live.\n");
     fprintf(f, "# (default %d)\n", d.seat_fire_from_eye ? 1 : 0);
     fprintf(f, "seat_fire_from_eye = %d\n\n", g_config.seat_fire_from_eye ? 1 : 0);
+    fprintf(f, "# EXPERIMENTAL, Halo 4. 1 = CONVERGED AIM IN HALO 4 SEATS: the game traces the ray from your eye\n");
+    fprintf(f, "# along the controller, and the seat's aim is bent so the line the game itself aims the seat\n");
+    fprintf(f, "# along passes through the point it hits; the reticle sits on that point. With coop_safe_shots\n");
+    fprintf(f, "# on that line starts at the game's own seat camera, the same on every player's game, and\n");
+    fprintf(f, "# nothing but the aim you send is changed. The gun then turns its shot onto the point as far as\n");
+    fprintf(f, "# the game lets it (its own 21 degree cap, a seat's stops). Halo 4 seats write the heading; the\n");
+    fprintf(f, "# up/down still follows the stick's turn rate. Needs converged_aim, reach_vehicle_aim above 0\n");
+    fprintf(f, "# and vehicle_first_person. 0 = Halo 4 seats keep the fixed-distance aim. Live. The log line\n");
+    fprintf(f, "# \"SIGHT Halo 4 seat converge\" says every 2 s whether it runs and, if not, why. (default %d)\n",
+            d.halo4_seat_converge);
+    fprintf(f, "halo4_seat_converge = %d\n\n", g_config.halo4_seat_converge);
     fprintf(f, "# Reach, Halo 3, ODST and Halo 4 (switch it live in F1 > Weapon & aim). 1 = DIRECT DRIVE: your\n");
     fprintf(f, "# aim writes the game's own aim instead of steering the right stick (which can only turn at the\n");
     fprintf(f, "# game's turn rate). It arms itself a moment after it is switched on, once the aim it found\n");
@@ -2596,7 +2604,8 @@ void ConfigSave()
     fprintf(f, "aim_direct_drive = %d\n\n", g_config.aim_direct_drive);
     fprintf(f, "# Every title (Reach also needs aim_direct_drive = 1), on foot and in vehicle seats: Halo 3,\n");
     fprintf(f, "# ODST and Reach; Halo CE and Halo 2 in their first-person seat view (vehicle_first_person = 1;\n");
-    fprintf(f, "# Halo 2 where direct drive writes the seat, see seat_direct_drive); Halo 4 seats not yet.\n");
+    fprintf(f, "# Halo 2 where direct drive writes the seat, see seat_direct_drive); Halo 4 seats with\n");
+    fprintf(f, "# halo4_seat_converge = 1 (experimental).\n");
     fprintf(f, "# 1 = CONVERGED AIM: the game traces the ray from your eye\n");
     fprintf(f, "# along the controller and bends the aim so the shot passes through the point it hits, at\n");
     fprintf(f, "# any distance; the reticle sits on that point. In a Halo CE or Halo 2 seat the game's own\n");
