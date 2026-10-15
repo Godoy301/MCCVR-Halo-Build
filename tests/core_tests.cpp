@@ -1660,6 +1660,42 @@ int main()
               "after rearm the dying ticks hold again until a real freeze");
     }
     {
+        // The crosshair's kept picture is of the art at one HUD scale: a change of scale is a new identity.
+        const uint64_t art = 0x33637B71E3AA1D40ULL;
+        Check(AuthoredReticleKeyAtScale(0, 0) == 0 && AuthoredReticleKeyAtScale(0, 7) == 0,
+              "no art stays no art at any scale");
+        Check(AuthoredReticleKeyAtScale(art, 0) == art, "before any change of scale the key is the art's own");
+        Check(AuthoredReticleKeyAtScale(art, 1) != art &&
+                  AuthoredReticleKeyAtScale(art, 1) != AuthoredReticleKeyAtScale(art, 2),
+              "each change of scale gives the same art another key");
+        Check(AuthoredReticleKeyAtScale(art, 3) == AuthoredReticleKeyAtScale(art, 3),
+              "and the same scale the same key");
+        Check(AuthoredReticleKeyAtScale(0x9E3779B97F4A7C15ULL, 1) == 1, "an art key never becomes none");
+        // What it is for: a picture taken before the layout's scale was written is retaken after it, once the
+        // new identity has settled, with no change of weapon.
+        AuthoredReticleRefreshState state{};
+        uint64_t frame = 100;
+        bool uploaded = false;
+        for (; frame < 100 + kAuthoredIdentitySettleFrames + 2 && !uploaded; ++frame)
+            uploaded = ShouldUploadAuthoredReticle(AuthoredReticleRefreshPolicy::IdentityAndColorState, true, true,
+                                                   AuthoredReticleKeyAtScale(art, 0), 0, 0, frame, 1, state);
+        Check(uploaded, "the first picture is taken once its art has settled");
+        MarkAuthoredReticleUploaded(state, AuthoredReticleKeyAtScale(art, 0), 0, 0, frame);
+        bool again = false;
+        for (uint64_t f = frame + 10; f < frame + 200; ++f)
+            again = again || ShouldUploadAuthoredReticle(AuthoredReticleRefreshPolicy::IdentityAndColorState, true,
+                                                         true, AuthoredReticleKeyAtScale(art, 0), 0, 0, f, 1, state);
+        Check(!again, "the same art at the same scale is kept");
+        const uint64_t written = frame + 200;
+        uint64_t retakenAt = 0;
+        for (uint64_t f = written; f < written + 100 && !retakenAt; ++f)
+            if (ShouldUploadAuthoredReticle(AuthoredReticleRefreshPolicy::IdentityAndColorState, true, true,
+                                            AuthoredReticleKeyAtScale(art, 1), 0, 0, f, 1, state))
+                retakenAt = f;
+        Check(retakenAt >= written + kAuthoredIdentitySettleFrames && retakenAt < written + 100,
+              "after the scale changes the picture is retaken, some frames after the change");
+    }
+    {
         const float neutral[4]{1.0f, 0.3f, 0.6f, 0.9f};
         const float neutralFaded[4]{0.5f, 0.15f, 0.3f, 0.45f};
         const float friendly[4]{1.0f, 0.8f, 0.2f, 0.4f};

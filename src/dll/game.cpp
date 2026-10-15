@@ -3781,6 +3781,12 @@ namespace
     std::atomic<uint32_t> g_safeFrameBaseCurvatureBits[kMaxSafeFrameHits]{};
     std::atomic<int> g_safeFrameHitCount{-1}; // -1 none, -2 scanning, >0 verified
     std::atomic<uint32_t> g_hudAppliedBits{0};
+    // How many times the safe-frame pair every layout slot holds has changed (g_hudAppliedSafeFrameHBits / VBits
+    // going from one value to another, the first time on a map included): the scale the HUD's art is drawn at.
+    // The crosshair's kept picture is of the art at one scale (AuthoredReticleKeyAtScale). Counted on the pair as
+    // applied, not per write: Reach restores its own record between passes and is rewritten on every pass with
+    // the same pair, which is no change of scale.
+    std::atomic<uint32_t> g_hudLayoutScaleEpoch{0};
     std::atomic<uint32_t> g_hudAppliedAspectBits{0};
     std::atomic<uint32_t> g_hudAppliedCurvatureBits{0};
     // The safe-frame pair in the title's slots while every slot holds it (0 otherwise): the crosshair capture
@@ -4790,6 +4796,9 @@ namespace
                 wantAspectBits, std::memory_order_relaxed);
             g_hudAppliedCurvatureBits.store(
                 wantCurvatureBits, std::memory_order_relaxed);
+            if (g_hudAppliedSafeFrameHBits.load(std::memory_order_relaxed) != wantHBits ||
+                g_hudAppliedSafeFrameVBits.load(std::memory_order_relaxed) != wantVBits)
+                g_hudLayoutScaleEpoch.fetch_add(1, std::memory_order_relaxed);
             g_hudAppliedSafeFrameHBits.store(wantHBits, std::memory_order_relaxed);
             g_hudAppliedSafeFrameVBits.store(wantVBits, std::memory_order_relaxed);
         }
@@ -49930,7 +49939,8 @@ uint64_t Game_GetAuthoredCrosshairKey()
         return 0x0a9b60d8f40268f6ULL;
     }
 #endif
-    return g_authoredCrosshairKey.load(std::memory_order_acquire);
+    return AuthoredReticleKeyAtScale(g_authoredCrosshairKey.load(std::memory_order_acquire),
+                                     g_hudLayoutScaleEpoch.load(std::memory_order_relaxed));
 }
 uint32_t Game_GetAuthoredCrosshairDrawCount()
 {
