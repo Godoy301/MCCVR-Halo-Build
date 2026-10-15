@@ -124,6 +124,8 @@ bool SetLive(const std::string& name, int value)
     // A gun-slaved seat's pitch check: 1 the pitch stick is held while it collects (what a player build does),
     // 0 the stick servo runs through it.
     else if (name == "seat_pitch_check_hold") Game_DevSetSeatPitchCheckHold(value != 0);
+    // Halo 4's Broadsword view: 1 on the seat camera's point (what a player build does), 0 the observer.
+    else if (name == "broadsword_ride") Game_DevSetBroadswordRide(value != 0);
     // The first-person ladder's fault bits (config.h): the ladders read the value at every evaluation, so
     // bits 0-2 take effect on the next camera frame and one launch can walk 0 -> 1 -> 3 -> 5 -> 0. Bit 3
     // needs a level the camera rung has not been proven in (the value agreement never withdraws a proven

@@ -19,6 +19,7 @@
 #include <windows.h>
 #include <intrin.h>
 #include <MinHook.h>
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cmath>
@@ -55,6 +56,13 @@ struct Runtime
     uint32_t tickSlot{},tickByte{};
     // Selector calls for our own seat that were answered as the game built them, for the simulation's sake.
     std::atomic<uint64_t> simulationCalls{};
+    // The point the camera was last placed at (NativeVehicleFirstPerson_PlacedPoint). Seqlock with a try-lock
+    // writer, as the trim publication: a second writer skips rather than tear the record.
+    std::atomic_flag placedWriting=ATOMIC_FLAG_INIT;
+    std::atomic<uint32_t> placedVersion{},placedGeneration{},placedParent{UINT32_MAX};
+    std::atomic<int> placedSeat{-1};
+    std::atomic<uint64_t> placedIdentity{},placedUs{};
+    std::atomic<float> placedPoint[3]{};
 #if HALOMCCVR_DEV_DIAGNOSTICS
     // Why the selector was not taken over: the native mode it chose (0-4, other), and Owner()'s first refusal.
     std::atomic<uint32_t> modeSeen[6]{};
@@ -134,6 +142,100 @@ void ReportSeatHead()
             double(s.hullDrawn[1]),double(s.hullDrawn[2]),s.hullValid?1:0,s.carried?1:0,s.thread);
     }
     std::fclose(f);
+}
+// Halo 4's seat camera against its vehicle (dev), one line a second while a seat's camera is placed: where the
+// head marker the camera stands on sits in the vehicle's own frame (does an animation move the occupant?), the
+// vehicle as drawn against as simulated along its forward (is the camera ahead of or behind the hull on screen?),
+// and the vehicle's speed. The vehicle's root node is asked of the same marker query with no marker (0), as in
+// Halo 2, simulated (last flag 0) and drawn (last flag 1); a count other than 1 is counted and not used. A
+// concurrent caller skips the frame rather than tear the window.
+struct Halo4SeatWindow
+{
+    uint64_t startMs{},lastUs{};
+    unsigned frames{},rootSimulated{},rootDrawn{},faults{};
+    float localMin[3]{},localMax[3]{},localSum[3]{},gapMin{},gapMax{},speedMax{},speedSum{};
+    unsigned speedFrames{};
+    float lastRoot[3]{};
+    bool haveLast{};
+    uint64_t identity{};
+    int seat{-1};
+};
+Halo4SeatWindow g_h4SeatWindow;
+std::atomic_flag g_h4SeatWriting=ATOMIC_FLAG_INIT;
+bool Halo4VehicleRoot(uint32_t vehicle,uint8_t flag,float frame[seat_camera_ride::kFrameFloats],bool& faulted)
+{
+    using Query=int16_t(__fastcall*)(uint32_t,uint32_t,void*,int16_t,uint8_t,uint8_t,uint8_t);
+    alignas(16) uint8_t record[128]{};
+    __try {
+        if (reinterpret_cast<Query>(runtime[2].marker)(vehicle,0,record,1,0,0,flag)!=1) return false;
+    } __except(EXCEPTION_EXECUTE_HANDLER) {faulted=true;return false;}
+    std::memcpy(frame,record+56,sizeof(float)*seat_camera_ride::kFrameFloats);
+    return seat_camera_ride::UsableFrame(frame);
+}
+void NoteHalo4SeatHead(const NativeVehicleCameraOwner& owner,const float point[3])
+{
+    if (!runtime[2].marker||g_h4SeatWriting.test_and_set(std::memory_order_acquire)) return;
+    auto& w=g_h4SeatWindow;
+    const uint32_t vehicle=owner.root!=UINT32_MAX?owner.root:owner.parent;
+    float simulated[seat_camera_ride::kFrameFloats]{},drawn[seat_camera_ride::kFrameFloats]{};
+    bool faulted=false;
+    const bool haveSimulated=vehicle!=UINT32_MAX&&Halo4VehicleRoot(vehicle,0,simulated,faulted);
+    const bool haveDrawn=vehicle!=UINT32_MAX&&Halo4VehicleRoot(vehicle,1,drawn,faulted);
+    const uint64_t us=Sight_NowUs(),ms=us/1000;
+    if (!w.startMs||w.identity!=owner.vehicleIdentity||w.seat!=owner.seat) {
+        w=Halo4SeatWindow{};w.startMs=ms;w.identity=owner.vehicleIdentity;w.seat=owner.seat;
+    }
+    if (faulted) ++w.faults;
+    if (haveSimulated) {
+        // The head in the vehicle's frame: forward, left, up, in world units.
+        float local[3]{};
+        const float d[3]{point[0]-simulated[10],point[1]-simulated[11],point[2]-simulated[12]};
+        for (int axis=0;axis<3;++axis) {
+            const float* v=simulated+1+axis*3;
+            local[axis]=d[0]*v[0]+d[1]*v[1]+d[2]*v[2];
+        }
+        for (int axis=0;axis<3;++axis) {
+            if (!w.rootSimulated||local[axis]<w.localMin[axis]) w.localMin[axis]=local[axis];
+            if (!w.rootSimulated||local[axis]>w.localMax[axis]) w.localMax[axis]=local[axis];
+            w.localSum[axis]+=local[axis];
+        }
+        if (w.haveLast&&us>w.lastUs) {
+            const float dx=simulated[10]-w.lastRoot[0],dy=simulated[11]-w.lastRoot[1],dz=simulated[12]-w.lastRoot[2];
+            const float speed=std::sqrt(dx*dx+dy*dy+dz*dz)/(float(us-w.lastUs)*1.0e-6f);
+            if (std::isfinite(speed)) { w.speedMax=(std::max)(w.speedMax,speed);w.speedSum+=speed;++w.speedFrames; }
+        }
+        std::memcpy(w.lastRoot,simulated+10,sizeof(w.lastRoot));w.lastUs=us;w.haveLast=true;
+        ++w.rootSimulated;
+        if (haveDrawn) {
+            // The hull on screen against the simulated one, along the vehicle's forward: negative = drawn behind.
+            float carried[3]{point[0],point[1],point[2]};
+            if (seat_camera_ride::CarryPoint(simulated,drawn,carried)) {
+                const float gap=(carried[0]-point[0])*simulated[1]+(carried[1]-point[1])*simulated[2]+
+                    (carried[2]-point[2])*simulated[3];
+                if (!w.rootDrawn||gap<w.gapMin) w.gapMin=gap;
+                if (!w.rootDrawn||gap>w.gapMax) w.gapMax=gap;
+                ++w.rootDrawn;
+            }
+        }
+    }
+    ++w.frames;
+    if (ms-w.startMs>=1000) {
+        const float n=w.rootSimulated?float(w.rootSimulated):1.0f;
+        constexpr float kMetresPerWu=3.048f;
+        LOG("Halo 4 seat camera vs vehicle (dev): model %016llx seat %d, %u frames (vehicle root %u simulated, %u "
+            "drawn, %u faulted): head in the vehicle's frame forward %.3f..%.3f (mean %.3f) left %.3f..%.3f up "
+            "%.3f..%.3f wu; the drawn hull %+.3f..%+.3f wu from the simulated along forward; speed max %.1f mean %.1f "
+            "m/s",
+            static_cast<unsigned long long>(w.identity),w.seat,w.frames,w.rootSimulated,w.rootDrawn,w.faults,
+            double(w.localMin[0]),double(w.localMax[0]),double(w.localSum[0]/n),double(w.localMin[1]),
+            double(w.localMax[1]),double(w.localMin[2]),double(w.localMax[2]),double(w.gapMin),double(w.gapMax),
+            double(w.speedMax*kMetresPerWu),
+            double(w.speedFrames?w.speedSum/float(w.speedFrames)*kMetresPerWu:0.0f));
+        const Halo4SeatWindow keep=w;
+        w=Halo4SeatWindow{};w.startMs=ms;w.identity=keep.identity;w.seat=keep.seat;
+        std::memcpy(w.lastRoot,keep.lastRoot,sizeof(w.lastRoot));w.lastUs=keep.lastUs;w.haveLast=keep.haveLast;
+    }
+    g_h4SeatWriting.clear(std::memory_order_release);
 }
 // The first-person witness (NativeVehicleFirstPerson_ArmSelectWitness): armed and taken by one caller on its own
 // thread around one native call; Halo 4's selector hook records into it only while it is armed.
@@ -289,6 +391,7 @@ template<unsigned I> void PositionOwned(uint32_t unit,void* result) noexcept
         if (!Owner(I,unit,after)||before!=after) return;
 #if HALOMCCVR_DEV_DIAGNOSTICS
         if constexpr (I==1) NoteSeatHead(before);
+        if constexpr (I==2) NoteHalo4SeatHead(before,point);
         // The native camera point, before the override replaces it (NativeVehicleFirstPerson_SeatEyeDelta).
         [[maybe_unused]] float native[3]{};
         if constexpr (I==2) std::memcpy(native,static_cast<const uint8_t*>(result)+4,12);
@@ -296,6 +399,19 @@ template<unsigned I> void PositionOwned(uint32_t unit,void* result) noexcept
         // After the full native evaluation, including any slave-turret marker.
         std::memcpy(static_cast<uint8_t*>(result)+4,point,12);
         auto& r=runtime[I];
+        if constexpr (I==2) {
+            if (!r.placedWriting.test_and_set(std::memory_order_acquire)) {
+                r.placedVersion.fetch_add(1,std::memory_order_acq_rel);   // odd: writing
+                r.placedGeneration.store(before.generation,std::memory_order_relaxed);
+                r.placedParent.store(before.parent,std::memory_order_relaxed);
+                r.placedSeat.store(before.seat,std::memory_order_relaxed);
+                r.placedIdentity.store(before.vehicleIdentity,std::memory_order_relaxed);
+                for (unsigned axis=0;axis<3;++axis) r.placedPoint[axis].store(point[axis],std::memory_order_relaxed);
+                r.placedUs.store(Sight_NowUs(),std::memory_order_relaxed);
+                r.placedVersion.fetch_add(1,std::memory_order_release);   // even: published
+                r.placedWriting.clear(std::memory_order_release);
+            }
+        }
 #if HALOMCCVR_DEV_DIAGNOSTICS
         if constexpr (I==2) {
             const float delta[3]{native[0]-point[0],native[1]-point[1],native[2]-point[2]};
@@ -456,6 +572,29 @@ bool Install(unsigned i,size_t size)
 void NativeVehicleFirstPerson_SetStockOnThisThread(bool stock) noexcept
 {
     t_stockOnThisThread=stock;
+}
+bool NativeVehicleFirstPerson_PlacedPoint(GameTitle title,NativeVehicleSeatPoint& out) noexcept
+{
+    constexpr unsigned i=2;   // Halo 4 only
+    if (title!=kBindings[i].title||title!=TitleAdapter_GetActiveTitle()) return false;
+    const auto& r=runtime[i];
+    if (!r.requested.load(std::memory_order_acquire)||r.faulted.load(std::memory_order_acquire)) return false;
+    for (int attempt=0;attempt<2;++attempt) {
+        const uint32_t before=r.placedVersion.load(std::memory_order_acquire);
+        if (!before||(before&1u)) continue;
+        NativeVehicleSeatPoint p{};
+        p.generation=r.placedGeneration.load(std::memory_order_relaxed);
+        p.parent=r.placedParent.load(std::memory_order_relaxed);
+        p.seat=static_cast<int16_t>(r.placedSeat.load(std::memory_order_relaxed));
+        p.vehicleIdentity=r.placedIdentity.load(std::memory_order_relaxed);
+        for (unsigned axis=0;axis<3;++axis) p.point[axis]=r.placedPoint[axis].load(std::memory_order_relaxed);
+        p.us=r.placedUs.load(std::memory_order_relaxed);
+        std::atomic_thread_fence(std::memory_order_acquire);
+        if (r.placedVersion.load(std::memory_order_relaxed)!=before) continue;
+        if (!p.us||p.generation!=TitleAdapter_GetGeneration(title)||p.parent==UINT32_MAX||p.seat<0) return false;
+        out=p;return true;
+    }
+    return false;
 }
 int NativeVehicleFirstPerson_InSimulationTick(GameTitle title) noexcept
 {
