@@ -129,6 +129,8 @@ namespace
     std::atomic<int> g_lastCompletedMonoEye{-1};
     std::atomic<uint64_t> g_monoFrames{0};
     std::atomic<uint64_t> g_monoDrops{0};
+    // Of the HUD replays, those over a mono frame's one picture (drawn once, not per eye).
+    std::atomic<uint64_t> g_hudMonoReplays{0};
 
     std::atomic<uint64_t> g_callbacks{0};
     std::atomic<uint64_t> g_pairs{0};
@@ -1321,7 +1323,11 @@ namespace
             reason = "replay faulted";
         }
         if (ok)
+        {
             g_hudReplays.fetch_add(1, std::memory_order_relaxed);
+            if (monoEye == 0 || monoEye == 1)
+                g_hudMonoReplays.fetch_add(1, std::memory_order_relaxed);
+        }
         else
         {
             g_hudFailures.fetch_add(1, std::memory_order_relaxed);
@@ -1770,12 +1776,14 @@ namespace
             LOG("Halo 2 Anniversary HUD: host UI callback +0x%X (-> 0x960230(1) "
                 "-> 0x7E1990 interface draw) fired %llu times; replayed per eye "
                 "(eye 1 restored+drawn+recaptured, eye 0 restored+drawn+recaptured) on "
-                "%llu frames, run once untouched on %llu (no complete pair), "
+                "%llu frames (%llu of them mono: drawn once over the one picture), "
+                "run once untouched on %llu (no complete pair), "
                 "%llu interface failures; native gameplay HUD draws=%llu "
                 "failures=%llu; last reason: %s",
                 static_cast<unsigned>(kHalo2SaberHostUiCallbackRva),
                 static_cast<unsigned long long>(g_hudCallbacks.load(std::memory_order_relaxed)),
                 static_cast<unsigned long long>(replays),
+                static_cast<unsigned long long>(g_hudMonoReplays.load(std::memory_order_relaxed)),
                 static_cast<unsigned long long>(g_hudStockPasses.load(std::memory_order_relaxed)),
                 static_cast<unsigned long long>(g_hudFailures.load(std::memory_order_relaxed)),
                 static_cast<unsigned long long>(

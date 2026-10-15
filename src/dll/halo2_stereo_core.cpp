@@ -273,9 +273,11 @@ namespace
     void* g_firstPersonTarget = nullptr;
     std::atomic<uintptr_t> g_firstPersonOriginal{0};
     std::atomic<uint64_t> g_firstPersonCentred{0};
-    // MONO RENDERING: Classic frames completed as one pass, and mono frames dropped.
+    // MONO RENDERING: Classic frames completed as one pass, and mono frames dropped; the eye the last completed
+    // frame was drawn as when it was one pass (-1: a pair).
     std::atomic<uint64_t> g_monoFrames{0};
     std::atomic<uint64_t> g_monoDrops{0};
+    std::atomic<int> g_lastCompletedMonoEye{-1};
     std::atomic<uint64_t> g_firstPersonUnreadable{0};
     // E-H2-34: first-pass eyes rendered with no known previous pop (the
     // weapon keeps the stale camera's offset for that one pass).
@@ -2746,6 +2748,7 @@ namespace
                 snapshot.preparedSerial, std::memory_order_release);
             g_telemetry.completedPairs.fetch_add(
                 1, std::memory_order_relaxed);
+            g_lastCompletedMonoEye.store(scope.mono ? firstEye : -1, std::memory_order_relaxed);
             if (scope.mono)
                 g_monoFrames.fetch_add(1, std::memory_order_relaxed);
             else
@@ -3014,18 +3017,34 @@ namespace
                     windowDelta += d * d;
                 }
                 windowDelta = std::sqrt(windowDelta);
-                LOG("Halo 2 stereo core: render cameras written for the last "
-                    "pair - eye 0 (%.4f, %.4f, %.4f) eye 1 (%.4f, %.4f, %.4f), "
-                    "separation %.4f wu = %.1f mm; the engine's window camera "
-                    "stood at (%.4f, %.4f, %.4f), %.1f mm from the observer "
-                    "pose the mod published%s",
-                    eyePosition[0][0], eyePosition[0][1], eyePosition[0][2],
-                    eyePosition[1][0], eyePosition[1][1], eyePosition[1][2],
-                    separation, separation * kHalo2MetersPerWorldUnit * 1000.0f,
-                    windowPosition[0], windowPosition[1], windowPosition[2],
-                    windowDelta * kHalo2MetersPerWorldUnit * 1000.0f,
-                    g_lastPublishedValid.load(std::memory_order_relaxed)
-                        ? "" : " (no publication was available)");
+                const int monoEye = g_lastCompletedMonoEye.load(std::memory_order_relaxed);
+                if (monoEye == 0 || monoEye == 1)
+                {
+                    // A mono frame wrote one camera; the other eye's is the last stereo frame's.
+                    LOG("Halo 2 stereo core: render camera written for the last frame (mono, one pass as eye %d) "
+                        "(%.4f, %.4f, %.4f); the engine's window camera stood at (%.4f, %.4f, %.4f), %.1f mm "
+                        "from the observer pose the mod published%s",
+                        monoEye, eyePosition[monoEye][0], eyePosition[monoEye][1], eyePosition[monoEye][2],
+                        windowPosition[0], windowPosition[1], windowPosition[2],
+                        windowDelta * kHalo2MetersPerWorldUnit * 1000.0f,
+                        g_lastPublishedValid.load(std::memory_order_relaxed)
+                            ? "" : " (no publication was available)");
+                }
+                else
+                {
+                    LOG("Halo 2 stereo core: render cameras written for the last "
+                        "pair - eye 0 (%.4f, %.4f, %.4f) eye 1 (%.4f, %.4f, %.4f), "
+                        "separation %.4f wu = %.1f mm; the engine's window camera "
+                        "stood at (%.4f, %.4f, %.4f), %.1f mm from the observer "
+                        "pose the mod published%s",
+                        eyePosition[0][0], eyePosition[0][1], eyePosition[0][2],
+                        eyePosition[1][0], eyePosition[1][1], eyePosition[1][2],
+                        separation, separation * kHalo2MetersPerWorldUnit * 1000.0f,
+                        windowPosition[0], windowPosition[1], windowPosition[2],
+                        windowDelta * kHalo2MetersPerWorldUnit * 1000.0f,
+                        g_lastPublishedValid.load(std::memory_order_relaxed)
+                            ? "" : " (no publication was available)");
+                }
             }
             g_lastTelemetry = current;
         }
