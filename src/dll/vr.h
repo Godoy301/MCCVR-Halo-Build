@@ -762,6 +762,26 @@ private:
 // Dev A/B of the rule above: 0 the capture as the game draws it, 1 the rule, 2 no draw writes alpha.
 void VR_DevSetHalo4ReticleAlphaMode(int mode);
 #endif
+// Halo 4 (halo4_scene_copy_logic.h): the source a whole-resource copy is to read. While an eye is drawn, a copy
+// out of the game's scene colour texture reads that eye's image; any other copy reads what it named. Called from
+// the CopyResource hook, on whichever thread copies.
+ID3D11Resource* VR_RedirectSceneCopySource(ID3D11DeviceContext* context, ID3D11Resource* destination,
+                                           ID3D11Resource* source);
+// How many copies were given an eye's image since the last call (the worker's status line).
+uint64_t VR_TakeHalo4SceneCopyCount();
+#if HALOMCCVR_DEV_DIAGNOSTICS
+// Dev A/B: false leaves every copy as the game made it (the stock, blacked-out behaviour).
+void VR_DevSetHalo4SceneCopy(bool on);
+#endif
+#if HALOMCCVR_DEV_DIAGNOSTICS
+// For the pixel shader census (dev_ps_census.inl). What a resource is to this mod: 0 other, 1 the game's scene
+// colour (the target the eyes are drawn in place of), 2 / 3 the image of eye 0 / 1, 4 the crosshair capture.
+int VR_DevResourceRole(ID3D11Resource* resource);
+// That role's name, the resource's address and its shape, as text.
+void VR_DevDescribeResource(ID3D11Resource* resource, char* out, size_t outSize);
+// The eye being drawn now, or -1.
+int VR_DevRasterEye();
+#endif
 // The optional H4 hooks pass through completely after a fatal reticle-resource
 // failure, leaving the stock CUI reticle visible without affecting camera,
 // theatre, stereo, or OpenXR ownership.

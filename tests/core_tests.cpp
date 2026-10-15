@@ -67,6 +67,7 @@ int RunDirectorCameraTests();
 #include "halo4_reticle_alpha_logic.h"
 #include "halo4_helmet_shader_logic.h"
 #include "halo4_screen_effect_shader_logic.h"
+#include "halo4_scene_copy_logic.h"
 #include "halo4_hud_logic.h"
 #include "halo4_restoration_logic.h"
 #include "halo4_parity_trace_logic.h"
@@ -11539,6 +11540,21 @@ int main()
                   !halo4_screen_effect_shader::ShouldSuppress(
                       true, true, true, false),
             "Halo 4 motion-suck suppression is exact, feature-local, title-local, and stereo-only");
+
+        // The frame copy: taken from the eye's image only when every condition holds.
+        using halo4_scene_copy::TakesEyeImage;
+        Check(TakesEyeImage(true, true, true, true, true, true, false),
+            "Halo 4: a copy out of the scene colour texture while an eye is drawn reads that eye's image");
+        Check(!TakesEyeImage(false, true, true, true, true, true, false) &&
+                  !TakesEyeImage(true, false, true, true, true, true, false) &&
+                  !TakesEyeImage(true, true, false, true, true, true, false) &&
+                  !TakesEyeImage(true, true, true, false, true, true, false) &&
+                  !TakesEyeImage(true, true, true, true, false, true, false) &&
+                  !TakesEyeImage(true, true, true, true, true, false, false),
+            "Halo 4: switched off, another title, another source, no eye being drawn on this context, an eye "
+            "whose draws were not redirected, or no eye image: the copy is left as the game made it");
+        Check(!TakesEyeImage(true, true, true, true, true, true, true),
+            "Halo 4: a copy that would read and write the eye's image is left alone");
     }
 
     Halo4CuiReticleInstallProof halo4CuiInstall{};

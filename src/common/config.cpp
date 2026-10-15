@@ -1400,6 +1400,7 @@ void ConfigLoad(const wchar_t* path)
         if (!strcmp(key, "dev_sim_probe")) { g_config.dev_sim_probe=(int)strtol(val,nullptr,0)&0xFF; continue; }
         if (!strcmp(key, "dev_sim_minimal")) { g_config.dev_sim_minimal=atoi(val)!=0?1:0; continue; }
         if (!strcmp(key, "dev_sim_bisect")) { g_config.dev_sim_bisect=(int)strtol(val,nullptr,0)&0xFFFF; continue; }
+        if (!strcmp(key, "dev_ps_census")) { g_config.dev_ps_census = atoi(val) != 0 ? 1 : 0; continue; }
         if (!strcmp(key, "reach_sight_fault")) { g_config.reach_sight_fault=(int)strtol(val,nullptr,0); continue; }
         if (!strcmp(key, "first_person_rung_fault")) { g_config.first_person_rung_fault=(int)strtol(val,nullptr,0)&0xF; continue; }
         if (!strcmp(key, "reach_sight_trace_length_m")) { g_config.reach_sight_trace_length_m=(float)atof(val); continue; }

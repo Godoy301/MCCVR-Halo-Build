@@ -8,6 +8,7 @@
 // window, which is why the harness holds the foreground (through the polite gate) while a script runs.
 
 #include "dev_pad.h"
+#include "d3d11_hook.h"
 
 #if HALOMCCVR_DEV_DIAGNOSTICS
 #include "../common/dev_pad_script.h"
@@ -152,6 +153,13 @@ bool SetLive(const std::string& name, int value)
         g_config.vehicle_model_trims[slot].value[axis] = static_cast<float>(value - 500) / 100.0f;
         g_config.vehicle_model_trims[slot].set[axis] = true;
     }
+    // The pixel shader census (dev_ps_census.inl): pause or resume it, and bind no pixel shader in place of
+    // the numbered one (0 = none).
+    else if (name == "dev_ps_census") g_config.dev_ps_census = value ? 1 : 0;
+    // Halo 4's copies of its finished picture (halo4_scene_copy_logic.h): 1 taken from the eye being drawn
+    // (what every build does), 0 left as the game makes them.
+    else if (name == "halo_four_scene_copy") VR_DevSetHalo4SceneCopy(value != 0);
+    else if (name == "dev_ps_blank") D3D_DevSetBlankPixelShader(value);
     else return false;
     return true;
 }

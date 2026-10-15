@@ -116,6 +116,7 @@
 #include "../common/cutscene_theater_logic.h"
 #include "../common/frame_pacing_logic.h"
 #include "../common/halo4_render_logic.h"
+#include "../common/halo4_scene_copy_logic.h"
 #include "../common/halo4_cui_reticle_logic.h"
 #include "../common/halo4_reticle_alpha_logic.h"
 #include "../common/halo4_world_collision_logic.h"
@@ -864,11 +865,20 @@ namespace
     ID3D11RenderTargetView* g_h4PreviousEyeCandidate = nullptr;
     unsigned g_h4CandidatesThisEye = 0;
     unsigned g_h4LearningEyes = 0;
+    // The texture behind the latched scene colour target, to know a copy out of it (VR_RedirectSceneCopySource).
+    // A comparison pointer like the ones above: g_sceneColorRtv keeps the texture alive, and both are dropped
+    // together. Written on the render thread; read by whichever thread copies.
+    std::atomic<ID3D11Resource*> g_h4SceneColorTexture{nullptr};
+    std::atomic<uint64_t> g_h4SceneCopiesFromEye{0};
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    std::atomic<bool> g_devH4SceneCopy{true};
+#endif
 
     // Only ever holds raw comparison pointers, never a reference: the latched
     // target is the one that gets AddRef'd, and it lives in g_sceneColorRtv.
     void Halo4ResetSceneTargetDiscovery()
     {
+        g_h4SceneColorTexture.store(nullptr, std::memory_order_release);
         g_h4LastCandidate = nullptr;
         g_h4LastCandidateDesc = {};
         g_h4LastCandidateViewFormat = DXGI_FORMAT_UNKNOWN;
@@ -22140,6 +22150,93 @@ void VR_InvalidateHalo4PreparedFrame()
 }
 #endif
 
+#if HALOMCCVR_DEV_DIAGNOSTICS
+int VR_DevResourceRole(ID3D11Resource* resource)
+{
+    if (!resource)
+        return 0;
+    if (resource == g_eyeCache[0])
+        return 2;
+    if (resource == g_eyeCache[1])
+        return 3;
+    if (resource == g_authoredReticleTexture)
+        return 4;
+    if (g_sceneColorRtv)
+    {
+        ID3D11Resource* scene = nullptr;
+        g_sceneColorRtv->GetResource(&scene);
+        const bool same = scene == resource;
+        if (scene)
+            scene->Release();
+        if (same)
+            return 1;
+    }
+    return 0;
+}
+
+void VR_DevDescribeResource(ID3D11Resource* resource, char* out, size_t outSize)
+{
+    static const char* const names[] = {"other", "THE GAME'S SCENE COLOUR", "EYE IMAGE 0", "EYE IMAGE 1",
+                                        "crosshair capture"};
+    if (!resource)
+    {
+        snprintf(out, outSize, "none");
+        return;
+    }
+    D3D11_RESOURCE_DIMENSION kind = D3D11_RESOURCE_DIMENSION_UNKNOWN;
+    resource->GetType(&kind);
+    if (kind != D3D11_RESOURCE_DIMENSION_TEXTURE2D)
+    {
+        snprintf(out, outSize, "not a 2D texture (kind %d) %p", static_cast<int>(kind), static_cast<void*>(resource));
+        return;
+    }
+    D3D11_TEXTURE2D_DESC desc{};
+    static_cast<ID3D11Texture2D*>(resource)->GetDesc(&desc);
+    snprintf(out, outSize, "%s %p %ux%u fmt %d mips %u samples %u bind %X", names[VR_DevResourceRole(resource)],
+             static_cast<void*>(resource), desc.Width, desc.Height, static_cast<int>(desc.Format), desc.MipLevels,
+             desc.SampleDesc.Count, desc.BindFlags);
+}
+
+int VR_DevRasterEye() { return g_rasterEye.load(std::memory_order_relaxed); }
+#endif
+
+ID3D11Resource* VR_RedirectSceneCopySource(ID3D11DeviceContext* context, ID3D11Resource* destination,
+                                           ID3D11Resource* source)
+{
+    // The first test is the one nearly every copy fails: one load and a compare.
+    ID3D11Resource* const sceneTexture = g_h4SceneColorTexture.load(std::memory_order_acquire);
+    if (!sceneTexture || source != sceneTexture)
+        return source;
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    const bool enabled = g_devH4SceneCopy.load(std::memory_order_relaxed);
+#else
+    constexpr bool enabled = true;
+#endif
+    const bool eyeRaster = VR_IsEyeRasterActive(context);
+    const int eye = eyeRaster ? g_rasterEye.load(std::memory_order_acquire) : -1;
+    const bool eyeValid = eye == 0 || eye == 1;
+    ID3D11Resource* const eyeImage = eyeValid ? g_eyeCache[eye] : nullptr;
+    if (!halo4_scene_copy::TakesEyeImage(
+            enabled, TitleAdapter_GetActiveTitle() == GameTitle::Halo4, true, eyeRaster && eyeValid,
+            eyeValid && g_rasterRedirected[eye], eyeImage != nullptr, eyeImage && destination == eyeImage))
+        return source;
+    g_h4SceneCopiesFromEye.fetch_add(1, std::memory_order_relaxed);
+    return eyeImage;
+}
+
+uint64_t VR_TakeHalo4SceneCopyCount()
+{
+    return g_h4SceneCopiesFromEye.exchange(0, std::memory_order_relaxed);
+}
+
+#if HALOMCCVR_DEV_DIAGNOSTICS
+void VR_DevSetHalo4SceneCopy(bool on)
+{
+    g_devH4SceneCopy.store(on, std::memory_order_relaxed);
+    LOG("Halo 4 frame copies (dev): %s", on ? "taken from the eye being drawn" : "left as the game makes them");
+}
+#endif
+
 bool VR_CaptureBackbufferEye(int eye)
 {
     if (eye < 0 || eye > 1 || !g_context || !g_gameBackbufferDescValid ||
@@ -22320,6 +22417,13 @@ static void Halo4ResolveSceneTargetAtEyeEnd()
     }
     candidate->AddRef();
     g_sceneColorRtv = candidate;
+    {
+        ID3D11Resource* sceneTexture = nullptr;
+        candidate->GetResource(&sceneTexture);
+        g_h4SceneColorTexture.store(sceneTexture, std::memory_order_release);
+        if (sceneTexture)
+            sceneTexture->Release();   // the view holds it
+    }
     LOG("M2 RASTER: learned Halo 4 scene-color RTV %p as the LAST qualifying "
         "target of the eye (%ux%u fmt=%u viewfmt=%u), agreed by two "
         "consecutive eyes after %u learning eye(s); steady-state redirect is "
