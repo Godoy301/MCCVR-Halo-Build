@@ -929,6 +929,14 @@ struct Config
     // DEV BUILDS ONLY, test-only (never saved): trace length override in metres for a cost A/B.
     // 0 = the shipped 1 km.
     float reach_sight_trace_length_m = 0.0f;
+    // DEV BUILDS ONLY (not parsed otherwise): where the trace is made, for an A/B. -1 = by the rule (inside the
+    // unit's update when alone in the game, at the control pass when the simulation is shared); 0 = always inside
+    // the unit's update; 1 = always at the control pass.
+    int reach_sight_trace_site = -1;
+    // DEV BUILDS ONLY (not parsed otherwise): when Reach moves an effect's place onto the gun, for an A/B. -1 = by
+    // the rule (always when alone in the game; only outside a simulation tick when the simulation is shared);
+    // 0 = always; 1 = only outside a tick; 2 = never; 3 = only the player's own first-person weapon effects.
+    int reach_effect_move_rule = -1;
     // DEV BUILDS ONLY (not parsed otherwise): replace the resolved flags for an experiment. 0 = use them.
     unsigned long long reach_sight_trace_flags = 0;
     int reach_sight_trace_mode = 0;
@@ -1032,6 +1040,24 @@ struct Config
     // mod folder press its buttons (tools/Send-MccPad.ps1; the language is src/common/dev_pad_script.h).
     // Read once at startup. Leave at 0 to play.
     int dev_synthetic_pad = 0;
+    // DEV BUILD ONLY (not parsed and compiled out otherwise), Halo: Reach (src/dll/reach_sim_trace.inl).
+    // dev_sim_trace: 1 = every object's state at each simulation tick goes to HaloMCCVR-simtrace-<stamp>.bin beside
+    // the log (about 35 MB a minute), to compare two replays of one saved film, or a game with its own film.
+    // dev_sim_probe: make one of the mod's own calls while a film replays. Bit 0 = the aim trace inside the tick (a
+    // 1 km collision test along the unit's aim, once a tick, in the unit's own update); bit 1 = the unit
+    // camera-position evaluator alone, inside the tick; bit 2 = that aim trace between ticks instead (when the game
+    // builds the unit's camera); bit 3 = the collision test alone, inside the tick (no evaluator). Both keys can be
+    // set live with the dev pad (`set dev_sim_probe 1`).
+    // dev_sim_minimal (needs dev_sim_trace, read at startup): the reference. Nothing of the mod is installed in
+    // Reach but the recorder -- no VR view, no aim, no other hook -- so the trace is the game's own.
+    // dev_sim_bisect: each bit makes one group of the mod's Reach detours a plain pass-through (the game's own
+    // function and nothing else): 1 the per-unit update, 2 the collision test, 4 the unit camera position, 8 the
+    // unit adjust, 16 the effect location, 32 the muzzle lane's four, 64 the melee damage, 128 the weapon haptics'
+    // five, 256 the tracker and the sound listener. For finding which one changes a replay.
+    int dev_sim_trace = 0;
+    int dev_sim_probe = 0;
+    int dev_sim_minimal = 0;
+    int dev_sim_bisect = 0;
 
     // Halo Reach, SEATED, direct drive (reach_direct_drive = 3): the same trace-and-reaim aim in vehicles.
     // The write drives the seat's look (desired_angles), and Reach aims every seat's weapon from it: it

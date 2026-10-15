@@ -2,6 +2,7 @@
 #include "title_adapter.h"
 #include "game.h"
 #include "sigscan.h"
+#include "sim_tick_reader.h"
 #include "hook_quiescence.h"
 #include "host_unload_gate.h"
 #include "sight_layer.h"
@@ -242,19 +243,10 @@ __declspec(noinline) void Fault(unsigned i) noexcept
 }
 // Inside a simulation tick on the calling thread (1), outside one (0), or not known (-1). Guarded: the block and
 // the state are the engine's own.
-__declspec(noinline) int InTick(unsigned i) noexcept
+int InTick(unsigned i) noexcept
 {
     const auto& r=runtime[i];
-    if (!r.tlsIndex) return -1;
-    __try {
-        const uint32_t index=*r.tlsIndex;
-        const auto* slots=reinterpret_cast<const uintptr_t*>(__readgsqword(0x58));
-        if (!slots||index>=0x400||!slots[index]) return -1;
-        const auto* state=*reinterpret_cast<const uint8_t* const*>(slots[index]+r.tickSlot);
-        return state?(state[r.tickByte]?1:0):-1;
-    } __except(EXCEPTION_EXECUTE_HANDLER) {
-        return -1;
-    }
+    return sim_tick::InTick(sim_tick::Reader{r.tlsIndex,r.tickSlot,r.tickByte});
 }
 // WHO IS ASKING. The selector and the camera answer the simulation as well as the frame: the player's per-tick
 // targeting and a fire's crosshair line start from the seat's camera, and in a shared simulation every machine
@@ -429,29 +421,16 @@ bool Retire(unsigned i)
     r.trimIdentity.store(0);r.trimGeneration.store(0);r.trimSeat.store(-1);
     r.attempted=r.ready=false;r.faulted.store(false,std::memory_order_release);return true;
 }
-// Halo 4's tick loop where it marks a tick begun: mov r8d, <slot>; inc ecx; mov r8, [r8+rsi]; mov byte ptr
-// [r8+<byte>], 1 -- rsi the thread's engine TLS block. The slot and the byte are the match's own operands, and the
-// module's TLS index is its PE TLS directory's.
-// ADDR-HYGIENE: resolved (one signature that must match exactly once, decoded; the PE TLS directory). Unresolved
-// fails closed: while one-machine changes are not allowed the override then answers nothing (ForTheSimulation).
-constexpr char kHalo4TickBegun[]="41 B8 ?? ?? ?? ?? FF C1 4D 8B 04 30 41 C6 40 ?? 01";
+// Halo 4's in-tick byte, where its tick loop marks a tick begun (sim_tick_reader.h: resolved by signature, never a
+// fixed address). Unresolved fails closed: while one-machine changes are not allowed the override then answers
+// nothing (ForTheSimulation).
 void ResolveTick(unsigned i,size_t size)
 {
     auto& r=runtime[i];r.tlsIndex=nullptr;r.tickSlot=r.tickByte=0;
     if (kBindings[i].title!=GameTitle::Halo4) return;
-    const auto hit=sig::Find(r.base,size,kHalo4TickBegun);
-    if (!hit||sig::Find(hit+1,r.base+size-hit-1,kHalo4TickBegun)) return;
-    uint32_t slot=0;std::memcpy(&slot,reinterpret_cast<const void*>(hit+2),sizeof(slot));
-    const uint8_t byte=*reinterpret_cast<const uint8_t*>(hit+15);
-    const auto* dos=reinterpret_cast<const IMAGE_DOS_HEADER*>(r.base);
-    const auto* nt=reinterpret_cast<const IMAGE_NT_HEADERS64*>(r.base+dos->e_lfanew);
-    const auto& directory=nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_TLS];
-    if (!slot||slot>0x4000||(slot&7)||byte>0x7F||!directory.VirtualAddress||directory.VirtualAddress>=size||
-        size-directory.VirtualAddress<sizeof(IMAGE_TLS_DIRECTORY64)) return;
-    const auto* tls=reinterpret_cast<const IMAGE_TLS_DIRECTORY64*>(r.base+directory.VirtualAddress);
-    if (tls->AddressOfIndex<r.base||tls->AddressOfIndex-r.base>=size||
-        size-(tls->AddressOfIndex-r.base)<sizeof(uint32_t)) return;
-    r.tickSlot=slot;r.tickByte=byte;r.tlsIndex=reinterpret_cast<const uint32_t*>(tls->AddressOfIndex);
+    sim_tick::Reader reader{};
+    if (!sim_tick::Resolve(r.base,size,reader)) return;
+    r.tickSlot=reader.slot;r.tickByte=reader.byte;r.tlsIndex=reader.tlsIndex;
 }
 bool Install(unsigned i,size_t size)
 {

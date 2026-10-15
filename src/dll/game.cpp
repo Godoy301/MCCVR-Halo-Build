@@ -84,6 +84,7 @@
 #include "../common/physical_crouch_cached_witnesses.h"
 #include "d3d11_hook.h"
 #include "sigscan.h"
+#include "sim_tick_reader.h"
 #include "mcc_frame_clock.h"
 #include "seat_frame_reader.h"
 #include "vr.h"
@@ -2545,6 +2546,8 @@ namespace
         std::atomic<bool> queryActive{false};
         std::atomic<uint64_t> engineCalls{0};
         std::atomic<uint64_t> queryTicks{0};
+        // Turns passed over because the game's call came from inside a simulation tick (a shared simulation, Reach).
+        std::atomic<uint64_t> insideTick{0};
         std::atomic<uint64_t> targetMisses{0};
         std::atomic<uint64_t> seeds{0};
         LegacyCollisionPublication targetPublication[2]{};
@@ -2618,6 +2621,8 @@ namespace
         const BoneMatrix& root, const BoneMatrix* solved, float output[][3],
         uint64_t& shapeId);
     int32_t LegacyCollisionIgnoredObject(GameTitle title);
+    // Reach: the calling thread is known to be outside a simulation tick (defined with the Reach camera core).
+    bool ReachOutsideTheSimulation();
     bool Halo3ContactMeleeReady();
     bool InstallHalo3ContactMelee(uintptr_t base,size_t size,uint32_t generation);
     bool InstallHalo3WeaponHaptics(uintptr_t base,size_t size,uint32_t generation);
@@ -2692,8 +2697,14 @@ namespace
         int32_t ignoredA,int32_t ignoredB,int32_t ignoredC,void* result,uint8_t& returned);
     bool ReachContactMeleeReady();
     void ReportReachContactMelee();
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    void ReachSimTraceFlush();   // reach_sim_trace.inl
+    void ReachSimProbeFrame(int32_t unit, uintptr_t caller);
+    void ReachSimMinimalInstall(uintptr_t base, size_t size);
+#endif
     // Reach trace-and-reaim (reach_sight_trace.inl).
     void ReachSightTraceTick(uint32_t unit);
+    void ReachSightTraceControlPass();
     void ReachNoteCollisionCensus(uintptr_t caller, uint64_t flags, int32_t mode,
         const float* vector, int32_t ignoredA);
     void ReachSightNoteEngineTrace(uint64_t flags, const float* start, const float* vector,
@@ -6241,6 +6252,14 @@ namespace
             !g_enabled.load(std::memory_order_acquire) ||
             !VR_IsStereoEnabled())
             return;
+        // A SHARED SIMULATION, Reach (ReachOutsideTheSimulation): the hands' own collision tests are calls of the
+        // game's own, so there they are made only from a game call that came from outside a simulation tick. The
+        // game makes collision tests between ticks and on its other threads too, so the work still gets its turns.
+        if(feature.title==GameTitle::HaloReach && !Sight_FireTimeChangesAllowed() && !ReachOutsideTheSimulation())
+        {
+            feature.insideTick.fetch_add(1,std::memory_order_relaxed);
+            return;
+        }
         const uint64_t now=GetTickCount64();
         uint64_t due=feature.nextQueryAtMs.load(std::memory_order_relaxed);
         if(now<due || !feature.nextQueryAtMs.compare_exchange_strong(
@@ -6451,6 +6470,15 @@ namespace
         uint8_t nativeResult=0;
         const uintptr_t caller=reinterpret_cast<uintptr_t>(_ReturnAddress());
         __try {
+#if HALOMCCVR_DEV_DIAGNOSTICS
+            if (g_config.dev_sim_bisect & 2)
+            {
+                if (const auto plain = reinterpret_cast<LegacyCollisionTestVectorFn>(g_reachWorldCollision.original))
+                    nativeResult = plain(flags, mode, start, vector, ignoredObjectA, ignoredObjectB, ignoredObjectC,
+                                         result);
+                __leave;
+            }
+#endif
             // Reach's crosshair query, re-aimed through the intent point from its own start
             // (ReachSightReaimCrosshairQuery: every build, fail closed). The census and the engine-trace witness
             // see the query as the game built it; the shot-lag witness sees what was traced.
@@ -20600,6 +20628,58 @@ namespace
                 ReachVehicleCameraBindingState::StockFallback)};
     } g_reachCamera;
 
+    // REACH'S IN-TICK BYTE (sim_tick_reader.h), bound when the core installs and forgotten when it goes. The index
+    // is published last and withdrawn first, so a reader holds the whole binding or none.
+    struct ReachSimTickBinding
+    {
+        std::atomic<const uint32_t*> tlsIndex{nullptr};
+        std::atomic<uint32_t> slot{0}, byte{0};
+    } g_reachSimTick;
+
+    // Inside a simulation tick as the calling thread reads it (1), outside one (0), or not known (-1).
+    int ReachInSimulationTick()
+    {
+        const uint32_t* const index = g_reachSimTick.tlsIndex.load(std::memory_order_acquire);
+        if (!index)
+            return -1;
+        return sim_tick::InTick(sim_tick::Reader{index, g_reachSimTick.slot.load(std::memory_order_relaxed),
+                                                 g_reachSimTick.byte.load(std::memory_order_relaxed)});
+    }
+
+    // WHAT THE SIMULATION READS STAYS THE GAME'S OWN. A co-op campaign is one simulation, run on every machine from
+    // the same inputs: a thing moved, or a call of the game's own made, inside a tick on this machine alone can
+    // part this machine's simulation from the others', and the session ends
+    // (docs/COOP-SHARED-SIMULATION-2026-10-13.md: one saved co-op film replayed with and without each of the mod's
+    // in-tick acts). So while one-machine changes are not allowed (sight_layer.h Sight_FireTimeChangesAllowed) a
+    // lane that would act asks this first: true only where the call is known to be outside a simulation tick. Where
+    // the tick cannot be read nothing is known, and the answer is no.
+    bool ReachOutsideTheSimulation()
+    {
+        return ReachInSimulationTick() == 0;
+    }
+
+    void ReachSimTickBind(uintptr_t base, size_t size)
+    {
+        sim_tick::Reader reader{};
+        const bool bound = sim_tick::Resolve(base, size, reader);
+        g_reachSimTick.slot.store(reader.slot, std::memory_order_relaxed);
+        g_reachSimTick.byte.store(reader.byte, std::memory_order_relaxed);
+        g_reachSimTick.tlsIndex.store(bound ? reader.tlsIndex : nullptr, std::memory_order_release);
+        if (bound)
+            LOG("Reach simulation tick: readable (the tick loop's own mark: engine TLS +0x%X, byte %u). With Co-op "
+                "safe on, the mod asks nothing of the game and moves nothing it reads inside a tick",
+                reader.slot, reader.byte);
+        else
+            LOG("Reach simulation tick: NOT readable in this haloreach.dll (the tick loop's mark was not found "
+                "exactly once). With Co-op safe on, whatever must stay outside a tick is off: effects keep the "
+                "game's own places and the aim does not converge");
+    }
+
+    void ReachSimTickForget()
+    {
+        g_reachSimTick.tlsIndex.store(nullptr, std::memory_order_release);
+    }
+
     uint32_t ReachRetainedRuntimeGeneration()
     {
         return g_reachCamera.generation.load(std::memory_order_acquire);
@@ -21281,6 +21361,9 @@ namespace
         ReachUnitCameraPositionFn original = g_origReachUnitCameraPosition;
         const uint64_t stockResult =
             original ? original(unitIndex, out) : 0;
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        ReachSimProbeFrame(unitIndex, caller);   // dev: one of the mod's own calls between ticks (dev_sim_probe 4)
+#endif
         if (!out)
             return stockResult;
         const uintptr_t returnA = g_reachFiringOriginReturnA.load(
@@ -21435,6 +21518,14 @@ namespace
             GetTickCount64(), std::memory_order_release);
         __try
         {
+#if HALOMCCVR_DEV_DIAGNOSTICS
+            if (g_config.dev_sim_bisect & 4)
+            {
+                if (const ReachUnitCameraPositionFn plain = g_origReachUnitCameraPosition)
+                    result = plain(unitIndex, out);
+                __leave;
+            }
+#endif
             result = ReachUnitCameraPositionBody(unitIndex, out, caller);
         }
         __finally
@@ -21826,6 +21917,15 @@ namespace
             1, std::memory_order_acq_rel);
         __try
         {
+#if HALOMCCVR_DEV_DIAGNOSTICS
+            if (g_config.dev_sim_bisect & 8)
+            {
+                if (const ReachUnitAdjustFn plain = g_origReachUnitAdjust)
+                    plain(unitIndex, origin, direction, basisForward, barrelOffset, optionalCameraPoint,
+                          firesFromCamera, useUnitAim, collision, simulation);
+                __leave;
+            }
+#endif
             // The projectile transaction names its shooter here, before its aim_assist traces the crosshair: the
             // local player's fire only from here (shot_lag::FireMark; ReachMuzzleFireDetour opens the fire). Seated,
             // unitIndex is the occupant (the seated redirect below matches it to the occupation's unit).
@@ -22730,7 +22830,74 @@ namespace
     // stacking the next candidate onto it.
     constexpr bool kReachEffectOwnerGateEnabled = false;
     std::atomic<uint32_t> g_reachMuzzleReparented{0};
+    // Places near the stock weapon that were left where the game put them (ReachEffectMoveAllowed).
+    std::atomic<uint32_t> g_reachMuzzleLeft{0};
     std::atomic<uint32_t> g_reachMuzzleOutOfRange{0};
+
+    // AN EFFECT'S PLACE IS THE SIMULATION'S AS WELL AS THE FRAME'S. A place asked for inside a tick is where the
+    // effect makes its objects and does its damage; moved on this machine alone, what it makes lands somewhere
+    // else here than on every other machine (a piece knocked off a punched Grunt landed 0.2 world units away:
+    // docs/COOP-SHARED-SIMULATION-2026-10-13.md). So in a shared simulation a place is moved onto the gun only when
+    // it is asked for outside a simulation tick -- the frame's own -- and not at all where the tick cannot be read.
+    // Alone in the game every place near the gun is moved, as before. `ownWeapon`: the effect carries the local
+    // player's first-person weapon mark.
+    bool ReachEffectMoveAllowed(bool ownWeapon)
+    {
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        switch (g_config.reach_effect_move_rule)   // an A/B override (dev): logged at load as a DEV OVERRIDE
+        {
+        case 0: return true;
+        case 1: return ReachOutsideTheSimulation();
+        case 2: return false;
+        case 3: return ownWeapon;
+        default: break;
+        }
+#else
+        (void)ownWeapon;
+#endif
+        return Sight_FireTimeChangesAllowed() || ReachOutsideTheSimulation();
+    }
+
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    // WHO ASKS FOR AN EFFECT'S PLACE, AND WHEN (dev census). Seven call sites reach the resolver; each call is
+    // counted by its caller and by where it was made, and again when its place lay near the stock weapon (the ones a
+    // move touches), the player's own weapon effects apart from the rest.
+    // ADDR-HYGIENE: dev-only (the returns of the resolver's seven direct call sites in the pinned haloreach.dll; a
+    // call from anywhere else is counted under "other", so a build they do not fit shows itself).
+    inline constexpr uint32_t kReachEffectCallerReturns[] = {0x1181A6, 0x11A79C, 0x11BF8B, 0x11FBB7,
+                                                             0x1200D3, 0x1210C3, 0x1220D8};
+    inline constexpr int kReachEffectCallers = static_cast<int>(_countof(kReachEffectCallerReturns)) + 1;
+    // 0 the simulation's thread inside a tick, 1 that thread outside one, 2 another thread while the mark is set,
+    // 3 another thread while it is clear, 4 the mark unreadable.
+    inline constexpr int kReachEffectWheres = 5;
+    struct ReachEffectCensus
+    {
+        std::atomic<uint32_t> calls[kReachEffectCallers][kReachEffectWheres]{};
+        std::atomic<uint32_t> nearOwn[kReachEffectCallers][kReachEffectWheres]{};
+        std::atomic<uint32_t> nearOther[kReachEffectCallers][kReachEffectWheres]{};
+    } g_reachEffectCensus;
+    // The thread the simulation runs on, as the per-unit update last saw it (0 until it has run once).
+    std::atomic<uint32_t> g_reachSimThread{0};
+
+    int ReachEffectCensusCaller(uintptr_t caller)
+    {
+        const uintptr_t rva = caller - g_reachCamera.base;
+        for (int i = 0; i < kReachEffectCallers - 1; ++i)
+            if (rva == kReachEffectCallerReturns[i])
+                return i;
+        return kReachEffectCallers - 1;
+    }
+
+    int ReachEffectCensusWhere()
+    {
+        const int inTick = ReachInSimulationTick();
+        if (inTick < 0)
+            return 4;
+        const uint32_t sim = g_reachSimThread.load(std::memory_order_relaxed);
+        const bool simThread = !sim || GetCurrentThreadId() == sim;
+        return simThread ? (inTick ? 0 : 1) : (inTick ? 2 : 3);
+    }
+#endif
     std::atomic<uint32_t> g_reachMuzzleNearestMilli{0xFFFFFFFFu};
 
     // R * v and R^T * v for the row-major 3x3 in a BoneMatrix.
@@ -22751,8 +22918,10 @@ namespace
     // controller-aligned weapon instead, preserving its exact local offset and
     // orientation. Guarded; leaves the matrix untouched on any fault or if it
     // is not on the stock weapon.
-    __declspec(noinline) bool ReachReparentEffectMatrix(
-        float* matrix, const BoneMatrix& stock, const BoneMatrix& moved)
+    // Returns 0 when the place is not on the stock weapon (or cannot be read), 1 when it was moved, 2 when it is on
+    // the stock weapon and was left there (ReachEffectMoveAllowed said no).
+    __declspec(noinline) int ReachReparentEffectMatrix(
+        float* matrix, const BoneMatrix& stock, const BoneMatrix& moved, bool ownWeapon)
     {
         __try
         {
@@ -22785,6 +22954,11 @@ namespace
                 g_reachMuzzleOutOfRange.fetch_add(
                     1, std::memory_order_relaxed);
                 return false;
+            }
+            if (!ReachEffectMoveAllowed(ownWeapon))
+            {
+                g_reachMuzzleLeft.fetch_add(1, std::memory_order_relaxed);
+                return 2;
             }
             // Translation only, and deliberately so. The anchor is now
             // head -> gun, not weapon -> weapon, so rotating by
@@ -22900,6 +23074,16 @@ namespace
             ReachEffectLocationFn original = g_reachOrigEffectLocation;
             if (!original)
                 return;
+#if HALOMCCVR_DEV_DIAGNOSTICS
+            if (g_config.dev_sim_bisect & 16)
+            {
+                original(effect, nodeDesignator, outMatrix);
+                return;
+            }
+            const int censusCaller = ReachEffectCensusCaller(reinterpret_cast<uintptr_t>(_ReturnAddress()));
+            const int censusWhere = ReachEffectCensusWhere();
+            g_reachEffectCensus.calls[censusCaller][censusWhere].fetch_add(1, std::memory_order_relaxed);
+#endif
             ReachEffectFpMarkerFn fpQuery = g_reachEffectFpMarkerQuery;
             if (!fpQuery || !effect || !outMatrix ||
                 !g_reachCamera.armed.load(std::memory_order_acquire) ||
@@ -23054,8 +23238,15 @@ namespace
                     g_enabled.load(std::memory_order_acquire) &&
                     ReachReadWeaponAnchor(stockWeapon, movedWeapon))
                 {
-                    ReachReparentEffectMatrix(resolved, stockWeapon,
-                                              movedWeapon);
+                    const bool ownWeapon = (fpUserByte & 0x0Fu) != 0u;
+                    const int outcome = ReachReparentEffectMatrix(resolved, stockWeapon, movedWeapon, ownWeapon);
+#if HALOMCCVR_DEV_DIAGNOSTICS
+                    if (outcome)
+                        (ownWeapon ? g_reachEffectCensus.nearOwn : g_reachEffectCensus.nearOther)
+                            [censusCaller][censusWhere].fetch_add(1, std::memory_order_relaxed);
+#else
+                    (void)outcome;
+#endif
                 }
             }
 
@@ -26584,6 +26775,9 @@ namespace
         const uint64_t now=GetTickCount64();
         if(now-lastLogMs<2000) return;
         lastLogMs=now;
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        ReachSimTraceFlush();   // whatever title is up: a trace's last ticks are written after its game has gone
+#endif
         if(title==GameTitle::HaloReach){ReportReachContactMelee();ReportReachMuzzle();ReportReachSightTrace();ReportReachHeadRelative();ReportReachNavMarkers();ReportReachNavProjection();}
         if(title==GameTitle::Halo3) { ReportHalo3ContactMelee(); ReportHalo3WeaponHaptics(); ReportHalo3Avatar(); }
         if(title==GameTitle::Halo3ODST){ReportOdstContactMelee();ReportOdstMuzzle();ReportOdstWeaponHaptics();ReportOdstControllerFingers();}
@@ -26604,6 +26798,7 @@ namespace
             "authored bounds %llu published / %llu hand-only fallback, "
             "visible corrections %llu/%llu, callbacks %u, isolated "
             "failures %llu; scheduling %llu engine calls / %llu ticks / "
+            "%llu passed over inside a simulation tick (Co-op safe) / "
             "%llu target misses / %llu seeds, mapped gun root %d",
             name,
             feature->installed.load(std::memory_order_acquire)?1:0,
@@ -26629,6 +26824,7 @@ namespace
                 std::memory_order_relaxed)),
             static_cast<unsigned long long>(feature->engineCalls.exchange(0)),
             static_cast<unsigned long long>(feature->queryTicks.exchange(0)),
+            static_cast<unsigned long long>(feature->insideTick.exchange(0)),
             static_cast<unsigned long long>(feature->targetMisses.exchange(0)),
             static_cast<unsigned long long>(feature->seeds.exchange(0)),
             feature->weaponObservation[0].root.load(std::memory_order_relaxed));
@@ -28069,6 +28265,8 @@ namespace
     #include "reach_sight_trace.inl"
     #include "reach_fire_eye.inl"
     #include "legacy_sight_trace.inl"
+    // Dev builds only: every object's state per simulation tick, to a file (the file compiles to nothing otherwise).
+    #include "reach_sim_trace.inl"
     #include "reach_contact_melee_runtime.inl"
     #include "halo3_contact_melee_runtime.inl"
     #include "halo3_vehicle_gun_band.inl"
@@ -33770,6 +33968,7 @@ namespace
         g_reachCamera.observerCameraTarget = nullptr;
         g_reachCamera.effectLocationTarget = nullptr;
         g_reachCamera.rainRenderTarget = nullptr;
+        ReachSimTickForget();
         g_reachCamera.playerUnitByOutputUser = nullptr;
         g_reachCamera.unitInVehicle = nullptr;
         g_reachCamera.vehicleInputBindingState.store(
@@ -35572,6 +35771,7 @@ namespace
                 base + kReachCameraStackCallbackRva);
         g_reachCamera.base = base;
         g_reachCamera.size = size;
+        ReachSimTickBind(base, size);
         g_reachCamera.decoratorWindState = ResolveReachDecoratorWind(base, size);
         g_reachWindReplayFaults.store(0, std::memory_order_relaxed);
         g_reachWindReplayPairs.store(0, std::memory_order_relaxed);
@@ -36156,6 +36356,7 @@ namespace
         for (auto& slot : g_reachChudMaxCollection)
             slot.store(0, std::memory_order_relaxed);
         g_reachMuzzleOutOfRange.store(0, std::memory_order_relaxed);
+        g_reachMuzzleLeft.store(0, std::memory_order_relaxed);
         g_reachMuzzleNearestMilli.store(0xFFFFFFFFu, std::memory_order_relaxed);
         g_reachMuzzleIdentityNoSibling.store(0, std::memory_order_relaxed);
         g_reachMuzzleReadFailures.store(0, std::memory_order_relaxed);
@@ -37305,6 +37506,67 @@ namespace
     // Worker-side only. Reports what the effect-location hook actually saw, so
     // one short headset run decides the muzzle mechanism instead of a fourth
     // guess. Silent until something happens, then rate-limited to 30 s.
+    // Worker-side: the effect places left where the game put them (a shared simulation), said when the count has
+    // moved and at most every 30 s; and (dev) who asked for a place, and when.
+    void ReachEffectMoveReport()
+    {
+        static uint32_t s_left = 0, s_moved = 0;
+        static uint64_t s_at = 0;
+        const uint64_t now = GetTickCount64();
+        const uint32_t left = g_reachMuzzleLeft.load(std::memory_order_relaxed);
+        const uint32_t moved = g_reachMuzzleReparented.load(std::memory_order_relaxed);
+        if (left < s_left || moved < s_moved)   // the counters were reset with the core
+        {
+            s_left = left;
+            s_moved = moved;
+        }
+        if (left != s_left && (!s_at || now - s_at >= 30000))
+        {
+            LOG("Reach effects (Co-op safe): %u effect place(s) near the gun left where the game put them since the "
+                "last report (asked for inside a simulation tick, where every machine must be given the same "
+                "place); %u moved onto the gun (asked for outside one)",
+                left - s_left, moved - s_moved);
+            s_left = left;
+            s_moved = moved;
+            s_at = now;
+        }
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        static uint64_t s_censusAt = 0;
+        if (s_censusAt && now - s_censusAt < 10000)
+            return;
+        s_censusAt = now;
+        static const char* const kWhere[kReachEffectWheres] = {"sim thread in a tick", "sim thread between ticks",
+                                                               "another thread, mark set",
+                                                               "another thread, mark clear", "mark unreadable"};
+        for (int c = 0; c < kReachEffectCallers; ++c)
+        {
+            char line[900]{};
+            size_t used = 0;
+            uint32_t total = 0;
+            for (int w = 0; w < kReachEffectWheres; ++w)
+            {
+                const uint32_t calls = g_reachEffectCensus.calls[c][w].exchange(0, std::memory_order_relaxed);
+                const uint32_t own = g_reachEffectCensus.nearOwn[c][w].exchange(0, std::memory_order_relaxed);
+                const uint32_t other = g_reachEffectCensus.nearOther[c][w].exchange(0, std::memory_order_relaxed);
+                total += calls;
+                if (!calls)
+                    continue;
+                const int n = snprintf(line + used, sizeof(line) - used,
+                                       "%s%s: %u (near the gun: %u of the player's own weapon, %u of anything else)",
+                                       used ? "; " : "", kWhere[w], calls, own, other);
+                if (n > 0)
+                    used = (std::min)(sizeof(line) - 1, used + static_cast<size_t>(n));
+            }
+            if (!total)
+                continue;
+            if (c < kReachEffectCallers - 1)
+                LOG("REACH EFFECT PLACES (dev): asked from +0x%X: %s", kReachEffectCallerReturns[c], line);
+            else
+                LOG("REACH EFFECT PLACES (dev): asked from another call site: %s", line);
+        }
+#endif
+    }
+
     void ReachMuzzleLogTick()
     {
         static uint32_t lastTotal = 0;
@@ -37942,6 +38204,7 @@ namespace
         ReachSsaoLogTick();
         ReachObserverCameraLogTick();
         ReachMuzzleLogTick();
+        ReachEffectMoveReport();
         ReachWorldWristWriteLogTick();
         ReachCineProbeLogTick();
         LogReachOuterCameraCommitIfReady();
@@ -38047,6 +38310,15 @@ namespace
             // already-running proof (captured 2026-08-06: proof PASS
             // 08:54:38, gate open 6078 ms later, ~9 s of flat cinematic;
             // versus ~2 s on the same session's early-proof load).
+#if HALOMCCVR_DEV_DIAGNOSTICS
+            // The sim trace's reference mode: the recorder alone, in place of everything else (reach_sim_trace.inl).
+            if (g_config.dev_sim_minimal)
+            {
+                if (levelRunning)
+                    ReachSimMinimalInstall(base, size);
+                return;
+            }
+#endif
             if (ready && levelRunning)
                 InstallReachCameraCore(base, size, generation);
             return;
@@ -53350,6 +53622,10 @@ extern "C" void ReachPcApplyForUser(int user, const uint8_t* entryRsp)
         g_reachApplyYaw.store(yaw, std::memory_order_relaxed);
         g_reachApplyPitch.store(pitch, std::memory_order_relaxed);
     }
+    // The aim trace's control-pass site (reach_sight_trace.inl ReachSightTraceSite): this is the validated record's
+    // own stick update, between ticks, where the game makes its own collision tests for this player.
+    if (user == 0 && action == aim_caller::Action::StepAndWrite && armed && same)
+        ReachSightTraceControlPass();
 }
 
 // Input thread: the stops Reach's last seated write knew (the seat-limit latch's), under 100 ms old, while the drive is
