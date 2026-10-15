@@ -15985,7 +15985,7 @@ int main()
           g_config.roomscale_recenter_moving && g_config.roomscale_recenter_moving_speed == 0.25f,
           "legacy config inherits the roomscale view recenter options (on; they act only with roomscale on)");
     Check(g_config.shots_from_muzzle, "legacy config inherits shots from the muzzle");
-    Check(g_config.coop_safe_shots == 1, "legacy config gets co-op safe shots always on");
+    Check(g_config.coop_safe_shots == 2, "legacy config gets co-op safe shots automatic");
     Check(g_config.aim_lead_ticks == 1.0f, "legacy config inherits the aim lead at its default of one tick");
     Check(g_config.physical_crouch && g_config.physical_crouch_depth_m == 0.22f,
           "legacy config inherits the physical crouch (on) at its default depth");
@@ -16157,6 +16157,32 @@ int main()
     Check(!g_config.experimental_hand_alignment,
         "left-handed updates keep released positioning until explicitly opted in");
     Check(g_config.halo4_seat_converge == 0, "Halo 4 seated convergence survives config save/load");
+    {
+        // Co-op safe shots before and after its automatic value existed (its own file; primary is loaded again).
+        const std::filesystem::path coopPath = configDir / L"halomccvr-coop-safe.cfg";
+        {
+            std::ofstream file(coopPath);
+            file << "coop_safe_shots = 1\n";
+        }
+        ConfigLoad(coopPath.c_str());
+        Check(g_config.coop_safe_shots == 2,
+            "a config from before automatic co-op safe shots moves its on to automatic");
+        ConfigSave();
+        ConfigLoad(coopPath.c_str());
+        Check(g_config.coop_safe_shots == 2, "automatic co-op safe shots survives config save/load");
+        g_config.coop_safe_shots = 1;
+        ConfigSave();
+        ConfigLoad(coopPath.c_str());
+        Check(g_config.coop_safe_shots == 1, "co-op safe shots chosen as always stays always through save/load");
+        {
+            std::ofstream file(coopPath);
+            file << "coop_safe_shots = 0\n";
+        }
+        ConfigLoad(coopPath.c_str());
+        Check(g_config.coop_safe_shots == 0, "a config from before automatic co-op safe shots keeps off");
+        std::filesystem::remove(coopPath);
+        ConfigLoad(primary.c_str());
+    }
     g_config.experimental_hand_alignment = true;
     ConfigSave();
     ConfigLoad(primary.c_str());

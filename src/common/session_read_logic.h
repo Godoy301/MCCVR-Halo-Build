@@ -1,6 +1,7 @@
 #pragma once
 
-// THE SESSION, AS THE GAME HOLDS IT -- for the log (sight_layer.h Sight_NoteSession). Three facts a title's
+// THE SESSION, AS THE GAME HOLDS IT -- for the log and for the automatic co-op switch (sight_layer.h
+// Sight_NoteSession, coop_safe_shots = 2). Three facts a title's
 // simulation thread can read in one pass:
 //
 //   * the SIMULATION TYPE the game was started with. The games name the values themselves (Halo 3's table of
@@ -54,7 +55,8 @@ struct TlsSlots
 };
 
 // ADDR-HYGIENE: guarded (the players array's own name, signature, maximum and datum size are checked before the
-// count beside it is believed) and log only: a wrong value mislabels one SESSION line and decides nothing.
+// count beside it is believed). A layout that does not prove reads "not read", which the automatic co-op switch
+// counts as shared: a build these offsets were not measured on can only keep the stand-downs on.
 inline constexpr Layout kHalo3{0x11, false, true, false, 0x2F8, 0x08, false, 0x7C};
 inline constexpr TlsSlots kHalo3Slots{0x48, 0x10, 0x40};
 inline constexpr Layout kOdst{0x11, false, true, false, 0x418, 0x08, false, 0x7C};
