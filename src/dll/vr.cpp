@@ -16019,22 +16019,22 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
     }
 #endif
 
-    // MONO RENDERING (mono_view_logic.h): Halo 2's and Halo CE's renderers have no single-pass path. Said once for
-    // each, the first time a frame of it is prepared with the setting on, so the setting never looks ignored.
+    // MONO RENDERING (mono_view_logic.h): Halo CE's Anniversary renderer has no single-pass path (its Classic one
+    // and both of Halo 2's do). Said once, the first time a frame of it is prepared with the setting on, so the
+    // setting never looks ignored.
     void NoteMonoAskedInTitleWithoutIt() noexcept
     {
-        if (!g_config.mono_rendering)
+        if (!g_config.mono_rendering ||
+            TitleAdapter_GetActiveTitle() != GameTitle::HaloCE ||
+            HaloCE_ObservedRenderer() != 1)
             return;
-        const GameTitle title = TitleAdapter_GetActiveTitle();
-        if (title != GameTitle::Halo2 && title != GameTitle::HaloCE)
+        static bool said = false;
+        if (said)
             return;
-        static bool said[kTitleRuntimeSlotCount]{};
-        const size_t slot = TitleRuntimeSlotIndex(title);
-        if (slot >= kTitleRuntimeSlotCount || said[slot])
-            return;
-        said[slot] = true;
-        LOG("mono rendering (%s): asked for, and not available in this game: its renderer has no single-pass path, "
-            "so it is drawn in stereo", DlssTitleName(title));
+        said = true;
+        LOG("mono rendering (%s): asked for, and not available with the Anniversary graphics: that renderer has no "
+            "single-pass path, so it is drawn in stereo (the Classic graphics draw it once)",
+            DlssTitleName(GameTitle::HaloCE));
     }
 
 #if HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA
@@ -16910,6 +16910,10 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                     ce.eyes[eye].fov[0]=fov.angleLeft; ce.eyes[eye].fov[1]=fov.angleRight;
                     ce.eyes[eye].fov[2]=fov.angleUp; ce.eyes[eye].fov[3]=fov.angleDown;
                 }
+                // MONO RENDERING: asked once for this prepared frame. Only the Classic renderer has a single pass;
+                // its cover is CE's own (BuildCover), so the one VR_MonoRenderThisFrame offers is not used.
+                float monoFov[4]{};
+                ce.mono=HaloCE_ObservedRenderer()==0&&VR_MonoRenderThisFrame(GameTitle::HaloCE,monoFov);
             }
             HaloCE_PublishTracking(ce,enabled);
         }
@@ -17086,6 +17090,17 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                 previousSerial=ceLease.pair.key.serial;previousEpoch=ceLease.pair.depthHistoryEpoch;
                 previousSpace=ceLease.pair.key.spaceEpoch;previousGeneration=ceLease.pair.key.generation;
             }
+            // MONO RENDERING (mono_view::MonoRejections): the mono frames Classic dropped, then what the latest
+            // frame CE completed is, once for each new one. A pair re-presented from an earlier frame is not news.
+            static uint64_t monoReportedSerial=0;
+            for(uint64_t drops=std::min<uint64_t>(HaloCE_TakeMonoDrops(),mono_view::kMonoDropsBeforeProbe);
+                drops;--drops)
+                VR_NoteMonoFrameRejected(GameTitle::HaloCE);
+            if(ceImages&&ceLease.pair.key.serial!=monoReportedSerial) {
+                monoReportedSerial=ceLease.pair.key.serial;
+                if(ceLease.pair.monoEye>=0) VR_NoteMonoFrameRendered(GameTitle::HaloCE,ceLease.pair.monoEye);
+                else VR_NoteStereoFrameRendered(GameTitle::HaloCE);
+            }
         }
         float comfortFadeAlpha = UpdatePauseTransition();
 
@@ -17148,11 +17163,13 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         layers.clear();
         // The world's latest picture was drawn once, from between the eyes, as eye `monoEye`
         // (mono_view_logic.h). Only in the title that drew it: a picture left from one title is never taken
-        // for another's.
-        const int monoEye = g_monoPictureEye.load(std::memory_order_acquire);
+        // for another's. Halo CE's pair says itself what it is (EyeCache::Completed::monoEye), so a pair it
+        // re-presents from an earlier frame is shown as what it was drawn as.
+        const int monoEye = ceTitle ? (ceImages ? ceLease.pair.monoEye : -1)
+                                    : g_monoPictureEye.load(std::memory_order_acquire);
         const bool monoFrame = (monoEye == 0 || monoEye == 1) &&
-            g_monoPictureTitle.load(std::memory_order_acquire) ==
-                static_cast<int>(TitleAdapter_GetActiveTitle());
+            (ceTitle || g_monoPictureTitle.load(std::memory_order_acquire) ==
+                static_cast<int>(TitleAdapter_GetActiveTitle()));
         g_nativeTheatreCaptionReady=false;
         const bool nativeSubtitleReady=fs.shouldRender && comfortFadeAlpha<=0.01f &&
             !Menu_IsOpen() && PrepareNativeSubtitle(nativeSubtitleQuad);
@@ -17713,7 +17730,9 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                     if (!reachTitle && !halo2Title && !ceTitle && !monoFrame)
                         ValidateStereoImagesOnce();
 #if HALOMCCVR_HALO2_STEREO6DOF
-                    if (halo2Title && halo2LiveExactPair)
+                    // (A mono frame has one picture: comparing it with the other eye's older image would teach
+                    // the capture source from nothing.)
+                    if (halo2Title && halo2LiveExactPair && !monoFrame)
                         ValidateHalo2EyePairPeriodic();
 #endif
                     // Once per frame, but it only writes a line every two
@@ -20578,6 +20597,107 @@ bool VR_Halo2CompleteSynchronousPair(
     return PublishHalo2SynchronousPresentation(
         generation, preparedSerial,
         Halo2SynchronousFrameDisposition::Complete);
+}
+
+bool VR_Halo2CompleteSynchronousMonoPair(
+    uint32_t generation, uint64_t preparedSerial, int eye,
+    const float* otherPosition, const float* otherOrientation)
+{
+    if (eye != 0 && eye != 1)
+        return false;
+    const int other = 1 - eye;
+    const uint64_t reserved =
+        Halo2ReservedSynchronousSerial(preparedSerial);
+    const uint32_t resourceEpoch =
+        g_halo2SynchronousPairResourceEpoch.load(std::memory_order_relaxed);
+    if (g_halo2SynchronousPairToken.load(std::memory_order_acquire) !=
+            reserved ||
+        g_halo2SynchronousPairGeneration.load(std::memory_order_relaxed) !=
+            generation ||
+        !Halo2SynchronousContextCurrent(
+            generation, preparedSerial, resourceEpoch) ||
+        g_halo2SynchronousEyeSerial[eye].load(std::memory_order_acquire) !=
+            preparedSerial ||
+        g_halo2SynchronousEyeGeneration[eye].load(std::memory_order_relaxed) !=
+            generation ||
+        g_halo2SynchronousEyeResourceEpoch[eye].load(
+            std::memory_order_relaxed) != resourceEpoch ||
+        !g_eyeHasImage[eye])
+    {
+        return false;
+    }
+    // A core that submits the poses it rendered from gives the other eye its own; one that does not, none.
+    const bool poseOwned =
+        g_halo2SynchronousEyePoseOwned[eye].load(std::memory_order_relaxed);
+    float pose[7]{0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f};
+    if (poseOwned)
+    {
+        if (!otherPosition || !otherOrientation)
+            return false;
+        float lengthSquared = 0.0f;
+        for (int i = 0; i < 3; ++i)
+            pose[i] = otherPosition[i];
+        for (int i = 0; i < 4; ++i)
+        {
+            pose[3 + i] = otherOrientation[i];
+            lengthSquared += otherOrientation[i] * otherOrientation[i];
+        }
+        for (float value : pose)
+            if (!std::isfinite(value))
+                return false;
+        if (std::fabs(lengthSquared - 1.0f) > 0.05f)
+            return false;
+    }
+    g_halo2SynchronousEyeGeneration[other].store(
+        generation, std::memory_order_relaxed);
+    g_halo2SynchronousEyeResourceEpoch[other].store(
+        resourceEpoch, std::memory_order_relaxed);
+    g_halo2SynchronousEyeHalfFovX[other].store(
+        g_halo2SynchronousEyeHalfFovX[eye].load(std::memory_order_relaxed),
+        std::memory_order_relaxed);
+    g_halo2SynchronousEyeHalfFovY[other].store(
+        g_halo2SynchronousEyeHalfFovY[eye].load(std::memory_order_relaxed),
+        std::memory_order_relaxed);
+    for (int i = 0; i < 7; ++i)
+        g_halo2SynchronousEyePose[other][i].store(pose[i], std::memory_order_relaxed);
+    g_halo2SynchronousEyePoseOwned[other].store(poseOwned, std::memory_order_relaxed);
+    g_halo2SynchronousCaptureCount[other].store(
+        g_halo2SynchronousCaptureCount[eye].load(std::memory_order_relaxed),
+        std::memory_order_relaxed);
+    g_halo2SynchronousCaptureSerial[other].store(
+        preparedSerial, std::memory_order_release);
+    g_halo2SynchronousEyeSerial[other].store(
+        preparedSerial, std::memory_order_release);
+    g_eyeHasImage[other] = true;
+    // The present takes this eye's picture for both before the frame can be seen, so it never pairs it with the
+    // other eye's older image.
+    const int previousTitle = g_monoPictureTitle.load(std::memory_order_acquire);
+    const int previousEye = g_monoPictureEye.load(std::memory_order_acquire);
+    g_monoPictureTitle.store(static_cast<int>(GameTitle::Halo2), std::memory_order_release);
+    g_monoPictureEye.store(eye, std::memory_order_release);
+    uint64_t expected = reserved;
+    if (!g_halo2SynchronousPairToken.compare_exchange_strong(
+            expected, preparedSerial, std::memory_order_release,
+            std::memory_order_acquire))
+    {
+        g_monoPictureEye.store(previousEye, std::memory_order_release);
+        g_monoPictureTitle.store(previousTitle, std::memory_order_release);
+        return false;
+    }
+    if (!PublishHalo2SynchronousPresentation(
+            generation, preparedSerial,
+            Halo2SynchronousFrameDisposition::Complete))
+    {
+        return false;
+    }
+    VR_NoteMonoFrameRendered(GameTitle::Halo2, eye);
+    return true;
+}
+
+bool VR_Halo2CaptureSourceSettled()
+{
+    return g_halo2HeavyValidationRetired.load(std::memory_order_acquire) &&
+        !g_halo2EyeDumpDueMs.load(std::memory_order_acquire);
 }
 
 bool VR_Halo2ClaimSynchronousPairForPresentation(
@@ -25418,6 +25538,11 @@ void VR_NoteMonoFrameRendered(GameTitle title, int eye)
     }
     else
 #endif
+    if (title == GameTitle::HaloCE)
+    {
+        // CE's own eye cache hands the one picture out for both eyes (halo_ce::EyeCache::Completed::monoEye).
+    }
+    else
     {
         g_eyeHasImage[other] = g_eyeHasImage[eye];
         have = g_eyeHasImage[eye];

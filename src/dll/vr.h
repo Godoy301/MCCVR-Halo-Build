@@ -534,6 +534,15 @@ bool VR_Halo2RestoreEyeToFinalTarget(
     uint32_t generation, uint64_t preparedSerial, int eye);
 bool VR_Halo2CompleteSynchronousPair(
     uint32_t generation, uint64_t preparedSerial);
+// MONO RENDERING (mono_view_logic.h): complete a frame drawn as ONE pass, as `eye`. Its stamps (serial, capture,
+// half-angles, image) answer for the other eye too; when the core owns poses the other eye keeps its own submitted
+// pose (`otherPosition`/`otherOrientation`), so each eye is still shown where it is. The picture is marked mono
+// before the frame can be presented. Reports the mono frame (VR_NoteMonoFrameRendered) on success.
+bool VR_Halo2CompleteSynchronousMonoPair(
+    uint32_t generation, uint64_t preparedSerial, int eye,
+    const float* otherPosition = nullptr, const float* otherOrientation = nullptr);
+// The eye capture's source is settled: learning it compares the two eyes' pictures, so a mono frame waits for it.
+bool VR_Halo2CaptureSourceSettled();
 // Claim immediately before the first original eye render_view call. A failed
 // publication must take the zero-eye pre-stereo screen path; once published,
 // this

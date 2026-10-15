@@ -2164,7 +2164,7 @@ namespace
                               "one picture. You lose 3D depth.\n"
                               "For very large maps that will not hold the headset's frame rate in 3D.\n"
                               "The crosshair and the scope move far away so they do not double.\n"
-                              "Halo 3, ODST, Reach and Halo 4. Halo 2 and Halo: CE are always drawn in 3D.\n"
+                              "Every game; Halo: CE with its Anniversary graphics is always drawn in 3D.\n"
                               "Not on headsets with angled displays, in the cutscene theatre, or with DLSS.");
         ImGui::Spacing();
         ImGui::Separator();
