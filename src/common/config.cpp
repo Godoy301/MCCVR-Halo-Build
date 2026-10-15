@@ -1351,6 +1351,7 @@ void ConfigLoad(const wchar_t* path)
         if (!strcmp(key, "seat_aim_through_barrel")) { g_config.seat_aim_through_barrel = atoi(val) != 0; continue; }
         if (!strcmp(key, "seat_fire_from_eye")) { g_config.seat_fire_from_eye = atoi(val) != 0; continue; }
         if (!strcmp(key, "halo4_seat_converge")) { g_config.halo4_seat_converge = atoi(val) != 0 ? 1 : 0; continue; }
+        if (!strcmp(key, "install_search_memory")) { g_config.install_search_memory = atoi(val) != 0 ? 1 : 0; continue; }
         if (!strcmp(key, "aim_direct_drive"))
         { g_config.aim_direct_drive = atoi(val) != 0 ? 1 : 0; aimDirectDriveSeen = true; continue; }
         if (!strcmp(key, "drive_address_cache")) { g_config.drive_address_cache = atoi(val) != 0 ? 1 : 0; continue; }
@@ -1369,6 +1370,7 @@ void ConfigLoad(const wchar_t* path)
         if (!strcmp(key, "mono_rendering")) { g_config.mono_rendering = atoi(val) != 0; continue; }
 #if HALOMCCVR_DEV_DIAGNOSTICS   // research tools and dev overrides: a player build never reads them
         if (!strcmp(key, "reach_aim_probe")) { g_config.reach_aim_probe=atoi(val); continue; }
+        if (!strcmp(key, "dev_install_search_check")) { g_config.dev_install_search_check = atoi(val) != 0 ? 1 : 0; continue; }
         if (!strcmp(key, "reach_desired_aim_offset")) { g_config.reach_desired_aim_offset=(int)strtol(val,nullptr,0); continue; }
         if (!strcmp(key, "reach_dd_test_deg")) { g_config.reach_dd_test_deg=atoi(val); continue; }
         if (!strcmp(key, "reach_dd_watchpoint")) { g_config.reach_dd_watchpoint=atoi(val); continue; }
@@ -3431,6 +3433,10 @@ void ConfigSave()
     fprintf(f, "# Ghosting diagnostic: 1 renders the right eye first.\n");
     fprintf(f, "# (default %d)\n", d.right_eye_first ? 1 : 0);
     fprintf(f, "right_eye_first = %d\n", g_config.right_eye_first ? 1 : 0);
+    fprintf(f, "# Halo 3: the mod's hooks are installed again after a pause and at each level. 1 = an install re-uses\n");
+    fprintf(f, "# what an earlier one found in the same load of the game's DLL and searches it only for what is new.\n");
+    fprintf(f, "# 0 = every install searches all of it again. (default %d)\n", d.install_search_memory);
+    fprintf(f, "install_search_memory = %d\n", g_config.install_search_memory);
     fprintf(f, "# --- Per-title weapon/hand/HUD/crosshair profiles (C-TITLE-1) ---\n");
     fprintf(f, "# Every supported game - and Halo 2 Anniversary vs Classic\n");
     fprintf(f, "# separately - keeps its OWN copy of the tunables below.\n");
