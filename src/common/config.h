@@ -473,10 +473,11 @@ struct Config
     float screen_width_m = 4.0f;    // width of the virtual screen, in meters
     float screen_distance_m = 2.4f; // how far away the screen floats, in meters
 
-    // MONO RENDERING (mono_view_logic.h; Halo 3): 1 = the world is drawn once a frame, from between the eyes, and
-    // shown to both: no depth between the eyes, one pass of drawing instead of two. For maps with so much in view
-    // that two passes do not fit the headset's frame. Refused, with a log line, on canted displays, in the cutscene
-    // theatre and while DLSS is on. Followed live. (default 0)
+    // MONO RENDERING (mono_view_logic.h; Halo 3, ODST, Reach, Halo 4): 1 = the world is drawn once a frame, from
+    // between the eyes, and shown to both: no depth between the eyes, one pass of drawing instead of two. For maps
+    // with so much in view that two passes do not fit the headset's frame. Refused, with a log line, on canted
+    // displays, in the cutscene theatre, while DLSS is on, and in a title whose renderer turns single passes down.
+    // Halo 2 and Halo CE have no single-pass path and are drawn in stereo. Followed live. (default 0)
     bool mono_rendering = false;
 
     // Universal cutscene-only stereo theatre. A title enters it only after its

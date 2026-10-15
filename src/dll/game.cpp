@@ -650,9 +650,6 @@ namespace
     std::atomic<bool> g_writeUp{true};         // F7
     std::atomic<bool> g_positional{true};      // M2: 6DOF head translation on by default; F6 toggles
     std::atomic<int> g_stereoEye{-1};           // M2: -1 mono, 0 left, 1 right
-    // The eye pass now running is a mono frame's only pass (mono_view_logic.h). What is done once a frame, in the
-    // pass the eye-order setting draws first, is done in this one whichever eye that setting names.
-    std::atomic<bool> g_monoEyePass{false};
 
     // World scale: Halo world units per real meter (1 wu ~= 3.05 m), so ~0.33
     // gives roughly 1:1 leaning. Offset is clamped so a bad value can't fling
@@ -3142,8 +3139,7 @@ namespace
                 return true;
 
             const int eye = g_stereoEye.load(std::memory_order_relaxed);
-            const int captureEye =
-                g_monoEyePass.load(std::memory_order_relaxed) ? 0 : (g_config.right_eye_first ? 1 : 0);
+            const int captureEye = g_config.right_eye_first ? 1 : 0;
             if (eye < 0 || eye == captureEye)
             {
                 if (!VR_ShouldCaptureAuthoredReticleThisFrame())
@@ -12142,16 +12138,16 @@ namespace
         (void)VR_GetContactTrackingSnapshot(g_fpStereoSolveScope.anatomicalTracking);
         BeginHalo3AvatarPair(saved);
         // MONO RENDERING (mono_view_logic.h): the world once, from between the eyes, for both of them. The one
-        // pass is eye 0's in every book that is kept per eye; its camera has no eye offset and no cant, and its
-        // frustum covers either eye's.
-        float monoTanX = 0.0f, monoTanY = 0.0f;
-        const bool monoFrame = VR_MonoRenderThisFrame(monoTanX, monoTanY) && !cutsceneTheater;
+        // pass is drawn as the eye the eye-order setting draws first, so what is done once a frame in that pass
+        // (the crosshair's capture) is done in it; its camera has no eye offset and no cant, and its frustum
+        // covers either eye's.
+        float monoFov[4]{};
+        const bool monoFrame = VR_MonoRenderThisFrame(GameTitle::Halo3, monoFov) && !cutsceneTheater;
         __try {
-        g_monoEyePass.store(monoFrame, std::memory_order_relaxed);
         const int firstEye = g_config.right_eye_first ? 1 : 0;
         for (int pass = 0; pass < (monoFrame ? 1 : 2); ++pass)
         {
-            const int eye = monoFrame ? 0 : (pass == 0 ? firstEye : 1 - firstEye);
+            const int eye = pass == 0 ? firstEye : 1 - firstEye;
             g_stereoEye = eye;
             VR_BeginRasterEye(eye);
             memcpy(camera, saved, sizeof(saved));
@@ -12225,8 +12221,8 @@ namespace
                 float immersiveTangentY = tanf(0.92502f);
                 if (monoFrame)
                 {
-                    immersiveTangentX = monoTanX;
-                    immersiveTangentY = monoTanY;
+                    immersiveTangentX = tanf(monoFov[1]);
+                    immersiveTangentY = tanf(monoFov[2]);
                 }
                 else if (VR_GetEyeFov(eye, eyeFov))
                 {
@@ -12405,9 +12401,10 @@ namespace
             VR_EndRasterEye();
         }
         if (monoFrame)
-            VR_NoteMonoFrameRendered();
+            VR_NoteMonoFrameRendered(GameTitle::Halo3, firstEye);
+        else
+            VR_NoteStereoFrameRendered();
         } __finally {
-            g_monoEyePass.store(false, std::memory_order_relaxed);
             EndHalo3AvatarPair();
             g_fpStereoSolveScope.armed = false;
         }
@@ -15869,6 +15866,10 @@ namespace
             OdstHalo3FovMatch fovMatch{};
         } eyeInputs[2];
         const bool cutsceneTheater = VR_IsCutsceneTheaterActive();
+        // MONO RENDERING (mono_view_logic.h): one pass, drawn as the first eye, by a camera at the midpoint of the
+        // eyes with no cant and a frustum that covers either eye's. Both eyes' inputs are that camera's.
+        float monoFov[4]{};
+        const bool monoFrame = VR_MonoRenderThisFrame(GameTitle::Halo3ODST, monoFov) && !cutsceneTheater;
         bool eyeInputsValid = true;
         for (int eye = 0; eye < 2; ++eye)
         {
@@ -15876,6 +15877,15 @@ namespace
             eyeInputsValid = VR_GetEyeViewOffset(
                 eye, eyeInputs[eye].position, eyeInputs[eye].orientation) &&
                 VR_GetEyeFov(eye, fov) && eyeInputsValid;
+            if (monoFrame)
+            {
+                for (float& component : eyeInputs[eye].position)
+                    component = 0.0f;
+                eyeInputs[eye].orientation[0] = eyeInputs[eye].orientation[1] =
+                    eyeInputs[eye].orientation[2] = 0.0f;
+                eyeInputs[eye].orientation[3] = 1.0f;
+                memcpy(fov, monoFov, sizeof(fov));
+            }
             ApplyCutsceneTheaterEyeTransform(
                 cutsceneTheater,
                 g_config.cutscene_theater_depth,
@@ -15977,7 +15987,7 @@ namespace
         g_fpStereoSolveScope.twoHandAimActive = VR_IsTwoHandAiming();
         (void)VR_GetContactTrackingSnapshot(g_fpStereoSolveScope.anatomicalTracking);
         const int firstEye = g_config.right_eye_first ? 1 : 0;
-        for (int pass = 0; pass < 2; ++pass)
+        for (int pass = 0; pass < (monoFrame ? 1 : 2); ++pass)
         {
             const int eye = pass == 0 ? firstEye : 1 - firstEye;
             g_stereoEye.store(eye, std::memory_order_release);
@@ -16106,6 +16116,12 @@ namespace
             }
             g_odstRenderHalfFovX[eye].store(halfX, std::memory_order_relaxed);
             g_odstRenderHalfFovY[eye].store(halfY, std::memory_order_relaxed);
+            if (monoFrame)
+            {
+                // The one picture is the other eye's too: so is the frustum it was drawn with.
+                g_odstRenderHalfFovX[1 - eye].store(halfX, std::memory_order_relaxed);
+                g_odstRenderHalfFovY[1 - eye].store(halfY, std::memory_order_relaxed);
+            }
 
             memcpy(bytes + layout.rootSecondaryCompact, camera,
                    layout.compactSize);
@@ -16134,6 +16150,11 @@ namespace
         g_fpStereoSolveScope.armed = false;
         g_stereoEye.store(-1, std::memory_order_release);
         g_odstCamera.eyeView.store(nullptr, std::memory_order_release);
+        // A capture that missed keeps the last picture, mono or a pair, as it was.
+        if (monoFrame && capturesOk)
+            VR_NoteMonoFrameRendered(GameTitle::Halo3ODST, firstEye);
+        else if (!monoFrame)
+            VR_NoteStereoFrameRendered();
         memcpy(camera, savedCompact, layout.compactSize);
         memcpy(bytes + layout.rootCurrentDerived, savedDerived, layout.derivedSize);
         memcpy(bytes + layout.rootSecondaryCompact, savedSecondaryCompact,
@@ -20565,6 +20586,9 @@ namespace
         FpExplicitPoseTargets fpTargets{};
         alignas(16) unsigned char headCenter[kReachCompactCameraBytes]{};
         ReachEyeRenderInput eyes[2]{};
+        // MONO RENDERING (mono_view_logic.h): this frame's snapshot is one camera for both `eyes`; one pass is
+        // drawn with it.
+        bool mono = false;
         ReachScopeFrame scope{};
     };
 
@@ -25847,6 +25871,10 @@ namespace
         const uint8_t originalLastWindow =
             *reinterpret_cast<uint8_t*>(playerView + kReachLastWindowFlagOffset);
         const bool rightFirst = g_config.right_eye_first;
+        // MONO RENDERING (mono_view_logic.h): the snapshot's two eyes are one camera, and one pass is drawn with
+        // it: as the first eye, and as the engine's final window. The theatre keeps its two eyes.
+        const bool monoFrame = g_reachOwnerScope.mono && !g_reachOwnerScope.cutsceneTheater;
+        const uint32_t eyePasses = monoFrame ? 1u : 2u;
         bool completed = false;
         bool transactionValid = true;
         uint32_t capturedEyes = 0;
@@ -25858,10 +25886,11 @@ namespace
             g_reachCamera.decoratorWindState : nullptr;
         __try
         {
-            for (uint32_t pass = 0; pass < 2; ++pass)
+            for (uint32_t pass = 0; pass < eyePasses; ++pass)
             {
-                const ReachStereoPassPolicy policy = SelectReachStereoPassPolicy(
-                    pass, rightFirst, originalLastWindow);
+                const ReachStereoPassPolicy policy = monoFrame
+                    ? SelectReachMonoPassPolicy(rightFirst, originalLastWindow)
+                    : SelectReachStereoPassPolicy(pass, rightFirst, originalLastWindow);
                 if (!policy.valid)
                 {
                     transactionValid = false;
@@ -26019,7 +26048,8 @@ namespace
                 __try
                 {
                     fpCameraScope.active = true;
-                    if (windState)
+                    // One pass advances the wind once, as the stock frame does: nothing to replay.
+                    if (windState && !monoFrame)
                     {
                         if (pass == 0) windReplay.Begin(windState, ReachWindCopy);
                         else if (windReplay.Replay(windState, ReachWindCopy))
@@ -26057,7 +26087,16 @@ namespace
                 g_reachRenderFovSerial[policy.eye].store(
                     access.preparedSerial, std::memory_order_release);
                 ++capturedEyes;
-                if (pass == 0)
+                if (monoFrame)
+                {
+                    // The one picture is the other eye's too: so are the frustum it was drawn with and, for the
+                    // present's pair check, its frame serial.
+                    const int otherEye = 1 - policy.eye;
+                    g_reachRenderHalfFovX[otherEye].store(rasterFov.horizontal, std::memory_order_relaxed);
+                    g_reachRenderHalfFovY[otherEye].store(rasterFov.vertical, std::memory_order_relaxed);
+                    g_reachRenderFovSerial[otherEye].store(access.preparedSerial, std::memory_order_release);
+                }
+                else if (pass == 0)
                 {
                     memcpy(reinterpret_cast<void*>(workspace), savedWorkspace,
                            kReachRenderScopeSnapshotSize);
@@ -26066,10 +26105,15 @@ namespace
                            savedPv, kReachPvSnapshotBytes);
                 }
             }
-            completed = transactionValid && capturedEyes == 2 &&
-                (committedOuterCameraEyes & 0x3u) == 0x3u;
+            const uint32_t requiredEyes = monoFrame ? (rightFirst ? 0x2u : 0x1u) : 0x3u;
+            completed = transactionValid && capturedEyes == eyePasses &&
+                (committedOuterCameraEyes & requiredEyes) == requiredEyes;
             if (completed)
             {
+                if (monoFrame)
+                    VR_NoteMonoFrameRendered(GameTitle::HaloReach, rightFirst ? 1 : 0);
+                else
+                    VR_NoteStereoFrameRendered();
                 const uint32_t completedGeneration =
                     g_reachCamera.generation.load(std::memory_order_relaxed);
                 PublishReachOuterCameraCommitPair(
@@ -26189,6 +26233,8 @@ namespace
         }
         if (!handled)
         {
+            if (g_reachOwnerScope.mono)
+                VR_NoteMonoFrameRejected(GameTitle::HaloReach);
             // Skip this frame, keep the core. ReachStereoTransaction restores
             // the workspace and player view in its own __finally, so an
             // incomplete attempt leaves no partial engine state behind, and the
@@ -32620,6 +32666,7 @@ namespace
             return g_reachOrigMainRenderView(
                 workspace, playerView, windowIndex);
         }
+        candidate.mono = tracking.mono;
 
         ReachVrRenderAccess access{};
         if (!VR_ReachBeginRenderAccess(epoch, prepared, access))
@@ -45351,6 +45398,10 @@ namespace
         // OpenXR cover.  Sampling this once keeps both eyes in one camera mode
         // for the complete transaction and preserves the existing transition.
         const bool authoredTheater = VR_IsCutsceneTheaterActive();
+        // MONO RENDERING (mono_view_logic.h): the snapshot's two eyes are one camera, and one pass is drawn with
+        // it, as the eye the eye-order setting draws first. The theatre keeps its two eyes.
+        const bool monoFrame = snapshot.mono && !authoredTheater;
+        const int eyePasses = monoFrame ? 1 : 2;
 
         unsigned char savedObserver[kHalo4ObserverSnapshotBytes];
         if (!Halo4SafeRead(reinterpret_cast<const void*>(args.observer),
@@ -45788,7 +45839,7 @@ namespace
             Halo4BeginFloatingPair();
             if(!authoredTheater)Halo4RenderScope(element,view,window,args,savedObserver,controllerRoot,stock,calibration);
             const int firstEye = g_config.right_eye_first ? 1 : 0;
-            for (int pass = 0; pass < 2; ++pass)
+            for (int pass = 0; pass < eyePasses; ++pass)
             {
                 const int eye = pass == 0 ? firstEye : 1 - firstEye;
                 unsigned char eyeObserver[kHalo4ObserverSnapshotBytes];
@@ -46018,12 +46069,25 @@ namespace
         if (!restoreSucceeded)
             rejection = Halo4StereoRejection::RestoreFailed;
         else if (rejection == Halo4StereoRejection::None &&
-                 completedEyes == 2 && uncapturedEyes != 0)
+                 completedEyes == eyePasses && uncapturedEyes != 0)
             rejection = Halo4StereoRejection::EyeCaptureMissing;
 
-        if (restoreSucceeded && completedEyes == 2 && uncapturedEyes == 0 &&
+        if (restoreSucceeded && completedEyes == eyePasses && uncapturedEyes == 0 &&
             rejection == Halo4StereoRejection::None)
         {
+            if (monoFrame)
+            {
+                // The one picture is the other eye's too: so are the frustum it was drawn with and, for the
+                // present's pair check, its image and its frame serial.
+                const int drawnEye = g_config.right_eye_first ? 1 : 0;
+                halfFovX[1 - drawnEye] = halfFovX[drawnEye];
+                halfFovY[1 - drawnEye] = halfFovY[drawnEye];
+                VR_NoteMonoFrameRendered(GameTitle::Halo4, drawnEye);
+            }
+            else
+            {
+                VR_NoteStereoFrameRendered();
+            }
             for (int eye = 0; eye < 2; ++eye)
             {
                 g_halo4RenderHalfFovX[eye].store(
@@ -46076,6 +46140,8 @@ namespace
         if (rejection == Halo4StereoRejection::None)
             rejection = Halo4StereoRejection::TransactionException;
         Halo4NoteRejection(rejection, true);
+        if (monoFrame)
+            VR_NoteMonoFrameRejected(GameTitle::Halo4);
         return Halo4StereoResult::StartedFrameDropped;
     }
 

@@ -445,6 +445,9 @@ struct Halo4VrRenderSnapshot
     bool leftControllerValid = false;
     float leftControllerOrientation[4]{0.0f, 0.0f, 0.0f, 1.0f};
     float leftControllerPosition[3]{};
+    // MONO RENDERING (src/common/mono_view_logic.h): this frame is one pass. Both `eyes` are then the one camera:
+    // no offset, no cant, and the frustum that covers either eye. Last, so the offsets asserted below stand.
+    bool mono = false;
 };
 
 static_assert(sizeof(Halo4VrEyeSnapshot) == 0x30);
@@ -1015,11 +1018,17 @@ bool VR_SupportInvocationReceiptTrustedForReticle(GameTitle title,
 
 // Latest OpenXR per-eye FOV angles: left, right, up, down (radians).
 bool VR_GetEyeFov(int eye, float outFov[4]);
-// MONO RENDERING (src/common/mono_view_logic.h). A title's render hook asks once a frame, before its eye passes.
-// True: draw the world ONCE, as eye 0, from the midpoint of the eyes (no eye offset, no cant) with a symmetric
-// frustum of these half-angle tangents, capture it, and call VR_NoteMonoFrameRendered. False: both eyes as usual.
-bool VR_MonoRenderThisFrame(float& coverTanX, float& coverTanY);
-void VR_NoteMonoFrameRendered();
+// MONO RENDERING (src/common/mono_view_logic.h). Whoever builds a frame's eye cameras for `title` asks once,
+// before its eye passes. True: draw the world ONCE, as the eye the eye-order setting draws first, from the
+// midpoint of the eyes (no eye offset, no cant) with the symmetric frustum `coverFov` (left, right, up, down;
+// radians), capture it, and call VR_NoteMonoFrameRendered with that eye. False: both eyes as usual.
+bool VR_MonoRenderThisFrame(GameTitle title, float coverFov[4]);
+void VR_NoteMonoFrameRendered(GameTitle title, int eye);
+// A pair was drawn: the latest picture is two eyes' again.
+void VR_NoteStereoFrameRendered();
+// The title's renderer turned a single pass down (its own checks on the frame failed). A run of them leaves the
+// title in stereo.
+void VR_NoteMonoFrameRejected(GameTitle title);
 // Pixel aspect of Halo's main render surface. Halo lays native 2D HUD geometry
 // out for this shape, which can differ substantially from the headset's
 // tangent-space view aspect.
@@ -1107,6 +1116,9 @@ struct ReachVrRenderSnapshot
     float leftControllerPosition[3]{};
     VrPadState pad{};
     ReachVrEyeSnapshot eyes[2]{};
+    // MONO RENDERING (src/common/mono_view_logic.h): this frame is one pass. Both `eyes` are then the one camera:
+    // no offset, no cant, and the frustum that covers either eye.
+    bool mono = false;
     int64_t predictedDisplayTimeNs = 0;
     uint64_t trackingSpaceEpoch = 0;
 };

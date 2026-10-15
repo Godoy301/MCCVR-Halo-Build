@@ -2158,12 +2158,13 @@ namespace
         if (CategorySection section{Cat_Picture}; section.visible)
         {
         ImGui::Text("Rendering");
-        changed |= ImGui::Checkbox("Mono rendering (Halo 3): one picture for both eyes", &g_config.mono_rendering);
+        changed |= ImGui::Checkbox("Mono rendering: one picture for both eyes", &g_config.mono_rendering);
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("The game is drawn once a frame instead of once for each eye, and both eyes see that\n"
                               "one picture. You lose 3D depth.\n"
                               "For very large maps that will not hold the headset's frame rate in 3D.\n"
                               "The crosshair and the scope move far away so they do not double.\n"
+                              "Halo 3, ODST, Reach and Halo 4. Halo 2 and Halo: CE are always drawn in 3D.\n"
                               "Not on headsets with angled displays, in the cutscene theatre, or with DLSS.");
         ImGui::Spacing();
         ImGui::Separator();

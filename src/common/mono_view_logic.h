@@ -15,6 +15,11 @@
 // crops it out as it already does from an eye's own symmetric raster. A direction in the picture is the same
 // direction in both eyes.
 //
+// WHICH PASS. A title draws its two eyes in an order the player can set, and does its once-a-frame work (the
+// crosshair's capture, for one) in the first of them. The one pass of a mono frame is drawn AS that first eye, so
+// all of that work happens in it unchanged, and it is the title's LAST pass too: whatever the engine does once a
+// frame after its final view, it does after this one.
+//
 // WHAT IS LAID OVER THE PICTURE. A layer placed at its true distance (the crosshair on what it marks, the scope's
 // pane on the weapon) would be the only thing in view WITH disparity: eye separation over distance, more than a
 // degree at 3 m, and with the eyes converged on the picture it doubles and no longer sits on what it marks. So
@@ -24,8 +29,10 @@
 // subtitles) keep their own depth: they float in front of the picture, as they should.
 //
 // WHERE IT IS REFUSED (MonoRefusal): displays whose eyes do not look the same way (canted: an eye's frustum is
-// then not a sub-rectangle of a straight-ahead picture), while a cutscene is shown as a stereo theatre, and while
-// an upscaler reconstructs each eye from its own history. Refused, the frame is drawn in stereo as before.
+// then not a sub-rectangle of a straight-ahead picture), while a cutscene is shown as a stereo theatre, while an
+// upscaler reconstructs each eye from its own history, and in a title whose renderer has turned down a run of
+// single passes (MonoRejections: the player gets the stereo picture back instead of none). Refused, the frame is
+// drawn in stereo as before.
 //
 // No Windows or OpenXR calls here; the unit test is tests/mono_view_tests.cpp.
 
@@ -84,6 +91,7 @@ enum class MonoRefusal
     Canted,        // the eyes do not look the same way
     Theatre,       // a cutscene is being shown as a stereo theatre
     Upscaler,      // each eye is being reconstructed from its own history
+    Rejected,      // this title's renderer turned down a run of single passes
     Count
 };
 inline const char* MonoRefusalName(MonoRefusal r)
@@ -97,6 +105,7 @@ inline const char* MonoRefusalName(MonoRefusal r)
     case MonoRefusal::Canted: return "this headset's eyes do not look the same way (canted displays)";
     case MonoRefusal::Theatre: return "a cutscene is being shown as a stereo theatre";
     case MonoRefusal::Upscaler: return "the upscaler is reconstructing each eye from its own history";
+    case MonoRefusal::Rejected: return "this game's renderer did not accept a single pass, so it is left in stereo";
     default: return "?";
     }
 }
@@ -108,6 +117,7 @@ struct MonoInput
     float eyeCantDeg = 180.0f;
     bool theatre = false;
     bool upscaler = false;
+    bool rejected = false;
 };
 inline MonoRefusal DecideMono(const MonoInput& in)
 {
@@ -123,8 +133,32 @@ inline MonoRefusal DecideMono(const MonoInput& in)
         return MonoRefusal::Theatre;
     if (in.upscaler)
         return MonoRefusal::Upscaler;
+    if (in.rejected)
+        return MonoRefusal::Rejected;
     return MonoRefusal::None;
 }
+
+// A title's renderer can turn a single pass down (its own checks on a frame fail). One such frame is a frame
+// dropped, as in stereo; a run of them is a title that cannot be drawn this way, and it is left in stereo until
+// the setting is switched off and on again or the title is loaded anew. A frame that is drawn ends a run.
+inline constexpr unsigned kMonoRejectionsToRefuse = 30;
+struct MonoRejections
+{
+    unsigned run = 0;
+    bool refused = false;
+    void Rendered() noexcept { run = 0; }
+    // True on the rejection that makes the refusal.
+    bool Rejected() noexcept
+    {
+        if (refused)
+            return false;
+        if (++run < kMonoRejectionsToRefuse)
+            return false;
+        refused = true;
+        return true;
+    }
+    void Reset() noexcept { run = 0; refused = false; }
+};
 
 // A layer registered to a point of the world, moved to where it has no disparity: out along the ray from the
 // midpoint of the eyes (`centre`) through its own position, to `farM`, its size scaled by the same factor.
