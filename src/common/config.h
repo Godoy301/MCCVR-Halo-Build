@@ -902,6 +902,13 @@ struct Config
     // old files that set those are still read, as aliases that can only turn it on. (default 1: direct drive is
     // the aim path everything else builds on; no release ever shipped this key, so no saved file holds an old 0)
     int aim_direct_drive = 1;
+    // EVERY TITLE WITH DIRECT DRIVE: 1 = the address cache (src/common/drive_known.h). When a drive had to search
+    // its game DLL for its code -- a game build the mod's tables were not measured on -- what it found is written
+    // to HaloMCCVR-drive-addresses.txt in the mod's folder, and the next launch on that build verifies those
+    // addresses instead of searching again. The file is a cache, not a setting: every address is verified
+    // before it is used, another game build or another version of the mod's tables makes an entry dead, and
+    // deleting it costs one search. 0 = the file is neither read nor written. (default 1)
+    int drive_address_cache = 1;
     // EVERY TITLE, live from F1 > Weapon & aim > "Converged aim" (Reach's also needs direct drive; with it off
     // Reach keeps its own convergence), on foot and in Halo 3, ODST and Reach seats (reach_vehicle_aim):
     // CONVERGED AIM (1). The game traces the ray from your eye along the controller and bends the aim so the
@@ -960,6 +967,26 @@ struct Config
     // a first-person game camera reads "not first person" (the value agreement with the view model must
     // then withdraw the rung). Read at launch; 0 for every other run.
     int first_person_rung_fault = 0;
+    // DEV BUILDS ONLY (not parsed and compiled out otherwise; never saved): fault injection for the direct drives'
+    // address resolution, every title (src/common/drive_resolve.h, src/dll/drive_cascade.cpp). Each bit forces one
+    // thing that only happens on a game build the tables were not measured on, so the rung below it -- or the
+    // refusal -- can be watched working through the real install path. Bit 0 (0x01) = every signature search
+    // finds nothing: no drive is hooked, each says what was not found. Bit 1 (0x02) = every signature search
+    // finds one match too many: each is taken at its recorded address, and says so. Bit 2 (0x04) = every recorded
+    // RVA is wrong: the search must win, and each address is reported MOVED. Bits 1 and 2 together = ambiguous
+    // with no record to settle it: no drive is hooked. Bit 3 (0x08) = the module's PE TLS directory disagrees
+    // with the instruction a drive anchors on: no drive that reads the engine TLS index is hooked. Bit 4 (0x10)
+    // = a hook's watchdog is told the hook never ran: it must say so once, after its ten seconds of possible
+    // time. Bit 5 (0x20) = no short field anchor stands at its recorded offset in its function: each must be the
+    // one match inside that function. Bit 6 (0x40) = the addresses saved from an earlier launch are stale: the
+    // resolution behaves as on a build that is not the recorded one, verifying them fails, and the search must
+    // find everything. Bit 7 (0x80) = a self-test, not a fault: where the known addresses verified, the search
+    // is run as well and the log says whether the two agree; what is used does not change. With bits 0, 1, 2
+    // or 5 the known addresses fail first, so the whole path shows: not verified, searched, reported. While
+    // ANY bit is set the address cache's file is neither read nor written, so nothing a launch with this key
+    // in it found can reach a later launch (with bit 7 the self-test is therefore of the recorded addresses,
+    // the only known ones left). Read when a drive is installed; 0 for every other run.
+    int drive_fault = 0;
     // Diagnostic: log the distinct (caller, flags, mode) of Reach's own collision_test_vector calls,
     // to identify the flags a bullet's flight test uses. Leave at 0 for play.
     int reach_collision_census = 0;

@@ -328,6 +328,12 @@ if(HALOMCCVR_EXPERIMENTAL_HALO4_CAMERA)
 endif()
 # Halo 3 / ODST / Halo 4 direct drive (legacy_direct_drive): the control-update detours.
 target_sources(halo3xr PRIVATE src/dll/legacy_player_control_hook.asm)
+# Where the direct drives' code is in the loaded game DLL (src/common/drive_sites.h, drive_resolve.h): the DLL's
+# side of the resolution, and the address-verification library it uses (the TLS directory read, the watchdog, the
+# reporter).
+target_sources(halo3xr PRIVATE
+    src/dll/drive_cascade.cpp
+    src/common/addrcascade/AddressCascade.cpp)
 # Halo 2 direct drive (halo2_direct_drive.inl): its control-update detour, with the observer it reads.
 if(HALOMCCVR_HALO2_OBSERVER_6DOF)
     target_sources(halo3xr PRIVATE src/dll/halo2_player_control_hook.asm)
@@ -360,6 +366,9 @@ target_compile_definitions(halo3xr PRIVATE
     HALOMCCVR_HALO2_OBSERVER_6DOF=$<BOOL:${HALOMCCVR_HALO2_OBSERVER_6DOF}>
     HALOMCCVR_HALO2_RENDER_PROBE=$<BOOL:${HALOMCCVR_HALO2_RENDER_PROBE}>
     HALOMCCVR_DEV_DIAGNOSTICS=$<BOOL:${HALOMCCVR_DEV_DIAGNOSTICS}>
+    # Fault injection for the direct drives' address resolution (config key drive_fault): dev builds only. A player
+    # build leaves it undefined, and the forcing code is not compiled (addrcascade::fault, drive_resolve::Fault).
+    $<$<BOOL:${HALOMCCVR_DEV_DIAGNOSTICS}>:ADDRCASCADE_FAULTS=1>
     HALOMCCVR_HALO2_ANNIVERSARY_STEREO=$<BOOL:${HALOMCCVR_HALO2_ANNIVERSARY_STEREO}>
     HALOMCCVR_BUILD_COMMIT="${HALOMCCVR_BUILD_COMMIT}"
     HALOMCCVR_BUILD_ODST="${HALOMCCVR_BUILD_ODST}"
@@ -1141,6 +1150,77 @@ if(BUILD_TESTING)
     add_executable(halomccvr_type13_flight_log_tests tests/type13_flight_log_tests.cpp)
     target_include_directories(halomccvr_type13_flight_log_tests PRIVATE src/common)
     add_test(NAME halomccvr_type13_flight_log_tests COMMAND halomccvr_type13_flight_log_tests)
+    # addrcascade (src/common/addrcascade): the address-verification library the direct drives resolve through.
+    # Its two source files are unmodified copies, so its tests compile them ALONE: of this project's folders only
+    # its own is on the include path, at /W4 /WX, with a consumer that includes nothing else of this project. One
+    # convenient #include of a project header would never fail in the DLL's build, where they all are.
+    # Built twice: as a player build sees it (ADDRCASCADE_FAULTS undefined, fault() a constant false) and as a dev
+    # build does (ADDRCASCADE_FAULTS=1).
+    foreach(halomccvr_addrcascade_flavour "" "_faults")
+        set(halomccvr_addrcascade_target "halomccvr_addrcascade${halomccvr_addrcascade_flavour}_tests")
+        add_executable(${halomccvr_addrcascade_target}
+            tests/addrcascade_tests.cpp src/common/addrcascade/AddressCascade.cpp)
+        target_include_directories(${halomccvr_addrcascade_target} PRIVATE src/common/addrcascade)
+        if(MSVC)
+            target_compile_options(${halomccvr_addrcascade_target} PRIVATE /W4 /WX)
+        endif()
+        add_test(NAME ${halomccvr_addrcascade_target} COMMAND ${halomccvr_addrcascade_target})
+    endforeach()
+    target_compile_definitions(halomccvr_addrcascade_faults_tests PRIVATE ADDRCASCADE_FAULTS=1)
+    # Drive address resolution (src/common/drive_resolve.h) over synthetic images: found as recorded, followed
+    # when the code moved, refused when ambiguous or missing, told apart by the recorded address, resolved inside
+    # its function, read through this mod's own hooks, and every forced fault.
+    add_executable(halomccvr_drive_resolve_tests tests/drive_resolve_tests.cpp)
+    target_include_directories(halomccvr_drive_resolve_tests PRIVATE src/common)
+    add_test(NAME halomccvr_drive_resolve_tests COMMAND halomccvr_drive_resolve_tests)
+    # EVERY REAL PLAN of src/common/drive_sites.h -- the code that decides what each drive hooks -- run on an image
+    # synthesised from the tables themselves (each row's bytes at its recorded RVA, inside function extents
+    # generated from the rows, with a matching .pdata, calls and rip loads filled as the plan requires): as
+    # recorded, moved, and with one row broken at a time; then the proofs that are not rows. No game file.
+    add_executable(halomccvr_drive_sites_tests tests/drive_sites_tests.cpp)
+    target_include_directories(halomccvr_drive_sites_tests PRIVATE src/common)
+    add_test(NAME halomccvr_drive_sites_tests COMMAND halomccvr_drive_sites_tests)
+    # The DLL's side of that resolution (src/dll/drive_cascade.cpp), as shipped, on a module that is really loaded
+    # (the test's own executable): opened through VirtualQuery, its .pdata compared with the operating system's own
+    # lookup, its TLS index taken from its PE TLS directory, a signature read through a hook patch, the address
+    # cache's file written, verified from, replaced, refused and left whole by a failed write on disk, the line
+    # that says which rung won, and the hook watchdog as the cold worker steps it. Player flavour (the dev fault
+    # key must do nothing), then dev flavour (each forced fault must show).
+    foreach(halomccvr_drive_cascade_flavour "" "_dev")
+        set(halomccvr_drive_cascade_target "halomccvr_drive_cascade${halomccvr_drive_cascade_flavour}_tests")
+        add_executable(${halomccvr_drive_cascade_target} tests/drive_cascade_tests.cpp
+            src/dll/drive_cascade.cpp src/dll/sigscan.cpp src/common/config.cpp
+            src/common/addrcascade/AddressCascade.cpp)
+        target_include_directories(${halomccvr_drive_cascade_target} PRIVATE src/common src/dll)
+        target_compile_definitions(${halomccvr_drive_cascade_target} PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+        target_link_libraries(${halomccvr_drive_cascade_target} PRIVATE psapi)
+        add_test(NAME ${halomccvr_drive_cascade_target} COMMAND ${halomccvr_drive_cascade_target})
+    endforeach()
+    target_compile_definitions(halomccvr_drive_cascade_dev_tests PRIVATE
+        HALOMCCVR_DEV_DIAGNOSTICS=1 ADDRCASCADE_FAULTS=1)
+    # THE OFFLINE CHECK of the direct drives' addresses against the game's own DLL files
+    # (tools/drive_address_check.cpp): each DLL laid out as an image, every drive's own resolution run on it from
+    # the same tables the DLL uses (src/common/drive_sites.h), then again on a copy with every section moved, and
+    # again with each fault forced. It needs the MCC install folder (--mcc <folder>, or the HALOMCCVR_MCC_DIR
+    # environment variable) and only reads the DLLs. With neither it exits 77, which ctest reports as skipped: a
+    # machine without the game does not fail its tests.
+    # With --loaded <scratch folder> it also maps a copy of each DLL as the Windows loader does (its code not run)
+    # and resolves every drive on it through the DLL's own side of the resolution (src/dll/drive_cascade.cpp).
+    # That side is built here as a dev build builds it, so the tool can run the search beside the verified addresses
+    # (the self-test bit of drive_fault) on each mapped copy. With --loaded it also makes each install's own
+    # decision on the mapped copy, says the line the install logs, and puts the address cache through a real
+    # file in that folder. Everything is done for the player build's plans and for the dev build's.
+    # The test below never passes --loaded, and where HALOMCCVR_MCC_DIR is not set it is SKIPPED, which ctest
+    # counts among the tests that passed: a green run there has read no game DLL.
+    add_executable(halomccvr_drive_address_check tools/drive_address_check.cpp
+        src/dll/drive_cascade.cpp src/dll/sigscan.cpp src/common/config.cpp
+        src/common/addrcascade/AddressCascade.cpp)
+    target_include_directories(halomccvr_drive_address_check PRIVATE src/common)
+    target_compile_definitions(halomccvr_drive_address_check PRIVATE
+        NOMINMAX WIN32_LEAN_AND_MEAN ADDRCASCADE_FAULTS=1 HALOMCCVR_DEV_DIAGNOSTICS=1)
+    target_link_libraries(halomccvr_drive_address_check PRIVATE psapi)
+    add_test(NAME halomccvr_drive_address_check COMMAND halomccvr_drive_address_check --moved --faults --brief)
+    set_tests_properties(halomccvr_drive_address_check PROPERTIES SKIP_RETURN_CODE 77)
     add_executable(halomccvr_dev_pad_script_tests tests/dev_pad_script_tests.cpp)
     target_include_directories(halomccvr_dev_pad_script_tests PRIVATE src/common)
     add_test(NAME halomccvr_dev_pad_script_tests COMMAND halomccvr_dev_pad_script_tests)

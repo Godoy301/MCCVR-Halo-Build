@@ -100,6 +100,10 @@
 #include "../common/reach_hand_shot_logic.h"
 #include "../common/aim_no_unit_logic.h"
 #include "../common/title_runtime_state.h"
+// Where the direct drives' code is in the loaded game DLL: the tables and their resolution, and the DLL's side.
+#include "../common/drive_sites.h"
+#include "drive_cascade.h"
+#include "drive_install.h"
 // THE FREE CAMERA WITH NO PLAYER UNIT (src/common/aim_no_unit_logic.h). Each servo title's own vehicle/seat
 // sampler already reads its local player's unit through the output-user getter on an engine thread; it also
 // publishes Present / Absent here, one word per title, with the time it read it. Game_ComputeAimStick (the input
@@ -208,6 +212,9 @@ static std::atomic<unsigned>           g_reachDriveResetSeq{0};
 static std::atomic<int>                g_reachUnitCrouchState{-1};
 static std::atomic<unsigned long long> g_reachUnitCrouchMs{0};
 static void* g_reachPcTarget = nullptr;
+static uint32_t g_reachPcEntryRva = 0;   // where the install found the control update in this module
+static uint32_t g_reachPcInstalls = 0;   // how many times that hook has been installed (worker)
+static void ReachDriveForgetCalls();     // ... each of which is watched afresh (the hook watchdog)
 // The seat's frame for the Reach direct drive (seat_frame_reader.h): what the vehicle-tilt rebase 0x48ADB8 will do
 // to a seated record, read by ReachPcApplyForUser on the sim thread. Bound with the hook (ReachSeatFrameBind),
 // unbound when it is removed.
@@ -220,9 +227,12 @@ static std::atomic<unsigned long long> g_reachSeatFrameUnknownMs{0};
 static void ReachSeatFrameBind(uintptr_t base, size_t size);
 static void ReachRecordDesiredAim(float gameYaw, float gamePitch);
 extern "C" void ReachPcApplyForUser(int user, const uint8_t* entryRsp);
+// What the control update's install resolves in the loaded module (drive_sites.h: PlanReachControl): the update
+// itself, its callers and, in a dev build, the sim tick counter the census reads.
+using ReachControlFound = drive_sites::ReachControlPlan;
 // Which caller ran the accumulator (aim_caller_logic.h; defined beside ReachPcApplyForUser). Built at install,
-// before the hook is enabled.
-static bool ReachBuildCallerMap(uintptr_t base, size_t size);
+// before the hook is enabled, from what that resolution found.
+static bool ReachBuildCallerMap(uintptr_t base, size_t size, const ReachControlFound& resolved);
 // player_control through the engine TLS, exactly as 0x6375C does it (mov edi,0xD8; lea rbx,[rsi+rsi*2];
 // shl rbx,7): globals = *(TLS + 0xD8); user entry = globals + user * 0x180. Both constants are verified
 // in place by the install's exact-byte anchors before the hook exists.
@@ -254,6 +264,18 @@ bool LegacyDriveInstall(GameTitle title, uintptr_t base, size_t size);
 bool LegacyDriveRemove(GameTitle title);
 bool LegacyDriveLive(GameTitle title);
 void LegacyDriveReport();
+// THE PLAYER IS IN CONTROL OF `title`, as the direct drives' hook watchdogs ask it (drive_cascade.h: HookWatch):
+// it is the active title, in the Gameplay runtime mode, and its camera hook's cinematic-control publication of
+// this generation, no older than a second, says the player has control (not an authored camera, not unread).
+// Nothing here is produced by a direct-drive hook, which is what lets it say when such a hook SHOULD be running.
+static bool DriveWatchPlayerInControl(GameTitle title, uint64_t nowMs)
+{
+    if (TitleAdapter_GetActiveTitle() != title || TitleAdapter_GetRuntimeMode() != RuntimeMode::Gameplay)
+        return false;
+    const CinematicControlPublication cine = TitleAdapter_GetCinematicControlPublication(title);
+    return cine.generation == TitleAdapter_GetGeneration(title) && cine.heartbeatMs && nowMs >= cine.heartbeatMs &&
+           nowMs - cine.heartbeatMs <= 1000 && cine.state == CinematicControlState::PlayerControlled;
+}
 // The Halo 4 tracker lane's run-time proof (halo4_head_relative.inl) compares the game's heading with this: the aim
 // yaw this mod's direct drive is WRITING into the game's own aim, on foot. False when the drive is not live or
 // nothing that fresh was published. Defined after legacy_direct_drive.inl.
@@ -364,52 +386,9 @@ bool Halo4Type13LogInstall(uintptr_t base, size_t size, uint32_t generation);
 #include "gesture_melee_bindings.inl"
 
 // AIM CALLER SPLIT (aim_caller_logic.h), engine side, shared by the Halo 3 / ODST / Halo 4 accumulator hook
-// (legacy_direct_drive.inl) and Reach's (ReachPcApplyForUser).
-//
-// The dispatcher-frame proof: the .pdata entry that contains the dispatcher, then the engine-free proof over
-// it (the entry begins at the dispatcher and contains the accumulator's call past the prolog; the unwind
-// info and the prologue's own instructions decode to one fixed frame). `entryFrame`: where the dispatcher's
-// return sits relative to the accumulator's entry rsp. `why`: the first failing proof.
-static bool AimCallerProveDispatcher(uintptr_t base, size_t size, uint32_t dispatcherRva, uint32_t accCallRva,
-                                     uint32_t& entryFrame, const char*& why)
-{
-    entryFrame = 0;
-    why = nullptr;
-    DWORD64 imageBase = 0;
-    const PRUNTIME_FUNCTION function =
-        RtlLookupFunctionEntry(static_cast<DWORD64>(base + dispatcherRva), &imageBase, nullptr);
-    if (!function || imageBase != static_cast<DWORD64>(base))
-    {
-        why = "dispatcher .pdata entry";
-        return false;
-    }
-    return aim_caller::ProveDispatcherFrame(reinterpret_cast<const uint8_t*>(base), size, dispatcherRva,
-                                           function->BeginAddress, function->EndAddress, function->UnwindData,
-                                           accCallRva, entryFrame, why);
-}
-
-// The pattern matches at exactly base + rva and nowhere else in the module.
-static bool AimCallerUniqueAt(uintptr_t base, size_t size, uint32_t rva, const char* pattern)
-{
-    const uintptr_t first = sig::Find(base, size, pattern);
-    if (first != base + rva)
-        return false;
-    const uintptr_t next = first + 1;
-    return next >= base + size || !sig::Find(next, static_cast<size_t>(base + size - next), pattern);
-}
-
-// The `call` (E8 rel32) at `callRva` lands on `targetRva`: its return address, or 0.
-static uintptr_t AimCallerCallReturn(uintptr_t base, size_t size, uint32_t callRva, uint32_t targetRva)
-{
-    if (!callRva || static_cast<size_t>(callRva) + 5 > size)
-        return 0;
-    const auto* call = reinterpret_cast<const uint8_t*>(base + callRva);
-    int32_t rel = 0;
-    memcpy(&rel, call + 1, sizeof(rel));
-    if (call[0] != 0xE8 || static_cast<int64_t>(callRva) + 5 + rel != static_cast<int64_t>(targetRva))
-        return 0;
-    return base + callRva + 5;
-}
+// (legacy_direct_drive.inl) and Reach's (ReachPcApplyForUser). The proofs an install makes on the loaded module
+// -- a call that lands on its target, the dispatcher's frame out of the system's function table -- are
+// drive_install.h's (CallReturn, ProveDispatcher), which the offline check runs too.
 
 // The put-back slot's safety cap runs on QPC (monotonic, sub-millisecond), not GetTickCount64 (~16 ms steps).
 static uint64_t AimCallerClockNow()
@@ -441,32 +420,30 @@ constexpr uint64_t kAimCallerPutBackCapMs = 250;
 // field disp8 at +0x1E are read from it) and by the per-tick incrementer (unique; the same slot, where its
 // bytes carry one, and the same field). Any failure: the census reports the tick as unreadable.
 // ADDR-HYGIENE: dev-only (census; nothing reads it to decide anything).
-struct AimCallerTickAnchors
-{
-    uint32_t getterRva;
-    const char* getter;
-    uint32_t incRva;
-    const char* inc;
-    uint8_t incSlotOff;    // 0xFF: the slot is set earlier, not in these bytes
-    uint8_t incFieldOff;
-};
-
-static bool AimCallerTickProof(uintptr_t base, size_t size, uintptr_t tlsIndexAddress, const AimCallerTickAnchors& a,
-                               uint32_t& slot, uint32_t& field)
+// The proof over the getter and the incrementer as the install's resolution FOUND them in this module
+// (drive_sites::ResolveTick: each by its own signature, once; 0: not found).
+static bool AimCallerTickProofAt(uintptr_t base, size_t size, uintptr_t tlsIndexAddress,
+                                 const drive_sites::TickAnchors& a, const drive_sites::Tick& found, uint32_t& slot,
+                                 uint32_t& field)
 {
     slot = field = 0;
-    if (!AimCallerUniqueAt(base, size, a.getterRva, a.getter) || !AimCallerUniqueAt(base, size, a.incRva, a.inc))
+    if (!found.getter || !found.increment || static_cast<size_t>(found.getter) + 0x20 > size ||
+        static_cast<size_t>(found.increment) + 0x20 > size)
         return false;
-    const auto* g = reinterpret_cast<const uint8_t*>(base + a.getterRva);
+    // Both anchors' bytes, read under a guard (drive_install.h) though the plan found them.
+    uint8_t g[0x20], inc[0x20];
+    if (!drive_install::Read(base + found.getter, g, sizeof(g)) || !drive_install::Read(base + found.increment, inc, sizeof(inc)))
+        return false;
     int32_t disp = 0;
     memcpy(&disp, g + 2, sizeof(disp));
     if (g[0] != 0x8B || g[1] != 0x0D ||
-        base + a.getterRva + 6 + static_cast<intptr_t>(disp) != tlsIndexAddress)
+        base + found.getter + 6 + static_cast<intptr_t>(disp) != tlsIndexAddress)
         return false;
     uint32_t getterSlot = 0;
     memcpy(&getterSlot, g + 0x10, sizeof(getterSlot));
     const uint8_t getterField = g[0x1E];
-    const auto* inc = reinterpret_cast<const uint8_t*>(base + a.incRva);
+    if ((a.incSlotOff != 0xFF && a.incSlotOff + sizeof(uint32_t) > sizeof(inc)) || a.incFieldOff >= sizeof(inc))
+        return false;
     uint32_t incSlot = getterSlot;
     if (a.incSlotOff != 0xFF)
         memcpy(&incSlot, inc + a.incSlotOff, sizeof(incSlot));
@@ -36235,10 +36212,13 @@ namespace
         // haloreach+0x6375C -- the ACCUMULATOR of player_control.desired_angles (a one-shot write there
         // moves the aim) -- and, after it runs on the sim thread, overwrite desired
         // yaw+0x94 / pitch+0x98 with the VR aim: upstream of the derived aim vector AND of replication.
-        // ADDR-HYGIENE: guarded. The RVA is a measurement of this build; three unique exact-byte anchors
-        // must all match before a hook exists: the entry prologue (so MinHook relocates known
-        // instructions), the TLS/stride block (mov edi,0xD8 ... lea rbx,[rsi+rsi*2] ... mov r14,
-        // [rax+rcx*8]) and the accumulator itself (addss/movss [rdi+rbx+0x94]). Any mismatch = no hook,
+        // ADDR-HYGIENE: resolved (src/common/drive_sites.h, ResolveReachControl). The recorded RVAs say where
+        // nothing is: three exact-byte anchors are FOUND by signature anywhere in the module's code before a hook
+        // exists, each exactly once -- the entry prologue (so MinHook relocates known instructions; it must be
+        // where a function starts), and inside that function the TLS/stride block (mov edi,0xD8 ... lea
+        // rbx,[rsi+rsi*2] ... mov r14,[rax+rcx*8]) and the accumulator itself (addss/movss [rdi+rbx+0x94]). The
+        // engine TLS index must be the module's own (its PE TLS directory), loaded by the TLS block's own
+        // instruction, AND the one this lane's readers use (kReachEngineTlsIndexRva). Anything not found = no hook,
         // said loudly; the stick servo keeps aiming. Installed DISARMED: the engine-thread arm-gate
         // (ReachDriveArmGate_OnEngineTick) validates the player_control address before the first write.
         // 0x1E0834 is not a substitute target: a hook there installs but never runs on foot.
@@ -36246,35 +36226,46 @@ namespace
         // validates the record in mode 3, and the gate disarms it again the moment the mode leaves 3.
         if (!g_reachPcTarget)
         {
-            // (The prologue alone also occurs at +0x6AA488; the frame size and the first xmm saves make it
-            // unique -- verified offline against the mapped image.)
-            const bool entryOk = ReachColdExactSignatureAt(base, size, 0x6375C,
-                "48 8B C4 48 89 58 10 48 89 70 18 48 89 78 20 55 41 54 41 55 41 56 41 57 48 8D 6C 24 80 "
-                "48 81 EC 80 01 00 00 0F 29 70 C8 0F 29 78 B8");
-            const bool tlsOk = ReachColdExactSignatureAt(base, size, 0x637FA,
-                "8B 0D ?? ?? ?? ?? BF D8 00 00 00 F3 0F 11 5C 24 50 48 8D 1C 76 4C 8B 34 C8");
-            const bool accOk = ReachColdExactSignatureAt(base, size, 0x63AF9,
-                "0F 28 D0 F3 0F 58 94 1F 94 00 00 00 41 83 CB FF B8 10 00 00 00 F3 0F 11 94 1F 94 00 00 00");
-            if (entryOk && tlsOk && accOk)
+            drive_cascade::Resolution<ReachControlFound> resolution;
+            const drive_cascade::Drive drive{GameTitle::HaloReach, "control-update"};
+            // The plan is drive_sites.h's own function, the one the tests and the offline check run: with the sim
+            // tick's two anchors in a dev build, without them in a player build.
+            const bool opened = drive_cascade::Resolve(base, size, drive, resolution, [](drive_resolve::Resolver& r) {
+                return drive_sites::PlanReachControl<HALOMCCVR_DEV_DIAGNOSTICS != 0>(r);
+            });
+            const drive_sites::ReachControl& found = resolution.found.control;
+            if (opened)
+                drive_cascade::Announce(drive_cascade::kReachName, resolution);
+            // THE DECISION (drive_install.h; the offline check runs the same function on haloreach.dll as the
+            // loader maps it): each anchor on a page of code, and the module's TLS index the one this lane's
+            // readers use -- the hook, the arm gate and the Sabre's controller all read it through that constant.
+            const drive_install::ReachControlDecision decision =
+                drive_install::DecideReachControl(base, opened, found, static_cast<uint32_t>(kReachEngineTlsIndexRva));
+            const bool entryOk = decision.entryOk, tlsOk = decision.tlsOk, accOk = decision.accOk,
+                       indexOk = decision.indexOk;
+            if (decision.hook)
             {
                 // Which caller ran it (the dispatcher's return): built while no hook can run, logged inside.
-                (void)ReachBuildCallerMap(base, size);
+                (void)ReachBuildCallerMap(base, size, resolution.found);
                 // The seat's frame (the vehicle-tilt rebase, read by the hook itself): bound while no hook can run.
                 ReachSeatFrameBind(base, size);
-                void* target = reinterpret_cast<void*>(base + 0x6375C);
+                void* target = reinterpret_cast<void*>(base + found.entry);
+                ++g_reachPcInstalls;
+                ReachDriveForgetCalls();
                 const MH_STATUS created = MH_CreateHook(
                     target, reinterpret_cast<void*>(&ReachPlayerControlHook),
                     reinterpret_cast<void**>(&g_reachPcOrig));
                 if (created == MH_OK && MH_EnableHook(target) == MH_OK)
                 {
                     g_reachPcTarget = target;
+                    g_reachPcEntryRva = found.entry;
                     // A fresh hook starts disarmed with a released gate (the reset is applied on the
                     // engine thread), and only then may the gate run again.
                     ReachDriveDisarm();
                     g_reachDriveResetSeq.fetch_add(1, std::memory_order_acq_rel);
                     g_reachDriveTearingDown.store(false, std::memory_order_release);
-                    LOG("Reach direct-drive: control-update hook INSTALLED at haloreach.dll+0x6375C (disarmed "
-                        "until the arm-gate validates player_control)");
+                    LOG("Reach direct-drive: control-update hook INSTALLED at haloreach.dll+0x%X (disarmed "
+                        "until the arm-gate validates player_control)", found.entry);
                 }
                 else
                 {
@@ -36290,8 +36281,20 @@ namespace
             }
             else
             {
-                LOG("Reach direct-drive: anchors did not match this build (entry=%d tls=%d accumulator=%d) -- "
-                    "NO hook; the stick servo keeps aiming", entryOk ? 1 : 0, tlsOk ? 1 : 0, accOk ? 1 : 0);
+                char first[280] = "";
+                if (opened)
+                    drive_cascade::FirstFailure(resolution.report, first, sizeof(first));
+                LOG("Reach direct-drive: anchors did not resolve in this build (%s; entry=%d tls=%d accumulator=%d "
+                    "tls-index=%d: the module's is +0x%X, this lane reads +0x%llX) -- NO hook; the stick servo keeps "
+                    "aiming", opened ? first : (resolution.why ? resolution.why : "the module did not open"),
+                    entryOk ? 1 : 0, tlsOk ? 1 : 0, accOk ? 1 : 0, indexOk ? 1 : 0, found.tlsIndex,
+                    static_cast<unsigned long long>(kReachEngineTlsIndexRva));
+                // NOT FOLLOWED, and said as what it is: the code may all have been found.
+                if (opened && found.tlsIndex && !indexOk)
+                    LOG("Reach direct-drive: NOT FOLLOWED. This game DLL keeps its engine TLS index at +0x%X, and "
+                        "this lane's run-time readers read it at the recorded +0x%llX: Reach's data moved. The drive "
+                        "is not hooked, even where every code site was found, until that constant is the module's",
+                        found.tlsIndex, static_cast<unsigned long long>(kReachEngineTlsIndexRva));
             }
         }
 #if HALOMCCVR_DEV_DIAGNOSTICS
@@ -53254,14 +53257,22 @@ bool Game_ReachSightReticleRange(float& outRangeM, bool& outHit)
 // at the accumulator's entry rsp + 0x100 (0x6350C keeps a fixed 0xF8-byte frame, 7 pushes + 0xC0, no frame
 // register). Only the stick call is the update: counted as one, the impulse call steps the seat-limit
 // latch (a false limit whenever the vehicle is hit, which also clears the converged stamp) and the counters.
-// ADDR-HYGIENE: guarded. The accumulator's call site, the dispatcher prologue and each caller site are exact
-// byte patterns that must be unique and match at their RVAs, every E8 must land on its target, and the frame
-// is proven from the dispatcher's .pdata/unwind info and its prologue (AimCallerProveDispatcher). Rung 1 is the
-// stick site: without it every call counts as the update (no split by caller). A missing impulse
-// or no-unit site only reads as unknown (put back). Measured on the retail Steam module.
+// ADDR-HYGIENE: resolved (src/common/drive_sites.h, kReachCallerAnchors and ResolveCallers). The accumulator's
+// call site, the dispatcher prologue and each caller site are exact byte patterns FOUND by signature in the module
+// (each exactly once), every E8 must land on its found target, the dispatcher must be the function that holds the
+// accumulator's call, and the frame is proven from the dispatcher's .pdata/unwind info and its prologue
+// (drive_install::ProveDispatcher). Rung 1 is the stick site: without it every call counts as the update (no split by
+// caller). A missing impulse or no-unit site only reads as unknown (put back).
 static aim_caller::CallerMap g_reachCallerMap;            // written at install, before the hook is enabled
 static std::atomic<uint8_t>  g_reachCallerMode{0};        // for the cold worker: 0 not proven, 2 by dispatcher
 static std::atomic<unsigned> g_reachRoleCalls[aim_caller::kCallerCount]{};
+// A new install of the control-update hook: nothing counted before it may read as a call of this one (the hook
+// watchdog, Game_ReachDirectDriveReport).
+static void ReachDriveForgetCalls()
+{
+    for (auto& role : g_reachRoleCalls)
+        role.store(0, std::memory_order_relaxed);
+}
 static std::atomic<unsigned> g_reachPutBacks{0}, g_reachPutBacksRefused{0};
 static std::atomic<uintptr_t> g_reachLastUnknownRet{0};
 #if HALOMCCVR_DEV_DIAGNOSTICS
@@ -53272,77 +53283,39 @@ static uint32_t g_reachTickSlot = 0, g_reachTickField = 0;   // proven at instal
 static std::atomic<uint32_t> g_reachCensusPutBacks{0};
 static std::atomic<uint32_t> g_reachRefusals[aim_caller::kRefusalCount]{};
 static std::atomic<uint32_t> g_reachExtraDeltaMax[2][2]{}, g_reachStickDriftMax[2][2]{};
-static constexpr AimCallerTickAnchors kReachTickAnchors{
-    0x5C410, "8B 0D ?? ?? ?? ?? 65 48 8B 04 25 58 00 00 00 BA A0 00 00 00 48 8B 04 C8 48 8B 0C 10 8B 41 0C C3",
-    0x57A4C, "F6 44 24 7C 01 4C 89 3D ?? ?? ?? ?? 74 0C B8 A0 00 00 00 48 8B 04 18 FF 40 0C", 15, 25};
 #endif
 
-static bool ReachBuildCallerMap(uintptr_t base, size_t size)
+// Builds the caller map from the call sites the install's resolution FOUND in this module (drive_sites.h,
+// kReachCallerAnchors) and logs what it proved. Each found call is proven again here, on the loaded image: its
+// rel32 must land on its target, and the dispatcher's frame is taken from the loaded module's own function table
+// (drive_install::ProveDispatcher) and must be the one the resolution proved from the module's .pdata.
+static bool ReachBuildCallerMap(uintptr_t base, size_t size, const ReachControlFound& resolved)
 {
-    constexpr uint32_t kEntry = 0x6375C, kAccCallPat = 0x63651, kAccCall = 0x6365E, kDispatcher = 0x6350C;
-    struct ReachCallerSite { uint32_t patRva; const char* pat; uint8_t callOff; aim_caller::Caller role; };
-    static constexpr ReachCallerSite kSites[] = {
-        {0x6244A, "F3 0F 10 55 88 4C 8D 4C 24 70 F3 0F 10 4D 84 8B CF F3 0F 11 7C 24 28 F3 0F 11 74 24 20 "
-                  "E8 ?? ?? ?? ??", 0x1D, aim_caller::Caller::Stick},
-        {0x5EE1C, "4C 8D 0D ?? ?? ?? ?? F3 0F 10 55 34 41 0F 57 CE F3 44 0F 10 74 24 50 8B CB F3 44 0F 11 74 24 28 "
-                  "F3 44 0F 11 6C 24 20 E8 ?? ?? ?? ??", 0x27, aim_caller::Caller::Impulse},
-        {0x62885, "F3 0F 10 55 88 4C 8D 4C 24 70 F3 0F 10 4D 84 41 8B CD F3 0F 11 7C 24 28 F3 0F 11 74 24 20 "
-                  "E8 ?? ?? ?? ??", 0x1E, aim_caller::Caller::NoUnit},
-    };
+    const drive_sites::CallerAnchors& anchors = drive_sites::kReachCallerAnchors;
+    const drive_sites::Callers& found = resolved.callers;
+    const uint32_t entry = resolved.control.entry;
+    // THE PROOF (drive_install.h; the offline check runs the same function on haloreach.dll as the loader maps it).
     aim_caller::CallerMap map;
-    const char* why = nullptr;
-    const uintptr_t accRet =
-        AimCallerUniqueAt(base, size, kAccCallPat,
-                          "F3 0F 10 5D 77 0F 28 D7 0F 28 CE 8B CF E8 ?? ?? ?? ?? F2 0F 10 43 14")
-            ? AimCallerCallReturn(base, size, kAccCall, kEntry) : 0;
-    uint32_t frame = 0;
-    if (!accRet)
-        why = "the accumulator's call site";
-    else if (!AimCallerUniqueAt(base, size, kDispatcher,
-                                "48 8B C4 55 53 57 41 54 41 55 41 56 41 57 48 8D 68 B1 48 81 EC C0 00 00 00 0F 29 70 B8 "
-                                "0F 29 78 A8"))
-        why = "the dispatcher prologue";
-    else
-        (void)AimCallerProveDispatcher(base, size, kDispatcher, kAccCall, frame, why);
+    const drive_install::CallerMapProof proof = drive_install::BuildCallerMap(base, size, entry, found, anchors, map);
+    const bool proven = proof.proven;
+    const char* const why = proof.why;
+    const uint32_t frame = map.dispatcher_frame;
     char sites[200] = "";
-    size_t used = 0;
-    if (frame)
-    {
-        map.acc_ret = accRet;
-        map.dispatcher_frame = frame;
-        map.no_unit_action = aim_caller::Action::EndUpdate;
-        for (const auto& s : kSites)
-        {
-            const uintptr_t ret = AimCallerUniqueAt(base, size, s.patRva, s.pat)
-                ? AimCallerCallReturn(base, size, s.patRva + s.callOff, kDispatcher) : 0;
-            const bool ok = ret && map.add(ret, s.role);
-            const int n = ok
-                ? snprintf(sites + used, sizeof(sites) - used, "%s%s +0x%llX", used ? ", " : "",
-                           aim_caller::CallerName(s.role), static_cast<unsigned long long>(ret - base))
-                : snprintf(sites + used, sizeof(sites) - used, "%s%s NOT verified (reads unknown)", used ? ", " : "",
-                           aim_caller::CallerName(s.role));
-            if (n > 0)
-                used = (std::min)(sizeof(sites) - 1, used + static_cast<size_t>(n));
-        }
-        if (!map.stick_proven())
-            why = "the stick update's call";
-    }
-    const bool proven = frame && map.stick_proven();
-    if (!proven)
-        map.clear();
+    drive_install::CallerMapText(base, anchors, proof, sites, sizeof(sites));
     g_reachCallerMap = map;
     g_reachCallerMode.store(proven ? 2 : 0, std::memory_order_release);
     if (proven)
         LOG("REACHDRIVE: caller map proven by the dispatcher's return (accumulator call +0x%X in dispatcher +0x%X, "
             "frame 0x%X from its unwind info and prologue): %s. Only the stick call is the update; the impulse has "
-            "the last stick write put back, the no-unit call ends the update", kAccCall, kDispatcher, frame, sites);
+            "the last stick write put back, the no-unit call ends the update", found.accumulatorCall, found.dispatcher,
+            frame, sites);
     else
         LOG("REACHDRIVE: caller map NOT proven (%s); every call counts as the update (as before)",
             why ? why : "dispatcher frame");
 #if HALOMCCVR_DEV_DIAGNOSTICS
     uint32_t tickSlot = 0, tickField = 0;
-    const bool tickOk = AimCallerTickProof(base, size, base + kReachEngineTlsIndexRva, kReachTickAnchors, tickSlot,
-                                           tickField);
+    const bool tickOk = AimCallerTickProofAt(base, size, base + kReachEngineTlsIndexRva, drive_sites::kReachTickAnchors,
+                                             resolved.tick, tickSlot, tickField);
     g_reachTickSlot = tickOk ? tickSlot : 0;
     g_reachTickField = tickOk ? tickField : 0;
     LOG("REACHDRIVE (dev census): the sim tick %s",
@@ -53810,6 +53783,21 @@ void Game_ReachDirectDriveReport()
     ReachSabreDriveReport();   // the type-13 pilot's own line, on its own two seconds
     static unsigned long long s_last = 0;
     const unsigned long long now = GetTickCount64();
+    {
+        // "INSTALLED" IS NOT "RUNNING" (drive_cascade.h: HookWatch), on every loop, before the counters below are
+        // read and cleared. Possible: fresh on-foot, player-controlled Reach (Game_ReachDirectDriveOnFoot -- the
+        // camera lane's publications, nothing this hook produces), where the game runs the control update on every
+        // frame. Called: any call the detour itself counted (a pilot's update handed on by the Sabre's hook is not).
+        static drive_cascade::HookWatch s_watch;
+        const void* target = g_reachPcTarget;
+        bool called = false;
+        for (int r = 0; r < aim_caller::kCallerCount && !called; ++r)
+            called = g_reachRoleCalls[r].load(std::memory_order_relaxed) != 0;
+        if (s_watch.Pass(drive_cascade::HookWatch::Install(target, g_reachPcInstalls),
+                         target && Game_ReachDirectDriveOnFoot(), called, now))
+            drive_cascade::SayNeverCalled("REACHDRIVE", "the control update", g_reachPcEntryRva,
+                                          "the player was in control and on foot, where the game runs it every frame");
+    }
     if (now - s_last < 1000) return;
     s_last = now;
     unsigned roles[aim_caller::kCallerCount]{};
