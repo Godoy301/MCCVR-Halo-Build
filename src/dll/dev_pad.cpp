@@ -15,6 +15,10 @@
 #include "../common/config.h"
 #include "../common/roomscale_recenter_logic.h"
 #include "../common/log.h"
+#include "vr.h"
+#include "game.h"
+#include "native_vehicle_first_person.h"
+#include "title_adapter.h"
 
 #include <algorithm>
 #include <atomic>
@@ -115,11 +119,31 @@ bool SetLive(const std::string& name, int value)
         g_config.aim_lead_ticks = aim_lead::ClampTicks(float(value) * 0.01f, Config{}.aim_lead_ticks);
     else if (name == "gun_barrel_aim") g_config.gun_barrel_aim = value != 0;
     else if (name == "vehicle_cam_smoothing") g_config.vehicle_cam_smoothing = value != 0;
+    // A gun-slaved seat's pitch check: 1 the pitch stick is held while it collects (what a player build does),
+    // 0 the stick servo runs through it.
+    else if (name == "seat_pitch_check_hold") Game_DevSetSeatPitchCheckHold(value != 0);
     // The first-person ladder's fault bits (config.h): the ladders read the value at every evaluation, so
     // bits 0-2 take effect on the next camera frame and one launch can walk 0 -> 1 -> 3 -> 5 -> 0. Bit 3
     // needs a level the camera rung has not been proven in (the value agreement never withdraws a proven
     // rung), so it still wants the key set before the level loads.
     else if (name == "first_person_rung_fault") g_config.first_person_rung_fault = value & 0xF;
+    // Halo 4's reticle capture (vr.h, VrHalo4ReticleDrawScope): 0 as the game draws it, 1 alpha only from draws
+    // that write coverage (what a player build does), 2 no draw writes alpha. Takes effect at the next capture.
+    else if (name == "reticle_capture_alpha") VR_DevSetHalo4ReticleAlphaMode(value);
+    // The seat camera's offsets for the vehicle model and seat the camera is in now, in centimetres plus 500
+    // (a script's numbers are unsigned): 500 is zero, 650 is +1.5 m. What the Vehicles page's sliders write.
+    else if (name == "seat_cam_forward" || name == "seat_cam_up" || name == "seat_cam_right")
+    {
+        const GameTitle title = TitleAdapter_GetActiveTitle();
+        uint64_t identity = 0;
+        int seat = -1;
+        if (!NativeVehicleFirstPerson_TrimTarget(title, identity, seat)) return false;
+        const int slot = ConfigEnsureVehicleModelTrim(g_config, title, identity, seat);
+        if (slot < 0) return false;
+        const unsigned axis = name == "seat_cam_forward" ? 0u : (name == "seat_cam_up" ? 1u : 2u);
+        g_config.vehicle_model_trims[slot].value[axis] = static_cast<float>(value - 500) / 100.0f;
+        g_config.vehicle_model_trims[slot].set[axis] = true;
+    }
     else return false;
     return true;
 }

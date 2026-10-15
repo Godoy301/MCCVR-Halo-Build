@@ -64,6 +64,7 @@ int RunDirectorCameraTests();
 #include "reach_hand_shot_logic.h"
 #include "halo4_adapter.h"
 #include "halo4_cui_reticle_logic.h"
+#include "halo4_reticle_alpha_logic.h"
 #include "halo4_helmet_shader_logic.h"
 #include "halo4_screen_effect_shader_logic.h"
 #include "halo4_hud_logic.h"
@@ -214,6 +215,28 @@ namespace
 
 int main()
 {
+    {
+        using namespace halo4_reticle_alpha;
+        const uint8_t all = 15, rgb = 7;
+        const Blend additive{true, 2, kBlendOpAdd, all};      // (one, one): it adds
+        const Blend showThrough{true, 5, kBlendOpAdd, all};   // (one, source alpha): alpha is what shows through
+        const Blend over{true, kBlendInvSrcAlpha, kBlendOpAdd, all};
+        const Blend opaque{false, 1, kBlendOpAdd, all};       // blending off
+        const Blend subtract{true, kBlendInvSrcAlpha, 3, all};
+        Check(WritesCoverage(over) && !WritesCoverage(additive) && !WritesCoverage(showThrough) &&
+                  !WritesCoverage(opaque) && !WritesCoverage(subtract),
+              "H4 reticle alpha: only an enabled add with (one minus source alpha) on the scene writes coverage");
+        Check(!DropsAlphaWrite(over), "H4 reticle alpha: a draw that writes coverage keeps its alpha");
+        Check(DropsAlphaWrite(additive) && DropsAlphaWrite(showThrough),
+              "H4 reticle alpha: the game's two HUD blends are drawn without their alpha write");
+        Check(DropsAlphaWrite(opaque) && DropsAlphaWrite(subtract),
+              "H4 reticle alpha: any other alpha that is not coverage is not written either");
+        const Blend additiveRgb{true, 2, kBlendOpAdd, rgb};
+        Check(!DropsAlphaWrite(additiveRgb), "H4 reticle alpha: a draw that writes no alpha is left as it is");
+        Check(WriteMaskWithoutAlpha(all) == rgb && WriteMaskWithoutAlpha(rgb) == rgb &&
+                  WriteMaskWithoutAlpha(kWriteAlpha) == 0,
+              "H4 reticle alpha: the twin's mask is the game's without the alpha bit");
+    }
     {
         const float identity[]{0.f,0.f,0.f,1.f},zero[3]{};
         auto basis=[](float yaw) {Halo2CameraBasis b{};b.forward[0]=std::cos(yaw);

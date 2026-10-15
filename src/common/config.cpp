@@ -92,6 +92,12 @@ Config::Config()
         reach_vehicle_cam_up_set[slot] = true;
         reach_vehicle_cam_right_set[slot] = true;
     }
+    for (const ConfigShippedVehicleModelTrim& trim : kConfigShippedVehicleModelTrims)
+    {
+        const int slot = ConfigEnsureVehicleModelTrim(*this, trim.title, trim.identity, trim.seat);
+        if (slot >= 0)
+            ConfigResetVehicleModelTrim(*this, slot);
+    }
 }
 static std::wstring g_path;
 
@@ -2312,7 +2318,8 @@ void ConfigSave()
             d.halo4_hands_mirrored);
     fprintf(f, "halo4_hands_mirrored = %d\n\n", g_config.halo4_hands_mirrored);
     fprintf(f, "# Halo 4 authored Mjolnir helmet/visor frame. This does not hide\n");
-    fprintf(f, "# shields, radar, ammo, objectives, or the aiming reticle. (default %d)\n",
+    fprintf(f, "# shields, radar, ammo, objectives, or the aiming reticle. In the campaign the\n");
+    fprintf(f, "# frame is a dark band above the HUD and a larger one below it. (default %d)\n",
             d.halo4_helmet ? 1 : 0);
     fprintf(f, "halo4_helmet = %d\n\n", g_config.halo4_helmet ? 1 : 0);
     fprintf(f, "# Hide gameplay HUD and VR reticle; menus remain available.\nhide_hud = %d\n\n", g_config.hide_hud ? 1 : 0);
@@ -2689,6 +2696,8 @@ void ConfigSave()
                 vehicleAxes[axis],g_config.vehicle_cam_game[title][axis]);
     fprintf(f,"\n");
     fprintf(f,"# Identified vehicle/seat overrides; stable authored model identity, never object handles.\n");
+    fprintf(f,"# Built in: Halo 4's Mantis pilot (halo4_000000551b05181e_seat0) sits above its closed cockpit,\n");
+    fprintf(f,"# forward 0.30, up 0.80. At 0 the eye is inside the cockpit and sees only its walls.\n");
     for(const auto& trim:g_config.vehicle_model_trims)
     {
         const int title=weapon_interaction::TitleIndex(trim.title);

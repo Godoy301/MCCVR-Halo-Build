@@ -729,7 +729,28 @@ bool VR_RedirectRenderTargets(ID3D11DeviceContext* context, UINT count,
 void VR_Halo4NoteBoundRenderTargets(
     ID3D11DeviceContext* context, UINT count,
     ID3D11RenderTargetView* const* rtvs);
-void VR_Halo4PrepareAuthoredReticleDraw(ID3D11DeviceContext* context);
+// One Draw / DrawIndexed, seen from the D3D hooks. If the draw goes into Halo 4's reticle capture it gets the
+// capture's framing, and unless its blend writes coverage it is made without its alpha write
+// (halo4_reticle_alpha_logic.h); the game's own blend state is bound again when the scope ends. Any other draw
+// is not touched.
+class VrHalo4ReticleDrawScope
+{
+public:
+    explicit VrHalo4ReticleDrawScope(ID3D11DeviceContext* context);
+    ~VrHalo4ReticleDrawScope();
+    VrHalo4ReticleDrawScope(const VrHalo4ReticleDrawScope&) = delete;
+    VrHalo4ReticleDrawScope& operator=(const VrHalo4ReticleDrawScope&) = delete;
+
+private:
+    ID3D11DeviceContext* context_ = nullptr;
+    ID3D11BlendState* saved_ = nullptr;
+    FLOAT factor_[4]{};
+    UINT sampleMask_ = 0;
+};
+#if HALOMCCVR_DEV_DIAGNOSTICS
+// Dev A/B of the rule above: 0 the capture as the game draws it, 1 the rule, 2 no draw writes alpha.
+void VR_DevSetHalo4ReticleAlphaMode(int mode);
+#endif
 // The optional H4 hooks pass through completely after a fatal reticle-resource
 // failure, leaving the stock CUI reticle visible without affecting camera,
 // theatre, stereo, or OpenXR ownership.
