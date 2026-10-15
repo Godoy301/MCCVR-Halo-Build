@@ -412,4 +412,21 @@ inline const char* RoleName(bool flagsKnown, uint32_t flags)
     return driver && gunner ? "driver+gunner" : driver ? "driver" : gunner ? "gunner" : "passenger";
 }
 
+// A seat's "camera on its gun" flag, held for the seat stint. Set by a control update of this seat that read the
+// seat's flags, and changed only by another such read: a poll whose read of the control update collided, or an
+// update that came without the flags, leaves it as it was. Dropping it for one poll would flip the pitch servo out
+// of its turret mode and back, which resets what the servo has measured. A new stint starts a new latch.
+struct GunCameraLatch
+{
+    bool known = false, onGun = false;
+    void Note(bool controlRead, bool flagsKnown, uint32_t flags)
+    {
+        if (!controlRead || !flagsKnown)
+            return;
+        known = true;
+        onGun = (flags & kFlagCameraOnGun) != 0;
+    }
+    bool Turret() const { return known && onGun; }
+};
+
 } // namespace halo4_seat_converge

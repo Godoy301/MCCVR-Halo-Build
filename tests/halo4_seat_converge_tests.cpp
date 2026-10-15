@@ -543,6 +543,27 @@ void TestRole()
     Check(std::string_view(RoleName(true, kFlagDriver | kFlagGunner)) == "driver+gunner", "both");
     Check(std::string_view(RoleName(true, kFlagGunner | kFlagCameraOnGun)) == "gunner, camera on the gun", "bit 7");
 }
+
+void TestGunCameraLatch()
+{
+    GunCameraLatch latch{};
+    Check(!latch.Turret(), "a new stint: not a turret until the seat's flags have been read");
+    latch.Note(true, false, kFlagCameraOnGun);
+    Check(!latch.Turret(), "a control update without the flags says nothing");
+    latch.Note(false, true, kFlagCameraOnGun);
+    Check(!latch.Turret(), "a control update that was not read says nothing");
+    latch.Note(true, true, kFlagGunner | kFlagCameraOnGun);
+    Check(latch.Turret(), "the flags read with bit 7: a turret");
+    latch.Note(false, false, 0);
+    Check(latch.Turret(), "a poll whose read collided keeps the turret");
+    latch.Note(true, false, 0);
+    Check(latch.Turret(), "an update without the flags keeps the turret");
+    latch.Note(true, true, kFlagGunner);
+    Check(!latch.Turret(), "the flags read without bit 7: no longer a turret");
+    latch.Note(true, false, kFlagCameraOnGun);
+    Check(!latch.Turret(), "and an update without the flags keeps that too");
+    Check(!GunCameraLatch{}.Turret(), "a new stint starts a new latch");
+}
 } // namespace
 
 int main()
@@ -556,6 +577,7 @@ int main()
     TestWhy();
     TestMeasureLine();
     TestRole();
+    TestGunCameraLatch();
     std::printf("halo4_seat_converge_tests: %u checks, %u failures\n", checks, failures);
     return failures ? 1 : 0;
 }

@@ -952,7 +952,7 @@ struct Config
     // engine eye and run along the converged aim (the crosshair / shot query candidates; Halo 4 and Halo 2).
     // Leave at 0 for play.
     int sight_ray_census = 0;
-    // Halo 4 SEATED CONVERGENCE (every build; EXPERIMENTAL, F1 > Vehicles): 1 = a Halo 4 seat converges -- its
+    // Halo 4 SEATED CONVERGENCE (every build; F1 > Vehicles): 1 = a Halo 4 seat converges -- its
     // intent ray is traced, and the aim is bent so the line the SIMULATION aims the seat along passes through the
     // point that ray hits; the reticle sits on that point. The line is sampled from the game's own aim-view call
     // for the seat: with coop_safe_shots on that is the game's own seat camera (the following camera in a seat the
@@ -960,8 +960,8 @@ struct Config
     // written into the control record and the stick. Converged is then claimed as on foot and in a Halo 3 seat:
     // the native assist's cap, a seat's stop and a gun still turning are natural and never switch it off. Needs
     // converged_aim, reach_vehicle_aim > 0 and the first-person seat view. 0 = Halo 4 seats keep the
-    // fixed-distance aim. (src/dll/halo4_seat_converge.inl; default 0)
-    int halo4_seat_converge = 0;
+    // fixed-distance aim. (src/dll/halo4_seat_converge.inl; default 1)
+    int halo4_seat_converge = 1;
     // DEV BUILD ONLY (parsed and saved only in dev builds): 1 = a Halo 3 SEATED local shot whose round will inherit
     // its vehicle's velocity (the fire routine's body-velocity branch, 0x369419) re-aims its crosshair query through
     // P' -- the point that makes the round's own velocity, d * Vp + the inherited sideways velocity, point at P --

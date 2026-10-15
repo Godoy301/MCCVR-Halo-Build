@@ -172,6 +172,9 @@ struct Halo4SeatConvergeRuntime
     // THE CONTROL UPDATE and the seated trace (the stick call's thread).
     Halo4SeatBlob<Halo4SeatControlRecord> control;
     uint64_t lastTraceMs = 0;
+    // The seated trace's own fault latch. A native fault in a seat's ray stops the seated trace until the title
+    // reinstalls and leaves the on-foot trace, which has its own latch (Sight_TraceFaulted), running.
+    std::atomic<bool> traceFaulted{false};
     // THE SOLVED POINT (the aim path's thread writes, the fire witness reads).
     Halo4SeatBlob<Halo4SeatSolvedPoint> solved;
     // Counters since the last report.
@@ -206,6 +209,13 @@ inline bool Halo4SeatConvergeMeasures()
 #else
     return Halo4SeatConvergeOn();
 #endif
+}
+
+// No seat can be traced: the seated trace's own latch, or the aim's. Nothing is solved for a seat then, so
+// nothing is stood down for one either.
+inline bool Halo4SeatConvergeTraceOff()
+{
+    return g_h4SeatConverge.traceFaulted.load(std::memory_order_acquire) || Sight_TraceFaulted(GameTitle::Halo4);
 }
 
 // The seat as every lane keys it (the direct drive's own key for the seat; never 0, which is the on-foot stance).
@@ -252,9 +262,10 @@ Halo4SeatConvergeCall Halo4SeatConvergeBeforeView(uintptr_t caller, uint32_t uni
     // by the title's in-tick byte, so for the fire this changes nothing while that byte is being written; the
     // lane does not rest on it, since the sample and the fire must be answered by the same camera. Only with the
     // key on and the seat's aim the hand's (converged_aim, reach_vehicle_aim): a dev build measuring with the key
-    // off, and a seat nothing is solved for, leave both calls exactly as they were.
+    // off, a seat nothing is solved for, and a seated trace latched off leave both calls exactly as they were.
     if (halo4_seat_converge::SampleWithGameCamera(
-            Halo4SeatConvergeOn() && Sight_AimEnabled() && g_config.reach_vehicle_aim > 0,
+            Halo4SeatConvergeOn() && !Halo4SeatConvergeTraceOff() && Sight_AimEnabled() &&
+                g_config.reach_vehicle_aim > 0,
             Sight_FireTimeChangesAllowed()))
     {
         NativeVehicleFirstPerson_SetStockOnThisThread(true);
@@ -544,7 +555,7 @@ void Halo4SeatConvergeTrace(const uint8_t* tls, const Halo4VehicleInputState& se
     constexpr GameTitle kTitle = GameTitle::Halo4;
     auto& f = g_h4SeatConverge;
     if (!LegacySight(kTitle).flags.load(std::memory_order_acquire) || !g_halo4Contact.flags ||
-        !g_halo4WorldCollision.originalRayCast || Sight_TraceFaulted(kTitle))
+        !g_halo4WorldCollision.originalRayCast || Halo4SeatConvergeTraceOff())
         return;
     // The seat's own rate limit, on the sight clock: the on-foot trace's slot is not this one's to take.
     const uint64_t nowMs = Sight_NowMs();
@@ -630,10 +641,10 @@ void Halo4SeatConvergeTrace(const uint8_t* tls, const Halo4VehicleInputState& se
     QueryPerformanceCounter(&after);
     if (!result.completed)
     {
-        Sight_NoteTraceFault(kTitle);
+        f.traceFaulted.store(true, std::memory_order_release);
         f.faults.fetch_add(1, std::memory_order_relaxed);
-        LOG("SIGHT Halo 4 seated trace: the native ray raised a fault; the trace stays off until the title "
-            "reinstalls");
+        LOG("SIGHT Halo 4 seated trace: the native ray raised a fault; the seated trace stays off until the title "
+            "reinstalls (the on-foot trace is untouched)");
         return;
     }
     const uint64_t cost = static_cast<uint64_t>(after.QuadPart - before.QuadPart);
@@ -689,10 +700,10 @@ void Halo4SeatConvergeTrace(const uint8_t* tls, const Halo4VehicleInputState& se
         float limitRangeWu = 0.0f;
         if (!auxTrace(limit, limitHit, limitRangeWu))
         {
-            Sight_NoteTraceFault(kTitle);
+            f.traceFaulted.store(true, std::memory_order_release);
             f.faults.fetch_add(1, std::memory_order_relaxed);
-            LOG("SIGHT Halo 4 seated seat limit trace: the native ray raised a fault; the trace stays off until the "
-                "title reinstalls");
+            LOG("SIGHT Halo 4 seated seat limit trace: the native ray raised a fault; the seated trace stays off "
+                "until the title reinstalls (the on-foot trace is untouched)");
             return;
         }
         Sight_PublishLimitTrace(kTitle, generation, limitHit, limitRangeWu);
@@ -782,6 +793,7 @@ bool Halo4SeatConvergePrepare(Halo4SeatConvergePoll& out, const float rayDir[3])
         uint64_t lastUs = 0;
         float lastYawDeg = 0.0f;   // the last new sample's heading residual (the side-change witness)
         halo4_seat_converge::StartHold hold{};
+        halo4_seat_converge::GunCameraLatch gunCamera{};
     };
     static State s_state;   // this thread only, like the servo's own statics
     // The lane off, or its anchors unproven on this build: the seat is left exactly as with the key off (the
@@ -831,7 +843,7 @@ bool Halo4SeatConvergePrepare(Halo4SeatConvergePoll& out, const float rayDir[3])
     memcpy(out.eye, out.head, sizeof(out.eye));
     facts.traceArmed = LegacySight(kTitle).flags.load(std::memory_order_acquire) != 0;
     facts.anchors = f.ready.load(std::memory_order_acquire) && f.generation == generation;
-    facts.traceFaulted = Sight_TraceFaulted(kTitle);
+    facts.traceFaulted = Halo4SeatConvergeTraceOff();
     facts.stanceOurs = Sight_Stance(kTitle) == out.seatKey;
     Halo4SeatControlRecord control{};
     const bool controlRead = f.control.Read(control) && control.seatKey == out.seatKey;
@@ -885,9 +897,9 @@ bool Halo4SeatConvergePrepare(Halo4SeatConvergePoll& out, const float rayDir[3])
     out.solve = key && out.why == halo4_seat_converge::Why::Solved;
     // A seat whose camera is on its gun: the frame's aim, which the pitch servo closes on, is then the gun, slewing
     // at its own rate. The servo parks instead of hunting (its reticle stays on the hand's point like every
-    // seat's). From the stick call's own read of the seat's flags.
-    out.turret = key && facts.aimOn && facts.viewOurs && controlRead && control.flagsKnown &&
-        (control.flags & halo4_seat_converge::kFlagCameraOnGun) != 0;
+    // seat's). From the stick call's own read of the seat's flags, held for the stint (GunCameraLatch).
+    s_state.gunCamera.Note(controlRead, controlRead && control.flagsKnown != 0, control.flags);
+    out.turret = key && facts.aimOn && facts.viewOurs && s_state.gunCamera.Turret();
     // THE WITNESS: each new sample's own line against the point, while the seat solves.
     if (sampleRead && sample.sequence != s_state.sampleSequence)
     {
@@ -1108,6 +1120,7 @@ void InstallHalo4SeatConverge(uintptr_t base, size_t size, uint32_t generation)
     RemoveHalo4SeatConverge();
     f.base = base;
     f.generation = generation;
+    f.traceFaulted.store(false, std::memory_order_release);   // a reinstall gives the seated trace another try
     // (The trace's rate limiter is the stick call's thread's alone and needs no reset: a last trace it cannot
     // place against the clock never holds the next one back.)
     // The sampler's own state, under the sampler's flag: a view call of the last generation that was already past
