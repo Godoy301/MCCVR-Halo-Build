@@ -1363,6 +1363,9 @@ void ConfigLoad(const wchar_t* path)
 #endif
             continue;
         }
+        // A player's setting stands ABOVE the development-only part below: a key read only in there is saved by a
+        // player build and then called unknown at its next start (tests/config_player_roundtrip_tests.cpp).
+        if (!strcmp(key, "mono_rendering")) { g_config.mono_rendering = atoi(val) != 0; continue; }
 #if HALOMCCVR_DEV_DIAGNOSTICS   // research tools and dev overrides: a player build never reads them
         if (!strcmp(key, "reach_aim_probe")) { g_config.reach_aim_probe=atoi(val); continue; }
         if (!strcmp(key, "reach_desired_aim_offset")) { g_config.reach_desired_aim_offset=(int)strtol(val,nullptr,0); continue; }
@@ -2101,6 +2104,11 @@ void ConfigSave()
     fprintf(f, "# Distance from your head to that screen, in meters.\n");
     fprintf(f, "# (default %.2f, range 0.3 to 20)\n", d.screen_distance_m);
     fprintf(f, "screen_distance_m = %.2f\n\n", g_config.screen_distance_m);
+    fprintf(f, "# Mono rendering (Halo 3). 1 = the game is drawn once a frame and both eyes see that one picture:\n");
+    fprintf(f, "# no 3D depth. For very large maps that are too slow in 3D. Not on headsets with angled (canted)\n");
+    fprintf(f, "# displays, in the cutscene theatre, or with DLSS. (default %d)\n",
+            d.mono_rendering ? 1 : 0);
+    fprintf(f, "mono_rendering = %d\n\n", g_config.mono_rendering ? 1 : 0);
     fprintf(f, "# Stereo 3D theatre for engine-confirmed cutscenes where the game\n");
     fprintf(f, "# has taken camera control away from the player. Shared by every\n");
     fprintf(f, "# supported title, including future title adapters. (default %d)\n",

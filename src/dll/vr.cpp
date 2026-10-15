@@ -65,6 +65,7 @@
 #include "../common/haloce_reticle_logic.h"
 #include "../common/vr_blit_shader.h"
 #include "../common/reticle_tint_shader.h"
+#include "../common/mono_view_logic.h"
 #include "haloce_controls.h"
 #include "haloce_first_person.h"
 #include "haloce_hud.h"
@@ -514,6 +515,11 @@ namespace
     std::atomic<bool> g_stereoEnabled{false};
     int g_renderEye = 0;
     bool g_eyeHasImage[2] = {false, false};
+    // MONO RENDERING (mono_view_logic.h). The latest picture of the world was drawn once, from between the eyes:
+    // it (eye 0's) is shown to both eyes, and the layers registered to the world are parked far. It stays so for
+    // every present until a second eye's pass begins again, so a frame presented without a new render shows the
+    // same one picture and never an old second eye. The render thread.
+    std::atomic<bool> g_monoPicture{false};
 #if HALOMCCVR_HALO2_STEREO6DOF
     constexpr uint64_t kHalo2SynchronousReservationBit = uint64_t{1} << 63;
     // One eye is complete when the engine's FINISHED frame for it has been
@@ -17067,6 +17073,11 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         static std::vector<XrCompositionLayerBaseHeader*> layers;
         projectionViews.clear();
         layers.clear();
+        // The world's latest picture was drawn once, from between the eyes (mono_view_logic.h). Only the title
+        // that draws that way: the mark is cleared by a second eye's pass, which another title's own stereo
+        // path need not make, so a picture left from Halo 3 is never taken for another title's.
+        const bool monoFrame = g_monoPicture.load(std::memory_order_acquire) &&
+            TitleAdapter_GetActiveTitle() == GameTitle::Halo3;
         g_nativeTheatreCaptionReady=false;
         const bool nativeSubtitleReady=fs.shouldRender && comfortFadeAlpha<=0.01f &&
             !Menu_IsOpen() && PrepareNativeSubtitle(nativeSubtitleQuad);
@@ -17623,7 +17634,8 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                     // Halo 2 has its own bounded source-learning validator;
                     // running the generic full-resolution check as well is a
                     // redundant synchronous GPU stall.
-                    if (!reachTitle && !halo2Title && !ceTitle)
+                    // (A mono frame has one picture: there is no pair to compare.)
+                    if (!reachTitle && !halo2Title && !ceTitle && !monoFrame)
                         ValidateStereoImagesOnce();
 #if HALOMCCVR_HALO2_STEREO6DOF
                     if (halo2Title && halo2LiveExactPair)
@@ -17757,11 +17769,13 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                         HRESULT accessoryPairResult=S_FALSE;
                         for (uint32_t targetEye = 0; targetEye < 2; ++targetEye)
                         {
+                            // A mono frame's one picture goes to both eyes; each eye's own frustum is then
+                            // cropped out of it by the views' image rectangles, as from an eye's own raster.
                             const uint32_t sourceEye = theaterProjectionAttempted
                                 ? CutsceneTheaterImageIndex(
                                       targetEye,
                                       g_config.cutscene_theater_flip_depth)
-                                : targetEye;
+                                : (monoFrame ? 0u : targetEye);
                             const bool haveImage = ceImages || reachImages ||
                                 (!reachTitle && (!halo4Title || halo4Images) &&
                                  (!halo2Title || halo2Images) &&
@@ -19606,6 +19620,31 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
             layers.push_back(reinterpret_cast<XrCompositionLayerBaseHeader*>(&nativeSubtitleQuad));
         // Evaluate against this frame's actual native quad before composition.
         // The cursor follows the last successfully delivered smoothed mouse UV.
+        // MONO: nothing in the one picture has disparity, so a layer left at its true distance would be the only
+        // thing that has, and would double over what it marks. The crosshairs and the scope's pane slide out along
+        // their own rays from the midpoint of the eyes (mono_view::FlattenQuad). The panels keep their depth.
+        if (monoFrame && projection.viewCount == 2 && projectionViews.size() == 2)
+        {
+            const XrVector3f& leftEye = projectionViews[0].pose.position;
+            const XrVector3f& rightEye = projectionViews[1].pose.position;
+            const float centre[3]{(leftEye.x + rightEye.x) * 0.5f, (leftEye.y + rightEye.y) * 0.5f,
+                                  (leftEye.z + rightEye.z) * 0.5f};
+            for (XrCompositionLayerQuad* quad : {&reticleQuad, &secondaryReticleQuad, &scopeQuad})
+            {
+                // Only a quad queued this frame has been filled in.
+                if (std::find(layers.begin(), layers.end(),
+                              reinterpret_cast<XrCompositionLayerBaseHeader*>(quad)) == layers.end() ||
+                    quad->space != g_localSpace)
+                    continue;
+                float position[3]{quad->pose.position.x, quad->pose.position.y, quad->pose.position.z};
+                float size[2]{quad->size.width, quad->size.height};
+                if (mono_view::FlattenQuad(centre, position, size))
+                {
+                    quad->pose.position = {position[0], position[1], position[2]};
+                    quad->size = {size[0], size[1]};
+                }
+            }
+        }
         if (comfortFadeAlpha <= 0.01f &&
             std::find(layers.begin(),layers.end(),
                 reinterpret_cast<XrCompositionLayerBaseHeader*>(&screenQuad)) != layers.end()) {
@@ -22095,6 +22134,9 @@ void VR_BeginRasterEye(int eye)
         g_rasterRedirected[eye] = false;
         g_dlssKicked[eye].Reset();
     }
+    // A second eye's pass: the world is being drawn for each eye again (mono_view_logic.h).
+    if (eye == 1)
+        g_monoPicture.store(false, std::memory_order_release);
     if (eye < 0 || eye > 1 || !g_gameSwapchain || !g_device)
         return;
     // Eye caches are created lazily when Halo binds its final scene-color RTV.
@@ -25092,6 +25134,62 @@ bool VR_GetLeftControllerPose(float outQuat[4], float outPos[3])
     }
     LeaveCriticalSection(&g_headCs);
     return ok;
+}
+
+// MONO RENDERING (mono_view_logic.h): asked by a title's render hook once a frame, before its eye passes. True:
+// draw the world once, as eye 0, from the midpoint of the eyes looking the way the head looks, with the cover
+// given, then call VR_NoteMonoFrameRendered. The render thread.
+bool VR_MonoRenderThisFrame(float& coverTanX, float& coverTanY)
+{
+    mono_view::MonoInput in;
+    in.asked = g_config.mono_rendering;
+    in.titleSupported = TitleAdapter_GetActiveTitle() == GameTitle::Halo3;
+    float tanX = 0.0f, tanY = 0.0f;
+    if (in.asked && in.titleSupported && g_views.size() >= 2)
+    {
+        const XrFovf& a = g_views[0].fov;
+        const XrFovf& b = g_views[1].fov;
+        const float qa[4]{g_views[0].pose.orientation.x, g_views[0].pose.orientation.y,
+                          g_views[0].pose.orientation.z, g_views[0].pose.orientation.w};
+        const float qb[4]{g_views[1].pose.orientation.x, g_views[1].pose.orientation.y,
+                          g_views[1].pose.orientation.z, g_views[1].pose.orientation.w};
+        in.viewsLocated = mono_view::MonoCover({a.angleLeft, a.angleRight, a.angleUp, a.angleDown},
+                                               {b.angleLeft, b.angleRight, b.angleUp, b.angleDown}, tanX, tanY);
+        in.eyeCantDeg = mono_view::EyeCantDeg(qa, qb);
+        in.theatre = VR_IsCutsceneTheaterActive();
+        in.upscaler = VR_DlssWantsEyeCamera();
+    }
+    const mono_view::MonoRefusal refusal = mono_view::DecideMono(in);
+    // A line when the answer changes, at most one a second.
+    static int logged = -1;
+    static uint64_t loggedMs = 0;
+    const uint64_t now = GetTickCount64();
+    if (static_cast<int>(refusal) != logged && now - loggedMs >= 1000)
+    {
+        logged = static_cast<int>(refusal);
+        loggedMs = now;
+        if (refusal == mono_view::MonoRefusal::None)
+            LOG("mono rendering: on. The world is drawn once a frame, from between the eyes, and shown to both "
+                "(cover %.1f x %.1f deg each way); the crosshair and the scope are parked at %.0f m so they do "
+                "not double",
+                atanf(tanX) * 57.2958f, atanf(tanY) * 57.2958f, mono_view::kMonoFlatDistanceM);
+        else if (in.asked)
+            LOG("mono rendering: asked for, and this frame is drawn in stereo: %s",
+                mono_view::MonoRefusalName(refusal));
+        else
+            LOG("mono rendering: off; the world is drawn once for each eye");
+    }
+    if (refusal != mono_view::MonoRefusal::None)
+        return false;
+    coverTanX = tanX;
+    coverTanY = tanY;
+    return true;
+}
+// The one pass of a mono frame has been drawn and captured as eye 0: its picture is both eyes' for this frame.
+void VR_NoteMonoFrameRendered()
+{
+    g_eyeHasImage[1] = g_eyeHasImage[0];
+    g_monoPicture.store(g_eyeHasImage[0], std::memory_order_release);
 }
 
 bool VR_GetEyeFov(int eye, float outFov[4])
