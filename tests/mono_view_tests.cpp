@@ -106,21 +106,68 @@ int main()
 
     // A title whose renderer turns single passes down.
     {
-        MonoRejections rejections;
-        bool refusedEarly = false;
-        for (unsigned i = 0; i + 1 < kMonoRejectionsToRefuse; ++i)
-            refusedEarly = rejections.Rejected() || refusedEarly;
-        Check(!refusedEarly && !rejections.refused, "a short run of dropped frames is not a refusal");
-        rejections.Rendered();
-        for (unsigned i = 0; i + 1 < kMonoRejectionsToRefuse; ++i)
-            refusedEarly = rejections.Rejected() || refusedEarly;
-        Check(!refusedEarly && !rejections.refused, "a frame that is drawn ends the run");
-        Check(rejections.Rejected() && rejections.refused, "the full run refuses, and says so on that rejection");
-        Check(!rejections.Rejected() && rejections.refused, "once refused it stays refused, and says nothing more");
-        rejections.Rendered();
-        Check(rejections.refused, "a later frame does not lift the refusal");
-        rejections.Reset();
-        Check(!rejections.refused && rejections.run == 0, "the setting switched off and on again gives a new try");
+        using Frame = MonoRejections::Frame;
+        // One frame of the title: what it is asked to draw, and whether the renderer drew it.
+        const auto frame = [](MonoRejections& r, bool monoDraws, bool stereoDraws, bool& refusedNow) {
+            const Frame asked = r.Next();
+            if (asked == Frame::Mono)
+            {
+                if (monoDraws) r.MonoRendered(); else r.MonoRejected();
+            }
+            else if (stereoDraws)
+            {
+                refusedNow = r.StereoRendered() || refusedNow;
+            }
+            return asked;
+        };
+
+        // A title that draws every pair and no single pass.
+        MonoRejections broken;
+        bool refusedNow = false;
+        unsigned monoAsked = 0, probes = 0, frames = 0;
+        while (!broken.refused && frames < 1000)
+        {
+            const Frame asked = frame(broken, false, true, refusedNow);
+            monoAsked += asked == Frame::Mono;
+            probes += asked == Frame::Probe;
+            ++frames;
+        }
+        Check(broken.refused && refusedNow, "a title that draws pairs and no single pass is refused");
+        Check(monoAsked == kMonoDropsBeforeProbe * kMonoBlamesToRefuse && probes == kMonoBlamesToRefuse,
+              "and it costs that many dropped frames, with a pair drawn after each run of them");
+        Check(broken.Next() == Frame::Refused, "once refused it stays refused");
+        broken.MonoRendered();
+        Check(broken.refused, "and nothing but a reset lifts it");
+        broken.Reset();
+        Check(!broken.refused && broken.Next() == Frame::Mono, "the setting switched off and on gives a new try");
+
+        // A title that is dropping every frame for a while, pairs too: mono is not to blame.
+        MonoRejections stalled;
+        refusedNow = false;
+        for (int i = 0; i < 400; ++i)
+            frame(stalled, false, false, refusedNow);
+        Check(!stalled.refused && !refusedNow && stalled.blames == 0, "frames dropped as pairs too are not blamed on mono");
+        frame(stalled, false, true, refusedNow);   // the stall ends on a probe frame
+        Check(!stalled.refused && stalled.blames == 0, "a probe that went missing first blames nothing when one is drawn");
+        Check(frame(stalled, true, true, refusedNow) == Frame::Mono && stalled.dropRun == 0, "and mono is tried again");
+
+        // Mono that draws most of the time: short runs of drops never add up.
+        MonoRejections flaky;
+        refusedNow = false;
+        for (int round = 0; round < 50; ++round)
+        {
+            for (unsigned i = 0; i < kMonoDropsBeforeProbe; ++i)
+                frame(flaky, false, true, refusedNow);
+            frame(flaky, false, true, refusedNow);   // the probe: drawn, one blame
+            frame(flaky, true, true, refusedNow);    // then a mono frame is drawn: the blame is lifted
+        }
+        Check(!flaky.refused && !refusedNow, "a mono frame drawn between the blames lifts them");
+
+        // A pair that is not a probe (the setting off, the theatre) changes nothing.
+        MonoRejections idle;
+        Check(!idle.StereoRendered() && !idle.probing && idle.blames == 0, "an ordinary pair is not a verdict");
+        idle.MonoRejected();
+        Check(!idle.StereoRendered() && idle.dropRun == 1, "nor is a pair before any probe was asked for");
     }
 
     // A crosshair 3 m away, a little right and up of the midpoint of the eyes; eyes 64 mm apart.

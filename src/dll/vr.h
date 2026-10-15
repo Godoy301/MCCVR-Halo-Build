@@ -1024,10 +1024,10 @@ bool VR_GetEyeFov(int eye, float outFov[4]);
 // radians), capture it, and call VR_NoteMonoFrameRendered with that eye. False: both eyes as usual.
 bool VR_MonoRenderThisFrame(GameTitle title, float coverFov[4]);
 void VR_NoteMonoFrameRendered(GameTitle title, int eye);
-// A pair was drawn: the latest picture is two eyes' again.
-void VR_NoteStereoFrameRendered();
-// The title's renderer turned a single pass down (its own checks on the frame failed). A run of them leaves the
-// title in stereo.
+// `title` drew a pair: the latest picture is two eyes' again.
+void VR_NoteStereoFrameRendered(GameTitle title);
+// `title`'s renderer turned a single pass down (its own checks on the frame failed, or it faulted). A run of them
+// is answered with a probe pair; single passes dropped where pairs are drawn leave the title in stereo.
 void VR_NoteMonoFrameRejected(GameTitle title);
 // Pixel aspect of Halo's main render surface. Halo lays native 2D HUD geometry
 // out for this shape, which can differ substantially from the headset's
