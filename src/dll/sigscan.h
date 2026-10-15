@@ -85,7 +85,7 @@ namespace sig
     // SEARCHES OF ONE LOADED IMAGE, REMEMBERED WHILE IT STAYS LOADED.
     //
     // A title's hooks are installed more than once within one load of its DLL
-    // (after a pause, at a level's start), and every install asks the same
+    // (Halo 3: at each new level), and every install asks the same
     // questions of the same bytes: where is this signature, and is there a
     // second match after it. The second question has no early way out: it
     // reads the image to its end, every time. The answers cannot change while

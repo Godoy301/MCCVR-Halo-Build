@@ -17095,8 +17095,9 @@ namespace
 
     bool InstallHookBody(uintptr_t base, size_t size, uint32_t runtimeGeneration);
 
-    // Halo 3's hooks are installed again after any two seconds without a camera (a pause) and at each level's
-    // start, within one load of halo3.dll.
+    // Halo 3's hooks are retired when the game stops copying its camera for two seconds (a level ending, a
+    // loading screen; the pause menu keeps the camera running) and installed again when the next level is live,
+    // within one load of halo3.dll: a campaign session meets this at every new level.
     bool InstallHook(uintptr_t base, size_t size, uint32_t runtimeGeneration)
     {
         static sig::ImageMemo s_searches;
