@@ -45458,6 +45458,81 @@ namespace
 
     #include "halo4_scope.inl"
 
+    // THE BROADSWORD'S VIEW RIDES ITS COCKPIT, location only. In a seat the observer the eyes are built from is the
+    // game's camera director following the point the seat camera was placed at, and the director's position lags:
+    // under the Broadsword's boost the view falls behind the cockpit and catches up once the boost ends. For the
+    // Broadsword's seats the render camera stands on the point placed this frame (the pilot's head as drawn plus
+    // the seat's trims; native_vehicle_first_person.cpp). Its direction stays the observer's, and the hands and
+    // the aim keep the game's camera (`controllerRoot`). Every other vehicle keeps the director's camera: a
+    // Banshee's tricks would carry the view through them.
+    constexpr uint64_t kHalo4BroadswordModel = 0x0000001d1a19101eull;   // render model identity (halo4_vehicle_identity.inl)
+    // The placed point is the frame's own: the evaluator places it for the frame's camera just before the render.
+    constexpr uint64_t kHalo4PlacedPointMaxAgeUs = 50000;
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    std::atomic<bool> g_devBroadswordRideOff{false};   // dev pad broadsword_ride 0: measure, change nothing
+    struct BroadswordRideWindow
+    {
+        uint64_t startMs = 0;
+        unsigned frames = 0, applied = 0;
+        float alongMin = 0.0f, alongMax = 0.0f, alongSum = 0.0f, offMax = 0.0f, ageMaxMs = 0.0f;
+    };
+#endif
+    void Halo4BroadswordRideCockpit(Halo4CameraBasis& camera) noexcept
+    {
+        NativeVehicleSeatPoint placed{};
+        if (!NativeVehicleFirstPerson_PlacedPoint(GameTitle::Halo4, placed) ||
+            placed.vehicleIdentity != kHalo4BroadswordModel)
+            return;
+        const uint64_t now = Sight_NowUs();
+        if (now < placed.us || now - placed.us > kHalo4PlacedPointMaxAgeUs ||
+            !NativeVehicleFirstPerson_SeatViewOwned(GameTitle::Halo4, placed.parent, placed.seat))
+            return;
+        for (float value : placed.point)
+            if (!std::isfinite(value))
+                return;
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        // How far the observer trails the placed point, along the view's forward (negative = behind), per second.
+        {
+            static BroadswordRideWindow w;
+            const uint64_t ms = now / 1000;
+            if (!w.startMs)
+                w.startMs = ms;
+            const float d[3]{camera.position[0] - placed.point[0], camera.position[1] - placed.point[1],
+                             camera.position[2] - placed.point[2]};
+            const float along = d[0] * camera.forward[0] + d[1] * camera.forward[1] + d[2] * camera.forward[2];
+            const float off = sqrtf(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+            if (!w.frames || along < w.alongMin) w.alongMin = along;
+            if (!w.frames || along > w.alongMax) w.alongMax = along;
+            w.alongSum += along;
+            w.offMax = (std::max)(w.offMax, off);
+            w.ageMaxMs = (std::max)(w.ageMaxMs, float(now - placed.us) * 0.001f);
+            ++w.frames;
+            const bool apply = !g_devBroadswordRideOff.load(std::memory_order_relaxed);
+            if (apply) ++w.applied;
+            if (ms - w.startMs >= 1000)
+            {
+                LOG("Halo 4 Broadsword view (dev): %u frames, %u on the placed point; the observer stood %.3f..%.3f "
+                    "(mean %.3f) wu along the view from the point (negative = behind), %.3f wu away at most; the "
+                    "point was %.1f ms old at most",
+                    w.frames, w.applied, double(w.alongMin), double(w.alongMax),
+                    double(w.alongSum / float(w.frames)), double(w.offMax), double(w.ageMaxMs));
+                w = BroadswordRideWindow{};
+                w.startMs = ms;
+            }
+            if (!apply)
+                return;
+        }
+#endif
+        memcpy(camera.position, placed.point, sizeof(camera.position));
+        static uint32_t saidFor = UINT32_MAX;
+        if (saidFor != placed.parent)
+        {
+            saidFor = placed.parent;
+            LOG("Halo 4 Broadsword: the view stands on the seat camera's own point (the camera director's lag behind "
+                "the cockpit is left out); its direction is the game's");
+        }
+    }
+
     // C-H4-7: stock-projection geometry on C-H4-5's sustained wrapper scope.
     // The snapshot, camera basis, and both eye transforms are validated before
     // the first mutation. Once mutation begins, any failure drops this frame;
@@ -45528,6 +45603,7 @@ namespace
         // controller-owned in this frame; `stock` below becomes the HMD-owned
         // render camera and must not be reused for their placement.
         const Halo4CameraBasis controllerRoot = stock;
+        Halo4BroadswordRideCockpit(stock);
 
         // C-H4-9: publish the ENGINE's own look pitch, taken before any of our
         // head transform touches it. This observer forward is the ray Halo
@@ -54760,6 +54836,11 @@ void Game_DevNoteFireTrigger(bool pressed)
 {
     if (TitleAdapter_GetActiveTitle() == GameTitle::Halo3)
         Halo3ImpactNoteTrigger(pressed);
+}
+void Game_DevSetBroadswordRide(bool ride)
+{
+    g_devBroadswordRideOff.store(!ride, std::memory_order_relaxed);
+    LOG("Halo 4 Broadsword view (dev): %s", ride ? "on the seat camera's point" : "the observer's, as the game makes it");
 }
 static std::atomic<bool> g_devSeatPitchCheckHoldOff{false};
 void Game_DevSetSeatPitchCheckHold(bool hold)

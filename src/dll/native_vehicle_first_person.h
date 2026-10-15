@@ -31,6 +31,19 @@ void NativeVehicleFirstPerson_SetStockOnThisThread(bool stock) noexcept;
 // in-tick byte, where this override resolved it (Halo 4). A read; nothing else.
 int NativeVehicleFirstPerson_InSimulationTick(GameTitle title) noexcept;
 bool Game_ReadVehicleCameraOwner(GameTitle title, NativeVehicleCameraOwner& owner) noexcept;
+// Halo 4: the point this override last placed the seat camera at (world units, the occupant's head as drawn this
+// frame plus the seat's trims), with its seat, the vehicle's model, and when (Sight_NowUs). Written by the camera
+// evaluator for the frame's camera, read by the render transaction of the same frame; a seqlock, any thread.
+// False while there is none for the active generation.
+struct NativeVehicleSeatPoint
+{
+    uint32_t generation{}, parent{UINT32_MAX};
+    int16_t seat{-1};
+    uint64_t vehicleIdentity{};
+    float point[3]{};
+    uint64_t us{};
+};
+bool NativeVehicleFirstPerson_PlacedPoint(GameTitle title, NativeVehicleSeatPoint& out) noexcept;
 #if HALOMCCVR_DEV_DIAGNOSTICS
 void Game_Halo4CameraOwnerReport() noexcept;   // dev: why Game_ReadVehicleCameraOwner refused Halo 4 seats
 
