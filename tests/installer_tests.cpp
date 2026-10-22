@@ -145,8 +145,9 @@ int wmain(int argc,wchar_t** argv) {
                 GameInstall resolved;
                 Require(ProbeInstall(browse,resolved)&&fs::equivalent(resolved.root, gameRoot),
                     "root/bin/already-installed-folder browsing always resolves to actual game root");
-                Require((resolved.root/"Halo_MCC_VR").parent_path()==gameRoot,
-                    "VR destination is a direct child of game root for either edition");
+                const auto vrTarget = (resolved.root / L"Halo_MCC_VR").lexically_normal();
+                Require(vrTarget.parent_path() == resolved.root.lexically_normal(),
+                    "VR destination is a direct child of the normalized game root for either edition");
             }
         }
         Write(source / "HaloMCCVR.dll", "new DLL fixture"); Write(source.parent_path() / "HaloMCCVRLauncher.exe", "new launcher fixture");
