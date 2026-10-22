@@ -2297,9 +2297,10 @@ namespace
         int elbow = -1;
         int shoulder = -1;
         uint64_t wristDescendants = 0;
-        // Reach uses this exact appended held-object boundary; H3/ODST
-        // leave it disabled and retain their authored descendant masks.
+        // Reach supplies this model's explicit held outputs for custom graphs.
+        // H3/ODST leave these disabled and retain authored descendant masks.
         int heldObjectStart = -1;
+        FpHeldSources heldSources{};
         int lWrist = -1;
         int lElbow = -1;
         int lShoulder = -1;
@@ -2793,9 +2794,9 @@ namespace
         int elbow = -1;
         int shoulder = -1;
         uint64_t wristDescendants = 0;
-        // Reach uses this exact appended held-object boundary; H3/ODST
-        // leave it disabled and retain their authored descendant masks.
+        // The exact model selection participates in stereo-cache identity too.
         int heldObjectStart = -1;
+        FpHeldSources heldSources{};
         int lWrist = -1;
         int lElbow = -1;
         int lShoulder = -1;
@@ -7108,6 +7109,7 @@ namespace
                 cache.shoulder == context.shoulder &&
                 cache.wristDescendants == context.wristDescendants &&
                 cache.heldObjectStart == context.heldObjectStart &&
+                cache.heldSources == context.heldSources &&
                 cache.lWrist == context.lWrist &&
                 cache.lElbow == context.lElbow &&
                 cache.lShoulder == context.lShoulder &&
@@ -7170,6 +7172,7 @@ namespace
                 cache.shoulder = context.shoulder;
                 cache.wristDescendants = context.wristDescendants;
                 cache.heldObjectStart = context.heldObjectStart;
+                cache.heldSources = context.heldSources;
                 cache.lWrist = context.lWrist;
                 cache.lElbow = context.lElbow;
                 cache.lShoulder = context.lShoulder;
@@ -7459,8 +7462,8 @@ namespace
                         const bool handDescendant=i<64 &&
                             (mask&(uint64_t{1}<<i));
                         const bool heldObject=carryHeldObjects &&
-                            context.heldObjectStart>=0 &&
-                            i>=context.heldObjectStart;
+                            FpSourceIndexIsHeldObject(i,context.count,
+                                context.heldObjectStart,context.heldSources);
                         if (!handDescendant && !heldObject) continue;
                         BoneMatrix boneW{},newW{};
                         if (ComposeBoneMatrices(armRoot,unmod[i],boneW) &&
@@ -7664,8 +7667,8 @@ namespace
                             const bool handDescendant=i<64 &&
                                 (mask&(uint64_t{1}<<i));
                             const bool heldObject=carryHeldObjects &&
-                                context.heldObjectStart>=0 &&
-                                i>=context.heldObjectStart;
+                                FpSourceIndexIsHeldObject(i,context.count,
+                                    context.heldObjectStart,context.heldSources);
                             if (!handDescendant && !heldObject) continue;
                             BoneMatrix& bone=g_fpPaletteScratch[i];
                             for (int r=0;r<3;++r)
@@ -26386,6 +26389,8 @@ namespace
                            const ReachFpBodyLayout& b)
     {
         return a.Valid() && b.Valid() && a.kind==b.kind &&
+            a.paletteToSource==b.paletteToSource &&
+            a.bodySourceMask==b.bodySourceMask &&
             a.paletteBodyNodeCount==b.paletteBodyNodeCount &&
             a.liveSourceNodeCount==b.liveSourceNodeCount &&
             a.rightShoulderSource==b.rightShoulderSource &&
@@ -26589,8 +26594,8 @@ namespace
         if(!feature || !generation || feature->generation!=generation)
             return false;
         if (!g_config.world_collision && !Sight_PhysicalMelee()) return false;
-        // Observe the body even when its checksum is unfamiliar. Only the
-        // native appended held graph can authorize an unknown weapon model.
+        // Observe the body even when its checksum is unfamiliar. A validated
+        // native model remap can authorize an uncatalogued held model.
         const bool mappedWeapon=feature->runtimeBoundsProven.load(std::memory_order_acquire) &&
             LegacyClassifyRuntimeWeapon(title,renderModelTag,generation,source,boneMap);
         uint32_t checksum=0;
@@ -27545,8 +27550,8 @@ namespace
         return ReachBoneMatrixFinite(alignedTarget);
     }
 
-    // Reach's official Spartan/Elite body maps resolve the left wrist to source
-    // node 11 and publish the complete source-space left-hand descendant mask.
+    // Reach's verified body maps resolve the left wrist and publish the
+    // complete source-space left-hand descendant mask, including custom order.
     // The shared rigid (arm_ik=0) reconstruction intentionally carries the
     // whole weapon assembly from the right wrist; that is correct for the gun.
     // HREK proves the visible left-hand skin is also weighted across its hidden
@@ -27629,8 +27634,7 @@ namespace
         if (!rawTargets.rightWristValid || !rawTargets.leftWristValid ||
             fp.count <= 0 || fp.count > int(kReachFpMaxSourceNodeCount) ||
             fp.heldObjectStart <= 0 || fp.heldObjectStart > 64 ||
-            (fp.heldObjectStart < 64 &&
-             ((fp.wristDescendants | fp.lWristDescendants) >> fp.heldObjectStart)))
+            !fp.heldSources.explicitMap)
             return false;
         uint32_t checksum = 0;
         int bodyCount = 0;
@@ -28004,11 +28008,12 @@ namespace
         const BoneMatrix* selectedSource=source;
 
         int paletteCount=0;
-        int32_t mapCopy[64]{};
+        uint32_t bodyChecksum=0;
+        int32_t mapCopy[kReachFpMaxSourceNodeCount]{};
         ReachFpBodyLayout observed{};
         bool bodyLayout=false;
         const bool paletteCountResolved=contextCurrent &&
-            ReachResolvePaletteNodeCount(tag,paletteCount);
+            ReachReadRenderModelIdentity(tag,bodyChecksum,paletteCount);
         if (paletteCountResolved)
             ReachObserveFpLegPalette(tag,paletteCount);
         if (paletteCountResolved && boneMap &&
@@ -28020,8 +28025,12 @@ namespace
             bodyLayout=ResolveReachFpBodyLayout(
                 std::span<const int32_t>{mapCopy,
                     static_cast<size_t>(paletteCount)},
-                static_cast<size_t>(context.liveSourceCount),observed);
+                static_cast<size_t>(context.liveSourceCount),observed,bodyChecksum);
         }
+        if (contextCurrent && !bodyLayout &&
+            (paletteCount==static_cast<int>(kReachSpartanFpBodyNodeCount) ||
+             paletteCount==static_cast<int>(kReachEliteFpBodyNodeCount)))
+            PublishReachFpStatus(4,paletteCount,context.liveSourceCount);
         const bool frozenLayoutValid=context.layout.Valid();
         const bool exactBodyMatchesFrozen=bodyLayout && frozenLayoutValid &&
             tag==context.bodyTag && ReachLayoutsEqual(context.layout,observed);
@@ -28115,6 +28124,26 @@ namespace
                     context.layout.rightHandSourceDescendants;
                 fp.heldObjectStart=static_cast<int>(
                     context.layout.paletteBodyNodeCount);
+                // This palette's native model supplies the held outputs. The
+                // body palette owns no weapon outputs; unrendered graph extras
+                // must not become guns merely because the Elite lacks them.
+                fp.heldSources.explicitMap=true;
+                if (!exactBodyMatchesFrozen &&
+                    (!paletteCountResolved || !boneMap ||
+                     !SafeReadBytes(boneMap,mapCopy,
+                         static_cast<size_t>(paletteCount)*sizeof(int32_t)) ||
+                     !ResolveReachFpHeldSources(context.layout,
+                         std::span<const int32_t>{mapCopy,
+                             static_cast<size_t>(paletteCount)},fp.heldSources)))
+                {
+                    // Refuse only this unrelated/malformed model. A valid
+                    // arms layout must survive an optional palette failure.
+                    selectedSource=context.untouchedLive;
+                    PublishReachFpStatus(4,paletteCount,context.liveSourceCount);
+                    if (original)
+                        original(tag,root,destination,unused,selectedSource,boneMap);
+                    return;
+                }
                 fp.lWrist=context.layout.leftWristSource;
                 fp.lElbow=context.layout.leftElbowSource;
                 fp.lShoulder=context.layout.leftShoulderSource;
@@ -28254,8 +28283,8 @@ namespace
                         {
                             const bool hand=i<64 &&
                                 (keep&(uint64_t{1}<<i));
-                            const bool held=fp.heldObjectStart>=0 &&
-                                i>=fp.heldObjectStart;
+                            const bool held=FpSourceIndexIsHeldObject(i,fp.count,
+                                fp.heldObjectStart,fp.heldSources);
                             if (!hand && !held)
                             {
                                 const bool leftArm=i<64 &&
@@ -37033,6 +37062,9 @@ namespace
         else if (code==3)
             LOG("Reach FP layout changed or failed validation at live=%d; next pair remains stock",
                 liveCount);
+        else if (code==4)
+            LOG("Reach FP palette stays native: unsupported identity or invalid source mapping; "
+                "palette=%d live=%d; camera and aim remain independent",bodyCount,liveCount);
     }
 
     void ReachVehicleInputLogTick()

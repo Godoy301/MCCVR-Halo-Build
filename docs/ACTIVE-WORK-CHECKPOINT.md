@@ -1,3 +1,23 @@
+## October 22 Reach modded weapons: generic mapping candidate
+
+Latest user request: commit and push the generic correction to
+`modded-weapons-fix`; the user will compile it on Windows for testing. Branch `modded-weapons-fix`, baseline HEAD `6919a53a`.
+Local source changes implement verified-body remapping and explicit per-model
+held-output selection; no weapon allowlist and no new native bindings. The
+initial body-complement WIP was replaced because it misclassified extra fingers
+and IK nodes. See `REACH-MODDED-WEAPONS-IMPLEMENTATION-2026-10-22.md` for precise
+scope, commands and limitations, and the analysis/evidence JSON alongside it.
+
+Offline validation: 2,793 focused production/helper checks with ASan/UBSan and
+40 prior layout/pair/palette checks pass. CMake Release configuration cannot run
+here: the Linux environment lacks Visual Studio 2022. Full DLL build, cumulative
+CTest, PowerShell Reach gate, package and headset/Halo 3 regression results are
+outstanding. Source delivery by commit/push is now explicitly authorized. No
+installable DLL/build ZIP, installation, launch or accepted-pointer update.
+The user will perform Windows compilation and headset testing. Precision SMG's
+identity as the user's plain "SMG" remains qualified. Do not claim universal
+custom-arm-rig compatibility or in-game acceptance from offline tests.
+
 ## September 30 avatar/finger and login-focus candidate handoff
 
 The user ended further IK/finger expansion for this candidate, requested the
