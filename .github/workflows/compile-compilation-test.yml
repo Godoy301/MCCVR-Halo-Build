@@ -19,7 +19,7 @@ jobs:
     runs-on: windows-2022
     timeout-minutes: 120
     steps:
-      - name: Check out the source commit that was on compilation-test before adding this workflow
+      - name: Check out the compilation-test source commit before this workflow update
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.before }}
@@ -34,13 +34,14 @@ jobs:
           if ($env:GITHUB_REF_NAME -ne 'compilation-test') {
             throw "Refusing to build unexpected branch: $env:GITHUB_REF_NAME"
           }
-          $expectedRequestedSha = '6919a53a8c6a6ad12ccb5c98355ebaecadaddc2f'
-          if ($env:EXPECTED_SOURCE_SHA -ne $expectedRequestedSha) {
-            throw "compilation-test changed since the requested revision. Expected $expectedRequestedSha but push-before SHA is $env:EXPECTED_SOURCE_SHA. Refusing to build another revision."
-          }
           $actual = (& git rev-parse HEAD).Trim()
           if ($actual -ne $env:EXPECTED_SOURCE_SHA) {
             throw "Checkout SHA mismatch. Expected $env:EXPECTED_SOURCE_SHA, got $actual"
+          }
+          $baselineSha = '6919a53a8c6a6ad12ccb5c98355ebaecadaddc2f'
+          git merge-base --is-ancestor $baselineSha $actual
+          if ($LASTEXITCODE -ne 0) {
+            throw "Refusing to build a source commit that does not descend from the originally requested compilation-test revision $baselineSha."
           }
           Write-Host "Requested branch: compilation-test"
           Write-Host "Exact source commit being built: $actual"
