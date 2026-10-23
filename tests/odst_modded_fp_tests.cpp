@@ -45,8 +45,8 @@ static uint64_t Descendants(const Asset& a,int root)
 {
     uint64_t mask=0;
     for(int i=0;i<a.bodyCount;++i)
-        for(int n=i,depth=0;n>=0&&depth<a.count;++depth)
-        { if(n==root){mask|=uint64_t{1}<<i;break;}n=a.parents[n]; }
+        for(int n=a.body[i],depth=0;n>=0&&depth<a.count;++depth)
+        { if(n==a.body[root]){mask|=uint64_t{1}<<a.body[i];break;}n=a.parents[n]; }
     return mask;
 }
 static FpInterpolationContext Capture(BoneMatrix* bones,int count,int slot=0,int id=42)
@@ -73,6 +73,19 @@ int main()
             Check(a.count<39?!oldAccepted:oldAccepted,"reproduce old count gate");
             if(oldAccepted)Check(old.leftHandDescendants!=Descendants(a,5),"reproduce old Elite finger corruption");
         }
+        uint64_t gunMask=0;
+        Check(OdstCollectSourceMask(model,a.count,gunMask),"native gun map is injective");
+        OdstFpLayoutEntry complete{};complete.key.count=a.count;
+        complete.layout=layout;complete.heldMask=gunMask;OdstFpLayoutCache::Complete(complete);
+        Check(complete.valid && complete.layout.skeleton.cameraControl==a.camera,"derive actual camera from both maps");
+        layout=complete.layout;
+        if(a.camera==1) {
+            OdstFpSkeletonLayout old{};
+            Check(ComputeOdstFpSkeletonLayout(a.count,old),"old code accepted early-camera Automag by count");
+            Check(old.rightWrist!=layout.skeleton.rightWrist && old.leftWrist!=layout.skeleton.leftWrist,
+                "reproduce Automag wrong wrist indices");
+            Check(old.cameraControl!=a.camera,"reproduce last-node camera assumption");
+        }
         FpHeldSources held{};
         Check(ResolveOdstHeldSources(layout,model,a.count,held),"actual gun mapping");
         for(int n=0;n<a.count;++n)
@@ -81,23 +94,56 @@ int main()
         // Permute every source except the separately reserved camera. Neither
         // hand ownership nor gun ownership may depend on prefix positions.
         auto perm=a.body,gun=a.model;
-        for(int n=0;n<a.bodyCount;++n)perm[n]=a.count-2-perm[n];
-        for(int n=0;n<a.modelCount;++n)gun[n]=a.count-2-gun[n];
+        for(int n=0;n<a.bodyCount;++n)perm[n]=a.count-1-perm[n];
+        for(int n=0;n<a.modelCount;++n)gun[n]=a.count-1-gun[n];
         OdstMappedFpLayout reordered{};
         Check(ResolveOdstMappedFpLayout(a.checksum,{perm.data(),size_t(a.bodyCount)},a.count,reordered),"reordered body");
         Check(reordered.skeleton.rightWrist==perm[6],"mapped wrist");
+        reordered.skeleton.cameraControl=a.count-1-a.camera;
         Check(ResolveOdstHeldSources(reordered,{gun.data(),size_t(a.modelCount)},a.count,held),"reordered gun");
         Check(!ResolveOdstMappedFpLayout(0,body,a.count,reordered),"unknown body rejected");
         perm[1]=perm[0];
         Check(!ResolveOdstMappedFpLayout(a.checksum,{perm.data(),size_t(a.bodyCount)},a.count,reordered),"duplicate body rejected");
         Check(!ResolveOdstHeldSources(layout,body,a.count,held),"body cannot become gun");
-        int32_t invalid[]{a.count-1};
+        int32_t invalid[]{a.camera};
         Check(!ResolveOdstHeldSources(layout,invalid,a.count,held),"camera cannot become gun");
         invalid[0]=-2;
         Check(!ResolveOdstHeldSources(layout,invalid,a.count,held),"invalid sentinel rejected");
         invalid[0]=-1;
         Check(!ResolveOdstHeldSources(layout,invalid,a.count,held),"empty selection rejected");
         Check(!ResolveOdstMappedFpLayout(a.checksum,body,65,reordered),"bounded graph");
+        // Regression: the old hook consumed the interpolation on the first
+        // palette. Exercise the real receipt selector without recapturing.
+        for(bool gunFirst:{false,true}) {
+            g_odstMappedFpCache={};g_fpStereoSolveScope={};readable=true;
+            BoneMatrix shared[64]{};
+            Capture(shared,a.count);
+            for(int pass=0;pass<2;++pass) {
+                const bool isGun=gunFirst==(pass==0);
+                auto receipt=OdstMappedPaletteContext(shared);
+                Check(receipt.valid,"one interpolation feeds both native palettes");
+                Check(!OdstResolveMappedPalette(isGun?2:1,isGun?a.model.data():a.body.data(),receipt),"learning pair remains stock in either order");
+            }
+            ++g_fpStereoSolveScope.anatomicalTracking.serial;
+            Capture(shared,a.count);
+            for(int pass=0;pass<2;++pass) {
+                const bool isGun=gunFirst==(pass==0);
+                auto receipt=OdstMappedPaletteContext(shared);
+                Check(OdstResolveMappedPalette(isGun?2:1,isGun?a.model.data():a.body.data(),receipt),"both palettes accepted from one interpolation");
+                Check(receipt.cameraControl==a.camera,"runtime camera is the asset camera, not last node");
+            }
+            BoneMatrix foreign[64]{};
+            Check(!OdstMappedPaletteContext(foreign).valid,"unrelated source cannot borrow receipt");
+        }
+        OdstFpLayoutEntry ambiguous=complete;
+        ambiguous.heldMask=0;OdstFpLayoutCache::Complete(ambiguous);
+        Check(!ambiguous.valid,"body alone cannot authorize a guessed camera");
+        ambiguous=complete;ambiguous.heldMask|=uint64_t{1}<<a.body[0];
+        OdstFpLayoutCache::Complete(ambiguous);
+        Check(!ambiguous.valid,"overlapping body and gun rejected");
+        ambiguous=complete;ambiguous.heldMask&=ambiguous.heldMask-1;
+        OdstFpLayoutCache::Complete(ambiguous);
+        Check(!ambiguous.valid,"multiple unmapped nodes cannot identify camera");
         for(int slot=0;slot<2;++slot)
         {
             g_odstMappedFpCache={};g_fpStereoSolveScope={};readable=true;
@@ -111,7 +157,7 @@ int main()
             ++g_fpStereoSolveScope.anatomicalTracking.serial;
             context=Capture(bones,a.count,slot);
             Check(OdstResolveMappedPalette(1,a.body.data(),context),"next-pair body resolves");
-            Check(context.wrist==6 && context.lWrist==5,"runtime anchor assignment");
+            Check(context.wrist==a.body[6] && context.lWrist==a.body[5],"runtime anchor assignment");
             Check(context.heldSources.explicitMap&&!context.heldSources.bits[0],"body does not own gun outputs");
             std::fill(std::begin(bones),std::end(bones),BoneMatrix{});
             context=Capture(bones,a.count,slot);
@@ -139,7 +185,7 @@ int main()
             ++g_fpStereoSolveScope.anatomicalTracking.serial;
             context=Capture(bones,a.count,slot);
             Check(OdstResolveMappedPalette(1,changed.data(),context),"changed body learned next pair");
-            Check(context.shoulder==1&&context.lShoulder==2,"changed anchors applied");
+            Check(context.shoulder==changed[2]&&context.lShoulder==changed[1],"changed anchors applied");
             ++g_odstRuntimeGeneration;
             context=Capture(bones,a.count,slot);
             Check(!OdstResolveMappedPalette(2,a.model.data(),context),"generation retires layout");

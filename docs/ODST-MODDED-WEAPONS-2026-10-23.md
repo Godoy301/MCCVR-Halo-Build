@@ -1,3 +1,6 @@
+> Superseded by a failed headset result: the user reports all weapons head-locked.
+> See `ODST-MYTHIC-REGRESSION-2026-10-23.md` for rollback and replacement evidence.
+
 # ODST New Covenant: native body mapping instead of a human-only skeleton
 
 Status: source candidate on `modded-weapons-fix`; Windows compilation and

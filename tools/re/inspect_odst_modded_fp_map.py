@@ -1,4 +1,4 @@
-"""Read-only, hash-pinned ODST New Covenant FP asset inspection.
+"""Read-only, hash-pinned ODST New Covenant/Mythic Overhaul FP inspection.
 
 Cache metadata only; this tool establishes no engine hook or runtime binding.
 This supplied v13 ODST cache uses a tag-index signature at +0x44 and direct packed
@@ -36,8 +36,9 @@ def inspect(path):
         if data[:4] != b"daeh" or u32(4) != 13 or u32(8) != len(data):
             raise ValueError("Unsupported cache header or incomplete download")
         digest = hashlib.sha256(data).hexdigest()
-        if digest != "9d6cf73d249e0289b0465fd9f7ded7067c90a7352e9725fda15cae38f068783e":
-            raise ValueError("Unsupported cache: expected the supplied 01_hijacked.map")
+        if digest not in {"9d6cf73d249e0289b0465fd9f7ded7067c90a7352e9725fda15cae38f068783e",
+                          "4de591bea89ac6d427c15fd2bf79f16bdc81e38259e2a63a54a6fe70d66da5c0"}:
+            raise ValueError("Unsupported cache: expected supplied New Covenant or Mythic Overhaul cache")
 
         meta_start, meta_size = unpack("<II", 0x10)
         virtual_base, tag_header = unpack("<QQ", 0x2E0)
@@ -103,7 +104,7 @@ def inspect(path):
             datum = u32(offset + 12)
             index, salt = datum & 0xFFFF, datum >> 16
             if group != expected_group or index >= tag_count:
-                raise ValueError("Invalid first-person tag reference")
+                raise ValueError(f"Invalid first-person tag reference at {offset:x}: {group} {datum:08x}")
             tag = tags[index]
             if tag["salt"] != salt or tag["group"] != group:
                 raise ValueError("First-person tag reference identity mismatch")
@@ -132,7 +133,7 @@ def inspect(path):
         assets=[]
         bodies=[]
         for t in tags:
-            if t["group"] == "mode" and t["name"] in ["objects\\characters\\"+n+"\\fp\\fp" for n in ("odst_recon","odst_oni_op","masterchief","dervish")]:
+            if t["group"] == "mode" and "characters\\" in t["name"] and "\\fp\\" in t["name"]:
                 bodies.append(dict(tag=t,checksum=u32(packed(t["address"])+8),nodes=nodes(t)))
             if t["group"] == "weap":
                 start=packed(t["address"])
@@ -143,7 +144,7 @@ def inspect(path):
                 refs=packed(u32(start+0x410),count*32)
                 models=[]
                 for slot in range(count):
-                    if data[refs+slot*32:refs+slot*32+4] == b"\xff"*4: continue
+                    if data[refs+slot*32:refs+slot*32+4] == b"\xff"*4 or u32(refs+slot*32+12)==0xFFFFFFFF: continue
                     model=reference(refs+slot*32,"mode")
                     graph=reference(refs+slot*32+16,"jmad")
                     model_nodes=nodes(model)

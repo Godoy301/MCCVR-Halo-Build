@@ -1,14 +1,21 @@
-## October 23 ODST regression: mapped candidate failed in headset
+## October 23 ODST Mythic/previous-mod regression: replacement source candidate
 
-User reports all New Covenant/Mythic Overhaul weapons now head-locked. Supplied
-log identifies source f7a0778d, Steam, with every observed mapped layout rejected.
-Disable the failed mapped path in a separate commit, retaining its implementation
-and restoring the prior count-based path while investigating. This rollback does
-not solve custom skeletons and is not the final requested candidate. Preserve
-Reach/H3 fixes and dual shake reload work. New Mythic sc100.map downloaded;
-Automag graph has camera_control at 1 and wrists 6/7, not old 5/6. Its custom
-human body checksum is 14020C1F, absent from the previous body's identity list.
-Investigation and a replacement candidate remain in progress.
+The user reports all weapons head-locked after the prior ODST mapped fix and
+reconfirms this in New Covenant. Their log identifies f7a0778d, before dual-shake.
+Rollback commit 05d53019 separately disables the failed candidate, retaining code.
+The replacement restores mapped admission with a newly evidenced Mythic human
+body, camera inference from complete body+gun maps, and reusable interpolation
+receipts across both palette calls. Automag's actual graph has camera at 1,
+wrists 6/7, fingers 8–37 and gun 38–42; count-based assumptions explain its prior
+corruption. New Covenant remains in regression fixtures, not excluded.
+
+See ODST-MYTHIC-REGRESSION-2026-10-23.md for evidence, limitations and test steps.
+24,186 ODST checks across 202 map-derived combinations and H3/Reach regressions
+(828/2,793) pass with ASan/UBSan. Full Windows build and headset tests pending;
+user compiles. No DLL/package produced. Cold-worker diagnostics now distinguish
+missing receipt, stale pair, unreadable map, incomplete evidence and acceptance.
+Preserve dual-shake and prior Reach/H3 behavior; do not advance accepted pointer.
+Delivery is commit/push to modded-weapons-fix, without install/launch/release/PR.
 
 ## October 23 dual wield shake reload: source candidate ready for Windows test
 

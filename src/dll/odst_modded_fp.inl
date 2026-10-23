@@ -11,6 +11,13 @@ struct OdstFpMappedTransaction
 thread_local OdstFpLayoutCache g_odstMappedFpCache;
 thread_local OdstFpMappedTransaction g_odstMappedFpTransactions[2];
 
+// Cold-worker diagnostics only; render callbacks publish bounded atomics.
+struct OdstMappedFpDiagnostics {
+    std::atomic<uint64_t> bodyObservations{0},gunObservations{0},acceptedPalettes{0};
+    std::atomic<int> tag{-1},modelCount{0},stage{0};
+};
+OdstMappedFpDiagnostics g_odstMappedFpDiagnostics;
+
 void OdstApplyMappedLayout(const OdstMappedFpLayout& mapped,FpInterpolationContext& context)
 {
     const auto& layout=mapped.skeleton;
@@ -93,9 +100,20 @@ bool OdstTryReadMappedPaletteBytes(const void* source,void* destination,size_t s
 #endif
 }
 
+FpInterpolationContext OdstMappedPaletteContext(const BoneMatrix* source)
+{
+    // Body and weapon palettes share a native interpolation. Consuming this
+    // receipt on the first palette prevents learning when the gun comes first.
+    for(const auto& candidate:g_fpInterpolationContexts)
+        if(candidate.valid && source && candidate.source==source)return candidate;
+    return {};
+}
+
 bool OdstResolveMappedPalette(uint16_t tag,const int32_t* boneMap,
     FpInterpolationContext& context)
 {
+    g_odstMappedFpDiagnostics.tag.store(tag,std::memory_order_relaxed);
+    g_odstMappedFpDiagnostics.stage.store(1,std::memory_order_relaxed);
     if (!context.valid || context.slot<0 || context.slot>1 || !context.source ||
         context.count<=0 || context.count>64) return false;
     auto& transaction=g_odstMappedFpTransactions[context.slot];
@@ -106,6 +124,7 @@ bool OdstResolveMappedPalette(uint16_t tag,const int32_t* boneMap,
         context.generation==g_odstRuntimeGeneration.load(std::memory_order_acquire);
     uint32_t checksum=0;
     const int count=current?OdstReadFpModelIdentity(tag,checksum):0;
+    g_odstMappedFpDiagnostics.modelCount.store(count,std::memory_order_relaxed);
     int32_t remap[64]{};
     OdstMappedFpLayout observed{};
     const bool readable=count>0 && count<=64 && boneMap &&
@@ -116,17 +135,26 @@ bool OdstResolveMappedPalette(uint16_t tag,const int32_t* boneMap,
     bool accepted=false;
     if (body)
     {
+        ++g_odstMappedFpDiagnostics.bodyObservations;
+        // Compare with the camera derived from BOTH maps, not count - 1.
+        observed.skeleton.cameraControl=frozen.layout.skeleton.cameraControl;
         accepted=frozen.valid && frozen.bodyTag==tag && frozen.layout==observed;
         g_odstMappedFpCache.Learn(transaction.key,tag,observed);
     }
-    else if (readable && frozen.valid && tag!=frozen.bodyTag)
+    else if (readable)
     {
-        accepted=ResolveOdstHeldSources(frozen.layout,
-            std::span<const int32_t>{remap,size_t(count)},context.count,context.heldSources);
+        uint64_t mask=0;
+        if(OdstCollectSourceMask(std::span<const int32_t>{remap,size_t(count)},context.count,mask)) {
+            ++g_odstMappedFpDiagnostics.gunObservations;
+            accepted=frozen.valid && frozen.heldTag==tag && frozen.heldMask==mask &&
+                ResolveOdstHeldSources(frozen.layout,
+                    std::span<const int32_t>{remap,size_t(count)},context.count,context.heldSources);
+            g_odstMappedFpCache.LearnHeld(transaction.key,tag,mask);
+        }
     }
     if (!accepted)
     {
-        if (!body && frozen.valid) g_odstMappedFpCache.Reject(transaction.key);
+        if (!readable) g_odstMappedFpCache.Reject(transaction.key);
         // A changed body map cannot leave speculative marker transforms in the
         // native source. Restore only this invocation's untouched graph.
         if (transaction.transformed)
@@ -134,6 +162,9 @@ bool OdstResolveMappedPalette(uint16_t tag,const int32_t* boneMap,
                 g_fpUnmodifiedInterpolations[context.slot],size_t(context.count)*sizeof(BoneMatrix));
         context.valid=false;
     }
+    if(accepted)++g_odstMappedFpDiagnostics.acceptedPalettes;
+    g_odstMappedFpDiagnostics.stage.store(accepted?7:!current?2:!readable?3:
+        frozen.valid?6:body?5:4,std::memory_order_relaxed);
     PublishOdstFpLayoutSelfCheck(context.slot,context.count,accepted,
         accepted?frozen.layout.skeleton:OdstFpSkeletonLayout{},
         body?observed.bodyCount:frozen.layout.bodyCount,
