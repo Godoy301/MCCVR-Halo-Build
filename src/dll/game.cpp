@@ -15141,7 +15141,8 @@ namespace
             preparedSerial, unit, weapon, aux0, aux1);
     }
 
-static constexpr bool kOdstMappedFpEnabled = true;
+// Keep the failed learned-palette candidate dormant; restore the pre-ODST solver.
+static constexpr bool kOdstMappedFpEnabled = false;
 #include "odst_modded_fp.inl"
 
     bool OdstFpInterpolateWeaponBody(
