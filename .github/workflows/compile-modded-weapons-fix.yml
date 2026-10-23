@@ -34,7 +34,7 @@ jobs:
           if ($env:GITHUB_REF_NAME -ne 'modded-weapons-fix') {
             throw "Refusing to build unexpected branch: $env:GITHUB_REF_NAME"
           }
-          $expectedSourceSha = '244bf88cd1dc7da4b6bb05d29eddff43ebfaaaff'
+          $expectedSourceSha = '7c05a6a6e7105c21a124c4bc4be198e7a758e105'
           if ($env:EXPECTED_SOURCE_SHA -ne $expectedSourceSha) {
             throw "Source revision differs from the reviewed modded-weapons-fix commit. Expected $expectedSourceSha, got $env:EXPECTED_SOURCE_SHA. Refusing to build a different revision."
           }
