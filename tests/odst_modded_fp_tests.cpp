@@ -38,7 +38,9 @@ static bool BuildOdstCenterFpRoot(int,BoneMatrix&) {return true;}
 static bool ApplyControllerToMarkerBonesFromRoot(BoneMatrix,BoneMatrix* bones,int count,int,int,bool)
 {if(!markerSuccess)return false;for(int i=0;i<count;++i)bones[i].value+=100;return true;}
 static void PublishOdstFpLayoutSelfCheck(int,int,bool,const OdstFpSkeletonLayout&,int=0,uint32_t=0) {}
+#define ODST_MODDED_FP_TESTING 1
 #include "../src/dll/odst_modded_fp.inl"
+#undef ODST_MODDED_FP_TESTING
 static uint64_t Descendants(const Asset& a,int root)
 {
     uint64_t mask=0;
