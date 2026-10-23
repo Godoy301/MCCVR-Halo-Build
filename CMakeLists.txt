@@ -1455,6 +1455,19 @@ if(BUILD_TESTING)
     add_test(NAME halo4_weapon_haptics COMMAND halo4_weapon_haptics_tests)
     add_executable(reach_weapon_haptics_logic_tests tests/reach_weapon_haptics_logic_tests.cpp)
     add_test(NAME reach_weapon_haptics_logic COMMAND reach_weapon_haptics_logic_tests)
+    set(HALOMCCVR_HALO3_MODDED_FIXTURE "${HALOMCCVR_GENERATED_DIR}/halo3_modded_fp_fixture.inl")
+    set(HALOMCCVR_HALO3_MODDED_ASSETS "${HALOMCCVR_GENERATED_DIR}/halo3_modded_fp_assets.inl")
+    add_custom_command(OUTPUT "${HALOMCCVR_HALO3_MODDED_FIXTURE}" "${HALOMCCVR_HALO3_MODDED_ASSETS}"
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_halo3_modded_fp_fixture.py"
+            --source-root "${CMAKE_CURRENT_SOURCE_DIR}" --output "${HALOMCCVR_HALO3_MODDED_FIXTURE}"
+        DEPENDS tools/generate_halo3_modded_fp_fixture.py tools/generate_haptics_runtime_fixture.py
+            src/dll/game.cpp src/dll/legacy_runtime_weapon_bounds.inl
+            docs/HALO3-MODDED-WEAPONS-MAP-EVIDENCE.json VERBATIM)
+    add_executable(halo3_modded_fp_tests tests/halo3_modded_fp_tests.cpp
+        "${HALOMCCVR_HALO3_MODDED_FIXTURE}" "${HALOMCCVR_HALO3_MODDED_ASSETS}")
+    target_include_directories(halo3_modded_fp_tests PRIVATE "${HALOMCCVR_GENERATED_DIR}")
+    target_compile_features(halo3_modded_fp_tests PRIVATE cxx_std_20)
+    add_test(NAME halo3_modded_fp COMMAND halo3_modded_fp_tests)
     set(HALOMCCVR_REACH_MODDED_FIXTURE "${HALOMCCVR_GENERATED_DIR}/reach_modded_fp_fixture.inl")
     set(HALOMCCVR_REACH_MODDED_ASSETS "${HALOMCCVR_GENERATED_DIR}/reach_modded_fp_assets.inl")
     add_custom_command(OUTPUT "${HALOMCCVR_REACH_MODDED_FIXTURE}" "${HALOMCCVR_REACH_MODDED_ASSETS}"

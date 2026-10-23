@@ -1,3 +1,23 @@
+## October 22 Halo 3 modded weapons: detached gun candidate
+
+User confirms Reach works across all mods they tested. Preserve that correction;
+this is scoped user evidence, not all-mod/all-title release acceptance. The new
+Halo 3 Ultimate Firefight report has tracked hands but invisible Bulldog/Ravager;
+Skewer is suspected. The supplied firefight_shrine map confirms all three gun
+roots are parented to base, outside both wrist subtrees. H3 floating-hands
+visibility collapses those sources, and default arm IK does not carry them.
+
+Candidate adds H3-only native held-model output selection before reconstruction,
+using the existing validated remap classifier; those outputs participate in IK,
+scaling and visibility. No ODST or Reach runtime changes. See
+`HALO3-MODDED-WEAPONS-2026-10-22.md` and its hash-pinned asset JSON/inspector.
+828 focused H3 checks and 2,793 Reach checks pass with ASan/UBSan. Full Windows
+build/headset confirmation pending; user compiles. The existing CI workflow is
+still pinned to f70f3b93 and will not build the new source without updating its
+pin/trigger; do not mistake that old DLL for this candidate. Source delivery on
+modded-weapons-fix follows the user's established commit/push workflow. No game
+writes, installation, launch, accepted-pointer update or publication requested.
+
 ## October 22 Reach modded weapons: generic mapping candidate
 
 Latest user request: commit and push the generic correction to

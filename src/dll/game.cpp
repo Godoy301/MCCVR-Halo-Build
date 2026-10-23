@@ -96,6 +96,7 @@
 #include "../common/seat_view_logic.h"
 #include "../common/reach_chud_logic.h"
 #include "../common/reach_render_logic.h"
+#include "../common/halo3_held_palette_logic.h"
 #include "../common/reach_vehicle_logic.h"
 #include "../common/reach_hand_shot_logic.h"
 #include "../common/aim_no_unit_logic.h"
@@ -2845,6 +2846,9 @@ namespace
     bool LegacyRouteLeftHandedPalette(GameTitle title, uint16_t tag, const int32_t* boneMap,
         const BoneMatrix& root, const FpInterpolationContext& context,
         FpInterpolationContext& contactContext);
+
+    bool Halo3SelectHeldPaletteSources(uint16_t tag, const int32_t* boneMap,
+                                      FpInterpolationContext& context);
 
     thread_local float g_fpPaletteCollisionCorrection[2][3]{};
 
@@ -8006,6 +8010,10 @@ namespace
                 candidate.valid=false;
                 break;
             }
+        // A modded gun can be parented to base instead of either wrist.
+        // Resolve its actual model outputs before IK, scaling and visibility.
+        if (context.valid)
+            (void)Halo3SelectHeldPaletteSources(tag,boneMap,context);
         const BoneMatrix* selectedSource=source;
         // Never let the visible palette consume the live buffer after the
         // marker/effect preservation rewrite. If the final reconstruction is
@@ -8039,8 +8047,8 @@ namespace
         // FLOATING HANDS (optional, OFF by default): a pure presentation filter
         // over the already-solved palette. The VRIK solve above still tracks the
         // hands to the controllers exactly as normal; here we only collapse the
-        // bones that are NOT part of either hand-or-gun subtree â€” the shoulders,
-        // elbows, and forearms â€” so their skinned geometry vanishes and only the
+        // bones outside the hands and the classified held model, including
+        // guns parented to base. Shoulder/forearm skin disappears while the
         // hands and held guns remain. Scale is a PROVEN render input (the same
         // field the gun_scale trim resizes the visible mesh with), so shrinking a
         // bone's scale toward zero drives its vertices to the joint origin: an
@@ -8053,7 +8061,7 @@ namespace
         {
             const uint64_t keep=context.wristDescendants|context.lWristDescendants;
             for (int i=0;i<context.count;++i)
-                if (!(keep&(1ull<<i)))
+                if (!Halo3FpSourceVisible(i,context.count,keep,context.heldSources))
                     g_fpPaletteScratch[i].scale=0.0001f; // collapse to the joint
         }
 
@@ -26561,6 +26569,26 @@ namespace
 #include "left_hand_presentation.inl"
 #include "visual_hand_palette.inl"
 #include "legacy_runtime_weapon_bounds.inl"
+
+    bool Halo3SelectHeldPaletteSources(uint16_t tag, const int32_t* boneMap,
+                                      FpInterpolationContext& context)
+    {
+        context.heldSources={};
+        if (!context.valid || !context.source || !boneMap ||
+            context.slot<0 || context.slot>1 || context.count<=0 || context.count>64 ||
+            context.generation!=g_halo3RuntimeGeneration.load(std::memory_order_acquire) ||
+            !LegacyClassifyRuntimeWeapon(GameTitle::Halo3,tag,context.generation,
+                                        context.source,boneMap))
+            return false;
+        const int count=LegacyAnatomicalRenderNodeCount(GameTitle::Halo3,tag);
+        int32_t remap[64]{};
+        if (count<=0 || count>64 ||
+            !SafeReadBytes(boneMap,remap,size_t(count)*sizeof(*remap)))
+            return false;
+        return ResolveHalo3HeldPaletteSources(true,
+            std::span<const int32_t>{remap,size_t(count)},context.count,
+            context.cameraControl,context.heldSources);
+    }
 
     void LegacyObserveReloadModel(
         GameTitle title, uint16_t renderModelTag, uint32_t generation,
