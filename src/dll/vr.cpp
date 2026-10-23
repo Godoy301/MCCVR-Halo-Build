@@ -5,6 +5,8 @@
 #include "../common/hud_reveal_logic.h"
 #include "../common/weapon_hand_logic.h"
 #include "../common/weapon_interaction_logic.h"
+#include "../common/dual_wield_shake_logic.h"
+#include "../common/dual_wield_reload_channel.h"
 #include "../common/weapon_model_observation.h"
 #include "../common/weapon_reload_target.h"
 #include "weapon_accessory_renderer.h"
@@ -10563,6 +10565,8 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
     HybridDiagnosticOverrideState g_hybridDiagnosticOverride;
     VirtualStockTestProfileState g_virtualStockTestProfile;
     weapon_interaction::State g_weaponInteraction;
+    dual_wield_shake::State g_dualReloadShake;
+    dual_wield_shake::Channel g_dualReloadChannel;
     // Setting the holster spot with a hand. The machine belongs to the input poll; the menu only asks
     // (request: 1 arm, 2 cancel) and reads the two counters and the armed flag.
     weapon_interaction::HolsterCapture g_holsterCapture;
@@ -14371,6 +14375,7 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         exclusive_input::active.store(false,std::memory_order_release);
         g_weaponAccessory={};
         g_weaponInteraction.Cancel();
+        g_dualReloadShake.Reset();g_dualReloadChannel.Cancel();
         g_weaponGestureReadyMs.store(0,std::memory_order_release);
         EnterCriticalSection(&g_headCs);
         g_padState.weaponSampleMs=0;
@@ -14921,7 +14926,7 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         if(f1Chord) pad.clickL=pad.clickR=true;
         const float rawSupportGrip=pad.gripL;
         weapon_interaction::Output weaponGesture{};
-        if(g_config.manual_reload || g_config.weapon_holsters || g_weaponInteraction.HasClaimedGrip() ||
+        if(g_config.dual_wield_shake_reload || g_config.manual_reload || g_config.weapon_holsters || g_weaponInteraction.HasClaimedGrip() ||
            g_holsterCapture.ConsumesGrip() || g_holsterCaptureRequest.load(std::memory_order_acquire))
         {
             // Use the same predicted-time head and controller space. This
@@ -15000,6 +15005,27 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                     g_holsterCaptureTimedOut.fetch_add(1,std::memory_order_relaxed);
                 g_holsterCaptureArmed.store(g_holsterCapture.Armed(),std::memory_order_release);
             }
+            dual_wield_shake::Owner dualOwner{};
+            dual_wield_shake::Sample dual{};
+            dual.title=sample.title;dual.generation=sample.generation;dual.space=sample.space;
+            dual.now=inputNow;dual.enabled=g_config.dual_wield_shake_reload;
+            dual.leftHanded=leftHanded;dual.head=sample.head;
+            dual.hands={sample.primary,sample.support};dual.travel=g_config.weapon_shake_travel_m;
+            const bool haveDualOwner=g_dualReloadChannel.Read(inputNow,dualOwner)&&
+                dualOwner.title==sample.title&&dualOwner.generation==sample.generation&&
+                dualOwner.space==sample.space&&dualOwner.leftHanded==leftHanded;
+            dual.ready=sample.ready&&haveDualOwner&&!g_weaponInteraction.HasClaimedGrip()&&
+                !g_holsterCapture.ConsumesGrip()&&!pad.menu&&!pad.a&&!pad.b&&!pad.x&&!pad.y&&
+                !pad.clickL&&!pad.clickR;
+            dual.dualWield=haveDualOwner;
+            if(haveDualOwner){dual.weapons=dualOwner.weapons;dual.unit=dualOwner.unit;}
+            dual.busy={pad.trigR>0.15f,pad.trigL>0.15f};
+            const unsigned reloadSlots=g_dualReloadShake.Update(dual);
+            if(!dual.enabled||!dual.ready)g_dualReloadChannel.Cancel();
+            else {
+                g_dualReloadChannel.CancelSlots((dual.busy[0]?1u:0u)|(dual.busy[1]?2u:0u));
+                if(reloadSlots)(void)g_dualReloadChannel.Request(dualOwner,inputNow,reloadSlots);
+            }
             weapon_interaction::Settings settings{};
             settings.reload=g_config.manual_reload;settings.holsters=g_config.weapon_holsters;
             settings.leftHanded=leftHanded;settings.pouchDown=g_config.weapon_pouch_down_m;
@@ -15056,6 +15082,7 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         else
         {
             g_weaponInteraction.Reset();
+            g_dualReloadShake.Reset();g_dualReloadChannel.Cancel();
             g_weaponAccessory={};
             g_weaponGestureReadyMs.store(0,std::memory_order_release);
         }
@@ -25730,4 +25757,18 @@ void VR_GetCrouchContinuityStats(VrCrouchContinuityStats& out) noexcept
     EnterCriticalSection(&g_headCs);
     out=g_crouchStats;
     LeaveCriticalSection(&g_headCs);
+}
+
+unsigned VR_DualWieldReloadTick(GameTitle title,uint32_t generation,uint32_t unit,
+    const uint32_t weapons[2]) noexcept
+{
+    if(!g_config.dual_wield_shake_reload||!weapons||title!=TitleAdapter_GetActiveTitle()||
+        generation!=TitleAdapter_GetGeneration(title)||!Game_IsHeadTracking()||!VR_IsStereoEnabled()||
+        TitleAdapter_GetRuntimeMode()!=RuntimeMode::Gameplay||Menu_IsOpen()||
+        VR_IsPausePresentation()||VR_IsPausePresentationTarget()||VR_IsCutsceneTheaterActive()||
+        g_sessionStateShared.load(std::memory_order_acquire)!=XR_SESSION_STATE_FOCUSED)
+    {g_dualReloadChannel.Cancel();return 0;}
+    const dual_wield_shake::Owner owner{title,generation,unit,{weapons[0],weapons[1]},
+        g_contactSpaceEpoch.load(std::memory_order_acquire),g_config.left_handed};
+    return g_dualReloadChannel.ObserveAndConsume(owner,GetTickCount64());
 }

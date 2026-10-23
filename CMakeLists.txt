@@ -1455,6 +1455,9 @@ if(BUILD_TESTING)
     add_test(NAME halo4_weapon_haptics COMMAND halo4_weapon_haptics_tests)
     add_executable(reach_weapon_haptics_logic_tests tests/reach_weapon_haptics_logic_tests.cpp)
     add_test(NAME reach_weapon_haptics_logic COMMAND reach_weapon_haptics_logic_tests)
+    add_executable(dual_wield_shake_tests tests/dual_wield_shake_tests.cpp)
+    target_compile_features(dual_wield_shake_tests PRIVATE cxx_std_20)
+    add_test(NAME dual_wield_shake COMMAND dual_wield_shake_tests)
     set(HALOMCCVR_ODST_MODDED_ASSETS "${HALOMCCVR_GENERATED_DIR}/odst_modded_fp_assets.inl")
     add_custom_command(OUTPUT "${HALOMCCVR_ODST_MODDED_ASSETS}"
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_odst_modded_fp_fixture.py"

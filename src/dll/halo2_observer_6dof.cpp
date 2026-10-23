@@ -1,3 +1,4 @@
+#include "native_reload_policy.h"
 #include "../common/vr_interaction_refinement_logic.h"
 #include "../common/exclusive_input.h"
 #include "../common/halo2_datum_logic.h"
@@ -4140,6 +4141,8 @@ namespace
     // FLAT PARITY's proof feed (halo2_fire_eye.inl, included below): our on-foot unit's own tick while it stands still.
     void Halo2NoteFireEyeTick(uint32_t unit) noexcept;
 
+    void Halo2DualShakeTick(uint32_t unit) noexcept;
+
     __declspec(noinline) uint64_t __fastcall Halo2NativeAimUpdateDetour(
         uint32_t objectIndex)
     {
@@ -4227,6 +4230,7 @@ namespace
                         __leave;
                     }
                 }
+                Halo2DualShakeTick(objectIndex);
                 if (!directVrAim) __leave;
                 Halo2SightTrace(objectIndex);
                 // Co-op safe: the unit's two aim vectors are simulation state, and writing them here changes it on

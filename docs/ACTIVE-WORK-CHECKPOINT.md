@@ -1,3 +1,20 @@
+## October 23 dual wield shake reload: source candidate ready for Windows test
+
+User supplied all four requested kit/retail binaries. The H2/H3 request paths
+are now verified and wired: each controller shake requests the native reload of
+its own currently owned dual weapon on the simulation thread. Menu/config option
+`dual wield shake reload` defaults off and works independently of Manual Reload.
+Reuse Needler detector per logical hand, including handedness and settle/rearm.
+
+See `DUAL-WIELD-SHAKE-RELOAD-2026-10-23.md` for own-title kit/retail evidence,
+thread handoff, hook dependencies, tests, binary identities and headset steps.
+1,335 portable gesture/channel checks and the four-binary verifier pass; retained
+ODST/H3/Reach fixtures pass (4,742/828/2,793). Windows native-detour tests updated
+but not run here. Full Windows DLL build and headset acceptance remain pending.
+The user compiles; source delivery is commit/push to modded-weapons-fix. No game
+writes, install, launch, release, PR or accepted-pointer changes. Prior ODST
+source 89ab89c4 remains included and awaits user testing.
+
 ## October 23 ODST New Covenant: mapped body/held palette candidate
 
 User confirms Halo 3's fix makes all previously invisible guns visible and

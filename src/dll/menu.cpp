@@ -1331,6 +1331,15 @@ namespace
         if (CategorySection section{Cat_Reload}; section.visible)
         {
         ImGui::Text("Reload and holsters");
+        changed |= ImGui::Checkbox("dual wield shake reload", &g_config.dual_wield_shake_reload);
+        ImGui::TextDisabled("shake to reload a weapon when dual wielding");
+        if(g_config.dual_wield_shake_reload)
+        {
+            changed |= vr_menu::SliderFloat("Minimum shake stroke (m)##dualreload",
+                &g_config.weapon_shake_travel_m,0.06f,0.20f,"%.2f");
+            ImGui::TextDisabled("Halo 2 and Halo 3. Shake either hand back and forth once.\n"
+                "Let the hand settle before shaking again.");
+        }
         changed |= ImGui::Checkbox("Manual Reload", &g_config.manual_reload);
         if (g_config.manual_reload)
         {

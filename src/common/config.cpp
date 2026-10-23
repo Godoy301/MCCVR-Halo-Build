@@ -1257,6 +1257,7 @@ void ConfigLoad(const wchar_t* path)
         if (!strcmp(key,"weapon_holsters")) { g_config.weapon_holsters=atoi(val)!=0;continue; }
         if (!strcmp(key,"weapon_holster_slide")) { g_config.weapon_holster_slide=atoi(val)!=0;continue; }
         if (!strcmp(key,"weapon_holster_click")) { g_config.weapon_holster_click=atoi(val)!=0;continue; }
+        if (!strcmp(key,"dual_wield_shake_reload")) { g_config.dual_wield_shake_reload=atoi(val)!=0;continue; }
         if (!strcmp(key,"weapon_needler_shake")) { g_config.weapon_needler_shake=atoi(val)!=0;continue; }
         if (!strcmp(key,"weapon_unknown_reload_visual")) { g_config.weapon_unknown_reload_visual=atoi(val)!=0;continue; }
         if (!strcmp(key,"weapon_shake_travel_m"))
@@ -3140,6 +3141,8 @@ void ConfigSave()
         g_config.weapon_holster_radius_m,g_config.weapon_insert_radius_m,g_config.weapon_holster_draw_m);
     fprintf(f, "weapon_holster_slide = %d\nweapon_holster_click = %d\n",
         g_config.weapon_holster_slide?1:0,g_config.weapon_holster_click?1:0);
+    fprintf(f, "# Shake each held controller to reload its weapon in Halo 2/3 dual wield. Independent of manual_reload.\n");
+    fprintf(f, "dual_wield_shake_reload = %d\n", g_config.dual_wield_shake_reload?1:0);
     fprintf(f, "# Recognized Needlers across all titles and Reach Needle Rifle; requires manual_reload.\n");
     fprintf(f, "# One rapid gun-hand out-and-back shake in any direction; no grip; settle to rearm.\n");
     fprintf(f, "weapon_needler_shake = %d\nweapon_shake_travel_m = %.3f\n",
