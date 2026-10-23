@@ -81,7 +81,8 @@ bool OdstTryReadMappedPaletteBytes(const void* source,void* destination,size_t s
         memcpy(destination,source,size);
         return true;
     }
-    __except(EXCEPTION_EXECUTE_HANDLER)
+    // EXCEPTION_EXECUTE_HANDLER is 1 in WinNT.h; keep this unit-testable without windows.h.
+    __except(1)
     {
         return false;
     }
