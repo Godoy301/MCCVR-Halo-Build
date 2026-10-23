@@ -381,6 +381,7 @@ bool Halo4Type13LogInstall(uintptr_t base, size_t size, uint32_t generation);
 #include "../common/halo4_head_relative_logic.h"
 #include "../common/halo4_sound_listener_logic.h"
 #include "../common/odst_bringup_logic.h"
+#include "../common/odst_modded_fp_logic.h"
 #include "../common/odst_vehicle_logic.h"
 #include "../common/scope_logic.h"
 #include "../common/two_hand_ik_logic.h"
@@ -2298,8 +2299,8 @@ namespace
         int elbow = -1;
         int shoulder = -1;
         uint64_t wristDescendants = 0;
-        // Reach supplies this model's explicit held outputs for custom graphs.
-        // H3/ODST leave these disabled and retain authored descendant masks.
+        // Each title may select the current model's explicit held outputs.
+        // Unselected callers retain the authored descendant/range behavior.
         int heldObjectStart = -1;
         FpHeldSources heldSources{};
         int lWrist = -1;
@@ -15083,18 +15084,15 @@ namespace
     }
 
     // ---- One-shot FP weapon-layout self-check (headset diagnostics) ---------
-    // The two remaining fail-closed risks for the ODST weapon/arm path are (1)
-    // the FP interpolation hook never firing on a weapon slot and (2) the live
-    // node count falling outside ComputeOdstFpSkeletonLayout's accepted 39..64
-    // range (H3ODSTEK-derived indices vs. the retail skeleton). Neither can be
-    // logged from this hot hook, so it publishes atomically and the 50 ms worker
-    // emits one line -- exactly the pattern the non-FP camera capture uses below.
+    // Report mapped-layout learning/rejection outside the render thread.
     struct OdstFpLayoutSelfCheck
     {
         std::atomic<uint32_t> key{0};     // 0 = nothing observed yet
         std::atomic<int> slot{-1};
         std::atomic<int> nodeCount{-1};
-        std::atomic<int> accepted{0};     // 1 = layout accepted the node count
+        std::atomic<int> accepted{0};     // 1 = current palette matches the mapped rig
+        std::atomic<int> bodyCount{0};
+        std::atomic<uint32_t> bodyChecksum{0};
         std::atomic<int> wrist{-1};
         std::atomic<int> cameraControl{-1};
     };
@@ -15105,16 +15103,20 @@ namespace
     // built from slot/count/accepted so it republishes only when the observation
     // changes; the worker then emits each distinct observation at most once.
     void PublishOdstFpLayoutSelfCheck(int slot, int nodeCount, bool accepted,
-                                      const OdstFpSkeletonLayout& layout)
+                                      const OdstFpSkeletonLayout& layout,
+                                      int bodyCount=0,uint32_t bodyChecksum=0)
     {
         const uint32_t key =
             (static_cast<uint32_t>(slot & 0x3) << 30) |
             (static_cast<uint32_t>(accepted ? 1u : 0u) << 29) |
             (static_cast<uint32_t>(nodeCount & 0x1FF) << 20) |
+            (static_cast<uint32_t>(bodyCount & 0x7F) << 8) |
             0x1u;  // low bit set so a real observation is never key 0
         OdstFpLayoutSelfCheck& sc = g_odstFpLayoutSelfCheck;
         if (sc.key.load(std::memory_order_relaxed) == key)
             return;
+        sc.bodyCount.store(bodyCount,std::memory_order_relaxed);
+        sc.bodyChecksum.store(bodyChecksum,std::memory_order_relaxed);
         sc.slot.store(slot, std::memory_order_relaxed);
         sc.nodeCount.store(nodeCount, std::memory_order_relaxed);
         sc.accepted.store(accepted ? 1 : 0, std::memory_order_relaxed);
@@ -15138,6 +15140,8 @@ namespace
             g_odstRuntimeGeneration.load(std::memory_order_acquire),
             preparedSerial, unit, weapon, aux0, aux1);
     }
+
+#include "odst_modded_fp.inl"
 
     bool OdstFpInterpolateWeaponBody(
         int view, int id, int slot, BoneMatrix** outBones, int* outCount)
@@ -15232,51 +15236,8 @@ namespace
         if ((slot == 0 || slot == 1) && ownsWeapons)
         {
             g_fpInterpolationContexts[slot] = {};
-            OdstFpSkeletonLayout layout{};
-            const bool haveBones = result && outBones && outCount && *outBones;
-            const bool layoutOk =
-                haveBones && ComputeOdstFpSkeletonLayout(*outCount, layout);
-            PublishOdstFpLayoutSelfCheck(
-                slot, haveBones ? *outCount : -1, layoutOk, layout);
-            if (layoutOk)
-            {
-                const int count = *outCount;
-                FpInterpolationContext& context =
-                    g_fpInterpolationContexts[slot];
-                context.source = *outBones;
-                context.count = count;
-                context.generation=g_odstRuntimeGeneration.load(std::memory_order_acquire);
-                uint32_t currentUnit=UINT32_MAX,currentWeapon=UINT32_MAX;
-                if(muzzleOwner&&OdstCaptureMuzzleOwner(view,slot,currentUnit,currentWeapon)&&
-                    currentUnit==muzzleUnit&&currentWeapon==muzzleWeapon)
-                {context.muzzleUnit=muzzleUnit;context.muzzleWeapon=muzzleWeapon;}
-                context.player = view;
-                context.slot = slot;
-                context.wrist = layout.rightWrist;
-                context.cameraControl = layout.cameraControl;
-                context.elbow = layout.rightElbow;
-                context.shoulder = layout.rightShoulder;
-                context.wristDescendants =
-                    layout.rightHandAndWeaponDescendants;
-                context.lWrist = layout.leftWrist;
-                context.lElbow = layout.leftElbow;
-                context.lShoulder = layout.leftShoulder;
-                context.lWristDescendants = layout.leftHandDescendants;
-                context.valid = true;
-                memcpy(g_fpUnmodifiedInterpolations[slot], *outBones,
-                       static_cast<size_t>(count) * sizeof(BoneMatrix));
-                if (slot == 1 && view == 0)
-                    VR_ObserveSecondaryWeaponPresentation(GameTitle::Halo3ODST,
-                        g_odstRuntimeGeneration.load(std::memory_order_acquire));
-                MeasureOdstAuthoredBarrel(
-                    slot, g_fpUnmodifiedInterpolations[slot],
-                    layout.rightWrist);
-                BoneMatrix root{};
-                if (BuildOdstCenterFpRoot(slot, root))
-                    ApplyControllerToMarkerBonesFromRoot(
-                        root, *outBones, count, layout.rightWrist,
-                        layout.leftWrist, slot == 1);
-            }
+            OdstCaptureMappedInterpolation(view,id,slot,result,outBones,outCount,
+                muzzleOwner,muzzleUnit,muzzleWeapon);
         }
         else if (slot == 0 || slot == 1)
             g_fpInterpolationContexts[slot] = {};
@@ -15340,6 +15301,7 @@ namespace
             if(original)original(tag,root,destination,unused,hidden,boneMap);
             return;
         }
+        (void)OdstResolveMappedPalette(tag,boneMap,context);
         (void)LegacyObserveWeaponRenderModel(GameTitle::Halo3ODST,tag,collisionGeneration,source,boneMap);
         const BoneMatrix* selectedSource = source;
         if (context.valid && source == context.source)
@@ -15378,7 +15340,8 @@ namespace
             const uint64_t keep =
                 context.wristDescendants | context.lWristDescendants;
             for (int i = 0; i < context.count; ++i)
-                if (!(keep & (uint64_t{1} << i)))
+                if (!(keep & (uint64_t{1} << i)) &&
+                    !FpSourceIndexIsHeldObject(i,context.count,context.heldObjectStart,context.heldSources))
                     g_fpPaletteScratch[i].scale = 0.0001f;
         }
         if (g_scopeRenderActive.load(std::memory_order_acquire) &&
@@ -15712,16 +15675,18 @@ namespace
         const int slot = sc.slot.load(std::memory_order_relaxed);
         const int nodeCount = sc.nodeCount.load(std::memory_order_relaxed);
         const int accepted = sc.accepted.load(std::memory_order_relaxed);
+        const int bodyCount=sc.bodyCount.load(std::memory_order_relaxed);
+        const uint32_t bodyChecksum=sc.bodyChecksum.load(std::memory_order_relaxed);
         const int wrist = sc.wrist.load(std::memory_order_relaxed);
         const int cameraControl =
             sc.cameraControl.load(std::memory_order_relaxed);
         if (sc.key.load(std::memory_order_acquire) != key)
             return; // a newer observation started; re-read next tick
         LOG("ODST FP WEAPON SELF-CHECK: interpolation hook fired slot=%d "
-            "nodeCount=%d layoutAccepted=%s (need 39..64) wrist=%d "
-            "cameraControl=%d -- hands/gun driven by controller = %s",
-            slot, nodeCount, accepted ? "YES" : "NO", wrist, cameraControl,
-            accepted ? "YES" : "NO (layout rejected -> stock pose on head)");
+            "nodeCount=%d layoutAccepted=%s (validated body remap) wrist=%d "
+            "cameraControl=%d bodyNodes=%d bodyChecksum=%08X -- hands/gun driven by controller = %s",
+            slot, nodeCount, accepted ? "YES" : "NO", wrist, cameraControl,bodyCount,bodyChecksum,
+            accepted ? "YES" : "NO (learning or unsupported palette -> stock pose)");
         g_odstFpLayoutLoggedKey.store(key, std::memory_order_relaxed);
     }
 
@@ -26569,6 +26534,11 @@ namespace
 #include "left_hand_presentation.inl"
 #include "visual_hand_palette.inl"
 #include "legacy_runtime_weapon_bounds.inl"
+
+    int OdstReadFpModelIdentity(uint16_t tag,uint32_t& checksum)
+    {
+        return LegacyAnatomicalRenderNodeCount(GameTitle::Halo3ODST,tag,&checksum);
+    }
 
     bool Halo3SelectHeldPaletteSources(uint16_t tag, const int32_t* boneMap,
                                       FpInterpolationContext& context)

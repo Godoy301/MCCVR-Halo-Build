@@ -1,8 +1,11 @@
 # Halo 3 Ultimate Firefight: detached weapons hidden by floating hands
 
-Status: source candidate, offline validated; Windows DLL compilation and user
-headset testing remain pending. Reach's user-confirmed correction is preserved.
-ODST is deliberately not changed in this candidate.
+Status update: the user compiled the candidate and confirms all previously
+invisible weapons now appear, with hands and animations working correctly.
+They declined an additional log because everything works. This is scoped user
+acceptance; no installed-DLL hash or new exhaustive regression coverage was
+provided. Preserve this fix while investigating ODST. The original candidate
+and offline evidence below are retained; they did not change ODST.
 
 ## Report and inputs
 

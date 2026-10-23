@@ -1,3 +1,22 @@
+## October 23 ODST New Covenant: mapped body/held palette candidate
+
+User confirms Halo 3's fix makes all previously invisible guns visible and
+reports everything working; no further H3 log supplied. Preserve H3 and Reach.
+New ODST report/log/map show Elite 31-node rigs rejected below 39 combined
+nodes or corrupted by the old 37-node human digit masks above that threshold.
+The candidate learns the native body remap, freezes it per stereo pair, and
+selects each gun's explicit native outputs for carry/visibility. Four body
+identities are evidenced in the supplied ODST map; no weapon allowlist or new
+native binding. See `ODST-MODDED-WEAPONS-2026-10-23.md` for evidence and bounds.
+
+4,742 ODST production-fixture checks, 828 H3 and 2,793 Reach checks pass with
+ASan/UBSan. Windows DLL build and headset acceptance pending; user compiles.
+Source delivery remains commit/push to modded-weapons-fix. Existing CI is pinned
+to 5fdf982e and does not auto-build source changes. No game/map writes, launch,
+installation, publication or accepted-pointer update. The helper remains
+bounded to evidenced rigs, 64 sources and camera-last graphs; do not describe
+this as verified for arbitrary custom rigs before user testing.
+
 ## October 22 Halo 3 modded weapons: detached gun candidate
 
 User confirms Reach works across all mods they tested. Preserve that correction;
