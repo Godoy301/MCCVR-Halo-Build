@@ -75,6 +75,10 @@ void OdstCaptureMappedInterpolation(int view,int id,int slot,bool result,
 // Native palette pointers are not trusted: contain access violations to this read.
 bool OdstTryReadMappedPaletteBytes(const void* source,void* destination,size_t size)
 {
+#ifdef ODST_MODDED_FP_TESTING
+    // The unit-test seam simulates unreadable native pointers without causing an AV.
+    return SafeReadBytes(source,destination,size);
+#else
     if(!source || !destination || size==0) return false;
     __try
     {
@@ -86,6 +90,7 @@ bool OdstTryReadMappedPaletteBytes(const void* source,void* destination,size_t s
     {
         return false;
     }
+#endif
 }
 
 bool OdstResolveMappedPalette(uint16_t tag,const int32_t* boneMap,
