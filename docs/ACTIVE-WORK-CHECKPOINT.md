@@ -1,3 +1,24 @@
+## October 23 latest: dual shake accepted; ODST restored for Mythic diagnosis
+
+User confirms dual shake now works in all requested games. Preserve 444f7a15.
+Both supplied ODST logs reject 62ef856f: all guns remain head-locked, accepted
+mapped palettes zero. User requests the pre-ODST 5fdf982e behavior while keeping
+new dual reload. Separate rollback disables the mapped candidate, retaining it
+inert. The active solver is back to the original count-based implementation.
+
+Reinspection of sc100 confirms all five reported Mythic weapons have camera at
+1 and wrists 6/7; original solver assumes last camera and wrists 5/6. The failed
+cache never completes despite observing both body and gun; actual native maps
+are missing from old logs. Added a passive bounded map probe, not a new pose
+fix. Normal guns should recover baseline tracking; affected guns are still
+expected to deform. See ODST-MYTHIC-BASELINE-PROBE-2026-10-23.md.
+
+Portable production-probe tests pass with ASan/UBSan; retained dual tests pass
+1,350 + 125 checks. Windows compilation/headset test pending. User compiles
+source on modded-weapons-fix. Request a short Mythic session with one normal gun
+then Automag and one other affected gun, plus new log. Other mods deferred.
+No release, installation, launch, PR or accepted-pointer advance.
+
 ## October 23 dual shake reload: Classic/H3 failure correction candidate
 
 User confirms H2 Anniversary works, but H2 Classic and H3 do not (source

@@ -382,6 +382,7 @@ bool Halo4Type13LogInstall(uintptr_t base, size_t size, uint32_t generation);
 #include "../common/halo4_sound_listener_logic.h"
 #include "../common/odst_bringup_logic.h"
 #include "../common/odst_modded_fp_logic.h"
+#include "../common/odst_fp_map_probe.h"
 #include "../common/odst_vehicle_logic.h"
 #include "../common/scope_logic.h"
 #include "../common/two_hand_ik_logic.h"
@@ -15144,6 +15145,7 @@ namespace
 // Keep the failed learned-palette candidate dormant; restore the pre-ODST solver.
 static constexpr bool kOdstMappedFpEnabled = false;
 #include "odst_modded_fp.inl"
+#include "odst_fp_map_probe.inl"
 
     bool OdstFpInterpolateWeaponBody(
         int view, int id, int slot, BoneMatrix** outBones, int* outCount)
@@ -15235,6 +15237,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
             g_odstCamera.armed.load(std::memory_order_acquire) &&
             !g_odstCamera.teardownRequested.load(std::memory_order_acquire) &&
             g_enabled.load(std::memory_order_relaxed);
+        if(ownsWeapons)OdstCaptureFpMapProbe(view,id,slot,result,outBones,outCount);
         if ((slot == 0 || slot == 1) && ownsWeapons)
         {
             if (kOdstMappedFpEnabled)
@@ -15358,6 +15361,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
             if(original)original(tag,root,destination,unused,hidden,boneMap);
             return;
         }
+        OdstObserveFpMapProbe(tag,source,boneMap);
         if (kOdstMappedFpEnabled) (void)OdstResolveMappedPalette(tag,boneMap,context);
         (void)LegacyObserveWeaponRenderModel(GameTitle::Halo3ODST,tag,collisionGeneration,source,boneMap);
         const BoneMatrix* selectedSource = source;
@@ -15723,6 +15727,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
     // line tells us whether the hook fired and whether the skeleton was accepted.
     void LogOdstFpLayoutSelfCheckIfNew()
     {
+        OdstLogFpMapProbe();
         OdstFpLayoutSelfCheck& sc = g_odstFpLayoutSelfCheck;
         const uint32_t key = sc.key.load(std::memory_order_acquire);
         if (key == 0)
@@ -15740,11 +15745,13 @@ static constexpr bool kOdstMappedFpEnabled = false;
         if (sc.key.load(std::memory_order_acquire) != key)
             return; // a newer observation started; re-read next tick
         LOG("ODST FP WEAPON SELF-CHECK: interpolation hook fired slot=%d "
-            "nodeCount=%d layoutAccepted=%s (validated body remap) wrist=%d "
+            "nodeCount=%d layoutAccepted=%s (%s) wrist=%d "
             "cameraControl=%d bodyNodes=%d bodyChecksum=%08X -- hands/gun driven by controller = %s",
-            slot, nodeCount, accepted ? "YES" : "NO", wrist, cameraControl,bodyCount,bodyChecksum,
+            slot, nodeCount, accepted ? "YES" : "NO",
+            kOdstMappedFpEnabled?"validated body remap":"restored pre-fix count layout",
+            wrist, cameraControl,bodyCount,bodyChecksum,
             accepted ? "YES" : "NO (learning or unsupported palette -> stock pose)");
-        LOG("ODST mapped FP: tag=%d modelNodes=%d stage=%d bodySeen=%llu gunSeen=%llu accepted=%llu "
+        if(kOdstMappedFpEnabled)LOG("ODST mapped FP: tag=%d modelNodes=%d stage=%d bodySeen=%llu gunSeen=%llu accepted=%llu "
             "(1=no interpolation receipt, 2=stale pair, 3=unreadable model/map, 4=waiting body/complete union, 5=waiting gun/complete union, 6=changed mapping, 7=accepted)",
             g_odstMappedFpDiagnostics.tag.load(),g_odstMappedFpDiagnostics.modelCount.load(),
             g_odstMappedFpDiagnostics.stage.load(),g_odstMappedFpDiagnostics.bodyObservations.load(),
