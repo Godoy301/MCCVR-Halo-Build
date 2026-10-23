@@ -85,6 +85,34 @@ int main()
         const int beforeReset=barrelResets;
         OdstCorrectMythicBodyPalette(1,a.body.data(),direct);
         if(isElite) {
+            const auto primaryReceipt=g_odstMythicReceipts[0];
+            const int savedMeasurements=barrelMeasurements,savedResets=barrelResets,savedWrist=lastBarrelWrist;
+            std::array<int32_t,31> partial{};
+            for(int i=0;i<31;++i)partial[i]=(i==1 || i==3 || i==5 ||
+                (i>=7 && i<=10) || (i>=15 && i<=18) || (i>=23 && i<=26))?i:-1;
+            OdstMappedFpLayout secondary{};
+            Check(ResolveOdstEliteSecondaryLayout(a.checksum,partial,a.count,secondary),"native secondary Elite map admitted");
+            FpInterpolationContext offhand{};offhand.valid=true;offhand.slot=1;
+            offhand.generation=7;offhand.count=a.count;offhand.source=original;
+            for(int i=0;i<a.count;++i)g_fpUnmodifiedInterpolations[1][i].value=float(i);
+            g_odstMythicReceipts[1]={};
+            OdstPrepareMythicInterpolation(0,99,1,offhand);
+            OdstCorrectMythicBodyPalette(1,partial.data(),offhand);
+            Check(offhand.lWrist==5 && offhand.cameraControl==a.camera,"secondary runtime uses left wrist and actual camera");
+            Check(offhand.lWristDescendants==Descendants(a,5),"secondary four-finger mask");
+            for(int i=0;i<a.modelCount;++i)
+                Check((offhand.wristDescendants&(uint64_t{1}<<a.model[i]))!=0,"secondary gun follows dual carrier path");
+            Check(g_odstMythicReceipts[1].valid,"secondary receipt retained");
+            FpInterpolationContext nextLeft{};nextLeft.generation=7;nextLeft.count=a.count;
+            OdstPrepareMythicInterpolation(0,99,1,nextLeft);
+            Check(nextLeft.lWrist==5 && nextLeft.cameraControl==a.camera,"secondary reinterpolation retains mapping");
+            auto primary=offhand;primary.slot=0;primary.wrist=-1;
+            OdstCorrectMythicBodyPalette(1,partial.data(),primary);
+            Check(primary.wrist==-1,"partial map never admitted to primary slot");
+            partial[5]=-1;
+            Check(!ResolveOdstEliteSecondaryLayout(a.checksum,partial,a.count,secondary),"missing left wrist rejected");
+            g_odstMythicReceipts[0]=primaryReceipt;
+            barrelMeasurements=savedMeasurements;barrelResets=savedResets;lastBarrelWrist=savedWrist;
             auto invalid=a.body;invalid[0]=-1;
             OdstMappedFpLayout rejected{};
             Check(!ResolveOdstEliteLayout(a.checksum,std::span<const int32_t>{invalid.data(),31},a.count,rejected),"partial Elite body not admitted");

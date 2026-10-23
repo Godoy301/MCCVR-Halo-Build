@@ -28,7 +28,8 @@ void OdstPrepareMythicInterpolation(int view,int id,int slot,FpInterpolationCont
 }
 
 // Correct only positively identified Mythic human or New Covenant Elite bodies.
-// Keep the original solver for all other palettes, including partial dual bodies.
+// Keep the original solver for other palettes; only the evidenced Elite
+// secondary mask is admitted as a partial body.
 void OdstCorrectMythicBodyPalette(uint16_t tag,const int32_t* map,
     FpInterpolationContext& context)
 {
@@ -41,7 +42,9 @@ void OdstCorrectMythicBodyPalette(uint16_t tag,const int32_t* map,
     OdstMappedFpLayout layout{};
     if(!OdstTryReadMappedPaletteBytes(map,remap,size_t(bodyCount)*sizeof(int32_t)) ||
         !(ResolveOdstMythicEarlyCamera(checksum,std::span<const int32_t>{remap,size_t(bodyCount)},context.count,layout) ||
-          ResolveOdstEliteLayout(checksum,std::span<const int32_t>{remap,size_t(bodyCount)},context.count,layout))) {
+          ResolveOdstEliteLayout(checksum,std::span<const int32_t>{remap,size_t(bodyCount)},context.count,layout) ||
+          (context.slot==1 && ResolveOdstEliteSecondaryLayout(checksum,
+              std::span<const int32_t>{remap,size_t(bodyCount)},context.count,layout)))) {
         g_odstMythicReceipts[context.slot]={};
         return;
     }

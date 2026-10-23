@@ -1,3 +1,15 @@
+## October 23 latest: New Covenant primary accepted; secondary partial-map fix
+
+User confirms e3b5924f works except dual left plasma pistol remains head-locked.
+Native log proves the Elite secondary palette emits only left-arm/finger outputs;
+all other body entries are -1. Full-map admission rejects it. Added a strictly
+slot-1/exact-checksum/exact-mask exception using the same Elite source topology
+and accepted dual left-hand carrier. Primary and human/Mythic paths preserved.
+See ODST-ELITE-SECONDARY-2026-10-23.md. 25,596 portable checks pass ASan/UBSan;
+Windows/headset validation pending. Next test: left plasma pistol and another
+dual gun, acquire/drop, reload, and primary regression. No install/release/PR
+or accepted-release pointer update; source delivery and pinned CI only.
+
 ## October 23 latest: Mythic accepted; New Covenant Elite candidate
 
 User confirms bdad3ab1 works perfectly for all tested Mythic weapons. Preserve
