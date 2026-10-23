@@ -15141,6 +15141,7 @@ namespace
             preparedSerial, unit, weapon, aux0, aux1);
     }
 
+static constexpr bool kOdstMappedFpEnabled = false;
 #include "odst_modded_fp.inl"
 
     bool OdstFpInterpolateWeaponBody(
@@ -15235,9 +15236,61 @@ namespace
             g_enabled.load(std::memory_order_relaxed);
         if ((slot == 0 || slot == 1) && ownsWeapons)
         {
+            if (kOdstMappedFpEnabled)
+            {
             g_fpInterpolationContexts[slot] = {};
             OdstCaptureMappedInterpolation(view,id,slot,result,outBones,outCount,
                 muzzleOwner,muzzleUnit,muzzleWeapon);
+            }
+            else
+            {
+            g_fpInterpolationContexts[slot] = {};
+            OdstFpSkeletonLayout layout{};
+            const bool haveBones = result && outBones && outCount && *outBones;
+            const bool layoutOk =
+                haveBones && ComputeOdstFpSkeletonLayout(*outCount, layout);
+            PublishOdstFpLayoutSelfCheck(
+                slot, haveBones ? *outCount : -1, layoutOk, layout);
+            if (layoutOk)
+            {
+                const int count = *outCount;
+                FpInterpolationContext& context =
+                    g_fpInterpolationContexts[slot];
+                context.source = *outBones;
+                context.count = count;
+                context.generation=g_odstRuntimeGeneration.load(std::memory_order_acquire);
+                uint32_t currentUnit=UINT32_MAX,currentWeapon=UINT32_MAX;
+                if(muzzleOwner&&OdstCaptureMuzzleOwner(view,slot,currentUnit,currentWeapon)&&
+                    currentUnit==muzzleUnit&&currentWeapon==muzzleWeapon)
+                {context.muzzleUnit=muzzleUnit;context.muzzleWeapon=muzzleWeapon;}
+                context.player = view;
+                context.slot = slot;
+                context.wrist = layout.rightWrist;
+                context.cameraControl = layout.cameraControl;
+                context.elbow = layout.rightElbow;
+                context.shoulder = layout.rightShoulder;
+                context.wristDescendants =
+                    layout.rightHandAndWeaponDescendants;
+                context.lWrist = layout.leftWrist;
+                context.lElbow = layout.leftElbow;
+                context.lShoulder = layout.leftShoulder;
+                context.lWristDescendants = layout.leftHandDescendants;
+                context.valid = true;
+                memcpy(g_fpUnmodifiedInterpolations[slot], *outBones,
+                       static_cast<size_t>(count) * sizeof(BoneMatrix));
+                if (slot == 1 && view == 0)
+                    VR_ObserveSecondaryWeaponPresentation(GameTitle::Halo3ODST,
+                        g_odstRuntimeGeneration.load(std::memory_order_acquire));
+                MeasureOdstAuthoredBarrel(
+                    slot, g_fpUnmodifiedInterpolations[slot],
+                    layout.rightWrist);
+                BoneMatrix root{};
+                if (BuildOdstCenterFpRoot(slot, root))
+                    ApplyControllerToMarkerBonesFromRoot(
+                        root, *outBones, count, layout.rightWrist,
+                        layout.leftWrist, slot == 1);
+            }
+            }
         }
         else if (slot == 0 || slot == 1)
             g_fpInterpolationContexts[slot] = {};
@@ -15301,7 +15354,7 @@ namespace
             if(original)original(tag,root,destination,unused,hidden,boneMap);
             return;
         }
-        (void)OdstResolveMappedPalette(tag,boneMap,context);
+        if (kOdstMappedFpEnabled) (void)OdstResolveMappedPalette(tag,boneMap,context);
         (void)LegacyObserveWeaponRenderModel(GameTitle::Halo3ODST,tag,collisionGeneration,source,boneMap);
         const BoneMatrix* selectedSource = source;
         if (context.valid && source == context.source)

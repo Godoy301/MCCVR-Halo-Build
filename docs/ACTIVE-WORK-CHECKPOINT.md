@@ -1,3 +1,15 @@
+## October 23 ODST regression: mapped candidate failed in headset
+
+User reports all New Covenant/Mythic Overhaul weapons now head-locked. Supplied
+log identifies source f7a0778d, Steam, with every observed mapped layout rejected.
+Disable the failed mapped path in a separate commit, retaining its implementation
+and restoring the prior count-based path while investigating. This rollback does
+not solve custom skeletons and is not the final requested candidate. Preserve
+Reach/H3 fixes and dual shake reload work. New Mythic sc100.map downloaded;
+Automag graph has camera_control at 1 and wrists 6/7, not old 5/6. Its custom
+human body checksum is 14020C1F, absent from the previous body's identity list.
+Investigation and a replacement candidate remain in progress.
+
 ## October 23 dual wield shake reload: source candidate ready for Windows test
 
 User supplied all four requested kit/retail binaries. The H2/H3 request paths
