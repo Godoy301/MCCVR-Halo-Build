@@ -72,6 +72,21 @@ void OdstCaptureMappedInterpolation(int view,int id,int slot,bool result,
     else PublishOdstFpLayoutSelfCheck(slot,haveBones?*outCount:-1,false,{});
 }
 
+// Native palette pointers are not trusted: contain access violations to this read.
+bool OdstTryReadMappedPaletteBytes(const void* source,void* destination,size_t size)
+{
+    if(!source || !destination || size==0) return false;
+    __try
+    {
+        memcpy(destination,source,size);
+        return true;
+    }
+    __except(EXCEPTION_EXECUTE_HANDLER)
+    {
+        return false;
+    }
+}
+
 bool OdstResolveMappedPalette(uint16_t tag,const int32_t* boneMap,
     FpInterpolationContext& context)
 {
@@ -88,7 +103,7 @@ bool OdstResolveMappedPalette(uint16_t tag,const int32_t* boneMap,
     int32_t remap[64]{};
     OdstMappedFpLayout observed{};
     const bool readable=count>0 && count<=64 && boneMap &&
-        SafeReadBytes(boneMap,remap,size_t(count)*sizeof(*remap));
+        OdstTryReadMappedPaletteBytes(boneMap,remap,size_t(count)*sizeof(*remap));
     const bool body=readable && ResolveOdstMappedFpLayout(checksum,
         std::span<const int32_t>{remap,size_t(count)},context.count,observed);
     const auto& frozen=transaction.frozen;
