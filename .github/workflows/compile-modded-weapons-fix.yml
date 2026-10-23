@@ -1,4 +1,4 @@
-name: Compile modded-weapons-fix branch
+name: Compile latest modded-weapons-fix commit
 
 on:
   push:
@@ -34,7 +34,7 @@ jobs:
           if ($env:GITHUB_REF_NAME -ne 'modded-weapons-fix') {
             throw "Refusing to build unexpected branch: $env:GITHUB_REF_NAME"
           }
-          $expectedSourceSha = 'f70f3b93aed3aff794b93084e5e9f37b79cee94a'
+          $expectedSourceSha = '5fdf982e979cc4dab693bbaccfb941d2bc199307'
           if ($env:EXPECTED_SOURCE_SHA -ne $expectedSourceSha) {
             throw "Source revision differs from the reviewed modded-weapons-fix commit. Expected $expectedSourceSha, got $env:EXPECTED_SOURCE_SHA. Refusing to build a different revision."
           }
