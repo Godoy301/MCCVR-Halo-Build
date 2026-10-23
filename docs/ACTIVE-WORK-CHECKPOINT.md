@@ -1,3 +1,16 @@
+## October 23 latest: Mythic accepted; New Covenant Elite candidate
+
+User confirms bdad3ab1 works perfectly for all tested Mythic weapons. Preserve
+that human mapping/alignment and dual shake. New Covenant (not Prophet's Hand)
+uses a confirmed 31-node Elite body (10000E0B): short graphs fail the old 39-node
+gate; longer graphs put gun sources into human finger masks. Added an isolated
+Elite identity/remap resolver and pending short-graph observation path, reusing
+the already accepted identity/epoch receipt. Mythic resolver unchanged.
+See ODST-NEW-COVENANT-ELITE-2026-10-23.md. 25,452 asset/helper checks and 1,475
+dual-shake checks pass; Windows/headset validation pending. User compiles/tests
+from modded-weapons-fix. Ask for New Covenant and Mythic/original-ODST regression
+results. No install, release, PR or accepted-release pointer advance.
+
 ## October 23 latest: preserve corrected hands; Mythic alignment refinement
 
 User confirms e6edf4ad removes hand/finger/weapon deformation. Gun seating is

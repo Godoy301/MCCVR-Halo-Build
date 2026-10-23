@@ -1,5 +1,6 @@
 #include "../src/common/odst_modded_fp_logic.h"
 #include "../src/common/odst_mythic_layout.h"
+#include "../src/common/odst_elite_layout.h"
 #include <atomic>
 #include <algorithm>
 #include <cstdio>
@@ -71,32 +72,42 @@ int main()
         OdstMappedFpLayout mythic{};
         const bool early=ResolveOdstMythicEarlyCamera(a.checksum,body,a.count,mythic);
         Check(early==(a.checksum==0x14020C1Fu && a.camera==1),"only evidenced early-camera Mythic family selected");
+        OdstMappedFpLayout elite{};
+        const bool isElite=ResolveOdstEliteLayout(a.checksum,body,a.count,elite);
+        Check(isElite==(a.checksum==0x10000E0Bu && a.camera==a.count-1),"Elite identity independent of human rig");
         BoneMatrix original[64]{};
         FpInterpolationContext direct{};direct.valid=true;direct.slot=0;direct.count=a.count;
-        direct.generation=7;direct.source=original;direct.wrist=6;direct.lWrist=5;
+        direct.generation=7;direct.source=original;direct.wrist=a.count<39?-1:6;direct.lWrist=5;
         for(int i=0;i<a.count;++i){original[i].value=999;g_fpUnmodifiedInterpolations[0][i].value=float(i);}
         g_odstMythicReceipts[0]={};
         g_fpStereoSolveScope.armed=true;
         OdstPrepareMythicInterpolation(0,42,0,direct);
         const int beforeReset=barrelResets;
         OdstCorrectMythicBodyPalette(1,a.body.data(),direct);
-        if(early) {
+        if(isElite) {
+            auto invalid=a.body;invalid[0]=-1;
+            OdstMappedFpLayout rejected{};
+            Check(!ResolveOdstEliteLayout(a.checksum,std::span<const int32_t>{invalid.data(),31},a.count,rejected),"partial Elite body not admitted");
+            Check(!ResolveOdstEliteLayout(0x14020C1F,body,a.count,rejected),"human identity cannot select Elite solver");
+        }
+        if(early || isElite) {
             Check(direct.wrist==a.body[6] && direct.lWrist==a.body[5] && direct.cameraControl==a.camera,"live corrected role indices");
             Check(direct.lWristDescendants==Descendants(a,5),"live left finger ownership");
+            Check((direct.lWristDescendants&direct.wristDescendants)==0,"hands never share finger or gun sources");
             for(int i=0;i<a.modelCount;++i)
                 Check((direct.wristDescendants&(uint64_t{1}<<a.model[i]))!=0,"entire gun carried");
-            Check(!(direct.wristDescendants&2),"camera not carried as gun");
+            Check(!(direct.wristDescendants&(uint64_t{1}<<a.camera)),"camera not carried as gun");
             Check(original[0].value==100,"marker rebuilt from untouched graph");
-            Check(g_fpInterpolationContexts[0].valid && g_fpInterpolationContexts[0].wrist==7,"gun palette retains corrected receipt");
-            Check(barrelResets==beforeReset+1 && lastBarrelWrist==7,"discard wrong-wrist calibration on first discovery");
+            Check(g_fpInterpolationContexts[0].valid && g_fpInterpolationContexts[0].wrist==a.body[6],"gun palette retains corrected receipt");
+            Check(barrelResets==beforeReset+1 && lastBarrelWrist==a.body[6],"discard wrong-wrist calibration on first discovery");
             // Native code may interpolate again between body and gun palettes.
             // A fresh context must not put the weapon back on wrist 6 or hide
             // its last component as camera_control.
             FpInterpolationContext next=direct;next.wrist=6;next.lWrist=5;next.cameraControl=a.count-1;
             next.wristDescendants=0;next.lWristDescendants=0;
             OdstPrepareMythicInterpolation(0,42,0,next);
-            Check(next.wrist==7 && next.lWrist==6 && next.cameraControl==1,"new interpolation retains observed body roles");
-            Check((next.wristDescendants&(uint64_t{1}<<(a.count-1)))!=0,"last gun component remains visible/carried");
+            Check(next.wrist==a.body[6] && next.lWrist==a.body[5] && next.cameraControl==a.camera,"new interpolation retains observed body roles");
+            Check((next.wristDescendants&(uint64_t{1}<<a.model[a.modelCount-1]))!=0,"last gun component remains visible/carried");
             const int measured=barrelMeasurements;
             const float transformed=original[0].value;
             OdstCorrectMythicBodyPalette(1,a.body.data(),next);
@@ -113,7 +124,7 @@ int main()
             next.wrist=6;OdstPrepareMythicInterpolation(0,43,0,next);
             Check(next.wrist==6 && !g_odstMythicReceipts[0].valid,"weapon identity change returns to baseline");
 
-        } else Check(original[0].value==999 && direct.wrist==6,"other layouts preserve baseline behavior");
+        } else Check(original[0].value==999 && direct.wrist==(a.count<39?-1:6),"other layouts preserve baseline behavior");
         Check(ResolveOdstMappedFpLayout(a.checksum,body,a.count,layout),"actual ODST body admitted");
         Check(layout.skeleton.leftHandDescendants==Descendants(a,5),"own left fingers");
         Check(layout.skeleton.rightHandAndWeaponDescendants==Descendants(a,6),"own right fingers");

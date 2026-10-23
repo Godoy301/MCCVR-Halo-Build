@@ -27,7 +27,7 @@ void OdstPrepareMythicInterpolation(int view,int id,int slot,FpInterpolationCont
     }
 }
 
-// Correct only the live, positively identified early-camera Mythic body palette.
+// Correct only positively identified Mythic human or New Covenant Elite bodies.
 // Keep the original solver for all other palettes, including partial dual bodies.
 void OdstCorrectMythicBodyPalette(uint16_t tag,const int32_t* map,
     FpInterpolationContext& context)
@@ -35,18 +35,22 @@ void OdstCorrectMythicBodyPalette(uint16_t tag,const int32_t* map,
     if(!context.valid || context.slot<0 || context.slot>1 || !map || !context.source ||
         context.generation!=g_odstRuntimeGeneration.load(std::memory_order_acquire))return;
     uint32_t checksum=0;
-    if(OdstReadFpModelIdentity(tag,checksum)!=37)return;
+    const int bodyCount=OdstReadFpModelIdentity(tag,checksum);
+    if(bodyCount!=37 && bodyCount!=31)return;
     int32_t remap[37]{};
     OdstMappedFpLayout layout{};
-    if(!OdstTryReadMappedPaletteBytes(map,remap,sizeof(remap)) ||
-        !ResolveOdstMythicEarlyCamera(checksum,std::span<const int32_t>{remap,37},context.count,layout)) {
+    if(!OdstTryReadMappedPaletteBytes(map,remap,size_t(bodyCount)*sizeof(int32_t)) ||
+        !(ResolveOdstMythicEarlyCamera(checksum,std::span<const int32_t>{remap,size_t(bodyCount)},context.count,layout) ||
+          ResolveOdstEliteLayout(checksum,std::span<const int32_t>{remap,size_t(bodyCount)},context.count,layout))) {
         g_odstMythicReceipts[context.slot]={};
         return;
     }
     const uint64_t epoch=g_fpStereoSolveScope.armed?
         g_fpStereoSolveScope.anatomicalTracking.referenceEpoch:0;
     if(epoch)g_odstMythicReceipts[context.slot]={g_odstMythicInvocation[context.slot],epoch,layout,true};
-    if(context.wrist==layout.skeleton.rightWrist && context.cameraControl==1) {
+    if(context.wrist==layout.skeleton.rightWrist && context.cameraControl==layout.skeleton.cameraControl &&
+        context.wristDescendants==layout.skeleton.rightHandAndWeaponDescendants &&
+        context.lWristDescendants==layout.skeleton.leftHandDescendants) {
         // Interpolation already used the corrected wrist. Do not filter the
         // barrel twice or apply the marker transform a second time.
         g_fpInterpolationContexts[context.slot]=context;
@@ -65,5 +69,5 @@ void OdstCorrectMythicBodyPalette(uint16_t tag,const int32_t* map,
     ApplyControllerToMarkerBonesFromRoot(root,source,context.count,context.wrist,context.lWrist,context.slot==1);
     // The following gun palette uses the same source and corrected role masks.
     g_fpInterpolationContexts[context.slot]=context;
-    PublishOdstFpLayoutSelfCheck(context.slot,context.count,true,layout.skeleton,37,checksum);
+    PublishOdstFpLayoutSelfCheck(context.slot,context.count,true,layout.skeleton,bodyCount,checksum);
 }

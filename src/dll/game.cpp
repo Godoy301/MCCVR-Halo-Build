@@ -384,6 +384,7 @@ bool Halo4Type13LogInstall(uintptr_t base, size_t size, uint32_t generation);
 #include "../common/odst_modded_fp_logic.h"
 #include "../common/odst_fp_map_probe.h"
 #include "../common/odst_mythic_layout.h"
+#include "../common/odst_elite_layout.h"
 #include "../common/odst_vehicle_logic.h"
 #include "../common/scope_logic.h"
 #include "../common/two_hand_ik_logic.h"
@@ -15262,7 +15263,10 @@ static constexpr bool kOdstMappedFpEnabled = false;
                     haveBones && ComputeOdstFpSkeletonLayout(*outCount, layout);
                 if(!layoutOk)PublishOdstFpLayoutSelfCheck(
                     slot, haveBones ? *outCount : -1, false, layout);
-                if (layoutOk)
+                // Small graphs are observation-only until their body palette
+                // positively identifies the supported Elite rig. No guessed IK.
+                const bool pendingShort=haveBones && *outCount>=33 && *outCount<39;
+                if (layoutOk || pendingShort)
             {
                     const int count = *outCount;
                     FpInterpolationContext& context =
@@ -15276,7 +15280,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
                     {context.muzzleUnit=muzzleUnit;context.muzzleWeapon=muzzleWeapon;}
                     context.player = view;
                     context.slot = slot;
-                    context.wrist = layout.rightWrist;
+                    context.wrist = layoutOk?layout.rightWrist:-1;
                     context.cameraControl = layout.cameraControl;
                     context.elbow = layout.rightElbow;
                     context.shoulder = layout.rightShoulder;
@@ -15289,19 +15293,19 @@ static constexpr bool kOdstMappedFpEnabled = false;
                     context.valid = true;
                     memcpy(g_fpUnmodifiedInterpolations[slot], *outBones,
                            static_cast<size_t>(count) * sizeof(BoneMatrix));
-                    if (slot == 1 && view == 0)
+                    OdstPrepareMythicInterpolation(view,id,slot,context);
+                    if (slot == 1 && view == 0 && context.wrist>=0)
                         VR_ObserveSecondaryWeaponPresentation(GameTitle::Halo3ODST,
                             g_odstRuntimeGeneration.load(std::memory_order_acquire));
-                    OdstPrepareMythicInterpolation(view,id,slot,context);
                     const auto& mythic=g_odstMythicReceipts[slot];
-                    PublishOdstFpLayoutSelfCheck(slot,count,true,
+                    PublishOdstFpLayoutSelfCheck(slot,count,context.wrist>=0,
                         mythic.valid?mythic.layout.skeleton:layout,
-                        mythic.valid?37:0,mythic.valid?mythic.layout.checksum:0);
-                    MeasureOdstAuthoredBarrel(
+                        mythic.valid?mythic.layout.bodyCount:0,mythic.valid?mythic.layout.checksum:0);
+                    if(context.wrist>=0)MeasureOdstAuthoredBarrel(
                         slot, g_fpUnmodifiedInterpolations[slot],
                         context.wrist);
                     BoneMatrix root{};
-                    if (BuildOdstCenterFpRoot(slot, root))
+                    if (context.wrist>=0 && BuildOdstCenterFpRoot(slot, root))
                         ApplyControllerToMarkerBonesFromRoot(
                             root, *outBones, count, context.wrist,
                             context.lWrist, slot == 1);
@@ -15761,7 +15765,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
             "nodeCount=%d layoutAccepted=%s (%s) wrist=%d "
             "cameraControl=%d bodyNodes=%d bodyChecksum=%08X -- hands/gun driven by controller = %s",
             slot, nodeCount, accepted ? "YES" : "NO",
-            kOdstMappedFpEnabled?"validated body remap":"baseline / verified Mythic layout",
+            kOdstMappedFpEnabled?"validated body remap":"baseline / verified body layout",
             wrist, cameraControl,bodyCount,bodyChecksum,
             accepted ? "YES" : "NO (learning or unsupported palette -> stock pose)");
         if(kOdstMappedFpEnabled)LOG("ODST mapped FP: tag=%d modelNodes=%d stage=%d bodySeen=%llu gunSeen=%llu accepted=%llu "
