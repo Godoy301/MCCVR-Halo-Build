@@ -308,6 +308,7 @@ void NativeReloadPolicy_Poll()
                 LOG("Dual wield shake reload title=%u bindingReady=%u nativeTicks=%llu requests=%llu accepted=%llu fault=%u",
                     i,(r.options.load()&8u)&&!r.shakeFaulted.load()?1u:0u,
                     r.shakeTicks.load(),r.shakeRequests.load(),r.shakeAccepted.load(),r.shakeFaulted.load()?1u:0u);
+            if(requested&8u)VR_ReportDualWieldReloadInput(title);
             LOG("Native reload tail title=%u retained=%llu stockFallback=%llu rejectedMask=0x%x (1=receipt 2=owner 4=channel 8=timing 16=tag 32=seek)%s",i,r.tails.load(),r.tailFallback.load(),r.tailFallbackMask.load(),
                 r.tailFaulted.load()?" SHORTENED STOCK FALLBACK (guarded access fault)":"");
         }

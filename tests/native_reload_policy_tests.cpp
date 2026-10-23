@@ -14,6 +14,7 @@ static GameTitle activeTitle=GameTitle::None;
 static uint32_t activeGeneration=3;
 static bool own=true,advanceGeneration=false,ownSecondary=false;
 static unsigned shakeMask=0;
+void VR_ReportDualWieldReloadInput(GameTitle) {}
 unsigned VR_DualWieldReloadTick(GameTitle,uint32_t,uint32_t,const uint32_t[2]) noexcept {return shakeMask;}
 static uint8_t object[0x700];
 static int stockCalls,initializations,played,checks;

@@ -5,6 +5,12 @@
 // Independent logical-hand gestures; native owner-bound requests are consumed
 // only on each title's admitted simulation update.
 namespace dual_wield_shake {
+// Motion derivatives must use the timestamp at which the poses were located.
+// GetTickCount64 may repeat at VR frame rates and would reset SingleNeedleShake.
+// Keep wall-clock receipt expiry separate from this pose-domain clock.
+inline uint64_t PoseMilliseconds(int64_t timeNs) noexcept
+{return timeNs>0?uint64_t(timeNs)/1000000u:0;}
+
 struct Sample {
     GameTitle title=GameTitle::None;
     uint32_t generation=0,unit=UINT32_MAX;

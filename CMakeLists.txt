@@ -1458,12 +1458,16 @@ if(BUILD_TESTING)
     add_executable(dual_wield_shake_tests tests/dual_wield_shake_tests.cpp)
     target_compile_features(dual_wield_shake_tests PRIVATE cxx_std_20)
     add_test(NAME dual_wield_shake COMMAND dual_wield_shake_tests)
+    add_executable(halo3_dual_shake_tests tests/halo3_dual_shake_tests.cpp)
+    target_compile_features(halo3_dual_shake_tests PRIVATE cxx_std_20)
+    add_test(NAME halo3_dual_shake COMMAND halo3_dual_shake_tests)
     set(HALOMCCVR_ODST_MODDED_ASSETS "${HALOMCCVR_GENERATED_DIR}/odst_modded_fp_assets.inl")
     add_custom_command(OUTPUT "${HALOMCCVR_ODST_MODDED_ASSETS}"
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_odst_modded_fp_fixture.py"
             --source-root "${CMAKE_CURRENT_SOURCE_DIR}" --output "${HALOMCCVR_ODST_MODDED_ASSETS}"
         DEPENDS tools/generate_odst_modded_fp_fixture.py
-            docs/ODST-MODDED-WEAPONS-MAP-EVIDENCE.json VERBATIM)
+            docs/ODST-MODDED-WEAPONS-MAP-EVIDENCE.json
+            docs/ODST-MYTHIC-FP-MAP-EVIDENCE.json VERBATIM)
     add_executable(odst_modded_fp_tests tests/odst_modded_fp_tests.cpp "${HALOMCCVR_ODST_MODDED_ASSETS}")
     target_include_directories(odst_modded_fp_tests PRIVATE "${HALOMCCVR_GENERATED_DIR}")
     target_compile_features(odst_modded_fp_tests PRIVATE cxx_std_20)

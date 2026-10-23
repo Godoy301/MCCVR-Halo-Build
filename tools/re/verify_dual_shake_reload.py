@@ -70,7 +70,23 @@ def main():
                 offset = pointer - pe.OPTIONAL_HEADER.ImageBase
                 if data[offset:offset + len(label)] != label:
                     raise ValueError('H2 action-name table mismatch')
+        if name == 'halo3_tag_test.exe':
+            unit_instructions = {i.address: f'{i.mnemonic} {i.op_str}' for i in
+                capstone.Cs(capstone.CS_ARCH_X86, mode).disasm(data[0xa7e9d0:0xa7ea9d], 0xa7e9d0)}
+            if unit_instructions.get(0xa7ea7a) != 'cmp di, 4' or unit_instructions.get(0xa7ea7e) != 'jl 0xa7ea00':
+                raise ValueError('H3EK four-slot unit-action updater mismatch')
         if name == 'halo3.dll':
+            # Existing contact-melee unit updater, not the intermittent weapon
+            # action callback previously used by shake reload.
+            source = (Path(__file__).resolve().parents[2] / 'src/dll/halo3_contact_melee_runtime.inl').read_text()
+            pattern = re.search(r'\{0x379B30,"([^"]+)"', source).group(1)
+            expression = b''.join(b'.' if b == '??' else re.escape(bytes([int(b, 16)])) for b in pattern.split())
+            matches = [m.start() for m in re.finditer(b'(?=' + expression + b')', data, re.DOTALL)]
+            if matches != [0x379b30]:
+                raise ValueError('H3 unit updater is not unique at the proved RVA')
+            call = 0x39a5ad
+            if data[call] != 0xe8 or call + 5 + struct.unpack_from('<i', data, call + 1)[0] != 0x379b30:
+                raise ValueError('H3 native unit-update caller mismatch')
             pointer = struct.unpack_from('<Q', data, 0x8b1d78)[0]
             if pointer != pe.OPTIONAL_HEADER.ImageBase + 0x35f828:
                 raise ValueError('H3 existing weapon-update callback table mismatch')

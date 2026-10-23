@@ -10567,6 +10567,12 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
     weapon_interaction::State g_weaponInteraction;
     dual_wield_shake::State g_dualReloadShake;
     dual_wield_shake::Channel g_dualReloadChannel;
+    struct DualReloadInputStats {
+        std::atomic<uint64_t> samples{0},ready{0},gestures{0},queued{0},coarseRepeats{0};
+        std::atomic<uint64_t> trackingBlocked{0},ownerBlocked{0},actionsBlocked{0},busyHands{0};
+        uint64_t lastWallMs=0; // XR input thread only; never read by the worker.
+    };
+    DualReloadInputStats g_dualReloadInputStats[2];
     // Setting the holster spot with a hand. The machine belongs to the input poll; the menu only asks
     // (request: 1 arm, 2 cancel) and reads the two counters and the armed flag.
     weapon_interaction::HolsterCapture g_holsterCapture;
@@ -15008,23 +15014,38 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
             dual_wield_shake::Owner dualOwner{};
             dual_wield_shake::Sample dual{};
             dual.title=sample.title;dual.generation=sample.generation;dual.space=sample.space;
-            dual.now=inputNow;dual.enabled=g_config.dual_wield_shake_reload;
+            dual.now=dual_wield_shake::PoseMilliseconds(time);dual.enabled=g_config.dual_wield_shake_reload;
             dual.leftHanded=leftHanded;dual.head=sample.head;
             dual.hands={sample.primary,sample.support};dual.travel=g_config.weapon_shake_travel_m;
             const bool haveDualOwner=g_dualReloadChannel.Read(inputNow,dualOwner)&&
                 dualOwner.title==sample.title&&dualOwner.generation==sample.generation&&
                 dualOwner.space==sample.space&&dualOwner.leftHanded==leftHanded;
-            dual.ready=sample.ready&&haveDualOwner&&!g_weaponInteraction.HasClaimedGrip()&&
+            const bool dualActionsClear=!g_weaponInteraction.HasClaimedGrip()&&
                 !g_holsterCapture.ConsumesGrip()&&!pad.menu&&!pad.a&&!pad.b&&!pad.x&&!pad.y&&
                 !pad.clickL&&!pad.clickR;
+            dual.ready=sample.ready&&haveDualOwner&&dualActionsClear;
             dual.dualWield=haveDualOwner;
             if(haveDualOwner){dual.weapons=dualOwner.weapons;dual.unit=dualOwner.unit;}
             dual.busy={pad.trigR>0.15f,pad.trigL>0.15f};
             const unsigned reloadSlots=g_dualReloadShake.Update(dual);
+            bool reloadQueued=false;
             if(!dual.enabled||!dual.ready)g_dualReloadChannel.Cancel();
             else {
                 g_dualReloadChannel.CancelSlots((dual.busy[0]?1u:0u)|(dual.busy[1]?2u:0u));
-                if(reloadSlots)(void)g_dualReloadChannel.Request(dualOwner,inputNow,reloadSlots);
+                if(reloadSlots)reloadQueued=g_dualReloadChannel.Request(dualOwner,inputNow,reloadSlots);
+            }
+            if(dual.enabled&&(dual.title==GameTitle::Halo2||dual.title==GameTitle::Halo3)) {
+                auto& stats=g_dualReloadInputStats[dual.title==GameTitle::Halo2?0:1];
+                ++stats.samples;
+                if(dual.ready)++stats.ready;
+                if(reloadSlots)++stats.gestures;
+                if(reloadQueued)++stats.queued;
+                if(inputNow==stats.lastWallMs)++stats.coarseRepeats;
+                stats.lastWallMs=inputNow;
+                if(!sample.ready)++stats.trackingBlocked;
+                if(!haveDualOwner)++stats.ownerBlocked;
+                if(!dualActionsClear)++stats.actionsBlocked;
+                if(dual.busy[0]||dual.busy[1])++stats.busyHands;
             }
             weapon_interaction::Settings settings{};
             settings.reload=g_config.manual_reload;settings.holsters=g_config.weapon_holsters;
@@ -25771,4 +25792,15 @@ unsigned VR_DualWieldReloadTick(GameTitle title,uint32_t generation,uint32_t uni
     const dual_wield_shake::Owner owner{title,generation,unit,{weapons[0],weapons[1]},
         g_contactSpaceEpoch.load(std::memory_order_acquire),g_config.left_handed};
     return g_dualReloadChannel.ObserveAndConsume(owner,GetTickCount64());
+}
+
+// Called only by the cold native-policy worker, never from input/render hooks.
+void VR_ReportDualWieldReloadInput(GameTitle title)
+{
+    if(title!=GameTitle::Halo2&&title!=GameTitle::Halo3)return;
+    const auto& s=g_dualReloadInputStats[title==GameTitle::Halo2?0:1];
+    LOG("Dual shake input game=%s samples=%llu ready=%llu gestures=%llu queued=%llu coarseClockRepeats=%llu "
+        "trackingBlocked=%llu ownerBlocked=%llu actionsBlocked=%llu busyHandSamples=%llu (gesture clock=OpenXR pose)",
+        title==GameTitle::Halo2?"Halo 2":"Halo 3",s.samples.load(),s.ready.load(),s.gestures.load(),s.queued.load(),s.coarseRepeats.load(),
+        s.trackingBlocked.load(),s.ownerBlocked.load(),s.actionsBlocked.load(),s.busyHands.load());
 }

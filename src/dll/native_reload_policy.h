@@ -14,3 +14,6 @@ void NativeReloadPolicy_DualShakeTick(GameTitle title,uint32_t generation,
 // Input-to-simulation handoff; returns one-shot logical weapon slot bits.
 unsigned VR_DualWieldReloadTick(GameTitle title,uint32_t generation,uint32_t unit,
     const uint32_t weapons[2]) noexcept;
+
+// Cold-worker input admission and clock diagnostics.
+void VR_ReportDualWieldReloadInput(GameTitle title);

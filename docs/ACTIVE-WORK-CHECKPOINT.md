@@ -1,3 +1,22 @@
+## October 23 dual shake reload: Classic/H3 failure correction candidate
+
+User confirms H2 Anniversary works, but H2 Classic and H3 do not (source
+7c05a6a6, supplied HaloMCCVRDUALRELOAD.log). Classic native ticks continue with
+no requests; H3's weapon callback stalls for seconds, expiring owner receipts.
+Retain the Anniversary acceptance as scoped only. Separate rollback c162db87
+disables the failed H3 weapon-callback invocation without removing its code.
+
+Replacement uses OpenXR pose timestamps for shake derivatives instead of coarse
+GetTickCount64 (reproduced repeated-timestamp reset bug), and H3's existing native
+unit-action update for idle owner receipts/consumption. Native reload requests
+and H2 simulation route remain unchanged. New per-title input counters separate
+tracking, owner, action and gesture/queue failures in the next user log.
+See DUAL-SHAKE-CLOCK-AND-IDLE-2026-10-23.md. 1,350 gesture/channel and 125 production
+H3 idle-routing checks pass with ASan/UBSan; pinned native verifier also passes.
+Full Windows build and headset acceptance pending; user compiles. Preserve ODST
+62ef856f and all prior Reach/H3 modded-weapon changes. Source commit/push only;
+no installation, launch, release, PR or accepted-pointer update.
+
 ## October 23 ODST Mythic/previous-mod regression: replacement source candidate
 
 The user reports all weapons head-locked after the prior ODST mapped fix and

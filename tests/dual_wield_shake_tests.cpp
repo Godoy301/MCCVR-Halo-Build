@@ -91,5 +91,28 @@ int main() {
         Check(c.ObserveAndConsume(a,3152)==2,"new request does not extend other hand expiry");
         c.Request(a,3153,3);Check(c.ObserveAndConsume(a,3100)==0,"clock regression rejects requests");
     }
+    // Reproduce Windows' coarse tick clock at a faster-than-clock VR rate.
+    // Identical physical strokes fail with repeated wall-clock milliseconds,
+    // but succeed with the actual pose timestamps in either renderer.
+    for(unsigned dt:{8u,11u,14u,22u})for(auto title:{GameTitle::Halo2,GameTitle::Halo3}) {
+        Rig coarse(title,false),pose(title,false);
+        unsigned oldRequests=0,newRequests=0;
+        const auto origin=pose.sample.hands;
+        for(unsigned frame=1;frame<=24;++frame) {
+            const float delta=.14f*float(frame<=12?frame:24-frame)/12.f;
+            const uint64_t exact=1000+frame*dt;
+            coarse.sample.now=(exact/16)*16;
+            pose.sample.now=dual_wield_shake::PoseMilliseconds(int64_t(exact)*1000000);
+            for(unsigned slot=0;slot<2;++slot) {
+                coarse.sample.hands[slot].x=pose.sample.hands[slot].x=origin[slot].x+delta;
+            }
+            oldRequests|=coarse.state.Update(coarse.sample);
+            newRequests|=pose.state.Update(pose.sample);
+        }
+        Check(newRequests==3,"pose-clock shake works at high and lower frame rates");
+        if(dt<16)Check(oldRequests==0,"old coarse clock repeatedly cancels the high-rate gesture");
+    }
+    Check(dual_wield_shake::PoseMilliseconds(0)==0 && dual_wield_shake::PoseMilliseconds(-1)==0,
+        "missing pose time cannot start a gesture");
     std::printf("Dual-wield shake detector: %u checks passed\n",checks);
 }

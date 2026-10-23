@@ -1,3 +1,7 @@
+> Partial headset result: H2 Anniversary works; H2 Classic and H3 failed.
+> The pose clock and H3 scheduling below are superseded by
+> `DUAL-SHAKE-CLOCK-AND-IDLE-2026-10-23.md`. Native request ABI evidence remains valid.
+
 # Dual wield shake reload — October 23, 2026
 
 Source candidate for `modded-weapons-fix`; Windows build and headset acceptance
