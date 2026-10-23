@@ -1,3 +1,17 @@
+## October 23 latest log: older DLL loaded, diagnostic build not tested
+
+The user reports continued deformation and missing dual reload menu. Supplied
+HaloMCCVR.log identifies source 5fdf982e979cc4dab693bbaccfb941d2bc199307,
+compiled Oct 23 01:45:47, before dual reload and the passive ODST probe. There
+are no baseline map probe records. This is not a headset failure of fa29efe0.
+The current menu contains the exact requested label and description next to
+Manual Reload. No gameplay/menu behavior was removed or changed this turn.
+Workflow now checks those source features and the restored ODST probe, and
+uploads BUILD-IDENTITY.txt with the exact expected log source. Its reviewed
+source pin is 552124dd (includes fa29efe0 and accepted dual reload).
+User must test that build and return a fresh log before native-map diagnosis
+can continue. Existing five-weapon deformation remains unresolved.
+
 ## October 23 latest: dual shake accepted; ODST restored for Mythic diagnosis
 
 User confirms dual shake now works in all requested games. Preserve 444f7a15.

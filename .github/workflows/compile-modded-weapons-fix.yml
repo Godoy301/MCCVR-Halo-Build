@@ -34,7 +34,7 @@ jobs:
           if ($env:GITHUB_REF_NAME -ne 'modded-weapons-fix') {
             throw "Refusing to build unexpected branch: $env:GITHUB_REF_NAME"
           }
-          $expectedSourceSha = 'fa29efe0b454fe35891ce618ab779daafad633a6'
+          $expectedSourceSha = '552124dd74b6ff5f6d70d3d35ac84b3a3c338589'
           if ($env:EXPECTED_SOURCE_SHA -ne $expectedSourceSha) {
             throw "Source revision differs from the reviewed modded-weapons-fix commit. Expected $expectedSourceSha, got $env:EXPECTED_SOURCE_SHA. Refusing to build a different revision."
           }
@@ -50,6 +50,20 @@ jobs:
           Write-Host "Requested branch: modded-weapons-fix"
           Write-Host "Exact source commit being built: $actual"
           Write-Host "The main and compilation-test branches are not used as source."
+
+      - name: Verify dual shake menu and ODST diagnostic source
+        shell: pwsh
+        run: |
+          $menu = Get-Content 'src/dll/menu.cpp' -Raw
+          if (-not $menu.Contains('ImGui::Checkbox("dual wield shake reload", &g_config.dual_wield_shake_reload)') -or
+              -not $menu.Contains('shake to reload a weapon when dual wielding')) {
+            throw "This source is missing the requested dual wield shake reload menu option."
+          }
+          $game = Get-Content 'src/dll/game.cpp' -Raw
+          if (-not $game.Contains('static constexpr bool kOdstMappedFpEnabled = false;') -or
+              -not $game.Contains('#include "odst_fp_map_probe.inl"')) {
+            throw "This source is not the restored ODST diagnostic baseline."
+          }
 
       - name: Set up Python for test generation
         uses: actions/setup-python@v5
@@ -101,6 +115,14 @@ jobs:
           if ($checksumText -notmatch [regex]::Escape($env:EXPECTED_SOURCE_SHA)) {
             throw "The package checksum receipt does not identify expected modded-weapons-fix commit $env:EXPECTED_SOURCE_SHA."
           }
+          @"
+          Source branch: modded-weapons-fix
+          Expected source in the first line of HaloMCCVR.log: $env:EXPECTED_SOURCE_SHA
+          Includes: dual wield shake reload, restored ODST baseline, passive ODST map probe.
+          ODST affected-weapon deformation is still under investigation.
+          If the log reports source 5fdf982e, MCC loaded an older DLL.
+          Use the Build ZIP from this artifact, not a previous workflow run.
+          "@ | Set-Content 'out/candidates/BUILD-IDENTITY.txt'
           Write-Host "Source branch: modded-weapons-fix"
           Write-Host "Source commit: $env:EXPECTED_SOURCE_SHA"
           Get-FileHash $builds[0].FullName -Algorithm SHA256
@@ -115,5 +137,6 @@ jobs:
             out/candidates/*-Build.zip
             out/candidates/*-Source.zip
             out/candidates/*-SHA256.txt
+            out/candidates/BUILD-IDENTITY.txt
           if-no-files-found: error
           retention-days: 14
