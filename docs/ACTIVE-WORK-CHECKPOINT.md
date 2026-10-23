@@ -1,3 +1,14 @@
+## October 23 latest: native Mythic maps confirmed, direct correction candidate
+
+552124dd log confirms early-camera body [0,2,...,37], gun [38,...,count-1]
+for affected Mythic weapons; reload menu now confirmed present. Added scoped
+body-palette correction using the exact checksum and complete observed map.
+Retains baseline for other layouts; learned-palette candidate remains disabled.
+Corrected context survives for the gun palette; markers rebuild from the saved
+untouched graph. See ODST-MYTHIC-DIRECT-MAP-2026-10-23.md. 24,845 portable checks
+pass; Windows/headset testing pending. Preserve accepted dual shake behavior.
+Other mods remain deferred, no installation/release/accepted-pointer update.
+
 ## October 23 latest log: older DLL loaded, diagnostic build not tested
 
 The user reports continued deformation and missing dual reload menu. Supplied

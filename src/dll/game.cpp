@@ -383,6 +383,7 @@ bool Halo4Type13LogInstall(uintptr_t base, size_t size, uint32_t generation);
 #include "../common/odst_bringup_logic.h"
 #include "../common/odst_modded_fp_logic.h"
 #include "../common/odst_fp_map_probe.h"
+#include "../common/odst_mythic_layout.h"
 #include "../common/odst_vehicle_logic.h"
 #include "../common/scope_logic.h"
 #include "../common/two_hand_ik_logic.h"
@@ -15146,6 +15147,7 @@ namespace
 static constexpr bool kOdstMappedFpEnabled = false;
 #include "odst_modded_fp.inl"
 #include "odst_fp_map_probe.inl"
+#include "odst_mythic_layout.inl"
 
     bool OdstFpInterpolateWeaponBody(
         int view, int id, int slot, BoneMatrix** outBones, int* outCount)
@@ -15362,6 +15364,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
             return;
         }
         OdstObserveFpMapProbe(tag,source,boneMap);
+        if(!kOdstMappedFpEnabled)OdstCorrectMythicBodyPalette(tag,boneMap,context);
         if (kOdstMappedFpEnabled) (void)OdstResolveMappedPalette(tag,boneMap,context);
         (void)LegacyObserveWeaponRenderModel(GameTitle::Halo3ODST,tag,collisionGeneration,source,boneMap);
         const BoneMatrix* selectedSource = source;

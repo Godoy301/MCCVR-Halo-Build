@@ -1,4 +1,5 @@
 #include "../src/common/odst_modded_fp_logic.h"
+#include "../src/common/odst_mythic_layout.h"
 #include <atomic>
 #include <algorithm>
 #include <cstdio>
@@ -41,6 +42,7 @@ static void PublishOdstFpLayoutSelfCheck(int,int,bool,const OdstFpSkeletonLayout
 #define ODST_MODDED_FP_TESTING 1
 #include "../src/dll/odst_modded_fp.inl"
 #undef ODST_MODDED_FP_TESTING
+#include "../src/dll/odst_mythic_layout.inl"
 static uint64_t Descendants(const Asset& a,int root)
 {
     uint64_t mask=0;
@@ -59,10 +61,27 @@ int main()
 {
     for(const auto& a:assets)
     {
-        active=&a;
+        active=&a;readable=true;markerSuccess=true;g_odstRuntimeGeneration.store(7);
         OdstMappedFpLayout layout{};
         const auto body=std::span<const int32_t>{a.body.data(),size_t(a.bodyCount)};
         const auto model=std::span<const int32_t>{a.model.data(),size_t(a.modelCount)};
+        OdstMappedFpLayout mythic{};
+        const bool early=ResolveOdstMythicEarlyCamera(a.checksum,body,a.count,mythic);
+        Check(early==(a.checksum==0x14020C1Fu && a.camera==1),"only evidenced early-camera Mythic family selected");
+        BoneMatrix original[64]{};
+        FpInterpolationContext direct{};direct.valid=true;direct.slot=0;direct.count=a.count;
+        direct.generation=7;direct.source=original;direct.wrist=6;direct.lWrist=5;
+        for(int i=0;i<a.count;++i){original[i].value=999;g_fpUnmodifiedInterpolations[0][i].value=float(i);}
+        OdstCorrectMythicBodyPalette(1,a.body.data(),direct);
+        if(early) {
+            Check(direct.wrist==a.body[6] && direct.lWrist==a.body[5] && direct.cameraControl==a.camera,"live corrected role indices");
+            Check(direct.lWristDescendants==Descendants(a,5),"live left finger ownership");
+            for(int i=0;i<a.modelCount;++i)
+                Check((direct.wristDescendants&(uint64_t{1}<<a.model[i]))!=0,"entire gun carried");
+            Check(!(direct.wristDescendants&2),"camera not carried as gun");
+            Check(original[0].value==100,"marker rebuilt from untouched graph");
+            Check(g_fpInterpolationContexts[0].valid && g_fpInterpolationContexts[0].wrist==7,"gun palette retains corrected receipt");
+        } else Check(original[0].value==999 && direct.wrist==6,"other layouts preserve baseline behavior");
         Check(ResolveOdstMappedFpLayout(a.checksum,body,a.count,layout),"actual ODST body admitted");
         Check(layout.skeleton.leftHandDescendants==Descendants(a,5),"own left fingers");
         Check(layout.skeleton.rightHandAndWeaponDescendants==Descendants(a,6),"own right fingers");
