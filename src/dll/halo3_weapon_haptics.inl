@@ -203,7 +203,9 @@ __declspec(noinline) uint8_t __fastcall Halo3WeaponHapticTriggerUpdateDetour(uin
         uint8_t result = 0;
         if (feature.triggerUpdateOriginal)
             result = reinterpret_cast<Halo3WeaponTriggerUpdateFn>(feature.triggerUpdateOriginal)(weapon);
-        Halo3DualShakeTick(weapon);
+        // Disabled after the headset test: this weapon callback can stop at
+        // idle, so it cannot supply continuous shake-owner receipts.
+        if constexpr(false) Halo3DualShakeTick(weapon);
         return result;
     }
     __finally
