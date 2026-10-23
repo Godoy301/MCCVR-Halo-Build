@@ -1,3 +1,18 @@
+## October 23 latest: preserve corrected hands; Mythic alignment refinement
+
+User confirms e6edf4ad removes hand/finger/weapon deformation. Gun seating is
+still sideways/backward and hands tilt down; Automag upper-part loss remains
+unconfirmed in dark photos. Preserve corrected body roles and dual reload.
+New candidate reuses the observed Mythic layout before interpolation alignment,
+resets wrong-wrist filter history on first recognition, avoids double body-palette
+calibration/marker transforms and preserves final gun-component carry. Identity,
+generation and epoch changes discard the per-slot reuse hint. The failed union
+cache stays disabled; normal/unrecognized layouts retain baseline control.
+See ODST-MYTHIC-ALIGNMENT-2026-10-23.md. 25,006 portable checks pass ASan/UBSan;
+Windows/headset validation pending. Source and pinned CI delivery only; no game
+installation, release or accepted-pointer advance. Ask for gun seating/top-part
+and normal-weapon regression results after this build.
+
 ## October 23 latest: native Mythic maps confirmed, direct correction candidate
 
 552124dd log confirms early-camera body [0,2,...,37], gun [38,...,count-1]

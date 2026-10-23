@@ -15143,6 +15143,11 @@ namespace
             preparedSerial, unit, weapon, aux0, aux1);
     }
 
+    void OdstResetAuthoredBarrel(int slot)
+    {
+        g_barrelInWristValid[slot].store(false,std::memory_order_release);
+    }
+
 // Keep the failed learned-palette candidate dormant; restore the pre-ODST solver.
 static constexpr bool kOdstMappedFpEnabled = false;
 #include "odst_modded_fp.inl"
@@ -15255,8 +15260,8 @@ static constexpr bool kOdstMappedFpEnabled = false;
                 const bool haveBones = result && outBones && outCount && *outBones;
                 const bool layoutOk =
                     haveBones && ComputeOdstFpSkeletonLayout(*outCount, layout);
-                PublishOdstFpLayoutSelfCheck(
-                    slot, haveBones ? *outCount : -1, layoutOk, layout);
+                if(!layoutOk)PublishOdstFpLayoutSelfCheck(
+                    slot, haveBones ? *outCount : -1, false, layout);
                 if (layoutOk)
             {
                     const int count = *outCount;
@@ -15287,14 +15292,19 @@ static constexpr bool kOdstMappedFpEnabled = false;
                     if (slot == 1 && view == 0)
                         VR_ObserveSecondaryWeaponPresentation(GameTitle::Halo3ODST,
                             g_odstRuntimeGeneration.load(std::memory_order_acquire));
+                    OdstPrepareMythicInterpolation(view,id,slot,context);
+                    const auto& mythic=g_odstMythicReceipts[slot];
+                    PublishOdstFpLayoutSelfCheck(slot,count,true,
+                        mythic.valid?mythic.layout.skeleton:layout,
+                        mythic.valid?37:0,mythic.valid?mythic.layout.checksum:0);
                     MeasureOdstAuthoredBarrel(
                         slot, g_fpUnmodifiedInterpolations[slot],
-                        layout.rightWrist);
+                        context.wrist);
                     BoneMatrix root{};
                     if (BuildOdstCenterFpRoot(slot, root))
                         ApplyControllerToMarkerBonesFromRoot(
-                            root, *outBones, count, layout.rightWrist,
-                            layout.leftWrist, slot == 1);
+                            root, *outBones, count, context.wrist,
+                            context.lWrist, slot == 1);
             }
             }
         }
@@ -15751,7 +15761,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
             "nodeCount=%d layoutAccepted=%s (%s) wrist=%d "
             "cameraControl=%d bodyNodes=%d bodyChecksum=%08X -- hands/gun driven by controller = %s",
             slot, nodeCount, accepted ? "YES" : "NO",
-            kOdstMappedFpEnabled?"validated body remap":"restored pre-fix count layout",
+            kOdstMappedFpEnabled?"validated body remap":"baseline / verified Mythic layout",
             wrist, cameraControl,bodyCount,bodyChecksum,
             accepted ? "YES" : "NO (learning or unsupported palette -> stock pose)");
         if(kOdstMappedFpEnabled)LOG("ODST mapped FP: tag=%d modelNodes=%d stage=%d bodySeen=%llu gunSeen=%llu accepted=%llu "

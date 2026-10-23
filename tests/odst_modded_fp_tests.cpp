@@ -34,7 +34,10 @@ static bool SafeReadBytes(const void* p,void* q,size_t n)
 { if(!p||!readable)return false;std::memcpy(q,p,n);return true; }
 static bool OdstCaptureMuzzleOwner(int,int,uint32_t&,uint32_t&) {return false;}
 static void VR_ObserveSecondaryWeaponPresentation(GameTitle,uint32_t) {}
-static void MeasureOdstAuthoredBarrel(int,const BoneMatrix*,int) {}
+static int barrelMeasurements=0,barrelResets=0,lastBarrelWrist=-1;
+static void OdstResetAuthoredBarrel(int) {++barrelResets;}
+static void MeasureOdstAuthoredBarrel(int,const BoneMatrix*,int wrist)
+{++barrelMeasurements;lastBarrelWrist=wrist;}
 static bool BuildOdstCenterFpRoot(int,BoneMatrix&) {return true;}
 static bool ApplyControllerToMarkerBonesFromRoot(BoneMatrix,BoneMatrix* bones,int count,int,int,bool)
 {if(!markerSuccess)return false;for(int i=0;i<count;++i)bones[i].value+=100;return true;}
@@ -72,6 +75,10 @@ int main()
         FpInterpolationContext direct{};direct.valid=true;direct.slot=0;direct.count=a.count;
         direct.generation=7;direct.source=original;direct.wrist=6;direct.lWrist=5;
         for(int i=0;i<a.count;++i){original[i].value=999;g_fpUnmodifiedInterpolations[0][i].value=float(i);}
+        g_odstMythicReceipts[0]={};
+        g_fpStereoSolveScope.armed=true;
+        OdstPrepareMythicInterpolation(0,42,0,direct);
+        const int beforeReset=barrelResets;
         OdstCorrectMythicBodyPalette(1,a.body.data(),direct);
         if(early) {
             Check(direct.wrist==a.body[6] && direct.lWrist==a.body[5] && direct.cameraControl==a.camera,"live corrected role indices");
@@ -81,6 +88,31 @@ int main()
             Check(!(direct.wristDescendants&2),"camera not carried as gun");
             Check(original[0].value==100,"marker rebuilt from untouched graph");
             Check(g_fpInterpolationContexts[0].valid && g_fpInterpolationContexts[0].wrist==7,"gun palette retains corrected receipt");
+            Check(barrelResets==beforeReset+1 && lastBarrelWrist==7,"discard wrong-wrist calibration on first discovery");
+            // Native code may interpolate again between body and gun palettes.
+            // A fresh context must not put the weapon back on wrist 6 or hide
+            // its last component as camera_control.
+            FpInterpolationContext next=direct;next.wrist=6;next.lWrist=5;next.cameraControl=a.count-1;
+            next.wristDescendants=0;next.lWristDescendants=0;
+            OdstPrepareMythicInterpolation(0,42,0,next);
+            Check(next.wrist==7 && next.lWrist==6 && next.cameraControl==1,"new interpolation retains observed body roles");
+            Check((next.wristDescendants&(uint64_t{1}<<(a.count-1)))!=0,"last gun component remains visible/carried");
+            const int measured=barrelMeasurements;
+            const float transformed=original[0].value;
+            OdstCorrectMythicBodyPalette(1,a.body.data(),next);
+            Check(barrelMeasurements==measured && original[0].value==transformed,"body palette does not double-calibrate or double-transform");
+            const auto receipt=g_odstMythicReceipts[0];
+            ++g_fpStereoSolveScope.anatomicalTracking.referenceEpoch;
+            next.wrist=6;OdstPrepareMythicInterpolation(0,42,0,next);
+            Check(next.wrist==6 && !g_odstMythicReceipts[0].valid,"reference epoch invalidates receipt");
+            --g_fpStereoSolveScope.anatomicalTracking.referenceEpoch;
+            g_odstMythicReceipts[0]=receipt;
+            next.generation=8;OdstPrepareMythicInterpolation(0,42,0,next);
+            Check(!g_odstMythicReceipts[0].valid,"runtime generation invalidates receipt");
+            next.generation=7;g_odstMythicReceipts[0]=receipt;
+            next.wrist=6;OdstPrepareMythicInterpolation(0,43,0,next);
+            Check(next.wrist==6 && !g_odstMythicReceipts[0].valid,"weapon identity change returns to baseline");
+
         } else Check(original[0].value==999 && direct.wrist==6,"other layouts preserve baseline behavior");
         Check(ResolveOdstMappedFpLayout(a.checksum,body,a.count,layout),"actual ODST body admitted");
         Check(layout.skeleton.leftHandDescendants==Descendants(a,5),"own left fingers");
