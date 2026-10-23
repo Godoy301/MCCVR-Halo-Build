@@ -34,7 +34,7 @@ jobs:
           if ($env:GITHUB_REF_NAME -ne 'modded-weapons-fix') {
             throw "Refusing to build unexpected branch: $env:GITHUB_REF_NAME"
           }
-          $expectedSourceSha = '552124dd74b6ff5f6d70d3d35ac84b3a3c338589'
+          $expectedSourceSha = 'e6edf4ad1eb2db74ea7481a1733e09a1ae60e35c'
           if ($env:EXPECTED_SOURCE_SHA -ne $expectedSourceSha) {
             throw "Source revision differs from the reviewed modded-weapons-fix commit. Expected $expectedSourceSha, got $env:EXPECTED_SOURCE_SHA. Refusing to build a different revision."
           }
@@ -61,7 +61,8 @@ jobs:
           }
           $game = Get-Content 'src/dll/game.cpp' -Raw
           if (-not $game.Contains('static constexpr bool kOdstMappedFpEnabled = false;') -or
-              -not $game.Contains('#include "odst_fp_map_probe.inl"')) {
+              -not $game.Contains('#include "odst_fp_map_probe.inl"') -or
+              -not $game.Contains('#include "odst_mythic_layout.inl"')) {
             throw "This source is not the restored ODST diagnostic baseline."
           }
 
@@ -118,8 +119,8 @@ jobs:
           @"
           Source branch: modded-weapons-fix
           Expected source in the first line of HaloMCCVR.log: $env:EXPECTED_SOURCE_SHA
-          Includes: dual wield shake reload, restored ODST baseline, passive ODST map probe.
-          ODST affected-weapon deformation is still under investigation.
+          Includes: dual wield shake reload, Mythic early-camera correction, passive ODST map probe.
+          ODST Mythic correction requires headset validation.
           If the log reports source 5fdf982e, MCC loaded an older DLL.
           Use the Build ZIP from this artifact, not a previous workflow run.
           "@ | Set-Content 'out/candidates/BUILD-IDENTITY.txt'
