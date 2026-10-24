@@ -1,3 +1,13 @@
+## October 24 latest: Cursed candidate disabled at user request
+
+User reports 74406fd4 removes 2D but places the Cursed objects far from hands;
+asks to remove latest 55dec9d8. That commit only pins CI, so disable the actual
+74406fd4 inferred sibling-root behavior as well. Keep failed implementation
+dormant per AGENTS.md; preserve accepted Mercury/XAM/ODST/dual shake changes.
+Restore accepted CE tests and assert all five Cursed fixtures reject again.
+No further Cursed correction requested. Pin CI to this rollback source.
+No history rewrite, installation, PR or accepted release pointer change.
+
 ## October 24 latest: Mercury accepted; Cursed Halo generic sibling-root candidate
 
 User confirms Mercury Rising fix worked. Cursed Halo sword/crossbow/bow/potions

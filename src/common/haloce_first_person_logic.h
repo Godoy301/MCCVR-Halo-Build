@@ -311,8 +311,10 @@ inline bool BuildFirstPersonBinding(uint32_t graph,uint32_t generation,
     // Cursed Halo uses arbitrary names for the one non-body root child.
     // Infer it only when both complete arm chains are rooted beside it;
     // the full finger/body partition is verified below before publication.
+    // Disabled after headset testing: inferred objects were displaced from the hands.
+    constexpr bool kInferSiblingWeaponRoot=false;
     bool inferredGun=false;
-    if (candidate.gun<0 && detachedGun<0 && candidate.shoulder[0]>0 &&
+    if (kInferSiblingWeaponRoot && candidate.gun<0 && detachedGun<0 && candidate.shoulder[0]>0 &&
         candidate.shoulder[1]>0 && candidate.elbow[0]>0 && candidate.elbow[1]>0 &&
         nodes[candidate.shoulder[0]].parent==0 && nodes[candidate.shoulder[1]].parent==0) {
         for (size_t i=1;i<count;++i)

@@ -325,10 +325,7 @@ int main(int argc,char** argv)
         malformed[5].parent=5;
         CHECK(!BuildFirstPersonBinding(25,3,malformed.data(),asset.count,binding));
     }
-    std::array<CeXamGraph,8> detachedGraphs{};
-    std::copy(std::begin(ceMercuryGraphs),std::end(ceMercuryGraphs),detachedGraphs.begin());
-    std::copy(std::begin(ceCursedGraphs),std::end(ceCursedGraphs),detachedGraphs.begin()+3);
-    for (const auto& asset:detachedGraphs) {
+    for (const auto& asset:ceMercuryGraphs) {
         FirstPersonBinding binding{};
         CHECK(BuildFirstPersonBinding(25,3,asset.nodes.data(),asset.count,binding));
         CHECK(binding.gun==1 && !(binding.gunMask&(binding.leftMask|binding.rightMask)));
@@ -371,7 +368,7 @@ int main(int argc,char** argv)
             tracking.controllers.supportGripAttached=attached;
             uint32_t stage{};
             const bool built=BuildTrackedFirstPersonPalette(binding,source,camera,tracking,reference,1,true,staged,&stage);
-            if (!built) std::fprintf(stderr,"Detached graph %s floating=%d attached=%d stage=%u\n",asset.name,floating,attached,stage);
+            if (!built) std::fprintf(stderr,"Mercury %s floating=%d attached=%d stage=%u\n",asset.name,floating,attached,stage);
             CHECK(built);
             CHECK(Near(staged[1].forward,expected.forward));
             CHECK(Near(staged[binding.rightWrist].position,expected.position));
@@ -386,30 +383,10 @@ int main(int argc,char** argv)
         Name(malformed[4],"frame gun",0);
         CHECK(!BuildFirstPersonBinding(25,3,malformed.data(),asset.count,binding));
     }
-    {
-        auto graph=ceCursedGraphs[0].nodes;
+    // The rejected Cursed candidate must remain inactive while Mercury works.
+    for (const auto& asset:ceCursedGraphs) {
         FirstPersonBinding binding{};
-        Name(graph[1],"custom object",0);
-        CHECK(BuildFirstPersonBinding(25,3,graph.data(),38,binding));
-        CHECK(binding.gun==1);
-        // Preserve arbitrary weapon subtrees, but do not guess between peers.
-        Name(graph[38],"moving part",1);
-        CHECK(BuildFirstPersonBinding(25,3,graph.data(),39,binding));
-        CHECK(binding.gunMask==((1ull<<1)|(1ull<<38)));
-        const auto saved=binding;
-        graph[38].parent=0;
-        CHECK(!BuildFirstPersonBinding(25,3,graph.data(),39,binding));
-        CHECK(std::memcmp(&binding,&saved,sizeof(binding))==0);
-        graph[38].parent=7;
-        CHECK(!BuildFirstPersonBinding(25,3,graph.data(),39,binding));
-        graph[38].parent=33;
-        CHECK(!BuildFirstPersonBinding(25,3,graph.data(),39,binding));
-        graph=ceCursedGraphs[0].nodes;
-        Name(graph[33],"unknown finger",23);
-        CHECK(!BuildFirstPersonBinding(25,3,graph.data(),38,binding));
-        graph=ceCursedGraphs[0].nodes;
-        graph[1].parent=1;
-        CHECK(!BuildFirstPersonBinding(25,3,graph.data(),38,binding));
+        CHECK(!BuildFirstPersonBinding(25,3,asset.nodes.data(),asset.count,binding));
     }
     AnimationNode nodes[9]{};
     Name(nodes[0],"frame bone24",0);
