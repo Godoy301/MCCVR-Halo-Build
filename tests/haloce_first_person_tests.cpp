@@ -265,6 +265,16 @@ int main(int argc,char** argv)
         CHECK((actual.armMask[0]|actual.armMask[1]|actual.leftMask|actual.rightMask|1)==
             (count==64?~uint64_t{}:(uint64_t{1}<<count)-1));
     }
+    {
+        ControllerRig rig{};
+        rig.gunForwardM=.12f;rig.supportForwardM=.03f;rig.gunRightM=.08f;rig.gunUpM=.04f;
+        rig.visualPitchDeg=rig.visualYawDeg=rig.visualRollDeg=0;
+        rig.supportMountPitchDeg=rig.supportMountYawDeg=rig.supportMountRollDeg=0;
+        NodeMatrix right{},left{};
+        CHECK(ApplyVisualMount(rig,1,true,right)&&ApplyVisualMount(rig,1,false,left));
+        CHECK(Near(right.position,{.12f,-.08f,.04f}));
+        CHECK(Near(left.position,{.15f,.08f,.04f}));
+    }
     for(const auto& asset:ceXamGraphs) {
         FirstPersonBinding binding{};
         CHECK(BuildFirstPersonBinding(25,3,asset.nodes.data(),asset.count,binding));

@@ -1,3 +1,5 @@
+#include "../common/visual_aim.h"
+#include "../common/weapon_alignment.h"
 #include "../common/dlss_logic.h"
 #include "contact_melee_queue.h"
 #include "../common/reach_wind_replay.h"
@@ -2322,6 +2324,7 @@ namespace
     struct FpExplicitPoseTargets
     {
         BoneMatrix centerRoot{};
+        BoneMatrix aimNeutral{},aimVisual{},oneHandAimNeutral{},oneHandAimVisual{};
         BoneMatrix rightWrist{};
         BoneMatrix leftWrist{};
         // Exact translations applied to this prepared pair, not a later
@@ -2369,6 +2372,8 @@ namespace
     weapon_muzzle::Store g_halo3Muzzles;
     std::atomic<bool> g_halo3MuzzleBindingsReady{false};
     bool Halo3CaptureMuzzleOwner(int player,int slot,uint32_t& unit,uint32_t& weapon) noexcept;
+    void Halo3ApplySecondarySmgAlignment(uint16_t tag,const FpInterpolationContext& context,
+        BoneMatrix* destination);
     void Halo3PublishMuzzlePalette(uint16_t tag,const FpInterpolationContext& context,
         const BoneMatrix* destination,uint32_t generation) noexcept;
     weapon_muzzle::Store g_odstMuzzles;
@@ -5044,7 +5049,7 @@ namespace
     // firing origin or an authored muzzle marker. The firing helper projects
     // and collision-adjusts an origin later; this probe cannot measure it.
     bool DesiredWristWorld(bool left, BoneMatrix& out, float& meshScale,
-                           float* collisionCorrection = nullptr); // defined below
+                           float* collisionCorrection = nullptr, BoneMatrix* neutralVisual = nullptr); // defined below
     void ProbeBulletOrigin()
     {
         if (!g_config.bullet_probe) return;
@@ -6951,9 +6956,9 @@ namespace
     // in the world" â€” used by the visible palette, the arm IK, AND the
     // muzzle/marker path so the gun, flash, and hands can never diverge. The
     // right hand carries the weapon mount trim + forward standoff; the left
-    // hand mirrors the yaw/roll trim and has no standoff.
+    // hand mirrors the yaw/roll trim and receives the shared mirrored offsets.
     bool DesiredWristWorld(bool left, BoneMatrix& out, float& meshScale,
-                           float* collisionCorrection)
+                           float* collisionCorrection, BoneMatrix* neutralVisual)
     {
         float basisC[9], posC[3];
         if (!ControllerWorldPoseEx(left, basisC, posC, meshScale))
@@ -7002,6 +7007,7 @@ namespace
                 }
             }
         }
+        float neutralBasis[9];memcpy(neutralBasis,mounted,sizeof(neutralBasis));
         // Right-hand calibration is already part of VR_GetAimPose, so applying
         // it here again would rotate only the mesh a second time. Preserve the
         // existing mirrored presentation trim for the independent left hand.
@@ -7036,6 +7042,10 @@ namespace
         memcpy(out.translation, posC, sizeof(posC));
         (void)LegacyApplyWorldCollision(
             TitleAdapter_GetActiveTitle(), left ? 0 : 1, out, collisionCorrection);
+        if (neutralVisual) {
+            *neutralVisual=out;
+            if (!left) memcpy(neutralVisual->rotation,neutralBasis,sizeof(neutralBasis));
+        }
         return true;
     }
 
@@ -8088,6 +8098,7 @@ namespace
         if(reconstructed && selectedSource==g_fpPaletteScratch &&
             !g_scopeRenderActive.load(std::memory_order_acquire))
         {
+            Halo3ApplySecondarySmgAlignment(tag,context,destination);
             Halo3PublishMuzzlePalette(tag,context,destination,collisionGeneration);
             LegacyApplyVisualHandOffsets(GameTitle::Halo3,tag,boneMap,context,destination);
             if(context.valid&&context.player==0&&context.slot==0)
@@ -8372,19 +8383,11 @@ namespace
 #endif
         Halo3SelectHandOrigin(g_config.vehicle_hands_follow_body,
                               bodyAnchorValid, bodyAnchor, cam);
-        // Forward standoff along the controller's own aim direction (basis
-        // column 0 = forward). EVERY left-hand use â€” support hand AND the
-        // dual-wield gun seat â€” is the same wrist-to-palm PALM point (23:17
-        // headset result: seating the dual gun by the weapon depth put it on
-        // the wrist, ~12 cm behind the rendered hand). Right keeps its
-        // independent weapon offset.
-        const float standoff = (left
-            ? Clamp(g_config.left_hand_forward_m, -0.15f, 0.30f)
-            : Clamp(g_config.gun_forward_m, -0.3f, 0.5f)) * s;
-        const float rightOff = !left
-            ? Clamp(g_config.gun_right_m, -0.3f, 0.3f) * s : 0.0f;
-        const float upOff = !left
-            ? Clamp(g_config.gun_up_m, -0.3f, 0.3f) * s : 0.0f;
+        // Both hands receive the shared offsets. Keep the left-only forward
+        // adjustment additive and mirror the lateral offset on the left.
+        const float standoff = weapon_alignment::Forward(left,g_config.gun_forward_m,g_config.left_hand_forward_m) * s;
+        const float rightOff = weapon_alignment::Right(left,g_config.gun_right_m)*s;
+        const float upOff = weapon_alignment::Up(g_config.gun_up_m)*s;
         for (int j = 0; j < 3; ++j)
             pos[j] = cam[j] + off[j] + basis[j] * standoff +
                 basis[3 + j] * rightOff + basis[6 + j] * upOff;
@@ -26618,6 +26621,28 @@ static constexpr bool kOdstMappedFpEnabled = false;
     }
 
 #include "left_hand_presentation.inl"
+
+    void Halo3ApplySecondarySmgAlignment(uint16_t tag,const FpInterpolationContext& context,
+        BoneMatrix* destination)
+    {
+        if (!destination || !context.valid || context.slot!=1 || context.player!=0 ||
+            g_config.left_handed) return;
+        uint32_t checksum=0;
+        const int count=LegacyAnatomicalRenderNodeCount(GameTitle::Halo3,tag,&checksum);
+        const float yaw=weapon_alignment::H3SecondaryYaw(unsigned(context.slot),checksum);
+        if (!yaw || count!=4) return;
+        BoneMatrix frame{};float scale=1;
+        if (!DesiredWristWorld(true,frame,scale,nullptr)) return;
+        BoneMatrix candidate[4]{};
+        for (int i=0;i<4;++i) {
+            candidate[i]=destination[i];
+            if (!weapon_alignment::RotateYaw(frame.rotation,frame.translation,yaw,
+                    candidate[i].rotation,candidate[i].translation)) return;
+        }
+        // Only the verified SMG model palette is rotated, never the hands.
+        memcpy(destination,candidate,sizeof(candidate));
+    }
+
 #include "visual_hand_palette.inl"
 #include "legacy_runtime_weapon_bounds.inl"
 
@@ -27472,7 +27497,8 @@ static constexpr bool kOdstMappedFpEnabled = false;
         const ReachVrRenderSnapshot& tracking, bool left,
         const float gameplayBase[3], BoneMatrix& out, float& meshScale,
         contact_melee::TrackingToWorld* contactSpace=nullptr,
-        contact_melee::TrackingToWorld* contactController=nullptr)
+        contact_melee::TrackingToWorld* contactController=nullptr,
+        BoneMatrix* neutralVisual=nullptr)
     {
         const bool valid=left ? tracking.leftControllerValid
                               : tracking.rightAimValid;
@@ -27513,6 +27539,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
         float basis[9];
         BuildTrackedGameBasisFromFrame(
             q, false, followValid, hullYaw, hullPitch, basis);
+        float neutralBasis[9];memcpy(neutralBasis,basis,sizeof(neutralBasis));
         if (left)
         {
             float mount[9],trimmed[9];
@@ -27587,13 +27614,9 @@ static constexpr bool kOdstMappedFpEnabled = false;
             contactSpace->origin={gameplayBase[0]-reference.x,gameplayBase[1]-reference.y,
                                   gameplayBase[2]-reference.z};
         }
-        const float standoff=(left
-            ? Clamp(g_config.left_hand_forward_m,-0.15f,0.30f)
-            : Clamp(g_config.gun_forward_m,-0.3f,0.5f))*scale;
-        const float rightOff=!left
-            ? Clamp(g_config.gun_right_m,-0.3f,0.3f)*scale : 0.0f;
-        const float upOff=!left
-            ? Clamp(g_config.gun_up_m,-0.3f,0.3f)*scale : 0.0f;
+        const float standoff=weapon_alignment::Forward(left,g_config.gun_forward_m,g_config.left_hand_forward_m)*scale;
+        const float rightOff=weapon_alignment::Right(left,g_config.gun_right_m)*scale;
+        const float upOff=weapon_alignment::Up(g_config.gun_up_m)*scale;
         out={};
         out.scale=1.0f;
         memcpy(out.rotation,basis,sizeof(basis));
@@ -27601,6 +27624,15 @@ static constexpr bool kOdstMappedFpEnabled = false;
             out.translation[axis]=gameplayBase[axis]+offset[axis]+
                 basis[axis]*standoff + basis[3+axis]*rightOff +
                 basis[6+axis]*upOff;
+        if (neutralVisual) {
+            *neutralVisual=out;
+            if (!left) {
+                memcpy(neutralVisual->rotation,neutralBasis,sizeof(neutralBasis));
+                for(int i=0;i<3;++i) neutralVisual->translation[i]+=
+                    (neutralBasis[i]-basis[i])*standoff+(neutralBasis[3+i]-basis[3+i])*rightOff+
+                    (neutralBasis[6+i]-basis[6+i])*upOff;
+            }
+        }
         meshScale=left
             ? Clamp(g_config.left_hand_scale,0.3f,3.0f)
             : Clamp(g_config.gun_scale,0.3f,3.0f);
@@ -27833,6 +27865,8 @@ static constexpr bool kOdstMappedFpEnabled = false;
             context.targets.rightOneHandWristValid)
         {
             context.targets.rightWrist=context.targets.rightOneHandWrist;
+            context.targets.aimNeutral=context.targets.oneHandAimNeutral;
+            context.targets.aimVisual=context.targets.oneHandAimVisual;
             context.targets.rightScale=context.targets.rightOneHandScale;
         }
 
@@ -33014,7 +33048,8 @@ static constexpr bool kOdstMappedFpEnabled = false;
                 tracking,false,candidate.gameplayBasePosition,
                 candidate.fpTargets.rightWrist,
                 candidate.fpTargets.rightScale,&candidate.fpTargets.contactSpace[1],
-                &candidate.fpTargets.contactController[1]);
+                &candidate.fpTargets.contactController[1],&candidate.fpTargets.aimNeutral);
+        candidate.fpTargets.aimVisual=candidate.fpTargets.rightWrist;
         candidate.fpTargets.leftWristValid=
             ReachBuildPreparedControllerTarget(
                 tracking,true,candidate.gameplayBasePosition,
@@ -33041,7 +33076,8 @@ static constexpr bool kOdstMappedFpEnabled = false;
                 ReachBuildPreparedControllerTarget(
                     oneHandTracking,false,candidate.gameplayBasePosition,
                     candidate.fpTargets.rightOneHandWrist,
-                    candidate.fpTargets.rightOneHandScale);
+                    candidate.fpTargets.rightOneHandScale,nullptr,nullptr,&candidate.fpTargets.oneHandAimNeutral);
+            candidate.fpTargets.oneHandAimVisual=candidate.fpTargets.rightOneHandWrist;
         }
         candidate.fpTargets.contactSerial=tracking.preparedSerial;
         candidate.fpTargets.contactTimeNs=tracking.predictedDisplayTimeNs;
@@ -39625,6 +39661,8 @@ static constexpr bool kOdstMappedFpEnabled = false;
     };
     struct Halo4FloatingPair
     {
+        Halo4FloatingTransform aimNeutral{},aimVisual{},oneHandAimNeutral{},oneHandAimVisual{};
+        bool aimNeutralValid=false,oneHandAimNeutralValid=false;
         contact_melee::TrackingToWorld reloadTrackingTransform{};
         bool reloadTrackingValid=false;
         contact_melee::Frame contactFrames[2]{};
@@ -41518,14 +41556,14 @@ static constexpr bool kOdstMappedFpEnabled = false;
                 (sg*roomForward-cg*roomRight)*s,
                 dy*s};
             // Halo 3's standoff, along the controller's own forward column.
-            const float standoff=(left
-                ? Clamp(g_config.left_hand_forward_m,-0.15f,0.30f)
-                : Clamp(g_config.gun_forward_m,-0.3f,0.5f))*s;
+            const float standoff=weapon_alignment::Forward(left,g_config.gun_forward_m,g_config.left_hand_forward_m)*s;
             memcpy(controller.basis,basis,sizeof(basis));
             for (int axis=0;axis<3;++axis)
             {
                 controller.position[axis]=
-                    bodyRoot.translation[axis]+off[axis]+basis[axis]*standoff;
+                    bodyRoot.translation[axis]+off[axis]+basis[axis]*standoff+
+                    basis[3+axis]*weapon_alignment::Right(left,g_config.gun_right_m)*s+
+                    basis[6+axis]*weapon_alignment::Up(g_config.gun_up_m)*s;
                 if (!isfinite(controller.position[axis])) return false;
             }
             for (int i=0;i<9;++i)
@@ -42294,7 +42332,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
         frame.rightForwardTrim=g_config.halo4_hand_forward_m+
             Clamp(g_config.gun_forward_m,-0.3f,0.5f);
         frame.leftForwardTrim=g_config.halo4_hand_forward_m+
-            Clamp(g_config.left_hand_forward_m,-0.15f,0.30f);
+            weapon_alignment::Forward(true,g_config.gun_forward_m,g_config.left_hand_forward_m);
         frame.gunYawDeg=g_config.gun_yaw_deg;
         frame.gunPitchDeg=g_config.gun_pitch_deg;
         frame.gunRollDeg=g_config.gun_roll_deg;
@@ -42403,10 +42441,9 @@ static constexpr bool kOdstMappedFpEnabled = false;
                 controller.basis,targetPosition,false,
                 frame.gunYawDeg,frame.gunPitchDeg,frame.gunRollDeg,carrier))
             return false;
-        if (!left)
         {
             const float rightOff=
-                Clamp(g_config.gun_right_m,-0.3f,0.3f)*input.worldScale;
+                weapon_alignment::Right(left,g_config.gun_right_m)*input.worldScale;
             const float upOff=
                 Clamp(g_config.gun_up_m,-0.3f,0.3f)*input.worldScale;
             for (int axis=0;axis<3;++axis)
@@ -42520,6 +42557,11 @@ static constexpr bool kOdstMappedFpEnabled = false;
         g_halo4FloatingPair.rightTargetValid=frameValid &&
             Halo4BuildFloatingWorldTarget(
                 false,targetFrame,g_halo4FloatingPair.rightTargetWorld);
+        auto neutralFrame=targetFrame;
+        neutralFrame.visualPitchDeg=neutralFrame.visualYawDeg=neutralFrame.visualRollDeg=0;
+        g_halo4FloatingPair.aimVisual=g_halo4FloatingPair.rightTargetWorld;
+        g_halo4FloatingPair.aimNeutralValid=frameValid &&
+            Halo4BuildFloatingWorldTarget(false,neutralFrame,g_halo4FloatingPair.aimNeutral);
         g_halo4FloatingPair.leftTargetValid=frameValid &&
             Halo4BuildFloatingWorldTarget(
                 true,targetFrame,g_halo4FloatingPair.leftTargetWorld);
@@ -42531,6 +42573,9 @@ static constexpr bool kOdstMappedFpEnabled = false;
             g_halo4FloatingPair.oneHandRightTargetValid=frameValid &&
                 Halo4BuildFloatingWorldTarget(false,targetFrame,
                     g_halo4FloatingPair.oneHandRightTargetWorld,true);
+        g_halo4FloatingPair.oneHandAimVisual=g_halo4FloatingPair.oneHandRightTargetWorld;
+        g_halo4FloatingPair.oneHandAimNeutralValid=g_halo4FloatingPair.oneHandRightTargetValid &&
+            Halo4BuildFloatingWorldTarget(false,neutralFrame,g_halo4FloatingPair.oneHandAimNeutral,true);
         if (g_halo4FloatingPair.rightTargetValid &&
             g_halo4FloatingPair.leftTargetValid)
         {

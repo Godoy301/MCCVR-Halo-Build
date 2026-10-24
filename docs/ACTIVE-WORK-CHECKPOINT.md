@@ -1,3 +1,27 @@
+## October 24 latest: weapons-alignment branch, three requested changes
+
+User ended mod-weapon fixes and switched work to weapons-alignment. Preserve
+all accepted fixes and disabled Cursed inference. User requests: H2 Classic
+fixed visual -11.5 pitch without barrel feedback, H3 dual secondary SMG +30 yaw,
+shared gun forward/right/up offsets on both hands with mirrored left lateral.
+Clarification: visual alignment/barrel separation must apply to ALL games.
+
+Implemented title-local neutral/visual carrier separation in CE/H2/H3/ODST/
+Reach/H4 muzzle publication. Authored marker transform and ownership receipts
+remain; visual mesh/effect rendering unchanged except requested H2 correction
+and SMG yaw. Removed H2-specific menu sliders; legacy config fields retained
+but no longer drive the Classic model. Shared visual slider zero adds no trim
+to the fixed -11.5 baseline. Left-only forward slider remains additive.
+H3 SMG tweak is slot1, verified model checksum171C0B10/count4, right-handed
+presentation only; hands/primary/other models unchanged.
+
+Portable alignment, 615 authored-muzzle/lifetime checks and CE FP suite pass
+ASan/UBSan. Updated Windows publisher fixtures and CMake test registration;
+full Windows build/headset validation pending. GitHub API read returned Forbidden,
+so do not claim a successful Actions run. Deliver source + branch-specific pinned
+workflow. No install, release, PR or accepted release pointer advance.
+See WEAPONS-ALIGNMENT-2026-10-24.md for scope and testing.
+
 ## October 24 latest: Cursed candidate disabled at user request
 
 User reports 74406fd4 removes 2D but places the Cursed objects far from hands;

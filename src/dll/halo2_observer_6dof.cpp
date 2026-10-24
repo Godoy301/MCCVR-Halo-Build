@@ -1,3 +1,5 @@
+#include "../common/halo2_visual_aim.h"
+#include "../common/weapon_alignment.h"
 #include "native_reload_policy.h"
 #include "../common/vr_interaction_refinement_logic.h"
 #include "../common/exclusive_input.h"
@@ -403,6 +405,9 @@ namespace
         Halo2CameraBasis renderCamera{};
         Halo2CameraBasis rightCarrier{};
         Halo2CameraBasis leftCarrier{};
+        bool muzzleVisualFrameValid=false;
+        Halo2CameraBasis muzzleNeutralCarrier[2]{};
+        Halo2CameraBasis muzzleVisualCarrier[2]{};
         Halo2CameraBasis collisionRightCarrier{};
         Halo2CameraBasis collisionLeftCarrier{};
         float rightCollisionCorrection[3]{};
@@ -1787,9 +1792,9 @@ namespace
                    Halo2ControllerReference(publication), publication.referenceOrientation,
                    publication.referencePosition, leftOrientation,
                    tracking.leftControllerPosition, worldScale,
-                   std::clamp(
-                       g_config.left_hand_forward_m, -0.15f, 0.30f),
-                   leftCarrier);
+                   weapon_alignment::Forward(true,g_config.gun_forward_m,g_config.left_hand_forward_m),
+                   weapon_alignment::Right(true,g_config.gun_right_m),
+                   weapon_alignment::Up(g_config.gun_up_m),leftCarrier);
     }
 
     void Halo2PublishCollisionCorrection(
@@ -2586,8 +2591,9 @@ namespace
             !Halo2BuildControllerCarrier(
                 renderCamera, headOrientation, headPosition, leftOrientation,
                 leftPosition, Game_GetWorldScale(),
-                std::clamp(g_config.left_hand_forward_m, -0.3f, 0.5f),
-                candidate.leftCarrier))
+                weapon_alignment::Forward(true,g_config.gun_forward_m,g_config.left_hand_forward_m),
+                weapon_alignment::Right(true,g_config.gun_right_m),
+                weapon_alignment::Up(g_config.gun_up_m),candidate.leftCarrier))
         {
             return false;
         }
@@ -3148,50 +3154,25 @@ namespace
                 }
                 else
                 {
-                    // Mesh-only barrel trim from the ACTIVE title profile
-                    // (Anniversary and Classic each carry their own): rotates
-                    // the carriers, so the gun and the hands holding it turn
-                    // together about the controller while the crosshair and
-                    // the shot ray - which never read the carriers - stay
-                    // put. The legacy halo2_classic_* keys add on top for
-                    // Classic only. An invalid trim leaves the carriers as
-                    // built.
+                    // Keep a separate pre-visual frame for barrel aiming. The
+                    // committed mesh still owns collision, effects and reload.
+                    candidate.muzzleNeutralCarrier[0]=rightCarrier;
+                    candidate.muzzleNeutralCarrier[1]=leftCarrier;
                     {
-                        const float extraPitch = classicConsumer
-                            ? g_config.halo2_classic_gun_pitch_deg : 0.0f;
-                        const float extraYaw = classicConsumer
-                            ? g_config.halo2_classic_gun_yaw_deg : 0.0f;
-                        const float extraRoll = classicConsumer
-                            ? g_config.halo2_classic_gun_roll_deg : 0.0f;
-                        const float extraForward = classicConsumer
-                            ? g_config.halo2_classic_gun_forward_m : 0.0f;
-                        const float extraRight = classicConsumer
-                            ? g_config.halo2_classic_gun_right_m : 0.0f;
-                        const float extraUp = classicConsumer
-                            ? g_config.halo2_classic_gun_up_m : 0.0f;
-                        const float pitch = g_config.barrel_pitch_deg + extraPitch;
-                        const float yaw = g_config.barrel_yaw_deg + extraYaw;
-                        const float roll = g_config.barrel_roll_deg + extraRoll;
-                        const float worldScale = Game_GetWorldScale();
-                        Halo2CameraBasis trimmedRight{}, trimmedLeft{};
-                        if (Halo2ApplyCarrierTrim(
-                                rightCarrier, pitch, yaw, roll, extraForward,
-                                extraRight, extraUp, worldScale, trimmedRight) &&
-                            Halo2ApplyCarrierTrim(
-                                leftCarrier, pitch, yaw, roll, extraForward,
-                                extraRight, extraUp, worldScale, trimmedLeft))
-                        {
-                            rightCarrier = trimmedRight;
-                            leftCarrier = trimmedLeft;
-                            g_classicTrimApplied.fetch_add(
-                                1, std::memory_order_relaxed);
-                        }
-                        else
-                        {
-                            g_classicTrimRefused.fetch_add(
-                                1, std::memory_order_relaxed);
-                        }
+                        const float pitch=g_config.barrel_pitch_deg+
+                            (classicConsumer?weapon_alignment::kH2ClassicVisualPitch:0.0f);
+                        Halo2CameraBasis trimmedRight{},trimmedLeft{};
+                        if (Halo2ApplyCarrierTrim(rightCarrier,pitch,g_config.barrel_yaw_deg,
+                                g_config.barrel_roll_deg,0,0,0,Game_GetWorldScale(),trimmedRight) &&
+                            Halo2ApplyCarrierTrim(leftCarrier,pitch,g_config.barrel_yaw_deg,
+                                g_config.barrel_roll_deg,0,0,0,Game_GetWorldScale(),trimmedLeft)) {
+                            rightCarrier=trimmedRight;leftCarrier=trimmedLeft;
+                            g_classicTrimApplied.fetch_add(1,std::memory_order_relaxed);
+                        } else g_classicTrimRefused.fetch_add(1,std::memory_order_relaxed);
                     }
+                    candidate.muzzleVisualCarrier[0]=rightCarrier;
+                    candidate.muzzleVisualCarrier[1]=leftCarrier;
+                    candidate.muzzleVisualFrameValid=true;
                     auto& context = candidate;
                     // H2EK 306E04 enumerates two weapon_data records before
                     // publishing one merged hands packet and separate guns.
@@ -3738,10 +3719,9 @@ namespace
                                         pass.frame, headOrientation,
                                         headPosition, leftOrientation,
                                         leftPosition, Game_GetWorldScale(),
-                                        std::clamp(
-                                            g_config.left_hand_forward_m,
-                                            -0.3f, 0.5f),
-                                        leftCarrier))
+                                        weapon_alignment::Forward(true,g_config.gun_forward_m,g_config.left_hand_forward_m),
+                                        weapon_alignment::Right(true,g_config.gun_right_m),
+                                        weapon_alignment::Up(g_config.gun_up_m),leftCarrier))
                                 {
                                     split =
                                         Halo2PlaceFirstPersonSlotOnTwoControllers(

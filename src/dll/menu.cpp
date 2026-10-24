@@ -1680,7 +1680,7 @@ namespace
             changed |= vr_menu::SliderFloat("Left hand forward offset (m)",
                                           &g_config.left_hand_forward_m,
                                           -0.15f, 0.30f, "%.3f");
-            ImGui::TextDisabled("Moves the visible support hand; the aiming line stays on the controllers.");
+            ImGui::TextDisabled("Additional left-hand adjustment on top of the shared gun forward offset.");
             changed |= vr_menu::SliderFloat("Grab zone side offset (m)",
                                           &g_config.two_hand_zone_right_m,
                                           -0.10f, 0.10f, "%.3f");
@@ -1732,27 +1732,18 @@ namespace
                             "move the gun and hands without changing the aiming ray.\n"
                             "Saved separately for each game; zero restores automatic alignment.");
         changed |= vr_menu::SliderFloat("Gun forward offset (m)", &g_config.gun_forward_m, -0.3f, 0.5f, "%.2f");
-        ImGui::TextDisabled("Slides gun/arms along your aim. Negative seats the gun back in your fist.");
+        ImGui::TextDisabled("Moves both hands along their aim. Left hand forward offset adds extra trim.");
         changed |= vr_menu::SliderFloat("Gun right offset (m)", &g_config.gun_right_m, -0.3f, 0.3f, "%.2f");
         ImGui::SameLine();
         if (ImGui::SmallButton("Center##gnrx")) { g_config.gun_right_m = 0.0f; changed = true; }
         changed |= vr_menu::SliderFloat("Gun up offset (m)", &g_config.gun_up_m, -0.3f, 0.3f, "%.2f");
         ImGui::SameLine();
         if (ImGui::SmallButton("Center##gnux")) { g_config.gun_up_m = 0.0f; changed = true; }
-        ImGui::TextDisabled("Gun-stock calibration on the weapon's post-rotation right/up axes.");
+        ImGui::TextDisabled("Applied to both hands; right offset is mirrored on the left.");
 
-        ImGui::TextDisabled("All supported VR titles; visual only, shots/reticle remain on controller aim.");
+        ImGui::TextDisabled("Visual rotations are separate from barrel aiming in all supported VR titles.");
         ImGui::Spacing();
-        ImGui::Text("Halo 2 Classic gun alignment");
-        changed |= vr_menu::SliderFloat(
-            "H2 Classic gun yaw (deg)",
-            &g_config.halo2_classic_gun_yaw_deg, -30.0f, 30.0f, "%.1f");
-        changed |= vr_menu::SliderFloat(
-            "H2 Classic gun pitch (deg)",
-            &g_config.halo2_classic_gun_pitch_deg, -30.0f, 30.0f, "%.1f");
-        ImGui::TextDisabled(
-            "Classic/original graphics only; moves the visible gun and hands.\n"
-            "Anniversary, the VR reticle, and bullet direction stay unchanged.");
+        ImGui::TextDisabled("Halo 2 Classic includes a fixed -11.5 degree visual pitch correction.");
         changed |= vr_menu::SliderFloat("Muzzle height (m)", &g_config.muzzle_height_m, -0.3f, 0.3f, "%.2f");
         ImGui::TextDisabled("Reach: adjusts secondary muzzle placement; H3/ODST marker effects follow the gun. H2 Classic does not read this slider.");
         ImGui::TextDisabled("Raises supported muzzle/effect placement along the gun's own axis.");

@@ -1,4 +1,5 @@
 #pragma once
+#include "weapon_alignment.h"
 #include "visual_hand_offset.h"
 
 #include "haloce_render_logic.h"
@@ -664,7 +665,7 @@ inline bool ApplyVisualMount(const ControllerRig& rig,float unitsPerMeter,
     bool primary,NodeMatrix& matrix) noexcept
 {
     const float scale=primary?rig.gunScale:rig.supportScale;
-    const float forward=primary?rig.gunForwardM:rig.supportForwardM;
+    const float forward=weapon_alignment::Forward(!primary,rig.gunForwardM,rig.supportForwardM);
     const float pitchDeg=primary?rig.visualPitchDeg:rig.supportMountPitchDeg;
     const float yawDeg=primary?rig.visualYawDeg:rig.supportMountYawDeg;
     const float rollDeg=primary?rig.visualRollDeg:rig.supportMountRollDeg;
@@ -687,9 +688,8 @@ inline bool ApplyVisualMount(const ControllerRig& rig,float unitsPerMeter,
     }
     candidate.scale=std::clamp(scale,0.3f,3.0f);
     candidate.position=candidate.position+candidate.forward*
-        (std::clamp(forward,primary?-0.3f:-0.15f,primary?0.5f:0.3f)*unitsPerMeter);
-    if (primary)
-        candidate.position=candidate.position-candidate.left*(std::clamp(rig.gunRightM,-0.3f,0.3f)*unitsPerMeter)+
+        (forward*unitsPerMeter);
+    candidate.position=candidate.position-candidate.left*(weapon_alignment::Right(!primary,rig.gunRightM)*unitsPerMeter)+
             candidate.up*(std::clamp(rig.gunUpM,-0.3f,0.3f)*unitsPerMeter);
     if (!Valid(candidate)) return false;
     matrix=candidate;return true;

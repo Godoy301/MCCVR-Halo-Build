@@ -1,3 +1,4 @@
+#include "../common/visual_aim.h"
 #include "haloce_first_person.h"
 #include "../common/config.h"
 #include "haloce_contact.h"
