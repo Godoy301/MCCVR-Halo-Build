@@ -1,3 +1,15 @@
+## October 24 latest: weapons-alignment packaging gate repair
+
+User reports failed Actions run40128327607 (source a59b39c8). Public job page
+shows package step failed in one second; detailed logs/API inaccessible here.
+Deterministic local finding: C-H2-88 package gate still requires the retired
+H2 Classic pitch/yaw labels and therefore rejects this source before CMake.
+Remove those two obsolete checks while preserving the rest of C-H2-88, and
+replace the old -9.5/+1 defaults gate with the active -11.5 correction, neutral
+barrel publication, absent legacy sliders and registered alignment test checks.
+Runtime behavior unchanged. Re-pin branch CI to repaired source. Windows
+compilation still pending; do not claim that inaccessible run's exact log text.
+
 ## October 24 latest: weapons-alignment branch, three requested changes
 
 User ended mod-weapon fixes and switched work to weapons-alignment. Preserve
