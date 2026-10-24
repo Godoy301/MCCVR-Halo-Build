@@ -317,7 +317,7 @@ try {
         (Join-Path $repoRoot 'tests\weapon_alignment_tests.cpp'))
     $cmakeSource = [IO.File]::ReadAllText(
         (Join-Path $repoRoot 'CMakeLists.txt'))
-    if ($alignmentSource -notmatch 'kH2ClassicVisualPitch\s*=\s*-11\.5f' -or
+    if ($alignmentSource -notmatch 'kH2ClassicVisualPitch\s*=\s*-9\.5f' -or
         $halo2ObserverSource -notmatch 'classicConsumer\?weapon_alignment::kH2ClassicVisualPitch:0\.0f' -or
         $halo2ObserverSource -notmatch 'Halo2RemoveVisualFrame' -or
         $halo2ObserverSource -notmatch 'candidate\.muzzleNeutralCarrier\[0\]=rightCarrier' -or

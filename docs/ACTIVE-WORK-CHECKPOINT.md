@@ -1,3 +1,16 @@
+## October 24 latest: user accepted alignment build; follow-up calibration
+
+User confirms build/test success and correct secondary H3 SMG yaw, but requests
+-0.4 m lateral displacement, plus +30 yaw/-0.4 m for secondary Plasma Rifle.
+Extend the existing scoped palette correction using H3 catalog checksum
+16120C11/count7 (SMG remains171C0B10/count4), world-unit conversion and hand-frame
+lateral axis. Primary weapons, hands and other models unchanged.
+H2 Classic fixed visual pitch becomes -9.5 degrees. Left-only forward default
+becomes zero; missing left_hand_forward_reset_version triggers a one-time reset
+of shared and title profiles, saved immediately. Subsequent player edits persist.
+Config round-trip regression covers legacy upgrade and subsequent edits.
+Windows build/headset validation of these follow-ups pending.
+
 ## October 24 latest: Windows test failures from run40129474979
 
 User supplied the complete Actions log. Windows compilation succeeded; CTest

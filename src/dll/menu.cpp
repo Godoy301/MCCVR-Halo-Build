@@ -1743,7 +1743,7 @@ namespace
 
         ImGui::TextDisabled("Visual rotations are separate from barrel aiming in all supported VR titles.");
         ImGui::Spacing();
-        ImGui::TextDisabled("Halo 2 Classic includes a fixed -11.5 degree visual pitch correction.");
+        ImGui::TextDisabled("Halo 2 Classic includes a fixed -9.5 degree visual pitch correction.");
         changed |= vr_menu::SliderFloat("Muzzle height (m)", &g_config.muzzle_height_m, -0.3f, 0.3f, "%.2f");
         ImGui::TextDisabled("Reach: adjusts secondary muzzle placement; H3/ODST marker effects follow the gun. H2 Classic does not read this slider.");
         ImGui::TextDisabled("Raises supported muzzle/effect placement along the gun's own axis.");

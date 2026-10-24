@@ -408,7 +408,7 @@ struct TitleTunables
     float gun_forward_m = -0.14f;
     float gun_right_m = 0.0f;
     float gun_up_m = 0.0f;
-    float left_hand_forward_m = -0.063f;
+    float left_hand_forward_m = 0.0f;
     // The HUD layout. With no game running these four follow and edit Reach's profile rather than the shared
     // defaults (kTitleProfileReach), like the crosshair's below.
     float hud_size = 0.43f;
@@ -1601,7 +1601,7 @@ struct Config
     // (IK/hand placement). Excluded from the two-hand aim line, which uses
     // raw tracked controller points. Negative seats the hand back toward the
     // wrist; -0.063 is the headset-tuned release default.
-    float left_hand_forward_m = -0.063f;
+    float left_hand_forward_m = 0.0f;
     // Sideways nudge of the two-hand grab zone along the right controller's +X
     // (positive = toward the player's right) so the grab line sits on the
     // visible barrel. Headset request 2026-07-19: the AR's barrel sat right of

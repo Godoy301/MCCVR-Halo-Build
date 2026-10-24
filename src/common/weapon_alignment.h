@@ -10,9 +10,9 @@ inline float Forward(bool left,float gun,float leftExtra) noexcept
 inline float Right(bool left,float value) noexcept
 { return (left?-1.f:1.f)*std::clamp(value,-.3f,.3f); }
 inline float Up(float value) noexcept { return std::clamp(value,-.3f,.3f); }
-inline constexpr float kH2ClassicVisualPitch=-11.5f;
+inline constexpr float kH2ClassicVisualPitch=-9.5f;
 inline float H3SecondaryYaw(unsigned slot,unsigned checksum) noexcept
-{ return slot==1 && checksum==0x171C0B10u ? 30.f : 0.f; }
+{ return slot==1 && (checksum==0x171C0B10u || checksum==0x16120C11u) ? 30.f : 0.f; }
 inline bool RotateYaw(const float frame[9],const float pivot[3],float degrees,
     float basis[9],float position[3]) noexcept
 {

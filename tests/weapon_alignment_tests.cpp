@@ -18,6 +18,8 @@ int main()
     assert(near(Up(.04f),.04f));
     assert(H3SecondaryYaw(1,0x171C0B10u)==30 && H3SecondaryYaw(0,0x171C0B10u)==0);
     assert(H3SecondaryYaw(1,0x1E130811u)==0);
+    assert(H3SecondaryYaw(1,0x16120C11u)==30 && H3SecondaryYaw(0,0x16120C11u)==0);
+    assert(near(kH2ClassicVisualPitch,-9.5f));
     float frame[]{1,0,0,0,1,0,0,0,1},basis[]{1,0,0,0,1,0,0,0,1};
     float pivot[]{2,3,4},position[]{3,3,4};
     assert(RotateYaw(frame,pivot,30,basis,position));

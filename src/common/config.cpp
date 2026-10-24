@@ -1003,6 +1003,7 @@ void ConfigLoad(const wchar_t* path)
     bool loadedScopeZoom = false;
     bool loadedHolsterRadius = false;
     bool flashlightMappingV2 = false;
+    bool leftHandForwardResetV1 = false;
     bool aimDirectDriveSeen = false;
     bool coopSafeShotsV2 = false;   // coop_safe_shots_version >= 2: a 1 in this file is a chosen "always"
     bool loadedLegacyVirtualStockStrength = false;
@@ -1042,6 +1043,7 @@ void ConfigLoad(const wchar_t* path)
             vehicleGameKey=true;break;
         }
         if(vehicleGameKey)continue;
+        if (!strcmp(key,"left_hand_forward_reset_version")) {leftHandForwardResetV1=atoi(val)>=1;continue;}
         if (ParseWeaponAlignmentKey(key,val)||ParseTitleProfileKey(key, val))
             continue;
         bool vrBindingKey=false;
@@ -2029,7 +2031,13 @@ void ConfigLoad(const wchar_t* path)
     NormalizeVirtualStockProximityPair();
     NormalizeVirtualStockHybridSeatPair();
     NormalizeVirtualStockHybridHorizontalPair();
+    if (!leftHandForwardResetV1) {
+        // Shared bilateral offsets replace the old left-hand baseline once.
+        g_config.left_hand_forward_m=0.0f;
+        for (auto& profile:g_config.title_profiles) profile.left_hand_forward_m=0.0f;
+    }
     ResolveTitleProfiles();
+    if (!leftHandForwardResetV1) ConfigSave();
     LOG("config: loaded (screen %.2fm wide at %.2fm)", g_config.screen_width_m, g_config.screen_distance_m);
 }
 
@@ -2082,6 +2090,7 @@ void ConfigSave()
         LOG("config: FAILED to write %ls", g_path.c_str());
         return;
     }
+    fprintf(f, "left_hand_forward_reset_version = 1\n\n");
     const Config d{}; // struct defaults, printed beside each setting
 
     fprintf(f, "# ===================================================================\n");

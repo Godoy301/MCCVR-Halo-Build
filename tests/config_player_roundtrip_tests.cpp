@@ -64,6 +64,24 @@ int main()
     failures += static_cast<int>(g_unknownKeys.size());
     Check(g_config.mono_rendering, "mono_rendering is remembered");
 
+    // Upgrade once, including explicit title overrides; later edits survive reload.
+    FILE* legacy=nullptr;
+    _wfopen_s(&legacy,path,L"wt");
+    Check(legacy!=nullptr,"legacy fixture opens");
+    if (legacy) {
+        std::fputs("left_hand_forward_m = 0.12\nhalo3_left_hand_forward_m = 0.2\n",legacy);
+        std::fclose(legacy);
+        ConfigLoad(path);
+        Check(g_config.left_hand_forward_m==0,"legacy shared offset resets");
+        for (const auto& profile:g_config.title_profiles)
+            Check(profile.left_hand_forward_m==0,"legacy title offset resets");
+        g_config.left_hand_forward_m=0.075f;
+        ConfigSave();
+        ConfigLoad(path);
+        Check(g_config.left_hand_forward_m==0.075f,"post-upgrade edit survives reload");
+        DeleteFileW(path);
+    }
+
     if (failures)
         std::printf("%d check(s) failed\n", failures);
     else

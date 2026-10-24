@@ -2372,7 +2372,7 @@ namespace
     weapon_muzzle::Store g_halo3Muzzles;
     std::atomic<bool> g_halo3MuzzleBindingsReady{false};
     bool Halo3CaptureMuzzleOwner(int player,int slot,uint32_t& unit,uint32_t& weapon) noexcept;
-    void Halo3ApplySecondarySmgAlignment(uint16_t tag,const FpInterpolationContext& context,
+    void Halo3ApplySecondaryWeaponAlignment(uint16_t tag,const FpInterpolationContext& context,
         BoneMatrix* destination);
     void Halo3PublishMuzzlePalette(uint16_t tag,const FpInterpolationContext& context,
         const BoneMatrix* destination,uint32_t generation) noexcept;
@@ -8098,7 +8098,7 @@ namespace
         if(reconstructed && selectedSource==g_fpPaletteScratch &&
             !g_scopeRenderActive.load(std::memory_order_acquire))
         {
-            Halo3ApplySecondarySmgAlignment(tag,context,destination);
+            Halo3ApplySecondaryWeaponAlignment(tag,context,destination);
             Halo3PublishMuzzlePalette(tag,context,destination,collisionGeneration);
             LegacyApplyVisualHandOffsets(GameTitle::Halo3,tag,boneMap,context,destination);
             if(context.valid&&context.player==0&&context.slot==0)
@@ -26622,7 +26622,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
 
 #include "left_hand_presentation.inl"
 
-    void Halo3ApplySecondarySmgAlignment(uint16_t tag,const FpInterpolationContext& context,
+    void Halo3ApplySecondaryWeaponAlignment(uint16_t tag,const FpInterpolationContext& context,
         BoneMatrix* destination)
     {
         if (!destination || !context.valid || context.slot!=1 || context.player!=0 ||
@@ -26630,17 +26630,23 @@ static constexpr bool kOdstMappedFpEnabled = false;
         uint32_t checksum=0;
         const int count=LegacyAnatomicalRenderNodeCount(GameTitle::Halo3,tag,&checksum);
         const float yaw=weapon_alignment::H3SecondaryYaw(unsigned(context.slot),checksum);
-        if (!yaw || count!=4) return;
+        if (!yaw || count!=(checksum==0x171C0B10u?4:7)) return;
         BoneMatrix frame{};float scale=1;
         if (!DesiredWristWorld(true,frame,scale,nullptr)) return;
-        BoneMatrix candidate[4]{};
-        for (int i=0;i<4;++i) {
+        const float lateral=-.4f*g_worldScale.load();
+        if (!std::isfinite(lateral)) return;
+        BoneMatrix candidate[7]{};
+        for (int i=0;i<count;++i) {
             candidate[i]=destination[i];
             if (!weapon_alignment::RotateYaw(frame.rotation,frame.translation,yaw,
                     candidate[i].rotation,candidate[i].translation)) return;
+            for (int axis=0;axis<3;++axis) {
+                candidate[i].translation[axis]+=frame.rotation[3+axis]*lateral;
+                if (!std::isfinite(candidate[i].translation[axis])) return;
+            }
         }
-        // Only the verified SMG model palette is rotated, never the hands.
-        memcpy(destination,candidate,sizeof(candidate));
+        // Only verified secondary weapon palettes move, never the hands.
+        memcpy(destination,candidate,count*sizeof(BoneMatrix));
     }
 
 #include "visual_hand_palette.inl"
