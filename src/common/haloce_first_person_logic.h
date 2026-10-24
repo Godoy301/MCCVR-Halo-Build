@@ -577,6 +577,9 @@ inline bool BuildSightGeometry(const Camera& native,const Tracking& tracking,con
 inline NodeMatrix FirstPersonGunAimFrame(const FirstPersonBinding& binding,
     const NodeMatrix& gun) noexcept
 {
+    // Disabled after the XAM headset test: marker axes did not match visible barrels.
+    constexpr bool kXamMarkerAimEnabled=false;
+    if (!kXamMarkerAimEnabled) return gun;
     Quat local{};bool matched=false;
     if(binding.nodeIdentity==0x0698859159826A29ull && binding.count==41 && binding.gun==17) {
         local={0.0922959968f,0.0925370008f,0.7010250092f,0.7010570168f};matched=true;
