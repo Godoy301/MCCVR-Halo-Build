@@ -34,7 +34,7 @@ jobs:
           if ($env:GITHUB_REF_NAME -ne 'weapons-alignment') {
             throw "Refusing to build unexpected branch: $env:GITHUB_REF_NAME"
           }
-          $expectedSourceSha = '1bb5669c0f7a2f932fcfd3ae3ae56b9e8a554164'
+          $expectedSourceSha = 'a76d4b0211f78eca935e9f0124f8e768e9192b3a'
           if ($env:EXPECTED_SOURCE_SHA -ne $expectedSourceSha) {
             throw "Source revision differs from the reviewed weapons-alignment commit. Expected $expectedSourceSha, got $env:EXPECTED_SOURCE_SHA. Refusing to build a different revision."
           }
@@ -119,8 +119,8 @@ jobs:
           @"
           Source branch: weapons-alignment
           Expected source in the first line of HaloMCCVR.log: $env:EXPECTED_SOURCE_SHA
-          Includes: previous ODST and dual reload fixes, CE XAM imported-gun muzzle alignment and launcher refusal diagnostics.
-          Test MP5 and MP7 muzzle alignment. Both launcher fallbacks remain under investigation.
+          Includes: preserved modded-weapon fixes, visual/barrel separation, bilateral offsets and one-time left forward reset.
+          Test H3 secondary SMG/Plasma Rifle placement and H2 Classic -9.5 degree visual pitch.
           If the log reports source 5fdf982e, MCC loaded an older DLL.
           Use the Build ZIP from this artifact, not a previous workflow run.
           "@ | Set-Content 'out/candidates/BUILD-IDENTITY.txt'
