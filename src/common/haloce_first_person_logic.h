@@ -736,6 +736,51 @@ inline bool SolveFirstPersonArm(const FirstPersonBinding& binding,size_t side,
     return true;
 }
 
+// XAM's two launchers share this exact graph and omit the detached left arm
+// in the observed native palette. Only accept finite, zero-scale left nodes;
+// malformed live bones and all other graphs retain the normal refusal path.
+inline bool HasHiddenXamLeftArm(const FirstPersonBinding& binding,const NodeMatrix* source) noexcept
+{
+    if (!source || binding.nodeIdentity!=0x4C86902A3289986Eull || binding.count!=42 ||
+        binding.gun!=7 || binding.rightWrist!=6 || binding.leftWrist!=5 ||
+        (binding.leftMask|binding.armMask[0])!=0xF81F01F2Aull) return false;
+    for (size_t i=0;i<binding.count;++i) {
+        const auto& node=source[i];
+        if ((binding.leftMask|binding.armMask[0])&(uint64_t{1}<<i)) {
+            if (node.scale!=0 || !Finite(node.position) || !Finite(node.forward) ||
+                !Finite(node.left) || !Finite(node.up)) return false;
+        } else if (!Valid(node)) return false;
+    }
+    return true;
+}
+
+inline bool BuildXamRightOnlyPalette(const FirstPersonBinding& binding,const NodeMatrix* source,
+    const NodeMatrix& aim,const Camera& camera,const ControllerRig& rig,
+    std::array<NodeMatrix,kFirstPersonMaxNodes>& out) noexcept
+{
+    if (!HasHiddenXamLeftArm(binding,source)) return false;
+    NodeMatrix wrist{};
+    if (!MoveNode(source[binding.gun],aim,source[binding.rightWrist],wrist)) return false;
+    wrist.position=aim.position;
+    std::array<NodeMatrix,kFirstPersonMaxNodes> candidate{};
+    for (size_t i=0;i<binding.count;++i) {
+        candidate[i]=source[i];
+        if ((binding.rightMask|binding.gunMask|binding.armMask[1])&(uint64_t{1}<<i))
+            if (!MoveNode(source[binding.rightWrist],wrist,source[i],candidate[i])) return false;
+    }
+    if (ShouldApplyArmIk(rig.armIk,rig.supportGripAttached) &&
+        !SolveFirstPersonArm(binding,1,source,camera,rig,wrist,candidate)) return false;
+    if (rig.floatingHands) {
+        for (size_t i=1;i<binding.count;++i) if (binding.armMask[1]&(uint64_t{1}<<i)) {
+            candidate[i]=wrist;candidate[i].scale=0.00001f;
+            if (kCeFloatingArmsAtCameraEnabled) candidate[i].position=camera.position;
+        }
+    }
+    // Preserve every omitted left node byte-for-byte; never synthesize a hand
+    // or resurrect geometry the native animation intentionally hid.
+    out=candidate;return true;
+}
+
 // Preserve the shared controller-role presentation by default. The explicit
 // hand-alignment option keeps physical left/right geometry on matching hands
 // in left-handed mode. The weapon receives its own primary carrier either way.
@@ -757,6 +802,10 @@ inline bool BuildTrackedFirstPersonPalette(const FirstPersonBinding& binding,
         !ApplyVisualMount(rig,unitsPerMeter,true,primaryAim)||
         !ApplyVisualMount(rig,unitsPerMeter,false,supportAim)) return false;
     stage(3);
+    if (HasHiddenXamLeftArm(binding,source)) {
+        if (!BuildXamRightOnlyPalette(binding,source,primaryAim,camera,rig,out)) return false;
+        stage(0);return true;
+    }
     NodeMatrix weaponGrip{},unused{},left{},right{};
     if (!BuildGripCarriers(binding,source,binding.count,primaryAim,supportAim,weaponGrip,unused)) return false;
     const NodeMatrix& gun=source[binding.gun];

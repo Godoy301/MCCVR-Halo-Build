@@ -1,3 +1,20 @@
+## October 24 latest: ODST secondary accepted; CE hidden-left launcher candidate
+
+User confirms ODST dual-wield fix works. Preserve 1ab75005 and all other title
+fixes. CE source 41b14137 failed: standard AR normal, Stinger/RPG head-locked,
+MP5 backward and MP7 sideways-left. Disabled failed marker-axis override in
+its own commit; implementation retained dormant. No release-pointer advance.
+Log proves both launchers reject stage 3 with exactly the left arm/finger mask
+F81F01F2A invalid and zero left segment lengths. New narrow candidate permits
+right-only staging ONLY for exact launcher graph identity/count/roles and
+finite zero-scale left nodes, with all remaining matrices valid. Hidden left
+nodes preserved; right IK, gun parts and floating hands retained. Zero scale
+was not recorded by the old probe: this candidate adds that mask if it still
+refuses. No claim launcher fix is headset verified. MP5/MP7 orientation remains
+unresolved; do not re-enable marker override or guess inverse rotations.
+CE portable tests pass ASan/UBSan; Windows build and headset check pending.
+See CE-XAM-HIDDEN-LEFT-2026-10-24.md. Source/pinned CI only; no install or PR.
+
 ## October 24 latest: XAM muzzle-axis candidate; launchers still unresolved
 
 2935040d user result: MP5 tracks but sideways, Uzi/MP7 points up, RPG/Stinger

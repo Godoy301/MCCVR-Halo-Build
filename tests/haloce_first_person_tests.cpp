@@ -271,7 +271,7 @@ int main(int argc,char** argv)
         if(binding.nodeIdentity==0x0698859159826A29ull || binding.nodeIdentity==0xD822330265B09099ull) {
             NodeMatrix authored[64]{};
             // Deliberately rotate the native gun and wrist to catch coordinate
-            // space mistakes; the authored muzzle, not the raw root, must aim.
+            // space mistakes. The failed marker override remains disabled.
             authored[binding.gun].forward={0,1,0};authored[binding.gun].left={-1,0,0};
             authored[binding.rightWrist].position={.1f,.2f,.3f};
             NodeMatrix aim{},supportAim{},primary{},support{},rendered{};
@@ -286,6 +286,35 @@ int main(int argc,char** argv)
             auto unrelated=binding;unrelated.nodeIdentity=0;
             const auto unchanged=FirstPersonGunAimFrame(unrelated,raw);
             CHECK(Near(unchanged.forward,raw.forward) && Near(unchanged.up,raw.up));
+        }
+        if (binding.nodeIdentity==0x4C86902A3289986Eull) {
+            NodeMatrix native[64]{};
+            const uint64_t hidden=binding.leftMask|binding.armMask[0];
+            for (size_t i=0;i<binding.count;++i)
+                if (hidden&(uint64_t{1}<<i)) native[i].scale=0;
+            native[6].position={1,0,0};native[7].position={1.5f,0,0};
+            native[18].position={1.5f,0,.2f};
+            CHECK(HasHiddenXamLeftArm(binding,native));
+            NodeMatrix aim{};aim.position={2,3,4};aim.forward={0,1,0};aim.left={-1,0,0};
+            Camera camera{};ControllerRig rig{};rig.armIk=false;
+            std::array<NodeMatrix,kFirstPersonMaxNodes> staged{};
+            CHECK(BuildXamRightOnlyPalette(binding,native,aim,camera,rig,staged));
+            CHECK(Near(staged[6].position,aim.position));
+            CHECK(Near(staged[7].position,{2,3.5f,4}) && Near(staged[7].forward,aim.forward));
+            CHECK(Near(staged[18].position-staged[7].position,{0,0,.2f}));
+            for (size_t i=0;i<binding.count;++i) if (hidden&(uint64_t{1}<<i))
+                CHECK(std::memcmp(&native[i],&staged[i],sizeof(NodeMatrix))==0);
+            const auto saved=staged;
+            native[5].scale=1;
+            CHECK(!BuildXamRightOnlyPalette(binding,native,aim,camera,rig,staged));
+            CHECK(std::memcmp(&saved,&staged,sizeof(saved))==0);
+            native[5].scale=0;native[7].scale=0;
+            CHECK(!HasHiddenXamLeftArm(binding,native));
+            native[7].scale=1;native[5].position.x=std::numeric_limits<float>::quiet_NaN();
+            CHECK(!HasHiddenXamLeftArm(binding,native));
+            native[5].position.x=0;
+            auto other=binding;other.nodeIdentity=0;
+            CHECK(!HasHiddenXamLeftArm(other,native));
         }
         auto malformed=asset.nodes;
         malformed[binding.gun].parent=-1;

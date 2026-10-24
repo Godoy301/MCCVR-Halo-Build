@@ -111,7 +111,7 @@ struct FpOrientationProbe {
 Snapshot<FpOrientationProbe> fpOrientationProbe;
 struct FpRefusalProbe {
     uint32_t generation{},graph{},stage{},count{};
-    uint64_t identity{},invalidNodes{};
+    uint64_t identity{},invalidNodes{},zeroScaleNodes{};
     float leftUpper{},leftLower{},rightUpper{},rightLower{};
 };
 Snapshot<FpRefusalProbe> fpRefusalProbe;
@@ -855,7 +855,10 @@ bool ApplyPalette(uint32_t graph,NodeMatrix* matrices,const Scope& owner) noexce
         FpRefusalProbe failure{};
         failure.generation=binding.generation;failure.graph=graph;failure.stage=refusalStage;
         failure.count=count;failure.identity=binding.nodeIdentity;
-        for(uint32_t i=0;i<count;++i)if(!Valid(source[i]))failure.invalidNodes|=uint64_t{1}<<i;
+        for(uint32_t i=0;i<count;++i) {
+            if(!Valid(source[i]))failure.invalidNodes|=uint64_t{1}<<i;
+            if(source[i].scale==0)failure.zeroScaleNodes|=uint64_t{1}<<i;
+        }
         const auto distance=[&](int a,int b) {
             if(a<0 || b<0 || a>=int(count) || b>=int(count))return -1.0f;
             const Vec3 delta=source[a].position-source[b].position;return std::sqrt(Dot(delta,delta));
@@ -1495,8 +1498,8 @@ bool HaloCEFirstPerson_Poll(uintptr_t base,size_t size,uint32_t gen,bool isActiv
             gen,installed.load(),observed.load(),applied.load(),refused.load(),exceptions.load());
         FpRefusalProbe failure{};
         if(fpRefusalProbe.Read(failure) && failure.generation==gen)
-            LOG("CE FP stage graph=%08X identity=%llX count=%u stage=%u invalidNodes=%llX armLengths=%.6f/%.6f/%.6f/%.6f (0=staged 1=input 2=controller 3=grip 4=hand 5=nodes 6=left-arm 7=right-arm 8=floating 10=read 11=binding)",
-                failure.graph,failure.identity,failure.count,failure.stage,failure.invalidNodes,
+            LOG("CE FP stage graph=%08X identity=%llX count=%u stage=%u invalidNodes=%llX zeroScale=%llX armLengths=%.6f/%.6f/%.6f/%.6f (0=staged 1=input 2=controller 3=grip 4=hand 5=nodes 6=left-arm 7=right-arm 8=floating 10=read 11=binding)",
+                failure.graph,failure.identity,failure.count,failure.stage,failure.invalidNodes,failure.zeroScaleNodes,
                 failure.leftUpper,failure.leftLower,failure.rightUpper,failure.rightLower);
         FpOrientationProbe probe{};
         if(fpOrientationProbe.Read(probe) && probe.generation==gen) {
