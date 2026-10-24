@@ -1,3 +1,17 @@
+## October 24 latest: XAM muzzle-axis candidate; launchers still unresolved
+
+2935040d user result: MP5 tracks but sideways, Uzi/MP7 points up, RPG/Stinger
+still 2D, last M4-like gun normal. Actual runtime identities show the UI Uzi is
+HL2 SMG, not the asset named uzi. Raw root axes already match aim. Map trigger
+markers prove different root-local firing axes for HL1 MP5/HL2 SMG; M4A1 identity.
+Candidate uses these two exact graph/count/root marker rotations for wrist
+carriers; unchanged other graphs. CE-XAM-MUZZLE-2026-10-24.md records scope/limits.
+Launchers NOT fixed: added active-graph refusal stage, invalid-node bits and arm
+lengths to cold log. Need several seconds on each launcher in next test. CE tests
+pass ASan/UBSan including rotated muzzle-axis cases and real HL2 graph. Windows
+build/headset verification pending. All prior title fixes preserved; ODST left
+secondary 1ab75005 still untested. No installation, release, PR or pointer update.
+
 ## October 24 latest: CE XAM graph correction; Uzi diagnostic pending
 
 User defers ODST secondary test and prioritizes CE XAM. Supplied a30.map now

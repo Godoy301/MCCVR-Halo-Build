@@ -109,6 +109,12 @@ struct FpOrientationProbe {
     NodeMatrix before{},after{},expected{};
 };
 Snapshot<FpOrientationProbe> fpOrientationProbe;
+struct FpRefusalProbe {
+    uint32_t generation{},graph{},stage{},count{};
+    uint64_t identity{},invalidNodes{};
+    float leftUpper{},leftLower{},rightUpper{},rightLower{};
+};
+Snapshot<FpRefusalProbe> fpRefusalProbe;
 thread_local Scope* scope{};
 struct ParticleScope { const SaberCamera* camera{};Tracking eye{}; };
 thread_local const ParticleScope* particleScope{};
@@ -824,10 +830,14 @@ bool ApplyPalette(uint32_t graph,NodeMatrix* matrices,const Scope& owner) noexce
 {
     AnimationNode nodes[kFirstPersonMaxNodes]{};
     uint32_t count{};
-    if (!ReadGraph(graph,nodes,count)) return false;
+    if (!ReadGraph(graph,nodes,count)) {
+        (void)fpRefusalProbe.Publish({owner.context.tracking.generation,graph,10});return false;
+    }
     FirstPersonBinding binding{};
     const auto& context=owner.context;
-    if (!BuildFirstPersonBinding(graph,context.tracking.generation,nodes,count,binding)) return false;
+    if (!BuildFirstPersonBinding(graph,context.tracking.generation,nodes,count,binding)) {
+        (void)fpRefusalProbe.Publish({context.tracking.generation,graph,11,count});return false;
+    }
     // The optional pose applies only to the official CE first-person hand
     // graph whose five three-joint chains were bound by exact node names and
     // parent links. Unknown/custom graphs retain the normal tracked-hand path.
@@ -839,13 +849,30 @@ bool ApplyPalette(uint32_t graph,NodeMatrix* matrices,const Scope& owner) noexce
     }
     std::array<NodeMatrix,kFirstPersonMaxNodes> source{},staged{};
     if (!CopyPalette(matrices,source.data(),count)) return false;
+    uint32_t refusalStage=0;
     if (!BuildTrackedFirstPersonPalette(binding,source.data(),context.camera,context.tracking,
-            context.reference,context.unitsPerMeter,context.positional,staged)) return false;
+            context.reference,context.unitsPerMeter,context.positional,staged,&refusalStage)) {
+        FpRefusalProbe failure{};
+        failure.generation=binding.generation;failure.graph=graph;failure.stage=refusalStage;
+        failure.count=count;failure.identity=binding.nodeIdentity;
+        for(uint32_t i=0;i<count;++i)if(!Valid(source[i]))failure.invalidNodes|=uint64_t{1}<<i;
+        const auto distance=[&](int a,int b) {
+            if(a<0 || b<0 || a>=int(count) || b>=int(count))return -1.0f;
+            const Vec3 delta=source[a].position-source[b].position;return std::sqrt(Dot(delta,delta));
+        };
+        failure.leftUpper=distance(binding.shoulder[0],binding.elbow[0]);
+        failure.leftLower=distance(binding.elbow[0],binding.leftWrist);
+        failure.rightUpper=distance(binding.shoulder[1],binding.elbow[1]);
+        failure.rightLower=distance(binding.elbow[1],binding.rightWrist);
+        (void)fpRefusalProbe.Publish(failure);return false;
+    }
+    (void)fpRefusalProbe.Publish({binding.generation,graph,0,count,binding.nodeIdentity});
     // Passive pose evidence; formatting and logging stay in the cold poll.
     FpOrientationProbe probe{};
     probe.generation=binding.generation;probe.graph=graph;probe.identity=binding.nodeIdentity;
     probe.count=int(count);probe.gun=binding.gun;probe.right=binding.rightWrist;probe.left=binding.leftWrist;
-    probe.before=source[binding.gun];probe.after=staged[binding.gun];
+    probe.before=FirstPersonGunAimFrame(binding,source[binding.gun]);
+    probe.after=FirstPersonGunAimFrame(binding,staged[binding.gun]);
     if(BuildControllerMatrix(context.camera,context.tracking,context.reference,
             context.tracking.controllers.primaryAim,context.unitsPerMeter,context.positional,probe.expected) &&
         ApplyVisualMount(context.tracking.controllers,context.unitsPerMeter,true,probe.expected))
@@ -1466,6 +1493,11 @@ bool HaloCEFirstPerson_Poll(uintptr_t base,size_t size,uint32_t gen,bool isActiv
             gen,muzzleInstalled.load(),muzzleFaulted.load(),muzzleApplied.load(),muzzleRefused.load(),muzzleRestoreRefused.load());
         LOG("CE FP gen=%u installed=%d observed=%llu applied=%llu stock=%llu exceptions=%llu",
             gen,installed.load(),observed.load(),applied.load(),refused.load(),exceptions.load());
+        FpRefusalProbe failure{};
+        if(fpRefusalProbe.Read(failure) && failure.generation==gen)
+            LOG("CE FP stage graph=%08X identity=%llX count=%u stage=%u invalidNodes=%llX armLengths=%.6f/%.6f/%.6f/%.6f (0=staged 1=input 2=controller 3=grip 4=hand 5=nodes 6=left-arm 7=right-arm 8=floating 10=read 11=binding)",
+                failure.graph,failure.identity,failure.count,failure.stage,failure.invalidNodes,
+                failure.leftUpper,failure.leftLower,failure.rightUpper,failure.rightLower);
         FpOrientationProbe probe{};
         if(fpOrientationProbe.Read(probe) && probe.generation==gen) {
             LOG("CE FP orientation graph=%08X identity=%llX count=%d gun=%d wrists=%d/%d beforeF=%.4f/%.4f/%.4f afterF=%.4f/%.4f/%.4f aimF=%.4f/%.4f/%.4f afterUp=%.4f/%.4f/%.4f aimUp=%.4f/%.4f/%.4f",

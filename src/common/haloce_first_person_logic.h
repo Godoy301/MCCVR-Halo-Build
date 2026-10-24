@@ -571,6 +571,27 @@ inline bool BuildSightGeometry(const Camera& native,const Tracking& tracking,con
     return true;
 }
 
+// These two imported XAM models author their muzzle axes away from the gun
+// node axes. Values are the primary-trigger marker rotations in the supplied
+// cache, keyed by the complete graph identity/count/root, never by UI name.
+inline NodeMatrix FirstPersonGunAimFrame(const FirstPersonBinding& binding,
+    const NodeMatrix& gun) noexcept
+{
+    Quat local{};bool matched=false;
+    if(binding.nodeIdentity==0x0698859159826A29ull && binding.count==41 && binding.gun==17) {
+        local={0.0922959968f,0.0925370008f,0.7010250092f,0.7010570168f};matched=true;
+    }
+    if(binding.nodeIdentity==0xD822330265B09099ull && binding.count==48 && binding.gun==7) {
+        local={0.4844599962f,0.4989329875f,0.5161060095f,0.4999989867f};matched=true;
+    }
+    if(!matched)return gun;
+    NodeMatrix result=gun;
+    result.forward=TransformDirection(gun,Rotate(local,{1,0,0}));
+    result.left=TransformDirection(gun,Rotate(local,{0,1,0}));
+    result.up=TransformDirection(gun,Rotate(local,{0,0,1}));
+    return result;
+}
+
 inline bool BuildGripCarriers(const FirstPersonBinding& binding,const NodeMatrix* source,
     size_t count,const NodeMatrix& primaryAim,const NodeMatrix& supportAim,
     NodeMatrix& primary,NodeMatrix& support) noexcept
@@ -579,7 +600,7 @@ inline bool BuildGripCarriers(const FirstPersonBinding& binding,const NodeMatrix
         size_t(binding.gun)>=count||size_t(binding.rightWrist)>=count||size_t(binding.leftWrist)>=count||
         !Valid(primaryAim)||!Valid(supportAim)) return false;
     NodeMatrix primaryCandidate{},supportCandidate{};
-    const NodeMatrix& gun=source[binding.gun];
+    const NodeMatrix gun=FirstPersonGunAimFrame(binding,source[binding.gun]);
     if (!MoveNode(gun,primaryAim,source[binding.rightWrist],primaryCandidate)||
         !MoveNode(gun,supportAim,source[binding.leftWrist],supportCandidate)) return false;
     // Preserve each wrist's authored rotation relative to the gun, while the
@@ -717,25 +738,32 @@ inline bool SolveFirstPersonArm(const FirstPersonBinding& binding,size_t side,
 // in left-handed mode. The weapon receives its own primary carrier either way.
 inline bool BuildTrackedFirstPersonPalette(const FirstPersonBinding& binding,
     const NodeMatrix* source,const Camera& camera,const Tracking& tracking,const Reference& reference,
-    float unitsPerMeter,bool positional,std::array<NodeMatrix,kFirstPersonMaxNodes>& out) noexcept
+    float unitsPerMeter,bool positional,std::array<NodeMatrix,kFirstPersonMaxNodes>& out,
+    uint32_t* refusalStage=nullptr) noexcept
 {
+    const auto stage=[&](uint32_t value){if(refusalStage)*refusalStage=value;};
+    stage(1);
     const auto& rig=tracking.controllers;
     if (rig.controlsPresentationBlocked||!source||binding.generation!=tracking.generation||!binding.count||
         binding.count>kFirstPersonMaxNodes||binding.rightWrist<0||binding.leftWrist<0||binding.gun<0||
         binding.rightWrist>=binding.count||binding.leftWrist>=binding.count||binding.gun>=binding.count) return false;
+    stage(2);
     NodeMatrix primaryAim{},supportAim{};
     if (!BuildControllerMatrix(camera,tracking,reference,rig.primaryAim,unitsPerMeter,positional,primaryAim)||
         !BuildControllerMatrix(camera,tracking,reference,rig.support,unitsPerMeter,positional,supportAim)||
         !ApplyVisualMount(rig,unitsPerMeter,true,primaryAim)||
         !ApplyVisualMount(rig,unitsPerMeter,false,supportAim)) return false;
+    stage(3);
     NodeMatrix weaponGrip{},unused{},left{},right{};
     if (!BuildGripCarriers(binding,source,binding.count,primaryAim,supportAim,weaponGrip,unused)) return false;
     const NodeMatrix& gun=source[binding.gun];
+    const NodeMatrix gunAim=FirstPersonGunAimFrame(binding,gun);
+    stage(4);
     const bool anatomical=rig.leftHanded&&rig.handAlignment;
     const NodeMatrix& rightAim=anatomical?supportAim:primaryAim;
     const NodeMatrix& leftAim=anatomical?primaryAim:supportAim;
-    if (!MoveNode(gun,rightAim,source[binding.rightWrist],right)||
-        !MoveNode(gun,leftAim,source[binding.leftWrist],left)) return false;
+    if (!MoveNode(gunAim,rightAim,source[binding.rightWrist],right)||
+        !MoveNode(gunAim,leftAim,source[binding.leftWrist],left)) return false;
     right.position=rightAim.position;left.position=leftAim.position;
     const HandAlignmentPlane* alignmentPlane=anatomical?FindHandAlignmentPlane(binding):nullptr;
     NodeMatrix renderedGun{};
@@ -762,11 +790,12 @@ inline bool BuildTrackedFirstPersonPalette(const FirstPersonBinding& binding,
         }
         else if (anatomical)
         {
-            if (!MoveNode(gun,primaryAim,source[binding.rightWrist],support)) return false;
+            if (!MoveNode(gunAim,primaryAim,source[binding.rightWrist],support)) return false;
             support.position=supportPosition.position;
         }
         else support=supportPosition;
     }
+    stage(5);
     std::array<NodeMatrix,kFirstPersonMaxNodes> candidate{};
     for (size_t i=0;i<binding.count;++i)
     {
@@ -781,6 +810,7 @@ inline bool BuildTrackedFirstPersonPalette(const FirstPersonBinding& binding,
     }
     for (size_t side=0;side<2;++side)
     {
+        stage(uint32_t(6+side));
         const NodeMatrix& target=side?right:left;
         if (ShouldApplyArmIk(rig.armIk,rig.supportGripAttached))
         {
@@ -793,6 +823,7 @@ inline bool BuildTrackedFirstPersonPalette(const FirstPersonBinding& binding,
                 if (joint>=0&&joint<binding.count&&!MoveNode(carrier,target,source[joint],candidate[joint])) return false;
         }
     }
+    stage(8);
     if (rig.floatingHands&&kCeFloatingArmsAtCameraEnabled)
         // Saber also uses the remapped model's root matrix to position the
         // entire first-person object (native bridge 0x7AC60). Keep the graph
@@ -802,7 +833,7 @@ inline bool BuildTrackedFirstPersonPalette(const FirstPersonBinding& binding,
             { candidate[i].scale=0.00001f;candidate[i].position=camera.position; }
     if (rig.floatingHands&&!kCeFloatingArmsAtCameraEnabled&&
         !CollapseFirstPersonArmsAtWrists(binding,candidate)) return false;
-    out=candidate;return true;
+    out=candidate;stage(0);return true;
 }
 
 // All-or-nothing private palette staging. Runtime code must verify graph and

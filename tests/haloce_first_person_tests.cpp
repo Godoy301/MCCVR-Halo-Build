@@ -268,6 +268,25 @@ int main(int argc,char** argv)
         CHECK(BuildFirstPersonBinding(25,3,asset.nodes.data(),asset.count,binding));
         CHECK(binding.rightWrist==6 && binding.leftWrist==5 && binding.gun>=0);
         CHECK((binding.leftMask&binding.rightMask)==0 && binding.gunMask);
+        if(binding.nodeIdentity==0x0698859159826A29ull || binding.nodeIdentity==0xD822330265B09099ull) {
+            NodeMatrix authored[64]{};
+            // Deliberately rotate the native gun and wrist to catch coordinate
+            // space mistakes; the authored muzzle, not the raw root, must aim.
+            authored[binding.gun].forward={0,1,0};authored[binding.gun].left={-1,0,0};
+            authored[binding.rightWrist].position={.1f,.2f,.3f};
+            NodeMatrix aim{},supportAim{},primary{},support{},rendered{};
+            aim.forward={0,0,1};aim.left={0,1,0};aim.up={-1,0,0};
+            aim.position={4,5,6};
+            CHECK(BuildGripCarriers(binding,authored,binding.count,aim,supportAim,primary,support));
+            CHECK(MoveNode(authored[binding.rightWrist],primary,authored[binding.gun],rendered));
+            const auto muzzle=FirstPersonGunAimFrame(binding,rendered);
+            CHECK(Near(muzzle.forward,aim.forward) && Near(muzzle.up,aim.up));
+            CHECK(Near(primary.position,aim.position));
+            const auto raw=rendered;
+            auto unrelated=binding;unrelated.nodeIdentity=0;
+            const auto unchanged=FirstPersonGunAimFrame(unrelated,raw);
+            CHECK(Near(unchanged.forward,raw.forward) && Near(unchanged.up,raw.up));
+        }
         auto malformed=asset.nodes;
         malformed[binding.gun].parent=-1;
         CHECK(!BuildFirstPersonBinding(25,3,malformed.data(),asset.count,binding));
