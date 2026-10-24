@@ -297,8 +297,20 @@ inline bool BuildFirstPersonBinding(uint32_t graph,uint32_t generation,
              NodeName(nodes[i].name,"frame pole")||NodeName(nodes[i].name,"frame skull")||
              NodeName(nodes[i].name,"mp5_master")))
         { if (candidate.gun!=-1) return false;candidate.gun=int16_t(i); }
+    // Mercury Rising authors the named gun assembly beside both arm chains.
+    // Resolve that topology without asset hashes; ambiguous roots still fail.
+    int detachedGun=-1;
+    for (size_t i=1;i<count;++i)
+        if (nodes[i].parent==0 && NodeName(nodes[i].name,"frame gun")) {
+            if (detachedGun!=-1) return false;
+            detachedGun=int(i);
+        }
+    if (detachedGun>=0) {
+        if (candidate.gun!=-1) return false;
+        candidate.gun=int16_t(detachedGun);
+    }
     if (candidate.rightWrist<0||candidate.leftWrist<0||candidate.gun<0||
-        !DescendsFrom(nodes,count,size_t(candidate.gun),size_t(candidate.rightWrist)))
+        (detachedGun<0 && !DescendsFrom(nodes,count,size_t(candidate.gun),size_t(candidate.rightWrist))))
         return false;
     for (size_t i=0;i<count;++i)
     {
@@ -312,7 +324,9 @@ inline bool BuildFirstPersonBinding(uint32_t graph,uint32_t generation,
                 !DescendsFrom(nodes,count,i,size_t(side?candidate.rightWrist:candidate.leftWrist)))
                 candidate.armMask[side]|=bit;
     }
-    if ((candidate.rightMask&candidate.leftMask)||!candidate.gunMask) return false;
+    if ((candidate.rightMask&candidate.leftMask)||!candidate.gunMask ||
+        (candidate.gunMask&candidate.leftMask) ||
+        (detachedGun>=0 && (candidate.gunMask&candidate.rightMask))) return false;
     if ((candidate.armMask[0]&candidate.armMask[1])||
         ((candidate.armMask[0]|candidate.armMask[1])&
          (candidate.rightMask|candidate.leftMask|candidate.gunMask|1))) return false;
@@ -907,7 +921,7 @@ inline bool RelocateFirstPersonPalette(const FirstPersonBinding& binding,
         if (!Valid(source[i])) return false;
         candidate[i]=source[i];
         const uint64_t bit=uint64_t{1}<<i;
-        if (binding.rightMask&bit)
+        if ((binding.rightMask|binding.gunMask)&bit)
         {
             if (!MoveNode(source[binding.rightWrist],primaryCarrier,source[i],candidate[i]))
                 return false;

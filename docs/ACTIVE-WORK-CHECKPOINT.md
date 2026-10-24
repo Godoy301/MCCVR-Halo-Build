@@ -1,3 +1,16 @@
+## October 24 latest: Mercury Rising sibling-gun candidate
+
+User accepts XAM launchers; MP5/MP7 orientation explicitly deferred. Preserve
+accepted ODST dual wield. Mercury Rising SMG/excavator/sniper reported 2D.
+New eceed9ed log shows stage11 binding refusal for hose/sniper. Supplied map
+shows all three have frame gun parent0 beside arms, not below right wrist.
+Add unique root-child frame gun topology without per-asset hashes; retain
+ambiguity, overlap and existing graph validation. Production gunMask carry
+already independent; update standalone relocation to include gunMask too.
+Actual-map fixtures plus full CE tests pass ASan/UBSan. Windows/headset pending.
+See CE-MERCURY-2026-10-24.md and CE-MERCURY-GRAPHS.json. No title-other edits,
+installation, release pointer update or PR. Source and pinned CI delivery.
+
 ## October 24 latest: ODST secondary accepted; CE hidden-left launcher candidate
 
 User confirms ODST dual-wield fix works. Preserve 1ab75005 and all other title

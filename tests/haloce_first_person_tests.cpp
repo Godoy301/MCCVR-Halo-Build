@@ -5,6 +5,7 @@
 #include <fstream>
 using namespace halo_ce;
 #include "ce_xam_nodes.inl"
+#include "ce_mercury_nodes.inl"
 namespace
 {
 bool Near(Vec3 a,Vec3 b) { return Dot(a-b,a-b)<0.000001f; }
@@ -321,6 +322,64 @@ int main(int argc,char** argv)
         CHECK(!BuildFirstPersonBinding(25,3,malformed.data(),asset.count,binding));
         malformed=asset.nodes;
         malformed[5].parent=5;
+        CHECK(!BuildFirstPersonBinding(25,3,malformed.data(),asset.count,binding));
+    }
+    for (const auto& asset:ceMercuryGraphs) {
+        FirstPersonBinding binding{};
+        CHECK(BuildFirstPersonBinding(25,3,asset.nodes.data(),asset.count,binding));
+        CHECK(binding.gun==1 && !(binding.gunMask&(binding.leftMask|binding.rightMask)));
+        NodeMatrix source[64]{};
+        source[binding.rightWrist].position={1,0,0};
+        source[binding.leftWrist].position={1,1,0};
+        source[binding.shoulder[0]].position={0,1,0};
+        source[binding.elbow[0]].position={.5f,1,-.1f};
+        source[binding.shoulder[1]].position={0,0,0};
+        source[binding.elbow[1]].position={.5f,0,-.1f};
+        source[1].position={1.5f,0,0};
+        for (size_t i=2;i<asset.count;++i) if (binding.gunMask&(uint64_t{1}<<i))
+            source[i].position={1.5f,0,.2f};
+        NodeMatrix primary{},support{},aim{},offhand{};
+        aim.position={2,3,4};aim.forward={0,1,0};aim.left={-1,0,0};
+        offhand.position={-2,3,4};
+        CHECK(BuildGripCarriers(binding,source,asset.count,aim,offhand,primary,support));
+        std::array<NodeMatrix,kFirstPersonMaxNodes> staged{};
+        CHECK(RelocateFirstPersonPalette(binding,25,3,source,asset.count,primary,support,false,staged));
+        CHECK(Near(staged[1].position,{2,3.5f,4}) && Near(staged[1].forward,aim.forward));
+        CHECK(Near(staged[binding.leftWrist].position,offhand.position));
+        CHECK(Near(staged[binding.rightWrist].position,aim.position));
+        for (size_t i=2;i<asset.count;++i) if (binding.gunMask&(uint64_t{1}<<i))
+            CHECK(Near(staged[i].position-staged[1].position,{0,0,.2f}));
+        Camera camera{};camera.forward={1,0,0};camera.up={0,0,1};
+        camera.verticalFov=1;camera.viewport={0,0,100,100};camera.window=camera.viewport;
+        camera.nearPlane=.01f;camera.farPlane=100;
+        Tracking tracking{};tracking.serial=1;tracking.generation=3;tracking.spaceEpoch=2;
+        Reference reference{};reference.generation=3;reference.spaceEpoch=2;
+        tracking.controllers.primaryAim.valid=tracking.controllers.support.valid=true;
+        tracking.controllers.primaryAim.position={.2f,0,-.6f};
+        tracking.controllers.support.position={-.2f,0,-.6f};
+        tracking.controllers.armIk=false;
+        tracking.controllers.controlsPresentationBlocked=false;
+        NodeMatrix expected{};
+        CHECK(BuildControllerMatrix(camera,tracking,reference,tracking.controllers.primaryAim,1,true,expected));
+        CHECK(ApplyVisualMount(tracking.controllers,1,true,expected));
+        for (bool floating:{false,true}) for (bool attached:{false,true}) {
+            tracking.controllers.floatingHands=floating;
+            tracking.controllers.supportGripAttached=attached;
+            uint32_t stage{};
+            const bool built=BuildTrackedFirstPersonPalette(binding,source,camera,tracking,reference,1,true,staged,&stage);
+            if (!built) std::fprintf(stderr,"Mercury %s floating=%d attached=%d stage=%u\n",asset.name,floating,attached,stage);
+            CHECK(built);
+            CHECK(Near(staged[1].forward,expected.forward));
+            CHECK(Near(staged[binding.rightWrist].position,expected.position));
+            CHECK(Valid(staged[1]));
+            for (size_t i=2;i<asset.count;++i) if (binding.gunMask&(uint64_t{1}<<i))
+                CHECK(Near(staged[i].position-staged[1].position,expected.up*(.2f*expected.scale)));
+        }
+        auto malformed=asset.nodes;
+        malformed[1].parent=binding.leftWrist;
+        CHECK(!BuildFirstPersonBinding(25,3,malformed.data(),asset.count,binding));
+        malformed=asset.nodes;
+        Name(malformed[4],"frame gun",0);
         CHECK(!BuildFirstPersonBinding(25,3,malformed.data(),asset.count,binding));
     }
     AnimationNode nodes[9]{};
