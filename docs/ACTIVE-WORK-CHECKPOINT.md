@@ -1,3 +1,16 @@
+## October 24 latest: Windows test failures from run40129474979
+
+User supplied the complete Actions log. Windows compilation succeeded; CTest
+failed 2/201 tests (one other test skipped). CE muzzle runtime fixture inherited
+an incomplete controller frame, newly required by visual/neutral publication.
+Initialize its camera, matching reference, scale and primary pose explicitly.
+Committed aim concurrency test could attempt its last read during a write,
+then observe completion and exit without a stable read. Observe completion
+before each attempt, ensuring a final read after the writer completes.
+No production behavior changed and no test disabled. Portable CE frame setup
+check plus existing alignment, muzzle (615 checks) and CE FP suites passed.
+Full Windows test rerun pending; accepted release pointer unchanged.
+
 ## October 24 latest: weapons-alignment packaging gate repair
 
 User reports failed Actions run40128327607 (source a59b39c8). Public job page
