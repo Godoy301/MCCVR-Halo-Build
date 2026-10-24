@@ -1,3 +1,16 @@
+## October 24 latest: CE XAM graph correction; Uzi diagnostic pending
+
+User defers ODST secondary test and prioritizes CE XAM. Supplied a30.map now
+available at out/ce-xam/download via Drive. RPG/Stinger reject a detached named
+left-upperarm root; HL1 MP5 rejects mp5_master gun-root spelling. Corrected these
+specific graph cases, retained existing topology guards and added actual-map
+fixtures. CE suite passes ASan/UBSan with documented Linux compatibility flags.
+Uzi orientation is NOT solved: graph/model evidence does not justify a fixed
+rotation. New cold log snapshot compares native/staged gun axes to controller
+axes. Need new headset log after several seconds each on Uzi and normal gun.
+See CE-XAM-WEAPONS-2026-10-24.md. Preserve all previous title fixes; ODST left-hand
+candidate 1ab75005 remains pending user test. No install/release/PR/pointer change.
+
 ## October 23 latest: New Covenant primary accepted; secondary partial-map fix
 
 User confirms e3b5924f works except dual left plasma pistol remains head-locked.

@@ -4,6 +4,7 @@
 #include <limits>
 #include <fstream>
 using namespace halo_ce;
+#include "ce_xam_nodes.inl"
 namespace
 {
 bool Near(Vec3 a,Vec3 b) { return Dot(a-b,a-b)<0.000001f; }
@@ -261,6 +262,18 @@ int main(int argc,char** argv)
         // ancestor. The graph root is the only remaining non-hand node.
         CHECK((actual.armMask[0]|actual.armMask[1]|actual.leftMask|actual.rightMask|1)==
             (count==64?~uint64_t{}:(uint64_t{1}<<count)-1));
+    }
+    for(const auto& asset:ceXamGraphs) {
+        FirstPersonBinding binding{};
+        CHECK(BuildFirstPersonBinding(25,3,asset.nodes.data(),asset.count,binding));
+        CHECK(binding.rightWrist==6 && binding.leftWrist==5 && binding.gun>=0);
+        CHECK((binding.leftMask&binding.rightMask)==0 && binding.gunMask);
+        auto malformed=asset.nodes;
+        malformed[binding.gun].parent=-1;
+        CHECK(!BuildFirstPersonBinding(25,3,malformed.data(),asset.count,binding));
+        malformed=asset.nodes;
+        malformed[5].parent=5;
+        CHECK(!BuildFirstPersonBinding(25,3,malformed.data(),asset.count,binding));
     }
     AnimationNode nodes[9]{};
     Name(nodes[0],"frame bone24",0);

@@ -257,6 +257,14 @@ inline bool BuildFirstPersonBinding(uint32_t graph,uint32_t generation,
         return false;
     FirstPersonBinding candidate{};
     candidate.graph=graph;candidate.generation=generation;candidate.count=uint16_t(count);
+    // XAM's RPG/Stinger keep the support arm as its own rooted tree.
+    // Permit that named root only; disconnected gun trees and cycles still fail.
+    int detachedLeft=-1;
+    for(size_t i=1;i<count;++i)
+        if(nodes[i].parent==-1 && NodeName(nodes[i].name,"frame l upperarm")) {
+            if(detachedLeft!=-1)return false;
+            detachedLeft=int(i);
+        }
     for (size_t i=0;i<count;++i)
     {
         if (!std::memchr(nodes[i].name,0,sizeof(nodes[i].name))) return false;
@@ -264,7 +272,8 @@ inline bool BuildFirstPersonBinding(uint32_t graph,uint32_t generation,
         {
             if (nodes[i].parent!=-1&&nodes[i].parent!=0) return false;
         }
-        else if (!DescendsFrom(nodes,count,i,0)) return false;
+        else if (!DescendsFrom(nodes,count,i,0) &&
+            !(detachedLeft>=0 && DescendsFrom(nodes,count,i,size_t(detachedLeft)))) return false;
         for (int16_t index:{nodes[i].child,nodes[i].sibling})
             if (index!=-1&&(index<0||size_t(index)>=count||size_t(index)==i)) return false;
         if (IsWrist(nodes[i].name,false))
@@ -285,7 +294,8 @@ inline bool BuildFirstPersonBinding(uint32_t graph,uint32_t generation,
     for (size_t i=0;i<count;++i)
         if (nodes[i].parent==candidate.rightWrist&&
             (NodeName(nodes[i].name,"frame gun")||NodeName(nodes[i].name,"frame body")||
-             NodeName(nodes[i].name,"frame pole")||NodeName(nodes[i].name,"frame skull")))
+             NodeName(nodes[i].name,"frame pole")||NodeName(nodes[i].name,"frame skull")||
+             NodeName(nodes[i].name,"mp5_master")))
         { if (candidate.gun!=-1) return false;candidate.gun=int16_t(i); }
     if (candidate.rightWrist<0||candidate.leftWrist<0||candidate.gun<0||
         !DescendsFrom(nodes,count,size_t(candidate.gun),size_t(candidate.rightWrist)))

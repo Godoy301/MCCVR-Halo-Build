@@ -103,6 +103,12 @@ struct PaletteReceipt
     uint64_t weaponGraph{};
 };
 Snapshot<PaletteReceipt> paletteReceipt;
+struct FpOrientationProbe {
+    uint32_t generation{},graph{};uint64_t identity{};
+    int count{},gun{},right{},left{};
+    NodeMatrix before{},after{},expected{};
+};
+Snapshot<FpOrientationProbe> fpOrientationProbe;
 thread_local Scope* scope{};
 struct ParticleScope { const SaberCamera* camera{};Tracking eye{}; };
 thread_local const ParticleScope* particleScope{};
@@ -835,6 +841,15 @@ bool ApplyPalette(uint32_t graph,NodeMatrix* matrices,const Scope& owner) noexce
     if (!CopyPalette(matrices,source.data(),count)) return false;
     if (!BuildTrackedFirstPersonPalette(binding,source.data(),context.camera,context.tracking,
             context.reference,context.unitsPerMeter,context.positional,staged)) return false;
+    // Passive pose evidence; formatting and logging stay in the cold poll.
+    FpOrientationProbe probe{};
+    probe.generation=binding.generation;probe.graph=graph;probe.identity=binding.nodeIdentity;
+    probe.count=int(count);probe.gun=binding.gun;probe.right=binding.rightWrist;probe.left=binding.leftWrist;
+    probe.before=source[binding.gun];probe.after=staged[binding.gun];
+    if(BuildControllerMatrix(context.camera,context.tracking,context.reference,
+            context.tracking.controllers.primaryAim,context.unitsPerMeter,context.positional,probe.expected) &&
+        ApplyVisualMount(context.tracking.controllers,context.unitsPerMeter,true,probe.expected))
+        (void)fpOrientationProbe.Publish(probe);
     HaloCEContactPublication contact{};
     HaloCEContact_ApplyPalette(context,binding,source.data(),staged.data(),contact);
     (void)ApplyVisibleFirstPersonHandOffsets(binding,context.unitsPerMeter,context.tracking.controllers,staged.data());
@@ -1451,6 +1466,16 @@ bool HaloCEFirstPerson_Poll(uintptr_t base,size_t size,uint32_t gen,bool isActiv
             gen,muzzleInstalled.load(),muzzleFaulted.load(),muzzleApplied.load(),muzzleRefused.load(),muzzleRestoreRefused.load());
         LOG("CE FP gen=%u installed=%d observed=%llu applied=%llu stock=%llu exceptions=%llu",
             gen,installed.load(),observed.load(),applied.load(),refused.load(),exceptions.load());
+        FpOrientationProbe probe{};
+        if(fpOrientationProbe.Read(probe) && probe.generation==gen) {
+            LOG("CE FP orientation graph=%08X identity=%llX count=%d gun=%d wrists=%d/%d beforeF=%.4f/%.4f/%.4f afterF=%.4f/%.4f/%.4f aimF=%.4f/%.4f/%.4f afterUp=%.4f/%.4f/%.4f aimUp=%.4f/%.4f/%.4f",
+                probe.graph,probe.identity,probe.count,probe.gun,probe.left,probe.right,
+                probe.before.forward.x,probe.before.forward.y,probe.before.forward.z,
+                probe.after.forward.x,probe.after.forward.y,probe.after.forward.z,
+                probe.expected.forward.x,probe.expected.forward.y,probe.expected.forward.z,
+                probe.after.up.x,probe.after.up.y,probe.after.up.z,
+                probe.expected.up.x,probe.expected.up.y,probe.expected.up.z);
+        }
         if (alignmentKnownGraph.load() || alignmentUnknownGraph.load())
             LOG("CE hand alignment gen=%u verifiedGripGraph=%llu unknownGraphPriorMount=%llu; unknown graphs retain prior hand placement",
                 gen,alignmentKnownGraph.load(),alignmentUnknownGraph.load());
