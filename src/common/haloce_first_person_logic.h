@@ -250,6 +250,9 @@ inline bool DescendsFrom(const AnimationNode* nodes,size_t count,size_t node,
     }
     return false;
 }
+inline bool BuildFingerBindings(const AnimationNode* nodes,size_t count,
+    FirstPersonBinding& binding) noexcept;
+
 inline bool BuildFirstPersonBinding(uint32_t graph,uint32_t generation,
     const AnimationNode* nodes,size_t count,FirstPersonBinding& out) noexcept
 {
@@ -305,6 +308,20 @@ inline bool BuildFirstPersonBinding(uint32_t graph,uint32_t generation,
             if (detachedGun!=-1) return false;
             detachedGun=int(i);
         }
+    // Cursed Halo uses arbitrary names for the one non-body root child.
+    // Infer it only when both complete arm chains are rooted beside it;
+    // the full finger/body partition is verified below before publication.
+    bool inferredGun=false;
+    if (candidate.gun<0 && detachedGun<0 && candidate.shoulder[0]>0 &&
+        candidate.shoulder[1]>0 && candidate.elbow[0]>0 && candidate.elbow[1]>0 &&
+        nodes[candidate.shoulder[0]].parent==0 && nodes[candidate.shoulder[1]].parent==0) {
+        for (size_t i=1;i<count;++i)
+            if (nodes[i].parent==0 && int(i)!=candidate.shoulder[0] && int(i)!=candidate.shoulder[1]) {
+                if (detachedGun>=0) return false;
+                detachedGun=int(i);
+            }
+        inferredGun=detachedGun>=0;
+    }
     if (detachedGun>=0) {
         if (candidate.gun!=-1) return false;
         candidate.gun=int16_t(detachedGun);
@@ -338,6 +355,18 @@ inline bool BuildFirstPersonBinding(uint32_t graph,uint32_t generation,
              nodes[candidate.elbow[side]].parent!=candidate.shoulder[side])) return false;
     }
     candidate.nodeIdentity=FirstPersonNodeIdentity(nodes,count);
+    if (inferredGun) {
+        auto fingers=candidate;
+        if (!BuildFingerBindings(nodes,count,fingers)) return false;
+        uint64_t body=1;
+        for (size_t side=0;side<2;++side) {
+            body|=(uint64_t{1}<<candidate.shoulder[side])|(uint64_t{1}<<candidate.elbow[side])|
+                (uint64_t{1}<<int(side?candidate.rightWrist:candidate.leftWrist));
+            for (size_t finger=0;finger<5;++finger) body|=fingers.fingerMasks[side][finger];
+        }
+        const uint64_t all=count==64?~uint64_t{}:(uint64_t{1}<<count)-1;
+        if ((body&candidate.gunMask) || (body|candidate.gunMask)!=all) return false;
+    }
     out=candidate;
     return true;
 }

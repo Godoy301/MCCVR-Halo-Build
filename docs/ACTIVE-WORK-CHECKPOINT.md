@@ -1,3 +1,16 @@
+## October 24 latest: Mercury accepted; Cursed Halo generic sibling-root candidate
+
+User confirms Mercury Rising fix worked. Cursed Halo sword/crossbow/bow/potions
+remain 2D. New 4b650bfe log shows stage11/count38 for five graph datums; supplied
+b30.map proves all share full CE body37 plus a root-child frame bow (including
+sword/potions). Generic fallback identifies the unique non-body root child only
+with complete named arm/finger chains and exact disjoint body/weapon coverage.
+Known bindings retain prior behavior. No per-weapon names/hashes added.
+CE tests including actual five graph fixtures and malformed/ambiguous variants
+pass ASan/UBSan. Windows/headset pending. Preserve all accepted previous fixes;
+MP5/MP7 axes still deferred. See CE-CURSED-2026-10-24.md and graph JSON. Source
+and pinned CI only; no install, release pointer change or PR.
+
 ## October 24 latest: Mercury Rising sibling-gun candidate
 
 User accepts XAM launchers; MP5/MP7 orientation explicitly deferred. Preserve
