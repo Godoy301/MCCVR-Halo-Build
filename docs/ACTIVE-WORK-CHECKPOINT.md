@@ -1,3 +1,14 @@
+## Latest: H3 dual animation diagnostic candidate
+
+User authorizes diagnostic build for missing secondary recoil/reload whole-gun
+motion; adds secondary muzzle flashes displaced right. Add bounded atomic
+snapshots at 10 Hz per slot: authored/solved wrists and first classified held
+source, plus eye root/final render node0 after visual corrections. Log from
+existing report path only, no logging/allocation/locks in palette hook. Role3
+is root/final node0, not a muzzle marker. Log timestamps and tag/generation
+allow matching both hands. No animation/effect behavior changed in this probe.
+Capture SMG and Spiker firing/reloading each hand separately; video optional.
+
 ## Latest: Ultimate Firefight HUD alternate resolution candidate
 
 Log proves layout scan rejection (stock anchor safe frames0/0). Supplied map

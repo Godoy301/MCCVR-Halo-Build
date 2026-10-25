@@ -7052,6 +7052,8 @@ namespace
 
     bool ReachBoneMatrixFinite(const BoneMatrix& matrix);
 
+#include "halo3_dual_animation_probe.inl"
+
     bool ReconstructVisiblePaletteSource(uint16_t tag,
                                          const FpInterpolationContext& context,
                                          const BoneMatrix& root,
@@ -8102,6 +8104,8 @@ namespace
             Halo3ApplySecondaryWeaponAlignment(tag,context,destination);
             Halo3PublishMuzzlePalette(tag,context,destination,collisionGeneration);
             LegacyApplyVisualHandOffsets(GameTitle::Halo3,tag,boneMap,context,destination);
+            CaptureH3DualAnimation(tag,context,g_fpUnmodifiedInterpolations[context.slot],
+                selectedSource,root,destination);
             if(context.valid&&context.player==0&&context.slot==0)
                 ObserveHalo3AvatarFp(tag,destination);
         }
@@ -48129,6 +48133,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
     void Halo4CameraLogTick()
     {
         static uint64_t reportedFpFingerApplied=0,reportedFpFingerRefused=0;
+        ReportH3DualAnimation();
         static ULONGLONG lastFpFingerReport=0,lastBodyIkReport=0;
         const ULONGLONG avatarReportNow=GetTickCount64();
         const auto fpFingerApplied=g_halo4FpFingerApplied.load(std::memory_order_relaxed);
