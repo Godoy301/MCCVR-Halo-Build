@@ -1,3 +1,15 @@
+## Latest: secondary visual alignment and World scale slider
+
+User requests no compilation. H3/ODST DesiredWristWorld skipped visual trim on
+left via else-if; now apply it after the existing left aim mount and capture
+neutral basis after that mount. Both muzzle publishers undo visual trim for
+slot1 as well, preserving authored ray behavior. H2 packet builder already
+trims both carriers in both renderers. CE/Reach/H4 have no native dual wield;
+their free support hands retain existing presentation behavior.
+Added World scale in Comfort using existing runtime units-per-metre value,
+range .05..2, finite setter, session-only (explicit in UI). No CI trigger.
+Windows/headset verification pending.
+
 ## Latest: retire hidden visual-hand offsets from stored config
 
 User suspects removed Visible hand positioning sliders still affect Halo4.

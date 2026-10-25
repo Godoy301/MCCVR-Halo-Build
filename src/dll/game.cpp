@@ -7020,7 +7020,8 @@ namespace
             MultiplyBases(mounted, mount, trimmed);
             memcpy(mounted, trimmed, sizeof(trimmed));
         }
-        else if (g_config.barrel_pitch_deg != 0.0f ||
+        memcpy(neutralBasis,mounted,sizeof(neutralBasis));
+        if (g_config.barrel_pitch_deg != 0.0f ||
                  g_config.barrel_yaw_deg != 0.0f ||
                  g_config.barrel_roll_deg != 0.0f)
         {
@@ -7044,7 +7045,7 @@ namespace
             TitleAdapter_GetActiveTitle(), left ? 0 : 1, out, collisionCorrection);
         if (neutralVisual) {
             *neutralVisual=out;
-            if (!left) memcpy(neutralVisual->rotation,neutralBasis,sizeof(neutralBasis));
+            memcpy(neutralVisual->rotation,neutralBasis,sizeof(neutralBasis));
         }
         return true;
     }
@@ -57250,6 +57251,10 @@ void Game_GunScale(int dir)
 }
 
 float Game_GetWorldScale() { return g_worldScale.load(); }
+void Game_SetWorldScale(float value)
+{
+    if (std::isfinite(value)) g_worldScale.store(Clamp(value,0.05f,2.0f));
+}
 
 // ---- Shots-vs-reticle frame tranche (read-only evidence) ----
 // See game.h. All readers below are bounded, lock-free, finite-checked and

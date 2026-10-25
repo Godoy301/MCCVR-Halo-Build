@@ -659,6 +659,13 @@ namespace
         ImGui::Spacing();
         ImGui::Separator();
         }
+        if (ImGui::CollapsingHeader("World scale##section", ImGuiTreeNodeFlags_None))
+        {
+            float worldScale=Game_GetWorldScale();
+            if (vr_menu::SliderFloat("World scale", &worldScale, .05f, 2.0f, "%.3f"))
+                Game_SetWorldScale(worldScale);
+            ImGui::TextDisabled("Game units per metre. Applies to the current session.");
+        }
         if (ImGui::CollapsingHeader("Head motion##section", ImGuiTreeNodeFlags_None))
         {
         float headsetSmoothPercent = g_config.headset_smoothing * 100.0f;
