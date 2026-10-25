@@ -1792,9 +1792,9 @@ namespace
                    Halo2ControllerReference(publication), publication.referenceOrientation,
                    publication.referencePosition, leftOrientation,
                    tracking.leftControllerPosition, worldScale,
-                   weapon_alignment::Forward(true,g_config.gun_forward_m,g_config.left_hand_forward_m),
-                   weapon_alignment::Right(true,g_config.gun_right_m),
-                   weapon_alignment::Up(g_config.gun_up_m),leftCarrier);
+                   weapon_alignment::Forward(true,g_config.gun_forward_m,g_config.left_hand_forward_m,Config_ActiveTitleProfile()),
+                   weapon_alignment::Right(true,g_config.gun_right_m,Config_ActiveTitleProfile()),
+                   weapon_alignment::Up(g_config.gun_up_m,true,Config_ActiveTitleProfile()),leftCarrier);
     }
 
     void Halo2PublishCollisionCorrection(
@@ -2591,9 +2591,9 @@ namespace
             !Halo2BuildControllerCarrier(
                 renderCamera, headOrientation, headPosition, leftOrientation,
                 leftPosition, Game_GetWorldScale(),
-                weapon_alignment::Forward(true,g_config.gun_forward_m,g_config.left_hand_forward_m),
-                weapon_alignment::Right(true,g_config.gun_right_m),
-                weapon_alignment::Up(g_config.gun_up_m),candidate.leftCarrier))
+                weapon_alignment::Forward(true,g_config.gun_forward_m,g_config.left_hand_forward_m,Config_ActiveTitleProfile()),
+                weapon_alignment::Right(true,g_config.gun_right_m,Config_ActiveTitleProfile()),
+                weapon_alignment::Up(g_config.gun_up_m,true,Config_ActiveTitleProfile()),candidate.leftCarrier))
         {
             return false;
         }
@@ -3162,9 +3162,11 @@ namespace
                         const float pitch=g_config.barrel_pitch_deg+
                             (classicConsumer?weapon_alignment::kH2ClassicVisualPitch:0.0f);
                         Halo2CameraBasis trimmedRight{},trimmedLeft{};
-                        if (Halo2ApplyCarrierTrim(rightCarrier,pitch,g_config.barrel_yaw_deg,
+                        const float yaw=g_config.barrel_yaw_deg+
+                            (classicConsumer?weapon_alignment::kH2ClassicVisualYaw:0.0f);
+                        if (Halo2ApplyCarrierTrim(rightCarrier,pitch,yaw,
                                 g_config.barrel_roll_deg,0,0,0,Game_GetWorldScale(),trimmedRight) &&
-                            Halo2ApplyCarrierTrim(leftCarrier,pitch,g_config.barrel_yaw_deg,
+                            Halo2ApplyCarrierTrim(leftCarrier,pitch,yaw,
                                 g_config.barrel_roll_deg,0,0,0,Game_GetWorldScale(),trimmedLeft)) {
                             rightCarrier=trimmedRight;leftCarrier=trimmedLeft;
                             g_classicTrimApplied.fetch_add(1,std::memory_order_relaxed);
@@ -3719,9 +3721,9 @@ namespace
                                         pass.frame, headOrientation,
                                         headPosition, leftOrientation,
                                         leftPosition, Game_GetWorldScale(),
-                                        weapon_alignment::Forward(true,g_config.gun_forward_m,g_config.left_hand_forward_m),
-                                        weapon_alignment::Right(true,g_config.gun_right_m),
-                                        weapon_alignment::Up(g_config.gun_up_m),leftCarrier))
+                                        weapon_alignment::Forward(true,g_config.gun_forward_m,g_config.left_hand_forward_m,Config_ActiveTitleProfile()),
+                                        weapon_alignment::Right(true,g_config.gun_right_m,Config_ActiveTitleProfile()),
+                                        weapon_alignment::Up(g_config.gun_up_m,true,Config_ActiveTitleProfile()),leftCarrier))
                                 {
                                     split =
                                         Halo2PlaceFirstPersonSlotOnTwoControllers(

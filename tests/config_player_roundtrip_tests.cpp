@@ -11,6 +11,7 @@
 #include <string>
 #include <vector>
 #include "../src/common/config.h"
+#include "../src/common/weapon_alignment.h"
 
 namespace
 {
@@ -51,6 +52,12 @@ int main()
     // The first load of a file that is not there leaves the built-in settings; the save writes all of them.
     g_config = Config{};
     ConfigLoad(path);
+    for (int profile=0;profile<kTitleProfileCount;++profile) {
+        const auto baseline=weapon_alignment::Baseline(profile);
+        const auto& saved=g_config.title_profiles[profile];
+        Check(saved.gun_forward_m==baseline.forward && saved.gun_right_m==baseline.right &&
+            saved.gun_up_m==baseline.up,"new config uses per-title gun baselines");
+    }
     g_config.mono_rendering = true;
     ConfigSave();
 

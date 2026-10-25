@@ -1,3 +1,4 @@
+#include "../common/weapon_alignment.h"
 #include <windows.h>
 #include <windowsx.h>
 #include <algorithm>
@@ -1731,19 +1732,30 @@ namespace
         ImGui::TextDisabled("Align the visible barrel with the crosshair. These rotations\n"
                             "move the gun and hands without changing the aiming ray.\n"
                             "Saved separately for each game; zero restores automatic alignment.");
-        changed |= vr_menu::SliderFloat("Gun forward offset (m)", &g_config.gun_forward_m, -0.3f, 0.5f, "%.2f");
-        ImGui::TextDisabled("Moves both hands along their aim. Left hand forward offset adds extra trim.");
-        changed |= vr_menu::SliderFloat("Gun right offset (m)", &g_config.gun_right_m, -0.3f, 0.3f, "%.2f");
+        const auto gunBase=weapon_alignment::Baseline(Config_ActiveTitleProfile());
+        const auto offsetSlider=[&](const char* label,float& value,float baseline,float minimum,float maximum) {
+            float delta=value-baseline;
+            if (!vr_menu::SliderFloat(label,&delta,minimum-baseline,maximum-baseline,"%.2f")) return false;
+            value=baseline+delta;
+            return true;
+        };
+        changed |= offsetSlider("Gun forward offset (m)",g_config.gun_forward_m,gunBase.forward,-.3f,.5f);
+        changed |= offsetSlider("Gun right offset (m)",g_config.gun_right_m,gunBase.right,-.3f,.3f);
         ImGui::SameLine();
-        if (ImGui::SmallButton("Center##gnrx")) { g_config.gun_right_m = 0.0f; changed = true; }
-        changed |= vr_menu::SliderFloat("Gun up offset (m)", &g_config.gun_up_m, -0.3f, 0.3f, "%.2f");
+        if (ImGui::SmallButton("Center##gnrx")) { g_config.gun_right_m=gunBase.right; changed=true; }
+        changed |= offsetSlider("Gun up offset (m)",g_config.gun_up_m,gunBase.up,-.3f,.3f);
         ImGui::SameLine();
-        if (ImGui::SmallButton("Center##gnux")) { g_config.gun_up_m = 0.0f; changed = true; }
-        ImGui::TextDisabled("Applied to both hands; right offset is mirrored on the left.");
+        if (ImGui::SmallButton("Center##gnux")) { g_config.gun_up_m=gunBase.up; changed=true; }
+        if (ImGui::SmallButton("Reset gun offsets")) {
+            g_config.gun_forward_m=gunBase.forward;g_config.gun_right_m=gunBase.right;g_config.gun_up_m=gunBase.up;
+            changed=true;
+        }
+        ImGui::TextDisabled("Zero uses this game's calibrated hand positions. Changes move both hands;\n"
+                            "only the right-offset adjustment is mirrored on the left.");
 
         ImGui::TextDisabled("Visual rotations are separate from barrel aiming in all supported VR titles.");
         ImGui::Spacing();
-        ImGui::TextDisabled("Halo 2 Classic includes a fixed -9.5 degree visual pitch correction.");
+        ImGui::TextDisabled("Halo 2 Classic includes a fixed -9.5 pitch and -1 yaw visual correction.");
         changed |= vr_menu::SliderFloat("Muzzle height (m)", &g_config.muzzle_height_m, -0.3f, 0.3f, "%.2f");
         ImGui::TextDisabled("Reach: adjusts secondary muzzle placement; H3/ODST marker effects follow the gun. H2 Classic does not read this slider.");
         ImGui::TextDisabled("Raises supported muzzle/effect placement along the gun's own axis.");

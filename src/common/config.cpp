@@ -1,3 +1,4 @@
+#include "weapon_alignment.h"
 #include <windows.h>
 #include <cstdio>
 #include <cstring>
@@ -798,6 +799,10 @@ std::atomic<int> g_activeTitleProfile{-1};
 // key holds.
 float ProfileSeed(int profile, const TunableField& descriptor, float shared)
 {
+    const auto gun=weapon_alignment::Baseline(profile);
+    if (descriptor.member == &TitleTunables::gun_forward_m) return gun.forward;
+    if (descriptor.member == &TitleTunables::gun_right_m) return gun.right;
+    if (descriptor.member == &TitleTunables::gun_up_m) return gun.up;
     const TitleTunables defaults{};
     const CrosshairStart& own = kCrosshairStarts[profile];
     if (descriptor.member == &TitleTunables::crosshair_size_deg && own.size_deg != defaults.crosshair_size_deg)

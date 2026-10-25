@@ -1,3 +1,17 @@
+## Latest: per-title zero-labelled gun offsets and H2 Classic yaw
+
+User requests source commit only, no build. Added calibrated right/left base
+positions for all seven title profiles in common/weapon_alignment.h, with the
+left values already signed. CE/Reach left baselines mirror right lateral because
+no separate left values were supplied. Existing absolute config/weapon-profile
+values are preserved; missing title fields start at the new right baselines.
+Menu sliders display deltas from those bases; Reset gun offsets restores zero.
+Left carriers use left base plus shared deltas (only lateral delta mirrored),
+without changing right carriers. Existing left-forward additive trim remains.
+H2 Classic visual yaw adds -1 degree beside -9.5 pitch, using the same neutral
+muzzle-frame separation. Tests extended for every base, signed left deltas and
+new-config defaults; not compiled/run at user request. CI workflow untouched.
+
 ## Latest: H3 secondary lateral calibration corrected by user
 
 User reports -0.4 m was excessive and moved in the wrong direction. Disable

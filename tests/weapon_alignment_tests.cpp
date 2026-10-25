@@ -16,6 +16,28 @@ int main()
     assert(near(Forward(true,.12f,.03f),.15f));
     assert(near(Right(false,.08f),.08f)&&near(Right(true,.08f),-.08f));
     assert(near(Up(.04f),.04f));
+    const Offsets expectedRight[]{
+        {-.16f,-.04f,-.06f},{-.16f,-.03f,-.05f},{-.16f,-.04f,-.06f},
+        {-.20f,0,-.04f},{-.16f,.02f,-.04f},{-.16f,.02f,-.10f},{-.16f,.02f,-.05f}};
+    const Offsets expectedLeft[]{
+        {-.16f,.04f,0},{-.16f,.03f,-.01f},{-.16f,.04f,-.06f},
+        {-.20f,-.02f,-.09f},{-.10f,0,-.04f},{-.12f,.01f,-.04f},{-.16f,-.02f,-.05f}};
+    for (int profile=0;profile<7;++profile) {
+        const auto right=Baseline(profile),left=expectedLeft[profile];
+        assert(near(right.forward,expectedRight[profile].forward));
+        assert(near(right.right,expectedRight[profile].right));
+        assert(near(right.up,expectedRight[profile].up));
+        assert(near(Forward(false,right.forward,0,profile),right.forward));
+        assert(near(Right(false,right.right,profile),right.right));
+        assert(near(Up(right.up,false,profile),right.up));
+        assert(near(Forward(true,right.forward,0,profile),left.forward));
+        assert(near(Right(true,right.right,profile),left.right));
+        assert(near(Up(right.up,true,profile),left.up));
+        assert(near(Forward(true,right.forward+.01f,.02f,profile),left.forward+.03f));
+        assert(near(Right(true,right.right+.01f,profile),left.right-.01f));
+        assert(near(Up(right.up+.01f,true,profile),left.up+.01f));
+    }
+    assert(near(kH2ClassicVisualYaw,-1.f));
     assert(H3SecondaryYaw(1,0x171C0B10u)==30 && H3SecondaryYaw(0,0x171C0B10u)==0);
     assert(H3SecondaryYaw(1,0x1E130811u)==0);
     assert(H3SecondaryYaw(1,0x16120C11u)==30 && H3SecondaryYaw(0,0x16120C11u)==0);
