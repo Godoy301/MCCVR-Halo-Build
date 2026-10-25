@@ -26633,7 +26633,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
         if (!yaw || count!=(checksum==0x171C0B10u?4:7)) return;
         BoneMatrix frame{};float scale=1;
         if (!DesiredWristWorld(true,frame,scale,nullptr)) return;
-        const float lateral=.02f*g_worldScale.load();
+        const float lateral=.06f*g_worldScale.load();
         if (!std::isfinite(lateral)) return;
         BoneMatrix candidate[7]{};
         for (int i=0;i<count;++i) {
