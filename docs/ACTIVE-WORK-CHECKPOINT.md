@@ -1,3 +1,14 @@
+## Latest: diagnostic video and weapon sample starvation
+
+User supplied 35.78 s video (Drive1yNpxPujFh-9J0KOKh5v8iWbqhIojQq4n),
+SMG/Spiker comparison. Previous link was the map. Log800325cc contains mostly
+body tag3C82 with held node-1; rate limit is consumed by body submission before
+weapon tags0771/1265. Skip no-held-source submissions before the rate limiter
+so both slots report actual held source and final weapon palette. This changes
+only diagnostics. Flash mismatch remains tied to SMG/Plasma Rifle visual-only
+postcomposition correction; no effect fix claimed yet. Video downloaded to
+/tmp/dual-video-download; contact sheet /tmp/dual-contact.jpg.
+
 ## Latest: H3 dual animation diagnostic candidate
 
 User authorizes diagnostic build for missing secondary recoil/reload whole-gun

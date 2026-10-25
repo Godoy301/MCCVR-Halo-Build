@@ -13,15 +13,18 @@ void CaptureH3DualAnimation(uint16_t tag,const FpInterpolationContext& context,
 {
     if(!context.valid || context.player!=0 || context.slot<0 || context.slot>1 ||
        context.count<=0 || context.count>64 || !authored || !solved || !root || !finalPalette) return;
+    // Body submissions can arrive before the held-model submission each frame.
+    // They must not consume the rate limit or overwrite weapon evidence.
+    int held=-1;
+    for(int i=0;i<context.count;++i)
+        if(FpSourceIndexIsHeldObject(i,context.count,context.heldObjectStart,context.heldSources)) {held=i;break;}
+    if(held<0) return;
     auto& sample=g_h3DualAnimation[context.slot];
     if(sample.writing.test_and_set(std::memory_order_acquire)) return;
     const uint32_t now=GetTickCount();
     if(uint32_t(now-sample.time.load(std::memory_order_relaxed))<100) {
         sample.writing.clear(std::memory_order_release);return;
     }
-    int held=-1;
-    for(int i=0;i<context.count;++i)
-        if(FpSourceIndexIsHeldObject(i,context.count,context.heldObjectStart,context.heldSources)) {held=i;break;}
     const int nodes[]{context.wrist,context.lWrist,held,0};
     sample.sequence.fetch_add(1,std::memory_order_acq_rel);
     sample.generation.store(context.generation,std::memory_order_relaxed);
