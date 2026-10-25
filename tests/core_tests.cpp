@@ -7394,8 +7394,8 @@ int main()
             HudLayoutAdapterFor(HudLayoutProfile::Halo3);
         const HudLayoutAdapter* odstHud =
             HudLayoutAdapterFor(HudLayoutProfile::Halo3ODST);
-        Check(halo3Hud && halo3Hud->expectedBlocks == 3,
-            "Halo 3 HUD layout retains its three proven skin blocks");
+        Check(halo3Hud && halo3Hud->expectedBlocks == 2,
+            "Halo 3 HUD layout supports two mod resolution records or three stock skins");
         Check(odstHud && odstHud->expectedBlocks == 1,
             "ODST HUD layout accepts only its uniquely proven globals block");
         const HudLayoutAdapter* reachHud =
@@ -7466,9 +7466,9 @@ int main()
         // Halo 3 and ODST keep their proven exact cardinality and their proven
         // private-read-write-only search. Only Reach may look wider.
         Check(HudLayoutAcceptedCountOk(*halo3Hud, 3) &&
-                  !HudLayoutAcceptedCountOk(*halo3Hud, 2) &&
+                  HudLayoutAcceptedCountOk(*halo3Hud, 2) &&
                   !HudLayoutAcceptedCountOk(*halo3Hud, 4),
-            "Halo 3 still accepts exactly three layout blocks");
+            "Halo 3 accepts the verified two or three layout blocks");
         Check(HudLayoutAcceptedCountOk(*odstHud, 1) &&
                   !HudLayoutAcceptedCountOk(*odstHud, 0) &&
                   !HudLayoutAcceptedCountOk(*odstHud, 2),

@@ -1,3 +1,11 @@
+## Latest: Ultimate Firefight HUD alternate resolution candidate
+
+Log proves layout scan rejection (stock anchor safe frames0/0). Supplied map
+metadata proves live-scale1600x580 and960x580 records, omitted by old anchor.
+Add exact alternate signatures and accept verified2..3 blocks; preserve safety
+checks and stock signature. See HALO3-ULTIMATE-HUD-2026-10-25.md. Runtime/headset
+validation pending; this is bounded layout support, not universal discovery.
+
 ## Latest: persistent World scale per title
 
 User requests World scale per game. Added world_scale to title tunables,
