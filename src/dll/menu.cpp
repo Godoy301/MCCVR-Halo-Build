@@ -661,13 +661,17 @@ namespace
         }
         if (ImGui::CollapsingHeader("World scale##section", ImGuiTreeNodeFlags_None))
         {
-            float worldScale=Game_GetWorldScale();
-            if (vr_menu::SliderFloat("World scale", &worldScale, .05f, 2.0f, "%.3f"))
+            float worldScale=Game_GetWorldScale()/.33f*100.f;
+            if (vr_menu::SliderFloat("World scale", &worldScale, 50.f, 150.f, "%.0f%%"))
             {
-                Game_SetWorldScale(worldScale);
+                Game_SetWorldScale(worldScale*.0033f);
                 changed=true;
             }
-            ImGui::TextDisabled("Game units per metre. Saved separately for each game.");
+            if (ImGui::SmallButton("Reset world scale")) {
+                Game_SetWorldScale(.33f);
+                changed=true;
+            }
+            ImGui::TextDisabled("100% is the original scale. Saved separately for each game.");
         }
         if (ImGui::CollapsingHeader("Head motion##section", ImGuiTreeNodeFlags_None))
         {

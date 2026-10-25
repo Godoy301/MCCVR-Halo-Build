@@ -754,7 +754,7 @@ const TunableField kTunableFields[] = {
      -180.0f, 180.0f},
     {"gun_roll_deg", &TitleTunables::gun_roll_deg, &Config::gun_roll_deg,
      -180.0f, 180.0f},
-    {"world_scale", &TitleTunables::world_scale, &Config::world_scale, .05f, 2.f},
+    {"world_scale", &TitleTunables::world_scale, &Config::world_scale, .165f, .495f},
     {"gun_forward_m", &TitleTunables::gun_forward_m, &Config::gun_forward_m,
      -0.30f, 0.50f},
     {"gun_right_m", &TitleTunables::gun_right_m, &Config::gun_right_m,

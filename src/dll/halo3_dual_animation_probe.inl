@@ -9,16 +9,20 @@ struct H3DualAnimationSample
 };
 H3DualAnimationSample g_h3DualAnimation[2];
 void CaptureH3DualAnimation(uint16_t tag,const FpInterpolationContext& context,
-    const BoneMatrix* authored,const BoneMatrix* solved,const BoneMatrix* root,const BoneMatrix* finalPalette)
+    const BoneMatrix* authored,const BoneMatrix* solved,const BoneMatrix* root,const BoneMatrix* finalPalette,const int32_t* boneMap)
 {
     if(!context.valid || context.player!=0 || context.slot<0 || context.slot>1 ||
        context.count<=0 || context.count>64 || !authored || !solved || !root || !finalPalette) return;
-    // Body submissions can arrive before the held-model submission each frame.
-    // They must not consume the rate limit or overwrite weapon evidence.
-    int held=-1;
-    for(int i=0;i<context.count;++i)
-        if(FpSourceIndexIsHeldObject(i,context.count,context.heldObjectStart,context.heldSources)) {held=i;break;}
-    if(held<0) return;
+    // Read the same source index used by the native render-model composer.
+    // The held-source classifier can exclude a secondary root carried on a
+    // hand node; diagnostic sampling must not depend on that classification.
+    uint32_t checksum=0;
+    const int count=LegacyAnatomicalRenderNodeCount(GameTitle::Halo3,tag,&checksum);
+    if(!((checksum==0x171C0B10u && count==4) ||
+         (checksum==0x15130F16u && count==7) ||
+         (checksum==0x16120C11u && count==7))) return;
+    int32_t held=-1;
+    if(!boneMap || !SafeReadBytes(boneMap,&held,sizeof(held)) || held<0 || held>=context.count) return;
     auto& sample=g_h3DualAnimation[context.slot];
     if(sample.writing.test_and_set(std::memory_order_acquire)) return;
     const uint32_t now=GetTickCount();

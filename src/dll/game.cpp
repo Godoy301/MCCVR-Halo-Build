@@ -7052,6 +7052,7 @@ namespace
 
     bool ReachBoneMatrixFinite(const BoneMatrix& matrix);
 
+static int LegacyAnatomicalRenderNodeCount(GameTitle title,uint16_t tag,uint32_t* checksum);
 #include "halo3_dual_animation_probe.inl"
 
     bool ReconstructVisiblePaletteSource(uint16_t tag,
@@ -8105,7 +8106,7 @@ namespace
             Halo3PublishMuzzlePalette(tag,context,destination,collisionGeneration);
             LegacyApplyVisualHandOffsets(GameTitle::Halo3,tag,boneMap,context,destination);
             CaptureH3DualAnimation(tag,context,g_fpUnmodifiedInterpolations[context.slot],
-                selectedSource,root,destination);
+                selectedSource,root,destination,boneMap);
             if(context.valid&&context.player==0&&context.slot==0)
                 ObserveHalo3AvatarFp(tag,destination);
         }
@@ -57260,7 +57261,7 @@ float Game_GetWorldScale() { return g_worldScale.load(); }
 void Game_SetWorldScale(float value)
 {
     if (!std::isfinite(value)) return;
-    g_config.world_scale=Clamp(value,0.05f,2.0f);
+    g_config.world_scale=Clamp(value,0.165f,0.495f);
     g_worldScale.store(g_config.world_scale);
 }
 

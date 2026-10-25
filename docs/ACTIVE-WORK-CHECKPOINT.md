@@ -1,3 +1,14 @@
+## Latest: percent world scale and native-remap animation probe
+
+User log868b628e has286 valid slot0 SMG0771 samples, zero slot1 samples. Do not
+claim this proves no secondary animation: the held-source filter excluded the
+secondary. Probe now samples native boneMap[0], bounded by context count and
+verified SMG/Spiker/Plasma Rifle model checksum/count, independent of classifier.
+World scale UI becomes50..150%,100%=.33 native units/metre, reset to100%.
+Underlying per-title config remains native units, bounded .165..495. Existing
+in-range saved values preserved; defaults remain100%. No animation/effect fix
+claimed. Further headset diagnostic comparison needed.
+
 ## Latest: diagnostic video and weapon sample starvation
 
 User supplied 35.78 s video (Drive1yNpxPujFh-9J0KOKh5v8iWbqhIojQq4n),
