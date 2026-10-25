@@ -1,3 +1,11 @@
+## Latest: H3 secondary lateral calibration corrected by user
+
+User reports -0.4 m was excessive and moved in the wrong direction. Disable
+that displacement in its own rollback commit, then replace it with +0.04 m
+relative to the original position for secondary SMG and Plasma Rifle. Keep
++30 degree yaw, model/slot guards, H2 pitch and one-time offset reset unchanged.
+No cumulative displacement. Headset verification pending.
+
 ## October 24 latest: user accepted alignment build; follow-up calibration
 
 User confirms build/test success and correct secondary H3 SMG yaw, but requests
