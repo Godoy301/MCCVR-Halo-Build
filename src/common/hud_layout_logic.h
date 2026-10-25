@@ -99,7 +99,8 @@ inline constexpr std::array<uint8_t, kHudLayoutMaxAnchor> HudLayoutBytes(
 //    0  virtual width, virtual height
 //    8  sensor origin, sensor radius, blip radius
 //   24  global safe frame horiz., global safe frame vert.
-inline constexpr HudLayoutAdapter kHalo3HudLayoutAdapter = {
+// Headset-rejected: matching alternate records did not affect the visible HUD.
+inline constexpr HudLayoutAdapter kHalo3AlternateHudLayoutCandidate = {
     HudLayoutProfile::Halo3,
     "Halo 3",
     HudLayoutBytes({
@@ -129,6 +130,15 @@ inline constexpr HudLayoutAdapter kHalo3HudLayoutAdapter = {
     2,
     false,
 };
+
+// Restore the accepted stock locator while retaining the failed candidate.
+inline constexpr HudLayoutAdapter kHalo3HudLayoutAdapter = [] {
+    auto adapter=kHalo3AlternateHudLayoutCandidate;
+    adapter.expectedBlocks=3;
+    adapter.maxBlocks=3;
+    adapter.altAnchorCount=0;
+    return adapter;
+}();
 
 inline constexpr HudLayoutAdapter kOdstHudLayoutAdapter = {
     HudLayoutProfile::Halo3ODST,

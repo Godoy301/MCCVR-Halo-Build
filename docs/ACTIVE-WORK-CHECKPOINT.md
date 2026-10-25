@@ -1,3 +1,14 @@
+## Latest: rejected Ultimate Firefight HUD experiment disabled
+
+User reports no HUD size/aspect/curvature response in Ultimate Firefight or
+vanilla. Log868b628e proves alternate pair discovery and successful writes but
+not visible consumption. No separate stock-map scan appears in this log, so
+vanilla regression cause remains unproven. Disable alternate-anchor candidate
+and restore accepted original Halo3 adapter (stock anchor, exactly3 records),
+retaining candidate dormant per repo rules. This is a rollback for regression
+isolation, not a claimed Ultimate Firefight fix. No new CI trigger requested.
+Need active native HUD consumer evidence before broader mod-layout changes.
+
 ## Latest: percent world scale and native-remap animation probe
 
 User log868b628e has286 valid slot0 SMG0771 samples, zero slot1 samples. Do not
