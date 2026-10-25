@@ -665,15 +665,15 @@ inline bool ApplyVisualMount(const ControllerRig& rig,float unitsPerMeter,
     bool primary,NodeMatrix& matrix) noexcept
 {
     const float scale=primary?rig.gunScale:rig.supportScale;
-    const float forward=weapon_alignment::Forward(!primary,rig.gunForwardM,rig.supportForwardM);
+    const float forward=weapon_alignment::Forward(!primary,primary?rig.gunForwardM:rig.leftGunForwardM,rig.supportForwardM);
     const float pitchDeg=primary?rig.visualPitchDeg:rig.supportMountPitchDeg;
     const float yawDeg=primary?rig.visualYawDeg:rig.supportMountYawDeg;
     const float rollDeg=primary?rig.visualRollDeg:rig.supportMountRollDeg;
     if (!Valid(matrix)||!std::isfinite(scale)||!std::isfinite(forward)||
         !std::isfinite(unitsPerMeter)||unitsPerMeter<=0||
         !std::isfinite(pitchDeg)||!std::isfinite(yawDeg)||
-        !std::isfinite(rollDeg)||!std::isfinite(rig.gunRightM)||
-        !std::isfinite(rig.gunUpM)) return false;
+        !std::isfinite(rollDeg)||!std::isfinite(primary?rig.gunRightM:rig.leftGunRightM)||
+        !std::isfinite(primary?rig.gunUpM:rig.leftGunUpM)) return false;
     NodeMatrix candidate=matrix;
     {
         constexpr float radians=0.01745329252f;
@@ -689,8 +689,8 @@ inline bool ApplyVisualMount(const ControllerRig& rig,float unitsPerMeter,
     candidate.scale=std::clamp(scale,0.3f,3.0f);
     candidate.position=candidate.position+candidate.forward*
         (forward*unitsPerMeter);
-    candidate.position=candidate.position-candidate.left*(weapon_alignment::Right(!primary,rig.gunRightM)*unitsPerMeter)+
-            candidate.up*(std::clamp(rig.gunUpM,-0.3f,0.3f)*unitsPerMeter);
+    candidate.position=candidate.position-candidate.left*(weapon_alignment::Right(false,primary?rig.gunRightM:rig.leftGunRightM)*unitsPerMeter)+
+            candidate.up*(std::clamp(primary?rig.gunUpM:rig.leftGunUpM,-0.3f,0.3f)*unitsPerMeter);
     if (!Valid(candidate)) return false;
     matrix=candidate;return true;
 }

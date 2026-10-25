@@ -57,7 +57,12 @@ int main()
         const auto& saved=g_config.title_profiles[profile];
         Check(saved.gun_forward_m==baseline.forward && saved.gun_right_m==baseline.right &&
             saved.gun_up_m==baseline.up,"new config uses per-title gun baselines");
+        const auto left=weapon_alignment::kLeftOffsets[profile];
+        Check(saved.left_gun_forward_m==left.forward && saved.left_gun_right_m==left.right &&
+            saved.left_gun_up_m==left.up,"new config uses independent left baselines");
     }
+    g_config.left_gun_forward_m=.11f;g_config.left_gun_right_m=-.07f;g_config.left_gun_up_m=.03f;
+    g_config.gun_forward_m=-.22f;g_config.gun_right_m=.08f;g_config.gun_up_m=-.09f;
     g_config.mono_rendering = true;
     ConfigSave();
 
@@ -70,6 +75,10 @@ int main()
         std::printf("FAIL: written by a player build and not read by one: %s\n", line.c_str());
     failures += static_cast<int>(g_unknownKeys.size());
     Check(g_config.mono_rendering, "mono_rendering is remembered");
+    Check(g_config.left_gun_forward_m==.11f && g_config.left_gun_right_m==-.07f && g_config.left_gun_up_m==.03f,
+        "left offsets survive save/reload");
+    Check(g_config.gun_forward_m==-.22f && g_config.gun_right_m==.08f && g_config.gun_up_m==-.09f,
+        "right offsets remain independent after save/reload");
 
     // Upgrade once, including explicit title overrides; later edits survive reload.
     FILE* legacy=nullptr;

@@ -148,7 +148,7 @@ int main(int argc,char** argv)
         rig.controlsPresentationBlocked=false;rig.primaryAim.valid=rig.support.valid=true;
         rig.primaryAim.position={.3f,-.2f,-.6f};rig.support.position={-.3f,-.1f,-.4f};
         rig.gunScale=primaryScale;rig.supportScale=supportScale;
-        rig.gunForwardM=rig.supportForwardM=0;rig.primaryShoulderDrop=0;
+        rig.gunForwardM=rig.supportForwardM=0;rig.leftGunForwardM=rig.leftGunRightM=rig.leftGunUpM=0;rig.primaryShoulderDrop=0;
         rig.floatingHands=(flags&1)!=0;rig.leftHanded=(flags&2)!=0;
         rig.handAlignment=(flags&4)!=0;rig.twoHandAimActive=(flags&8)!=0;
         std::array<NodeMatrix,kFirstPersonMaxNodes> palette{};
@@ -268,12 +268,17 @@ int main(int argc,char** argv)
     {
         ControllerRig rig{};
         rig.gunForwardM=.12f;rig.supportForwardM=.03f;rig.gunRightM=.08f;rig.gunUpM=.04f;
+        rig.leftGunForwardM=.06f;rig.leftGunRightM=-.02f;rig.leftGunUpM=-.05f;
         rig.visualPitchDeg=rig.visualYawDeg=rig.visualRollDeg=0;
         rig.supportMountPitchDeg=rig.supportMountYawDeg=rig.supportMountRollDeg=0;
         NodeMatrix right{},left{};
         CHECK(ApplyVisualMount(rig,1,true,right)&&ApplyVisualMount(rig,1,false,left));
         CHECK(Near(right.position,{.12f,-.08f,.04f}));
-        CHECK(Near(left.position,{.15f,.08f,.04f}));
+        CHECK(Near(left.position,{.09f,.02f,-.05f}));
+        rig.gunForwardM=-.2f;rig.gunRightM=-.1f;rig.gunUpM=.2f;
+        NodeMatrix unchangedLeft{};
+        CHECK(ApplyVisualMount(rig,1,false,unchangedLeft));
+        CHECK(Near(unchangedLeft.position,left.position));
     }
     for(const auto& asset:ceXamGraphs) {
         FirstPersonBinding binding{};
@@ -529,7 +534,7 @@ int main(int argc,char** argv)
     rig.controlsPresentationBlocked=false;
     rig.primaryAim.valid=rig.support.valid=true;
     rig.primaryAim.position={0.3f,0,-0.5f};rig.support.position={-0.3f,0,-0.3f};
-    rig.gunScale=rig.supportScale=1;rig.gunForwardM=rig.supportForwardM=0;
+    rig.gunScale=rig.supportScale=1;rig.gunForwardM=rig.supportForwardM=0;rig.leftGunForwardM=rig.leftGunRightM=rig.leftGunUpM=0;
     rig.primaryShoulderDrop=0;rig.floatingHands=false;
     CHECK(BuildTrackedFirstPersonPalette(binding,authored,camera,tracking,reference,1,true,palette));
     CHECK(Near(palette[6].position,{0.5f,-0.3f,0}));

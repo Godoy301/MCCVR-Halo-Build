@@ -8385,9 +8385,9 @@ namespace
                               bodyAnchorValid, bodyAnchor, cam);
         // Both hands receive the shared offsets. Keep the left-only forward
         // adjustment additive and mirror the lateral offset on the left.
-        const float standoff = weapon_alignment::Forward(left,g_config.gun_forward_m,g_config.left_hand_forward_m,Config_ActiveTitleProfile()) * s;
-        const float rightOff = weapon_alignment::Right(left,g_config.gun_right_m,Config_ActiveTitleProfile())*s;
-        const float upOff = weapon_alignment::Up(g_config.gun_up_m,left,Config_ActiveTitleProfile())*s;
+        const float standoff = weapon_alignment::Forward(left,(left?g_config.left_gun_forward_m:g_config.gun_forward_m),g_config.left_hand_forward_m) * s;
+        const float rightOff = weapon_alignment::Right(false,(left?g_config.left_gun_right_m:g_config.gun_right_m))*s;
+        const float upOff = weapon_alignment::Up((left?g_config.left_gun_up_m:g_config.gun_up_m))*s;
         for (int j = 0; j < 3; ++j)
             pos[j] = cam[j] + off[j] + basis[j] * standoff +
                 basis[3 + j] * rightOff + basis[6 + j] * upOff;
@@ -26633,7 +26633,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
         if (!yaw || count!=(checksum==0x171C0B10u?4:7)) return;
         BoneMatrix frame{};float scale=1;
         if (!DesiredWristWorld(true,frame,scale,nullptr)) return;
-        const float lateral=.04f*g_worldScale.load();
+        const float lateral=.02f*g_worldScale.load();
         if (!std::isfinite(lateral)) return;
         BoneMatrix candidate[7]{};
         for (int i=0;i<count;++i) {
@@ -27620,9 +27620,9 @@ static constexpr bool kOdstMappedFpEnabled = false;
             contactSpace->origin={gameplayBase[0]-reference.x,gameplayBase[1]-reference.y,
                                   gameplayBase[2]-reference.z};
         }
-        const float standoff=weapon_alignment::Forward(left,g_config.gun_forward_m,g_config.left_hand_forward_m,Config_ActiveTitleProfile())*scale;
-        const float rightOff=weapon_alignment::Right(left,g_config.gun_right_m,Config_ActiveTitleProfile())*scale;
-        const float upOff=weapon_alignment::Up(g_config.gun_up_m,left,Config_ActiveTitleProfile())*scale;
+        const float standoff=weapon_alignment::Forward(left,(left?g_config.left_gun_forward_m:g_config.gun_forward_m),g_config.left_hand_forward_m)*scale;
+        const float rightOff=weapon_alignment::Right(false,(left?g_config.left_gun_right_m:g_config.gun_right_m))*scale;
+        const float upOff=weapon_alignment::Up((left?g_config.left_gun_up_m:g_config.gun_up_m))*scale;
         out={};
         out.scale=1.0f;
         memcpy(out.rotation,basis,sizeof(basis));
@@ -33097,6 +33097,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
             const float referenceInputs[]{g_headPosRef[0],g_headPosRef[1],g_headPosRef[2],g_headYawRef,
                 g_config.gun_scale,g_config.left_hand_scale,g_config.gun_forward_m,
                 g_config.gun_right_m,g_config.gun_up_m,g_config.left_hand_forward_m,
+                g_config.left_gun_forward_m,g_config.left_gun_right_m,g_config.left_gun_up_m,
                 g_config.gun_pitch_deg,g_config.gun_yaw_deg,g_config.gun_roll_deg,
                 g_config.barrel_pitch_deg,g_config.barrel_yaw_deg,g_config.barrel_roll_deg};
             for (float value:referenceInputs)
@@ -41562,14 +41563,14 @@ static constexpr bool kOdstMappedFpEnabled = false;
                 (sg*roomForward-cg*roomRight)*s,
                 dy*s};
             // Halo 3's standoff, along the controller's own forward column.
-            const float standoff=weapon_alignment::Forward(left,g_config.gun_forward_m,g_config.left_hand_forward_m,Config_ActiveTitleProfile())*s;
+            const float standoff=weapon_alignment::Forward(left,(left?g_config.left_gun_forward_m:g_config.gun_forward_m),g_config.left_hand_forward_m)*s;
             memcpy(controller.basis,basis,sizeof(basis));
             for (int axis=0;axis<3;++axis)
             {
                 controller.position[axis]=
                     bodyRoot.translation[axis]+off[axis]+basis[axis]*standoff+
-                    basis[3+axis]*weapon_alignment::Right(left,g_config.gun_right_m,Config_ActiveTitleProfile())*s+
-                    basis[6+axis]*weapon_alignment::Up(g_config.gun_up_m,left,Config_ActiveTitleProfile())*s;
+                    basis[3+axis]*weapon_alignment::Right(false,(left?g_config.left_gun_right_m:g_config.gun_right_m))*s+
+                    basis[6+axis]*weapon_alignment::Up((left?g_config.left_gun_up_m:g_config.gun_up_m))*s;
                 if (!isfinite(controller.position[axis])) return false;
             }
             for (int i=0;i<9;++i)
@@ -42338,7 +42339,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
         frame.rightForwardTrim=g_config.halo4_hand_forward_m+
             Clamp(g_config.gun_forward_m,-0.3f,0.5f);
         frame.leftForwardTrim=g_config.halo4_hand_forward_m+
-            weapon_alignment::Forward(true,g_config.gun_forward_m,g_config.left_hand_forward_m,Config_ActiveTitleProfile());
+            weapon_alignment::Forward(true,g_config.left_gun_forward_m,g_config.left_hand_forward_m);
         frame.gunYawDeg=g_config.gun_yaw_deg;
         frame.gunPitchDeg=g_config.gun_pitch_deg;
         frame.gunRollDeg=g_config.gun_roll_deg;
@@ -42449,9 +42450,9 @@ static constexpr bool kOdstMappedFpEnabled = false;
             return false;
         {
             const float rightOff=
-                weapon_alignment::Right(left,g_config.gun_right_m,Config_ActiveTitleProfile())*input.worldScale;
+                weapon_alignment::Right(false,(left?g_config.left_gun_right_m:g_config.gun_right_m))*input.worldScale;
             const float upOff=
-                weapon_alignment::Up(g_config.gun_up_m,left,3)*input.worldScale;
+                weapon_alignment::Up(left?g_config.left_gun_up_m:g_config.gun_up_m)*input.worldScale;
             for (int axis=0;axis<3;++axis)
                 carrier.translation[axis]+=
                     carrier.rotation[3+axis]*rightOff +
@@ -42542,7 +42543,8 @@ static constexpr bool kOdstMappedFpEnabled = false;
                 targetFrame.rightForwardTrim,targetFrame.leftForwardTrim,
                 targetFrame.visualPitchDeg,targetFrame.visualYawDeg,targetFrame.visualRollDeg,
                 targetFrame.common.verticalTrim,targetFrame.common.lateralTrim,
-                g_config.gun_right_m,g_config.gun_up_m,g_config.gun_scale,g_config.left_hand_scale};
+                g_config.gun_right_m,g_config.gun_up_m,g_config.gun_scale,g_config.left_hand_scale,
+                g_config.left_gun_forward_m,g_config.left_gun_right_m,g_config.left_gun_up_m};
             for(float value:trims)
             { uint32_t bits=0; memcpy(&bits,&value,sizeof(bits)); settings=(settings^bits)*1099511628211ull; }
             for(int hand=0;hand<2;++hand)

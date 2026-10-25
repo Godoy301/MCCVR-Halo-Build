@@ -759,6 +759,9 @@ const TunableField kTunableFields[] = {
     {"gun_right_m", &TitleTunables::gun_right_m, &Config::gun_right_m,
      -0.30f, 0.30f},
     {"gun_up_m", &TitleTunables::gun_up_m, &Config::gun_up_m, -0.30f, 0.30f},
+    {"left_gun_forward_m", &TitleTunables::left_gun_forward_m, &Config::left_gun_forward_m, -.3f, .5f},
+    {"left_gun_right_m", &TitleTunables::left_gun_right_m, &Config::left_gun_right_m, -.3f, .3f},
+    {"left_gun_up_m", &TitleTunables::left_gun_up_m, &Config::left_gun_up_m, -.3f, .3f},
     {"left_hand_forward_m", &TitleTunables::left_hand_forward_m,
      &Config::left_hand_forward_m, -0.15f, 0.30f},
     {"hud_size", &TitleTunables::hud_size, &Config::hud_size, 0.30f, 1.00f, kTitleProfileReach},
@@ -803,6 +806,10 @@ float ProfileSeed(int profile, const TunableField& descriptor, float shared)
     if (descriptor.member == &TitleTunables::gun_forward_m) return gun.forward;
     if (descriptor.member == &TitleTunables::gun_right_m) return gun.right;
     if (descriptor.member == &TitleTunables::gun_up_m) return gun.up;
+    const auto left=weapon_alignment::HasProfile(profile)?weapon_alignment::kLeftOffsets[profile]:weapon_alignment::Offsets{-.16f,.04f,-.06f};
+    if (descriptor.member == &TitleTunables::left_gun_forward_m) return left.forward;
+    if (descriptor.member == &TitleTunables::left_gun_right_m) return left.right;
+    if (descriptor.member == &TitleTunables::left_gun_up_m) return left.up;
     const TitleTunables defaults{};
     const CrosshairStart& own = kCrosshairStarts[profile];
     if (descriptor.member == &TitleTunables::crosshair_size_deg && own.size_deg != defaults.crosshair_size_deg)
@@ -1917,6 +1924,12 @@ void ConfigLoad(const wchar_t* path)
             g_config.two_handed_aim = atoi(val) != 0;
         else if (!strcmp(key, "two_hand_toggle"))
             g_config.two_hand_toggle = atoi(val) != 0;
+        else if (!strcmp(key, "left_gun_forward_m"))
+            g_config.left_gun_forward_m = (float)atof(val);
+        else if (!strcmp(key, "left_gun_right_m"))
+            g_config.left_gun_right_m = (float)atof(val);
+        else if (!strcmp(key, "left_gun_up_m"))
+            g_config.left_gun_up_m = (float)atof(val);
         else if (!strcmp(key, "left_hand_forward_m"))
             g_config.left_hand_forward_m = (float)atof(val);
         else if (!strcmp(key, "two_hand_zone_right_m"))
@@ -3387,6 +3400,9 @@ void ConfigSave()
     fprintf(f, "# Left controller wrist-to-palm correction for support-hand seating/IK, in meters.\n");
     fprintf(f, "# Excluded from the two-hand aim line, which uses raw tracked points.\n");
     fprintf(f, "# (default %.3f, range -0.15 to 0.30)\n", d.left_hand_forward_m);
+    fprintf(f, "left_gun_forward_m = %.3f\n", g_config.base_tunables.left_gun_forward_m);
+    fprintf(f, "left_gun_right_m = %.3f\n", g_config.base_tunables.left_gun_right_m);
+    fprintf(f, "left_gun_up_m = %.3f\n", g_config.base_tunables.left_gun_up_m);
     fprintf(f, "left_hand_forward_m = %.3f\n\n", g_config.base_tunables.left_hand_forward_m);
     fprintf(f, "# Sideways nudge of the two-hand grab zone (+ = player's right), so the\n");
     fprintf(f, "# grab line sits on the visible barrel, in meters.\n");

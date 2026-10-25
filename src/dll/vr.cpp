@@ -16902,6 +16902,10 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                 rig.gunForwardM=g_config.gun_forward_m;
                 rig.gunRightM=g_config.gun_right_m;
                 rig.gunUpM=g_config.gun_up_m;
+                rig.leftGunForwardM=g_config.left_gun_forward_m;
+                rig.leftGunRightM=g_config.left_gun_right_m;
+                rig.leftGunUpM=g_config.left_gun_up_m;
+
                 rig.shoulderBackM=g_config.shoulder_back_m;
                 rig.primaryShoulderDrop=g_config.right_shoulder_drop;
                 const auto pose=[](const XrPosef& source,bool valid) {

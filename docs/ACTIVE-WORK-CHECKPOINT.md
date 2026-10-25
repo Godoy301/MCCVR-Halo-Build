@@ -1,3 +1,24 @@
+## Latest: independent hand offsets and flat, initially collapsed menu
+
+User requests separate forward/right/up sliders per hand retaining supplied
+per-title baselines, removal of Visible hand positioning controls and category
+parent headers, collapsed sections at each process start, and H3 secondary SMG/
+Plasma Rifle lateral correction +0.02 m. Compilation authorized.
+
+Added persisted left_gun_forward/right/up_m fields to title and per-weapon
+profiles, config read/write and CE frozen rig. All title controller paths now
+select independent hand values; left lateral values are already signed and are
+not mirrored. Existing right config keys retain their values; missing left
+profile keys initialize from requested left baselines. Contact reference hashes
+include new fields. Old left-only forward trim remains additive.
+Removed only visible-hand menu controls, leaving stored runtime calibration
+compatible. CategorySection now only filters/scopes controls, no parent header.
+Child headers use no DefaultOpen flag; ImGui IniFilename remains null, so open
+state lives only within the process. H3 correction replaces +0.04 with +0.02.
+Portable CE FP, CE contact and alignment tests pass ASan/UBSan; Windows
+round-trip coverage extended for independent defaults and persistence. Full
+Windows build and headset/UI validation pending. No accepted pointer advance.
+
 ## Latest: collapsible menu sections; compilation requested
 
 User asks each settings section to open/close like Quality of Life and authorizes

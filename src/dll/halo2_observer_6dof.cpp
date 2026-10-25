@@ -1792,9 +1792,9 @@ namespace
                    Halo2ControllerReference(publication), publication.referenceOrientation,
                    publication.referencePosition, leftOrientation,
                    tracking.leftControllerPosition, worldScale,
-                   weapon_alignment::Forward(true,g_config.gun_forward_m,g_config.left_hand_forward_m,Config_ActiveTitleProfile()),
-                   weapon_alignment::Right(true,g_config.gun_right_m,Config_ActiveTitleProfile()),
-                   weapon_alignment::Up(g_config.gun_up_m,true,Config_ActiveTitleProfile()),leftCarrier);
+                   weapon_alignment::Forward(true,g_config.left_gun_forward_m,g_config.left_hand_forward_m),
+                   weapon_alignment::Right(false,g_config.left_gun_right_m),
+                   weapon_alignment::Up(g_config.left_gun_up_m),leftCarrier);
     }
 
     void Halo2PublishCollisionCorrection(
@@ -2591,9 +2591,9 @@ namespace
             !Halo2BuildControllerCarrier(
                 renderCamera, headOrientation, headPosition, leftOrientation,
                 leftPosition, Game_GetWorldScale(),
-                weapon_alignment::Forward(true,g_config.gun_forward_m,g_config.left_hand_forward_m,Config_ActiveTitleProfile()),
-                weapon_alignment::Right(true,g_config.gun_right_m,Config_ActiveTitleProfile()),
-                weapon_alignment::Up(g_config.gun_up_m,true,Config_ActiveTitleProfile()),candidate.leftCarrier))
+                weapon_alignment::Forward(true,g_config.left_gun_forward_m,g_config.left_hand_forward_m),
+                weapon_alignment::Right(false,g_config.left_gun_right_m),
+                weapon_alignment::Up(g_config.left_gun_up_m),candidate.leftCarrier))
         {
             return false;
         }
@@ -3721,9 +3721,9 @@ namespace
                                         pass.frame, headOrientation,
                                         headPosition, leftOrientation,
                                         leftPosition, Game_GetWorldScale(),
-                                        weapon_alignment::Forward(true,g_config.gun_forward_m,g_config.left_hand_forward_m,Config_ActiveTitleProfile()),
-                                        weapon_alignment::Right(true,g_config.gun_right_m,Config_ActiveTitleProfile()),
-                                        weapon_alignment::Up(g_config.gun_up_m,true,Config_ActiveTitleProfile()),leftCarrier))
+                                        weapon_alignment::Forward(true,g_config.left_gun_forward_m,g_config.left_hand_forward_m),
+                                        weapon_alignment::Right(false,g_config.left_gun_right_m),
+                                        weapon_alignment::Up(g_config.left_gun_up_m),leftCarrier))
                                 {
                                     split =
                                         Halo2PlaceFirstPersonSlotOnTwoControllers(

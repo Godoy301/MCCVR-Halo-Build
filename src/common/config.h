@@ -408,6 +408,9 @@ struct TitleTunables
     float gun_forward_m = -0.14f;
     float gun_right_m = 0.0f;
     float gun_up_m = 0.0f;
+    float left_gun_forward_m = -0.16f;
+    float left_gun_right_m = 0.04f;
+    float left_gun_up_m = -0.06f;
     float left_hand_forward_m = 0.0f;
     // The HUD layout. With no game running these four follow and edit Reach's profile rather than the shared
     // defaults (kTitleProfileReach), like the crosshair's below.
@@ -1267,6 +1270,9 @@ struct Config
     // controller ray. 0 = previous placement.
     float gun_right_m = 0.0f;
     float gun_up_m = 0.0f;
+    float left_gun_forward_m = -0.16f;
+    float left_gun_right_m = 0.04f;
+    float left_gun_up_m = -0.06f;
 
     // Halo 2 CLASSIC ONLY: extra rotation and offset applied to the visible
     // gun AND hands together, so Classic can be lined up with what
