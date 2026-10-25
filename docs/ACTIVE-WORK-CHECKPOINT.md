@@ -1,3 +1,11 @@
+## Latest: persistent World scale per title
+
+User requests World scale per game. Added world_scale to title tunables,
+shared config parsing/writing and slider save handling. Active title/renderer
+profile is applied to the runtime atomic scale during the existing frame profile
+selection. H2 Classic/Anniversary retain separate profiles. Default .33 and
+range .05..2 retained. No compilation requested; CI untouched.
+
 ## Latest: secondary visual alignment and World scale slider
 
 User requests no compilation. H3/ODST DesiredWristWorld skipped visual trim on

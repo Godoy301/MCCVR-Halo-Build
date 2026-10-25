@@ -392,6 +392,7 @@ inline constexpr CrosshairStart kCrosshairStarts[kTitleProfileCount] = {
 
 struct TitleTunables
 {
+    float world_scale = .33f;
     float gun_scale = 0.96f;
     float left_hand_scale = 0.96f;
     // Visible hand meshes only, in each hand's local frame (metres).
@@ -434,6 +435,7 @@ struct TitleTunables
 
 struct Config
 {
+    float world_scale = .33f;
     // Stamps the Halo 3, ODST and Reach shipped seat tables into their
     // independent per-seat arrays. Every other member keeps its default member
     // initializer, so Config{} remains the one description of a fresh

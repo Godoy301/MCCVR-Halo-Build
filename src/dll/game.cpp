@@ -49479,6 +49479,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
                     default: break;
                     }
                     Config_ApplyTitleProfile(tunableProfile);
+                    Game_SetWorldScale(g_config.world_scale);
                     VR_UpdateWeaponAlignment();
                 }
                 // C-H2-10. The classic core cannot serve Anniversary: with
@@ -52625,7 +52626,7 @@ void Game_PitchTrim(int dir)
 void Game_LeanScale(int dir)
 {
     const float s = Clamp(g_worldScale.load() + dir * 0.05f, 0.05f, 2.0f);
-    g_worldScale = s;
+    Game_SetWorldScale(s);
     LOG("lean scale %.2f (game units per meter)", s);
 }
 
@@ -57253,7 +57254,9 @@ void Game_GunScale(int dir)
 float Game_GetWorldScale() { return g_worldScale.load(); }
 void Game_SetWorldScale(float value)
 {
-    if (std::isfinite(value)) g_worldScale.store(Clamp(value,0.05f,2.0f));
+    if (!std::isfinite(value)) return;
+    g_config.world_scale=Clamp(value,0.05f,2.0f);
+    g_worldScale.store(g_config.world_scale);
 }
 
 // ---- Shots-vs-reticle frame tranche (read-only evidence) ----

@@ -754,6 +754,7 @@ const TunableField kTunableFields[] = {
      -180.0f, 180.0f},
     {"gun_roll_deg", &TitleTunables::gun_roll_deg, &Config::gun_roll_deg,
      -180.0f, 180.0f},
+    {"world_scale", &TitleTunables::world_scale, &Config::world_scale, .05f, 2.f},
     {"gun_forward_m", &TitleTunables::gun_forward_m, &Config::gun_forward_m,
      -0.30f, 0.50f},
     {"gun_right_m", &TitleTunables::gun_right_m, &Config::gun_right_m,
@@ -1055,6 +1056,7 @@ void ConfigLoad(const wchar_t* path)
             vehicleGameKey=true;break;
         }
         if(vehicleGameKey)continue;
+        if (!strcmp(key,"world_scale")) {ParseFloatSetting(key,val,g_config.world_scale);continue;}
         if (!strcmp(key,"left_hand_forward_reset_version")) {leftHandForwardResetV1=atoi(val)>=1;continue;}
         if (ParseWeaponAlignmentKey(key,val)||ParseTitleProfileKey(key, val))
             continue;
@@ -2123,6 +2125,7 @@ void ConfigSave()
         return;
     }
     fprintf(f, "left_hand_forward_reset_version = 1\n\n");
+    fprintf(f,"world_scale = %.4f\n",g_config.base_tunables.world_scale);
     const Config d{}; // struct defaults, printed beside each setting
 
     fprintf(f, "# ===================================================================\n");

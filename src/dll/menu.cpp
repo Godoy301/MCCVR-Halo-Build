@@ -663,8 +663,11 @@ namespace
         {
             float worldScale=Game_GetWorldScale();
             if (vr_menu::SliderFloat("World scale", &worldScale, .05f, 2.0f, "%.3f"))
+            {
                 Game_SetWorldScale(worldScale);
-            ImGui::TextDisabled("Game units per metre. Applies to the current session.");
+                changed=true;
+            }
+            ImGui::TextDisabled("Game units per metre. Saved separately for each game.");
         }
         if (ImGui::CollapsingHeader("Head motion##section", ImGuiTreeNodeFlags_None))
         {
