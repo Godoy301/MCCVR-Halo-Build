@@ -34,7 +34,7 @@ jobs:
           if ($env:GITHUB_REF_NAME -ne 'weapons-alignment') {
             throw "Refusing to build unexpected branch: $env:GITHUB_REF_NAME"
           }
-          $expectedSourceSha = 'c5a56b046a8ac1ca14444b842afb73152c596eb6'
+          $expectedSourceSha = 'd58e19839912cf8df52a1f4dbe405875d701808c'
           if ($env:EXPECTED_SOURCE_SHA -ne $expectedSourceSha) {
             throw "Source revision differs from the reviewed weapons-alignment commit. Expected $expectedSourceSha, got $env:EXPECTED_SOURCE_SHA. Refusing to build a different revision."
           }
@@ -120,7 +120,7 @@ jobs:
           Source branch: weapons-alignment
           Expected source in the first line of HaloMCCVR.log: $env:EXPECTED_SOURCE_SHA
           Includes: preserved modded-weapon fixes, visual/barrel separation, bilateral offsets and one-time left forward reset.
-          Test cleared retired Visible hand positioning offsets and preserved independent hand offsets.
+          Test retired visible-hand offsets clear on load, while per-title weapon offsets override shared defaults and persist independently.
           If the log reports source 5fdf982e, MCC loaded an older DLL.
           Use the Build ZIP from this artifact, not a previous workflow run.
           "@ | Set-Content 'out/candidates/BUILD-IDENTITY.txt'
