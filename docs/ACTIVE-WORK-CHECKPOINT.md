@@ -1,3 +1,11 @@
+## Latest: diagnostic compilation declaration fix
+
+User-provided logs109063516715 identify MSVC C3861 at
+halo3_dual_animation_probe.inl:25: SafeReadBytes not declared at include site.
+Add matching static int forward declaration before the diagnostic include;
+implementation and memory-read guards unchanged. New CI source also includes
+ece85a85 stock HUD locator restoration. Full Windows build pending.
+
 ## Latest: rejected Ultimate Firefight HUD experiment disabled
 
 User reports no HUD size/aspect/curvature response in Ultimate Firefight or

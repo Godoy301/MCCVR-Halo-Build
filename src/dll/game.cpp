@@ -7052,6 +7052,7 @@ namespace
 
     bool ReachBoneMatrixFinite(const BoneMatrix& matrix);
 
+static int SafeReadBytes(const void* src,void* dst,size_t n);
 static int LegacyAnatomicalRenderNodeCount(GameTitle title,uint16_t tag,uint32_t* checksum);
 #include "halo3_dual_animation_probe.inl"
 
