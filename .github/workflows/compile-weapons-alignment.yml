@@ -34,7 +34,7 @@ jobs:
           if ($env:GITHUB_REF_NAME -ne 'weapons-alignment') {
             throw "Refusing to build unexpected branch: $env:GITHUB_REF_NAME"
           }
-          $expectedSourceSha = 'd58e19839912cf8df52a1f4dbe405875d701808c'
+          $expectedSourceSha = '673c120a8f71b67f1d9754dc26b4c222bae21b2d'
           if ($env:EXPECTED_SOURCE_SHA -ne $expectedSourceSha) {
             throw "Source revision differs from the reviewed weapons-alignment commit. Expected $expectedSourceSha, got $env:EXPECTED_SOURCE_SHA. Refusing to build a different revision."
           }
