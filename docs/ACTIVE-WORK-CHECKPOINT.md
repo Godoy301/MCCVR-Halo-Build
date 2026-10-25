@@ -1,3 +1,14 @@
+## Latest: collapsible menu sections; compilation requested
+
+User asks each settings section to open/close like Quality of Life and authorizes
+compilation of accumulated weapons-alignment changes. Added independent
+CollapsingHeader groups for existing section headings, Virtual Stock, tracking
+calibration, telemetry and the experimental lab. Category scopes remain stable;
+individual pages start open, QoL category groups start closed. Collapsing does
+not change configuration or disable features. Existing widget callbacks and
+save handling retained. Static brace/widget-call checks pass; Windows build
+and UI interaction validation pending. Pin CI to this source after committing.
+
 ## Latest: per-title zero-labelled gun offsets and H2 Classic yaw
 
 User requests source commit only, no build. Added calibrated right/left base
