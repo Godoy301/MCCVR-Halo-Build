@@ -98,6 +98,33 @@ int main()
         DeleteFileW(path);
     }
 
+    // Retired shared and per-title offsets are cleared and remain inert on reload.
+    FILE* retired=nullptr;
+    _wfopen_s(&retired,path,L"wt");
+    Check(retired!=nullptr,"retired hand fixture opens");
+    if (retired) {
+        std::fputs("left_hand_forward_reset_version = 1\nleft_hand_mesh_x_m = .1\n"
+            "right_hand_mesh_z_m = -.1\nhalo4_left_hand_mesh_y_m = .15\n"
+            "halo4_right_hand_mesh_x_m = -.12\nhalo4_left_gun_right_m = .07\n",retired);
+        std::fclose(retired);
+        for (int pass=0;pass<2;++pass) {
+            ConfigLoad(path);
+            Config_ApplyTitleProfile(3);
+            Check(g_config.left_hand_mesh_x_m==0 && g_config.left_hand_mesh_y_m==0 &&
+                g_config.left_hand_mesh_z_m==0 && g_config.right_hand_mesh_x_m==0 &&
+                g_config.right_hand_mesh_y_m==0 && g_config.right_hand_mesh_z_m==0,
+                "retired visual hand offsets stay zero after title switch and reload");
+            Check(g_config.left_gun_right_m==.07f,"independent gun offset survives retired-hand cleanup");
+            for (const auto& profile:g_config.title_profiles)
+                Check(profile.left_hand_mesh_x_m==0 && profile.left_hand_mesh_y_m==0 &&
+                    profile.left_hand_mesh_z_m==0 && profile.right_hand_mesh_x_m==0 &&
+                    profile.right_hand_mesh_y_m==0 && profile.right_hand_mesh_z_m==0,
+                    "all title profiles discard retired hand offsets");
+            Config_ApplyTitleProfile(-1);
+        }
+        DeleteFileW(path);
+    }
+
     if (failures)
         std::printf("%d check(s) failed\n", failures);
     else

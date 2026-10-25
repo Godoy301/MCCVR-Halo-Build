@@ -1,3 +1,19 @@
+## Latest: retire hidden visual-hand offsets from stored config
+
+User suspects removed Visible hand positioning sliders still affect Halo4.
+Log source2661f34b, Steam; no six-value offset dump, so exact session offset is
+not proven. Code confirms Halo4ApplyVisualHandOffsets still applies saved
+nonzero values after the UI removal. Fast-forwarded remote through e7076e45,
+preserving the user's latest H3 lateral change and MSVC parser nesting fix.
+
+Zero all six retired live fields in Clamp and constrain their title-profile
+descriptors to [0,0]. Detect stale shared/title values before normalization and
+save the cleaned config immediately with a migration log message. Keys remain
+recognized, but later config edits cannot reactivate them. Preserve independent
+gun offsets and dormant transform code. Windows round-trip test covers upgrade,
+reload, title switch, all six fields/all profiles and surviving Halo4 gun trim.
+Static checks pass; Windows execution and headset validation pending.
+
 ## Latest: independent hand offsets and flat, initially collapsed menu
 
 User requests separate forward/right/up sliders per hand retaining supplied

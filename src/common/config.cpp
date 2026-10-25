@@ -478,12 +478,12 @@ static void Clamp()
     g_config.reticle_b = std::clamp(g_config.reticle_b, 0.0f, 1.0f);
     g_config.gun_scale = std::clamp(g_config.gun_scale, 0.3f, 3.0f);
     g_config.left_hand_scale = std::clamp(g_config.left_hand_scale, 0.3f, 3.0f);
-    g_config.left_hand_mesh_x_m = std::isfinite(g_config.left_hand_mesh_x_m) ? std::clamp(g_config.left_hand_mesh_x_m, -.20f, .20f) : 0.0f;
-    g_config.left_hand_mesh_y_m = std::isfinite(g_config.left_hand_mesh_y_m) ? std::clamp(g_config.left_hand_mesh_y_m, -.20f, .20f) : 0.0f;
-    g_config.left_hand_mesh_z_m = std::isfinite(g_config.left_hand_mesh_z_m) ? std::clamp(g_config.left_hand_mesh_z_m, -.20f, .20f) : 0.0f;
-    g_config.right_hand_mesh_x_m = std::isfinite(g_config.right_hand_mesh_x_m) ? std::clamp(g_config.right_hand_mesh_x_m, -.20f, .20f) : 0.0f;
-    g_config.right_hand_mesh_y_m = std::isfinite(g_config.right_hand_mesh_y_m) ? std::clamp(g_config.right_hand_mesh_y_m, -.20f, .20f) : 0.0f;
-    g_config.right_hand_mesh_z_m = std::isfinite(g_config.right_hand_mesh_z_m) ? std::clamp(g_config.right_hand_mesh_z_m, -.20f, .20f) : 0.0f;
+    g_config.left_hand_mesh_x_m = 0.0f;
+    g_config.left_hand_mesh_y_m = 0.0f;
+    g_config.left_hand_mesh_z_m = 0.0f;
+    g_config.right_hand_mesh_x_m = 0.0f;
+    g_config.right_hand_mesh_y_m = 0.0f;
+    g_config.right_hand_mesh_z_m = 0.0f;
 
     g_config.game_brightness = std::clamp(g_config.game_brightness, 0.5f, 2.0f);
     // Free-form: a hand-typed 0.90 stays 0.90. (Until 2026-07-20 this snapped
@@ -738,12 +738,12 @@ struct TunableField
 };
 
 const TunableField kTunableFields[] = {
-    {"left_hand_mesh_x_m", &TitleTunables::left_hand_mesh_x_m, &Config::left_hand_mesh_x_m, -.20f, .20f},
-    {"left_hand_mesh_y_m", &TitleTunables::left_hand_mesh_y_m, &Config::left_hand_mesh_y_m, -.20f, .20f},
-    {"left_hand_mesh_z_m", &TitleTunables::left_hand_mesh_z_m, &Config::left_hand_mesh_z_m, -.20f, .20f},
-    {"right_hand_mesh_x_m", &TitleTunables::right_hand_mesh_x_m, &Config::right_hand_mesh_x_m, -.20f, .20f},
-    {"right_hand_mesh_y_m", &TitleTunables::right_hand_mesh_y_m, &Config::right_hand_mesh_y_m, -.20f, .20f},
-    {"right_hand_mesh_z_m", &TitleTunables::right_hand_mesh_z_m, &Config::right_hand_mesh_z_m, -.20f, .20f},
+    {"left_hand_mesh_x_m", &TitleTunables::left_hand_mesh_x_m, &Config::left_hand_mesh_x_m, 0.0f, 0.0f},
+    {"left_hand_mesh_y_m", &TitleTunables::left_hand_mesh_y_m, &Config::left_hand_mesh_y_m, 0.0f, 0.0f},
+    {"left_hand_mesh_z_m", &TitleTunables::left_hand_mesh_z_m, &Config::left_hand_mesh_z_m, 0.0f, 0.0f},
+    {"right_hand_mesh_x_m", &TitleTunables::right_hand_mesh_x_m, &Config::right_hand_mesh_x_m, 0.0f, 0.0f},
+    {"right_hand_mesh_y_m", &TitleTunables::right_hand_mesh_y_m, &Config::right_hand_mesh_y_m, 0.0f, 0.0f},
+    {"right_hand_mesh_z_m", &TitleTunables::right_hand_mesh_z_m, &Config::right_hand_mesh_z_m, 0.0f, 0.0f},
 
     {"gun_scale", &TitleTunables::gun_scale, &Config::gun_scale, 0.30f, 3.00f},
     {"left_hand_scale", &TitleTunables::left_hand_scale,
@@ -2047,6 +2047,15 @@ void ConfigLoad(const wchar_t* path)
         LOG("config: co-op safe shots moved from on to automatic (on whenever anyone else is in your session); "
             "choose Always on the Advanced page to keep it on everywhere");
     }
+    // Retired visual hand sliders must not survive in shared or title profiles.
+    const auto staleHandOffsets=[](const auto& values) {
+        return values.left_hand_mesh_x_m!=0 || values.left_hand_mesh_y_m!=0 ||
+            values.left_hand_mesh_z_m!=0 || values.right_hand_mesh_x_m!=0 ||
+            values.right_hand_mesh_y_m!=0 || values.right_hand_mesh_z_m!=0;
+    };
+    bool retiredHandOffsets=staleHandOffsets(g_config);
+    for (const auto& profile:g_config.title_profiles)
+        retiredHandOffsets=retiredHandOffsets||staleHandOffsets(profile);
     Config_ApplyAimModes();
     Clamp();
     NormalizeVirtualStockProximityPair();
@@ -2058,7 +2067,9 @@ void ConfigLoad(const wchar_t* path)
         for (auto& profile:g_config.title_profiles) profile.left_hand_forward_m=0.0f;
     }
     ResolveTitleProfiles();
-    if (!leftHandForwardResetV1) ConfigSave();
+    if (retiredHandOffsets)
+        LOG("config: retired Visible hand positioning offsets cleared for both hands and all title profiles");
+    if (!leftHandForwardResetV1 || retiredHandOffsets) ConfigSave();
     LOG("config: loaded (screen %.2fm wide at %.2fm)", g_config.screen_width_m, g_config.screen_distance_m);
 }
 
