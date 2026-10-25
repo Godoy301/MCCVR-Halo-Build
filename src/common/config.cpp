@@ -1548,6 +1548,15 @@ void ConfigLoad(const wchar_t* path)
             g_config.left_handed = atoi(val) != 0;
             continue;
         }
+        // Keep the new independent left-hand offset keys outside the legacy
+        // else-if chain: those extra arms exceed MSVC's block-nesting limit (C1061).
+        if (!strcmp(key, "left_gun_forward_m"))
+        { g_config.left_gun_forward_m = (float)atof(val); continue; }
+        if (!strcmp(key, "left_gun_right_m"))
+        { g_config.left_gun_right_m = (float)atof(val); continue; }
+        if (!strcmp(key, "left_gun_up_m"))
+        { g_config.left_gun_up_m = (float)atof(val); continue; }
+
         // Here, not in the else-if chain below: that chain is at MSVC's block nesting limit (C1061).
         if (!strcmp(key, "vehicle_vr_controls"))
         {
@@ -1924,12 +1933,6 @@ void ConfigLoad(const wchar_t* path)
             g_config.two_handed_aim = atoi(val) != 0;
         else if (!strcmp(key, "two_hand_toggle"))
             g_config.two_hand_toggle = atoi(val) != 0;
-        else if (!strcmp(key, "left_gun_forward_m"))
-            g_config.left_gun_forward_m = (float)atof(val);
-        else if (!strcmp(key, "left_gun_right_m"))
-            g_config.left_gun_right_m = (float)atof(val);
-        else if (!strcmp(key, "left_gun_up_m"))
-            g_config.left_gun_up_m = (float)atof(val);
         else if (!strcmp(key, "left_hand_forward_m"))
             g_config.left_hand_forward_m = (float)atof(val);
         else if (!strcmp(key, "two_hand_zone_right_m"))
