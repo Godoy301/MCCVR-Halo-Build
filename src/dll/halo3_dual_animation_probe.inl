@@ -55,12 +55,14 @@ void ReportH3DualAnimation()
     const uint64_t now=GetTickCount64();
     if(now-lastMotionReport>=5000 && g_h3SecondaryMotionSamples.load()) {
         lastMotionReport=now;
-        LOG("H3 secondary motion: samples=%llu referenceResets=%llu refused=%llu effectsApplied=%llu effectsRefused=%llu",
+        LOG("H3 secondary motion: samples=%llu referenceResets=%llu refused=%llu effectsApplied=%llu effectsRefused=%llu motionApplied=%llu motionSkipped=%llu",
             static_cast<unsigned long long>(g_h3SecondaryMotionSamples.load()),
             static_cast<unsigned long long>(g_h3SecondaryMotionResets.load()),
             static_cast<unsigned long long>(g_h3SecondaryMotionRefused.load()),
             static_cast<unsigned long long>(g_h3SecondaryEffectApplied.load()),
-            static_cast<unsigned long long>(g_h3SecondaryEffectRefused.load()));
+            static_cast<unsigned long long>(g_h3SecondaryEffectRefused.load()),
+            static_cast<unsigned long long>(g_h3SecondaryMotionApplied.load()),
+            static_cast<unsigned long long>(g_h3SecondaryMotionSkipped.load()));
     }
     static uint32_t reported[2]{};
     for(int slot=0;slot<2;++slot) {

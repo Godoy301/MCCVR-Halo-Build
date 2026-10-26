@@ -1,3 +1,31 @@
+## Latest: accepted H3 flash, rejected motion; consumed-context fix
+
+User source57eaa410 log (Steam, Halo3) confirms correct muzzle flashes but no
+secondary whole-hand animation. Preserve the accepted effect correction. Log
+has17970 motion captures,1 reference reset,0 capture refusals,17786 effect
+applications and0 effect refusals; captures do NOT prove visual application.
+
+Concrete code defect: FpVisiblePaletteHook copies then invalidates the live
+interpolation receipt before solving. ApplyH3SecondaryMotion incorrectly checks
+that invalidated receipt, so rejects the visible solve. Disable rejected motion
+in8b7094f1, then supply an invocation-scoped pointer to the validated local
+receipt. Never rearm the live receipt. Nested scopes restore previous context;
+primary invocations cannot borrow secondary motion. Add applied/skipped counts.
+Tests reproduce receipt consumption and scope cleanup, and preserve existing
+owner/generation/time and effect-idempotence checks. Headset test pending.
+
+User also reports missing recoil/idle/reload whole-hand motion in CE/CEA and H2
+Classic/Anniversary, including H2 single-wield right hand. This log contains only
+Halo3. Source audit: CE BuildGripCarriers/BuildTrackedFirstPersonPalette derive
+mounts from the current animated gun/wrist and overwrite wrist positions. H2
+final-packet ownership similarly anchors current authored roots to controller
+carriers (both graphics paths). These can cancel rigid animation; this is
+separate from the H3 consumed-receipt defect. Do not transplant the H3 local-node
+reference into world-space CE/H2 matrices: it could retain camera movement.
+Need title-specific runtime captures/weapon and renderer comparison before
+claiming a CE/H2 correction. No CE/H2 behavior changed in this candidate.
+User says not to monitor CI; push the requested candidate and provide its link.
+
 ## Latest: H3 secondary motion and effect correction candidate (2026-10-26)
 
 User requests a build containing actual animation and muzzle-flash corrections,

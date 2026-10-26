@@ -8035,6 +8035,7 @@ static int LegacyAnatomicalRenderNodeCount(GameTitle title,uint16_t tag,uint32_t
                 candidate.valid=false;
                 break;
             }
+        H3SecondaryVisualScope secondaryMotionScope(context);
         // A modded gun can be parented to base instead of either wrist.
         // Resolve its actual model outputs before IK, scaling and visibility.
         if (context.valid)

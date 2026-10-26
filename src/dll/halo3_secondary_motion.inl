@@ -45,18 +45,35 @@ void CaptureH3SecondaryMotion(const FpInterpolationContext& context,const BoneMa
     state.delta.scale=1.f;
     ++g_h3SecondaryMotionSamples;
 }
-inline constexpr bool kH3SecondaryMotionEnabled=false;
+// The visible-palette hook consumes the interpolation receipt before solving.
+// Keep its validated local receipt scoped to that invocation; never re-arm the
+// consumed live receipt or let another palette inherit it.
+thread_local const FpInterpolationContext* g_h3SecondaryVisualContext=nullptr;
+struct H3SecondaryVisualScope
+{
+    const FpInterpolationContext* previous;
+    explicit H3SecondaryVisualScope(const FpInterpolationContext& context)
+        : previous(g_h3SecondaryVisualContext) {g_h3SecondaryVisualContext=&context;}
+    ~H3SecondaryVisualScope(){g_h3SecondaryVisualContext=previous;}
+    H3SecondaryVisualScope(const H3SecondaryVisualScope&)=delete;
+    H3SecondaryVisualScope& operator=(const H3SecondaryVisualScope&)=delete;
+};
+std::atomic<uint64_t> g_h3SecondaryMotionApplied{},g_h3SecondaryMotionSkipped{};
+inline constexpr bool kH3SecondaryMotionEnabled=true;
 void ApplyH3SecondaryMotion(BoneMatrix& visual,BoneMatrix& neutral)
 {
     if(!kH3SecondaryMotionEnabled)return;
     const auto& state=g_h3SecondaryMotion;
-    const auto& context=g_fpInterpolationContexts[1];
-    if(TitleAdapter_GetActiveTitle()!=GameTitle::Halo3||!state.valid||!context.valid||
-        context.generation!=state.generation||context.muzzleUnit!=state.unit||
-        context.muzzleWeapon!=state.weapon||GetTickCount64()-state.at>100)return;
+    const auto& context=g_h3SecondaryVisualContext?*g_h3SecondaryVisualContext:g_fpInterpolationContexts[1];
+    if(context.slot!=1||TitleAdapter_GetActiveTitle()!=GameTitle::Halo3||!state.valid||!context.valid||
+        context.generation!=state.generation||context.count!=state.count||context.lWrist!=state.wrist||
+        context.muzzleUnit!=state.unit||
+        context.muzzleWeapon!=state.weapon||GetTickCount64()-state.at>100) {
+        ++g_h3SecondaryMotionSkipped;return;
+    }
     BoneMatrix moved{},neutralMoved{};
     if(ComposeBoneMatrices(visual,state.delta,moved)&&ComposeBoneMatrices(neutral,state.delta,neutralMoved)&&
-        H3MotionFinite(moved)&&H3MotionFinite(neutralMoved)) {visual=moved;neutral=neutralMoved;}
+        H3MotionFinite(moved)&&H3MotionFinite(neutralMoved)) {visual=moved;neutral=neutralMoved;++g_h3SecondaryMotionApplied;}
 }
 
 // Model-specific visual correction is shared with both native effect paths.

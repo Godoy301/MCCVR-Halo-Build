@@ -75,6 +75,28 @@ int main()
     ApplyH3SecondaryMotion(moved,neutral);
     assert(near(moved.translation[0],.1f)&&near(moved.translation[2],3));
     assert(near(moved.rotation[1],std::sin(angle)));same(moved,neutral);
+    // Production consumes the live receipt BEFORE the palette solver. The
+    // validated local receipt must still apply motion, without rearming it.
+    const auto consumed=context;
+    context.valid=false;
+    moved=target;neutral=target;
+    ApplyH3SecondaryMotion(moved,neutral);same(moved,target);
+    {
+        H3SecondaryVisualScope scope(consumed);
+        ApplyH3SecondaryMotion(moved,neutral);
+        assert(near(moved.translation[0],.1f));
+        assert(near(moved.rotation[1],std::sin(angle)));
+        assert(!context.valid);
+        auto primary=consumed;primary.slot=0;
+        {
+            H3SecondaryVisualScope nested(primary);
+            moved=target;ApplyH3SecondaryMotion(moved,neutral);same(moved,target);
+        }
+        moved=target;ApplyH3SecondaryMotion(moved,neutral);
+        assert(near(moved.translation[0],.1f));
+    }
+    moved=target;ApplyH3SecondaryMotion(moved,neutral);same(moved,target);
+    context=consumed;
     // Other titles, stale samples and a different owner never inherit the delta.
     title=GameTitle::Other;moved=target;ApplyH3SecondaryMotion(moved,neutral);same(moved,target);
     title=GameTitle::Halo3;tick+=101;ApplyH3SecondaryMotion(moved,neutral);same(moved,target);
