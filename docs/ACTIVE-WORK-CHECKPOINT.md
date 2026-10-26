@@ -1,3 +1,34 @@
+## Latest: manual reload / holster native button policy (commit only)
+
+User requests disabling controller reload while Manual Reload is enabled and
+controller weapon switch while Weapon Holsters is enabled, independent of control
+layout. Explicitly no compilation requested. Do not touch the workflow trigger.
+
+Use existing verified post-device action adapters for CE/H2/H3/ODST/Reach/H4.
+Input publication carries a separate blocked semantic mask (Reload/SwitchWeapon)
+and excludes ordinary mapped input for those actions, while preserving gesture
+requests. Verified native consumers replace those actions with released private
+records, or gesture counters when requested. CE restores scoped digital fields;
+H2 edits only the private control-builder copy. Keep native context Use/pickup/
+vehicle actions separate (especially H2's shared context button). No guessed
+new binding, global config remap or raw physical-button mask. Menus/pause and
+vehicle modes do not request suppression; stale/cancelled publications retain
+existing guarded fallback. Automatic reload policy is unchanged.
+
+Adapters now operate for either feature even if VR Action Mapping is off.
+Once native cadence is verified, weapon gestures use semantic IDs regardless of
+mapper setting; older in-flight transport pulses are decoded only from the
+validated gesture packet. This policy also suppresses keyboard bindings for the
+two named actions because native abstraction merges input devices. Menu explains
+that consequence. Optional bridge proof/fault rejection remains feature-local;
+no claim of unconditional enforcement when a title's native binding fails.
+
+Added runtime fixture checks for released action overrides, gesture bypass,
+context-action preservation, disabled mapper, CE restoration and H2 private-copy
+isolation, plus transport decoding/semantic-mask checks. Static diff review only;
+Windows tests/build not executed per user request. No workflow/build/release.
+All weapon animation candidates and accepted muzzle corrections preserved.
+
 ## Latest: rotation-only animation, H2 inventory-pair identity, CE native root
 
 User tests source643ce498: H3 secondary animation and equip-reference fix work,

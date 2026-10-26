@@ -207,8 +207,8 @@ bool WaitForNativeDetourQuiescence(const void* const*,const void* const*,size_t,
 }
 static void* State(){return image.data()+0xF0000;}
 static void ConvertPoll(){ConverterHook(0x12345678,16,raw,image.data()+0xE0000,nullptr,nullptr);}
-static void Poll(uint32_t actions,bool direct){
-    ++clockNow;NativeVrActions_BeginPoll();NativeVrActions_Publish(raw,testTitle,clockNow,actions,direct);
+static void Poll(uint32_t actions,bool direct,uint32_t blocked=0){
+    ++clockNow;NativeVrActions_BeginPoll();NativeVrActions_Publish(raw,testTitle,clockNow,actions,direct,blocked);
     NativeVrActions_EndPoll();ConvertPoll();
 }
 static native_action_button::LaterRecord* ReadAction(vr_mapping::Action action){
@@ -218,8 +218,8 @@ static void Install(){
     *reinterpret_cast<unsigned*>(image.data()+0xF0000+0x6FC)=0;
     NativeVrActions_Poll();Check(runtime.admitted,"production worker admits unique fixture proofs and both hooks");
 }
-static void CePoll(uint32_t actions,bool direct){
-    ++clockNow;NativeVrActions_BeginPoll();NativeVrActions_Publish(raw,testTitle,clockNow,actions,direct);
+static void CePoll(uint32_t actions,bool direct,uint32_t blocked=0){
+    ++clockNow;NativeVrActions_BeginPoll();NativeVrActions_Publish(raw,testTitle,clockNow,actions,direct,blocked);
     NativeVrActions_EndPoll();native_ce::ConverterHook(0,16,raw,wrongRaw);
 }
 static void CeConsume(unsigned controller=0){native_ce::ConsumerHook(0,controller,.016f,wrongRaw);}
@@ -234,6 +234,12 @@ static void TestCe(){
     Check(native_ce::runtime.admitted,"CE separately admits its own converter/consumer and layout proofs");
     CePoll(1u<<vr_mapping::Fire,false);CeConsume();
     Check(!observedCe[8]&&NativeVrActions_CanRoute(testTitle,clockNow),"CE warmup keeps legacy state and observes owned cadence");
+    CeState()[14]=9;CeState()[3]=7;
+    CePoll(0,false,1u<<vr_mapping::Reload);CeConsume();
+    Check(observedCe[14]==0&&observedCe[3]==7&&CeState()[14]==9,"CE suppresses reload, preserves Use and restores physical history");
+    CePoll(1u<<vr_mapping::Reload,false,1u<<vr_mapping::Reload);CeConsume();
+    Check(observedCe[14]==1&&CeState()[14]==9,"CE gesture bypasses button suppression");
+    CeState()[14]=0;CeState()[3]=0;CePoll(0,false);
     CeState()[0x4C]=0xAB;CeState()[0x5D]=0xCD;
     CePoll(1u<<vr_mapping::Fire,true);CeConsume();
     Check(observedCe[8]==1&&*reinterpret_cast<uint16_t*>(observedCe+0x28)==16,"CE direct fire has native converter frame/ms counters");
@@ -271,8 +277,8 @@ static void TestCe(){
     Check(!native_ce::runtime.module&&!native_ce::runtime.admitted,"CE partial install failure leaves transport fallback");
     failCreate=0;testTitle=GameTitle::None;
 }
-static void H3Poll(uint32_t actions,bool direct){
-    ++clockNow;NativeVrActions_BeginPoll();NativeVrActions_Publish(raw,testTitle,clockNow,actions,direct);
+static void H3Poll(uint32_t actions,bool direct,uint32_t blocked=0){
+    ++clockNow;NativeVrActions_BeginPoll();NativeVrActions_Publish(raw,testTitle,clockNow,actions,direct,blocked);
     NativeVrActions_EndPoll();native_h3::ConverterHook(0,16,raw,wrongRaw,nullptr,nullptr);
 }
 static native_action_button::Gen3Record* H3Read(vr_mapping::Action action){
@@ -286,6 +292,18 @@ static void TestH3(){
     Check(native_h3::runtime.admitted,"H3 admits independent converter/controller/consumer proofs");
     H3Poll(1u<<vr_mapping::Reload,false);
     Check(H3Read(vr_mapping::Reload)==&h3Physical&&NativeVrActions_CanRoute(testTitle,clockNow),"H3 warmup retains native state before direct routing");
+    // Suppression is semantic, leaves Use alone, and admits gesture pulses.
+    h3Physical.state.frames=9;
+    g_config.vr_action_mapping=false;g_config.manual_reload=true;
+    H3Poll(0,false,1u<<vr_mapping::Reload);
+    Check(H3Read(vr_mapping::Reload)->state.frames==0&&h3Physical.state.frames==9,"manual reload suppresses only the consumed record");
+    Check(H3Read(vr_mapping::Interact)==&h3Physical,"manual reload preserves context interaction");
+    H3Poll(1u<<vr_mapping::Reload,false,1u<<vr_mapping::Reload);
+    Check(H3Read(vr_mapping::Reload)->state.frames==1,"manual gesture reload works with mapper disabled");
+    g_config.manual_reload=false;g_config.vr_action_mapping=true;
+    H3Poll(0,false);
+    Check(H3Read(vr_mapping::Reload)==&h3Physical,"disabling manual reload restores native buttons");
+    h3Physical.state={};
     H3Poll(1u<<vr_mapping::Reload,true);
     auto* reload=H3Read(vr_mapping::Reload);
     Check(reload!=&h3Physical&&reload->action==0x26&&reload->owner==0xff&&reload->state.frames==1&&reload->state.milliseconds==16,
@@ -322,8 +340,8 @@ static void TestH3(){
     Check(!native_h3::runtime.module&&!native_h3::runtime.admitted,"H3 partial hook failure leaves transport fallback");
     failCreate=0;testTitle=GameTitle::None;
 }
-static void OdstPoll(uint32_t actions,bool direct){
-    ++clockNow;NativeVrActions_BeginPoll();NativeVrActions_Publish(raw,testTitle,clockNow,actions,direct);
+static void OdstPoll(uint32_t actions,bool direct,uint32_t blocked=0){
+    ++clockNow;NativeVrActions_BeginPoll();NativeVrActions_Publish(raw,testTitle,clockNow,actions,direct,blocked);
     NativeVrActions_EndPoll();native_odst::ConverterHook(0,16,raw,wrongRaw,nullptr,nullptr);
 }
 static native_action_button::Gen3Record* OdstRead(vr_mapping::Action action){
@@ -337,6 +355,18 @@ static void TestOdst(){
     Check(native_odst::runtime.admitted,"ODST admits independent converter/controller/consumer proofs");
     OdstPoll(1u<<vr_mapping::Reload,false);
     Check(OdstRead(vr_mapping::Reload)==&odstPhysical&&NativeVrActions_CanRoute(testTitle,clockNow),"ODST warmup retains native state before direct routing");
+    // Suppression is semantic, leaves Use alone, and admits gesture pulses.
+    odstPhysical.state.frames=9;
+    g_config.vr_action_mapping=false;g_config.manual_reload=true;
+    OdstPoll(0,false,1u<<vr_mapping::Reload);
+    Check(OdstRead(vr_mapping::Reload)->state.frames==0&&odstPhysical.state.frames==9,"manual reload suppresses only the consumed record");
+    Check(OdstRead(vr_mapping::Interact)==&odstPhysical,"manual reload preserves context interaction");
+    OdstPoll(1u<<vr_mapping::Reload,false,1u<<vr_mapping::Reload);
+    Check(OdstRead(vr_mapping::Reload)->state.frames==1,"manual gesture reload works with mapper disabled");
+    g_config.manual_reload=false;g_config.vr_action_mapping=true;
+    OdstPoll(0,false);
+    Check(OdstRead(vr_mapping::Reload)==&odstPhysical,"disabling manual reload restores native buttons");
+    odstPhysical.state={};
     OdstPoll(1u<<vr_mapping::Reload,true);
     auto* reload=OdstRead(vr_mapping::Reload);
     Check(reload!=&odstPhysical&&reload->action==0x2A&&reload->owner==0xff&&reload->state.frames==1&&reload->state.milliseconds==16,
@@ -373,8 +403,8 @@ static void TestOdst(){
     Check(!native_odst::runtime.module&&!native_odst::runtime.admitted,"ODST partial hook failure leaves transport fallback");
     failCreate=0;testTitle=GameTitle::None;
 }
-static void H4Poll(uint32_t actions,bool direct){
-    ++clockNow;NativeVrActions_BeginPoll();NativeVrActions_Publish(raw,testTitle,clockNow,actions,direct);
+static void H4Poll(uint32_t actions,bool direct,uint32_t blocked=0){
+    ++clockNow;NativeVrActions_BeginPoll();NativeVrActions_Publish(raw,testTitle,clockNow,actions,direct,blocked);
     NativeVrActions_EndPoll();native_h4::ConverterHook(0x87654321,16,raw,image.data()+0x130000,nullptr,nullptr);
 }
 static native_action_button::LaterRecord* H4Read(vr_mapping::Action action){
@@ -388,6 +418,18 @@ static void TestH4(){
     Check(native_h4::runtime.admitted,"H4 admits independent converter/output-row/consumer proofs");
     H4Poll(1u<<vr_mapping::Reload,false);
     Check(H4Read(vr_mapping::Reload)==&h4Physical&&NativeVrActions_CanRoute(testTitle,clockNow),"H4 warmup retains native state before direct routing");
+    // Suppression is semantic, leaves Use alone, and admits gesture pulses.
+    h4Physical.state.frames=9;
+    g_config.vr_action_mapping=false;g_config.manual_reload=true;
+    H4Poll(0,false,1u<<vr_mapping::Reload);
+    Check(H4Read(vr_mapping::Reload)->state.frames==0&&h4Physical.state.frames==9,"manual reload suppresses only the consumed record");
+    Check(H4Read(vr_mapping::Interact)==&h4Physical,"manual reload preserves context interaction");
+    H4Poll(1u<<vr_mapping::Reload,false,1u<<vr_mapping::Reload);
+    Check(H4Read(vr_mapping::Reload)->state.frames==1,"manual gesture reload works with mapper disabled");
+    g_config.manual_reload=false;g_config.vr_action_mapping=true;
+    H4Poll(0,false);
+    Check(H4Read(vr_mapping::Reload)==&h4Physical,"disabling manual reload restores native buttons");
+    h4Physical.state={};
     H4Poll(1u<<vr_mapping::Reload,true);
     auto* reload=H4Read(vr_mapping::Reload);
     Check(reload!=&h4Physical&&reload->action==0x31&&reload->owner==0x7f&&reload->state.frames==1&&reload->state.milliseconds==16,
@@ -424,8 +466,8 @@ static void TestH4(){
     Check(!native_h4::runtime.module&&!native_h4::runtime.admitted,"H4 partial hook failure leaves transport fallback");
     failCreate=0;testTitle=GameTitle::None;
 }
-static void H2Poll(uint32_t actions,bool direct){
-    ++clockNow;NativeVrActions_BeginPoll();NativeVrActions_Publish(raw,testTitle,clockNow,actions,direct);
+static void H2Poll(uint32_t actions,bool direct,uint32_t blocked=0){
+    ++clockNow;NativeVrActions_BeginPoll();NativeVrActions_Publish(raw,testTitle,clockNow,actions,direct,blocked);
     NativeVrActions_EndPoll();native_h2::ConverterHook(0,wrongRaw,raw,nullptr,nullptr,image.data()+0x140000);
 }
 static void H2Copy(){native_h2::CopierHook(0,h2Output);}
@@ -439,6 +481,12 @@ static void TestH2(){
     Check(native_h2::runtime.admitted,"H2 owns unique abstraction/copy/cadence proofs");
     H2Poll(1u<<vr_mapping::Reload,false);H2Copy();
     Check(!h2Output[0x2E]&&NativeVrActions_CanRoute(testTitle,clockNow),"H2 observed owned cadence warms up without injecting");
+    image[0x140000+0x2E]=9;image[0x140000+0x23]=7;image[0x140000+4]=5;
+    H2Poll(0,false,(1u<<vr_mapping::Reload)|(1u<<vr_mapping::SwitchWeapon));H2Copy();
+    Check(h2Output[0x2E]==0&&h2Output[4]==0&&h2Output[0x23]==7&&image[0x140000+0x2E]==9,"H2 private copy suppresses reload/swap but preserves context button and source");
+    H2Poll(1u<<vr_mapping::SwitchWeapon,false,1u<<vr_mapping::SwitchWeapon);H2Copy();
+    Check(h2Output[4]==1,"H2 holster gesture remains available");
+    image[0x140000+0x2E]=image[0x140000+0x23]=image[0x140000+4]=0;H2Poll(0,false);
     H2Poll(1u<<vr_mapping::Reload,true);H2Copy();
     Check(h2Output[0x2E]==1&&*reinterpret_cast<uint16_t*>(h2Output+0x8C)==16&&!h2Output[0x23],"H2 native private copy separates Reload2E from Use23");
     Check(!image[0x140000+0x2E],"H2 global abstraction remains untouched");
@@ -478,6 +526,16 @@ static void TestH2(){
     NativeVrActions_Poll();testTitle=GameTitle::None;
 }
 int main(){
+    const auto blocked=manual_weapon_input::Blocked(true,true,true);
+    Check(!manual_weapon_input::Blocked(false,true,true),"menus never request gameplay suppression");
+    for(unsigned bit=0;bit<18;++bit) {
+        const uint32_t transport=1u<<bit;
+        Check(manual_weapon_input::Gestures(transport,transport,0)==(1u<<vr_mapping::Reload),"gesture reload decodes every native controller transport");
+        Check(manual_weapon_input::Gestures(0,transport,transport)==0,"physical buttons cannot synthesize a gesture exception");
+    }
+    Check(manual_weapon_input::Publish(blocked|(1u<<vr_mapping::Interact),0,blocked)==(1u<<vr_mapping::Interact),"shared-button interaction survives semantic filtering");
+    Check(manual_weapon_input::Publish(blocked,1u<<vr_mapping::SwitchWeapon,blocked)==(1u<<vr_mapping::SwitchWeapon),"holster pulse bypasses only its own policy");
+
     g_config.vr_action_mapping=true;NativeVrActions_Poll();
     Check(creates==0&&!runtime.module,"transport reader must be verified before optional reader prologue is patched");
     fallbackVerified=true;Install();
@@ -495,6 +553,13 @@ int main(){
     ConvertPoll();
     Check(producerReady&&ReadAction(vr_mapping::Grenade)!=&physical,
         "MCC polling thread publishes coherently to a different native converter/reader thread");
+
+    physical.state.frames=9;
+    Poll(0,false,1u<<vr_mapping::Reload);
+    Check(ReadAction(vr_mapping::Reload)->state.frames==0&&physical.state.frames==9,"Reach suppresses manual reload without mutating native record");
+    Poll(1u<<vr_mapping::Reload,false,1u<<vr_mapping::Reload);
+    Check(ReadAction(vr_mapping::Reload)->state.frames==1,"Reach manual gesture survives suppression");
+    physical.state={};Poll(0,false);
 
     vr_mapping::Mapper mapper;vr_mapping::Overrides overrides{};vr_mapping::Transports transports{};
     transports.fill(0x4000); // every native action intentionally aliases X

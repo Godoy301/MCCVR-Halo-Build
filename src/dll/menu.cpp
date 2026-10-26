@@ -1387,6 +1387,7 @@ namespace
                 "Let the hand settle before shaking again.");
         }
         changed |= ImGui::Checkbox("Manual Reload", &g_config.manual_reload);
+        if(g_config.manual_reload) ImGui::TextDisabled("Button and keyboard reload are disabled; use reload gestures.");
         if (g_config.manual_reload)
         {
             ImGui::TextDisabled("Hold your support grip at your hip to take a magazine.\n"
@@ -1429,6 +1430,7 @@ namespace
             }
         }
         changed |= ImGui::Checkbox("Weapon Holsters", &g_config.weapon_holsters);
+        if(g_config.weapon_holsters) ImGui::TextDisabled("Button and keyboard weapon switching are disabled; use the holster.");
         if (ImGui::Button("Over-the-shoulder weapon switch (Campaign Evolved)"))
         {
             // That mod's gesture: reach over the weapon-side shoulder and squeeze the grip.

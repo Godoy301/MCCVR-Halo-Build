@@ -191,6 +191,8 @@ namespace
     {
         const int index=weapon_interaction::TitleIndex(title);
         if(index<0) return 0;
+        if((g_config.manual_reload||g_config.weapon_holsters)&&NativeVrActions_CanRoute(title,now))
+            return NativeVrActions_GestureBit(action);
         if(g_config.vr_action_mapping&&NativeVrActions_GestureRouting(title,now))
             return NativeVrActions_GestureBit(action);
         if(g_config.vr_action_mapping)
