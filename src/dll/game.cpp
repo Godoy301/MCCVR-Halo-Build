@@ -43061,7 +43061,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
                 supportRightTarget,eyeRoot,stockRight,
                 desiredRight))
             return Halo4VrikStage::RightPoseFailed;
-        Halo4SmoothAuthoredWrist(false,supportRightTarget,desiredRight);
+        // Disabled after headset regression: preserve the accepted native H4 reroot.
         bool markerParityApplied=false;
         bool rigidSupportLockApplied=false;
         bool markerParityFallback=false;
@@ -43082,7 +43082,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
                     g_halo4FloatingPair.leftTargetWorld,eyeRoot,stockLeft,
                     desiredLeft))
                 return Halo4VrikStage::LeftPoseFailed;
-            Halo4SmoothAuthoredWrist(true,g_halo4FloatingPair.leftTargetWorld,desiredLeft);
+            // Keep native H4 wrist animation; optional smoothing remains dormant.
             // Reach's official left_hand marker is identity on its wrist.
             // Halo 4's marker is this H4EK quaternion on identity child node54.
             // Align the marker frames; never equate the wrist bone axes again.
