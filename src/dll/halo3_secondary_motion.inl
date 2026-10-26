@@ -45,8 +45,10 @@ void CaptureH3SecondaryMotion(const FpInterpolationContext& context,const BoneMa
     state.delta.scale=1.f;
     ++g_h3SecondaryMotionSamples;
 }
+inline constexpr bool kH3SecondaryMotionEnabled=false;
 void ApplyH3SecondaryMotion(BoneMatrix& visual,BoneMatrix& neutral)
 {
+    if(!kH3SecondaryMotionEnabled)return;
     const auto& state=g_h3SecondaryMotion;
     const auto& context=g_fpInterpolationContexts[1];
     if(TitleAdapter_GetActiveTitle()!=GameTitle::Halo3||!state.valid||!context.valid||
