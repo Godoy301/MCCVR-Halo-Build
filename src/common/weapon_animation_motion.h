@@ -48,10 +48,75 @@ inline Pose Compose(const Pose& a,const Pose& b)
     }
     return out;
 }
+// Smooth authored rotation only, before composing with the live controller.
+// Time-normalized equivalent of H3's 0.02 blend at 90 samples/second. Duplicate
+// eye/palette observations at one timestamp must not speed up the response.
+struct RotationFilter
+{
+    std::array<uint64_t,4> key{};
+    Pose value{};
+    uint64_t last{};
+    bool ready=false;
+    bool Update(std::array<uint64_t,4> identity,const Pose& input,uint64_t now,Pose& output)
+    {
+        if(!Valid(input)){*this={};return false;}
+        Pose target=input;for(float& v:target.translation)v=0;
+        if(!ready||identity!=key||now<last||now-last>500) {
+            key=identity;last=now;ready=true;value=target;output=value;return true;
+        }
+        const float alpha=1.f-std::pow(.98f,float(now-last)*.09f);
+        last=now;
+        const Pose relative=Relative(value,target);
+        const auto* m=relative.rotation;
+        float q[4]{};
+        const float trace=m[0]+m[4]+m[8];
+        if(trace>0) {
+            const float s=2.f*std::sqrt(trace+1.f);
+            q[3]=.25f*s;q[0]=(m[5]-m[7])/s;q[1]=(m[6]-m[2])/s;q[2]=(m[1]-m[3])/s;
+        } else {
+            const int i=m[0]>m[4]?(m[0]>m[8]?0:2):(m[4]>m[8]?1:2);
+            const int j=(i+1)%3,k=(i+2)%3;
+            const float s=2.f*std::sqrt(1.f+m[i*3+i]-m[j*3+j]-m[k*3+k]);
+            if(!(s>0)){*this={};return false;}
+            q[i]=.25f*s;q[j]=(m[j*3+i]+m[i*3+j])/s;
+            q[k]=(m[k*3+i]+m[i*3+k])/s;q[3]=(m[j*3+k]-m[k*3+j])/s;
+        }
+        if(q[3]<0)for(float& v:q)v=-v;
+        // Slerp from identity along the shortest arc, including near-pi poses.
+        const float length=std::sqrt(q[0]*q[0]+q[1]*q[1]+q[2]*q[2]);
+        Pose step{};
+        if(length>1.e-7f) {
+            const float angle=std::atan2(length,q[3])*alpha;
+            const float scale=std::sin(angle)/length;
+            const float x=q[0]*scale,y=q[1]*scale,z=q[2]*scale,w=std::cos(angle);
+            const float basis[9]={1-2*(y*y+z*z),2*(x*y+z*w),2*(x*z-y*w),
+                2*(x*y-z*w),1-2*(x*x+z*z),2*(y*z+x*w),
+                2*(x*z+y*w),2*(y*z-x*w),1-2*(x*x+y*y)};
+            for(int i=0;i<9;++i)step.rotation[i]=basis[i];
+        }
+        value=Compose(value,step);
+        if(!Valid(value)){*this={};return false;}
+        output=value;return true;
+    }
+};
+// Preserve tracking translation and parent rotation exactly; only the authored
+// parent-local rotation is filtered. A failed optional filter leaves output alone.
+inline bool SmoothLocalRotation(RotationFilter& filter,std::array<uint64_t,4> key,
+    const Pose& parent,const Pose& world,uint64_t now,Pose& output)
+{
+    if(!Valid(parent)||!Valid(world)){filter={};return false;}
+    Pose local=Relative(parent,world),smoothed{};
+    if(!filter.Update(key,local,now,smoothed))return false;
+    Pose result=Compose(parent,smoothed);
+    for(int i=0;i<3;++i)result.translation[i]=world.translation[i];
+    if(!Valid(result))return false;
+    output=result;return true;
+}
 struct Reference
 {
     std::array<uint64_t,4> key{};
     Pose anchor{},reference{};
+    RotationFilter smoothing{};
     uint64_t started{},stableSince{},last{};
     bool observed=false,ready=false;
     // A bounded settling heuristic, not a native idle-animation detector.
@@ -59,11 +124,11 @@ struct Reference
     // only after the initial delay AND a quiet window. Never chase later recoil
     // or reload motion with a moving average.
     bool Update(std::array<uint64_t,4> identity,const Pose& local,uint64_t now,
-                float unitsPerMetre,Pose& delta)
+                float unitsPerMetre,Pose& delta,bool smooth=false)
     {
         delta={};
         if(!Valid(local)||!std::isfinite(unitsPerMetre)||unitsPerMetre<=0) {
-            observed=ready=false;return false;
+            observed=ready=false;smoothing={};return false;
         }
         if(!observed||key!=identity||now<last||now-last>500) {
             *this={};observed=true;key=identity;anchor=local;
@@ -83,7 +148,7 @@ struct Reference
         // Controllers own wrist position. Retain pitch/yaw/roll animation only;
         // camera/stance translations must neither delay settling nor move hands.
         for(float& value:delta.translation)value=0;
-        return Valid(delta);
+        return smooth?smoothing.Update(identity,delta,now,delta):Valid(delta);
     }
 };
 }

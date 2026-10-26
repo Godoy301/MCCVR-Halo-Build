@@ -26,7 +26,7 @@ inline bool Halo2ObserveWeaponAnimation(weapon_animation::Reference& reference,
     // its wrist. Restore only the removed wrist translation and gun rotation.
     std::memcpy(world.translation,wrist.translation,sizeof(world.translation));
     if(!weapon_animation::Valid(world)){reference={};return false;}
-    return reference.Update(key,weapon_animation::Relative(root,world),now,unitsPerMetre,delta);
+    return reference.Update(key,weapon_animation::Relative(root,world),now,unitsPerMetre,delta,true);
 }
 inline bool Halo2ApplyWeaponAnimation(Halo2CameraBasis& carrier,const weapon_animation::Pose& delta,float scale)
 {

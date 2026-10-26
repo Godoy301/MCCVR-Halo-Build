@@ -39728,6 +39728,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
         // changes the submitted stock body palette.
         bool localUnitFrozen = false;
         uint32_t localUnit = UINT32_MAX;
+        uint32_t animationWeapon = UINT32_MAX;
         // Owner-safe one-hand fallback carrier, built once per pair from the
         // same prepared sample. The weapon carrier consumes it when this
         // invocation is untrusted/detached and the prepared aim is
@@ -42840,6 +42841,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
                (g_halo4FloatingPair.localUnitFrozen&&
                 g_halo4FloatingPair.localUnit!=ownerUnit))return false;
             g_halo4FloatingPair.localUnit=ownerUnit;
+            g_halo4FloatingPair.animationWeapon=ownerWeapon;
             g_halo4FloatingPair.localUnitFrozen=true;
             if(VR_SupportGripWiredForTitle(GameTitle::Halo4)&&
                 !g_halo4FloatingPair.supportGripResolved) {
@@ -42987,6 +42989,25 @@ static constexpr bool kOdstMappedFpEnabled = false;
         (valid?g_halo4FpFingerApplied:g_halo4FpFingerRefused).fetch_add(1,std::memory_order_relaxed);
     }
 
+    thread_local weapon_animation::RotationFilter g_halo4AnimationSmoothing[2];
+    void Halo4SmoothAuthoredWrist(bool left,const Halo4FloatingTransform& carrier,
+        Halo4FloatingTransform& desired)
+    {
+        auto& filter=g_halo4AnimationSmoothing[left?1:0];
+        const auto& pair=g_halo4FloatingPair;
+        if(!pair.localUnitFrozen||pair.animationWeapon==UINT32_MAX) {filter={};return;}
+        weapon_animation::Pose parent{},world{},smoothed{};
+        if(!Halo4NormalizeFloatingBasis(carrier.rotation,parent.rotation)||
+           !Halo4NormalizeFloatingBasis(desired.rotation,world.rotation)) {filter={};return;}
+        memcpy(parent.translation,carrier.translation,sizeof(parent.translation));
+        memcpy(world.translation,desired.translation,sizeof(world.translation));
+        if(weapon_animation::SmoothLocalRotation(filter,
+                {pair.generation,pair.localUnit,pair.animationWeapon,
+                 uint64_t(pair.supportGripAttached)|(uint64_t(pair.handAlignment)<<1)},
+                parent,world,GetTickCount64(),smoothed))
+            memcpy(desired.rotation,smoothed.rotation,sizeof(desired.rotation));
+    }
+
     Halo4VrikStage Halo4BuildFloatingHandsPalette(
         const BoneMatrix* source, BoneMatrix* solved, int nodeCount,
         int32_t objectIndex,bool publish)
@@ -43040,6 +43061,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
                 supportRightTarget,eyeRoot,stockRight,
                 desiredRight))
             return Halo4VrikStage::RightPoseFailed;
+        Halo4SmoothAuthoredWrist(false,supportRightTarget,desiredRight);
         bool markerParityApplied=false;
         bool rigidSupportLockApplied=false;
         bool markerParityFallback=false;
@@ -43060,6 +43082,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
                     g_halo4FloatingPair.leftTargetWorld,eyeRoot,stockLeft,
                     desiredLeft))
                 return Halo4VrikStage::LeftPoseFailed;
+            Halo4SmoothAuthoredWrist(true,g_halo4FloatingPair.leftTargetWorld,desiredLeft);
             // Reach's official left_hand marker is identity on its wrist.
             // Halo 4's marker is this H4EK quaternion on identity child node54.
             // Align the marker frames; never equate the wrist bone axes again.
@@ -43433,6 +43456,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
                     (ownerDetail&0x4u)!=0 && ownerUnit!=UINT32_MAX)
                 {
                     g_halo4FloatingPair.localUnit=ownerUnit;
+                    g_halo4FloatingPair.animationWeapon=ownerWeapon;
                     g_halo4FloatingPair.localUnitFrozen=true;
                 }
             }

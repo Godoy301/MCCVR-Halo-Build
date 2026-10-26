@@ -75,7 +75,8 @@ int main()
     CaptureH3SecondaryMotion(context,original);
     ApplyH3SecondaryMotion(moved,neutral);
     assert(near(moved.translation[0],0.f)&&near(moved.translation[2],3));
-    assert(near(moved.rotation[1],std::sin(angle)));same(moved,neutral);
+    assert(moved.rotation[1]>0 && moved.rotation[1]<std::sin(angle));same(moved,neutral);
+    const float filteredRotation=moved.rotation[1];
     // Production consumes the live receipt BEFORE the palette solver. The
     // validated local receipt must still apply motion, without rearming it.
     const auto consumed=context;
@@ -86,7 +87,7 @@ int main()
         H3SecondaryVisualScope scope(consumed);
         ApplyH3SecondaryMotion(moved,neutral);
         assert(near(moved.translation[0],0.f));
-        assert(near(moved.rotation[1],std::sin(angle)));
+        assert(near(moved.rotation[1],filteredRotation));
         assert(!context.valid);
         auto primary=consumed;primary.slot=0;
         {

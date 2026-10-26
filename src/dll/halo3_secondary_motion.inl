@@ -36,7 +36,7 @@ void CaptureH3SecondaryMotion(const FpInterpolationContext& context,const BoneMa
     const bool wasReady=state.reference.ready;
     state.valid=state.reference.Update({context.generation,
         (uint64_t(context.muzzleUnit)<<32)|context.muzzleWeapon,
-        uint64_t(context.count),uint64_t(context.lWrist)},local,now,g_worldScale.load(),delta);
+        uint64_t(context.count),uint64_t(context.lWrist)},local,now,g_worldScale.load(),delta,true);
     if(state.valid&&!wasReady)++g_h3SecondaryMotionResets;
     state.generation=context.generation;state.unit=context.muzzleUnit;state.weapon=context.muzzleWeapon;
     state.count=context.count;state.wrist=context.lWrist;state.at=now;

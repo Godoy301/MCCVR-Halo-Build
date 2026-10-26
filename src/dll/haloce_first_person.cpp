@@ -865,7 +865,7 @@ bool ApplyPalette(uint32_t graph,NodeMatrix* matrices,const Scope& owner,const N
         if(!localValid)animationReference={};
         haveAnimation=localValid&&animationReference.Update({binding.generation,
             (uint64_t(owner.muzzleUnit)<<32)|owner.muzzleWeapon,binding.nodeIdentity,context.rendererEpoch},
-            local,GetTickCount64(),context.unitsPerMeter,delta);
+            local,GetTickCount64(),context.unitsPerMeter,delta,true);
         if(haveAnimation) {animationDelta=AnimationMatrix(delta);++animationApplied;}
         else ++animationSettling;
     } else animationReference={};

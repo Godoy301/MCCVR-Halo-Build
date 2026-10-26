@@ -92,4 +92,46 @@ int main()
     for(uint64_t t=1800;t<=3300;t+=100)reference.Update(dual,Pose{},t,.33f,delta);
     assert(reference.ready);
     assert(!reference.Update(single,Pose{},3400,.33f,delta));
+    // Equivalent elapsed time must give the same angular response at 50/100Hz.
+    const auto turn=[](float a) {
+        Pose p;p.rotation[0]=p.rotation[4]=std::cos(a);
+        p.rotation[1]=std::sin(a);p.rotation[3]=-std::sin(a);return p;
+    };
+    weapon_animation::RotationFilter slow,fast;
+    Pose a{},b{},start{},target=turn(1.f);
+    assert(slow.Update(key,start,0,a)&&fast.Update(key,start,0,b));
+    for(uint64_t t=20;t<=200;t+=20)assert(slow.Update(key,target,t,a));
+    for(uint64_t t=10;t<=200;t+=10)assert(fast.Update(key,target,t,b));
+    same(a,b);assert(a.rotation[1]>0 && a.rotation[1]<target.rotation[1]);
+    const Pose firstEye=a;
+    for(int i=0;i<100;++i)assert(slow.Update(key,target,200,a));
+    same(a,firstEye);
+    // Held recoil converges, never introduces translation, and stays orthonormal.
+    target.translation[0]=100;
+    for(uint64_t t=220;t<=10000;t+=20)assert(slow.Update(key,target,t,a));
+    assert(near(a.rotation[1],std::sin(1.f))&&near(a.translation[0],0));
+    auto nextKey=key;++nextKey[1];
+    assert(slow.Update(nextKey,start,10020,a));same(a,start);
+    target=turn(3.14159265f);
+    assert(slow.Update(nextKey,target,10040,a));assert(std::fabs(a.rotation[1])>0);
+    assert(slow.Update(nextKey,start,11000,a));same(a,start); // stale state resets
+    target.rotation[0]=std::numeric_limits<float>::quiet_NaN();
+    assert(!slow.Update(nextKey,target,11020,a)&&!slow.ready);
+
+    // H4 reroot: camera/controller rotation and XYZ remain immediate; only the
+    // authored local animation is damped. A new weapon cannot inherit the old pose.
+    {
+    weapon_animation::RotationFilter relativeFilter;
+    Pose parent=turn(.3f),world=parent,result{};
+    assert(weapon_animation::SmoothLocalRotation(relativeFilter,key,parent,world,0,result));
+    parent=turn(1.2f);parent.translation[0]=50;
+    world=weapon_animation::Compose(parent,turn(.5f));world.translation[2]=7;
+    assert(weapon_animation::SmoothLocalRotation(relativeFilter,key,parent,world,20,result));
+    assert(near(result.translation[0],50)&&near(result.translation[2],7));
+    const auto local=weapon_animation::Relative(parent,result);
+    assert(local.rotation[1]>0&&local.rotation[1]<std::sin(.5f));
+    assert(weapon_animation::SmoothLocalRotation(relativeFilter,nextKey,parent,world,40,result));
+    same(result,world);
+    }
+
 }

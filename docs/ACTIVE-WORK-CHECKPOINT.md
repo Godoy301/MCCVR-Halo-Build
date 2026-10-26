@@ -1,3 +1,26 @@
+## Latest: user-requested smoothing for restored animations and Halo 4
+
+Apply authored-rotation-only smoothing to CE/CEA, both H2 renderers/hands,
+H3 secondary, and H4's exact Storm wrist reroot. H3 primary remains the accepted
+0.02 barrel-alignment EMA. New filter uses shortest-arc rotation interpolation
+with alpha=1-pow(0.98,elapsedMs*0.09), matching a 2% response at the user's 90Hz
+baseline while avoiding per-eye/per-palette rate dependence. It does not claim
+identical timing to H3 primary at every native sampling rate.
+
+Filter camera/controller-local animation before composing with current tracking;
+never low-pass the tracked controller or add animation XYZ. Keep the existing
+1500ms/500ms reference acquisition guard for CE/H2/H3 to prevent equip offsets.
+Reset filter on reference identity changes, invalid poses or >500ms gaps.
+H4 uses independently proven owner weapon and generation, plus support/handedness
+mode; preserves native attachment orientation and locked support-hand delta.
+Unknown H4 owner leaves the established target unchanged. No new engine hook.
+
+Local checks pass: animation tests (rate independence, duplicate samples,
+convergence, invalid/stale/owner resets, H4 relative-parent rotation/XYZ), H3
+secondary production regression, CE first-person, H2 left-hand 1005 checks.
+Windows/MSVC/SEH/MASM suites still require CI. Request candidate with prior
+native caller and Reach/ODST world-scale fixes; do not monitor the build.
+
 ## Latest: animation findings, native caller forwarding, live Reach/ODST scale
 
 User confirms source7124f9d6 animations work across titles and suppression works
