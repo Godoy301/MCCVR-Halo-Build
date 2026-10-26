@@ -1,3 +1,25 @@
+## Latest: accepted animations, H3 pickup regression and 1cm secondary setback
+
+User confirms animations now perfect: preserve animation/filter/reference code.
+Manual Reload was preventing left-hand weapon pickup because input aliases were
+shared. Roll back alias suppression in037db157, then use a separately verified
+H3 native player-action edge hook: clear only secondary reload pressed bit6,
+leaving pickup-held bit5 and native records intact. Exact local-player datum,
+caller, generation and fresh blocked-action publication required. See updated
+NATIVE-VR-ACTION-BRIDGE doc and read-only verifier; kit/retail checks pass.
+Windows runtime/assembly fixtures updated, require CI in this Linux workspace.
+
+User requests SMG/Plasma Rifle left-hand visual model -0.01m forward (backward)
+and explicitly the same muzzle flash movement. Add kH3SecondaryForwardMetres
+=-.01 to H3CorrectSecondaryMatrix, the shared masked visual/effect transform.
+Preserve +30 yaw and +.06m lateral. Existing checksum mask still limits it to
+those two offhand models. H3 secondary production test passes, including an
+independent numeric -1cm world-scale check and model/effects registration.
+
+Prepare source/build without installing, launching MCC, advancing accepted
+release pointer or monitoring Actions. Preserve all prior world-scale and
+other-title fixes, and disabled H4 animation smoothing.
+
 ## Latest: H4 rollback, faster animation response, cached references, H3 dual reload
 
 User log source5897cbe0 confirms H3 secondary animation too slow; primary reload
