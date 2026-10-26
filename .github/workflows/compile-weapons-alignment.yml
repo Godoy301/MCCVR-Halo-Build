@@ -34,7 +34,7 @@ jobs:
           if ($env:GITHUB_REF_NAME -ne 'weapons-alignment') {
             throw "Refusing to build unexpected branch: $env:GITHUB_REF_NAME"
           }
-          $expectedSourceSha = '18b812a78830215161f11a435603d0c3cd4bd83d'
+          $expectedSourceSha = '57eaa410790a65f4d714602badd3978eee6bd076'
           if ($env:EXPECTED_SOURCE_SHA -ne $expectedSourceSha) {
             throw "Source revision differs from the reviewed weapons-alignment commit. Expected $expectedSourceSha, got $env:EXPECTED_SOURCE_SHA. Refusing to build a different revision."
           }
@@ -120,7 +120,8 @@ jobs:
           Source branch: weapons-alignment
           Expected source in the first line of HaloMCCVR.log: $env:EXPECTED_SOURCE_SHA
           Includes: preserved modded-weapon fixes, independent hand offsets, collapsed menu sections, percent world scale with reset, and restored stock Halo 3 HUD locator.
-          Pending: Ultimate Firefight HUD support and secondary weapon animation/muzzle-flash corrections. Dual-animation instrumentation is diagnostic only.
+          Candidate fixes: Halo 3 secondary idle/fire/reload wrist motion and SMG/Plasma Rifle native effect alignment. Headset validation required.
+          Pending: Ultimate Firefight HUD support. Test secondary pickup/reload transitions and both hands; animation reference uses the first valid equipped pose.
           If the log reports source 5fdf982e, MCC loaded an older DLL.
           Use the Build ZIP from this artifact, not a previous workflow run.
           "@ | Set-Content 'out/candidates/BUILD-IDENTITY.txt'
