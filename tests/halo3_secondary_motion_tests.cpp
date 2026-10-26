@@ -8,6 +8,7 @@
 #include <cstring>
 #include <limits>
 #include "../src/common/weapon_alignment.h"
+#include "../src/common/weapon_animation_motion.h"
 
 // Native API stand-ins exercise the production motion/effect code without MCC.
 struct BoneMatrix {float scale=1,rotation[9]{1,0,0,0,1,0,0,0,1},translation[3]{};};
@@ -62,7 +63,7 @@ int main()
     auto& context=g_fpInterpolationContexts[1];
     auto* original=g_fpUnmodifiedInterpolations[1];
     original[0].translation[0]=2;
-    CaptureH3SecondaryMotion(context,original);
+    for(int i=0;i<17;++i){CaptureH3SecondaryMotion(context,original);tick+=100;}
     BoneMatrix target;target.translation[2]=3;
     BoneMatrix moved=target,neutral=target;
     ApplyH3SecondaryMotion(moved,neutral);same(moved,target);

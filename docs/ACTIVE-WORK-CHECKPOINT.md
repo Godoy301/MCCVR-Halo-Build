@@ -1,3 +1,45 @@
+## Latest: stabilize equip references; restore CE/H2 authored motion
+
+User tests source6bf3cadd on Steam. H3 secondary motion now works, but removing
+and equipping weapons seeds a bad permanent offset; a save loaded with SMG
+already equipped is correct. H3 log shows reference resets rising1..5 during
+these switches and motionApplied>0. Preserve accepted consumed-context fix and
+muzzle effects. The first-frame neutral-reference acquisition is superseded.
+
+New reference acquisition keeps the established controller mount while waiting
+at least1500ms and a500ms quiet window (within2cm/3degrees). Freeze that stable
+pose for subsequent recoil/idle/reload; do not continuously average animations
+away. Owner/model/generation/renderer changes and gaps over500ms reacquire.
+This is an explicit settling heuristic, NOT a native idle-state binding; a long
+custom equip/reload paused at a non-idle pose remains a runtime validation risk.
+Tell the tester to leave the weapon idle briefly after equipping, then exercise
+fire/reload and repeated drop/regrab. No new native addresses/hooks introduced.
+
+CE log: Magnum graphE8C2074E identity24585B0C2FBD0622,44nodes,gun7,wrists5/6;
+post-solve gun forward/up exactly match controller aim even while authored pose
+changes. H2 log confirms Chief packet ownership in both graphics paths, including
+dual Magnums; no ownership rejection explaining missing motion. Native placement
+currently cancels whole-weapon rotation and wrist translation in both titles.
+
+Restore these components upstream of the existing solvers. CE uses its coherent
+native center camera to remove world motion. H2 uses each renderer's own packet
+camera and remapped carrying wrist (right primary/left secondary); references
+are separate by renderer/slot. Observe gun rotation BUT wrist translation: the
+existing solve already preserves gun-to-wrist translation, so using gun position
+would count moving gun parts twice. Hands, gun and native effects continue through
+the existing common transformed palettes/carriers. Keep free CE support hand
+independent. CE owner receipt is captured even when barrel aim is disabled;
+revalidate owner before motion observation. Unsupported/invalid samples keep the
+prior tracked presentation. World scale and user offsets remain unchanged.
+
+Offline tests passed: settling/equip/regrab/identity changes, repeated eye reads,
+nonfinite rejection, camera-motion invariance, independent gun/wrist translation,
+H3 consumed-context/effect idempotence, CE first-person regressions plus animation
+transport, weapon alignment, and H2 left-hand suite(1005 checks). Linux runs of
+existing IK code use a temporary std::isfinite compatibility include; no IK source
+change. Windows CI and headset validation pending. Do not advance release pointer.
+User says not to monitor CI. Ultimate Firefight HUD remains deferred.
+
 ## Latest: accepted H3 flash, rejected motion; consumed-context fix
 
 User source57eaa410 log (Steam, Halo3) confirms correct muzzle flashes but no

@@ -391,6 +391,21 @@ int main(int argc,char** argv)
             for (size_t i=2;i<asset.count;++i) if (binding.gunMask&(uint64_t{1}<<i))
                 CHECK(Near(staged[i].position-staged[1].position,expected.up*(.2f*expected.scale)));
         }
+        // Preserve native motion without moving the independent support hand.
+        tracking.controllers.floatingHands=false;tracking.controllers.supportGripAttached=false;
+        std::array<NodeMatrix,kFirstPersonMaxNodes> still{},animated{};
+        NodeMatrix motion{};motion.position={0,0,.025f};
+        CHECK(BuildTrackedFirstPersonPalette(binding,source,camera,tracking,reference,1,true,still));
+        CHECK(BuildTrackedFirstPersonPalette(binding,source,camera,tracking,reference,1,true,animated,nullptr,&motion));
+        CHECK(Near(animated[binding.rightWrist].position-still[binding.rightWrist].position,expected.up*(.025f*expected.scale)));
+        CHECK(Near(animated[binding.gun].position-still[binding.gun].position,expected.up*(.025f*expected.scale)));
+        CHECK(Near(animated[binding.leftWrist].position,still[binding.leftWrist].position));
+        motion.forward={.9800666f,0,.1986693f};motion.up={-.1986693f,0,.9800666f};
+        NodeMatrix expectedAnimated{};
+        CHECK(MoveNode(NodeMatrix{},expected,motion,expectedAnimated));
+        CHECK(BuildTrackedFirstPersonPalette(binding,source,camera,tracking,reference,1,true,animated,nullptr,&motion));
+        CHECK(Near(animated[binding.gun].forward,expectedAnimated.forward));
+
         auto malformed=asset.nodes;
         malformed[1].parent=binding.leftWrist;
         CHECK(!BuildFirstPersonBinding(25,3,malformed.data(),asset.count,binding));

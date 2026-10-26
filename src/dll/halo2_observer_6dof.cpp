@@ -1,5 +1,6 @@
 #include "../common/halo2_visual_aim.h"
 #include "../common/weapon_alignment.h"
+#include "../common/halo2_weapon_animation.h"
 #include "native_reload_policy.h"
 #include "../common/vr_interaction_refinement_logic.h"
 #include "../common/exclusive_input.h"
@@ -438,6 +439,7 @@ namespace
         bool primaryGunDeferred = false;
     };
     thread_local Halo2VisibleConsumerContext g_visibleConsumerContext{};
+#include "halo2_weapon_animation.inl"
     struct Halo2CollisionResult;
     bool Halo2ContactMeleeReady();
     bool InstallHalo2ContactMelee(uintptr_t base,size_t size,uint32_t generation);
@@ -2774,6 +2776,7 @@ namespace
                     PublishBarrelMeter(
                         1, context.renderCamera, context.rightCarrier,
                         primaryMatrices);
+                    Halo2AnimateWeaponCarriers(context,context.handsMatrices,primaryMatrices,dual?matrices:nullptr,1,primaryModel,modelObject);
                     const bool owned = dual
                         ? Halo2OwnDualFirstPersonPackets(
                             context.handsMatrices, context.handsCount,
@@ -3463,6 +3466,8 @@ namespace
                         stockGun);
                 }
                 const bool dual = candidate.secondaryWeaponObject != UINT32_MAX;
+                if(packetBoundsValid)
+                    Halo2AnimateWeaponCarriers(candidate,handsMatrices,gunMatrices,dual?secondaryMatrices:nullptr,0,gunRenderModelTag,secondaryRenderModelTag);
                 const bool packetsOwned = packetBoundsValid && (dual
                     ? Halo2OwnDualFirstPersonPackets(
                         handsMatrices, candidate.handsCount,
@@ -6551,6 +6556,9 @@ namespace
             }
             leanMeters = std::sqrt(sum) * kHalo2MetersPerWorldUnit;
         }
+        LOG("Halo 2 weapon animation: applied=%llu settling=%llu",
+            static_cast<unsigned long long>(g_h2WeaponAnimationApplied.load()),
+            static_cast<unsigned long long>(g_h2WeaponAnimationSettling.load()));
         LOG("Halo 2 observer 6DOF: %llu observer transforms seen, %llu head "
             "poses applied, %llu rejected samples, %llu unreadable, %llu "
             "exceptions; lean now %.3f m at world_scale %.3f wu/m (positional "

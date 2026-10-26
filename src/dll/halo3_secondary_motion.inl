@@ -6,7 +6,8 @@ struct H3SecondaryMotion
     uint32_t generation{},unit=UINT32_MAX,weapon=UINT32_MAX;
     int count{},wrist=-1;
     uint64_t at{};
-    BoneMatrix inverseReference{},delta{};
+    weapon_animation::Reference reference;
+    BoneMatrix delta{};
     bool valid=false;
 };
 thread_local H3SecondaryMotion g_h3SecondaryMotion;
@@ -25,24 +26,23 @@ void CaptureH3SecondaryMotion(const FpInterpolationContext& context,const BoneMa
     const uint64_t now=GetTickCount64();
     if(!context.valid||context.player!=0||context.muzzleWeapon==UINT32_MAX||
         context.muzzleUnit==UINT32_MAX||context.count<=0||context.count>64||!authored||context.lWrist<0||context.lWrist>=context.count) {
-        state.valid=false;++g_h3SecondaryMotionRefused;return;
+        state.valid=false;state.reference={};++g_h3SecondaryMotionRefused;return;
     }
     const auto& current=authored[context.lWrist];
-    if(!H3MotionFinite(current)) {state.valid=false;++g_h3SecondaryMotionRefused;return;}
-    if(!state.valid||state.generation!=context.generation||state.unit!=context.muzzleUnit||
-        state.weapon!=context.muzzleWeapon||state.count!=context.count||state.wrist!=context.lWrist||now-state.at>500) {
-        state={};
-        if(!InvertBoneMatrix(current,state.inverseReference)){++g_h3SecondaryMotionRefused;return;}
-        state.generation=context.generation;state.unit=context.muzzleUnit;state.weapon=context.muzzleWeapon;
-        state.count=context.count;state.wrist=context.lWrist;state.valid=true;
-        ++g_h3SecondaryMotionResets;
-    }
-    state.at=now;
-    if(!ComposeBoneMatrices(state.inverseReference,current,state.delta)||!H3MotionFinite(state.delta)) {
-        state.valid=false;++g_h3SecondaryMotionRefused;return;
-    }
-    // Scale remains a player setting, rather than an animated wrist scale.
+    if(!H3MotionFinite(current)) {state.valid=false;state.reference={};++g_h3SecondaryMotionRefused;return;}
+    weapon_animation::Pose local{},delta{};
+    memcpy(local.rotation,current.rotation,sizeof(local.rotation));
+    memcpy(local.translation,current.translation,sizeof(local.translation));
+    const bool wasReady=state.reference.ready;
+    state.valid=state.reference.Update({context.generation,
+        (uint64_t(context.muzzleUnit)<<32)|context.muzzleWeapon,
+        uint64_t(context.count),uint64_t(context.lWrist)},local,now,g_worldScale.load(),delta);
+    if(state.valid&&!wasReady)++g_h3SecondaryMotionResets;
+    state.generation=context.generation;state.unit=context.muzzleUnit;state.weapon=context.muzzleWeapon;
+    state.count=context.count;state.wrist=context.lWrist;state.at=now;
     state.delta.scale=1.f;
+    memcpy(state.delta.rotation,delta.rotation,sizeof(delta.rotation));
+    memcpy(state.delta.translation,delta.translation,sizeof(delta.translation));
     ++g_h3SecondaryMotionSamples;
 }
 // The visible-palette hook consumes the interpolation receipt before solving.

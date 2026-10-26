@@ -827,6 +827,8 @@ __declspec(noinline) void __fastcall ParticleDrawHook(const SaberCamera* camera,
     __try { if (original) original(camera,texture,pass,batch); }
     __finally { particleScope=previous;callbacks.fetch_sub(1,std::memory_order_release); }
 }
+thread_local weapon_animation::Reference animationReference;
+std::atomic<uint64_t> animationApplied{},animationSettling{};
 bool ApplyPalette(uint32_t graph,NodeMatrix* matrices,const Scope& owner) noexcept
 {
     AnimationNode nodes[kFirstPersonMaxNodes]{};
@@ -850,9 +852,25 @@ bool ApplyPalette(uint32_t graph,NodeMatrix* matrices,const Scope& owner) noexce
     }
     std::array<NodeMatrix,kFirstPersonMaxNodes> source{},staged{};
     if (!CopyPalette(matrices,source.data(),count)) return false;
+    NodeMatrix animationDelta{};bool haveAnimation=false;
+    if(binding.gun>=0&&binding.gun<int(count)&&binding.rightWrist>=0&&binding.rightWrist<int(count)&&owner.muzzleUnit!=UINT32_MAX&&owner.muzzleWeapon!=UINT32_MAX&&MuzzleOwner(owner.muzzleUnit,owner.muzzleWeapon)) {
+        NodeMatrix camera{};camera.forward=context.camera.forward;camera.up=context.camera.up;
+        camera.left=Cross(camera.up,camera.forward);camera.position=context.camera.position;
+        // The solver already retains gun-to-wrist translation. Observe the
+        // wrist position, not the gun position, to avoid adding that motion twice.
+        auto anchor=FirstPersonGunAimFrame(binding,source[binding.gun]);
+        anchor.position=source[binding.rightWrist].position;
+        const auto local=weapon_animation::Relative(AnimationPose(camera),AnimationPose(anchor));
+        weapon_animation::Pose delta{};
+        haveAnimation=animationReference.Update({binding.generation,
+            (uint64_t(owner.muzzleUnit)<<32)|owner.muzzleWeapon,binding.nodeIdentity,context.rendererEpoch},
+            local,GetTickCount64(),context.unitsPerMeter,delta);
+        if(haveAnimation) {animationDelta=AnimationMatrix(delta);++animationApplied;}
+        else ++animationSettling;
+    } else animationReference={};
     uint32_t refusalStage=0;
     if (!BuildTrackedFirstPersonPalette(binding,source.data(),context.camera,context.tracking,
-            context.reference,context.unitsPerMeter,context.positional,staged,&refusalStage)) {
+            context.reference,context.unitsPerMeter,context.positional,staged,&refusalStage,haveAnimation?&animationDelta:nullptr)) {
         FpRefusalProbe failure{};
         failure.generation=binding.generation;failure.graph=graph;failure.stage=refusalStage;
         failure.count=count;failure.identity=binding.nodeIdentity;
@@ -1049,8 +1067,7 @@ __declspec(noinline) void __fastcall PrepareHook(int16_t user)
         local.output=reinterpret_cast<NodeMatrix*>(users+0x1088);
         local.valid=true;
         HaloCELocalPlayerState state{};
-        if((local.context.tracking.controllers.gunBarrelAim||local.context.tracking.controllers.muzzleShots)&&
-            HaloCEControls_GetLocalPlayerState(state)&&LocalOnFootShooter(state.unit))
+        if(HaloCEControls_GetLocalPlayerState(state)&&LocalOnFootShooter(state.unit))
         {local.muzzleUnit=state.unit;local.muzzleWeapon=state.weapon;}
         if (supportOutermostPrepare)
         {
@@ -1497,6 +1514,9 @@ bool HaloCEFirstPerson_Poll(uintptr_t base,size_t size,uint32_t gen,bool isActiv
             gen,muzzleInstalled.load(),muzzleFaulted.load(),muzzleApplied.load(),muzzleRefused.load(),muzzleRestoreRefused.load());
         LOG("CE FP gen=%u installed=%d observed=%llu applied=%llu stock=%llu exceptions=%llu",
             gen,installed.load(),observed.load(),applied.load(),refused.load(),exceptions.load());
+        LOG("CE weapon animation: applied=%llu settling=%llu",
+            static_cast<unsigned long long>(animationApplied.load()),
+            static_cast<unsigned long long>(animationSettling.load()));
         FpRefusalProbe failure{};
         if(fpRefusalProbe.Read(failure) && failure.generation==gen)
             LOG("CE FP stage graph=%08X identity=%llX count=%u stage=%u invalidNodes=%llX zeroScale=%llX armLengths=%.6f/%.6f/%.6f/%.6f (0=staged 1=input 2=controller 3=grip 4=hand 5=nodes 6=left-arm 7=right-arm 8=floating 10=read 11=binding)",

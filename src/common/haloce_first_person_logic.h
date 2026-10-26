@@ -1,5 +1,6 @@
 #pragma once
 #include "weapon_alignment.h"
+#include "weapon_animation_motion.h"
 #include "visual_hand_offset.h"
 
 #include "haloce_render_logic.h"
@@ -119,6 +120,20 @@ inline bool Valid(const NodeMatrix& m) noexcept
         std::fabs(Dot(m.forward,m.up))<0.05f&&
         std::fabs(Dot(m.left,m.up))<0.05f&&
         Dot(Cross(m.forward,m.left),m.up)>0.95f;
+}
+inline weapon_animation::Pose AnimationPose(const NodeMatrix& m) noexcept
+{
+    return {{m.forward.x,m.forward.y,m.forward.z,m.left.x,m.left.y,m.left.z,m.up.x,m.up.y,m.up.z},
+            {m.position.x,m.position.y,m.position.z}};
+}
+inline NodeMatrix AnimationMatrix(const weapon_animation::Pose& p) noexcept
+{
+    NodeMatrix out{};
+    out.forward={p.rotation[0],p.rotation[1],p.rotation[2]};
+    out.left={p.rotation[3],p.rotation[4],p.rotation[5]};
+    out.up={p.rotation[6],p.rotation[7],p.rotation[8]};
+    out.position={p.translation[0],p.translation[1],p.translation[2]};
+    return out;
 }
 inline Vec3 TransformDirection(const NodeMatrix& m,Vec3 p) noexcept
 { return m.forward*p.x+m.left*p.y+m.up*p.z; }
@@ -832,7 +847,7 @@ inline bool BuildXamRightOnlyPalette(const FirstPersonBinding& binding,const Nod
 inline bool BuildTrackedFirstPersonPalette(const FirstPersonBinding& binding,
     const NodeMatrix* source,const Camera& camera,const Tracking& tracking,const Reference& reference,
     float unitsPerMeter,bool positional,std::array<NodeMatrix,kFirstPersonMaxNodes>& out,
-    uint32_t* refusalStage=nullptr) noexcept
+    uint32_t* refusalStage=nullptr,const NodeMatrix* animationDelta=nullptr) noexcept
 {
     const auto stage=[&](uint32_t value){if(refusalStage)*refusalStage=value;};
     stage(1);
@@ -846,6 +861,11 @@ inline bool BuildTrackedFirstPersonPalette(const FirstPersonBinding& binding,
         !BuildControllerMatrix(camera,tracking,reference,rig.support,unitsPerMeter,positional,supportAim)||
         !ApplyVisualMount(rig,unitsPerMeter,true,primaryAim)||
         !ApplyVisualMount(rig,unitsPerMeter,false,supportAim)) return false;
+    if(animationDelta) {
+        NodeMatrix animated{};
+        if(!MoveNode(NodeMatrix{},primaryAim,*animationDelta,animated))return false;
+        primaryAim=animated;
+    }
     stage(3);
     if (HasHiddenXamLeftArm(binding,source)) {
         if (!BuildXamRightOnlyPalette(binding,source,primaryAim,camera,rig,out)) return false;

@@ -1,5 +1,6 @@
 #include "../common/visual_aim.h"
 #include "../common/weapon_alignment.h"
+#include "../common/weapon_animation_motion.h"
 #include "../common/dlss_logic.h"
 #include "contact_melee_queue.h"
 #include "../common/reach_wind_replay.h"
