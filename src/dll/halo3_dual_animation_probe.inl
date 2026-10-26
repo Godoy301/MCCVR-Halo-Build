@@ -51,6 +51,17 @@ void CaptureH3DualAnimation(uint16_t tag,const FpInterpolationContext& context,
 }
 void ReportH3DualAnimation()
 {
+    static uint64_t lastMotionReport=0;
+    const uint64_t now=GetTickCount64();
+    if(now-lastMotionReport>=5000 && g_h3SecondaryMotionSamples.load()) {
+        lastMotionReport=now;
+        LOG("H3 secondary motion: samples=%llu referenceResets=%llu refused=%llu effectsApplied=%llu effectsRefused=%llu",
+            static_cast<unsigned long long>(g_h3SecondaryMotionSamples.load()),
+            static_cast<unsigned long long>(g_h3SecondaryMotionResets.load()),
+            static_cast<unsigned long long>(g_h3SecondaryMotionRefused.load()),
+            static_cast<unsigned long long>(g_h3SecondaryEffectApplied.load()),
+            static_cast<unsigned long long>(g_h3SecondaryEffectRefused.load()));
+    }
     static uint32_t reported[2]{};
     for(int slot=0;slot<2;++slot) {
         auto& sample=g_h3DualAnimation[slot];

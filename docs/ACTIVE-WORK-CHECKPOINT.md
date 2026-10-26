@@ -1,3 +1,31 @@
+## Latest: H3 secondary motion and effect correction candidate (2026-10-26)
+
+User requests a build containing actual animation and muzzle-flash corrections,
+with Ultimate Firefight HUD explicitly deferred. This candidate changes behavior,
+not only diagnostics. Accepted release pointer remains unchanged.
+
+The secondary wrist inverse cancels authored whole-weapon motion. Preserve the
+relative authored wrist motion against a per-equipped-weapon reference in the
+shared target used by rendering and effects. Owner/generation/count/wrist changes
+and a capture gap reset the reference. This is a first-valid-pose reference, not
+an identified native idle pose; pickup/reload/idle transitions require headset
+validation, particularly alignment after the initial equip animation finishes.
+No new engine address or hook is introduced; other titles are gated out.
+
+SMG/Plasma Rifle effects now share the existing 30-degree/.06-metre visual
+correction. Select effect nodes from the native render-model remap and rebuild
+from the untouched authored palette, so a second effect path cannot accumulate
+the same correction. Preserve the existing visual constants and other models.
+Counters are reported off the render path. No HUD layout changes.
+
+Validation: portable production-inl tests and existing weapon alignment tests
+pass with g++; the motion/effect harness also passes when substituted with the
+actual game.cpp matrix composition/inversion implementations. Coverage includes
+motion, stale/owner/generation rejection, both corrected models, repeated effect
+calls, untouched nodes and nonfinite input rollback. Windows CI and headset
+validation remain pending. Test SMG, Plasma Rifle and Spiker in each hand:
+idle, fire, reload, drop/regrab, plus ordinary single-wield behavior.
+
 ## Latest: diagnostic compilation declaration fix
 
 User-provided logs109063516715 identify MSVC C3861 at

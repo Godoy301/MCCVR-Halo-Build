@@ -2373,7 +2373,7 @@ namespace
     std::atomic<bool> g_halo3MuzzleBindingsReady{false};
     bool Halo3CaptureMuzzleOwner(int player,int slot,uint32_t& unit,uint32_t& weapon) noexcept;
     void Halo3ApplySecondaryWeaponAlignment(uint16_t tag,const FpInterpolationContext& context,
-        BoneMatrix* destination);
+        BoneMatrix* destination,const int32_t* boneMap);
     void Halo3PublishMuzzlePalette(uint16_t tag,const FpInterpolationContext& context,
         const BoneMatrix* destination,uint32_t generation) noexcept;
     weapon_muzzle::Store g_odstMuzzles;
@@ -5999,6 +5999,7 @@ namespace
     // the secondary's authored pose differs from the primary's.
     std::atomic<float> g_barrelInWrist[2][3];
     std::atomic<bool> g_barrelInWristValid[2]={{false},{false}};
+#include "halo3_secondary_motion.inl"
 
     // Marker/effect packet builders also consume 0x184B08 directly. Preserve
     // their already headset-verified controller registration on the live
@@ -6095,6 +6096,7 @@ namespace
         if (!ApplyControllerToMarkerBonesWithTarget(
                 root,desiredWristWorld,meshScale,bones,count,transformAnchor))
             return false;
+        if(dual) ApplyH3SecondaryEffects(bones,count,desiredWristWorld,&root,meshScale);
         static std::atomic<bool> logged{false};
         if (!logged.exchange(true))
             LOG("M3: marker/muzzle bones rigid-parented with the same transform as the gun");
@@ -6874,6 +6876,7 @@ namespace
                     VR_ObserveSecondaryWeaponPresentation(GameTitle::Halo3, context.generation);
                 memcpy(g_fpUnmodifiedInterpolations[slot],*outBones,
                        static_cast<size_t>(count)*sizeof(BoneMatrix));
+                CaptureH3SecondaryMotion(context,g_fpUnmodifiedInterpolations[slot]);
                 if (slot==1)
                 {
                     static std::atomic<bool> loggedDual{false};
@@ -7041,12 +7044,15 @@ namespace
         out.scale = 1.0f;
         memcpy(out.rotation, mounted, sizeof(mounted));
         memcpy(out.translation, posC, sizeof(posC));
+        BoneMatrix neutral=out;
+        memcpy(neutral.rotation,neutralBasis,sizeof(neutralBasis));
+        if(left) ApplyH3SecondaryMotion(out,neutral);
+        const BoneMatrix beforeCollision=out;
         (void)LegacyApplyWorldCollision(
             TitleAdapter_GetActiveTitle(), left ? 0 : 1, out, collisionCorrection);
-        if (neutralVisual) {
-            *neutralVisual=out;
-            memcpy(neutralVisual->rotation,neutralBasis,sizeof(neutralBasis));
-        }
+        for(int axis=0;axis<3;++axis)
+            neutral.translation[axis]+=out.translation[axis]-beforeCollision.translation[axis];
+        if(neutralVisual)*neutralVisual=neutral;
         return true;
     }
 
@@ -8103,7 +8109,7 @@ static int LegacyAnatomicalRenderNodeCount(GameTitle title,uint16_t tag,uint32_t
         if(reconstructed && selectedSource==g_fpPaletteScratch &&
             !g_scopeRenderActive.load(std::memory_order_acquire))
         {
-            Halo3ApplySecondaryWeaponAlignment(tag,context,destination);
+            Halo3ApplySecondaryWeaponAlignment(tag,context,destination,boneMap);
             Halo3PublishMuzzlePalette(tag,context,destination,collisionGeneration);
             LegacyApplyVisualHandOffsets(GameTitle::Halo3,tag,boneMap,context,destination);
             CaptureH3DualAnimation(tag,context,g_fpUnmodifiedInterpolations[context.slot],
@@ -8521,6 +8527,7 @@ static int LegacyAnatomicalRenderNodeCount(GameTitle title,uint16_t tag,uint32_t
                 output[i].scale*=meshScale;
             }
         }
+        if(dual) ApplyH3SecondaryEffects(output,count,desired,nullptr,meshScale);
         static std::atomic<bool> logged{false};
         if (!logged.exchange(true))
             LOG("M3: composed wrist subtree snapped to the controller "
@@ -26630,7 +26637,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
 #include "left_hand_presentation.inl"
 
     void Halo3ApplySecondaryWeaponAlignment(uint16_t tag,const FpInterpolationContext& context,
-        BoneMatrix* destination)
+        BoneMatrix* destination,const int32_t* boneMap)
     {
         if (!destination || !context.valid || context.slot!=1 || context.player!=0 ||
             g_config.left_handed) return;
@@ -26638,19 +26645,30 @@ static constexpr bool kOdstMappedFpEnabled = false;
         const int count=LegacyAnatomicalRenderNodeCount(GameTitle::Halo3,tag,&checksum);
         const float yaw=weapon_alignment::H3SecondaryYaw(unsigned(context.slot),checksum);
         if (!yaw || count!=(checksum==0x171C0B10u?4:7)) return;
+        uint64_t effectMask=0;
+        int32_t remap[7]{};
+        if(boneMap && context.muzzleUnit!=UINT32_MAX && context.muzzleWeapon!=UINT32_MAX && SafeReadBytes(boneMap,remap,count*sizeof(int32_t))) {
+            bool valid=true;
+            for(int i=0;i<count;++i) {
+                if(remap[i]<0||remap[i]>=context.count||remap[i]>=64||remap[i]==context.cameraControl) {valid=false;break;}
+                effectMask|=uint64_t{1}<<remap[i];
+            }
+            if(valid) {
+                auto& binding=g_h3SecondaryEffectBinding;
+                uint32_t seq=binding.sequence.load();
+                if(!(seq&1)&&binding.sequence.compare_exchange_strong(seq,seq+1)) {
+                    binding.generation=context.generation;binding.unit=context.muzzleUnit;
+                    binding.weapon=context.muzzleWeapon;binding.checksum=checksum;binding.mask=effectMask;
+                    binding.sequence.store(seq+2,std::memory_order_release);
+                }
+            }
+        }
         BoneMatrix frame{};float scale=1;
         if (!DesiredWristWorld(true,frame,scale,nullptr)) return;
-        const float lateral=.06f*g_worldScale.load();
-        if (!std::isfinite(lateral)) return;
         BoneMatrix candidate[7]{};
         for (int i=0;i<count;++i) {
             candidate[i]=destination[i];
-            if (!weapon_alignment::RotateYaw(frame.rotation,frame.translation,yaw,
-                    candidate[i].rotation,candidate[i].translation)) return;
-            for (int axis=0;axis<3;++axis) {
-                candidate[i].translation[axis]+=frame.rotation[3+axis]*lateral;
-                if (!std::isfinite(candidate[i].translation[axis])) return;
-            }
+            if (!H3CorrectSecondaryMatrix(frame,yaw,candidate[i])) return;
         }
         // Only verified secondary weapon palettes move, never the hands.
         memcpy(destination,candidate,count*sizeof(BoneMatrix));
@@ -48135,7 +48153,6 @@ static constexpr bool kOdstMappedFpEnabled = false;
     void Halo4CameraLogTick()
     {
         static uint64_t reportedFpFingerApplied=0,reportedFpFingerRefused=0;
-        ReportH3DualAnimation();
         static ULONGLONG lastFpFingerReport=0,lastBodyIkReport=0;
         const ULONGLONG avatarReportNow=GetTickCount64();
         const auto fpFingerApplied=g_halo4FpFingerApplied.load(std::memory_order_relaxed);
@@ -49047,6 +49064,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
             Halo4FlightDriveReport();   // the Broadsword pilot's own line
             GunAimReport();   // DRIVE Halo 3 gun-slaved seat (the gun camera's offset), SEAT LIMIT Halo 3 gun band
             Halo3HeadRelativeReport();   // TRACKER HEAD Halo 3: the switch, by the head / the game's own
+            ReportH3DualAnimation();
             Halo3TrackerHudHeightReport();   // TRACKER HUD HEIGHT Halo 3: the blips moved with the HUD height / not
             HostUnloadGate_Report();   // UNLOAD GATE <title>: MCC's reload of a game DLL waited for our teardown / not
             VR_ReportStandingFollow();   // VIEW HEIGHT title=N: the neutral height began to follow the standing height
