@@ -102,6 +102,10 @@ uintptr_t Find(uintptr_t base,size_t,const char* pattern){
     if(pattern==native_ce::callerPattern)return base+native_ce::callerProofRva;
     if(pattern==native_h3::converterPattern)return base+native_h3::converterRva;
     if(pattern==native_h3::consumerEntryPattern)return base+native_h3::consumerBegin;
+    if(pattern==native_h3::edgeCallerPattern)return base+0xE4CD7;
+    if(pattern==native_h3::edgeFlagsPattern)return base+0xE7D8B;
+    if(pattern==native_h3::actionEdgesPattern)return base+native_h3::actionEdgesRva;
+    if(pattern==native_h3::localPlayerPattern)return base+native_h3::localPlayerRva;
     if(pattern==native_h3::secondaryReloadPattern)return base+native_h3::secondaryReloadRva;
     if(pattern==native_h3::consumerReloadPattern)return base+native_h3::consumerReloadRva;
     if(pattern==native_h3::controllerProofPattern)return base+native_h3::controllerProofRva;
@@ -182,8 +186,12 @@ static void __fastcall OriginalCeConsumer(int user,unsigned controller,float del
         Check(CeState()[8]!=0,"outer VR overlay resumes after nested stock consumer");
     }
 }
+static unsigned h3EdgesCalls=0;
+static uintptr_t __fastcall OriginalH3Edges(uint32_t,void*){++h3EdgesCalls;return 0x1234;}
+static uint32_t __fastcall H3LocalPlayer(int user){return user==0?0xABCD0002:UINT32_MAX;}
 MH_STATUS WINAPI MH_CreateHook(LPVOID target,LPVOID,LPVOID* original){
     ++creates;if(creates==failCreate)return MH_ERROR_UNSUPPORTED_FUNCTION;
+    if(target==image.data()+native_h3::actionEdgesRva){*original=reinterpret_cast<void*>(&OriginalH3Edges);return MH_OK;}
     if(target==image.data()+native_h3::converterRva){*original=reinterpret_cast<void*>(&OriginalH3Convert);return MH_OK;}
     if(target==image.data()+kGestureBindings[native_h3::readerIndex].readerRva){*original=reinterpret_cast<void*>(&OriginalH3Read);return MH_OK;}
     if(target==image.data()+native_odst::converterRva){*original=reinterpret_cast<void*>(&OriginalOdstConvert);return MH_OK;}
@@ -301,29 +309,34 @@ static void TestH3(){
     Check(H3Read(vr_mapping::Interact)==&h3Physical,"manual reload preserves context interaction");
     const unsigned secondaryIds[]{4,0x42,0x1F,4};
     const uintptr_t secondaryCallers[]{0xF6159,0xF6172,0xF61B2,0xF6196};
-    for(unsigned i=0;i<4;++i) {
-        auto* suppressed=static_cast<native_action_button::Gen3Record*>(native_h3::ReaderHook(
-            image.data()+0x100000,secondaryIds[i],reinterpret_cast<uintptr_t>(image.data())+secondaryCallers[i]));
-        Check(suppressed!=&h3Physical && suppressed->state.frames==0 && suppressed->state.amount==0 &&
-            suppressed->action==secondaryIds[i] && h3Physical.state.frames==9,
-            "manual reload suppresses secondary consumer aliases without modifying native input");
+    for(unsigned i=0;i<4;++i)
         Check(native_h3::ReaderHook(image.data()+0x100000,secondaryIds[i],
-            reinterpret_cast<uintptr_t>(image.data())+native_h3::consumerBegin+0x10)==&h3Physical,
-            "secondary alias remains native outside its verified reload read");
-    }
-    native_h3::runtime.secondaryReloadProved=false;
-    Check(native_h3::ReaderHook(image.data()+0x100000,4,reinterpret_cast<uintptr_t>(image.data())+0xF6159)==&h3Physical,
-        "secondary proof failure leaves that feature native");
-    native_h3::runtime.secondaryReloadProved=true;
-
+            reinterpret_cast<uintptr_t>(image.data())+secondaryCallers[i])==&h3Physical,
+            "manual reload preserves all native dual-pickup alias records");
+    Check(native_h3::runtime.secondaryEdgesReady,"optional H3 edge hook installed");
+    native_h3::runtime.localPlayer=&H3LocalPlayer;
+    alignas(8) uint8_t packet[0x48]{};
+    auto& edgeFlags=*reinterpret_cast<uint32_t*>(packet+0x40);
+    const auto edgeCall=[&](uint32_t player,uintptr_t caller) {
+        const unsigned before=h3EdgesCalls;
+        Check(native_h3::ActionEdgesHook(player,packet,reinterpret_cast<uintptr_t>(image.data())+caller)==0x1234 &&
+            h3EdgesCalls==before+1,"edge hook calls native exactly once and preserves result");
+    };
+    edgeFlags=0xFFFFFFFF;edgeCall(0xABCD0002,0xE4CE4);
+    Check(edgeFlags==0xFFFFFFBF,"only secondary reload pressed bit changes; pickup and held flags survive");
+    edgeFlags=0xFFFFFFFF;edgeCall(0xABCD0003,0xE4CE4);
+    Check(edgeFlags==0xFFFFFFFF,"other player action packet stays native");
+    edgeCall(0xABCD0002,0);Check(edgeFlags==0xFFFFFFFF,"unrelated native caller stays native");
+    native_h3::runtime.secondaryEdgesReady=false;
+    edgeCall(0xABCD0002,0xE4CE4);Check(edgeFlags==0xFFFFFFFF,"optional edge failure preserves pickup and native actions");
+    native_h3::runtime.secondaryEdgesReady=true;
     H3Poll(1u<<vr_mapping::Reload,false,1u<<vr_mapping::Reload);
     Check(H3Read(vr_mapping::Reload)->state.frames==1,"manual gesture reload works with mapper disabled");
-    Check(static_cast<native_action_button::Gen3Record*>(native_h3::ReaderHook(image.data()+0x100000,4,
-        reinterpret_cast<uintptr_t>(image.data())+0xF6159))->state.frames==0,
-        "primary reload gesture cannot leak into the secondary button alias");
     g_config.manual_reload=false;g_config.vr_action_mapping=true;
     H3Poll(0,false);
     Check(H3Read(vr_mapping::Reload)==&h3Physical,"disabling manual reload restores native buttons");
+    edgeFlags=0xFFFFFFFF;edgeCall(0xABCD0002,0xE4CE4);
+    Check(edgeFlags==0xFFFFFFFF,"manual reload off restores secondary reload edge");
     Check(native_h3::ReaderHook(image.data()+0x100000,4,
         reinterpret_cast<uintptr_t>(image.data())+0xF6159)==&h3Physical,
         "disabling manual reload restores the secondary button too");

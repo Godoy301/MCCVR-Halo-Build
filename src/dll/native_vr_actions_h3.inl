@@ -26,12 +26,20 @@ inline int SecondaryReloadRecord(unsigned action,uintptr_t caller) noexcept {
     if(action==0x1F && caller==0xF61B2)return 2;
     return -1;
 }
+// Match H3EK's player-action edge resolver and output-user player mapping.
+constexpr uintptr_t actionEdgesRva=0xE7C68,localPlayerRva=0xEE45C;
+constexpr const char* actionEdgesPattern="48 8B C4 48 89 58 08 48 89 68 10 48 89 70 18 48 89 78 20 8B 72 40 41 BA 74 00 80 F0 44 8B 05 11 23 95 00 65 48 8B 04 25 58 00 00 00 0F B7 C9 41 B9 10 00 00 00 4A 8B 04 C0 4E 8B 04 08 4C 69 C9 F8 02 00 00";
+constexpr const char* localPlayerPattern="83 C8 FF 3B C8 74 27 8B 15 33 BB 94 00 65 48 8B 04 25 58 00 00 00 41 B8 10 01 00 00 48 63 C9 48 8B 04 D0 4A 8B 04 00 8B 84 88 B8 00 00 00 C3";
+constexpr const char* edgeCallerPattern="48 8D 54 24 50 41 8B CF E8 84 2F 00 00";
+constexpr const char* edgeFlagsPattern="45 84 C0 74 0D 40 84 FF 75 08 8B 42 40 83 C8 40 EB 06 8B 42 40 83 E0 BF 45 84 C0 75 0B 40 84 FF 74 06 0F BA E8 07 EB 04 0F BA F0 07 89 42 40 BF";
 struct Runtime {
     HMODULE module{};
     uintptr_t base{}, state{};
     std::atomic<uint32_t> generation{};
-    void* target[2]{}, *original[2]{};
-    bool enabled[2]{}, attempted{};
+    void* target[3]{}, *original[3]{};
+    bool enabled[3]{}, attempted{};
+    std::atomic<bool> secondaryEdgesReady{};
+    uint32_t(__fastcall* localPlayer)(int){};
     std::atomic<bool> admitted{}, faulted{},secondaryReloadProved{};
     std::atomic<uint32_t> callbacks{};
     std::atomic<uint64_t> converted{}, routed{}, readerAt{};
@@ -156,8 +164,31 @@ void* __fastcall ReaderHook(void* state,unsigned action,uintptr_t caller) {
     } __finally {runtime.callbacks.fetch_sub(1,std::memory_order_release);}
     return result;
 }
+// Preserve held/long-held aliases for dual pickup. Only the derived reload
+// edge is removed, after native processing, for the exact local player.
+uintptr_t __fastcall ActionEdgesHook(uint32_t player,void* packet,uintptr_t caller) {
+    runtime.callbacks.fetch_add(1,std::memory_order_acq_rel);
+    uintptr_t result=0;
+    __try {
+        result=reinterpret_cast<uintptr_t(__fastcall*)(uint32_t,void*)>(runtime.original[2])(player,packet);
+        __try {
+            uint32_t actions=0,blocked=0;bool direct=false;
+            if(Current() && runtime.secondaryEdgesReady.load(std::memory_order_acquire) &&
+               caller==runtime.base+0xE4CE4 && player!=UINT32_MAX && packet &&
+               ReadPublication(GetTickCount64(),actions,direct,nullptr,title,runtime.generation.load(),&blocked) &&
+               (blocked&(1u<<vr_mapping::Reload)) &&
+               runtime.localPlayer && runtime.localPlayer(0)==player) {
+                auto* flags=reinterpret_cast<uint32_t*>(static_cast<uint8_t*>(packet)+0x40);
+                *flags &= ~uint32_t{0x40};
+            }
+        } __except(EXCEPTION_EXECUTE_HANDLER) {
+            runtime.secondaryEdgesReady.store(false,std::memory_order_release);
+        }
+    } __finally {runtime.callbacks.fetch_sub(1,std::memory_order_release);}
+    return result;
+}
 // The reader is entered through a register-preserving asm thunk (native_vr_reader_thunks.asm).
-void* const hooks[]{reinterpret_cast<void*>(&ConverterHook),reinterpret_cast<void*>(&NativeVrReaderThunkHalo3)};
+void* const hooks[]{reinterpret_cast<void*>(&ConverterHook),reinterpret_cast<void*>(&NativeVrReaderThunkHalo3),reinterpret_cast<void*>(&NativeVrH3ActionEdgesThunk)};
 bool ProveConsumerBounds(uintptr_t base) {
     DWORD64 imageBase=0;
     const auto* entry=RtlLookupFunctionEntry(base+consumerBegin,&imageBase,nullptr);
@@ -168,16 +199,17 @@ bool Retire() {
     runtime.readerAt.store(0,std::memory_order_release);
     publication.stamp.store(0,std::memory_order_release);
     publication.cancelEpoch.fetch_add(1,std::memory_order_acq_rel);
-    for(unsigned i=0;i<2;++i) if(runtime.enabled[i]) {
+    for(unsigned i=0;i<3;++i) if(runtime.enabled[i]) {
         const auto status=MCCVR_DisableHookForRetirement(runtime.target[i]);
         if(status!=MH_OK && status!=MH_ERROR_DISABLED) return false;
         runtime.enabled[i]=false;
     }
     const void* functions[]{hooks[0],hooks[1],reinterpret_cast<void*>(&ReaderHook),reinterpret_cast<void*>(&ReadOwned),
-        reinterpret_cast<void*>(&Current),reinterpret_cast<void*>(&ReadController),reinterpret_cast<void*>(&ReadFrames)};
-    const void* trampolines[]{runtime.original[0],runtime.original[1],nullptr,nullptr,nullptr,nullptr,nullptr};
-    if(!WaitForNativeDetourQuiescence(functions,trampolines,7,runtime.callbacks)) return false;
-    for(unsigned i=0;i<2;++i) if(runtime.target[i]) {
+        reinterpret_cast<void*>(&Current),reinterpret_cast<void*>(&ReadController),reinterpret_cast<void*>(&ReadFrames),
+        hooks[2],reinterpret_cast<void*>(&ActionEdgesHook)};
+    const void* trampolines[]{runtime.original[0],runtime.original[1],nullptr,nullptr,nullptr,nullptr,nullptr,runtime.original[2],nullptr};
+    if(!WaitForNativeDetourQuiescence(functions,trampolines,9,runtime.callbacks)) return false;
+    for(unsigned i=0;i<3;++i) if(runtime.target[i]) {
         if(MH_RemoveHook(runtime.target[i])!=MH_OK) return false;
         runtime.target[i]=runtime.original[i]=nullptr;
     }
@@ -243,6 +275,22 @@ void Poll() {
                 runtime.enabled[i]=proved;
             }
         }
+        bool edgeReady=proved && Prove(base,size,actionEdgesRva,actionEdgesPattern) &&
+            Prove(base,size,localPlayerRva,localPlayerPattern) &&
+            Prove(base,size,0xE4CD7,edgeCallerPattern) && Prove(base,size,0xE7D8B,edgeFlagsPattern);
+        runtime.localPlayer=edgeReady?reinterpret_cast<uint32_t(__fastcall*)(int)>(base+localPlayerRva):nullptr;
+        if(edgeReady) {
+            auto* target=reinterpret_cast<void*>(base+actionEdgesRva);
+            edgeReady=MH_CreateHook(target,hooks[2],&runtime.original[2])==MH_OK;
+            if(edgeReady) {
+                runtime.target[2]=target;
+                edgeReady=MH_EnableHook(target)==MH_OK;
+                runtime.enabled[2]=edgeReady;
+            }
+        }
+        runtime.secondaryEdgesReady.store(edgeReady,std::memory_order_release);
+        LOG("H3 secondary reload edge suppression: %s; dual pickup input preserved",
+            edgeReady?"installed":"StockFallback (proof/hook failure)");
         runtime.readerAt.store(0,std::memory_order_release);
         runtime.admitted.store(proved,std::memory_order_release);
         LOG("Native VR action bridge H3: %s; requires observed owned input cadence; runtime validation pending",
@@ -257,8 +305,8 @@ void Poll() {
     const auto now=GetTickCount64();
     if(now>=runtime.reportAt) {
         runtime.reportAt=now+5000;
-        LOG("Native VR action bridge H3: converter=%llu directReads=%llu%s",
-            runtime.converted.load(),runtime.routed.load(),runtime.faulted.load()?" TRANSPORT FALLBACK (guarded access fault)":"");
+        LOG("Native VR action bridge H3: converter=%llu directReads=%llu secondaryReload=%s%s",
+            runtime.converted.load(),runtime.routed.load(),runtime.secondaryEdgesReady.load()?"edge-only":"stock-fallback",runtime.faulted.load()?" TRANSPORT FALLBACK (guarded access fault)":"");
     }
 }
 

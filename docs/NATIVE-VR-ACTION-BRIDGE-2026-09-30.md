@@ -1,3 +1,38 @@
+## October 26: preserve dual pickup while suppressing secondary reload
+
+User reports the alias suppression also prevents dual pickup. Disable that
+behavior in rollback037db157; keep the dormant code. Native action4/42/1F
+records must pass unchanged, including frame/ms counters and long-held state.
+
+Kit343FC0 separates interactions: +40 bit5 is tested at344157 and calls
+346370 at344165 for held dual interaction; bit6 is independently tested at
+344309 for secondary reload. The prior input-reader approach erased both.
+Use the independently matched player-action edge resolver instead: kit341C20,
+retailE7C68..E7EFC, called at kit34D138 / retailE4CDF (returnE4CE4).
+Run native first, then clear ONLY packet+40 bit6 under a fresh blocked-Reload
+publication. Preserve all other packet bytes and the native previous-button
+state. Primary suppression and native dual-shake request paths are unchanged.
+
+The first argument is a PLAYER DATUM, not controller index0. Compare it with
+the exact output-user0 player getter at retailEE45C. H3EK's mapping writer
+3E9DBF stores output-user player into table+B8; descriptor105A6F0 contains the
+named assertion `player_mapping_globals->output_user_player_mapping[output_user_index]==NONE`.
+Retail getter reads the homologous table+B8 (engine TLS110), separately from
+the accepted unit getterEE48C/table+C8. Verify entry, getter, edge-bit and exact
+caller patterns uniquely on the worker. All checks pass on the pinned binaries.
+
+This optional hook is entered through the register-preserving assembly thunk;
+its original result, native caller, volatile registers and native single-call
+behavior are retained. It participates in three-hook retirement/quiescence.
+Missing proof, nonlocal owner, unrelated caller, stale publication or optional
+fault keeps this feature stock; an optional fault does not disable the action
+bridge. Worker diagnostics report edge-only versus stock-fallback.
+
+Read-only verifier covers the new proofs and distinct pickup/reload semantics.
+Windows fixture checks exact flag preservation, local/other player, caller,
+feature-off/failure, native call count/result and untouched shared records.
+The assembly probe covers the added thunk. Windows/headset result is pending.
+
 ## October 26: H3 secondary reload input aliases
 
 User confirms primary suppression works but secondary button still reloads.

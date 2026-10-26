@@ -19,6 +19,7 @@ option casemap:none
 
 EXTERN g_nativeVrReaderReach:QWORD
 EXTERN g_nativeVrReaderHalo3:QWORD
+EXTERN g_nativeVrH3ActionEdges:QWORD
 EXTERN g_nativeVrReaderOdst:QWORD
 EXTERN g_nativeVrReaderHalo4:QWORD
 
@@ -76,6 +77,7 @@ ENDM
 .code
 PRESERVING_READER NativeVrReaderThunkReach, g_nativeVrReaderReach
 PRESERVING_READER NativeVrReaderThunkHalo3, g_nativeVrReaderHalo3
+PRESERVING_READER NativeVrH3ActionEdgesThunk, g_nativeVrH3ActionEdges
 PRESERVING_READER NativeVrReaderThunkOdst, g_nativeVrReaderOdst
 PRESERVING_READER NativeVrReaderThunkHalo4, g_nativeVrReaderHalo4
 END

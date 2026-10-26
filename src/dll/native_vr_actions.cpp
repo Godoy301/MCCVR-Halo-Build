@@ -21,6 +21,7 @@
 extern "C" {
 void NativeVrReaderThunkReach();
 void NativeVrReaderThunkHalo3();
+void NativeVrH3ActionEdgesThunk();
 void NativeVrReaderThunkOdst();
 void NativeVrReaderThunkHalo4();
 }
@@ -266,6 +267,7 @@ uint32_t GenerationForTitle(GameTitle requested) noexcept {
 
 extern "C" {
 void* (*g_nativeVrReaderReach)(void*,unsigned,uintptr_t)=&ReaderHook;
+uintptr_t (*g_nativeVrH3ActionEdges)(uint32_t,void*,uintptr_t)=&native_h3::ActionEdgesHook;
 void* (*g_nativeVrReaderHalo3)(void*,unsigned,uintptr_t)=&native_h3::ReaderHook;
 void* (*g_nativeVrReaderOdst)(void*,unsigned,uintptr_t)=&native_odst::ReaderHook;
 void* (*g_nativeVrReaderHalo4)(void*,unsigned,uintptr_t)=&native_h4::ReaderHook;

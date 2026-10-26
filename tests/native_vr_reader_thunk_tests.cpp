@@ -8,9 +8,11 @@
 extern "C" {
 void NativeVrReaderThunkReach();
 void NativeVrReaderThunkHalo3();
+void NativeVrH3ActionEdgesThunk();
 void NativeVrReaderThunkOdst();
 void NativeVrReaderThunkHalo4();
 void* (*g_nativeVrReaderReach)(void*,unsigned,uintptr_t)=nullptr;
+void* (*g_nativeVrH3ActionEdges)(void*,unsigned,uintptr_t)=nullptr;
 void* (*g_nativeVrReaderHalo3)(void*,unsigned,uintptr_t)=nullptr;
 void* (*g_nativeVrReaderOdst)(void*,unsigned,uintptr_t)=nullptr;
 void* (*g_nativeVrReaderHalo4)(void*,unsigned,uintptr_t)=nullptr;
@@ -31,6 +33,7 @@ int main()
     struct { const char* name; void (*thunk)(); void* (**hook)(void*,unsigned,uintptr_t); } titles[]{
         {"Reach",&NativeVrReaderThunkReach,&g_nativeVrReaderReach},
         {"Halo 3",&NativeVrReaderThunkHalo3,&g_nativeVrReaderHalo3},
+        {"Halo 3 action edges",&NativeVrH3ActionEdgesThunk,&g_nativeVrH3ActionEdges},
         {"ODST",&NativeVrReaderThunkOdst,&g_nativeVrReaderOdst},
         {"Halo 4",&NativeVrReaderThunkHalo4,&g_nativeVrReaderHalo4},
     };
