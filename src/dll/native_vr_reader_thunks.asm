@@ -52,6 +52,9 @@ thunkName PROC FRAME
     .savexmm128 xmm5, 70h
     .endprolog
     ; rcx (state) and edx (action) still hold the native arguments.
+    ; Six saved registers (30h) plus locals (88h): original native return address.
+    ; Pass it explicitly; the C++ hook's own return address is inside this thunk.
+    mov r8, QWORD PTR [rsp+0B8h]
     call QWORD PTR [hookPointer]
     movdqa xmm0, XMMWORD PTR [rsp+20h]
     movdqa xmm1, XMMWORD PTR [rsp+30h]

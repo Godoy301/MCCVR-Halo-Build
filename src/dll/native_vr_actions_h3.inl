@@ -127,12 +127,12 @@ void* ReadOwned(void* state,unsigned action,void* native,uintptr_t caller) noexc
         runtime.routed.fetch_add(1,std::memory_order_relaxed);
         return record.bytes.data();
 }
-void* __fastcall ReaderHook(void* state,unsigned action) {
+void* __fastcall ReaderHook(void* state,unsigned action,uintptr_t caller) {
     runtime.callbacks.fetch_add(1,std::memory_order_acq_rel);
     void* result=nullptr;
     __try {
         result=reinterpret_cast<Read>(runtime.original[1])(state,action);
-        result=ReadOwned(state,action,result,reinterpret_cast<uintptr_t>(_ReturnAddress()));
+        result=ReadOwned(state,action,result,caller);
     } __finally {runtime.callbacks.fetch_sub(1,std::memory_order_release);}
     return result;
 }

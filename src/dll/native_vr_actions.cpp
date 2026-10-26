@@ -182,12 +182,12 @@ void* ReadOwned(void* state,unsigned action,void* native,uintptr_t caller) noexc
         runtime.routed.fetch_add(1,std::memory_order_relaxed);
         return record.bytes.data();
 }
-void* __fastcall ReaderHook(void* state,unsigned action) {
+void* __fastcall ReaderHook(void* state,unsigned action,uintptr_t caller) {
     runtime.callbacks.fetch_add(1,std::memory_order_acq_rel);
     void* result=nullptr;
     __try {
         result=reinterpret_cast<Read>(runtime.original[1])(state,action);
-        result=ReadOwned(state,action,result,reinterpret_cast<uintptr_t>(_ReturnAddress()));
+        result=ReadOwned(state,action,result,caller);
     } __finally {runtime.callbacks.fetch_sub(1,std::memory_order_release);}
     return result;
 }
@@ -265,10 +265,10 @@ uint32_t GenerationForTitle(GameTitle requested) noexcept {
 }
 
 extern "C" {
-void* (*g_nativeVrReaderReach)(void*,unsigned)=&ReaderHook;
-void* (*g_nativeVrReaderHalo3)(void*,unsigned)=&native_h3::ReaderHook;
-void* (*g_nativeVrReaderOdst)(void*,unsigned)=&native_odst::ReaderHook;
-void* (*g_nativeVrReaderHalo4)(void*,unsigned)=&native_h4::ReaderHook;
+void* (*g_nativeVrReaderReach)(void*,unsigned,uintptr_t)=&ReaderHook;
+void* (*g_nativeVrReaderHalo3)(void*,unsigned,uintptr_t)=&native_h3::ReaderHook;
+void* (*g_nativeVrReaderOdst)(void*,unsigned,uintptr_t)=&native_odst::ReaderHook;
+void* (*g_nativeVrReaderHalo4)(void*,unsigned,uintptr_t)=&native_h4::ReaderHook;
 }
 void NativeVrActions_BeginPoll() noexcept {
     pollPublished=false;

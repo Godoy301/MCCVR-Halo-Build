@@ -212,7 +212,7 @@ static void Poll(uint32_t actions,bool direct,uint32_t blocked=0){
     NativeVrActions_EndPoll();ConvertPoll();
 }
 static native_action_button::LaterRecord* ReadAction(vr_mapping::Action action){
-    return static_cast<native_action_button::LaterRecord*>(ReaderHook(State(),vr_mapping::NativeAction(testTitle,action)));
+    return static_cast<native_action_button::LaterRecord*>(ReaderHook(State(),vr_mapping::NativeAction(testTitle,action),reinterpret_cast<uintptr_t>(MockReturnAddress())));
 }
 static void Install(){
     *reinterpret_cast<unsigned*>(image.data()+0xF0000+0x6FC)=0;
@@ -283,7 +283,7 @@ static void H3Poll(uint32_t actions,bool direct,uint32_t blocked=0){
 }
 static native_action_button::Gen3Record* H3Read(vr_mapping::Action action){
     return static_cast<native_action_button::Gen3Record*>(native_h3::ReaderHook(image.data()+0x100000,
-        native_action_button::ConsumerAction(GameTitle::Halo3,action)));
+        native_action_button::ConsumerAction(GameTitle::Halo3,action),reinterpret_cast<uintptr_t>(MockReturnAddress())));
 }
 static void TestH3(){
     testTitle=GameTitle::Halo3;++testGeneration;creates=0;failCreate=failEnable=0;
@@ -322,7 +322,7 @@ static void TestH3(){
     h3Physical.state={};mockCallerRva=0;
     Check(H3Read(vr_mapping::Interact)==&h3Physical,"H3 abstraction updater never receives writable virtual record");
     mockCallerRva=native_h3::consumerBegin+0x10;
-    Check(native_h3::ReaderHook(image.data()+0x100518,3)==&h3Physical,"H3 other controller record is untouched");
+    Check(native_h3::ReaderHook(image.data()+0x100518,3,reinterpret_cast<uintptr_t>(MockReturnAddress()))==&h3Physical,"H3 other controller record is untouched");
     NativeVrActions_BeginPoll();NativeVrActions_EndPoll();
     Check(H3Read(vr_mapping::Interact)==&h3Physical,"H3 menu cancellation ends virtual hold immediately");
     NativeVrActions_Publish(raw,testTitle,clockNow,1u<<vr_mapping::Interact,true);
@@ -333,7 +333,7 @@ static void TestH3(){
     Check(H3Read(vr_mapping::Interact)!=&h3Physical,"H3 copied native input route uses proven controller zero");
     clockNow+=151;Check(H3Read(vr_mapping::Interact)==&h3Physical&&!NativeVrActions_CanRoute(testTitle,clockNow),"H3 expired publication falls back");
     H3Poll(1u<<vr_mapping::Fire,true);native_h3::runtime.state=1;
-    Check(native_h3::ReaderHook(reinterpret_cast<void*>(1),8)==&h3Physical&&native_h3::runtime.faulted,"H3 guarded state fault returns native and isolates optional feature");
+    Check(native_h3::ReaderHook(reinterpret_cast<void*>(1),8,reinterpret_cast<uintptr_t>(MockReturnAddress()))==&h3Physical&&native_h3::runtime.faulted,"H3 guarded state fault returns native and isolates optional feature");
     quiescent=false;NativeVrActions_Poll();Check(native_h3::runtime.module&&!native_h3::runtime.admitted,"H3 pending callbacks retain disabled trampolines");
     quiescent=true;NativeVrActions_Poll();Check(!native_h3::runtime.module,"H3 fault retirement frees only after quiescence");
     ++testGeneration;creates=0;failCreate=2;NativeVrActions_Poll();
@@ -346,7 +346,7 @@ static void OdstPoll(uint32_t actions,bool direct,uint32_t blocked=0){
 }
 static native_action_button::Gen3Record* OdstRead(vr_mapping::Action action){
     return static_cast<native_action_button::Gen3Record*>(native_odst::ReaderHook(image.data()+0x110000,
-        native_action_button::ConsumerAction(GameTitle::Halo3ODST,action)));
+        native_action_button::ConsumerAction(GameTitle::Halo3ODST,action),reinterpret_cast<uintptr_t>(MockReturnAddress())));
 }
 static void TestOdst(){
     testTitle=GameTitle::Halo3ODST;++testGeneration;creates=0;failCreate=failEnable=0;
@@ -385,7 +385,7 @@ static void TestOdst(){
     odstPhysical.state={};mockCallerRva=0;
     Check(OdstRead(vr_mapping::Interact)==&odstPhysical,"ODST abstraction updater never receives writable virtual record");
     mockCallerRva=native_odst::consumerBegin+0x10;
-    Check(native_odst::ReaderHook(image.data()+0x110558,3)==&odstPhysical,"ODST other controller record is untouched");
+    Check(native_odst::ReaderHook(image.data()+0x110558,3,reinterpret_cast<uintptr_t>(MockReturnAddress()))==&odstPhysical,"ODST other controller record is untouched");
     NativeVrActions_BeginPoll();NativeVrActions_EndPoll();
     Check(OdstRead(vr_mapping::Interact)==&odstPhysical,"ODST menu cancellation ends virtual hold immediately");
     NativeVrActions_Publish(raw,testTitle,clockNow,1u<<vr_mapping::Interact,true);
@@ -396,7 +396,7 @@ static void TestOdst(){
     Check(OdstRead(vr_mapping::Interact)!=&odstPhysical,"ODST copied native input route uses proven controller zero");
     clockNow+=151;Check(OdstRead(vr_mapping::Interact)==&odstPhysical&&!NativeVrActions_CanRoute(testTitle,clockNow),"ODST expired publication falls back");
     OdstPoll(1u<<vr_mapping::Fire,true);native_odst::runtime.state=1;
-    Check(native_odst::ReaderHook(reinterpret_cast<void*>(1),8)==&odstPhysical&&native_odst::runtime.faulted,"ODST guarded state fault returns native and isolates optional feature");
+    Check(native_odst::ReaderHook(reinterpret_cast<void*>(1),8,reinterpret_cast<uintptr_t>(MockReturnAddress()))==&odstPhysical&&native_odst::runtime.faulted,"ODST guarded state fault returns native and isolates optional feature");
     quiescent=false;NativeVrActions_Poll();Check(native_odst::runtime.module&&!native_odst::runtime.admitted,"ODST pending callbacks retain disabled trampolines");
     quiescent=true;NativeVrActions_Poll();Check(!native_odst::runtime.module,"ODST fault retirement frees only after quiescence");
     ++testGeneration;creates=0;failCreate=2;NativeVrActions_Poll();
@@ -409,7 +409,7 @@ static void H4Poll(uint32_t actions,bool direct,uint32_t blocked=0){
 }
 static native_action_button::LaterRecord* H4Read(vr_mapping::Action action){
     return static_cast<native_action_button::LaterRecord*>(native_h4::ReaderHook(image.data()+0x120000,
-        native_action_button::ConsumerAction(GameTitle::Halo4,action)));
+        native_action_button::ConsumerAction(GameTitle::Halo4,action),reinterpret_cast<uintptr_t>(MockReturnAddress())));
 }
 static void TestH4(){
     testTitle=GameTitle::Halo4;++testGeneration;creates=0;failCreate=failEnable=0;
@@ -448,7 +448,7 @@ static void TestH4(){
     h4Physical.state={};mockCallerRva=0;
     Check(H4Read(vr_mapping::Interact)==&h4Physical,"H4 abstraction updater never receives writable virtual record");
     mockCallerRva=native_h4::consumerBegin+0x10;
-    Check(native_h4::ReaderHook(image.data()+0x1207E8,2)==&h4Physical,"H4 other controller record is untouched");
+    Check(native_h4::ReaderHook(image.data()+0x1207E8,2,reinterpret_cast<uintptr_t>(MockReturnAddress()))==&h4Physical,"H4 other controller record is untouched");
     NativeVrActions_BeginPoll();NativeVrActions_EndPoll();
     Check(H4Read(vr_mapping::Interact)==&h4Physical,"H4 menu cancellation ends virtual hold immediately");
     NativeVrActions_Publish(raw,testTitle,clockNow,1u<<vr_mapping::Interact,true);
@@ -459,7 +459,7 @@ static void TestH4(){
     Check(H4Read(vr_mapping::Interact)!=&h4Physical,"H4 copied native input route uses proven output row zero");
     clockNow+=151;Check(H4Read(vr_mapping::Interact)==&h4Physical&&!NativeVrActions_CanRoute(testTitle,clockNow),"H4 expired publication falls back");
     H4Poll(1u<<vr_mapping::Fire,true);native_h4::runtime.state=1;
-    Check(native_h4::ReaderHook(reinterpret_cast<void*>(1),8)==&h4Physical&&native_h4::runtime.faulted,"H4 guarded state fault returns native and isolates optional feature");
+    Check(native_h4::ReaderHook(reinterpret_cast<void*>(1),8,reinterpret_cast<uintptr_t>(MockReturnAddress()))==&h4Physical&&native_h4::runtime.faulted,"H4 guarded state fault returns native and isolates optional feature");
     quiescent=false;NativeVrActions_Poll();Check(native_h4::runtime.module&&!native_h4::runtime.admitted,"H4 pending callbacks retain disabled trampolines");
     quiescent=true;NativeVrActions_Poll();Check(!native_h4::runtime.module,"H4 fault retirement frees only after quiescence");
     ++testGeneration;creates=0;failCreate=2;NativeVrActions_Poll();
@@ -629,7 +629,7 @@ int main(){
     ConverterHook(0x12345678,16,wrongRaw,image.data()+0xE0000,nullptr,nullptr);
     Check(ReadAction(vr_mapping::Fire)!=&physical,"MCC copied-input buffer admits only through proven output row zero");
     Poll(1u<<vr_mapping::Fire,true);
-    Check(ReaderHook(image.data()+0xF0700,7)==&physical,"another local controller state stays native");
+    Check(ReaderHook(image.data()+0xF0700,7,reinterpret_cast<uintptr_t>(MockReturnAddress()))==&physical,"another local controller state stays native");
     *reinterpret_cast<unsigned*>(image.data()+0xF0000+0x6FC)=1;
     Check(ReadAction(vr_mapping::Fire)==&physical,"owned-state controller field is verified live");
     *reinterpret_cast<unsigned*>(image.data()+0xF0000+0x6FC)=0;
@@ -649,7 +649,7 @@ int main(){
     Check(!runtime.module&&removes==5&&frees==3,"enable failure also removes created inactive trampoline");
     ++testGeneration;creates=0;failEnable=0;Install();Poll(1u<<vr_mapping::Fire,true);
     runtime.state=1;
-    Check(ReaderHook(reinterpret_cast<void*>(1),7)==&physical&&runtime.faulted,
+    Check(ReaderHook(reinterpret_cast<void*>(1),7,reinterpret_cast<uintptr_t>(MockReturnAddress()))==&physical&&runtime.faulted,
         "Reach guarded state access fault returns native record and marks optional bridge faulted");
     quiescent=false;NativeVrActions_Poll();
     Check(runtime.module&&!runtime.admitted&&removes==5,"failed quiescence retains trampolines with admission closed");

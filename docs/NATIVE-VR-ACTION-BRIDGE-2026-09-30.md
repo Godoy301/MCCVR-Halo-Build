@@ -1,3 +1,22 @@
+## October 26: preserve the native caller across reader thunks
+
+User source7124f9d6: CE/H2 manual reload and holster suppression works;
+Reach/H3/ODST/H4 does not. Supplied HaloMCCVR.log shows converter activity
+with zero direct reads. Source inspection identifies a deterministic admission
+failure: ReaderHook used _ReturnAddress(), which points into the preserving
+assembly thunk rather than the native consumer. All four later-title bridges
+therefore reject the caller before routing or suppression. CE/H2 use different
+entry paths and are unaffected.
+
+The thunk saves six registers and allocates 88h bytes, placing the native
+return address at rsp+B8h. Pass that address as the third C++ argument (r8),
+then restore the original r8 with all other preserved registers. Keep the
+existing independently verified native consumer bounds, owner and freshness
+checks. No native address, hook target or consumer whitelist is changed.
+The assembly regression probe now verifies exact caller forwarding as well as
+volatile-register preservation; runtime fixtures pass their explicit caller.
+Windows CI/headset validation remains pending.
+
 # Native VR action isolation: September 30 implementation
 
 The Halo 3 reference experience is a consistent VR action regardless of MCC's
