@@ -117,8 +117,9 @@ void* ReadOwned(void* state,unsigned action,void* native,uintptr_t caller) noexc
             publication.generation.load(std::memory_order_acquire)!=local.generation ||
             local.cancelEpoch!=publication.cancelEpoch.load(std::memory_order_acquire)) return native;
         runtime.readerAt.store(now,std::memory_order_release);
+        // Disabled after pickup regression: these aliases also drive dual pickup.
         const int secondary=SecondaryReloadRecord(action,caller-runtime.base);
-        if(secondary>=0 && runtime.secondaryReloadProved.load(std::memory_order_acquire) &&
+        if(false && secondary>=0 && runtime.secondaryReloadProved.load(std::memory_order_acquire) &&
            (local.blocked&(1u<<vr_mapping::Reload))) {
             // Gesture reloads use the proven native weapon-slot path. A primary
             // reload publication must never reload the secondary as a side effect.
