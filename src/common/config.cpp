@@ -1110,6 +1110,12 @@ void ConfigLoad(const wchar_t* path)
             muzzleFlashKey=true;break;
         }
         if(muzzleFlashKey) continue;
+        if(!strcmp(key,"disable_autoexposure_odst")) {
+            char* end=nullptr;const long value=strtol(val,&end,10);
+            if(end!=val&&end&&*end==0&&(value==0||value==1))g_config.disable_autoexposure_odst=value!=0;
+            else LOG("config: invalid autoexposure setting '%s' ignored",key);
+            continue;
+        }
         bool bloomKey=false;
         for(unsigned title=0;title<weapon_interaction::kTitleCount;++title)
         {
@@ -3235,6 +3241,7 @@ void ConfigSave()
     fprintf(f,"# Per-game muzzle-flash hiding. Supported paths: H2 Original and H4.\n");
     for(unsigned title=0;title<weapon_interaction::kTitleCount;++title)
         fprintf(f,"hide_muzzle_flash_%s = %d\n",weapon_interaction::kTitleKeys[title],g_config.hide_muzzle_flash[title]?1:0);
+    fprintf(f,"disable_autoexposure_odst = %d\n",g_config.disable_autoexposure_odst?1:0);
     fprintf(f,"# Stock bloom per game. Optional suppression supports H3, ODST and Reach.\n");
     for(unsigned title=0;title<weapon_interaction::kTitleCount;++title)
         fprintf(f,"bloom_enabled_%s = %d\n",weapon_interaction::kTitleKeys[title],g_config.bloom_enabled[title]?1:0);

@@ -1,3 +1,15 @@
+## Latest: Reach/ODST bloom and ODST exposure shader toggles
+
+Adapt supplied ShaderToggler pixel CRCs without ReShade. Picture -> Scene has
+Disable bloom in Reach/ODST and Disable autoexposure in ODST. Exact matching
+draws are omitted on the observed real immediate context; old Reach/ODST SRV
+substitution disabled, Halo 3 preserved. Native defaults and existing bloom
+preferences preserved. See BLOOM-CONSUMER-INTEGRATION-2026-09-23.md for hashes,
+upstream semantics, limitations and tests. Portable policy test passes; Windows
+fixtures and headset validation pending. Preserve prior H3 pickup/reload and
+shared model/muzzle setback, all accepted animation behavior. Build only; no
+monitoring, installation or accepted-pointer changes.
+
 ## Latest: accepted animations, H3 pickup regression and 1cm secondary setback
 
 User confirms animations now perfect: preserve animation/filter/reference code.

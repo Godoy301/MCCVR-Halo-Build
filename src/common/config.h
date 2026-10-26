@@ -1312,6 +1312,7 @@ struct Config
     bool hide_muzzle_flash[6]{false,false,false,true,false,true};
     // Per-game stock bloom. Verified optional suppression: H3, ODST, Reach.
     bool bloom_enabled[6]{true,true,true,true,true,true};
+    bool disable_autoexposure_odst = false;
 
     // Experimental gun-mounted VR zoom screen. R3 is isolated from Halo's
     // native zoom so the full VR gun/body remain visible; scope_zoom is the

@@ -2344,8 +2344,19 @@ namespace
             pictureTitle==GameTitle::Halo3ODST?1:pictureTitle==GameTitle::HaloReach?2:-1;
         if(bloomTitle>=0)
         {
-            changed|=ImGui::Checkbox("Bloom in this game",&g_config.bloom_enabled[bloomTitle]);
-            ImGui::TextWrapped("Turn off to remove the game's bloom glow. This setting is saved separately for each game.");
+            if(pictureTitle==GameTitle::Halo3) {
+                changed|=ImGui::Checkbox("Bloom in this game",&g_config.bloom_enabled[bloomTitle]);
+            } else {
+                bool disabled=!g_config.bloom_enabled[bloomTitle];
+                if(ImGui::Checkbox("Disable bloom",&disabled)) {
+                    g_config.bloom_enabled[bloomTitle]=!disabled;changed=true;
+                }
+            }
+            ImGui::TextWrapped("Bloom is saved separately for each game.");
+            if(pictureTitle==GameTitle::Halo3ODST) {
+                changed|=ImGui::Checkbox("Disable autoexposure",&g_config.disable_autoexposure_odst);
+                ImGui::TextWrapped("Stops automatic exposure updates in Halo 3: ODST.");
+            }
         }
         changed |= vr_menu::SliderFloat("Game brightness", &g_config.game_brightness, 0.5f, 2.0f, "%.2f");
         ImGui::TextDisabled("Brightens/darkens the whole game. 1.0 = the game's own brightness.\n"
