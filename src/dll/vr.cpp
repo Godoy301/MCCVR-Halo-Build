@@ -12714,11 +12714,9 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
             }
             else
             {
-                // ODST scale authority is the fixed constant (game.cpp writes
-                // no live world scale for ODST); 1/3.048 matches
-                // kOdstWorldUnitsPerMeter (game.cpp).
+                // Match the live conversion used by tracked eyes and hands.
                 frame.worldScaleValid = true;
-                frame.worldScale = 1.0f / 3.048f;
+                frame.worldScale = Game_GetWorldScale();
             }
         }
         else if (title == GameTitle::HaloReach)
@@ -12773,12 +12771,9 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                     TelemetryVec3{eye[0], eye[1], eye[2]};
                 frame.engineCameraSerial = eyeSerial;
             }
-            // Reach scale authority is the fixed constant (game.cpp writes no
-            // live world scale for Reach); 1/3.048 matches kOdstWorldUnitsPer-
-            // Meter (game.cpp) and kReachWorldUnitsPerMeter
-            // (reach_render_logic.h).
+            // Match the live tracking-to-world conversion used by the camera and hands.
             frame.worldScaleValid = true;
-            frame.worldScale = kReachWorldUnitsPerMeter;
+            frame.worldScale = Game_GetWorldScale();
         }
         else if (title == GameTitle::Halo4)
         {

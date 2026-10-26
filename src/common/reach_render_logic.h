@@ -1352,10 +1352,8 @@ inline constexpr std::array<uint8_t, 4> kReachSkyParallaxQuantizeOriginal{
 inline constexpr std::array<uint8_t, 4> kReachSkyParallaxQuantizeNeutral{
     0x31, 0xC0, 0x90, 0x90}; // xor eax,eax; nop; nop
 
-// Halo's authored physical scale is one world unit per ten feet. Reach must use
-// the same exact conversion for every tracked position so room-scale motion and
-// runtime IPD cannot disagree. This is title-local: accepted Halo 3 calibration
-// remains independently adjustable through g_worldScale.
+// Native authored units, used for engine distances and tag measurements.
+// Tracked eyes, head and controllers use the live per-title world scale.
 inline constexpr float kReachWorldUnitsPerMeter = 1.0f / 3.048f;
 inline constexpr uintptr_t kReachPlayerViewCameraStateOffset = 0x03B0;
 inline constexpr uintptr_t kReachPlayerViewCurrentMatricesOffset = 0x0490;

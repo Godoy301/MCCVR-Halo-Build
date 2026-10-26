@@ -1,3 +1,31 @@
+## Latest: animation findings, native caller forwarding, live Reach/ODST scale
+
+User confirms source7124f9d6 animations work across titles and suppression works
+in CE/CEA/H2/H2A. H3 right hand feels smoother; CE/H2/H3 secondary takes 1-2s
+on equip. Verified source causes: primary H3 barrel-in-wrist alignment uses a
+0.02 EMA, whereas secondary uses direct frozen-reference animation. Reference
+requires 1500ms plus a 500ms angular quiet window; this deliberately prevents
+equip pose becoming the reference. Explain both; leave accepted animation
+behavior unchanged rather than removing the guard and restoring equip offsets.
+Portable animation and H3 secondary regression suites pass locally.
+
+Fix later-title input bridge caller forwarding; see NATIVE-VR-ACTION-BRIDGE-
+2026-09-30.md. User log: attachments/0a17e915-ee24-4a08-a8dd-d639f55378b2/
+HaloMCCVR.log, Steam/OpenXR session, source7124f9d6. Added actual thunk caller
+assertion to Windows assembly tests, preserving register probes. Cannot run
+Windows/MSVC/SEH/MASM tests locally in this Linux environment.
+
+World-scale report confirmed by source: Reach/ODST eye separation and head
+translation used native fixed units while ODST hands already used live scale.
+Use g_worldScale for stereo eyes, head translation, roomscale and physical
+crouch; Reach controller placement, reticle projection and tracked muzzle lift
+follow the same conversion. Telemetry reports the live value. Native tag/engine
+distance constants and dormant visual-hand positioning remain unchanged.
+Preserve per-title 50-150% slider/reset and other titles' accepted behavior.
+World-scale log: attachments/c98e715c-b9e0-482c-84a4-3a250175e71a/
+HaloMCCVRWORLDSCALE.log. Headset verification still needed for these fixes.
+Do not advance accepted-release pointer, install, launch MCC or monitor CI.
+
 ## Latest: repair controller fixture link dependency
 
 CI log109297293880 reports LNK2019 for NativeVrActions_CanRoute in the

@@ -14225,7 +14225,7 @@ static int LegacyAnatomicalRenderNodeCount(GameTitle title,uint16_t tag,uint32_t
         // against it, so it rides his crouch (as Halo 3's and Reach's do).
         const float characterEyeZ = position[2];
         OdstApplyPhysicalCrouchCamera(position,
-            -Clamp((headPosition[1]-g_headPosRef[1])*kOdstWorldUnitsPerMeter,-1.5f,1.5f),!cinematic);
+            -Clamp((headPosition[1]-g_headPosRef[1])*g_worldScale.load(std::memory_order_relaxed),-1.5f,1.5f),!cinematic);
         // What it gave back (0 unless physical crouch holds a crouch): the hands, built on the engine's
         // eye (g_baseCam), rise by it with the view.
         float viewLiftZ = position[2] - characterEyeZ;
@@ -14234,7 +14234,7 @@ static int LegacyAnatomicalRenderNodeCount(GameTitle title,uint16_t tag,uint32_t
         Roomscale_Camera(GameTitle::Halo3ODST,
             cinematic ? Roomscale_Refuse(roomscale_admission::Refusal::Cinematic)
                       : Game_RoomscaleCameraVerdict(GameTitle::Halo3ODST),
-            position, headPosition, quaternion, forward, g_headPosRef, kOdstWorldUnitsPerMeter);
+            position, headPosition, quaternion, forward, g_headPosRef, g_worldScale.load(std::memory_order_relaxed));
         if (g_positional.load(std::memory_order_relaxed))
         {
             const float dx = headPosition[0] - g_headPosRef[0];
@@ -14250,7 +14250,7 @@ static int LegacyAnatomicalRenderNodeCount(GameTitle title,uint16_t tag,uint32_t
                 dz * horizontalForwardZ;
             const float rightMove = dx * (-horizontalForwardZ) +
                 dz * horizontalForwardX;
-            const float scale = kOdstWorldUnitsPerMeter;
+            const float scale = g_worldScale.load(std::memory_order_relaxed);
             // O3: while the view follows the hull, leaning must move through
             // the SAME pitched frame or a lean would slide along the world
             // floor instead of the vehicle's. Tracked pitch and roll are
@@ -16077,7 +16077,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
                     (savedRight[axis] * eyePosition[0] +
                      savedUp[axis] * eyePosition[1] -
                      savedForward[axis] * eyePosition[2]) *
-                    kOdstWorldUnitsPerMeter;
+                    g_worldScale.load(std::memory_order_relaxed);
 
             const float sinHalf = sqrtf(
                 eyeOrientation[0] * eyeOrientation[0] +
@@ -23208,7 +23208,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
                 if (isfinite(length) && length > 1.0e-4f)
                 {
                     const float scale =
-                        lift * kReachWorldUnitsPerMeter / length;
+                        lift * g_worldScale.load(std::memory_order_relaxed) / length;
                     for (int i = 0; i < 3; ++i)
                         newPosition[i] += worldUp[i] * scale;
                 }
@@ -24635,7 +24635,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
         // held against it, so it rides his crouch.
         const float characterEyeZ = pos[2];
         ApplyCachedPhysicalCrouch(GameTitle::HaloReach,pos,
-            -Clamp((hpos[1]-effectiveHeadPosRef[1])*kReachWorldUnitsPerMeter,-1.5f,1.5f),!vehicleEntryRecenter);
+            -Clamp((hpos[1]-effectiveHeadPosRef[1])*g_worldScale.load(std::memory_order_relaxed),-1.5f,1.5f),!vehicleEntryRecenter);
         // What it gave back (0 unless physical crouch holds a crouch): the view now follows the real
         // head, so the hands' and the reticle ray's stock-camera base needs the same lift.
         const float crouchLiftWu = pos[2] - characterEyeZ;
@@ -24644,7 +24644,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
         Roomscale_Camera(GameTitle::HaloReach,
             vehicleEntryRecenter ? Roomscale_Refuse(roomscale_admission::Refusal::Seated)
                                  : Game_RoomscaleCameraVerdict(GameTitle::HaloReach), pos, hpos, q, fwd,
-            effectiveHeadPosRef, kReachWorldUnitsPerMeter);
+            effectiveHeadPosRef, g_worldScale.load(std::memory_order_relaxed));
         if (!vehicleEntryRecenter)
             memcpy(g_headPosRef, effectiveHeadPosRef, sizeof(g_headPosRef));
         if (g_positional.load())
@@ -24657,7 +24657,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
             const float hfhx = hfx / hlen, hfhz = hfz / hlen;
             const float fwdComp = dx * hfhx + dz * hfhz;
             const float rightComp = dx * (-hfhz) + dz * hfhx;
-            const float s = kReachWorldUnitsPerMeter;
+            const float s = g_worldScale.load(std::memory_order_relaxed);
             float ox = 0.0f, oy = 0.0f, oz = 0.0f;
             float positionBasis[9]{};
             const float positionLocal[3] = {fwdComp, -rightComp, dy};
@@ -24700,7 +24700,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
                 ReachFirstPersonFresh(GetTickCount64()) &&
                 std::isfinite(leash) && leash >= 0.0f && std::isfinite(characterEyeZ))
             {
-                const float floorZ = characterEyeZ - leash * kReachWorldUnitsPerMeter;
+                const float floorZ = characterEyeZ - leash * g_worldScale.load(std::memory_order_relaxed);
                 if (pos[2] < floorZ)
                 {
                     g_reachHeadLookLeashLiftWu = floorZ - pos[2];
@@ -24710,7 +24710,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
         }
 #if HALOMCCVR_DEV_DIAGNOSTICS
         if (!(vehicle && vehicle->active))
-            DevNoteViewAboveEye(GameTitle::HaloReach, pos[2] - characterEyeZ, kReachWorldUnitsPerMeter);
+            DevNoteViewAboveEye(GameTitle::HaloReach, pos[2] - characterEyeZ, g_worldScale.load(std::memory_order_relaxed));
 #endif
         return true;
     }
@@ -25021,7 +25021,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
             fwd[1] * up[2] - fwd[2] * up[1],
             fwd[2] * up[0] - fwd[0] * up[2],
             fwd[0] * up[1] - fwd[1] * up[0]};
-        const float s = kReachWorldUnitsPerMeter;
+        const float s = g_worldScale.load(std::memory_order_relaxed);
         for (int axis = 0; axis < 3; ++axis)
             pos[axis] += (right[axis] * input.position[0] +
                           up[axis] * input.position[1] -
@@ -25645,7 +25645,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
                     ? owner.vehicle.cameraBase[axis]
                     : owner.presentedCameraBasePosition[axis]+(axis==2?owner.viewLiftWu:0.0f);
                 out[axis] = base +
-                    offset[axis] * kReachWorldUnitsPerMeter;
+                    offset[axis] * g_worldScale.load(std::memory_order_relaxed);
                 if (!std::isfinite(out[axis]))
                     return false;
             }
@@ -27603,7 +27603,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
         const float roomForward=dx*sh-dz*ch;
         const float roomRight=dx*ch+dz*sh;
         const float cg=cosf(g_gameYawRef),sg=sinf(g_gameYawRef);
-        const float scale=kReachWorldUnitsPerMeter;
+        const float scale=g_worldScale.load(std::memory_order_relaxed);
         float offset[3]{};
         float positionBasis[9]{};
         const float positionLocal[3] = {roomForward, -roomRight, dy};
