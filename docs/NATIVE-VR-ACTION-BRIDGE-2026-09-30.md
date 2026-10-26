@@ -1,3 +1,28 @@
+## October 26: H3 secondary reload input aliases
+
+User confirms primary suppression works but secondary button still reloads.
+Read-only inspection of the pinned H3EK/retail images establishes a separate
+secondary held-bit4 path. Kit reads actions4/42 at44B0F0/44B119 (held) and
+4/1F at44B14C/44B17D (long held). Output+2C bit5 promotes bit4. Existing action
+packing preserves that field; edge resolver341C20 creates bit6 at341D67.
+344309 tests bit6 and344330..344339 sets secondary control bit31, matching the
+already documented secondary reload action3F. Action3F is a unit action,
+not an input-reader ID.
+
+Retail caller return RVAs are F6159/F6172/F6196/F61B2, inside the existing
+verified consumer. Match the unique exact block F614F..F61B2 independently.
+While manual reload's blocked semantic bit is current, return released private
+records ONLY for those four action/caller pairs. Do not suppress the aliases
+elsewhere, remap raw controller buttons, or route primary gesture pulses into
+the secondary. Dual shake reload remains the separate proven native slot path.
+Proof mismatch leaves this secondary feature stock and logs on the worker;
+primary reload, holster and other bridge behavior continue.
+
+`tools/re/verify_h3_secondary_reload.py` verifies pinned hashes, kit instructions,
+retail calls and unique runtime signature. Passed locally against user-provided
+binaries. Windows fixture adds alias, caller, proof-failure, off-toggle and
+primary-gesture isolation checks; Windows/headset validation remains pending.
+
 ## October 26: preserve the native caller across reader thunks
 
 User source7124f9d6: CE/H2 manual reload and holster suppression works;

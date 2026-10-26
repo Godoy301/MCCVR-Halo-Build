@@ -17,13 +17,22 @@ constexpr const char* consumerEntryPattern=
 constexpr const char* consumerReloadPattern=
     "BA 26 00 00 00 E8 ED 0D 09 00 48 8B C8 E8 F1 DA FF FF 8B 4F 2C 84 C0 74 06 0F BA E9 0C EB 04 "
     "0F BA F1 0C 89 4F 2C BA 26 00 00 00 49 8B CF E8 C4 0D 09 00";
+// H3EK held bit 4 becomes secondary reload edge bit 6; three input aliases.
+constexpr uintptr_t secondaryReloadRva=0xF614F;
+constexpr const char* secondaryReloadPattern="BA 04 00 00 00 E8 CF 0E 09 00 48 8B C8 E8 D3 DB FF FF 84 C0 75 20 BA 42 00 00 00 49 8B CF E8 B6 0E 09 00 48 8B C8 E8 D6 DB FF FF 66 85 C0 75 06 83 67 2C EF EB 04 83 4F 2C 10 BA 04 00 00 00 49 8B CF E8 92 0E 09 00 48 8B C8 E8 B2 DB FF FF 0F B7 C0 3B C3 7D 22 BA 1F 00 00 00 49 8B CF E8 76 0E 09 00";
+inline int SecondaryReloadRecord(unsigned action,uintptr_t caller) noexcept {
+    if(action==4 && (caller==0xF6159 || caller==0xF6196))return 0;
+    if(action==0x42 && caller==0xF6172)return 1;
+    if(action==0x1F && caller==0xF61B2)return 2;
+    return -1;
+}
 struct Runtime {
     HMODULE module{};
     uintptr_t base{}, state{};
     std::atomic<uint32_t> generation{};
     void* target[2]{}, *original[2]{};
     bool enabled[2]{}, attempted{};
-    std::atomic<bool> admitted{}, faulted{};
+    std::atomic<bool> admitted{}, faulted{},secondaryReloadProved{};
     std::atomic<uint32_t> callbacks{};
     std::atomic<uint64_t> converted{}, routed{}, readerAt{};
     uint64_t reportAt{};
@@ -36,6 +45,7 @@ struct ThreadState {
     uint32_t blocked{};
     bool direct{}, converted{};
     native_action_button::Record records[vr_mapping::Count]{};
+    native_action_button::Record secondaryReleased[3]{};
     void Reset(uint32_t next) noexcept {
         generation=next; publishedAt=converterAt=cancelEpoch=0;
         actions=0;direct=converted=false;
@@ -107,6 +117,15 @@ void* ReadOwned(void* state,unsigned action,void* native,uintptr_t caller) noexc
             publication.generation.load(std::memory_order_acquire)!=local.generation ||
             local.cancelEpoch!=publication.cancelEpoch.load(std::memory_order_acquire)) return native;
         runtime.readerAt.store(now,std::memory_order_release);
+        const int secondary=SecondaryReloadRecord(action,caller-runtime.base);
+        if(secondary>=0 && runtime.secondaryReloadProved.load(std::memory_order_acquire) &&
+           (local.blocked&(1u<<vr_mapping::Reload))) {
+            // Gesture reloads use the proven native weapon-slot path. A primary
+            // reload publication must never reload the secondary as a side effect.
+            auto& released=local.secondaryReleased[secondary];released.Reset(title,action);
+            runtime.routed.fetch_add(1,std::memory_order_relaxed);
+            return released.bytes.data();
+        }
         const int semantic=native_action_button::SemanticAction(title,action);
         if(semantic<0) return native;
         auto& record=local.records[semantic];
@@ -205,6 +224,9 @@ void Poll() {
             Prove(base,size,consumerBegin,consumerEntryPattern) &&
             Prove(base,size,consumerReloadRva,consumerReloadPattern) &&
             Prove(base,size,controllerProofRva,controllerProofPattern) && ProveConsumerBounds(base);
+        runtime.secondaryReloadProved.store(proved && Prove(base,size,secondaryReloadRva,secondaryReloadPattern),std::memory_order_release);
+        if(proved && !runtime.secondaryReloadProved.load())
+            LOG("H3 secondary manual reload suppression: StockFallback; consumer alias proof failed");
         if(proved) {
             runtime.state=sig::RipTarget(base+d.stateLoadRva+10,base+d.stateLoadRva+14);
             proved=runtime.state>=base && runtime.state-base<size && size-(runtime.state-base)>=4*d.stride;

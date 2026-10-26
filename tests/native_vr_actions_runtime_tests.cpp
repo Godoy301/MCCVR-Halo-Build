@@ -102,6 +102,7 @@ uintptr_t Find(uintptr_t base,size_t,const char* pattern){
     if(pattern==native_ce::callerPattern)return base+native_ce::callerProofRva;
     if(pattern==native_h3::converterPattern)return base+native_h3::converterRva;
     if(pattern==native_h3::consumerEntryPattern)return base+native_h3::consumerBegin;
+    if(pattern==native_h3::secondaryReloadPattern)return base+native_h3::secondaryReloadRva;
     if(pattern==native_h3::consumerReloadPattern)return base+native_h3::consumerReloadRva;
     if(pattern==native_h3::controllerProofPattern)return base+native_h3::controllerProofRva;
     const auto& h3=kGestureBindings[native_h3::readerIndex];
@@ -298,11 +299,34 @@ static void TestH3(){
     H3Poll(0,false,1u<<vr_mapping::Reload);
     Check(H3Read(vr_mapping::Reload)->state.frames==0&&h3Physical.state.frames==9,"manual reload suppresses only the consumed record");
     Check(H3Read(vr_mapping::Interact)==&h3Physical,"manual reload preserves context interaction");
+    const unsigned secondaryIds[]{4,0x42,0x1F,4};
+    const uintptr_t secondaryCallers[]{0xF6159,0xF6172,0xF61B2,0xF6196};
+    for(unsigned i=0;i<4;++i) {
+        auto* suppressed=static_cast<native_action_button::Gen3Record*>(native_h3::ReaderHook(
+            image.data()+0x100000,secondaryIds[i],reinterpret_cast<uintptr_t>(image.data())+secondaryCallers[i]));
+        Check(suppressed!=&h3Physical && suppressed->state.frames==0 && suppressed->state.amount==0 &&
+            suppressed->action==secondaryIds[i] && h3Physical.state.frames==9,
+            "manual reload suppresses secondary consumer aliases without modifying native input");
+        Check(native_h3::ReaderHook(image.data()+0x100000,secondaryIds[i],
+            reinterpret_cast<uintptr_t>(image.data())+native_h3::consumerBegin+0x10)==&h3Physical,
+            "secondary alias remains native outside its verified reload read");
+    }
+    native_h3::runtime.secondaryReloadProved=false;
+    Check(native_h3::ReaderHook(image.data()+0x100000,4,reinterpret_cast<uintptr_t>(image.data())+0xF6159)==&h3Physical,
+        "secondary proof failure leaves that feature native");
+    native_h3::runtime.secondaryReloadProved=true;
+
     H3Poll(1u<<vr_mapping::Reload,false,1u<<vr_mapping::Reload);
     Check(H3Read(vr_mapping::Reload)->state.frames==1,"manual gesture reload works with mapper disabled");
+    Check(static_cast<native_action_button::Gen3Record*>(native_h3::ReaderHook(image.data()+0x100000,4,
+        reinterpret_cast<uintptr_t>(image.data())+0xF6159))->state.frames==0,
+        "primary reload gesture cannot leak into the secondary button alias");
     g_config.manual_reload=false;g_config.vr_action_mapping=true;
     H3Poll(0,false);
     Check(H3Read(vr_mapping::Reload)==&h3Physical,"disabling manual reload restores native buttons");
+    Check(native_h3::ReaderHook(image.data()+0x100000,4,
+        reinterpret_cast<uintptr_t>(image.data())+0xF6159)==&h3Physical,
+        "disabling manual reload restores the secondary button too");
     h3Physical.state={};
     H3Poll(1u<<vr_mapping::Reload,true);
     auto* reload=H3Read(vr_mapping::Reload);
