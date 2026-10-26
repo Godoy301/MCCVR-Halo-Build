@@ -142,7 +142,7 @@ int main()
     // the preserved lateral trim. Both visible and muzzle palettes use this.
     BoneMatrix trimFrame{},trimValue{};
     assert(H3CorrectSecondaryMatrix(trimFrame,30,trimValue));
-    assert(near(trimValue.translation[0],-.01f*g_worldScale.load()));
+    assert(near(trimValue.translation[0],.01f*g_worldScale.load()));
     assert(near(trimValue.translation[1],.06f*g_worldScale.load()));
 
 }

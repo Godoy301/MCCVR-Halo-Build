@@ -1,3 +1,10 @@
+## Latest: H3 offhand SMG/Plasma Rifle forward adjustment (commit only)
+
+User requests +0.02m relative to the current position, without compilation.
+Change shared secondary forward trim from -0.01m to +0.01m. Visible models and
+muzzle effects share this transform; preserve lateral trim, yaw and animations.
+Update existing numeric fixture expectation. No build or workflow trigger.
+
 ## Latest: Reach/ODST bloom and ODST exposure shader toggles
 
 Adapt supplied ShaderToggler pixel CRCs without ReShade. Picture -> Scene has
