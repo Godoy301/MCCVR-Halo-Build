@@ -102,7 +102,7 @@ int main()
     assert(slow.Update(key,start,0,a)&&fast.Update(key,start,0,b));
     for(uint64_t t=20;t<=200;t+=20)assert(slow.Update(key,target,t,a));
     for(uint64_t t=10;t<=200;t+=10)assert(fast.Update(key,target,t,b));
-    same(a,b);assert(a.rotation[1]>0 && a.rotation[1]<target.rotation[1]);
+    same(a,b);assert(a.rotation[1]>.7f && a.rotation[1]<target.rotation[1]);
     const Pose firstEye=a;
     for(int i=0;i<100;++i)assert(slow.Update(key,target,200,a));
     same(a,firstEye);
@@ -133,5 +133,26 @@ int main()
     assert(weapon_animation::SmoothLocalRotation(relativeFilter,nextKey,parent,world,40,result));
     same(result,world);
     }
+
+    // Only settled, exact-identity references bypass reacquisition. A new
+    // owner, generation, model/renderer or H2 inventory pair still settles.
+    weapon_animation::ReferenceCache cache;
+    weapon_animation::Reference cached;
+    for(uint64_t t=0;t<=1600;t+=100)cached.Update(key,idle,t,.33f,delta,true,&cache);
+    assert(cached.ready);
+    cached={};
+    assert(cached.Update(key,idle,1700,.33f,delta,true,&cache));same(delta,Pose{});
+    cached={};
+    assert(cached.Update(key,equip,1800,.33f,delta,false,&cache));
+    assert(near(delta.rotation[1],1.f)); // draw motion is not captured as neutral
+    for(int field=0;field<4;++field) {
+        auto changed=key;++changed[field];cached={};
+        assert(!cached.Update(changed,idle,1900,.33f,delta,true,&cache));
+    }
+    weapon_animation::ReferenceCache unready;
+    cached={};cached.Update(key,equip,0,.33f,delta,true,&unready);cached={};
+    assert(!cached.Update(key,idle,100,.33f,delta,true,&unready));
+    for(unsigned i=0;i<20;++i)cache.Store({99,i,0,0},idle);
+    assert(!cache.Find(key,delta)); // bounded cache eviction cannot invent a reference
 
 }

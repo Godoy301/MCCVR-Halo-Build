@@ -15,7 +15,7 @@ inline bool Halo2AnimationCameraPose(const Halo2CameraBasis& camera,weapon_anima
 }
 inline bool Halo2ObserveWeaponAnimation(weapon_animation::Reference& reference,
     std::array<uint64_t,4> key,const float* nativeGun,const float* nativeWrist,const Halo2CameraBasis& camera,
-    uint64_t now,float unitsPerMetre,weapon_animation::Pose& delta)
+    uint64_t now,float unitsPerMetre,weapon_animation::Pose& delta,weapon_animation::ReferenceCache* cache=nullptr)
 {
     Halo2FirstPersonTransform gun{},wrist{};weapon_animation::Pose root{},world{};
     if(!Halo2ReadFirstPersonTransform(nativeGun,gun)||!Halo2ReadFirstPersonTransform(nativeWrist,wrist)||!Halo2AnimationCameraPose(camera,root)) {
@@ -26,7 +26,7 @@ inline bool Halo2ObserveWeaponAnimation(weapon_animation::Reference& reference,
     // its wrist. Restore only the removed wrist translation and gun rotation.
     std::memcpy(world.translation,wrist.translation,sizeof(world.translation));
     if(!weapon_animation::Valid(world)){reference={};return false;}
-    return reference.Update(key,weapon_animation::Relative(root,world),now,unitsPerMetre,delta,true);
+    return reference.Update(key,weapon_animation::Relative(root,world),now,unitsPerMetre,delta,true,cache);
 }
 inline bool Halo2ApplyWeaponAnimation(Halo2CameraBasis& carrier,const weapon_animation::Pose& delta,float scale)
 {

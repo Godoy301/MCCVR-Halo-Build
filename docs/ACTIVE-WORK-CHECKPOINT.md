@@ -1,3 +1,34 @@
+## Latest: H4 rollback, faster animation response, cached references, H3 dual reload
+
+User log source5897cbe0 confirms H3 secondary animation too slow; primary reload
+blocked but left reload still works. H4 smoothing causes flashing: disable both
+H4 smoothing call sites in a separate rollback commit ca1d70cd, leaving dormant
+helper/code per repository rules. No H4 filter is active in this candidate.
+
+Root cause of slow response: H3's 0.02 EMA is per native interpolation call,
+not per 90Hz display frame. Supplied log reports about2600 secondary samples
+per5s, ~520Hz. Change new shared time-normalized filter from90 to520 samples/sec
+(~95ms time constant rather than550ms), for CE/CEA, H2/H2A and H3 secondary.
+This approximates the measured primary cadence; it is not proof of identical
+primary/secondary native animation curves. H3 primary is unchanged.
+
+No-wait path explanation: H3/ODST dynamically measure the authored wrist/barrel
+and apply a continuously updated alignment; Reach uses its own mapped native
+wrist/gun frames. Restored paths use a relative neutral delta on top of calibrated
+controller carriers. Native axes are not interchangeable (known CE custom-model
+axis exceptions), so copying the absolute wrist would risk alignment regressions.
+Do not claim universal removal of first-acquisition delay. Add bounded16-entry
+per-adapter caches of ONLY settled full-identity references. Exact owner/weapon/
+model/renderer/stance key reuse on re-equip applies motion immediately, including
+native draw pose, without relearning it as neutral. Unknown identities still use
+1500ms plus500ms quiet guard. Ownership changes and cache eviction remain guarded.
+
+H3 secondary reload uses dedicated aliases: see NATIVE-VR-ACTION-BRIDGE doc and
+new read-only verifier. Local kit/retail proof, animation smoothing/cache tests
+and H3 secondary production tests pass. Windows native runtime fixtures need CI.
+Preserve prior world-scale/input fixes. Package/build only, no game install,
+release-pointer change or build monitoring.
+
 ## Latest: user-requested smoothing for restored animations and Halo 4
 
 Apply authored-rotation-only smoothing to CE/CEA, both H2 renderers/hands,

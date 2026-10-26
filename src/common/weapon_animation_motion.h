@@ -49,7 +49,9 @@ inline Pose Compose(const Pose& a,const Pose& b)
     return out;
 }
 // Smooth authored rotation only, before composing with the live controller.
-// Time-normalized equivalent of H3's 0.02 blend at 90 samples/second. Duplicate
+// H3's 0.02 blend runs per interpolation invocation, not per headset frame.
+// The supplied 90Hz session reports about 520 samples/second; use that response
+// consistently across titles (about a 95ms time constant). Duplicate
 // eye/palette observations at one timestamp must not speed up the response.
 struct RotationFilter
 {
@@ -64,7 +66,7 @@ struct RotationFilter
         if(!ready||identity!=key||now<last||now-last>500) {
             key=identity;last=now;ready=true;value=target;output=value;return true;
         }
-        const float alpha=1.f-std::pow(.98f,float(now-last)*.09f);
+        const float alpha=1.f-std::pow(.98f,float(now-last)*.52f);
         last=now;
         const Pose relative=Relative(value,target);
         const auto* m=relative.rotation;
@@ -112,6 +114,22 @@ inline bool SmoothLocalRotation(RotationFilter& filter,std::array<uint64_t,4> ke
     if(!Valid(result))return false;
     output=result;return true;
 }
+// Bounded, caller-owned cache. Only a fully settled reference may be reused;
+// the complete owner/model/renderer key must match, never just a weapon name.
+struct ReferenceCache
+{
+    struct Entry {std::array<uint64_t,4> key{};Pose pose{};bool valid=false;};
+    std::array<Entry,16> entries{};
+    unsigned next=0;
+    bool Find(const std::array<uint64_t,4>& key,Pose& pose) const {
+        for(const auto& e:entries)if(e.valid&&e.key==key){pose=e.pose;return true;}
+        return false;
+    }
+    void Store(const std::array<uint64_t,4>& key,const Pose& pose) {
+        for(auto& e:entries)if(e.valid&&e.key==key){e.pose=pose;return;}
+        entries[next]={key,pose,true};next=(next+1)%entries.size();
+    }
+};
 struct Reference
 {
     std::array<uint64_t,4> key{};
@@ -124,7 +142,7 @@ struct Reference
     // only after the initial delay AND a quiet window. Never chase later recoil
     // or reload motion with a moving average.
     bool Update(std::array<uint64_t,4> identity,const Pose& local,uint64_t now,
-                float unitsPerMetre,Pose& delta,bool smooth=false)
+                float unitsPerMetre,Pose& delta,bool smooth=false,ReferenceCache* cache=nullptr)
     {
         delta={};
         if(!Valid(local)||!std::isfinite(unitsPerMetre)||unitsPerMetre<=0) {
@@ -132,7 +150,9 @@ struct Reference
         }
         if(!observed||key!=identity||now<last||now-last>500) {
             *this={};observed=true;key=identity;anchor=local;
-            started=stableSince=last=now;return false;
+            started=stableSince=last=now;
+            if(!cache||!cache->Find(identity,reference))return false;
+            ready=true;
         }
         last=now;
         if(!ready) {
@@ -143,6 +163,7 @@ struct Reference
             }
             if(now-started<1500||now-stableSince<500)return false;
             reference=local;ready=true;
+            if(cache)cache->Store(identity,reference);
         }
         delta=Relative(reference,local);
         // Controllers own wrist position. Retain pitch/yaw/roll animation only;

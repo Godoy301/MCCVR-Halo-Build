@@ -828,6 +828,7 @@ __declspec(noinline) void __fastcall ParticleDrawHook(const SaberCamera* camera,
     __finally { particleScope=previous;callbacks.fetch_sub(1,std::memory_order_release); }
 }
 thread_local weapon_animation::Reference animationReference;
+thread_local weapon_animation::ReferenceCache animationReferenceCache;
 std::atomic<uint64_t> animationApplied{},animationSettling{};
 bool ApplyPalette(uint32_t graph,NodeMatrix* matrices,const Scope& owner,const NodeMatrix* animationRoot) noexcept
 {
@@ -865,7 +866,7 @@ bool ApplyPalette(uint32_t graph,NodeMatrix* matrices,const Scope& owner,const N
         if(!localValid)animationReference={};
         haveAnimation=localValid&&animationReference.Update({binding.generation,
             (uint64_t(owner.muzzleUnit)<<32)|owner.muzzleWeapon,binding.nodeIdentity,context.rendererEpoch},
-            local,GetTickCount64(),context.unitsPerMeter,delta,true);
+            local,GetTickCount64(),context.unitsPerMeter,delta,true,&animationReferenceCache);
         if(haveAnimation) {animationDelta=AnimationMatrix(delta);++animationApplied;}
         else ++animationSettling;
     } else animationReference={};

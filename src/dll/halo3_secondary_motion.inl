@@ -19,6 +19,7 @@ bool H3MotionFinite(const BoneMatrix& value)
     for(float x:value.translation)if(!std::isfinite(x))return false;
     return true;
 }
+thread_local weapon_animation::ReferenceCache g_h3SecondaryReferenceCache;
 void CaptureH3SecondaryMotion(const FpInterpolationContext& context,const BoneMatrix* authored)
 {
     if(context.slot!=1||TitleAdapter_GetActiveTitle()!=GameTitle::Halo3)return;
@@ -36,7 +37,7 @@ void CaptureH3SecondaryMotion(const FpInterpolationContext& context,const BoneMa
     const bool wasReady=state.reference.ready;
     state.valid=state.reference.Update({context.generation,
         (uint64_t(context.muzzleUnit)<<32)|context.muzzleWeapon,
-        uint64_t(context.count),uint64_t(context.lWrist)},local,now,g_worldScale.load(),delta,true);
+        uint64_t(context.count),uint64_t(context.lWrist)},local,now,g_worldScale.load(),delta,true,&g_h3SecondaryReferenceCache);
     if(state.valid&&!wasReady)++g_h3SecondaryMotionResets;
     state.generation=context.generation;state.unit=context.muzzleUnit;state.weapon=context.muzzleWeapon;
     state.count=context.count;state.wrist=context.lWrist;state.at=now;
