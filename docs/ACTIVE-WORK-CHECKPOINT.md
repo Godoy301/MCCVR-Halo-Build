@@ -1,3 +1,13 @@
+## Latest: repair controller fixture link dependency
+
+CI log109297293880 reports LNK2019 for NativeVrActions_CanRoute in the
+D-pad action fixture. The fixture extracts shipping VR functions but did not
+provide this new native-routing dependency. Add an independently controlled
+mock and verify gesture-only routing with action mapping disabled, including
+rejection of cached transport bindings and loss of native routing readiness.
+Production code is unchanged. Windows link/runtime validation remains in CI;
+request a new build containing all latest fixes without monitoring it.
+
 ## Latest: repair CE runtime fixture compilation and rebuild
 
 User-supplied CI log reports C2660 in the contact transaction fixture: its
