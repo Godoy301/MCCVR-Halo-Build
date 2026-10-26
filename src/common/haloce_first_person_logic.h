@@ -135,6 +135,15 @@ inline NodeMatrix AnimationMatrix(const weapon_animation::Pose& p) noexcept
     out.position={p.translation[0],p.translation[1],p.translation[2]};
     return out;
 }
+inline bool FirstPersonAnimationLocal(const NodeMatrix& nativeRoot,const NodeMatrix& gun,
+    const NodeMatrix& wrist,weapon_animation::Pose& local) noexcept
+{
+    if(!Valid(nativeRoot)||!Valid(gun)||!Valid(wrist))return false;
+    auto anchor=AnimationPose(gun);
+    anchor.translation[0]=wrist.position.x;anchor.translation[1]=wrist.position.y;anchor.translation[2]=wrist.position.z;
+    local=weapon_animation::Relative(AnimationPose(nativeRoot),anchor);
+    return weapon_animation::Valid(local);
+}
 inline Vec3 TransformDirection(const NodeMatrix& m,Vec3 p) noexcept
 { return m.forward*p.x+m.left*p.y+m.up*p.z; }
 inline Vec3 InverseDirection(const NodeMatrix& m,Vec3 p) noexcept
@@ -862,8 +871,10 @@ inline bool BuildTrackedFirstPersonPalette(const FirstPersonBinding& binding,
         !ApplyVisualMount(rig,unitsPerMeter,true,primaryAim)||
         !ApplyVisualMount(rig,unitsPerMeter,false,supportAim)) return false;
     if(animationDelta) {
+        if(!Valid(*animationDelta))return false;
         NodeMatrix animated{};
-        if(!MoveNode(NodeMatrix{},primaryAim,*animationDelta,animated))return false;
+        NodeMatrix rotationOnly=*animationDelta;rotationOnly.position={};
+        if(!MoveNode(NodeMatrix{},primaryAim,rotationOnly,animated))return false;
         primaryAim=animated;
     }
     stage(3);

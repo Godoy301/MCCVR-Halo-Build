@@ -2,6 +2,11 @@
 #include "halo2_render_logic.h"
 #include "weapon_animation_motion.h"
 
+inline std::array<uint64_t,4> Halo2AnimationIdentity(uint32_t generation,uint32_t unit,
+    uint32_t weapon,uint32_t model,uint32_t count,uint32_t partner)
+{
+    return {generation,(uint64_t(unit)<<32)|weapon,model,(uint64_t(count)<<32)|partner};
+}
 inline bool Halo2AnimationCameraPose(const Halo2CameraBasis& camera,weapon_animation::Pose& out)
 {
     if(!Halo2BuildControllerHandMountBasis(camera,out.rotation))return false;
@@ -27,8 +32,8 @@ inline bool Halo2ApplyWeaponAnimation(Halo2CameraBasis& carrier,const weapon_ani
 {
     weapon_animation::Pose pose{};
     if(!Halo2AnimationCameraPose(carrier,pose)||!weapon_animation::Valid(delta)||!std::isfinite(scale)||scale<=0)return false;
-    auto scaled=delta;for(float& v:scaled.translation)v*=scale;
-    const auto result=weapon_animation::Compose(pose,scaled);
+    auto rotationOnly=delta;for(float& v:rotationOnly.translation)v=0;
+    const auto result=weapon_animation::Compose(pose,rotationOnly);
     if(!weapon_animation::Valid(result))return false;
     std::memcpy(carrier.forward,result.rotation,sizeof(carrier.forward));
     std::memcpy(carrier.up,result.rotation+6,sizeof(carrier.up));

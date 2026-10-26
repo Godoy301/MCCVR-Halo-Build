@@ -20,10 +20,13 @@ void Halo2AnimateWeaponCarriers(Halo2VisibleConsumerContext& context,
         }
         if(wrist<0||wristSource<0){reference={};continue;}
         weapon_animation::Pose delta{};
-        const uint64_t model=slot?secondaryModel:primaryModel;
-        const uint64_t count=slot?context.secondaryGunCount:context.gunCount;
-        if(!Halo2ObserveWeaponAnimation(reference,{g_generation.load(),
-                (uint64_t(context.unitObject)<<32)|weapon,model,count},native,hands+wrist*kHalo2FirstPersonNodeFloats,context.renderCamera,
+        const uint32_t model=slot?secondaryModel:primaryModel;
+        const uint32_t count=slot?context.secondaryGunCount:context.gunCount;
+        // Dual wield changes the primary's authored stance even when its own
+        // weapon handle/model stays the same. Both hands belong to this pair.
+        const uint32_t partner=slot?context.weaponObject:context.secondaryWeaponObject;
+        if(!Halo2ObserveWeaponAnimation(reference,Halo2AnimationIdentity(g_generation.load(),
+                context.unitObject,weapon,model,count,partner),native,hands+wrist*kHalo2FirstPersonNodeFloats,context.renderCamera,
                 GetTickCount64(),context.worldScale,delta)) {++g_h2WeaponAnimationSettling;continue;}
         auto carrier=slot?context.leftCarrier:context.rightCarrier;
         auto visual=context.muzzleVisualCarrier[slot],neutral=context.muzzleNeutralCarrier[slot];

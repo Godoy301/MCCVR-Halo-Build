@@ -829,7 +829,7 @@ __declspec(noinline) void __fastcall ParticleDrawHook(const SaberCamera* camera,
 }
 thread_local weapon_animation::Reference animationReference;
 std::atomic<uint64_t> animationApplied{},animationSettling{};
-bool ApplyPalette(uint32_t graph,NodeMatrix* matrices,const Scope& owner) noexcept
+bool ApplyPalette(uint32_t graph,NodeMatrix* matrices,const Scope& owner,const NodeMatrix* animationRoot) noexcept
 {
     AnimationNode nodes[kFirstPersonMaxNodes]{};
     uint32_t count{};
@@ -853,16 +853,17 @@ bool ApplyPalette(uint32_t graph,NodeMatrix* matrices,const Scope& owner) noexce
     std::array<NodeMatrix,kFirstPersonMaxNodes> source{},staged{};
     if (!CopyPalette(matrices,source.data(),count)) return false;
     NodeMatrix animationDelta{};bool haveAnimation=false;
-    if(binding.gun>=0&&binding.gun<int(count)&&binding.rightWrist>=0&&binding.rightWrist<int(count)&&owner.muzzleUnit!=UINT32_MAX&&owner.muzzleWeapon!=UINT32_MAX&&MuzzleOwner(owner.muzzleUnit,owner.muzzleWeapon)) {
-        NodeMatrix camera{};camera.forward=context.camera.forward;camera.up=context.camera.up;
-        camera.left=Cross(camera.up,camera.forward);camera.position=context.camera.position;
+    if(animationRoot&&Valid(*animationRoot)&&binding.gun>=0&&binding.gun<int(count)&&binding.rightWrist>=0&&binding.rightWrist<int(count)&&owner.muzzleUnit!=UINT32_MAX&&owner.muzzleWeapon!=UINT32_MAX&&MuzzleOwner(owner.muzzleUnit,owner.muzzleWeapon)) {
+        // E-CE-FP-1: the palette composes through these invocation arguments.
+        // Classic can prepare multiple cameras between outer prepare receipts.
+        const NodeMatrix& camera=*animationRoot;
         // The solver already retains gun-to-wrist translation. Observe the
         // wrist position, not the gun position, to avoid adding that motion twice.
-        auto anchor=FirstPersonGunAimFrame(binding,source[binding.gun]);
-        anchor.position=source[binding.rightWrist].position;
-        const auto local=weapon_animation::Relative(AnimationPose(camera),AnimationPose(anchor));
-        weapon_animation::Pose delta{};
-        haveAnimation=animationReference.Update({binding.generation,
+        const auto anchor=FirstPersonGunAimFrame(binding,source[binding.gun]);
+        weapon_animation::Pose local{},delta{};
+        const bool localValid=FirstPersonAnimationLocal(camera,anchor,source[binding.rightWrist],local);
+        if(!localValid)animationReference={};
+        haveAnimation=localValid&&animationReference.Update({binding.generation,
             (uint64_t(owner.muzzleUnit)<<32)|owner.muzzleWeapon,binding.nodeIdentity,context.rendererEpoch},
             local,GetTickCount64(),context.unitsPerMeter,delta);
         if(haveAnimation) {animationDelta=AnimationMatrix(delta);++animationApplied;}
@@ -957,11 +958,18 @@ __declspec(noinline) void __fastcall PaletteHook(uint32_t graph,NodeMatrix* matr
     Callback callback;
     auto original=reinterpret_cast<PaletteFn>(paletteHook.original);
     if (!original) return;
+    NodeMatrix animationRoot{};
+    const bool haveAnimationRoot=Current()&&scope&&scope->valid&&scope->output==matrices&&
+        reinterpret_cast<uintptr_t>(_ReturnAddress())==moduleBase+0xb29d8d&&
+        Read(reinterpret_cast<uintptr_t>(position),animationRoot.position)&&
+        Read(reinterpret_cast<uintptr_t>(forward),animationRoot.forward)&&
+        Read(reinterpret_cast<uintptr_t>(up),animationRoot.up);
+    animationRoot.left=Cross(animationRoot.up,animationRoot.forward);
     original(graph,matrices,animation,position,forward,up);
     if (!Current()||!scope||!scope->valid||scope->output!=matrices||
         reinterpret_cast<uintptr_t>(_ReturnAddress())!=moduleBase+0xb29d8d) return;
     observed.fetch_add(1,std::memory_order_relaxed);
-    if (ApplyPalette(graph,matrices,*scope))
+    if (ApplyPalette(graph,matrices,*scope,haveAnimationRoot?&animationRoot:nullptr))
     { applied.fetch_add(1,std::memory_order_relaxed); }
     else refused.fetch_add(1,std::memory_order_relaxed);
 }

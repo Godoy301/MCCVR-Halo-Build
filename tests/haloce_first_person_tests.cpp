@@ -25,6 +25,25 @@ int main(int argc,char** argv)
         return 0;
     }
     {
+        // The Classic producer can alternate native camera roots between
+        // preparations. Its local animation reference must still settle.
+        weapon_animation::Reference motionReference;
+        weapon_animation::Pose delta{};
+        NodeMatrix localGun{},localWrist{};localGun.position={.3f,.2f,.1f};
+        for(uint64_t t=0;t<=1600;t+=100)for(int eye=0;eye<3;++eye) {
+            NodeMatrix native{},gun{},wrist{};
+            native.position={float(eye)*2,0,0};
+            if(eye==1){native.forward={0,1,0};native.left={-1,0,0};}
+            CHECK(MoveNode(NodeMatrix{},native,localGun,gun));
+            CHECK(MoveNode(NodeMatrix{},native,localWrist,wrist));
+            weapon_animation::Pose local{};
+            CHECK(FirstPersonAnimationLocal(native,gun,wrist,local));
+            motionReference.Update({1,2,3,4},local,t,.33f,delta);
+        }
+        CHECK(motionReference.ready);
+        CHECK(std::fabs(delta.rotation[0]-1)<.00001f&&std::fabs(delta.rotation[4]-1)<.00001f);
+    }
+    {
         std::array<float,201*4> constants{};constants.fill(7);
         for (size_t emitter=0;emitter<9;++emitter) constants[(21+emitter*20+10)*4]=emitter%2?0.0f:1.0f;
         const auto before=constants;unsigned changed{};
@@ -397,8 +416,8 @@ int main(int argc,char** argv)
         NodeMatrix motion{};motion.position={0,0,.025f};
         CHECK(BuildTrackedFirstPersonPalette(binding,source,camera,tracking,reference,1,true,still));
         CHECK(BuildTrackedFirstPersonPalette(binding,source,camera,tracking,reference,1,true,animated,nullptr,&motion));
-        CHECK(Near(animated[binding.rightWrist].position-still[binding.rightWrist].position,expected.up*(.025f*expected.scale)));
-        CHECK(Near(animated[binding.gun].position-still[binding.gun].position,expected.up*(.025f*expected.scale)));
+        CHECK(Near(animated[binding.rightWrist].position-still[binding.rightWrist].position,Vec3{}));
+        CHECK(Near(animated[binding.gun].position-still[binding.gun].position,Vec3{}));
         CHECK(Near(animated[binding.leftWrist].position,still[binding.leftWrist].position));
         motion.forward={.9800666f,0,.1986693f};motion.up={-.1986693f,0,.9800666f};
         NodeMatrix expectedAnimated{};

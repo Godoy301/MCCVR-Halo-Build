@@ -67,14 +67,14 @@ int main()
     BoneMatrix target;target.translation[2]=3;
     BoneMatrix moved=target,neutral=target;
     ApplyH3SecondaryMotion(moved,neutral);same(moved,target);
-    // Whole-wrist motion survives while a child keeps its animated relative pose.
+    // Wrist rotation survives while controller position remains unchanged.
     tick+=16;original[0].translation[0]+=.1f;
     const float angle=.2f;
     original[0].rotation[0]=original[0].rotation[4]=std::cos(angle);
     original[0].rotation[1]=std::sin(angle);original[0].rotation[3]=-std::sin(angle);
     CaptureH3SecondaryMotion(context,original);
     ApplyH3SecondaryMotion(moved,neutral);
-    assert(near(moved.translation[0],.1f)&&near(moved.translation[2],3));
+    assert(near(moved.translation[0],0.f)&&near(moved.translation[2],3));
     assert(near(moved.rotation[1],std::sin(angle)));same(moved,neutral);
     // Production consumes the live receipt BEFORE the palette solver. The
     // validated local receipt must still apply motion, without rearming it.
@@ -85,7 +85,7 @@ int main()
     {
         H3SecondaryVisualScope scope(consumed);
         ApplyH3SecondaryMotion(moved,neutral);
-        assert(near(moved.translation[0],.1f));
+        assert(near(moved.translation[0],0.f));
         assert(near(moved.rotation[1],std::sin(angle)));
         assert(!context.valid);
         auto primary=consumed;primary.slot=0;
@@ -94,7 +94,7 @@ int main()
             moved=target;ApplyH3SecondaryMotion(moved,neutral);same(moved,target);
         }
         moved=target;ApplyH3SecondaryMotion(moved,neutral);
-        assert(near(moved.translation[0],.1f));
+        assert(near(moved.translation[0],0.f));
     }
     moved=target;ApplyH3SecondaryMotion(moved,neutral);same(moved,target);
     context=consumed;

@@ -24,7 +24,7 @@ int main()
     for(uint64_t t=1100;t<1500;t+=100)assert(!reference.Update(key,idle,t,.33f,delta));
     assert(reference.Update(key,idle,1500,.33f,delta));same(delta,Pose{});
     Pose firing=idle;firing.translation[2]=.01f;
-    assert(reference.Update(key,firing,1600,.33f,delta));assert(near(delta.translation[2],.01f));
+    assert(reference.Update(key,firing,1600,.33f,delta));assert(near(delta.translation[2],0.f));
     // Recoil/reload never replace an established neutral reference.
     assert(reference.Update(key,equip,1700,.33f,delta));
     assert(reference.Update(key,idle,1800,.33f,delta));same(delta,Pose{});
@@ -55,7 +55,7 @@ int main()
     assert(Halo2ObserveWeaponAnimation(reference,key,packet,packet,camera,1700,.33f,delta));same(delta,Pose{});
     local.translation[2]+=.01f;world=weapon_animation::Compose(root,local);write();
     assert(Halo2ObserveWeaponAnimation(reference,key,packet,packet,camera,1800,.33f,delta));
-    assert(near(delta.translation[2],.01f));
+    assert(near(delta.translation[2],0.f));
     // Gun-only motion is already preserved by packet ownership; it must not
     // also become an extra wrist translation.
     float wrist[13];std::memcpy(wrist,packet,sizeof(wrist));
@@ -64,5 +64,32 @@ int main()
     assert(Halo2ObserveWeaponAnimation(reference,key,packet,wrist,camera,1850,.33f,independent));
     same(independent,delta);
     Halo2CameraBasis controller{{4,5,6},{1,0,0},{0,0,1}};
-    assert(Halo2ApplyWeaponAnimation(controller,delta,1));assert(near(controller.position[2],6.01f));
+    assert(Halo2ApplyWeaponAnimation(controller,delta,1));assert(near(controller.position[2],6.f));
+
+    delta.rotation[0]=delta.rotation[4]=std::cos(.2f);
+    delta.rotation[1]=std::sin(.2f);delta.rotation[3]=-std::sin(.2f);
+    delta.translation[0]=.4f;delta.translation[2]=.7f;
+    assert(Halo2ApplyWeaponAnimation(controller,delta,1));
+    assert(near(controller.position[0],4)&&near(controller.position[1],5)&&near(controller.position[2],6));
+    assert(near(controller.forward[1],std::sin(.2f)));
+
+    // Classic's multiple native camera passes can have different translations.
+    // They must not starve a rotation-only settling window.
+    reference={};
+    for(uint64_t t=0;t<=1600;t+=100) {
+        Pose moving{};moving.translation[0]=float(t)*.01f;
+        reference.Update(key,moving,t,.33f,delta);
+    }
+    assert(reference.ready);same(delta,Pose{});
+    const auto single=Halo2AnimationIdentity(1,2,3,4,5,UINT32_MAX);
+    const auto dual=Halo2AnimationIdentity(1,2,3,4,5,6);
+    const auto swapped=Halo2AnimationIdentity(1,2,3,4,5,7);
+    assert(single!=dual&&dual!=swapped);
+    reference={};
+    for(uint64_t t=0;t<=1600;t+=100)reference.Update(single,Pose{},t,.33f,delta);
+    assert(reference.ready);
+    assert(!reference.Update(dual,Pose{},1700,.33f,delta));assert(!reference.ready);
+    for(uint64_t t=1800;t<=3300;t+=100)reference.Update(dual,Pose{},t,.33f,delta);
+    assert(reference.ready);
+    assert(!reference.Update(single,Pose{},3400,.33f,delta));
 }

@@ -72,16 +72,17 @@ struct Reference
         last=now;
         if(!ready) {
             const Pose change=Relative(anchor,local);
-            float distance=0;for(float v:change.translation)distance+=v*v;
             const float trace=change.rotation[0]+change.rotation[4]+change.rotation[8];
-            const float tolerance=.02f*unitsPerMetre;
-            if(distance>tolerance*tolerance||trace<2.997259f) {
+            if(trace<2.997259f) {
                 anchor=local;stableSince=now;
             }
             if(now-started<1500||now-stableSince<500)return false;
             reference=local;ready=true;
         }
         delta=Relative(reference,local);
+        // Controllers own wrist position. Retain pitch/yaw/roll animation only;
+        // camera/stance translations must neither delay settling nor move hands.
+        for(float& value:delta.translation)value=0;
         return Valid(delta);
     }
 };

@@ -1,3 +1,39 @@
+## Latest: rotation-only animation, H2 inventory-pair identity, CE native root
+
+User tests source643ce498: H3 secondary animation and equip-reference fix work,
+H2 animations work in both renderers, CE animation works only in Anniversary.
+User explicitly requests only pitch/yaw/roll animation, matching H3 primary;
+remove authored XYZ transport in H3 secondary, CE and both H2 hands. Preserve
+accepted muzzle effects and native internal-part animation.
+
+Reference acquisition now ignores translation when deciding orientation
+stability, and returned animation deltas have zero translation. CE/H2 adapters
+also keep carrier positions unchanged if supplied a translated delta. H3 uses
+the same rotation-only reference output, preserving the consumed-context fix.
+The 1500ms acquisition delay/500ms angular quiet window remains a heuristic.
+
+H2 primary retained its reference when the secondary changed, even though its
+native stance changes with dual wield. Scope references to the full inventory
+pair by including the partner handle as well as owner/model/count; reset on
+single/dual and partner swaps. Combined with removal of XYZ transport, this
+addresses the reported lateral shift. Requires headset validation.
+
+CE log shows0 applied/2406 settling before successful interval, then374 applied
+while settling resumes after return. It does not prove the exact per-pass root
+mismatch by itself. E-CE-FP-1 proves the palette builder's position/forward/up
+arguments are its native camera frame. Capture those arguments before native
+composition at the already verified callsite, and remove that exact frame for
+animation observation rather than the earlier outer-prepare camera receipt.
+Keep the outer coherent XR context for controller placement, collision and
+publishing. No new address/hook or scanner. This plus angular-only settling is
+the CE Classic candidate; do not claim runtime acceptance from local tests.
+
+Validation: reference/rotation tests, H3 scope/effects regression, H2 left-hand
+suite1005 checks and CE first-person suite pass locally. Added checks for XYZ
+invariance with nonzero angular delta, inventory-pair transitions, and a CE
+reference settling across three different native roots per frame. Windows CI
+and headset result pending. User says do not monitor CI. HUD work deferred.
+
 ## Latest: stabilize equip references; restore CE/H2 authored motion
 
 User tests source6bf3cadd on Steam. H3 secondary motion now works, but removing
