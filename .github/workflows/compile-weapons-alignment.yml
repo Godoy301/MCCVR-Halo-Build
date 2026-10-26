@@ -34,7 +34,7 @@ jobs:
           if ($env:GITHUB_REF_NAME -ne 'weapons-alignment') {
             throw "Refusing to build unexpected branch: $env:GITHUB_REF_NAME"
           }
-          $expectedSourceSha = 'bb1fb972c226b594a55280bf782c89b49f3288ce'
+          $expectedSourceSha = '0497eea96dd80c024ccaad996b9e98f9ac1db316'
           if ($env:EXPECTED_SOURCE_SHA -ne $expectedSourceSha) {
             throw "Source revision differs from the reviewed weapons-alignment commit. Expected $expectedSourceSha, got $env:EXPECTED_SOURCE_SHA. Refusing to build a different revision."
           }
@@ -120,8 +120,8 @@ jobs:
           Source branch: weapons-alignment
           Expected source in the first line of HaloMCCVR.log: $env:EXPECTED_SOURCE_SHA
           Includes: preserved modded-weapon fixes, independent hand offsets, collapsed menu sections, percent world scale with reset, and restored stock Halo 3 HUD locator.
-          Candidate fixes: preserve native dual pickup while blocking only the local H3 secondary reload edge; move offhand SMG/Plasma Rifle and their muzzle effects backward 0.01m. Accepted animations unchanged; H4 smoothing remains disabled. Headset validation required.
-          Pending: Ultimate Firefight HUD support. Test left-hand pickup and replacement with manual reload on; both reload buttons should remain blocked, dual shake available. Compare SMG/Plasma Rifle muzzle flash registration. Toggle manual reload off to verify native button behavior.
+          Candidate fixes: native Disable bloom for Reach/ODST and Disable autoexposure for ODST, using exact ShaderToggler pixel hashes without ReShade. Includes prior H3 pickup/reload separation and shared offhand model/muzzle setback. Headset validation required.
+          Pending: test Picture -> Scene bloom and exposure toggles independently and together, restore native effects, and verify Halo 3 regression. Ultimate Firefight HUD remains pending.
           If the log reports source 5fdf982e, MCC loaded an older DLL.
           Use the Build ZIP from this artifact, not a previous workflow run.
           "@ | Set-Content 'out/candidates/BUILD-IDENTITY.txt'
