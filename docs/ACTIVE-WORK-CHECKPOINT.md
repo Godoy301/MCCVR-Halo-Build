@@ -1,3 +1,14 @@
+## Latest: repair CE runtime fixture compilation and rebuild
+
+User-supplied CI log reports C2660 in the contact transaction fixture: its
+ApplyPalette call omitted the newly required native animation-root argument.
+Pass nullptr explicitly because this fixture has no native animation owner/root;
+keep its success, rejected ownership and rejected copy assertions unchanged.
+All production behavior and latest gesture-only input changes are preserved.
+Reviewed all ApplyPalette call sites and checked the diff locally. Windows
+runtime tests require CI; no local Windows build or headset acceptance claimed.
+User authorizes a new build and asks not to monitor it.
+
 ## Latest: manual reload / holster native button policy (commit only)
 
 User requests disabling controller reload while Manual Reload is enabled and
