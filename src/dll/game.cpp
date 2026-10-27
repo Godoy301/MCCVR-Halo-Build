@@ -46,6 +46,7 @@
 #include "../common/director_camera_logic.h"
 #include "../common/halo3_head_relative_logic.h"
 #include "../common/halo3_tracker_hud_height_logic.h"
+#include "../common/halo3_live_hud_layout.h"
 #include "host_unload_gate.h"
 #include <windows.h>
 #include <tlhelp32.h>
@@ -4878,8 +4879,17 @@ namespace
         return true;
     }
 
+    std::atomic<uint64_t> g_h3HudRecordAdjusted{0},g_h3HudRecordNative{0};
     void HudLayoutAutoTick(HudLayoutProfile profile)
     {
+        static uint64_t lastLiveHudLog=0;
+        const auto liveHudNow=GetTickCount64();
+        if(profile==HudLayoutProfile::Halo3&&liveHudNow-lastLiveHudLog>=5000) {
+            lastLiveHudLog=liveHudNow;
+            const auto adjusted=g_h3HudRecordAdjusted.exchange(0),native=g_h3HudRecordNative.exchange(0);
+            if(adjusted||native)LOG("H3 live HUD layout: selected-record adjusted=%llu native=%llu; stock scanner independent",adjusted,native);
+        }
+
         const HudLayoutAdapter* adapter = HudLayoutAdapterFor(profile);
         const uint32_t generation = EnsureHudLayoutProfile(profile);
         if (!adapter || !generation)
@@ -16880,6 +16890,34 @@ static constexpr bool kOdstMappedFpEnabled = false;
         }
     }
 
+    using H3HudRecordFn = const halo3_live_hud::Record*(__fastcall*)(int,int);
+    H3HudRecordFn g_realH3HudRecord=nullptr;
+    uintptr_t g_h3HudRecordReturn=0;
+    halo3_live_hud::Record g_h3HudRecordCopies[4][32]{};
+    __declspec(noinline) const halo3_live_hud::Record* __fastcall H3HudRecordHook(int user,int resolution)
+    {
+        const auto caller=reinterpret_cast<uintptr_t>(_ReturnAddress());
+        g_halo3CoreCallbacks.fetch_add(1,std::memory_order_acq_rel);
+        __try {
+            const auto* native=g_realH3HudRecord(user,resolution);
+            if(!g_halo3InstallReady.load(std::memory_order_acquire)||caller!=g_h3HudRecordReturn||
+               TitleAdapter_GetActiveTitle()!=GameTitle::Halo3||!native||user<0||user>=4||resolution<0||resolution>=32)
+                return native;
+            // Native frame setup publishes one shared record pointer for its pass.
+            // Per-user/class copies survive that pass in our image,
+            // which the stock scanner excludes. Never retain or modify tag pointers.
+            float h=0,v=0;ComputeHudSafeFramePair(g_config.hud_size,g_config.hud_aspect,h,v);
+            __try {
+                if(halo3_live_hud::Transform(*native,h,v,g_config.hud_curvature,g_h3HudRecordCopies[user][resolution])) {
+                    g_h3HudRecordAdjusted.fetch_add(1,std::memory_order_relaxed);
+                    return &g_h3HudRecordCopies[user][resolution];
+                }
+            } __except(EXCEPTION_EXECUTE_HANDLER) {}
+            g_h3HudRecordNative.fetch_add(1,std::memory_order_relaxed);
+            return native;
+        } __finally {g_halo3CoreCallbacks.fetch_sub(1,std::memory_order_acq_rel);}
+    }
+
     __declspec(noinline) void __fastcall GuardedHudXformHook(float x, float y, float z)
     {
         g_halo3CoreCallbacks.fetch_add(1, std::memory_order_acq_rel);
@@ -17033,14 +17071,16 @@ static constexpr bool kOdstMappedFpEnabled = false;
             }
         }
         {
-            const void* functions[]{reinterpret_cast<const void*>(&GuardedHudXformHook),
+            const void* functions[]{reinterpret_cast<const void*>(&H3HudRecordHook),
+                reinterpret_cast<const void*>(&GuardedHudXformHook),
                 reinterpret_cast<const void*>(&GuardedHudAnchorBasisHook),
                 reinterpret_cast<const void*>(&GuardedHudPlaceHook),
                 reinterpret_cast<const void*>(&GuardedHudCrosshairVisibleHook),
                 reinterpret_cast<const void*>(&GuardedHudDrawWidgetHook),
                 reinterpret_cast<const void*>(&GuardedFpDriverHook),
                 reinterpret_cast<const void*>(&GuardedRenderViewHook)};
-            const void* originals[]{reinterpret_cast<const void*>(g_realHudXform),
+            const void* originals[]{reinterpret_cast<const void*>(g_realH3HudRecord),
+                reinterpret_cast<const void*>(g_realHudXform),
                 reinterpret_cast<const void*>(g_realHudAnchorBasis),
                 reinterpret_cast<const void*>(g_realHudPlace),
                 reinterpret_cast<const void*>(g_realHudCrosshairVisible),
@@ -17697,6 +17737,34 @@ static constexpr bool kOdstMappedFpEnabled = false;
             }
             else
                 LOG("M3: brightness signature missing/ambiguous; brightness fixed at 1.0");
+        }
+
+        // Optional mod-HUD path. The stock scanner remains unchanged.
+        {
+            const auto unique=[&](const char* pattern)->uintptr_t {
+                const auto hit=sig::Find(base,size,pattern);
+                return hit&&!sig::Find(hit+1,base+size-hit-1,pattern)?hit:0;
+            };
+            const auto selector=unique(halo3_live_hud::kSelector);
+            const auto tail=unique(halo3_live_hud::kSelectorTail);
+            const auto caller=unique(halo3_live_hud::kCaller);
+            const auto consumer=unique(halo3_live_hud::kSafeFrameConsumer);
+            int32_t displacement=0;
+            if(caller)memcpy(&displacement,reinterpret_cast<const void*>(caller+1),4);
+            bool ready=false;
+            if(selector&&caller&&consumer&&tail>selector&&tail-selector<0x100&&
+               consumer>caller&&consumer-caller<0x1000&&caller+5+displacement==selector) {
+                const auto status=MH_CreateHook(reinterpret_cast<void*>(selector),
+                    reinterpret_cast<void*>(&H3HudRecordHook),reinterpret_cast<void**>(&g_realH3HudRecord));
+                if(status==MH_OK) {
+                    g_h3HudRecordReturn=caller+5;
+                    ready=MH_QueueEnableHook(reinterpret_cast<void*>(selector))==MH_OK;
+                    if(ready)RememberInstalledGameHook(reinterpret_cast<void*>(selector));
+                    else {MH_RemoveHook(reinterpret_cast<void*>(selector));g_realH3HudRecord=nullptr;}
+                }
+            }
+            LOG("H3 live HUD layout: %s; selected mod resolution receives size/width/curvature; stock scanner preserved",
+                ready?"Installed":"StockFallback (selector/caller/consumer proof or hook failed)");
         }
 
         // HUD CROSSHAIR CLASS HIDER. H3EK and ManagedDonkey agree that class 2

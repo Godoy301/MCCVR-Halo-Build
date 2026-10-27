@@ -1,3 +1,15 @@
+## Latest: Ultimate Firefight live selected-record HUD candidate
+
+User supplies vanilla/Firefight logs source0497eea9. Stock scan succeeds with3
+records; mod fails on zero scales. Keep accepted stock scanner and rejected
+alternate locator dormant. New optional exact selector/caller hook adapts only
+selected nonstock/zero-scale HUD records through a DLL-owned copy, avoiding map
+writes and double application. See HALO3-ULTIMATE-HUD-2026-10-25.md for verified
+retail selection/consumption, limitations and portable tests. New counters log
+adjusted/native uses. Signatures verified against supplied halo3.dll; portable
+tests pass. Windows/headset validation pending. Commit only; no CI trigger.
+Preserve bloom defaults/descriptions, offhand alignment and all prior features.
+
 ## Latest: accepted shader toggles and new bloom defaults (commit only)
 
 User reports everything working. Reach/ODST Disable bloom now defaults on for

@@ -449,6 +449,8 @@ set_target_properties(reach_runtime_observer PROPERTIES
     OUTPUT_NAME "reach-runtime-observer")
 
 if(BUILD_TESTING)
+    add_executable(halo3_live_hud_tests tests/halo3_live_hud_tests.cpp)
+    add_test(NAME halo3_live_hud_tests COMMAND halo3_live_hud_tests)
     add_executable(halomccvr_post_effect_policy_tests tests/post_effect_policy_tests.cpp)
     add_test(NAME halomccvr_post_effect_policy_tests COMMAND halomccvr_post_effect_policy_tests)
     add_executable(halomccvr_bloom_override_tests tests/bloom_override_tests.cpp src/dll/bloom_override.cpp src/common/config.cpp)
