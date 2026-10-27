@@ -87,7 +87,7 @@ struct H3SecondaryEffectBinding
 H3SecondaryEffectBinding g_h3SecondaryEffectBinding;
 std::atomic<uint64_t> g_h3SecondaryEffectApplied{},g_h3SecondaryEffectRefused{};
 inline constexpr float kH3SecondaryLateralMetres=.06f;
-inline constexpr float kH3SecondaryForwardMetres=.01f;
+inline constexpr float kH3SecondaryForwardMetres=.015f;
 bool H3CorrectSecondaryMatrix(const BoneMatrix& frame,float yaw,BoneMatrix& value)
 {
     if(!weapon_alignment::RotateYaw(frame.rotation,frame.translation,yaw,value.rotation,value.translation))return false;
