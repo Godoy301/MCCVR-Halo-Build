@@ -321,6 +321,9 @@
             const auto q=supportGripPositionValid?supportGripPosition:left.position;
             const float dx=q.x-p.x,dy=q.y-p.y,dz=q.z-p.z;
             result.closeGripAuthority=authored_grab::Authority(std::sqrt(dx*dx+dy*dy+dz*dz));
+            const XrQuaternionf inverse{-right.orientation.x,-right.orientation.y,-right.orientation.z,right.orientation.w};
+            const auto local=Rotate(inverse,{dx,dy,dz});
+            result.closeGripAuthority*=authored_grab::DirectionalAuthority({local.x,local.y,local.z});
         }
         return result;
     }

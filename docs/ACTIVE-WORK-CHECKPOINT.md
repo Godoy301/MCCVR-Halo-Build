@@ -1,3 +1,14 @@
+## Latest: larger grip zone and zero lateral-controller authority
+
+User confirms source6735313e solves Magnum placement and reacquisition bug.
+On two-handed-grip, expand long authored zone to54cm capsule/12cm radius and
+short grip area to44cm wide/28cm tall/34cm long. Distance influence remains
+unchanged; additional primary-local lateral guard zeros offhand directional
+authority for side-by-side controllers, smoothly restoring it forward.
+Tests pass (zone boundaries, distance unchanged,307 production aim checks).
+Preserve stable owner publication and grip state machine. No build requested.
+See AUTHORED-GRIP-ZONE.md for exact bounds and validation limits.
+
 ## Latest: H3 authored grip test follow-up
 
 User reports Magnum requires forward placement/pulls aim down, far barrel still

@@ -49,13 +49,31 @@ inline Publication publication;
 inline std::atomic<float> lastX{0},lastY{0},lastZ{0};
 inline std::atomic<uint64_t> hits{0},misses{0},fallbacks{0};
 // Short authored separation permits a side-by-side support grip. Longer arms
-// keep the authored sphere; no weapon names or tag-specific calibration.
+// use a short longitudinal capsule; no weapon-specific calibration.
 inline bool Short(Point centre){return Valid(centre)&&Distance2(centre,{0,0,0})<=.24f*.24f;}
-inline bool ShortHit(Point p){return Valid(p)&&std::fabs(p[0])<=.16f&&std::fabs(p[1])<=.10f&&p[2]>=-.10f&&p[2]<=.12f;}
+inline bool ShortHit(Point p){return Valid(p)&&std::fabs(p[0])<=.22f&&std::fabs(p[1])<=.14f&&p[2]>=-.18f&&p[2]<=.16f;}
 inline float Authority(float distance){
     if(!std::isfinite(distance))return 0;
     const float t=std::fmax(0.f,std::fmin(1.f,(distance-.16f)/.14f));
     return t*t*(3-2*t);
 }
-inline bool Hit(Point centre,Point sample){return Valid(centre)&&Valid(sample)&&Distance2(centre,sample)<.09f*.09f;}
+inline float SmoothUnit(float t){t=std::fmax(0.f,std::fmin(1.f,t));return t*t*(3-2*t);}
+// Side-by-side controllers cannot define a useful forward aim ray. Preserve
+// distance authority, multiplying only by a smooth lateral-position guard.
+inline float DirectionalAuthority(Point local){
+    if(!Valid(local))return 0;
+    const float forward=std::fabs(local[2]),side=std::fabs(local[0]);
+    const float longitudinal=SmoothUnit((forward-.08f)/.08f);
+    const float vertical=SmoothUnit((std::fabs(local[1])-.12f)/.08f);
+    const float notLateral=SmoothUnit((forward-side)/.08f);
+    return std::fmax(longitudinal,std::fmax(vertical,notLateral));
+}
+inline bool Hit(Point centre,Point sample){
+    if(!Valid(centre)||!Valid(sample))return false;
+    // 30cm segment plus 12cm rounded ends: 54cm total, versus the old
+    // 72cm forward interval. The segment stays centred on the authored grip.
+    Point nearest=centre;
+    nearest[2]+=std::fmax(-.15f,std::fmin(.15f,sample[2]-centre[2]));
+    return Distance2(nearest,sample)<.12f*.12f;
+}
 }

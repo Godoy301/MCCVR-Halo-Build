@@ -1,3 +1,25 @@
+# Follow-up: larger acquisition and side-by-side authority
+
+User accepts source6735313e Magnum placement and reacquisition recovery. New
+log confirms use of authored zones (e.g. endpoint -0.090,-0.005,-0.359 with
+mostly misses and no fallback), consistent with a restrictive acquisition area.
+
+Expand long-grip sphere9cm to a primary-forward capsule:30cm centre segment,
+12cm radius,54cm total length (original barrel interval72cm). Retain authored
+centre, owner checks and existing grip retention. Short-grip box expands to
++/-22cm lateral,+/-14cm vertical,18cm forward/16cm rearward. No per-weapon list.
+
+Keep distance Authority unchanged (zero<=16cm/full>=30cm). Multiply by a local
+primary-controller directional guard: exactly zero for lateral separation at
+<=8cm fore/aft and<=12cm vertical. Smooth transition returns full authority by
+16cm fore/aft; vertical/dominantly longitudinal arrangements also fade out the
+lateral guard. Uses physical grip samples, orientation transformed into primary
+local space, so headset/world heading does not choose the rule. Applies through
+the existing pre-calibration blend, preserving connected support and stock on/off.
+
+New geometry/boundary/authority tests pass;307 extracted production aim checks
+pass. Windows compilation/headset validation still pending. Commit only.
+
 # Follow-up: acquisition availability and close-hand aiming
 
 User log shows repeated hit=0/miss=0/fallback~400 intervals alternating with
