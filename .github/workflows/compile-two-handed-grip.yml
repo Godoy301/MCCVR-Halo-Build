@@ -34,7 +34,7 @@ jobs:
           if ($env:GITHUB_REF_NAME -ne 'two-handed-grip') {
             throw "Refusing to build unexpected branch: $env:GITHUB_REF_NAME"
           }
-          $expectedSourceSha = '261edef33980b2f70dc3987202680a6ff8432177'
+          $expectedSourceSha = '9e16c6713174b7815f603392ba44a0cc06cef9bc'
           if ($env:EXPECTED_SOURCE_SHA -ne $expectedSourceSha) {
             throw "Source revision differs from the reviewed two-handed-grip commit. Expected $expectedSourceSha, got $env:EXPECTED_SOURCE_SHA. Refusing to build a different revision."
           }
@@ -123,12 +123,11 @@ jobs:
           }
           @"
           Source branch: two-handed-grip
-          Expected source in the first line of HaloMCCVR.log: $env:EXPECTED_SOURCE_SHA
-          Includes: preserved modded-weapon fixes, independent hand offsets, collapsed menu sections, percent world scale with reset, and restored stock Halo 3 HUD locator.
-          Candidate fixes: move Halo 3 offhand SMG and Plasma Rifle an additional 0.005m forward, including muzzle effects. Preserve accepted animation settling, HUD support, bloom preferences and all other changes.
-          Pending: confirm the additional 5mm offhand alignment in the headset. Production motion/effect fixture passed locally; Windows build and tests run in this workflow.
-          If the log reports source 5fdf982e, MCC loaded an older DLL.
-          Use the Build ZIP from this artifact, not a previous workflow run.
+          Exact source commit: $env:EXPECTED_SOURCE_SHA
+          Change under test: Halo 3 authored wrist-based two-handed-grip acquisition, keyed to the current weapon/unit and generation.
+          Includes: bounded fresh publication, continuous settling, the authored 9 cm acquisition zone, legacy-geometry fallback, and the new authored-grip logic tests.
+          Windows build/test validation is performed by this workflow. Headset behavior remains a separate validation.
+          Use the Build ZIP from this artifact, not one from a different workflow run.
           "@ | Set-Content 'out/candidates/BUILD-IDENTITY.txt'
           Write-Host "Source branch: two-handed-grip"
           Write-Host "Source commit: $env:EXPECTED_SOURCE_SHA"
