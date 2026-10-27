@@ -130,6 +130,9 @@ struct ReferenceCache
         entries[next]={key,pose,true};next=(next+1)%entries.size();
     }
 };
+// Disabled after an equip-time reload poisoned a reused offhand reference.
+// Keep the cache implementation dormant; each acquisition must settle again.
+inline constexpr bool kReuseSettledReferences=false;
 struct Reference
 {
     std::array<uint64_t,4> key{};
@@ -144,6 +147,7 @@ struct Reference
     bool Update(std::array<uint64_t,4> identity,const Pose& local,uint64_t now,
                 float unitsPerMetre,Pose& delta,bool smooth=false,ReferenceCache* cache=nullptr)
     {
+        if(!kReuseSettledReferences)cache=nullptr;
         delta={};
         if(!Valid(local)||!std::isfinite(unitsPerMetre)||unitsPerMetre<=0) {
             observed=ready=false;smoothing={};return false;

@@ -134,17 +134,17 @@ int main()
     same(result,world);
     }
 
-    // Only settled, exact-identity references bypass reacquisition. A new
-    // owner, generation, model/renderer or H2 inventory pair still settles.
+    // Even a previously cached reload pose must not bypass equip settling.
     weapon_animation::ReferenceCache cache;
+    cache.Store(key,equip);
     weapon_animation::Reference cached;
-    for(uint64_t t=0;t<=1600;t+=100)cached.Update(key,idle,t,.33f,delta,true,&cache);
-    assert(cached.ready);
+    assert(!cached.Update(key,idle,0,.33f,delta,true,&cache));
+    for(uint64_t t=100;t<1500;t+=100)assert(!cached.Update(key,idle,t,.33f,delta,true,&cache));
+    assert(cached.Update(key,idle,1500,.33f,delta,true,&cache));same(delta,Pose{});
     cached={};
-    assert(cached.Update(key,idle,1700,.33f,delta,true,&cache));same(delta,Pose{});
-    cached={};
-    assert(cached.Update(key,equip,1800,.33f,delta,false,&cache));
-    assert(near(delta.rotation[1],1.f)); // draw motion is not captured as neutral
+    assert(!cached.Update(key,idle,1700,.33f,delta,true,&cache));
+    for(uint64_t t=1800;t<3200;t+=100)assert(!cached.Update(key,idle,t,.33f,delta,true,&cache));
+    assert(cached.Update(key,idle,3200,.33f,delta,true,&cache));same(delta,Pose{});
     for(int field=0;field<4;++field) {
         auto changed=key;++changed[field];cached={};
         assert(!cached.Update(changed,idle,1900,.33f,delta,true,&cache));

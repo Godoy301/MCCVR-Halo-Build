@@ -1,3 +1,18 @@
+## Latest: disable reused animation references after equip-time reload
+
+User source2d0cad23 log and headset report: first offhand Spiker pickup followed
+immediately by reload leaves the gun pointing upward, persisting on re-equip.
+The initial 1500ms/500ms quiet heuristic was still enabled; settled-reference
+cache bypassed that guard on reacquisition and could preserve a bad reference.
+Disable cache consumption/storage in shared Reference::Update, keeping dormant
+implementation. CE/CEA, H2/H2A and H3 secondary always settle on reacquisition.
+Preserve smoothing/rotation-only motion, native H3 primary and disabled H4 path.
+This rollback does not prove a reload plateau cannot fool the first-acquisition
+heuristic; native animation-state gating would be separate evidence-backed work.
+Regression fixture seeds a poisoned cache and verifies both acquisitions wait
+and recover the idle reference. User confirms other implementations work;
+preserve live HUD, bloom and alignment changes. Commit only, no build trigger.
+
 ## Latest: Ultimate Firefight live selected-record HUD candidate
 
 User supplies vanilla/Firefight logs source0497eea9. Stock scan succeeds with3
