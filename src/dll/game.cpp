@@ -47,6 +47,7 @@
 #include "../common/halo3_head_relative_logic.h"
 #include "../common/halo3_tracker_hud_height_logic.h"
 #include "../common/halo3_live_hud_layout.h"
+#include "../common/authored_grab_zone.h"
 #include "host_unload_gate.h"
 #include <windows.h>
 #include <tlhelp32.h>
@@ -4886,6 +4887,8 @@ namespace
         const auto liveHudNow=GetTickCount64();
         if(profile==HudLayoutProfile::Halo3&&liveHudNow-lastLiveHudLog>=5000) {
             lastLiveHudLog=liveHudNow;
+            LOG("H3 authored grip zone: hit=%llu miss=%llu fallback=%llu; authored wrist acquisition, stock geometry fallback",
+                authored_grab::hits.exchange(0),authored_grab::misses.exchange(0),authored_grab::fallbacks.exchange(0));
             const auto adjusted=g_h3HudRecordAdjusted.exchange(0),native=g_h3HudRecordNative.exchange(0);
             if(adjusted||native)LOG("H3 live HUD layout: selected-record adjusted=%llu native=%llu; stock scanner independent",adjusted,native);
         }
@@ -7073,6 +7076,37 @@ static int SafeReadBytes(const void* src,void* dst,size_t n);
 static int LegacyAnatomicalRenderNodeCount(GameTitle title,uint16_t tag,uint32_t* checksum);
 #include "halo3_dual_animation_probe.inl"
 
+    // First adapter: H3 primary authored wrists before any controller arm solve.
+    void PublishH3AuthoredGrab(const FpInterpolationContext& context,const BoneMatrix* source,
+                              const BoneMatrix& desired,bool attached)
+    {
+        if(TitleAdapter_GetActiveTitle()!=GameTitle::Halo3||context.slot!=0||context.player!=0||
+           !context.valid||!source||g_config.left_handed||attached||context.muzzleWeapon==UINT32_MAX||
+           context.muzzleUnit==UINT32_MAX||context.wrist<0||context.wrist>=context.count||
+           context.lWrist<0||context.lWrist>=context.count)return;
+        BoneMatrix inverse{},relative{},target{};
+        if(!InvertBoneMatrix(source[context.wrist],inverse)||
+           !ComposeBoneMatrices(inverse,source[context.lWrist],relative)||
+           !ComposeBoneMatrices(desired,relative,target))return;
+        float basis[9],origin[3],scale=1;
+        if(!ControllerWorldPoseEx(false,basis,origin,scale))return;
+        const float units=g_worldScale.load();if(!std::isfinite(units)||units<=0)return;
+        float local[3]{};
+        for(int axis=0;axis<3;++axis)for(int j=0;j<3;++j)
+            local[axis]+=basis[axis*3+j]*(target.translation[j]-desired.translation[j])/units;
+        // Cosmetic weapon offsets move the whole assembly, not the physical
+        // distance between controllers. Keep only the authored wrist separation.
+        const authored_grab::Point point{-local[1],local[2],-local[0]};
+        const authored_grab::Key key{unsigned(GameTitle::Halo3),context.generation,context.muzzleUnit,context.muzzleWeapon};
+        static thread_local authored_grab::Learner learner;
+        static thread_local int previousCount=-1,previousRight=-1,previousLeft=-1;
+        if(previousCount!=context.count||previousRight!=context.wrist||previousLeft!=context.lWrist)learner={};
+        previousCount=context.count;previousRight=context.wrist;previousLeft=context.lWrist;
+        const auto now=GetTickCount64();
+        const bool ready=learner.Observe(key,point,now);
+        authored_grab::publication.Publish(key,point,ready?now:0);
+    }
+
     bool ReconstructVisiblePaletteSource(uint16_t tag,
                                          const FpInterpolationContext& context,
                                          const BoneMatrix& root,
@@ -7302,6 +7336,9 @@ static int LegacyAnatomicalRenderNodeCount(GameTitle title,uint16_t tag,uint32_t
                 centerRoot.translation[2]=g_camZ.load();
             }
         }
+
+        if(!explicitTargets&&!dual&&haveDesiredWrist)
+            PublishH3AuthoredGrab(context,unmodified,desiredWristWorld,supportGripAttached);
 
         // SHOULDER LEVELING (2026-07-19): the arm rest pose is composed from the
         // camera frame, so its FULL pitch/roll rides the head â€” look down and the

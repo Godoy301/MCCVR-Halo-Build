@@ -1,3 +1,14 @@
+## Latest: first authored two-handed grip acquisition adapter
+
+Work on user branch two-handed-grip (created from6e13ded0). New H3 primary-only
+acquisition zone derived from authored left/right wrist relation; exact owner,
+fresh publication and continuous settling required. Both grip acquisition paths
+use it, falling back to old barrel geometry. No permanent pose cache and no aim
+solver changes. Other games and left-handed mode retain prior behavior. See
+AUTHORED-GRIP-ZONE.md for semantics, known limits and headset test matrix.
+Portable new tests and69 legacy checks pass; Windows/headset validation pending.
+Commit only; no compilation workflow triggered. Preserve prior accepted fixes.
+
 ## Latest: accepted settling rollback; additional 5mm H3 offhand adjustment
 
 User confirms the last build works. Move Halo 3 offhand SMG/Plasma Rifle another

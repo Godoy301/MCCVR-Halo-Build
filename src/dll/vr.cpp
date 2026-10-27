@@ -1,3 +1,4 @@
+#include "../common/authored_grab_zone.h"
 #include "../common/vr_interaction_refinement_logic.h"
 #include "../common/hand_smoothing.h"
 #include "../common/support_grip_logic.h"
@@ -13542,14 +13543,38 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
     // the raw point.
     //
     // This is the BASE (PG-off / unwired-title) helper and its geometry is the
-    // pre-fix rule verbatim, including the palm-depth shift along the SUPPORT
+    // legacy fallback rule, including the palm-depth shift along the SUPPORT
     // controller's own forward vector. The persistent-grip writer does not call
-    // it: `PersistentSupportGrabZoneHit` below carries the A003 acquisition
+    // it: both try the authored H3 zone first; `PersistentSupportGrabZoneHit` carries the A003 fallback
     // rule the archive wired, so a support-wrist rotation cannot orbit the
     // acquisition sample across the lateral boundary while the feature is on.
+    bool AuthoredSupportGrabHit(const XrPosef& primary,const XrPosef& support,bool& hit) noexcept
+    {
+        const auto title=TitleAdapter_GetActiveTitle();
+        if(title!=GameTitle::Halo3||g_config.left_handed)return false;
+        const auto generation=TitleAdapter_GetGeneration(title);
+        support_grip::OwnerTuple owner{};support_grip::OwnerEvidence evidence{};uint64_t revision=0;
+        if(!ReadSupportGripOwnerEvidenceInternal(title,generation,owner,evidence,revision)||
+           evidence!=support_grip::OwnerEvidence::KnownPresent)return false;
+        authored_grab::Point local{};
+        if(!authored_grab::publication.Read({unsigned(title),generation,owner.unit,owner.weapon},GetTickCount64(),local)){++authored_grab::fallbacks;return false;}
+        const auto displacement=Rotate(primary.orientation,{local[0],local[1],local[2]});
+        const auto right=Rotate(primary.orientation,{1,0,0});
+        const float nudge=std::clamp(g_config.two_hand_zone_right_m,-.10f,.10f);
+        // This is a wrist-to-wrist target: do not add the legacy barrel-zone
+        // palm offset, which would put a pistol's acquisition ahead of its grip.
+        const authored_grab::Point offset{support.position.x-primary.position.x,
+            support.position.y-primary.position.y,support.position.z-primary.position.z};
+        hit=authored_grab::Hit({displacement.x+right.x*nudge,displacement.y+right.y*nudge,displacement.z+right.z*nudge},offset);
+        (hit?authored_grab::hits:authored_grab::misses).fetch_add(1,std::memory_order_relaxed);
+        return true;
+    }
+
     bool TwoHandGrabZoneHit(const XrPosef& rpose,
         const XrPosef& lpose) noexcept
     {
+        bool authoredHit=false;
+        if(AuthoredSupportGrabHit(rpose,lpose,authoredHit))return authoredHit;
         const XrVector3f rfwd = Rotate(rpose.orientation, {0,0,-1});
         const float zr = std::clamp(g_config.two_hand_zone_right_m, -0.10f, 0.10f);
         const XrVector3f rright = Rotate(rpose.orientation, {1,0,0});
@@ -13584,10 +13609,12 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
     // while moving the hand still moves it naturally. Thresholds, the zone-right
     // nudge and its clamp, and the fail-closed non-finite behaviour are the
     // shared support_grab::EvaluateSupportGrabZone contract. The base helper
-    // above keeps the pre-fix geometry verbatim for PG off / unwired titles.
+    // above keeps the legacy fallback for titles without an authored endpoint.
     bool PersistentSupportGrabZoneHit(const XrPosef& rpose,
         const XrPosef& lpose) noexcept
     {
+        bool authoredHit=false;
+        if(AuthoredSupportGrabHit(rpose,lpose,authoredHit))return authoredHit;
         const XrVector3f rfwd = Rotate(rpose.orientation, {0,0,-1});
         const XrVector3f rright = Rotate(rpose.orientation, {1,0,0});
         const support_grab::SupportGrabZone zone =
