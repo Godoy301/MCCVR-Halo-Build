@@ -2352,10 +2352,12 @@ namespace
                     g_config.bloom_enabled[bloomTitle]=!disabled;changed=true;
                 }
             }
+            if(pictureTitle!=GameTitle::Halo3)
+                ImGui::TextWrapped("Restart the game for bloom to be properly disabled.");
             ImGui::TextWrapped("Bloom is saved separately for each game.");
             if(pictureTitle==GameTitle::Halo3ODST) {
                 changed|=ImGui::Checkbox("Disable autoexposure",&g_config.disable_autoexposure_odst);
-                ImGui::TextWrapped("Stops automatic exposure updates in Halo 3: ODST.");
+                ImGui::TextWrapped("Lowering the brightness is highly recommended when autoexposure is disabled.");
             }
         }
         changed |= vr_menu::SliderFloat("Game brightness", &g_config.game_brightness, 0.5f, 2.0f, "%.2f");

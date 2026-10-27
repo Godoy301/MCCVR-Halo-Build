@@ -1,3 +1,12 @@
+## Latest: accepted shader toggles and new bloom defaults (commit only)
+
+User reports everything working. Reach/ODST Disable bloom now defaults on for
+new installs and once for existing configurations via bloom_defaults_version=1.
+Migration saves immediately; later explicit choices persist. Exposure default
+unchanged. Scene descriptions explain restarting for bloom and recommend lower
+brightness when exposure is disabled. Config regression fixtures updated; no
+compilation requested or performed. Prior offhand adjustment preserved.
+
 ## Latest: H3 offhand SMG/Plasma Rifle forward adjustment (commit only)
 
 User requests +0.02m relative to the current position, without compilation.

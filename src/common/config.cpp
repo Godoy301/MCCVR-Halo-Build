@@ -1017,6 +1017,7 @@ void ConfigLoad(const wchar_t* path)
     bool loadedHolsterRadius = false;
     bool flashlightMappingV2 = false;
     bool leftHandForwardResetV1 = false;
+    bool bloomDefaultsV1 = false;
     bool aimDirectDriveSeen = false;
     bool coopSafeShotsV2 = false;   // coop_safe_shots_version >= 2: a 1 in this file is a chosen "always"
     bool loadedLegacyVirtualStockStrength = false;
@@ -1057,6 +1058,7 @@ void ConfigLoad(const wchar_t* path)
         }
         if(vehicleGameKey)continue;
         if (!strcmp(key,"world_scale")) {ParseFloatSetting(key,val,g_config.world_scale);continue;}
+        if (!strcmp(key,"bloom_defaults_version")) {bloomDefaultsV1=atoi(val)>=1;continue;}
         if (!strcmp(key,"left_hand_forward_reset_version")) {leftHandForwardResetV1=atoi(val)>=1;continue;}
         if (ParseWeaponAlignmentKey(key,val)||ParseTitleProfileKey(key, val))
             continue;
@@ -2069,6 +2071,12 @@ void ConfigLoad(const wchar_t* path)
     NormalizeVirtualStockProximityPair();
     NormalizeVirtualStockHybridSeatPair();
     NormalizeVirtualStockHybridHorizontalPair();
+    if (!bloomDefaultsV1) {
+        // Apply the new Reach/ODST default once, then preserve user choices.
+        g_config.bloom_enabled[1]=false;
+        g_config.bloom_enabled[2]=false;
+        LOG("config: enabled Disable bloom for ODST and Reach on first update load");
+    }
     if (!leftHandForwardResetV1) {
         // Shared bilateral offsets replace the old left-hand baseline once.
         g_config.left_hand_forward_m=0.0f;
@@ -2077,7 +2085,7 @@ void ConfigLoad(const wchar_t* path)
     ResolveTitleProfiles();
     if (retiredHandOffsets)
         LOG("config: retired Visible hand positioning offsets cleared for both hands and all title profiles");
-    if (!leftHandForwardResetV1 || retiredHandOffsets) ConfigSave();
+    if (!leftHandForwardResetV1 || retiredHandOffsets || !bloomDefaultsV1) ConfigSave();
     LOG("config: loaded (screen %.2fm wide at %.2fm)", g_config.screen_width_m, g_config.screen_distance_m);
 }
 
@@ -3241,6 +3249,7 @@ void ConfigSave()
     fprintf(f,"# Per-game muzzle-flash hiding. Supported paths: H2 Original and H4.\n");
     for(unsigned title=0;title<weapon_interaction::kTitleCount;++title)
         fprintf(f,"hide_muzzle_flash_%s = %d\n",weapon_interaction::kTitleKeys[title],g_config.hide_muzzle_flash[title]?1:0);
+    fprintf(f,"bloom_defaults_version = 1\n");
     fprintf(f,"disable_autoexposure_odst = %d\n",g_config.disable_autoexposure_odst?1:0);
     fprintf(f,"# Stock bloom per game. Optional suppression supports H3, ODST and Reach.\n");
     for(unsigned title=0;title<weapon_interaction::kTitleCount;++title)
