@@ -1,3 +1,11 @@
+## Latest: accepted settling rollback; additional 5mm H3 offhand adjustment
+
+User confirms the last build works. Move Halo 3 offhand SMG/Plasma Rifle another
++0.005m forward: shared model/effect forward trim changes +0.01m to +0.015m.
+Preserve yaw, lateral trim, animation settling and all other accepted changes.
+Update existing numeric production fixture; user requests a new build without
+monitoring. No installation, launch or release publication.
+
 ## Latest: disable reused animation references after equip-time reload
 
 User source2d0cad23 log and headset report: first offhand Spiker pickup followed

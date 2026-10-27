@@ -138,11 +138,11 @@ int main()
         ApplyH3SecondaryEffects(output,4,frame,nullptr,1.2f);same(output[1],before);
         original[1].translation[0]=.4f;
     }
-    // The requested centimetre follows controller-forward, independently of
+    // The forward trim follows controller-forward, independently of
     // the preserved lateral trim. Both visible and muzzle palettes use this.
     BoneMatrix trimFrame{},trimValue{};
     assert(H3CorrectSecondaryMatrix(trimFrame,30,trimValue));
-    assert(near(trimValue.translation[0],.01f*g_worldScale.load()));
+    assert(near(trimValue.translation[0],.015f*g_worldScale.load()));
     assert(near(trimValue.translation[1],.06f*g_worldScale.load()));
 
 }
