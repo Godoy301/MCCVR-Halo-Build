@@ -34,7 +34,7 @@ jobs:
           if ($env:GITHUB_REF_NAME -ne 'two-handed-grip') {
             throw "Refusing to build unexpected branch: $env:GITHUB_REF_NAME"
           }
-          $expectedSourceSha = '9e16c6713174b7815f603392ba44a0cc06cef9bc'
+          $expectedSourceSha = '6735313e01d9de8ff904d791dbbb835efd15def9'
           if ($env:EXPECTED_SOURCE_SHA -ne $expectedSourceSha) {
             throw "Source revision differs from the reviewed two-handed-grip commit. Expected $expectedSourceSha, got $env:EXPECTED_SOURCE_SHA. Refusing to build a different revision."
           }
@@ -124,8 +124,8 @@ jobs:
           @"
           Source branch: two-handed-grip
           Exact source commit: $env:EXPECTED_SOURCE_SHA
-          Change under test: Halo 3 authored wrist-based two-handed-grip acquisition, keyed to the current weapon/unit and generation.
-          Includes: bounded fresh publication, continuous settling, the authored 9 cm acquisition zone, legacy-geometry fallback, and the new authored-grip logic tests.
+          Change under test: latest two-handed-grip source, including stabilized Halo 3 authored wrist acquisition and reduced close-hand aim authority.
+          Includes: owner/weapon/generation-qualified publication, preserved settled endpoint during attached animation, no barrel-zone fallback for supported owners while pending, revised short-separation grip geometry, and distance-based close-hand aim blending with Virtual Stock on/off.
           Windows build/test validation is performed by this workflow. Headset behavior remains a separate validation.
           Use the Build ZIP from this artifact, not one from a different workflow run.
           "@ | Set-Content 'out/candidates/BUILD-IDENTITY.txt'
