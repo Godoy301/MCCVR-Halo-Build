@@ -1,3 +1,16 @@
+## Latest: H3 authored grip test follow-up
+
+User reports Magnum requires forward placement/pulls aim down, far barrel still
+acquires, and outside attempts appear to prevent reacquisition. Log confirms
+frequent legacy fallback plus final continuous misses, not a proven stuck latch.
+Preserve last settled owner-specific point with live attached/settling heartbeat;
+supported pending/stale data no longer reopens barrel fallback. Use controller
+grip positions and generic short-separation lateral volume. Add H3 distance-based
+orientation authority (0<=16cm, full>=30cm) before calibration for stock on/off.
+State machine and other titles unchanged. See AUTHORED-GRIP-ZONE.md.307 extracted
+production aim checks, new geometry/publication tests and wiring guard pass.
+Windows DLL/headset validation pending. Commit on two-handed-grip; no build yet.
+
 ## Latest: first authored two-handed grip acquisition adapter
 
 Work on user branch two-handed-grip (created from6e13ded0). New H3 primary-only

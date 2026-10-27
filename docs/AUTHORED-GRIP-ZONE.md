@@ -1,3 +1,40 @@
+# Follow-up: acquisition availability and close-hand aiming
+
+User log shows repeated hit=0/miss=0/fallback~400 intervals alternating with
+fresh authored hits/misses; final intervals have only misses. This proves zone
+availability changes, not a stuck durable latch. Previous producer stopped
+publishing while attached and erased readiness during settling. Its100ms expiry
+then reopened the legacy forward barrel zone, explaining far-front reacquisition.
+
+Retain the last settled point for the exact owner while observing its live
+primary invocation, including attachment. Pending learning never overwrites a
+calibrated point. Owner changes clear readiness. Fresh reads still require100ms
+heartbeat; known supported-but-pending/stale owners return no acquisition instead
+of switching geometry. Completely unknown owners retain legacy fallback. Outside
+attempts never mutate the publication; grip state machine is unchanged.
+
+Use fresh input-frame controller grip positions where available, aim positions
+otherwise. Authored separation <=24cm selects a generic close-grip volume:
++/-16cm lateral, +/-10cm vertical,10cm forward/12cm rearward. Longer separation
+keeps the9cm authored sphere. These are initial ergonomic bounds, not measured
+Magnum constants. No names/tags identify pistols. Logs now include local endpoint
+XYZ for diagnosing classification and position in the next headset session.
+
+All H3 standard-handed two-hand aim gets a frozen sample distance weight:
+0 at <=16cm, smoothstep to1 at30cm. Blend solved orientation toward primary
+before calibration, including Virtual Stock paths, while preserving grip/latch
+and position. Other titles keep factor1. Traced/untraced calculations agree;
+trace final direction reflects the blend. No native weapon animations changed.
+
+Validation:307 production aim checks pass via extracted shipping solver using
+minimal OpenXR value-struct stubs on Linux (not a Windows DLL build). New
+publication/geometry/authority regressions and persistent-support wiring guard
+pass. Headset confirmation pending, particularly short-grip classification and
+repeated outside/inside attempts. No compilation workflow triggered.
+
+Historical first-candidate design follows; availability and geometry rules above
+supersede the prior behavior:
+
 # Authored support-grip acquisition: first Halo 3 adapter
 
 Branch two-handed-grip, based on the user-created branch (6e13ded0). Goal:

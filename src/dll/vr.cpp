@@ -10706,6 +10706,7 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         // it - the offline fixtures in particular - keeps the pre-W3 product
         // shape. Virtual Stock solves never read it.
         float twoHandOffhandInfluence = 1.0f;
+        float closeGripAuthority = 1.0f;
         // Persistent support grip solve-time qualification (T5b). Plain
         // scalars only, exactly like the Lab fields above: the offline aim
         // fixtures compile this struct without the support-grip or vr headers.
@@ -13556,16 +13557,22 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         support_grip::OwnerTuple owner{};support_grip::OwnerEvidence evidence{};uint64_t revision=0;
         if(!ReadSupportGripOwnerEvidenceInternal(title,generation,owner,evidence,revision)||
            evidence!=support_grip::OwnerEvidence::KnownPresent)return false;
+        const authored_grab::Key key{unsigned(title),generation,owner.unit,owner.weapon};
         authored_grab::Point local{};
-        if(!authored_grab::publication.Read({unsigned(title),generation,owner.unit,owner.weapon},GetTickCount64(),local)){++authored_grab::fallbacks;return false;}
-        const auto displacement=Rotate(primary.orientation,{local[0],local[1],local[2]});
-        const auto right=Rotate(primary.orientation,{1,0,0});
-        const float nudge=std::clamp(g_config.two_hand_zone_right_m,-.10f,.10f);
-        // This is a wrist-to-wrist target: do not add the legacy barrel-zone
-        // palm offset, which would put a pistol's acquisition ahead of its grip.
-        const authored_grab::Point offset{support.position.x-primary.position.x,
-            support.position.y-primary.position.y,support.position.z-primary.position.z};
-        hit=authored_grab::Hit({displacement.x+right.x*nudge,displacement.y+right.y*nudge,displacement.z+right.z*nudge},offset);
+        if(!authored_grab::publication.Read(key,GetTickCount64(),local)){
+            ++authored_grab::fallbacks;hit=false;
+            // A supported weapon waiting for a fresh endpoint must not reopen
+            // the old 80cm barrel zone. Unknown weapons retain the old fallback.
+            return authored_grab::publication.Owns(key);
+        }
+        authored_grab::lastX.store(local[0]);authored_grab::lastY.store(local[1]);authored_grab::lastZ.store(local[2]);
+        const auto primaryPoint=g_primaryGripPoseValid?g_primaryGripPosePosition:primary.position;
+        const auto supportPoint=g_supportGripPoseValid?g_supportGripPosePosition:support.position;
+        const XrQuaternionf inverse{-primary.orientation.x,-primary.orientation.y,-primary.orientation.z,primary.orientation.w};
+        const auto relative=Rotate(inverse,{supportPoint.x-primaryPoint.x,supportPoint.y-primaryPoint.y,supportPoint.z-primaryPoint.z});
+        const authored_grab::Point sample{relative.x,relative.y,relative.z};
+        local[0]+=std::clamp(g_config.two_hand_zone_right_m,-.10f,.10f);
+        hit=authored_grab::Short(local)?authored_grab::ShortHit(sample):authored_grab::Hit(local,sample);
         (hit?authored_grab::hits:authored_grab::misses).fetch_add(1,std::memory_order_relaxed);
         return true;
     }

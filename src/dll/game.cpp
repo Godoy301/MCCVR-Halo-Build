@@ -4887,8 +4887,9 @@ namespace
         const auto liveHudNow=GetTickCount64();
         if(profile==HudLayoutProfile::Halo3&&liveHudNow-lastLiveHudLog>=5000) {
             lastLiveHudLog=liveHudNow;
-            LOG("H3 authored grip zone: hit=%llu miss=%llu fallback=%llu; authored wrist acquisition, stock geometry fallback",
-                authored_grab::hits.exchange(0),authored_grab::misses.exchange(0),authored_grab::fallbacks.exchange(0));
+            LOG("H3 authored grip zone: hit=%llu miss=%llu pending-or-fallback=%llu local=(%.3f,%.3f,%.3f); supported owners never reopen barrel zone",
+                authored_grab::hits.exchange(0),authored_grab::misses.exchange(0),authored_grab::fallbacks.exchange(0),
+                authored_grab::lastX.load(),authored_grab::lastY.load(),authored_grab::lastZ.load());
             const auto adjusted=g_h3HudRecordAdjusted.exchange(0),native=g_h3HudRecordNative.exchange(0);
             if(adjusted||native)LOG("H3 live HUD layout: selected-record adjusted=%llu native=%llu; stock scanner independent",adjusted,native);
         }
@@ -7081,9 +7082,11 @@ static int LegacyAnatomicalRenderNodeCount(GameTitle title,uint16_t tag,uint32_t
                               const BoneMatrix& desired,bool attached)
     {
         if(TitleAdapter_GetActiveTitle()!=GameTitle::Halo3||context.slot!=0||context.player!=0||
-           !context.valid||!source||g_config.left_handed||attached||context.muzzleWeapon==UINT32_MAX||
+           !context.valid||!source||g_config.left_handed||context.muzzleWeapon==UINT32_MAX||
            context.muzzleUnit==UINT32_MAX||context.wrist<0||context.wrist>=context.count||
            context.lWrist<0||context.lWrist>=context.count)return;
+        const authored_grab::Key key{unsigned(GameTitle::Halo3),context.generation,context.muzzleUnit,context.muzzleWeapon};
+        if(attached){authored_grab::publication.Publish(key,{},GetTickCount64(),false);return;}
         BoneMatrix inverse{},relative{},target{};
         if(!InvertBoneMatrix(source[context.wrist],inverse)||
            !ComposeBoneMatrices(inverse,source[context.lWrist],relative)||
@@ -7097,14 +7100,13 @@ static int LegacyAnatomicalRenderNodeCount(GameTitle title,uint16_t tag,uint32_t
         // Cosmetic weapon offsets move the whole assembly, not the physical
         // distance between controllers. Keep only the authored wrist separation.
         const authored_grab::Point point{-local[1],local[2],-local[0]};
-        const authored_grab::Key key{unsigned(GameTitle::Halo3),context.generation,context.muzzleUnit,context.muzzleWeapon};
         static thread_local authored_grab::Learner learner;
         static thread_local int previousCount=-1,previousRight=-1,previousLeft=-1;
         if(previousCount!=context.count||previousRight!=context.wrist||previousLeft!=context.lWrist)learner={};
         previousCount=context.count;previousRight=context.wrist;previousLeft=context.lWrist;
         const auto now=GetTickCount64();
         const bool ready=learner.Observe(key,point,now);
-        authored_grab::publication.Publish(key,point,ready?now:0);
+        authored_grab::publication.Publish(key,point,now,ready);
     }
 
     bool ReconstructVisiblePaletteSource(uint16_t tag,

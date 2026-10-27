@@ -21,5 +21,17 @@ int main(){
     Publication pub;Point out{};pub.Publish(pistol,rear,2000);
     assert(pub.Read(pistol,2050,out));assert(out==rear);
     assert(!pub.Read(rifle,2050,out));assert(!pub.Read(pistol,2101,out));assert(!pub.Read(pistol,1999,out));
+    for(int i=0;i<20;++i){assert(!Hit(rear,{0,0,-.6f}));assert(pub.Read(pistol,2050,out));}
+    assert(Hit(out,{0,0,0})); // an outside attempt never poisons the next attempt
+    assert(pub.Owns(pistol)&&!pub.Owns(rifle));
+    pub.Publish(pistol,front,2200,false); // attachment/settling heartbeat preserves learned zone
+    assert(pub.Read(pistol,2250,out)&&out==rear);
+    pub.Publish(rifle,front,2300,false);
+    assert(pub.Owns(rifle)&&!pub.Read(rifle,2300,out)); // pending never inherits old gun
+    pub.Publish(rifle,front,2400,true);assert(pub.Read(rifle,2400,out)&&out==front);
+    assert(Short(rear)&&!Short(front));assert(ShortHit({-.12f,0,0}));
+    assert(!ShortHit({0,0,-.3f}));assert(!ShortHit({.3f,0,0}));
+    assert(Authority(.10f)==0&&Authority(.16f)==0&&Authority(.30f)==1);
+    assert(Authority(.23f)>.49f&&Authority(.23f)<.51f);
     pub.Publish(pistol,rear,0);assert(!pub.Read(pistol,2050,out));
 }
