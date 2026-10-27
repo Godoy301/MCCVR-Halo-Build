@@ -34,7 +34,7 @@ jobs:
           if ($env:GITHUB_REF_NAME -ne 'weapons-alignment') {
             throw "Refusing to build unexpected branch: $env:GITHUB_REF_NAME"
           }
-          $expectedSourceSha = '664b8c68bdd0a406fcf2c619c1d7c5a657be0e45'
+          $expectedSourceSha = '6153649932cf09c7feca3e71d99fadc99e5d4aa5'
           if ($env:EXPECTED_SOURCE_SHA -ne $expectedSourceSha) {
             throw "Source revision differs from the reviewed weapons-alignment commit. Expected $expectedSourceSha, got $env:EXPECTED_SOURCE_SHA. Refusing to build a different revision."
           }
@@ -120,8 +120,8 @@ jobs:
           Source branch: weapons-alignment
           Expected source in the first line of HaloMCCVR.log: $env:EXPECTED_SOURCE_SHA
           Includes: preserved modded-weapon fixes, independent hand offsets, collapsed menu sections, percent world scale with reset, and restored stock Halo 3 HUD locator.
-          Candidate fixes: disable cached animation-reference reuse and restore settling on every acquisition for CE/CEA, H2/H2A and Halo 3 secondary weapons. Preserve smoothing, custom HUD support, bloom preferences and offhand model/muzzle alignment.
-          Pending: verify first pickup followed by immediate reload and subsequent drop/re-equip, especially the Halo 3 offhand Spiker. Settling remains a heuristic rather than native reload-state detection. Windows tests and headset validation required.
+          Candidate fixes: move Halo 3 offhand SMG and Plasma Rifle an additional 0.005m forward, including muzzle effects. Preserve accepted animation settling, HUD support, bloom preferences and all other changes.
+          Pending: confirm the additional 5mm offhand alignment in the headset. Production motion/effect fixture passed locally; Windows build and tests run in this workflow.
           If the log reports source 5fdf982e, MCC loaded an older DLL.
           Use the Build ZIP from this artifact, not a previous workflow run.
           "@ | Set-Content 'out/candidates/BUILD-IDENTITY.txt'
