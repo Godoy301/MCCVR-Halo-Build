@@ -34,7 +34,7 @@ jobs:
           if ($env:GITHUB_REF_NAME -ne 'two-handed-grip') {
             throw "Refusing to build unexpected branch: $env:GITHUB_REF_NAME"
           }
-          $expectedSourceSha = '09304aee3396705c40017d4b01e50faf2c2ee645'
+          $expectedSourceSha = 'adb695a0bdea4ff9c2a838d8493c4a34cb9298ec'
           if ($env:EXPECTED_SOURCE_SHA -ne $expectedSourceSha) {
             throw "Source revision differs from the reviewed two-handed-grip commit. Expected $expectedSourceSha, got $env:EXPECTED_SOURCE_SHA. Refusing to build a different revision."
           }
@@ -51,7 +51,7 @@ jobs:
           Write-Host "Exact source commit being built: $actual"
           Write-Host "The main and compilation-test branches are not used as source."
 
-      - name: Verify authored Halo 3 grip acquisition source
+      - name: Verify all-title authored grip acquisition source
         shell: pwsh
         run: |
           $logic = Get-Content 'src/common/authored_grab_zone.h' -Raw
@@ -62,9 +62,9 @@ jobs:
           if (-not $logic.Contains('struct Learner') -or -not $logic.Contains('struct Publication')) {
             throw "This source is missing the authored-grip learner/publication logic."
           }
-          if (-not $game.Contains('PublishH3AuthoredGrab') -or
+          if (-not $game.Contains('Game_PublishAuthoredGrip') -or
               -not $vr.Contains('AuthoredSupportGrabHit')) {
-            throw "The Halo 3 authored wrist acquisition adapter is incomplete."
+            throw "The shared authored wrist acquisition adapter is incomplete."
           }
           if (-not $cmake.Contains('authored_grab_zone_tests') -or
               -not $test.Contains('Publication pub')) {
@@ -124,8 +124,8 @@ jobs:
           @"
           Source branch: two-handed-grip
           Exact source commit: $env:EXPECTED_SOURCE_SHA
-          Change under test: fixed binary close-hand aim protection computed in the shared live/committed pose-input constructor, plus the expanded authored grip acquisition zone.
-          Includes: owner/weapon/generation-qualified publication, preserved settled endpoint during attached animation, no barrel-zone fallback for supported owners while pending, 54 cm authored forward capsule with 12 cm radius, expanded short-grip bounds, binary close-hand exclusion calculated from the current controller sample in the shared pose-input constructor used by live and committed consumers, restoration of the primary pose when the support hand is within 16 cm or the defined lateral box, and a 1000 ms initial authored-grip learning delay with the existing 500 ms quiet check.
+          Change under test: all-title authored support grip, one-second animation settling, Crosshair & Trajectory tab, and Halo 3 pickup suppression while support grip is occupied.
+          Includes: CE/CEA, H2/H2A, H3, ODST, Reach and H4 authored wrist adapters in standard handedness; binary close-hand aim exclusion; retained quiet-pose checks; semantic pickup aliases independent of controller layout.
           Windows build/test validation is performed by this workflow. Headset behavior remains a separate validation.
           Use the Build ZIP from this artifact, not one from a different workflow run.
           "@ | Set-Content 'out/candidates/BUILD-IDENTITY.txt'
