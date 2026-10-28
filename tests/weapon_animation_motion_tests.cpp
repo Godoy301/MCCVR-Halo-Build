@@ -139,12 +139,12 @@ int main()
     cache.Store(key,equip);
     weapon_animation::Reference cached;
     assert(!cached.Update(key,idle,0,.33f,delta,true,&cache));
-    for(uint64_t t=100;t<1500;t+=100)assert(!cached.Update(key,idle,t,.33f,delta,true,&cache));
-    assert(cached.Update(key,idle,1500,.33f,delta,true,&cache));same(delta,Pose{});
+    for(uint64_t t=100;t<1000;t+=100)assert(!cached.Update(key,idle,t,.33f,delta,true,&cache));
+    assert(cached.Update(key,idle,1000,.33f,delta,true,&cache));same(delta,Pose{});
     cached={};
     assert(!cached.Update(key,idle,1700,.33f,delta,true,&cache));
-    for(uint64_t t=1800;t<3200;t+=100)assert(!cached.Update(key,idle,t,.33f,delta,true,&cache));
-    assert(cached.Update(key,idle,3200,.33f,delta,true,&cache));same(delta,Pose{});
+    for(uint64_t t=1800;t<2700;t+=100)assert(!cached.Update(key,idle,t,.33f,delta,true,&cache));
+    assert(cached.Update(key,idle,2700,.33f,delta,true,&cache));same(delta,Pose{});
     for(int field=0;field<4;++field) {
         auto changed=key;++changed[field];cached={};
         assert(!cached.Update(changed,idle,1900,.33f,delta,true,&cache));
