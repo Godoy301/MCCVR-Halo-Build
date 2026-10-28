@@ -2096,11 +2096,12 @@ namespace
         if(context.valid&&handsMatrices&&gunMatrices)
         {
             const uint64_t identity=Halo2ObserveReloadModel(gunRenderModelTag,context.gunCount);
+            // Visual defaults need the secondary identity even with barrel aiming disabled.
+            const uint64_t secondaryIdentity=secondaryMatrices
+                ? Halo2ObserveReloadModel(secondaryRenderModelTag,context.secondaryGunCount,false):0;
             if(Sight_GunBarrelAim()||Sight_ShotsFromMuzzle())
             {
                 Halo2PublishMuzzlePalette(context,0,identity,gunMatrices,context.gunCount);
-                const uint64_t secondaryIdentity=secondaryMatrices
-                    ? Halo2ObserveReloadModel(secondaryRenderModelTag,context.secondaryGunCount,false):0;
                 Halo2PublishMuzzlePalette(context,1,secondaryIdentity,secondaryMatrices,context.secondaryGunCount);
             }
             const auto* model=weapon_model::Find(GameTitle::Halo2,identity);
