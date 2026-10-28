@@ -1,3 +1,21 @@
+## Latest: all-title authored grip and requested menu/input follow-ups
+
+User accepts the H3 grip and reports the Plasma Rifle projectile issue resolved.
+Port the same authored wrist zone and binary close-hand policy to CE/CEA,
+H2/H2A, ODST, Reach and H4 using their existing admitted palette adapters.
+Standard handedness remains the supported scope. New title headset tests pending.
+Separate commits: all-title adapter, animation reference minimum1000ms (quiet
+500ms retained), Crosshair & Trajectory label, H3 occupied support-hand pickup
+suppression at proven semantic input aliases. Manual reload alone still permits
+pickup. Publication and bridge run when two-handed aiming is enabled even with
+manual reload and action mapping off. No new native offsets or hook signatures.
+
+Local309 production aim checks, authored-zone tests, CE palette tests and
+animation tests pass; persistent-support guard passes. Windows native input
+fixture gains occupied/free-hand and unrelated-caller coverage, to run in CI.
+User requests one combined build; trigger exact source workflow after source
+push, without monitoring, installing or changing accepted release pointer.
+
 ## Latest: binary close-hand protection shared with committed aim
 
 Remove gradual distance influence; close controllers restore the entire primary

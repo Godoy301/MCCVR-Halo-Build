@@ -50352,6 +50352,20 @@ void Game_Init()
     CreateThread(nullptr, 0, WaitThread, nullptr, 0, nullptr);
 }
 
+bool Game_BlockHalo3SupportPickup() noexcept
+{
+    if(TitleAdapter_GetActiveTitle()!=GameTitle::Halo3||!g_config.two_handed_aim||
+       g_config.left_handed)return false;
+    if(!g_config.persistent_support_grip)return VR_IsTwoHandAiming();
+    SupportGripRelationshipSnapshot grip{};
+    support_grip::OwnerTuple owner{};support_grip::OwnerEvidence evidence{};uint64_t revision=0;
+    const auto generation=TitleAdapter_GetGeneration(GameTitle::Halo3);
+    return VR_GetSupportGripRelationship(grip)&&grip.engaged&&grip.title==GameTitle::Halo3&&
+        grip.generation==generation&&VR_ReadSupportGripOwnerEvidence(GameTitle::Halo3,generation,
+            owner,evidence,revision)&&evidence==support_grip::OwnerEvidence::KnownPresent&&
+        owner.unit==grip.unit&&owner.weapon==grip.weapon;
+}
+
 void Game_PublishAuthoredGrip(GameTitle title,uint32_t generation,uint32_t unit,uint32_t weapon,
     const void* right,const void* left,const void* desired,const float* controllerBasis,float units,bool attached)
 {
