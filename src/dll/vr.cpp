@@ -1,3 +1,4 @@
+#include "../common/reach_weapon_defaults.h"
 #include "../common/halo4_weapon_visual_defaults.h"
 #include "../common/authored_grab_zone.h"
 #include "../common/vr_interaction_refinement_logic.h"
@@ -24346,7 +24347,7 @@ void VR_GetPadState(VrPadState& out)
 
 void VR_ObserveWeaponModel(GameTitle title,uint32_t generation,uint64_t identity) noexcept
 {
-    if((title!=GameTitle::Halo4&&!g_config.manual_reload&&!g_config.per_gun_alignment)||title!=TitleAdapter_GetActiveTitle()||
+    if((title!=GameTitle::Halo4&&title!=GameTitle::HaloReach&&!g_config.manual_reload&&!g_config.per_gun_alignment)||title!=TitleAdapter_GetActiveTitle()||
         generation!=TitleAdapter_GetGeneration(title)) return;
     (void)g_weaponModels.Publish({title,generation,identity,
         g_contactSpaceEpoch.load(std::memory_order_acquire),GetTickCount64()});
@@ -24381,6 +24382,17 @@ void VR_PublishReloadTarget(GameTitle title,uint32_t generation,uint64_t identit
     if(weapon_interaction::BuildReloadTarget(title,generation,identity,
         current.referenceEpoch,GetTickCount64(),current.leftHanded,{world[0],world[1],world[2]},
         trackingToWorld,primaryController,target)) (void)g_reloadTargets.Publish(target);
+}
+
+void VR_ReachDefaultVisualAngles(float& yaw,float& pitch,float& roll) noexcept
+{
+    yaw=pitch=roll=0.f;
+    if(TitleAdapter_GetActiveTitle()!=GameTitle::HaloReach)return;
+    const auto identity=VR_GetWeaponModelIdentity(GameTitle::HaloReach,
+        TitleAdapter_GetGeneration(GameTitle::HaloReach),
+        g_contactSpaceEpoch.load(std::memory_order_acquire),GetTickCount64());
+    const auto defaults=weapon_alignment::ReachWeaponDefaults(identity);
+    yaw=defaults.yaw;pitch=defaults.pitch;roll=defaults.roll;
 }
 
 float VR_DefaultWeaponVisualYaw() noexcept

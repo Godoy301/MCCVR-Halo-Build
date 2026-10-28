@@ -1,3 +1,16 @@
+## Latest: Reach model-specific visual and barrel defaults
+
+User requests13 Reach model adjustments. reach_weapon_defaults.h contains the
+exact yaw/pitch/roll baseline table, added to visual sliders at the prepared
+controller target. Zero sliders select the new defaults. Identity observation
+remains active without manual reload/per-gun options. Existing H4 defaults kept.
+Two explicit barrel exceptions: Plasma Pistol yaw+1.6 and Needler pitch-8.
+Apply these after removing visual trim from the shared muzzle receipt, using
+its exact model checksum and neutral controller basis. Rotate direction/up only,
+retain muzzle origin; reticle and barrel-shot consumers share the receipt.
+Unknown models unchanged. Portable math check verifies rightward yaw, downward
+pitch and fixed origin; Windows/runtime test pending. Commit only, no build.
+
 ## Latest: Halo 4 per-model visual yaw defaults
 
 User confirms Reach/H4 grip reacquisition is fixed. Requested22 Halo4 weapon

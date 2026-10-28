@@ -1110,6 +1110,7 @@ void VR_GetPadState(VrPadState& out);
 const char* VR_ControllerProfileName(bool left);
 // Cold worker only: optional gesture status/counters, never render-hook logs.
 void VR_ReportWeaponInteractions(uint64_t nowMs);
+void VR_ReachDefaultVisualAngles(float& yaw,float& pitch,float& roll) noexcept;
 float VR_DefaultWeaponVisualYaw() noexcept;
 void VR_UpdateWeaponAlignment(); // cold title worker, after title-profile selection
 namespace contact_melee { struct TrackingToWorld; }

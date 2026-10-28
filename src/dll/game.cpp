@@ -1,3 +1,4 @@
+#include "../common/reach_weapon_defaults.h"
 #include "../common/visual_aim.h"
 #include "../common/weapon_alignment.h"
 #include "../common/weapon_animation_motion.h"
@@ -26798,7 +26799,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
         // Optional reload identity is independent of collision settings. Read
         // through each title's existing verified tag reader; never change a
         // palette, inventory, native animation or camera to select an accessory.
-        if((g_config.manual_reload || g_config.per_gun_alignment) && source && boneMap && generation)
+        if((title==GameTitle::HaloReach || g_config.manual_reload || g_config.per_gun_alignment) && source && boneMap && generation)
         {
             const bool primary=title==GameTitle::HaloReach ||
                 (g_fpInterpolationContexts[0].source==source &&
@@ -27660,6 +27661,11 @@ static constexpr bool kOdstMappedFpEnabled = false;
         BuildTrackedGameBasisFromFrame(
             q, false, followValid, hullYaw, hullPitch, basis);
         float neutralBasis[9];memcpy(neutralBasis,basis,sizeof(neutralBasis));
+        float defaultYaw=0,defaultPitch=0,defaultRoll=0;
+        if(!left)VR_ReachDefaultVisualAngles(defaultYaw,defaultPitch,defaultRoll);
+        const float visualYaw=g_config.barrel_yaw_deg+defaultYaw;
+        const float visualPitch=g_config.barrel_pitch_deg+defaultPitch;
+        const float visualRoll=g_config.barrel_roll_deg+defaultRoll;
         if (left)
         {
             float mount[9],trimmed[9];
@@ -27669,15 +27675,15 @@ static constexpr bool kOdstMappedFpEnabled = false;
             MultiplyBases(basis,mount,trimmed);
             memcpy(basis,trimmed,sizeof(basis));
         }
-        else if (g_config.barrel_pitch_deg!=0.0f ||
-                 g_config.barrel_yaw_deg!=0.0f ||
-                 g_config.barrel_roll_deg!=0.0f)
+        else if (visualPitch!=0.0f ||
+                 visualYaw!=0.0f ||
+                 visualRoll!=0.0f)
         {
             // Mesh-only barrel trim (per title profile); aim ray untouched.
             float mount[9],trimmed[9];
-            BasisFromAngles(-g_config.barrel_yaw_deg*0.0174533f,
-                             g_config.barrel_pitch_deg*0.0174533f,
-                            -g_config.barrel_roll_deg*0.0174533f,mount);
+            BasisFromAngles(-visualYaw*0.0174533f,
+                             visualPitch*0.0174533f,
+                            -visualRoll*0.0174533f,mount);
             MultiplyBases(basis,mount,trimmed);
             bool finite=true;
             for(int j=0;j<9;++j) if(!isfinite(trimmed[j])){finite=false;break;}
