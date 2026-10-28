@@ -34,7 +34,7 @@ jobs:
           if ($env:GITHUB_REF_NAME -ne 'two-handed-grip') {
             throw "Refusing to build unexpected branch: $env:GITHUB_REF_NAME"
           }
-          $expectedSourceSha = '04ec7061f6bdb8f0ed04ced1844a08d073ea8a10'
+          $expectedSourceSha = '574645d518704c3371df5b84bf9e7c6ed89592dc'
           if ($env:EXPECTED_SOURCE_SHA -ne $expectedSourceSha) {
             throw "Source revision differs from the reviewed two-handed-grip commit. Expected $expectedSourceSha, got $env:EXPECTED_SOURCE_SHA. Refusing to build a different revision."
           }
@@ -74,6 +74,13 @@ jobs:
           if (-not $cmake.Contains('authored_grab_zone_tests') -or
               -not $test.Contains('Publication pub')) {
             throw "The authored-grip zone test is not registered in this source."
+          }
+          $motion = Get-Content 'src/common/weapon_animation_motion.h' -Raw
+          $motionTests = Get-Content 'tests/weapon_animation_motion_tests.cpp' -Raw
+          if (-not $motion.Contains('now-started<500||now-stableSince<500') -or
+              -not $motionTests.Contains('reference.Update(key,idle,500,.33f,delta)') -or
+              -not $motionTests.Contains('movingReference.Update(key,idle,800,.33f,delta)')) {
+            throw "The 500ms weapon-animation settling change or its regression tests are missing."
           }
 
       - name: Set up Python for test generation
@@ -129,8 +136,8 @@ jobs:
           @"
           Source branch: two-handed-grip
           Exact source commit: $env:EXPECTED_SOURCE_SHA
-          Change under test: fix Reach/Halo 4 grip reacquisition after release and re-grab, prevent attached refresh from claiming an unknown owner without calibrated geometry, and extend authored grip acquisition downward by 5 cm.
-          Includes: CE/CEA, H2/H2A, H3, ODST, Reach and H4 authored wrist adapters in standard handedness; binary close-hand aim exclusion; title-specific frozen aim-neutral controller basis for Reach/H4; owner-safe attached refresh that cannot claim or steal an acquisition endpoint; short zone lower bound extended to -0.19 m and long capsule extended downward 5 cm while retaining upper/side limits; retained quiet-pose checks; semantic pickup aliases independent of controller layout.
+          Change under test: reduce the weapon-animation reference's initial settling minimum from 1000 ms to 500 ms while retaining the independent 500 ms quiet window.
+          Includes: the full accepted two-handed-grip source and all-title authored grip adapters; weapon animation reference initial minimum 500 ms, unchanged 500 ms quiet window after observed motion, updated stable/moving/reacquisition regression cases. The separate authored-grip learning delay remains unchanged at 1000 ms.
           Windows build/test validation is performed by this workflow. Headset behavior remains a separate validation.
           Use the Build ZIP from this artifact, not one from a different workflow run.
           "@ | Set-Content 'out/candidates/BUILD-IDENTITY.txt'
