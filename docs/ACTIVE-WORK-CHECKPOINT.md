@@ -1,3 +1,12 @@
+## Latest: separate Halo 2 classic/Anniversary visual defaults
+
+Second requested commit: H2A Magnum pitch1, Plasma Rifle yaw.5, Plasma Pistol
+yaw1, Brute Shot roll90. Classic SMG/plasma rifles yaw1, Plasma Pistol/BR yaw1.5,
+Brute Shot pitch10 roll90. Add per-model defaults to each hand's own visual
+carrier, preserving existing classic-wide pitch/yaw and neutral muzzle frames.
+Separate secondary model observation avoids using primary weapon defaults on
+the offhand. Portable table checks pass. No Windows compilation requested.
+
 ## Latest: Halo 3/ODST visual defaults
 
 User confirms unnamed axes are yaw. Default pitch+1 for H3/ODST, overridden by

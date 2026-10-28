@@ -2058,8 +2058,7 @@ namespace
 
     uint64_t Halo2ObserveReloadModel(uint32_t tag,uint32_t nodes,bool observePrimary=true) noexcept
     {
-        if((!g_config.manual_reload&&!g_config.per_gun_alignment&&!Sight_GunBarrelAim()&&!Sight_ShotsFromMuzzle())||
-            tag==UINT32_MAX||!nodes) return 0;
+        if(tag==UINT32_MAX||!nodes) return 0;
         const auto get=reinterpret_cast<Halo2GraphDefinitionGetFn>(
             g_graphDefinitionGet.load(std::memory_order_acquire));
         const auto slot=reinterpret_cast<unsigned char**>(
@@ -2080,6 +2079,8 @@ namespace
         __except(EXCEPTION_EXECUTE_HANDLER) { identity=0; }
         if(observePrimary)
             VR_ObserveWeaponModel(GameTitle::Halo2,TitleAdapter_GetGeneration(GameTitle::Halo2),identity);
+        else
+            VR_ObserveSecondaryWeaponModel(GameTitle::Halo2,TitleAdapter_GetGeneration(GameTitle::Halo2),identity);
         return identity;
     }
 
@@ -3164,15 +3165,18 @@ namespace
                     candidate.muzzleNeutralCarrier[0]=rightCarrier;
                     candidate.muzzleNeutralCarrier[1]=leftCarrier;
                     {
+                        float ry=0,rp=0,rr=0,ly=0,lp=0,lr=0;
+                        VR_LegacyDefaultVisualAngles(false,classicConsumer,ry,rp,rr);
+                        VR_LegacyDefaultVisualAngles(true,classicConsumer,ly,lp,lr);
                         const float pitch=g_config.barrel_pitch_deg+
                             (classicConsumer?weapon_alignment::kH2ClassicVisualPitch:0.0f);
                         Halo2CameraBasis trimmedRight{},trimmedLeft{};
                         const float yaw=g_config.barrel_yaw_deg+
                             (classicConsumer?weapon_alignment::kH2ClassicVisualYaw:0.0f);
-                        if (Halo2ApplyCarrierTrim(rightCarrier,pitch,yaw,
-                                g_config.barrel_roll_deg,0,0,0,Game_GetWorldScale(),trimmedRight) &&
-                            Halo2ApplyCarrierTrim(leftCarrier,pitch,yaw,
-                                g_config.barrel_roll_deg,0,0,0,Game_GetWorldScale(),trimmedLeft)) {
+                        if (Halo2ApplyCarrierTrim(rightCarrier,pitch+rp,yaw+ry,
+                                g_config.barrel_roll_deg+rr,0,0,0,Game_GetWorldScale(),trimmedRight) &&
+                            Halo2ApplyCarrierTrim(leftCarrier,pitch+lp,yaw+ly,
+                                g_config.barrel_roll_deg+lr,0,0,0,Game_GetWorldScale(),trimmedLeft)) {
                             rightCarrier=trimmedRight;leftCarrier=trimmedLeft;
                             g_classicTrimApplied.fetch_add(1,std::memory_order_relaxed);
                         } else g_classicTrimRefused.fetch_add(1,std::memory_order_relaxed);
