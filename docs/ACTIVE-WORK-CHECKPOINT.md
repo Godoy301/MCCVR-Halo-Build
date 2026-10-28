@@ -1,3 +1,13 @@
+## Latest: 500ms weapon-animation reference settling trial
+
+Following commit 32cd80d4, reduce the initial Reference::Update minimum from
+1000ms to 500ms. Keep the independent quiet window at500ms: observed motion
+restarts that window, so elapsed minimum alone does not allow a moving weapon
+pose to settle. Regression tests cover stable-pose readiness at500ms and motion
+requiring a full500ms quiet period. This is the weapon-animation reference timer
+in weapon_animation_motion.h; the separate authored-grip learning delay in
+authored_grab_zone.h remains unchanged. Commit requested; no build requested.
+
 ## Latest: independent game brightness profiles
 
 User reports brightness changes affecting every game. game_brightness was a
