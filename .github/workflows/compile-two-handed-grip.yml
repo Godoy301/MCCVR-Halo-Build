@@ -34,7 +34,7 @@ jobs:
           if ($env:GITHUB_REF_NAME -ne 'two-handed-grip') {
             throw "Refusing to build unexpected branch: $env:GITHUB_REF_NAME"
           }
-          $expectedSourceSha = 'e18f720333212beb021cbba41657d45417a51ab7'
+          $expectedSourceSha = '09304aee3396705c40017d4b01e50faf2c2ee645'
           if ($env:EXPECTED_SOURCE_SHA -ne $expectedSourceSha) {
             throw "Source revision differs from the reviewed two-handed-grip commit. Expected $expectedSourceSha, got $env:EXPECTED_SOURCE_SHA. Refusing to build a different revision."
           }
@@ -124,8 +124,8 @@ jobs:
           @"
           Source branch: two-handed-grip
           Exact source commit: $env:EXPECTED_SOURCE_SHA
-          Change under test: binary close-hand aim protection shared by live and committed poses, plus the expanded authored grip acquisition zone.
-          Includes: owner/weapon/generation-qualified publication, preserved settled endpoint during attached animation, no barrel-zone fallback for supported owners while pending, 54 cm authored forward capsule with 12 cm radius, expanded short-grip bounds, binary close-hand exclusion applied in shared live/committed aim settings, restoration of the primary pose when the support hand is within 16 cm or the defined lateral box, and a 1000 ms initial authored-grip learning delay with the existing 500 ms quiet check.
+          Change under test: fixed binary close-hand aim protection computed in the shared live/committed pose-input constructor, plus the expanded authored grip acquisition zone.
+          Includes: owner/weapon/generation-qualified publication, preserved settled endpoint during attached animation, no barrel-zone fallback for supported owners while pending, 54 cm authored forward capsule with 12 cm radius, expanded short-grip bounds, binary close-hand exclusion calculated from the current controller sample in the shared pose-input constructor used by live and committed consumers, restoration of the primary pose when the support hand is within 16 cm or the defined lateral box, and a 1000 ms initial authored-grip learning delay with the existing 500 ms quiet check.
           Windows build/test validation is performed by this workflow. Headset behavior remains a separate validation.
           Use the Build ZIP from this artifact, not one from a different workflow run.
           "@ | Set-Content 'out/candidates/BUILD-IDENTITY.txt'
