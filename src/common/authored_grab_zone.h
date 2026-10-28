@@ -16,7 +16,7 @@ struct Learner {
         if(!active||key!=k||now<last||now-last>250){key=k;anchor=p;start=quiet=last=now;active=true;return false;}
         last=now;
         if(Distance2(anchor,p)>.0009f){anchor=p;quiet=now;}
-        return now-start>=1500&&now-quiet>=500;
+        return now-start>=1000&&now-quiet>=500;
     }
 };
 struct Publication {
@@ -52,21 +52,14 @@ inline std::atomic<uint64_t> hits{0},misses{0},fallbacks{0};
 // use a short longitudinal capsule; no weapon-specific calibration.
 inline bool Short(Point centre){return Valid(centre)&&Distance2(centre,{0,0,0})<=.24f*.24f;}
 inline bool ShortHit(Point p){return Valid(p)&&std::fabs(p[0])<=.22f&&std::fabs(p[1])<=.14f&&p[2]>=-.18f&&p[2]<=.16f;}
-inline float Authority(float distance){
-    if(!std::isfinite(distance))return 0;
-    const float t=std::fmax(0.f,std::fmin(1.f,(distance-.16f)/.14f));
-    return t*t*(3-2*t);
-}
-inline float SmoothUnit(float t){t=std::fmax(0.f,std::fmin(1.f,t));return t*t*(3-2*t);}
-// Side-by-side controllers cannot define a useful forward aim ray. Preserve
-// distance authority, multiplying only by a smooth lateral-position guard.
-inline float DirectionalAuthority(Point local){
+// Binary exclusion: outside the close-hand volume, keep the user's full
+// configured influence. Physical grip separation ignores controller rotation.
+inline float CloseHandAuthority(Point local){
     if(!Valid(local))return 0;
-    const float forward=std::fabs(local[2]),side=std::fabs(local[0]);
-    const float longitudinal=SmoothUnit((forward-.08f)/.08f);
-    const float vertical=SmoothUnit((std::fabs(local[1])-.12f)/.08f);
-    const float notLateral=SmoothUnit((forward-side)/.08f);
-    return std::fmax(longitudinal,std::fmax(vertical,notLateral));
+    const bool close=Distance2(local,{0,0,0})<=.16f*.16f;
+    const bool lateral=std::fabs(local[0])<=.24f&&
+        std::fabs(local[1])<=.14f&&std::fabs(local[2])<=.12f;
+    return close||lateral?0.f:1.f;
 }
 inline bool Hit(Point centre,Point sample){
     if(!Valid(centre)||!Valid(sample))return false;

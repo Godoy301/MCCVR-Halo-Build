@@ -1,3 +1,14 @@
+## Latest: binary close-hand protection shared with committed aim
+
+Remove gradual distance influence; close controllers restore the entire primary
+pose with no support steering. Apply in the shared live/committed constructor
+(the prior wrapper left committed/native-camera consumers unprotected).
+Initial authored-grip learning delay1000ms; quiet check500ms unchanged.
+309 production aim checks, zone tests and persistent-support guard pass.
+No Windows build/headset validation. Plasma Rifle dual projectile report pending
+which firing hand was affected; independent aim is enabled in supplied log.
+No dual-shot behavior changed. See AUTHORED-GRIP-ZONE.md.
+
 ## Latest: larger grip zone and zero lateral-controller authority
 
 User confirms source6735313e solves Magnum placement and reacquisition bug.

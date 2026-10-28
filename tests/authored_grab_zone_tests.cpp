@@ -11,8 +11,9 @@ int main(){
     assert(Hit(rear,{0,0,0}));assert(!Hit(front,{0,0,0}));assert(Hit(front,{.02f,0,-.34f}));
     assert(!Hit(rear,{0,0,-.6f}));assert(!Hit(rear,{std::numeric_limits<float>::quiet_NaN(),0,0}));
     Learner learner;assert(!learner.Observe(pistol,rear,100));
-    for(uint64_t t=200;t<1600;t+=100)assert(!learner.Observe(pistol,rear,t));
-    assert(learner.Observe(pistol,rear,1600));
+    for(uint64_t t=200;t<1100;t+=100)assert(!learner.Observe(pistol,rear,t));
+    assert(learner.Observe(pistol,rear,1100));
+    for(uint64_t t=1200;t<=1600;t+=100)assert(learner.Observe(pistol,rear,t));
     assert(!learner.Observe(pistol,front,1700)); // reload movement revokes readiness
     assert(!learner.Observe(pistol,rear,1800));
     for(uint64_t t=1900;t<2300;t+=100)assert(!learner.Observe(pistol,rear,t));
@@ -31,17 +32,15 @@ int main(){
     pub.Publish(rifle,front,2400,true);assert(pub.Read(rifle,2400,out)&&out==front);
     assert(Short(rear)&&!Short(front));assert(ShortHit({-.12f,0,0}));
     assert(!ShortHit({0,0,-.3f}));assert(!ShortHit({.3f,0,0}));
-    assert(Authority(.10f)==0&&Authority(.16f)==0&&Authority(.30f)==1);
-    assert(Authority(.23f)>.49f&&Authority(.23f)<.51f);
     pub.Publish(pistol,rear,0);assert(!pub.Read(pistol,2050,out));
     // Wider acquisition, still shorter than the old forward barrel interval.
     assert(Hit(front,{.10f,0,-.50f}));assert(Hit(front,{0,0,-.60f}));
     assert(!Hit(front,{0,0,-.70f}));assert(!Hit(front,{.13f,0,-.35f}));
     assert(ShortHit({-.20f,.12f,-.16f}));assert(!ShortHit({0,0,-.20f}));
-    assert(DirectionalAuthority({-.22f,0,0})==0);
-    assert(DirectionalAuthority({.22f,.05f,-.05f})==0);
-    assert(DirectionalAuthority({0,0,-.35f})==1);
-    assert(DirectionalAuthority({-.22f,0,-.12f})>0&&DirectionalAuthority({-.22f,0,-.12f})<1);
-    assert(Authority(.23f)>.49f&&Authority(.23f)<.51f); // original distance curve unchanged
-
+    assert(CloseHandAuthority({-.22f,0,0})==0);
+    assert(CloseHandAuthority({.22f,.05f,-.05f})==0);
+    assert(CloseHandAuthority({0,0,-.15f})==0);
+    assert(CloseHandAuthority({0,0,-.17f})==1);
+    assert(CloseHandAuthority({0,0,-.23f})==1);
+    assert(CloseHandAuthority({0,0,-.35f})==1);
 }

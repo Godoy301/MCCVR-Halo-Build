@@ -2098,7 +2098,10 @@ void TestCloseGripAuthority()
         Check(SameQuaternion(result.pose.orientation,ApplyCalibration(inputs.right.orientation,
             inputs.gunYawDeg,inputs.gunPitchDeg,inputs.gunRollDeg),1e-4f),
             "close hands preserve calibrated primary orientation with stock on/off");
-        inputs.closeGripAuthority=.5f;AimPoseTrace trace{};
+        Check(result.pose.position.x==inputs.right.position.x&&
+            result.pose.position.y==inputs.right.position.y&&result.pose.position.z==inputs.right.position.z,
+            "close hands preserve primary position with stock on/off");
+        inputs.closeGripAuthority=1.f;AimPoseTrace trace{};
         const auto middle=ComputeAimPose(inputs,&trace);
         Check(middle.valid&&SameAimResult(middle,ComputeAimPose(inputs)),"close-hand traced and normal solves agree");
     }

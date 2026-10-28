@@ -96,3 +96,22 @@ AR/SMG, reload immediately after pickup, release/reacquire, switching weapons,
 hold/toggle and virtual stock on/off. H3 authored grip zone hit/miss/fallback
 counters report every5s on the existing cold tick. No build requested yet;
 existing weapons-alignment workflow is branch-specific and not changed.
+
+## Binary close-hand authority follow-up
+
+The multi-weapon test reports residual camera steering and rejects gradual
+attenuation. The committed-pose constructor bypassed the wrapper that previously
+set closeGripAuthority. Move the policy into the common neutral-capture
+constructor, shared by live and committed consumers. Zero authority restores the
+entire primary pose before calibration, retaining the support attachment.
+Outside the exclusion, preserve configured influence without distance blending.
+Exclusion uses physical grip separation in primary aim coordinates: <=16cm
+Euclidean distance, or a lateral box +/-24cm X, +/-14cm Y, +/-12cm Z.
+Acquisition initial delay is now1000ms, with the existing500ms quiet check;
+motion can still delay learning. Weapon-animation settling remains unchanged.
+
+Validation:309 extracted production aim checks, authored-zone/publication tests,
+and persistent-support wiring guard pass. Windows/headset validation pending.
+The log has independent dual aim enabled. Plasma Rifle wrong-hand projectile
+report remains under investigation pending identification of the firing hand;
+no independent-shot or reticle behavior is changed in this candidate.

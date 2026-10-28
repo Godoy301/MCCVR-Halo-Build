@@ -13,6 +13,14 @@
     ResolvedVirtualStockAimSettings
     CurrentResolvedVirtualStockAimSettings() noexcept
     {
+        // Shared by live and committed pose consumers, including native camera aim.
+        if(TitleAdapter_GetActiveTitle()==GameTitle::Halo3&&!g_config.left_handed&&rightValid&&leftValid){
+            const auto p=primaryGripPositionValid?primaryGripPosition:right.position;
+            const auto q=supportGripPositionValid?supportGripPosition:left.position;
+            const XrQuaternionf inverse{-right.orientation.x,-right.orientation.y,-right.orientation.z,right.orientation.w};
+            const auto local=Rotate(inverse,{q.x-p.x,q.y-p.y,q.z-p.z});
+            inputs.closeGripAuthority=authored_grab::CloseHandAuthority({local.x,local.y,local.z});
+        }
         const VirtualStockAimSettings userSettings =
             VirtualStockAimSettingsFromConfig(
                 g_config, g_hybridDiagnosticOverride.Load());
@@ -316,15 +324,6 @@
             inverseNeckNeutralOrientation,
             g_inverseNeckNeutralCapture.captureSerial,
             g_inverseNeckNeutralCapture.captureContactSpaceEpoch);
-        if(TitleAdapter_GetActiveTitle()==GameTitle::Halo3&&!g_config.left_handed&&rightValid&&leftValid){
-            const auto p=primaryGripPositionValid?primaryGripPosition:right.position;
-            const auto q=supportGripPositionValid?supportGripPosition:left.position;
-            const float dx=q.x-p.x,dy=q.y-p.y,dz=q.z-p.z;
-            result.closeGripAuthority=authored_grab::Authority(std::sqrt(dx*dx+dy*dy+dz*dz));
-            const XrQuaternionf inverse{-right.orientation.x,-right.orientation.y,-right.orientation.z,right.orientation.w};
-            const auto local=Rotate(inverse,{dx,dy,dz});
-            result.closeGripAuthority*=authored_grab::DirectionalAuthority({local.x,local.y,local.z});
-        }
         return result;
     }
 
@@ -416,24 +415,12 @@
                 sinf(pitch*0.5f), 0.0f, 0.0f, cosf(pitch*0.5f)};
             const XrQuaternionf qRoll{
                 0.0f, 0.0f, sinf(-roll*0.5f), cosf(roll*0.5f)};
-            // Blend before calibration, so every consumer receives the same
-            // close-hand protection, with Virtual Stock both on and off.
-            if(result.twoHandActive&&inputs.closeGripAuthority<1.f){
-                const float weight=std::isfinite(inputs.closeGripAuthority)
-                    ?std::clamp(inputs.closeGripAuthority,0.f,1.f):0.f;
-                const auto a=inputs.right.orientation;auto b=result.pose.orientation;
-                if(a.x*b.x+a.y*b.y+a.z*b.z+a.w*b.w<0){b.x=-b.x;b.y=-b.y;b.z=-b.z;b.w=-b.w;}
-                result.pose.orientation={a.x+(b.x-a.x)*weight,a.y+(b.y-a.y)*weight,
-                    a.z+(b.z-a.z)*weight,a.w+(b.w-a.w)*weight};
-                if constexpr(CaptureTrace){
-                    auto q=result.pose.orientation;
-                    const float length=std::sqrt(q.x*q.x+q.y*q.y+q.z*q.z+q.w*q.w);
-                    if(std::isfinite(length)&&length>1e-5f){
-                        q={q.x/length,q.y/length,q.z/length,q.w/length};
-                        const auto forward=Rotate(q,{0,0,-1});
-                        trace->finalDirection={forward.x,forward.y,forward.z};
-                    }
-                }
+            // Keep the support attachment, but consume no support motion when
+            // hands are together. Reset position as well as orientation.
+            if(result.twoHandActive&&inputs.closeGripAuthority==0.f){
+                result.pose=inputs.right;
+                if constexpr(CaptureTrace)
+                    trace->finalDirection=trace->primaryDirection;
             }
             const XrQuaternionf corrected = multiply(
                 result.pose.orientation,
