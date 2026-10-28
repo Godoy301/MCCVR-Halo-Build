@@ -4885,13 +4885,13 @@ namespace
     {
         static uint64_t lastLiveHudLog=0;
         const auto liveHudNow=GetTickCount64();
-        if(profile==HudLayoutProfile::Halo3&&liveHudNow-lastLiveHudLog>=5000) {
+        if(liveHudNow-lastLiveHudLog>=5000) {
             lastLiveHudLog=liveHudNow;
-            LOG("H3 authored grip zone: hit=%llu miss=%llu pending-or-fallback=%llu local=(%.3f,%.3f,%.3f); supported owners never reopen barrel zone",
-                authored_grab::hits.exchange(0),authored_grab::misses.exchange(0),authored_grab::fallbacks.exchange(0),
+            LOG("Authored grip zone title=%u: hit=%llu miss=%llu pending-or-fallback=%llu local=(%.3f,%.3f,%.3f); supported owners never reopen barrel zone",
+                unsigned(TitleAdapter_GetActiveTitle()),authored_grab::hits.exchange(0),authored_grab::misses.exchange(0),authored_grab::fallbacks.exchange(0),
                 authored_grab::lastX.load(),authored_grab::lastY.load(),authored_grab::lastZ.load());
             const auto adjusted=g_h3HudRecordAdjusted.exchange(0),native=g_h3HudRecordNative.exchange(0);
-            if(adjusted||native)LOG("H3 live HUD layout: selected-record adjusted=%llu native=%llu; stock scanner independent",adjusted,native);
+            if(profile==HudLayoutProfile::Halo3&&(adjusted||native))LOG("H3 live HUD layout: selected-record adjusted=%llu native=%llu; stock scanner independent",adjusted,native);
         }
 
         const HudLayoutAdapter* adapter = HudLayoutAdapterFor(profile);
@@ -7079,13 +7079,13 @@ static int LegacyAnatomicalRenderNodeCount(GameTitle title,uint16_t tag,uint32_t
 
     // First adapter: H3 primary authored wrists before any controller arm solve.
     void PublishAuthoredGrab(const FpInterpolationContext& context,const BoneMatrix* source,
-                             const BoneMatrix& desired,bool attached)
+                             const BoneMatrix& desired,bool attached,const float* basis)
     {
         if(context.slot!=0||context.player!=0||!context.valid||!source||
            context.wrist<0||context.wrist>=context.count||context.lWrist<0||context.lWrist>=context.count)return;
         Game_PublishAuthoredGrip(TitleAdapter_GetActiveTitle(),context.generation,
             context.muzzleUnit,context.muzzleWeapon,&source[context.wrist],&source[context.lWrist],
-            &desired,nullptr,g_worldScale.load(),attached);
+            &desired,basis,g_worldScale.load(),attached);
     }
 
     bool ReconstructVisiblePaletteSource(uint16_t tag,
@@ -7319,7 +7319,8 @@ static int LegacyAnatomicalRenderNodeCount(GameTitle title,uint16_t tag,uint32_t
         }
 
         if(!dual&&haveDesiredWrist)
-            PublishAuthoredGrab(context,unmodified,desiredWristWorld,supportGripAttached);
+            PublishAuthoredGrab(context,unmodified,desiredWristWorld,supportGripAttached,
+                explicitTargets?explicitTargets->aimNeutral.rotation:nullptr);
 
         // SHOULDER LEVELING (2026-07-19): the arm rest pose is composed from the
         // camera frame, so its FULL pitch/roll rides the head â€” look down and the
@@ -43130,12 +43131,13 @@ static constexpr bool kOdstMappedFpEnabled = false;
         Halo4FloatingTransform desiredRight{},desiredLeft{};
         Halo4FloatingTransform supportRightTarget=
             g_halo4FloatingPair.rightTargetWorld;
-        if (VR_SupportGripWiredForTitle(GameTitle::Halo4) &&
+        const bool supportOneHand = VR_SupportGripWiredForTitle(GameTitle::Halo4) &&
             !g_halo4FloatingPair.supportGripAttached &&
             g_halo4FloatingPair.oneHandRightTargetValid &&
             support_grip::AimSupportDerived(
                 g_halo4FloatingPair.rightTargetValid,
-                g_halo4FloatingPair.twoHandAimActive))
+                g_halo4FloatingPair.twoHandAimActive);
+        if (supportOneHand)
         {
             // Owner-untrusted/detached invocation whose prepared aim is
             // support-derived: the weapon carrier must not ride the two-hand
@@ -43149,10 +43151,16 @@ static constexpr bool kOdstMappedFpEnabled = false;
                 supportRightTarget,eyeRoot,stockRight,
                 desiredRight))
             return Halo4VrikStage::RightPoseFailed;
-        Game_PublishAuthoredGrip(GameTitle::Halo4,g_halo4FloatingPair.generation,
-            g_halo4FloatingPair.localUnit,g_halo4FloatingPair.animationWeapon,
-            &stockRight,&stockLeft,&desiredRight,nullptr,g_worldScale.load(),
-            g_halo4FloatingPair.supportGripAttached);
+        // Use this title's frozen controller frame, not the H3 camera globals.
+        const bool gripBasisValid=supportOneHand?g_halo4FloatingPair.oneHandAimNeutralValid:
+            g_halo4FloatingPair.aimNeutralValid;
+        const auto& gripBasis=supportOneHand?g_halo4FloatingPair.oneHandAimNeutral:
+            g_halo4FloatingPair.aimNeutral;
+        if(gripBasisValid)
+            Game_PublishAuthoredGrip(GameTitle::Halo4,g_halo4FloatingPair.generation,
+                g_halo4FloatingPair.localUnit,g_halo4FloatingPair.animationWeapon,
+                &stockRight,&stockLeft,&desiredRight,gripBasis.rotation,g_worldScale.load(),
+                g_halo4FloatingPair.supportGripAttached);
         // Disabled after headset regression: preserve the accepted native H4 reroot.
         bool markerParityApplied=false;
         bool rigidSupportLockApplied=false;
@@ -50374,7 +50382,7 @@ void Game_PublishAuthoredGrip(GameTitle title,uint32_t generation,uint32_t unit,
        !right||!left||!desired||!std::isfinite(units)||units<=0)return;
     const authored_grab::Key key{unsigned(title),generation,unit,weapon};
     const auto now=GetTickCount64();
-    if(attached){authored_grab::publication.Publish(key,{},now,false);return;}
+    if(attached){authored_grab::publication.Refresh(key,now);return;}
     BoneMatrix r{},l{},d{},inverse{},relative{},target{};
     memcpy(&r,right,sizeof(r));memcpy(&l,left,sizeof(l));memcpy(&d,desired,sizeof(d));
     if(!InvertBoneMatrix(r,inverse)||!ComposeBoneMatrices(inverse,l,relative)||

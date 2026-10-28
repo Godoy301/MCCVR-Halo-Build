@@ -19,17 +19,31 @@ int main(){
     for(uint64_t t=1900;t<2300;t+=100)assert(!learner.Observe(pistol,rear,t));
     assert(learner.Observe(pistol,rear,2300)); // never freezes the reload pose
     assert(!learner.Observe(rifle,front,2400));
-    Publication pub;Point out{};pub.Publish(pistol,rear,2000);
+    Publication pub;Point out{};
+    pub.Refresh(pistol,1900);
+    assert(!pub.Owns(pistol)&&!pub.Read(pistol,1900,out)); // first legacy grip cannot poison acquisition
+    pub.Publish(pistol,rear,2000);
     assert(pub.Read(pistol,2050,out));assert(out==rear);
     assert(!pub.Read(rifle,2050,out));assert(!pub.Read(pistol,2101,out));assert(!pub.Read(pistol,1999,out));
     for(int i=0;i<20;++i){assert(!Hit(rear,{0,0,-.6f}));assert(pub.Read(pistol,2050,out));}
     assert(Hit(out,{0,0,0})); // an outside attempt never poisons the next attempt
     assert(pub.Owns(pistol)&&!pub.Owns(rifle));
-    pub.Publish(pistol,front,2200,false); // attachment/settling heartbeat preserves learned zone
+    pub.Refresh(pistol,2200); // attachment heartbeat preserves learned zone
     assert(pub.Read(pistol,2250,out)&&out==rear);
     pub.Publish(rifle,front,2300,false);
     assert(pub.Owns(rifle)&&!pub.Read(rifle,2300,out)); // pending never inherits old gun
     pub.Publish(rifle,front,2400,true);assert(pub.Read(rifle,2400,out)&&out==front);
+    pub.Refresh(pistol,2450); // another owner cannot steal or refresh the current endpoint
+    assert(pub.Owns(rifle)&&!pub.Owns(pistol));
+    assert(!pub.Read(rifle,2501,out));
+    for(uint64_t t=2500;t<=3000;t+=100) {
+        pub.Refresh(rifle,t);
+        assert(pub.Read(rifle,t,out)&&out==front); // repeated grip/release cycles retain the point
+    }
+    assert(Hit(front,{0,-.16f,-.35f}));assert(!Hit(front,{0,-.18f,-.35f}));
+    assert(!Hit(front,{0,.13f,-.35f})); // upward limit unchanged
+    assert(ShortHit({0,-.18f,0}));assert(!ShortHit({0,-.20f,0}));
+    assert(!ShortHit({0,.15f,0}));
     assert(Short(rear)&&!Short(front));assert(ShortHit({-.12f,0,0}));
     assert(!ShortHit({0,0,-.3f}));assert(!ShortHit({.3f,0,0}));
     pub.Publish(pistol,rear,0);assert(!pub.Read(pistol,2050,out));

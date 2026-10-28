@@ -1,3 +1,15 @@
+## Latest: Reach/H4 regrip and downward acquisition margin
+
+User reports first grip works, then release/regrab fails until weapon change in
+Reach/H4; other changes accepted. Their log source adb695a0 includes both titles.
+Replace null publication bases with each title's frozen aimNeutral controller
+basis. Attached heartbeat must only refresh an existing matching owner, never
+claim an uncalibrated unknown weapon and close legacy acquisition. See evidence
+and limitations in AUTHORED-GRIP-ZONE.md. Enlarge shared zone downward5cm only.
+Add unknown/foreign/repeated refresh and lower/upper bound tests. Cold counters
+now include Reach/H4. No new hook, no relationship state-machine change.
+No Windows build requested; source commit/push, headset validation pending.
+
 ## Latest: all-title authored grip and requested menu/input follow-ups
 
 User accepts the H3 grip and reports the Plasma Rifle projectile issue resolved.

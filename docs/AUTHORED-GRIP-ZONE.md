@@ -130,3 +130,28 @@ The generic record boundary is the existing native52-byte scale/basis/position
 layout, copied into owned matrices before composition. Cosmetic translation
 is excluded by subtracting the primary target. No native palette is changed
 by the publisher. Headset validation of the new titles is still pending.
+
+## Reach/H4 re-acquisition correction
+
+User log source adb695a0, Steam, contains Reach and H4 grip binds/releases but
+no authored-zone counters (the old cold logger was H3-only). The log alone
+does not identify which failed press lacked geometry. Source inspection finds
+both adapters passed a null controller basis: the shared publisher then calls
+ControllerWorldPoseEx, gated on the H3/ODST camera globals g_camValid and
+g_baseCamValid. Reach/H4 already own different prepared controller frames.
+An attached fallback grip could Publish(ready=false) for a previously unknown
+owner, claiming it without calibration. Subsequent Read fails but Owns succeeds,
+closing legacy acquisition until the owner changes.
+
+Use Reach's exact prepared aimNeutral basis and H4's matching normal/one-hand
+aimNeutral basis, preserving the established source/desired wrist transforms.
+Refresh now only touches an existing matching owner; it cannot claim or replace
+an owner when no geometry has been observed. Pending valid geometry continues
+to suppress legacy fallback as before. Cold acquisition counters now cover all
+HUD profiles for follow-up logs. No support relationship state-machine changes.
+
+Shared acquisition grows only downward by5cm: short zone Y[-.19,.14] metres;
+long capsule swept down5cm, retaining its upper/side/longitudinal bounds.
+Regression checks cover unknown/foreign refresh, repeated refresh/read cycles,
+stale-owner rejection and asymmetric zone boundaries. Headset confirmation
+remains pending; no Windows build requested for this follow-up.
