@@ -34,7 +34,7 @@ jobs:
           if ($env:GITHUB_REF_NAME -ne 'two-handed-grip') {
             throw "Refusing to build unexpected branch: $env:GITHUB_REF_NAME"
           }
-          $expectedSourceSha = 'b732bbbe64353d8db3dbe4b3ff6cdedd05d51a41'
+          $expectedSourceSha = 'd524406de5aa64f43fdeb38f2d64498a4553da9c'
           if ($env:EXPECTED_SOURCE_SHA -ne $expectedSourceSha) {
             throw "Source revision differs from the reviewed two-handed-grip commit. Expected $expectedSourceSha, got $env:EXPECTED_SOURCE_SHA. Refusing to build a different revision."
           }
@@ -85,6 +85,10 @@ jobs:
           $reloadTests = Get-Content 'tests/reload_identity_tests.cpp' -Raw
           if (-not $reloadTests.Contains('void VR_ObserveSecondaryWeaponModel(GameTitle,uint32_t,uint64_t) noexcept {}')) {
             throw "The reload-identity fixture is missing the secondary weapon observer stub."
+          }
+          if (-not $reloadTests.Contains('primary weapon identity remains available for visual defaults when manual reload is disabled') -or
+              -not $reloadTests.Contains('per-gun alignment retains primary identity with manual reload disabled')) {
+            throw "The reload-identity tests do not cover primary visual-default identity when manual reload is disabled."
           }
 
       - name: Set up Python for test generation
