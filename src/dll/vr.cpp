@@ -13552,7 +13552,7 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
     bool AuthoredSupportGrabHit(const XrPosef& primary,const XrPosef& support,bool& hit) noexcept
     {
         const auto title=TitleAdapter_GetActiveTitle();
-        if(title!=GameTitle::Halo3||g_config.left_handed)return false;
+        if(title==GameTitle::None||g_config.left_handed)return false;
         const auto generation=TitleAdapter_GetGeneration(title);
         support_grip::OwnerTuple owner{};support_grip::OwnerEvidence evidence{};uint64_t revision=0;
         if(!ReadSupportGripOwnerEvidenceInternal(title,generation,owner,evidence,revision)||

@@ -245,7 +245,7 @@
         // Shared by live and committed pose consumers, including native camera aim.
         // This belongs in the pose-input constructor: the settings resolver has no
         // controller sample, and must remain independent of per-frame tracking.
-        if (TitleAdapter_GetActiveTitle() == GameTitle::Halo3 &&
+        if (TitleAdapter_GetActiveTitle() != GameTitle::None &&
             !g_config.left_handed && rightValid && leftValid) {
             const auto p = primaryGripPositionValid
                 ? primaryGripPosition : right.position;

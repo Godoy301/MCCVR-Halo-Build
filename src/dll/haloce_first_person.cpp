@@ -1,3 +1,4 @@
+#include "game.h"
 #include "../common/visual_aim.h"
 #include "haloce_first_person.h"
 #include "../common/config.h"
@@ -889,6 +890,17 @@ bool ApplyPalette(uint32_t graph,NodeMatrix* matrices,const Scope& owner,const N
         failure.rightUpper=distance(binding.shoulder[1],binding.elbow[1]);
         failure.rightLower=distance(binding.elbow[1],binding.rightWrist);
         (void)fpRefusalProbe.Publish(failure);return false;
+    }
+    if(!context.tracking.controllers.leftHanded&&MuzzleOwner(owner.muzzleUnit,owner.muzzleWeapon)) {
+        NodeMatrix primary{};
+        if(BuildControllerMatrix(context.camera,context.tracking,context.reference,
+                context.tracking.controllers.primaryAim,context.unitsPerMeter,context.positional,primary)) {
+            const float basis[9]{primary.forward.x,primary.forward.y,primary.forward.z,
+                primary.left.x,primary.left.y,primary.left.z,primary.up.x,primary.up.y,primary.up.z};
+            Game_PublishAuthoredGrip(GameTitle::HaloCE,binding.generation,owner.muzzleUnit,owner.muzzleWeapon,
+                &source[binding.rightWrist],&source[binding.leftWrist],&staged[binding.rightWrist],
+                basis,context.unitsPerMeter,context.tracking.controllers.supportGripAttached);
+        }
     }
     (void)fpRefusalProbe.Publish({binding.generation,graph,0,count,binding.nodeIdentity});
     // Passive pose evidence; formatting and logging stay in the cold poll.

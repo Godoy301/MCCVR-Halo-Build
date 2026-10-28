@@ -2777,6 +2777,7 @@ namespace
                         1, context.renderCamera, context.rightCarrier,
                         primaryMatrices);
                     Halo2AnimateWeaponCarriers(context,context.handsMatrices,primaryMatrices,dual?matrices:nullptr,1,primaryModel,modelObject);
+                    const Halo2AuthoredGripCapture grip(context,context.handsMatrices);
                     const bool owned = dual
                         ? Halo2OwnDualFirstPersonPackets(
                             context.handsMatrices, context.handsCount,
@@ -2799,6 +2800,7 @@ namespace
                             context.supportFingerInput);
                     if (owned)
                     {
+                        grip.Publish(context,context.handsMatrices);
                         Halo2PublishFinalPacketCollisionVolumes(
                             context, context.handsMatrices, primaryMatrices,
                             primaryModel, dual ? matrices : nullptr,
@@ -3468,6 +3470,7 @@ namespace
                 const bool dual = candidate.secondaryWeaponObject != UINT32_MAX;
                 if(packetBoundsValid)
                     Halo2AnimateWeaponCarriers(candidate,handsMatrices,gunMatrices,dual?secondaryMatrices:nullptr,0,gunRenderModelTag,secondaryRenderModelTag);
+                const Halo2AuthoredGripCapture grip(candidate,handsMatrices);
                 const bool packetsOwned = packetBoundsValid && (dual
                     ? Halo2OwnDualFirstPersonPackets(
                         handsMatrices, candidate.handsCount,
@@ -3492,6 +3495,7 @@ namespace
                         candidate.supportFingerInput));
                 if (packetsOwned)
                 {
+                    grip.Publish(candidate,handsMatrices);
                     Halo2PublishFinalPacketCollisionVolumes(
                         candidate, handsMatrices, gunMatrices,
                         gunRenderModelTag, dual ? secondaryMatrices : nullptr,

@@ -115,3 +115,18 @@ and persistent-support wiring guard pass. Windows/headset validation pending.
 The log has independent dual aim enabled. Plasma Rifle wrong-hand projectile
 report remains under investigation pending identification of the firing hand;
 no independent-shot or reticle behavior is changed in this candidate.
+
+## All-title adapter candidate
+
+User accepts H3 grip and reports the Plasma Rifle discrepancy resolved. Extend
+the same publication/acquisition/close-hand policy to CE/CEA, H2/H2A, ODST,
+Reach and H4. No new native offsets: each adapter uses its already verified
+right/left wrist bindings and its successful primary wrist target. H2 captures
+native wrists before packet ownership for both renderers; CE captures before
+tracked palette mutation; Reach forwards its exact owner into the common FP
+context; H4 uses the admitted Storm hand pair. Unknown/invalid bindings retain
+the legacy fallback. Standard handedness only, matching the accepted H3 scope.
+The generic record boundary is the existing native52-byte scale/basis/position
+layout, copied into owned matrices before composition. Cosmetic translation
+is excluded by subtracting the primary target. No native palette is changed
+by the publisher. Headset validation of the new titles is still pending.
