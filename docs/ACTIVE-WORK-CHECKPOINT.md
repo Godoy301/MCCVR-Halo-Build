@@ -1,3 +1,15 @@
+## Latest: additive weapon alignment follow-up, five commits
+
+User explicitly requests increments over prior defaults, one commit per game.
+Final values: Reach Needler barrel pitch-9; ODST Needler barrel-18, Brute Shot
+barrel-8, Plasma Pistol visual yaw0. H4 shotgun yaw-.3, railgun1.5, carbine-.5,
+Boltshot7.6. H2A plasma rifle yaw1, plasma pistol.5. H2 classic SMG yaw.3,
+plasma/brute rifles2, BR3, shotgun1.1. Other fields preserved.
+ODST muzzle publication now always removes the visual frame, including built-in
+visual defaults at zero sliders, before applying the exact-model barrel pitch.
+Barrel origin stays fixed. Portable math/table checks pass for every increment,
+title separation and ODST downward ray/origin. No DLL build requested.
+
 ## Latest: 500ms weapon-animation reference settling trial
 
 Following commit 32cd80d4, reduce the initial Reference::Update minimum from
@@ -7,6 +19,7 @@ pose to settle. Regression tests cover stable-pose readiness at500ms and motion
 requiring a full500ms quiet period. This is the weapon-animation reference timer
 in weapon_animation_motion.h; the separate authored-grip learning delay in
 authored_grab_zone.h remains unchanged. Commit requested; no build requested.
+
 
 ## Latest: independent game brightness profiles
 
