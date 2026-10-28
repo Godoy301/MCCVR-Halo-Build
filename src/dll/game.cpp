@@ -1,3 +1,4 @@
+#include "../common/legacy_weapon_visual_defaults.h"
 #include "../common/reach_weapon_defaults.h"
 #include "../common/visual_aim.h"
 #include "../common/weapon_alignment.h"
