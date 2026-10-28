@@ -34,7 +34,7 @@ jobs:
           if ($env:GITHUB_REF_NAME -ne 'two-handed-grip') {
             throw "Refusing to build unexpected branch: $env:GITHUB_REF_NAME"
           }
-          $expectedSourceSha = '574645d518704c3371df5b84bf9e7c6ed89592dc'
+          $expectedSourceSha = 'b732bbbe64353d8db3dbe4b3ff6cdedd05d51a41'
           if ($env:EXPECTED_SOURCE_SHA -ne $expectedSourceSha) {
             throw "Source revision differs from the reviewed two-handed-grip commit. Expected $expectedSourceSha, got $env:EXPECTED_SOURCE_SHA. Refusing to build a different revision."
           }
@@ -81,6 +81,10 @@ jobs:
               -not $motionTests.Contains('reference.Update(key,idle,500,.33f,delta)') -or
               -not $motionTests.Contains('movingReference.Update(key,idle,800,.33f,delta)')) {
             throw "The 500ms weapon-animation settling change or its regression tests are missing."
+          }
+          $reloadTests = Get-Content 'tests/reload_identity_tests.cpp' -Raw
+          if (-not $reloadTests.Contains('void VR_ObserveSecondaryWeaponModel(GameTitle,uint32_t,uint64_t) noexcept {}')) {
+            throw "The reload-identity fixture is missing the secondary weapon observer stub."
           }
 
       - name: Set up Python for test generation
