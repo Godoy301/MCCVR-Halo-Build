@@ -1,3 +1,4 @@
+#include "../common/legacy_weapon_visual_defaults.h"
 #include "../common/reach_weapon_defaults.h"
 #include "../common/halo4_weapon_visual_defaults.h"
 #include "../common/authored_grab_zone.h"
@@ -10588,7 +10589,7 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
     // inside the OpenXR frame function, where a rewrite of the whole config file is a dropped frame.
     std::atomic<bool> g_holsterCaptureSavePending{false};
     std::atomic<bool> g_holsterCaptureLeftHanded{false};
-    weapon_model::Observations g_weaponModels;
+    weapon_model::Observations g_weaponModels, g_secondaryWeaponModels;
     weapon_interaction::ReloadTargets g_reloadTargets;
     WeaponAccessoryRenderer g_weaponAccessoryRenderer;
     weapon_accessory::Presentation g_weaponAccessory; // compositor thread only
@@ -24347,7 +24348,7 @@ void VR_GetPadState(VrPadState& out)
 
 void VR_ObserveWeaponModel(GameTitle title,uint32_t generation,uint64_t identity) noexcept
 {
-    if((title!=GameTitle::Halo4&&title!=GameTitle::HaloReach&&!g_config.manual_reload&&!g_config.per_gun_alignment)||title!=TitleAdapter_GetActiveTitle()||
+    if(title!=TitleAdapter_GetActiveTitle()||
         generation!=TitleAdapter_GetGeneration(title)) return;
     (void)g_weaponModels.Publish({title,generation,identity,
         g_contactSpaceEpoch.load(std::memory_order_acquire),GetTickCount64()});
@@ -24393,6 +24394,25 @@ void VR_ReachDefaultVisualAngles(float& yaw,float& pitch,float& roll) noexcept
         g_contactSpaceEpoch.load(std::memory_order_acquire),GetTickCount64());
     const auto defaults=weapon_alignment::ReachWeaponDefaults(identity);
     yaw=defaults.yaw;pitch=defaults.pitch;roll=defaults.roll;
+}
+
+void VR_ObserveSecondaryWeaponModel(GameTitle title,uint32_t generation,uint64_t identity) noexcept
+{
+    if(title!=TitleAdapter_GetActiveTitle()||generation!=TitleAdapter_GetGeneration(title))return;
+    (void)g_secondaryWeaponModels.Publish({title,generation,identity,
+        g_contactSpaceEpoch.load(std::memory_order_acquire),GetTickCount64()});
+}
+
+void VR_LegacyDefaultVisualAngles(bool secondary,bool classic,float& yaw,float& pitch,float& roll) noexcept
+{
+    const auto title=TitleAdapter_GetActiveTitle();
+    const auto generation=TitleAdapter_GetGeneration(title);
+    const auto space=g_contactSpaceEpoch.load(std::memory_order_acquire);
+    const auto now=GetTickCount64();
+    const auto identity=secondary?g_secondaryWeaponModels.Read(title,generation,space,now):
+        VR_GetWeaponModelIdentity(title,generation,space,now);
+    const auto d=weapon_alignment::LegacyWeaponVisualDefaults(title,identity,classic);
+    yaw=d.yaw;pitch=d.pitch;roll=d.roll;
 }
 
 float VR_DefaultWeaponVisualYaw() noexcept

@@ -1,3 +1,12 @@
+## Latest: Halo 3/ODST visual defaults
+
+User confirms unnamed axes are yaw. Default pitch+1 for H3/ODST, overridden by
+Needler+8, sword-25, Automag0. Spiker roll+10; both plasma rifles yaw+1;
+Plasma Pistol yaw-1. Shared visual wrist path applies defaults before existing
+secondary SMG/plasma rifle correction; neutral ballistic frame unchanged.
+Secondary model observation is separate from primary to support different guns
+in dual wield. Local table smoke checks pass. Commit only; no build requested.
+
 ## Latest: Reach model-specific visual and barrel defaults
 
 User requests13 Reach model adjustments. reach_weapon_defaults.h contains the
