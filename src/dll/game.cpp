@@ -42461,7 +42461,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
         frame.gunPitchDeg=g_config.gun_pitch_deg;
         frame.gunRollDeg=g_config.gun_roll_deg;
         frame.visualPitchDeg=g_config.barrel_pitch_deg;
-        frame.visualYawDeg=g_config.barrel_yaw_deg;
+        frame.visualYawDeg=g_config.barrel_yaw_deg+VR_DefaultWeaponVisualYaw();
         frame.visualRollDeg=g_config.barrel_roll_deg;
         frame.twoHandAimActive=g_halo4RigTracking.twoHandAimActive;
         for (float value : frame.common.trackingOriginPosition)

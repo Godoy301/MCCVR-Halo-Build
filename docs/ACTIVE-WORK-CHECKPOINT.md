@@ -1,3 +1,15 @@
+## Latest: Halo 4 per-model visual yaw defaults
+
+User confirms Reach/H4 grip reacquisition is fixed. Requested22 Halo4 weapon
+visual yaw baselines are in halo4_weapon_visual_defaults.h, keyed by the existing
+held-model catalog identities. Apply as an additive baseline before visual target
+construction; the neutral muzzle frame still zeros visual angles. Slider0 now
+means the shipped per-model yaw; saved manual trims remain additive. Observation
+stays enabled for H4 even if manual reload/per-gun alignment are disabled.
+Unknown models get0. Catalog check resolves exactly22 distinct H4 models; no
+Windows build requested. Commit only on two-handed-grip. Headset yaw validation
+pending; prior accepted release pointer remains unchanged.
+
 ## Latest: Reach/H4 regrip and downward acquisition margin
 
 User reports first grip works, then release/regrab fails until weapon change in

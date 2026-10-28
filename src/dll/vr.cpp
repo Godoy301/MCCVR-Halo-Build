@@ -1,3 +1,4 @@
+#include "../common/halo4_weapon_visual_defaults.h"
 #include "../common/authored_grab_zone.h"
 #include "../common/vr_interaction_refinement_logic.h"
 #include "../common/hand_smoothing.h"
@@ -24345,7 +24346,7 @@ void VR_GetPadState(VrPadState& out)
 
 void VR_ObserveWeaponModel(GameTitle title,uint32_t generation,uint64_t identity) noexcept
 {
-    if((!g_config.manual_reload&&!g_config.per_gun_alignment)||title!=TitleAdapter_GetActiveTitle()||
+    if((title!=GameTitle::Halo4&&!g_config.manual_reload&&!g_config.per_gun_alignment)||title!=TitleAdapter_GetActiveTitle()||
         generation!=TitleAdapter_GetGeneration(title)) return;
     (void)g_weaponModels.Publish({title,generation,identity,
         g_contactSpaceEpoch.load(std::memory_order_acquire),GetTickCount64()});
@@ -24380,6 +24381,15 @@ void VR_PublishReloadTarget(GameTitle title,uint32_t generation,uint64_t identit
     if(weapon_interaction::BuildReloadTarget(title,generation,identity,
         current.referenceEpoch,GetTickCount64(),current.leftHanded,{world[0],world[1],world[2]},
         trackingToWorld,primaryController,target)) (void)g_reloadTargets.Publish(target);
+}
+
+float VR_DefaultWeaponVisualYaw() noexcept
+{
+    const auto title=TitleAdapter_GetActiveTitle();
+    if(title!=GameTitle::Halo4)return 0.f;
+    const auto identity=VR_GetWeaponModelIdentity(title,TitleAdapter_GetGeneration(title),
+        g_contactSpaceEpoch.load(std::memory_order_acquire),GetTickCount64());
+    return weapon_alignment::Halo4DefaultVisualYaw(identity);
 }
 
 void VR_UpdateWeaponAlignment()
