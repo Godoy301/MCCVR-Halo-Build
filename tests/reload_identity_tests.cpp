@@ -22,6 +22,9 @@ bool LegacyClassifyRuntimeWeapon(GameTitle,uint16_t,uint32_t,const BoneMatrix*,c
 {return fixtureHeld;}
 void VR_ObserveWeaponModel(GameTitle title,uint32_t generation,uint64_t identity) noexcept
 {++observations;observedTitle=title;observedGeneration=generation;observedIdentity=identity;}
+// This fixture extracts the production observer bodies but deliberately does not
+// exercise the separate secondary-presentation path.
+void VR_ObserveSecondaryWeaponModel(GameTitle,uint32_t,uint64_t) noexcept {}
 uint32_t TitleAdapter_GetGeneration(GameTitle) {return 7;}
 using Halo2GraphDefinitionGetFn=const void*(__fastcall*)(uint32_t);
 std::atomic<uintptr_t> g_graphDefinitionGet{},g_halo2TagDataBaseSlot{};
