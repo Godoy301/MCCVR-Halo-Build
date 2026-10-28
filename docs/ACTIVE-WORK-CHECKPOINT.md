@@ -1,3 +1,18 @@
+## Latest: independent game brightness profiles
+
+User reports brightness changes affecting every game. game_brightness was a
+shared Config field, omitted from TitleTunables/descriptor table; the UI and
+save comments explicitly described the shared behavior. Add it to the existing
+per-title profile table (range.5..2, default1.11), save the shared base rather
+than the active title value, and show the edited profile in Picture. Existing
+shared config brightness seeds unconfigured profiles, preserving appearance.
+No per-weapon brightness overrides. H2A/classic use their existing separate
+profiles; CE/CEA share the existing CE profile.
+Production config round-trip fixture passes locally with a temporary Linux
+Win32 file-API shim, including legacy migration, seven distinct profile values,
+save while active, reload and preservation of the shared seed. No DLL build.
+Commit requested on two-handed-grip; no compilation workflow requested.
+
 ## Latest: separate Halo 2 classic/Anniversary visual defaults
 
 Second requested commit: H2A Magnum pitch1, Plasma Rifle yaw.5, Plasma Pistol

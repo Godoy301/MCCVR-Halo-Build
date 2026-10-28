@@ -8,6 +8,7 @@
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
+#include <cmath>
 #include <string>
 #include <vector>
 #include "../src/common/config.h"
@@ -122,6 +123,31 @@ int main()
                     "all title profiles discard retired hand offsets");
             Config_ApplyTitleProfile(-1);
         }
+        DeleteFileW(path);
+    }
+
+    // Legacy brightness seeds every title; gameplay edits never replace that seed.
+    FILE* brightness=nullptr;
+    _wfopen_s(&brightness,path,L"wt");
+    Check(brightness!=nullptr,"brightness migration fixture opens");
+    if(brightness) {
+        std::fputs("game_brightness = 1.25\n",brightness);std::fclose(brightness);
+        ConfigLoad(path);
+        for(int profile=0;profile<kTitleProfileCount;++profile) {
+            Config_ApplyTitleProfile(profile);
+            Check(g_config.game_brightness==1.25f,"legacy brightness migrates without resetting appearance");
+            g_config.game_brightness=.6f+float(profile)*.1f;
+            Config_StoreLiveTunables();
+        }
+        ConfigSave();
+        ConfigLoad(path);
+        for(int profile=0;profile<kTitleProfileCount;++profile) {
+            Config_ApplyTitleProfile(profile);
+            Check(std::fabs(g_config.game_brightness-(.6f+float(profile)*.1f))<.0001f,
+                "brightness remains independent after title switches and save/reload");
+        }
+        Config_ApplyTitleProfile(-1);
+        Check(g_config.game_brightness==1.25f,"saving in a game preserves the shared brightness seed");
         DeleteFileW(path);
     }
 
