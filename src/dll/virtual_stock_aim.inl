@@ -13,14 +13,6 @@
     ResolvedVirtualStockAimSettings
     CurrentResolvedVirtualStockAimSettings() noexcept
     {
-        // Shared by live and committed pose consumers, including native camera aim.
-        if(TitleAdapter_GetActiveTitle()==GameTitle::Halo3&&!g_config.left_handed&&rightValid&&leftValid){
-            const auto p=primaryGripPositionValid?primaryGripPosition:right.position;
-            const auto q=supportGripPositionValid?supportGripPosition:left.position;
-            const XrQuaternionf inverse{-right.orientation.x,-right.orientation.y,-right.orientation.z,right.orientation.w};
-            const auto local=Rotate(inverse,{q.x-p.x,q.y-p.y,q.z-p.z});
-            inputs.closeGripAuthority=authored_grab::CloseHandAuthority({local.x,local.y,local.z});
-        }
         const VirtualStockAimSettings userSettings =
             VirtualStockAimSettingsFromConfig(
                 g_config, g_hybridDiagnosticOverride.Load());
@@ -250,6 +242,23 @@
         inputs.primaryGripPosition = primaryGripPosition;
         inputs.supportGripValid = supportGripPositionValid;
         inputs.supportGripPosition = supportGripPosition;
+        // Shared by live and committed pose consumers, including native camera aim.
+        // This belongs in the pose-input constructor: the settings resolver has no
+        // controller sample, and must remain independent of per-frame tracking.
+        if (TitleAdapter_GetActiveTitle() == GameTitle::Halo3 &&
+            !g_config.left_handed && rightValid && leftValid) {
+            const auto p = primaryGripPositionValid
+                ? primaryGripPosition : right.position;
+            const auto q = supportGripPositionValid
+                ? supportGripPosition : left.position;
+            const XrQuaternionf inverse{
+                -right.orientation.x, -right.orientation.y,
+                -right.orientation.z, right.orientation.w};
+            const auto local = Rotate(
+                inverse, {q.x - p.x, q.y - p.y, q.z - p.z});
+            inputs.closeGripAuthority = authored_grab::CloseHandAuthority(
+                {local.x, local.y, local.z});
+        }
         // Persistent support grip (F14): qualify this invocation against the
         // durable relationship BEFORE the support-capable raw aim can be
         // selected, and resolve an unreadable relationship or a title-denied
