@@ -49,11 +49,12 @@ int main()
                 readTitle==model.title&&observedGeneration==7,"production observer selects each title's own exact catalogue identity");
             g_config.manual_reload=false;observations=0;
             LegacyObserveReloadModel(model.title,123,7,&primary,&remap);
-            Check(!observations,"disabled optional consumers do not observe native models");
-            g_config.per_gun_alignment=true;
+            Check(observations==1&&observedIdentity==model.identity,
+                "primary weapon identity remains available for visual defaults when manual reload is disabled");
+            g_config.per_gun_alignment=true;observations=0;
             LegacyObserveReloadModel(model.title,123,7,&primary,&remap);
             Check(observations==1&&observedIdentity==model.identity,
-                "per-gun alignment observes primary identity with manual reload disabled");
+                "per-gun alignment retains primary identity with manual reload disabled");
             g_config.per_gun_alignment=false;g_config.manual_reload=true;
             observations=0;LegacyObserveReloadModel(model.title,123,7,nullptr,&remap);
             Check(!observations,"null native source refused");
