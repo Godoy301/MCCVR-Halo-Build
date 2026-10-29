@@ -11,7 +11,7 @@ int main() {
     Check(boltshot&&Halo4DefaultVisualYaw(boltshot->identity)==3.8f,"Boltshot uses held stasis model and absolute 3.8 yaw");
     Check(Halo4DefaultVisualYaw(0x160F1B01ull)==0,"unrelated burst pistol retains neutral yaw");
     Check(Halo4DefaultVisualYaw(0x171C0B05ull)==-.7f&&Halo4DefaultVisualYaw(0x10030014ull)==3.f,"H4 values are absolute");
-    Check(ReachWeaponDefaults(0x11091511ull).barrelPitch==-8.f,"Reach Needler requested barrel pitch remains -8 degrees");
+    Check(ReachWeaponDefaults(0x11091511ull).barrelPitch==-10.f,"Reach Needler requested barrel pitch remains -10 degrees");
     Check(OdstBarrelPitch(0x10190A19ull)==-10.f&&OdstBarrelPitch(0x17141007ull)==-8.f,"ODST Needler remains -10 degrees and Brute Shot remains -8");
     Check(LegacyWeaponVisualDefaults(GameTitle::Halo3ODST,0x150A000Cull).yaw==1.f&&
         LegacyWeaponVisualDefaults(GameTitle::Halo3,0x150A000Cull).yaw==-1.f,"ODST pistol correction preserves H3");
