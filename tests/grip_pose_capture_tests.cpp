@@ -245,7 +245,7 @@ void TestFiniteValues()
 bool BaseAcquisitionReference(const XrPosef& rpose, const XrPosef& lpose)
 {
     const XrVector3f rfwd=Rotate(rpose.orientation,{0,0,-1});
-    const float zoneRight=std::clamp(g_config.two_hand_zone_right_m,-0.10f,0.10f);
+    const float zoneRight=std::clamp(g_config.two_hand_zone_right_m,-0.02f,0.18f);
     const XrVector3f rright=Rotate(rpose.orientation,{1,0,0});
     const XrVector3f origin{rpose.position.x+rright.x*zoneRight,
                             rpose.position.y+rright.y*zoneRight,

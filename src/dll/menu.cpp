@@ -1740,7 +1740,7 @@ namespace
             float grabSideAdjustment=g_config.two_hand_zone_right_m-grabSideBaseline;
             if(vr_menu::SliderFloat("Grab zone side offset (m)",
                                    &grabSideAdjustment,
-                                   -0.10f-grabSideBaseline,0.10f-grabSideBaseline,"%.3f")) {
+                                   -0.10f,0.10f,"%.3f")) {
                 g_config.two_hand_zone_right_m=grabSideAdjustment+grabSideBaseline;
                 changed=true;
             }

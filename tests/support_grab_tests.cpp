@@ -138,7 +138,7 @@ LegacyZone EvaluateLegacyZone(
     float zoneRightM, Point3 rawSupport, Point3 supportForward,
     float gripForwardM)
 {
-    const float zoneRight = std::clamp(zoneRightM, -0.10f, 0.10f);
+    const float zoneRight = std::clamp(zoneRightM, -0.02f, 0.18f);
     const Point3 origin{
         primaryPosition.x + primaryRight.x * zoneRight,
         primaryPosition.y + primaryRight.y * zoneRight,
@@ -242,7 +242,7 @@ void TestConstantsAndSample(TestContext& test)
     test.Check(support_grab::kAlongMinimumM == 0.12f &&
             support_grab::kAlongMaximumM == 0.76f &&
             support_grab::kLateralMaximumM == 0.09f &&
-            support_grab::kZoneRightClampM == 0.10f,
+            support_grab::kZoneRightMaximumM == 0.18f,
         "acquisition thresholds and zone-right clamp keep the pre-fix values");
 
     const Point3 raw = Point(0.20f, 1.30f, -0.40f);
@@ -396,7 +396,7 @@ void TestZoneRightClamp(TestContext& test)
     const Point3 rawSupport = RawSupportFor(0.40f, 0.05f, kGripForward);
     const support_grab::SupportGrabZone atLimit =
         support_grab::EvaluateSupportGrabZone(kPrimary, kForward, kRight,
-            support_grab::kZoneRightClampM, rawSupport, kGripForward);
+            support_grab::kZoneRightMaximumM, rawSupport, kGripForward);
     const support_grab::SupportGrabZone overLimit =
         support_grab::EvaluateSupportGrabZone(kPrimary, kForward, kRight,
             1.0f, rawSupport, kGripForward);
@@ -405,11 +405,11 @@ void TestZoneRightClamp(TestContext& test)
             -1.0f, rawSupport, kGripForward);
     const support_grab::SupportGrabZone negativeLimit =
         support_grab::EvaluateSupportGrabZone(kPrimary, kForward, kRight,
-            -support_grab::kZoneRightClampM, rawSupport, kGripForward);
+            support_grab::kZoneRightMinimumM, rawSupport, kGripForward);
     test.Check(SameZoneBits(overLimit, atLimit),
-        "zone-right nudge clamps above the limit to exactly +0.10");
+        "zone-right nudge clamps above the limit to exactly +0.18");
     test.Check(SameZoneBits(belowLimit, negativeLimit),
-        "zone-right nudge clamps below the limit to exactly -0.10");
+        "zone-right nudge clamps below the limit to exactly -0.02");
 
     // The nudge still moves the zone: a point outside at zero nudge is inside
     // once the origin is shifted by the configured amount.

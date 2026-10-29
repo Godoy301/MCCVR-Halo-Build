@@ -13575,7 +13575,7 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         const XrQuaternionf inverse{-primary.orientation.x,-primary.orientation.y,-primary.orientation.z,primary.orientation.w};
         const auto relative=Rotate(inverse,{supportPoint.x-primaryPoint.x,supportPoint.y-primaryPoint.y,supportPoint.z-primaryPoint.z});
         const authored_grab::Point sample{relative.x,relative.y,relative.z};
-        const float side=std::clamp(g_config.two_hand_zone_right_m,-.10f,.10f);
+        const float side=std::clamp(g_config.two_hand_zone_right_m,-.02f,.18f);
         if(authored_grab::Short(local)) {
             auto shiftedSample=sample;
             shiftedSample[0]-=side;
@@ -13594,7 +13594,7 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         bool authoredHit=false;
         if(AuthoredSupportGrabHit(rpose,lpose,authoredHit))return authoredHit;
         const XrVector3f rfwd = Rotate(rpose.orientation, {0,0,-1});
-        const float zr = std::clamp(g_config.two_hand_zone_right_m, -0.10f, 0.10f);
+        const float zr = std::clamp(g_config.two_hand_zone_right_m, -0.02f, 0.18f);
         const XrVector3f rright = Rotate(rpose.orientation, {1,0,0});
         const XrVector3f origin{rpose.position.x+rright.x*zr,
                                 rpose.position.y+rright.y*zr,

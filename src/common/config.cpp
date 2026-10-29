@@ -503,7 +503,7 @@ static void Clamp()
     g_config.hud_vertical_offset = std::clamp(g_config.hud_vertical_offset,
                                               kHudHeightMin, kHudHeightMax);
     g_config.left_hand_forward_m = std::clamp(g_config.left_hand_forward_m, -0.15f, 0.30f);
-    g_config.two_hand_zone_right_m = std::clamp(g_config.two_hand_zone_right_m, -0.10f, 0.10f);
+    g_config.two_hand_zone_right_m = std::clamp(g_config.two_hand_zone_right_m, -0.02f, 0.18f);
     g_config.left_grip_forward_m = std::clamp(g_config.left_grip_forward_m, -0.05f, 0.25f);
     g_config.virtual_stock_standard_strength =
         std::isfinite(g_config.virtual_stock_standard_strength)
@@ -3441,7 +3441,7 @@ void ConfigSave()
     fprintf(f, "left_hand_forward_m = %.3f\n\n", g_config.base_tunables.left_hand_forward_m);
     fprintf(f, "# Sideways nudge of the two-hand grab zone (+ = player's right), so the\n");
     fprintf(f, "# grab line sits on the visible barrel, in meters (absolute; menu zero = 0.080 m).\n");
-    fprintf(f, "# (default %.3f, range -0.10 to 0.10)\n", d.two_hand_zone_right_m);
+    fprintf(f, "# (default %.3f, absolute range -0.02 to 0.18; menu -0.10 to 0.10)\n", d.two_hand_zone_right_m);
     fprintf(f, "two_hand_zone_right_m = %.3f\n\n", g_config.two_hand_zone_right_m);
     fprintf(f, "# Support-controller-to-palm depth for two-hand grab acquisition only, in meters.\n");
     fprintf(f, "# Does not change aim geometry, hand seating, or shots.\n");
