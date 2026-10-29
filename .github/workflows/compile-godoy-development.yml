@@ -118,7 +118,7 @@ jobs:
           @"
           Source branch: godoy-development
           Exact source commit: $env:EXPECTED_SOURCE_SHA
-          Shorter grip zone; side adjustment +/-0.100 m and both hands gun offsets +/-0.300 m from calibrated zero.
+          Rebuild with corrected per-weapon round-trip fixture for calibrated offset ranges.
           Windows build and all registered tests are executed by this workflow.
           Headset/runtime behavior is a separate validation step.
           Use the Build ZIP from this artifact, not an artifact from another branch or run.
