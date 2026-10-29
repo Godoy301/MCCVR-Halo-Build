@@ -11,14 +11,19 @@ int main(){
     assert(Hit(rear,{0,0,0}));assert(!Hit(front,{0,0,0}));assert(Hit(front,{.02f,0,-.34f}));
     assert(!Hit(rear,{0,0,-.6f}));assert(!Hit(rear,{std::numeric_limits<float>::quiet_NaN(),0,0}));
     Learner learner;assert(!learner.Observe(pistol,rear,100));
-    for(uint64_t t=200;t<1100;t+=100)assert(!learner.Observe(pistol,rear,t));
-    assert(learner.Observe(pistol,rear,1100));
-    for(uint64_t t=1200;t<=1600;t+=100)assert(learner.Observe(pistol,rear,t));
+    for(uint64_t t=200;t<600;t+=100)assert(!learner.Observe(pistol,rear,t));
+    assert(learner.Observe(pistol,rear,600));
+    for(uint64_t t=700;t<=1600;t+=100)assert(learner.Observe(pistol,rear,t));
     assert(!learner.Observe(pistol,front,1700)); // reload movement revokes readiness
     assert(!learner.Observe(pistol,rear,1800));
     for(uint64_t t=1900;t<2300;t+=100)assert(!learner.Observe(pistol,rear,t));
     assert(learner.Observe(pistol,rear,2300)); // never freezes the reload pose
     assert(!learner.Observe(rifle,front,2400));
+    for(uint64_t t=2500;t<2900;t+=100)assert(!learner.Observe(rifle,front,t));
+    assert(learner.Observe(rifle,front,2900)); // replacement also waits exactly 500ms
+    assert(!learner.Observe(rifle,front,3200)); // tracking gap restarts learning
+    for(uint64_t t=3300;t<3700;t+=100)assert(!learner.Observe(rifle,front,t));
+    assert(learner.Observe(rifle,front,3700));
     Publication pub;Point out{};
     pub.Refresh(pistol,1900);
     assert(!pub.Owns(pistol)&&!pub.Read(pistol,1900,out)); // first legacy grip cannot poison acquisition

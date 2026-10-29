@@ -1,3 +1,13 @@
+## Latest: clarify animation versus grip delay; grip minimum500ms
+
+Reviewed32cd80d4 and574645d5: both change weapon_animation::Reference, not
+acquisition. The latter correctly sets animation minimum500ms while retaining
+its500ms quiet window and corresponding tests. Authored grip Learner still had
+1000ms minimum; user explicitly wants half-second grip delay. Set its minimum
+to500ms, retaining500ms quiet and tracking-gap/owner safeguards. Tests cover
+stable readiness, motion, replacement and sample-gap restart. No animation
+change, no build requested; commit/push on two-handed-grip.
+
 ## Latest: additive weapon alignment follow-up, five commits
 
 User explicitly requests increments over prior defaults, one commit per game.

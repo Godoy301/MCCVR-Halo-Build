@@ -16,7 +16,7 @@ struct Learner {
         if(!active||key!=k||now<last||now-last>250){key=k;anchor=p;start=quiet=last=now;active=true;return false;}
         last=now;
         if(Distance2(anchor,p)>.0009f){anchor=p;quiet=now;}
-        return now-start>=1000&&now-quiet>=500;
+        return now-start>=500&&now-quiet>=500;
     }
 };
 struct Publication {
