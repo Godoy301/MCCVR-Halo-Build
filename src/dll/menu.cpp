@@ -1735,10 +1735,16 @@ namespace
                                           &g_config.left_hand_forward_m,
                                           -0.15f, 0.30f, "%.3f");
             ImGui::TextDisabled("Additional left-hand adjustment on top of the shared gun forward offset.");
-            changed |= vr_menu::SliderFloat("Grab zone side offset (m)",
-                                          &g_config.two_hand_zone_right_m,
-                                          -0.10f, 0.10f, "%.3f");
-            ImGui::TextDisabled("Slides the grip-click zone sideways (+ = right) onto the visible barrel.");
+            // Store absolute metres for compatibility with existing configurations.
+            constexpr float grabSideBaseline=0.080f;
+            float grabSideAdjustment=g_config.two_hand_zone_right_m-grabSideBaseline;
+            if(vr_menu::SliderFloat("Grab zone side offset (m)",
+                                   &grabSideAdjustment,
+                                   -0.10f-grabSideBaseline,0.10f-grabSideBaseline,"%.3f")) {
+                g_config.two_hand_zone_right_m=grabSideAdjustment+grabSideBaseline;
+                changed=true;
+            }
+            ImGui::TextDisabled("Slides the grip-click zone sideways (+ = right). Zero uses the default 0.080 m offset.");
             changed |= vr_menu::SliderFloat("Left palm depth (m)",
                                           &g_config.left_grip_forward_m,
                                           -0.05f, 0.25f, "%.3f");

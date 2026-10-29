@@ -3440,7 +3440,7 @@ void ConfigSave()
     fprintf(f, "left_gun_up_m = %.3f\n", g_config.base_tunables.left_gun_up_m);
     fprintf(f, "left_hand_forward_m = %.3f\n\n", g_config.base_tunables.left_hand_forward_m);
     fprintf(f, "# Sideways nudge of the two-hand grab zone (+ = player's right), so the\n");
-    fprintf(f, "# grab line sits on the visible barrel, in meters.\n");
+    fprintf(f, "# grab line sits on the visible barrel, in meters (absolute; menu zero = 0.080 m).\n");
     fprintf(f, "# (default %.3f, range -0.10 to 0.10)\n", d.two_hand_zone_right_m);
     fprintf(f, "two_hand_zone_right_m = %.3f\n\n", g_config.two_hand_zone_right_m);
     fprintf(f, "# Support-controller-to-palm depth for two-hand grab acquisition only, in meters.\n");

@@ -22,19 +22,19 @@ jobs:
       - name: Check out the source commit from two-handed-grip
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.before }}
+          ref: ad80c1347afee4fdc6da90f5660ac00655cc4d7f
           fetch-depth: 0
           persist-credentials: false
 
       - name: Verify the branch and exact source commit
         shell: pwsh
         env:
-          EXPECTED_SOURCE_SHA: ${{ github.event.before }}
+          EXPECTED_SOURCE_SHA: ad80c1347afee4fdc6da90f5660ac00655cc4d7f
         run: |
           if ($env:GITHUB_REF_NAME -ne 'two-handed-grip') {
             throw "Refusing to build unexpected branch: $env:GITHUB_REF_NAME"
           }
-          $expectedSourceSha = 'a91a054807f5307ca233247f9502775af2611247'
+          $expectedSourceSha = 'ad80c1347afee4fdc6da90f5660ac00655cc4d7f'
           if ($env:EXPECTED_SOURCE_SHA -ne $expectedSourceSha) {
             throw "Source revision differs from the reviewed two-handed-grip commit. Expected $expectedSourceSha, got $env:EXPECTED_SOURCE_SHA. Refusing to build a different revision."
           }
@@ -94,7 +94,7 @@ jobs:
           $visualDefaultsTests = Get-Content 'tests/weapon_defaults_tests.cpp' -Raw
           if (-not $cmake.Contains('add_test(NAME halomccvr_weapon_defaults_tests COMMAND halomccvr_weapon_defaults_tests') -or
               -not $visualDefaults.Contains('Halo2VisualIdentity') -or
-              -not $visualDefaultsTests.Contains('ReachWeaponDefaults(0x11091511ull).barrelPitch==-1.f')) {
+              -not $visualDefaultsTests.Contains('ReachWeaponDefaults(0x11091511ull).barrelPitch==-10.f')) {
             throw "The current weapon visual-default changes or their registered regression test are missing."
           }
           $interaction = Get-Content 'src/common/weapon_interaction_logic.h' -Raw
@@ -148,7 +148,7 @@ jobs:
       - name: Verify package files and record source identity
         shell: pwsh
         env:
-          EXPECTED_SOURCE_SHA: ${{ github.event.before }}
+          EXPECTED_SOURCE_SHA: ad80c1347afee4fdc6da90f5660ac00655cc4d7f
         run: |
           $builds = @(Get-ChildItem 'out/candidates' -Filter '*-Build.zip' -File)
           $sources = @(Get-ChildItem 'out/candidates' -Filter '*-Source.zip' -File)
@@ -177,7 +177,7 @@ jobs:
       - name: Upload two-handed-grip build and matching source
         uses: actions/upload-artifact@v4
         with:
-          name: MCCVR-two-handed-grip-${{ github.event.before }}
+          name: MCCVR-two-handed-grip-ad80c1347afee4fdc6da90f5660ac00655cc4d7f
           path: |
             out/candidates/*-Build.zip
             out/candidates/*-Source.zip

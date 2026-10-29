@@ -13575,8 +13575,15 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         const XrQuaternionf inverse{-primary.orientation.x,-primary.orientation.y,-primary.orientation.z,primary.orientation.w};
         const auto relative=Rotate(inverse,{supportPoint.x-primaryPoint.x,supportPoint.y-primaryPoint.y,supportPoint.z-primaryPoint.z});
         const authored_grab::Point sample{relative.x,relative.y,relative.z};
-        local[0]+=std::clamp(g_config.two_hand_zone_right_m,-.10f,.10f);
-        hit=authored_grab::Short(local)?authored_grab::ShortHit(sample):authored_grab::Hit(local,sample);
+        const float side=std::clamp(g_config.two_hand_zone_right_m,-.10f,.10f);
+        if(authored_grab::Short(local)) {
+            auto shiftedSample=sample;
+            shiftedSample[0]-=side;
+            hit=authored_grab::ShortHit(shiftedSample);
+        } else {
+            local[0]+=side;
+            hit=authored_grab::Hit(local,sample);
+        }
         (hit?authored_grab::hits:authored_grab::misses).fetch_add(1,std::memory_order_relaxed);
         return true;
     }
@@ -13597,7 +13604,7 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
             const float along = v.x*rfwd.x + v.y*rfwd.y + v.z*rfwd.z;
             const XrVector3f perp{v.x-along*rfwd.x, v.y-along*rfwd.y, v.z-along*rfwd.z};
             const float lateral = sqrtf(perp.x*perp.x+perp.y*perp.y+perp.z*perp.z);
-            return along>0.08f && along<0.80f && lateral<0.09f;
+            return along>0.12f && along<0.78f && lateral<0.09f;
         };
         const XrVector3f supportForward = Rotate(lpose.orientation, {0,0,-1});
         const virtual_stock::Point3 grabPoint =
