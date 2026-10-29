@@ -34,7 +34,7 @@ jobs:
           if ($env:GITHUB_REF_NAME -ne 'godoy-development') {
             throw "Refusing to build unexpected branch: $env:GITHUB_REF_NAME"
           }
-          $expectedSourceSha = '22142398ec209f253a6033654288c95a55debe47'
+          $expectedSourceSha = 'c3923df6ed63008bfc6142d0ba8971efd10a919d'
           if ($env:EXPECTED_SOURCE_SHA -ne $expectedSourceSha) {
             throw "Expected source $expectedSourceSha, got $env:EXPECTED_SOURCE_SHA. Refusing to build a different revision."
           }
