@@ -652,9 +652,9 @@ static void Clamp()
     g_config.gun_pitch_deg = std::clamp(g_config.gun_pitch_deg, -180.0f, 180.0f);
     g_config.gun_yaw_deg = std::clamp(g_config.gun_yaw_deg, -180.0f, 180.0f);
     g_config.gun_roll_deg = std::clamp(g_config.gun_roll_deg, -180.0f, 180.0f);
-    g_config.gun_forward_m = std::clamp(g_config.gun_forward_m, -0.3f, 0.5f);
-    g_config.gun_right_m = std::clamp(g_config.gun_right_m, -0.3f, 0.3f);
-    g_config.gun_up_m = std::clamp(g_config.gun_up_m, -0.3f, 0.3f);
+    g_config.gun_forward_m = std::clamp(g_config.gun_forward_m, weapon_alignment::kForwardMinimum, weapon_alignment::kForwardMaximum);
+    g_config.gun_right_m = std::clamp(g_config.gun_right_m, weapon_alignment::kRightMinimum, weapon_alignment::kRightMaximum);
+    g_config.gun_up_m = std::clamp(g_config.gun_up_m, weapon_alignment::kUpMinimum, weapon_alignment::kUpMaximum);
     g_config.halo2_classic_gun_pitch_deg =
         std::clamp(g_config.halo2_classic_gun_pitch_deg, -180.0f, 180.0f);
     g_config.halo2_classic_gun_yaw_deg =
@@ -757,14 +757,12 @@ const TunableField kTunableFields[] = {
     {"gun_roll_deg", &TitleTunables::gun_roll_deg, &Config::gun_roll_deg,
      -180.0f, 180.0f},
     {"world_scale", &TitleTunables::world_scale, &Config::world_scale, .165f, .495f},
-    {"gun_forward_m", &TitleTunables::gun_forward_m, &Config::gun_forward_m,
-     -0.30f, 0.50f},
-    {"gun_right_m", &TitleTunables::gun_right_m, &Config::gun_right_m,
-     -0.30f, 0.30f},
-    {"gun_up_m", &TitleTunables::gun_up_m, &Config::gun_up_m, -0.30f, 0.30f},
-    {"left_gun_forward_m", &TitleTunables::left_gun_forward_m, &Config::left_gun_forward_m, -.3f, .5f},
-    {"left_gun_right_m", &TitleTunables::left_gun_right_m, &Config::left_gun_right_m, -.3f, .3f},
-    {"left_gun_up_m", &TitleTunables::left_gun_up_m, &Config::left_gun_up_m, -.3f, .3f},
+    {"gun_forward_m", &TitleTunables::gun_forward_m, &Config::gun_forward_m, weapon_alignment::kForwardMinimum, weapon_alignment::kForwardMaximum},
+    {"gun_right_m", &TitleTunables::gun_right_m, &Config::gun_right_m, weapon_alignment::kRightMinimum, weapon_alignment::kRightMaximum},
+    {"gun_up_m", &TitleTunables::gun_up_m, &Config::gun_up_m, weapon_alignment::kUpMinimum, weapon_alignment::kUpMaximum},
+    {"left_gun_forward_m", &TitleTunables::left_gun_forward_m, &Config::left_gun_forward_m, weapon_alignment::kForwardMinimum, weapon_alignment::kForwardMaximum},
+    {"left_gun_right_m", &TitleTunables::left_gun_right_m, &Config::left_gun_right_m, weapon_alignment::kRightMinimum, weapon_alignment::kRightMaximum},
+    {"left_gun_up_m", &TitleTunables::left_gun_up_m, &Config::left_gun_up_m, weapon_alignment::kUpMinimum, weapon_alignment::kUpMaximum},
     {"left_hand_forward_m", &TitleTunables::left_hand_forward_m,
      &Config::left_hand_forward_m, -0.15f, 0.30f},
     {"hud_size", &TitleTunables::hud_size, &Config::hud_size, 0.30f, 1.00f, kTitleProfileReach},

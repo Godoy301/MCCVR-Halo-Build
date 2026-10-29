@@ -1,3 +1,23 @@
+## Latest: godoy-development grip and slider range follow-up
+
+User merged two-handed-grip into godoy-development; work now targets that branch.
+Three requested source commits: trim another 2cm off grip-zone front (authored
+capsule front -.11, short front -.14, fallback forward max .76); side slider
++/- .100 relative to .080 baseline (absolute -.020...180); all six gun offset
+sliders +/- .300 relative to each title/hand baseline. Preserve baseline values.
+
+Persistence and runtime clamps now admit the union of the calibrated gun
+ranges, including CE up, H2 primary carriers and H4 primary forward. Stored
+values remain absolute for compatibility. Menu, title profiles and per-weapon
+profiles no longer truncate valid slider endpoints to old absolute limits.
+
+Validation: authored-grab boundary assertions, support-grab 69 checks,
+weapon-alignment all-title/hand endpoint tests, production config save/load
+round-trip including all six endpoints and side offset passed. Config test
+used the Linux Win32 file shim. Windows build requested after source commits;
+workflow commit will pin the exact final source. No installation or monitoring.
+Accepted release pointer unchanged; headset testing pending.
+
 ## Latest: grip side baseline and asymmetric length reduction
 
 User accepts immediate grip acquisition. Set the stored physical side-offset

@@ -42472,7 +42472,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
         frame.common.lateralTrim=g_config.halo4_hand_lateral_m;
         frame.common.mirrored=g_config.halo4_hands_mirrored;
         frame.rightForwardTrim=g_config.halo4_hand_forward_m+
-            Clamp(g_config.gun_forward_m,-0.3f,0.5f);
+            weapon_alignment::Forward(false,g_config.gun_forward_m,0.f);
         frame.leftForwardTrim=g_config.halo4_hand_forward_m+
             weapon_alignment::Forward(true,g_config.left_gun_forward_m,g_config.left_hand_forward_m);
         frame.gunYawDeg=g_config.gun_yaw_deg;
