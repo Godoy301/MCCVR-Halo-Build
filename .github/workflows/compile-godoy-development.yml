@@ -34,9 +34,111 @@ jobs:
           if ($env:GITHUB_REF_NAME -ne 'godoy-development') {
             throw "Refusing to build unexpected branch: $env:GITHUB_REF_NAME"
           }
-          $expectedSourceSha = 'c3923df6ed63008bfc6142d0ba8971efd10a919d'
-          if ($env:EXPECTED_SOURCE_SHA -ne $expectedSourceSha) {
-            throw "Expected source $expectedSourceSha, got $env:EXPECTED_SOURCE_SHA. Refusing to build a different revision."
+          $expectedSourceSha = $env:EXPECTED_SOURCE_SHA
+          if ($expectedSourceSha -notmatch '^[0-9a-f]{40}
+          $actual = (& git rev-parse HEAD).Trim()
+          if ($actual -ne $env:EXPECTED_SOURCE_SHA) {
+            throw "Checkout SHA mismatch. Expected $env:EXPECTED_SOURCE_SHA, got $actual"
+          }
+          $baselineSha = '6e13ded07d7e6d93f3ef5a10a8eb9a6c01d07767'
+          git merge-base --is-ancestor $baselineSha $actual
+          if ($LASTEXITCODE -ne 0) {
+            throw "Refusing to build source that does not descend from accepted baseline $baselineSha."
+          }
+          Write-Host "Requested branch: godoy-development"
+          Write-Host "Exact source commit being built: $actual"
+          Write-Host "No other branch is used as source."
+
+      - name: Verify final Reach and ODST Needler defaults
+        shell: pwsh
+        run: |
+          $reach = Get-Content 'src/common/reach_weapon_defaults.h' -Raw
+          $legacy = Get-Content 'src/common/legacy_weapon_visual_defaults.h' -Raw
+          $tests = Get-Content 'tests/weapon_defaults_tests.cpp' -Raw
+          if (-not $reach.Contains('return {-1.5f,0.0f,0.0f,0.0f,-10.0f}; // needler') -or
+              -not $legacy.Contains('case 0x10190A19ull: return -10.f; // Needler') -or
+              -not $tests.Contains('ReachWeaponDefaults(0x11091511ull).barrelPitch==-10.f') -or
+              -not $tests.Contains('OdstBarrelPitch(0x10190A19ull)==-10.f')) {
+            throw "Reach/ODST Needler production defaults do not match the requested -10/-10 degree values."
+          }
+
+      - name: Set up Python for test generation
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Populate exact pinned dependencies
+        shell: pwsh
+        run: |
+          $dependencies = @(
+            @{ Name = 'openxr'; Url = 'https://github.com/KhronosGroup/OpenXR-SDK.git'; Sha = '5267613edf3d937e3d77556a106a65c2f82b25c6' },
+            @{ Name = 'minhook'; Url = 'https://github.com/TsudaKageyu/minhook.git'; Sha = 'c3fcafdc10146beb5919319d0683e44e3c30d537' },
+            @{ Name = 'imgui'; Url = 'https://github.com/ocornut/imgui.git'; Sha = '8936b58fe26e8c3da834b8f60b06511d537b4c63' }
+          )
+          New-Item -ItemType Directory -Force 'out/deps' | Out-Null
+          foreach ($dependency in $dependencies) {
+            $path = "out/deps/$($dependency.Name)-src"
+            git clone --quiet --filter=blob:none --depth 1 --no-checkout $dependency.Url $path
+            if ($LASTEXITCODE -ne 0) { throw "Could not clone $($dependency.Name)." }
+            git -C $path fetch --quiet --depth 1 origin $dependency.Sha
+            if ($LASTEXITCODE -ne 0) { throw "Could not fetch pinned $($dependency.Name) commit." }
+            git -C $path checkout --quiet --detach $dependency.Sha
+            if ($LASTEXITCODE -ne 0) { throw "Could not check out pinned $($dependency.Name) commit." }
+          }
+
+      - name: Show Windows build toolchain
+        shell: pwsh
+        run: |
+          cmake --version
+          python --version
+          git --version
+
+      - name: Clean build, run tests, and package exact godoy-development source
+        shell: pwsh
+        run: .\\tools\\package-candidate.ps1 -Clean
+
+      - name: Verify package and source identity
+        shell: pwsh
+        env:
+          EXPECTED_SOURCE_SHA: ${{ github.event.before }}
+        run: |
+          $builds = @(Get-ChildItem 'out/candidates' -Filter '*-Build.zip' -File)
+          $sources = @(Get-ChildItem 'out/candidates' -Filter '*-Source.zip' -File)
+          $checksums = @(Get-ChildItem 'out/candidates' -Filter '*-SHA256.txt' -File)
+          if ($builds.Count -ne 1 -or $sources.Count -ne 1 -or $checksums.Count -ne 1) {
+            throw "Expected one build ZIP, one source ZIP, and one checksum file. Found builds=$($builds.Count), sources=$($sources.Count), checksums=$($checksums.Count)."
+          }
+          $checksumText = Get-Content $checksums[0].FullName -Raw
+          if ($checksumText -notmatch [regex]::Escape($env:EXPECTED_SOURCE_SHA)) {
+            throw "Package checksum receipt does not identify expected commit $env:EXPECTED_SOURCE_SHA."
+          }
+          @"
+          Source branch: godoy-development
+          Exact source commit: $env:EXPECTED_SOURCE_SHA
+          Preserve the requested Reach Needler barrel pitch -10 degrees and ODST Needler barrel correction -10 degrees.
+          Windows build and all registered tests are executed by this workflow.
+          Headset/runtime behavior is a separate validation step.
+          Use the Build ZIP from this artifact, not an artifact from another branch or run.
+          "@ | Set-Content 'out/candidates/BUILD-IDENTITY.txt'
+          Write-Host "Source branch: godoy-development"
+          Write-Host "Exact source commit: $env:EXPECTED_SOURCE_SHA"
+          Get-FileHash $builds[0].FullName -Algorithm SHA256
+          Get-FileHash $sources[0].FullName -Algorithm SHA256
+          Get-Content $checksums[0].FullName
+
+      - name: Upload godoy-development build and matching source
+        uses: actions/upload-artifact@v4
+        with:
+          name: MCCVR-godoy-development-${{ github.event.before }}
+          path: |
+            out/candidates/*-Build.zip
+            out/candidates/*-Source.zip
+            out/candidates/*-SHA256.txt
+            out/candidates/BUILD-IDENTITY.txt
+          if-no-files-found: error
+          retention-days: 14
+) {
+            throw "Expected source SHA is missing or invalid: '$expectedSourceSha'. Refusing to build a different revision."
           }
           $actual = (& git rev-parse HEAD).Trim()
           if ($actual -ne $env:EXPECTED_SOURCE_SHA) {
