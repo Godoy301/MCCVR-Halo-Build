@@ -1,3 +1,18 @@
+## Latest: repair per-weapon config fixture after slider range change
+
+Run40936096643 compiled successfully but failed halomccvr_core_tests; 206 of
+207 targets passed. Fourteen failures came from the seven-title per-weapon
+round-trip block assigning absolute forward .231234, beyond the new .20
+absolute envelope, then expecting unclamped restoration. Use each title's
+baseline plus .231234 instead, within the requested relative +/-.30 range.
+Keep all precision, weapon switching, fallback isolation and save/load checks.
+No production offset or range changes.
+
+The exact corrected core-test block plus the existing player config round-trip
+suite passes with production config.cpp and the local Linux Win32 file shim.
+Full Windows suite remains for the requested replacement workflow. No install
+or runtime launch. Source branch godoy-development.
+
 ## Latest: godoy-development grip and slider range follow-up
 
 User merged two-handed-grip into godoy-development; work now targets that branch.
