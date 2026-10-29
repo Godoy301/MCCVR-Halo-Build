@@ -34,7 +34,7 @@ jobs:
           if ($env:GITHUB_REF_NAME -ne 'two-handed-grip') {
             throw "Refusing to build unexpected branch: $env:GITHUB_REF_NAME"
           }
-          $expectedSourceSha = 'd30d0e23fb64288f4576fb2a59932287d5564955'
+          $expectedSourceSha = '685f1d727f56499f4ae1b1fa4876c01056672f2c'
           if ($env:EXPECTED_SOURCE_SHA -ne $expectedSourceSha) {
             throw "Source revision differs from the reviewed two-handed-grip commit. Expected $expectedSourceSha, got $env:EXPECTED_SOURCE_SHA. Refusing to build a different revision."
           }
@@ -90,6 +90,20 @@ jobs:
               -not $reloadTests.Contains('per-gun alignment retains primary identity with manual reload disabled')) {
             throw "The reload-identity tests do not cover primary visual-default identity when manual reload is disabled."
           }
+          $visualDefaults = Get-Content 'src/common/legacy_weapon_visual_defaults.h' -Raw
+          $visualDefaultsTests = Get-Content 'tests/weapon_defaults_tests.cpp' -Raw
+          if (-not $cmake.Contains('add_test(NAME halomccvr_weapon_defaults_tests COMMAND halomccvr_weapon_defaults_tests') -or
+              -not $visualDefaults.Contains('Halo2VisualIdentity') -or
+              -not $visualDefaultsTests.Contains('ReachWeaponDefaults(0x11091511ull).barrelPitch==-1.f')) {
+            throw "The current weapon visual-default changes or their registered regression test are missing."
+          }
+          $interaction = Get-Content 'src/common/weapon_interaction_logic.h' -Raw
+          $interactionTests = Get-Content 'tests/weapon_interaction_tests.cpp' -Raw
+          if (-not $interaction.Contains('uint64_t poseNow{}') -or
+              -not $interaction.Contains('if(last_&&now==last_&&travel_==travel)return false;') -or
+              -not $interactionTests.Contains('every catalogued needle weapon reloads with coarse wall time and duplicate poses')) {
+            throw "The Needler pose-timing fix or its coarse-wall-clock regression test is missing."
+          }
 
       - name: Set up Python for test generation
         uses: actions/setup-python@v5
@@ -144,8 +158,8 @@ jobs:
           @"
           Source branch: two-handed-grip
           Exact source commit: $env:EXPECTED_SOURCE_SHA
-          Change under test: authored grip acquisition minimum 500 ms, with the existing 500 ms quiet window.
-          Includes: all current weapon alignment defaults, independent game brightness, Reach/H4 grip reacquisition fix, downward grip-zone expansion, and 500 ms minimums for both grip acquisition and weapon-animation reference settling.
+          Change under test: 500 ms authored-grip and weapon-animation settling minimums, current weapon visual defaults and Halo 2 visual-only alias, plus Needler shake timing based on predicted pose timestamps while retaining wall-clock cooldowns.
+          Includes: all current weapon alignment defaults, independent game brightness, Reach/H4 grip reacquisition fix, downward grip-zone expansion, both 500 ms settling minimums, and duplicate-pose-safe Needler shake timing.
           Windows build/test validation is performed by this workflow. Headset behavior remains a separate validation.
           Use the Build ZIP from this artifact, not one from a different workflow run.
           "@ | Set-Content 'out/candidates/BUILD-IDENTITY.txt'
