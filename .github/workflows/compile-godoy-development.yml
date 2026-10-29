@@ -26,6 +26,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      # Validate the event's before-SHA and verify checkout identity; do not pin one historical commit.
       - name: Verify branch and exact source SHA
         shell: pwsh
         env:
