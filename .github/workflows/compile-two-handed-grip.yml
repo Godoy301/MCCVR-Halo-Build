@@ -94,7 +94,7 @@ jobs:
           $visualDefaultsTests = Get-Content 'tests/weapon_defaults_tests.cpp' -Raw
           if (-not $cmake.Contains('add_test(NAME halomccvr_weapon_defaults_tests COMMAND halomccvr_weapon_defaults_tests') -or
               -not $visualDefaults.Contains('Halo2VisualIdentity') -or
-              -not $visualDefaultsTests.Contains('ReachWeaponDefaults(0x11091511ull).barrelPitch==-1.f')) {
+              -not $visualDefaultsTests.Contains('ReachWeaponDefaults(0x11091511ull).barrelPitch==-10.f')) {
             throw "The current weapon visual-default changes or their registered regression test are missing."
           }
           $interaction = Get-Content 'src/common/weapon_interaction_logic.h' -Raw
