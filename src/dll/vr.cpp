@@ -13604,7 +13604,7 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
             const float along = v.x*rfwd.x + v.y*rfwd.y + v.z*rfwd.z;
             const XrVector3f perp{v.x-along*rfwd.x, v.y-along*rfwd.y, v.z-along*rfwd.z};
             const float lateral = sqrtf(perp.x*perp.x+perp.y*perp.y+perp.z*perp.z);
-            return along>0.12f && along<0.78f && lateral<0.09f;
+            return along>0.12f && along<0.76f && lateral<0.09f;
         };
         const XrVector3f supportForward = Rotate(lpose.orientation, {0,0,-1});
         const virtual_stock::Point3 grabPoint =

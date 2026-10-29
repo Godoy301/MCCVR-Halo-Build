@@ -157,7 +157,7 @@ LegacyZone EvaluateLegacyZone(
     LegacyZone zone{};
     zone.along = along;
     zone.lateral = lateral;
-    zone.inZone = along > 0.12f && along < 0.78f && lateral < 0.09f;
+    zone.inZone = along > 0.12f && along < 0.76f && lateral < 0.09f;
     return zone;
 }
 
@@ -240,7 +240,7 @@ OrientationSweep SweepOrientations(
 void TestConstantsAndSample(TestContext& test)
 {
     test.Check(support_grab::kAlongMinimumM == 0.12f &&
-            support_grab::kAlongMaximumM == 0.78f &&
+            support_grab::kAlongMaximumM == 0.76f &&
             support_grab::kLateralMaximumM == 0.09f &&
             support_grab::kZoneRightClampM == 0.10f,
         "acquisition thresholds and zone-right clamp keep the pre-fix values");
@@ -386,9 +386,9 @@ void TestBoundaryResponse(TestContext& test)
         "along minimum is strict at exactly 0.12 m");
     const support_grab::SupportGrabZone atMaximum =
         support_grab::EvaluateSupportGrabZone(Point(0, 0, 0), kForward, kRight,
-            0.0f, Point(0.02f, 0.0f, -0.78f), 0.0f);
-    test.Check(atMaximum.along == 0.78f && !atMaximum.inZone,
-        "along maximum is strict at exactly 0.78 m");
+            0.0f, Point(0.02f, 0.0f, -0.76f), 0.0f);
+    test.Check(atMaximum.along == 0.76f && !atMaximum.inZone,
+        "along maximum is strict at exactly 0.76 m");
 }
 
 void TestZoneRightClamp(TestContext& test)

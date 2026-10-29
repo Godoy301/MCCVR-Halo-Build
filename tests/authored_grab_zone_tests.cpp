@@ -78,12 +78,12 @@ int main(){
     assert(!ShortHit({0,0,-.3f}));assert(!ShortHit({.3f,0,0}));
     pub.Publish(pistol,rear,0);assert(!pub.Read(pistol,2050,out));
     // Wider acquisition, still shorter than the old forward barrel interval.
-    assert(Hit(front,{.10f,0,-.50f}));assert(Hit(front,{0,0,-.59f}));
+    assert(Hit(front,{.10f,0,-.50f}));assert(Hit(front,{0,0,-.57f}));
     assert(!Hit(front,{0,0,-.70f}));assert(!Hit(front,{.13f,0,-.35f}));
-    assert(ShortHit({-.20f,.12f,-.16f}));assert(!ShortHit({0,0,-.20f}));
-    assert(Hit(front,{0,0,-.599f}));assert(!Hit(front,{0,0,-.601f}));
+    assert(ShortHit({-.20f,.12f,-.14f}));assert(!ShortHit({0,0,-.20f}));
+    assert(Hit(front,{0,0,-.579f}));assert(!Hit(front,{0,0,-.581f}));
     assert(Hit(front,{0,0,-.121f}));assert(!Hit(front,{0,0,-.119f}));
-    assert(ShortHit({0,0,-.159f}));assert(!ShortHit({0,0,-.161f}));
+    assert(ShortHit({0,0,-.139f}));assert(!ShortHit({0,0,-.141f}));
     assert(ShortHit({0,0,.119f}));assert(!ShortHit({0,0,.121f}));
     assert(CloseHandAuthority({-.22f,0,0})==0);
     assert(CloseHandAuthority({.22f,.05f,-.05f})==0);
