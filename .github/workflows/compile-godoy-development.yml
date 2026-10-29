@@ -34,7 +34,7 @@ jobs:
           if ($env:GITHUB_REF_NAME -ne 'godoy-development') {
             throw "Refusing to build unexpected branch: $env:GITHUB_REF_NAME"
           }
-          $expectedSourceSha = '82d76e3dc155bbf12ff856ff2c67b87be63b8f99'
+          $expectedSourceSha = '22142398ec209f253a6033654288c95a55debe47'
           if ($env:EXPECTED_SOURCE_SHA -ne $expectedSourceSha) {
             throw "Expected source $expectedSourceSha, got $env:EXPECTED_SOURCE_SHA. Refusing to build a different revision."
           }
@@ -57,11 +57,11 @@ jobs:
           $reach = Get-Content 'src/common/reach_weapon_defaults.h' -Raw
           $legacy = Get-Content 'src/common/legacy_weapon_visual_defaults.h' -Raw
           $tests = Get-Content 'tests/weapon_defaults_tests.cpp' -Raw
-          if (-not $reach.Contains('return {-1.5f,0.0f,0.0f,0.0f,-1.0f}; // needler') -or
-              -not $legacy.Contains('case 0x10190A19ull: return -12.f; // Needler') -or
-              -not $tests.Contains('ReachWeaponDefaults(0x11091511ull).barrelPitch==-1.f') -or
-              -not $tests.Contains('OdstBarrelPitch(0x10190A19ull)==-12.f')) {
-            throw "Reach/ODST Needler production defaults do not match the final regression expectations."
+          if (-not $reach.Contains('return {-1.5f,0.0f,0.0f,0.0f,-8.0f}; // needler') -or
+              -not $legacy.Contains('case 0x10190A19ull: return -10.f; // Needler') -or
+              -not $tests.Contains('ReachWeaponDefaults(0x11091511ull).barrelPitch==-8.f') -or
+              -not $tests.Contains('OdstBarrelPitch(0x10190A19ull)==-10.f')) {
+            throw "Reach/ODST Needler production defaults do not match the requested -8/-10 degree values."
           }
 
       - name: Set up Python for test generation
@@ -117,7 +117,7 @@ jobs:
           @"
           Source branch: godoy-development
           Exact source commit: $env:EXPECTED_SOURCE_SHA
-          Confirmed final Reach Needler barrel pitch -1 degree and ODST Needler barrel correction -12 degrees.
+          Preserve the requested Reach Needler barrel pitch -8 degrees and ODST Needler barrel correction -10 degrees.
           Windows build and all registered tests are executed by this workflow.
           Headset/runtime behavior is a separate validation step.
           Use the Build ZIP from this artifact, not an artifact from another branch or run.
