@@ -24,6 +24,31 @@ int main(){
     assert(!learner.Observe(rifle,front,3200)); // tracking gap restarts learning
     for(uint64_t t=3300;t<3700;t+=100)assert(!learner.Observe(rifle,front,t));
     assert(learner.Observe(rifle,front,3700));
+    // Live acquisition has no settling timer, including replacement and motion.
+    for(uint32_t title=1;title<=6;++title) {
+        Publication live;Point current{};
+        const Key first{title,2,3,4},second{title,2,3,5};
+        live.Publish(first,rear,100);
+        assert(live.Read(first,100,current)&&current==rear);
+        live.Publish(second,front,101);
+        assert(!live.Read(first,101,current));
+        assert(live.Read(second,101,current)&&current==front);
+        live.Publish(second,rear,102); // equip/reload motion is not permanently cached
+        assert(live.Read(second,102,current)&&current==rear);
+        live.Refresh(second,103); // attached hand preserves its current endpoint
+        assert(live.Read(second,103,current)&&current==rear);
+        live.Publish(second,front,104); // release resumes live geometry immediately
+        assert(live.Read(second,104,current)&&current==front);
+        live.Publish(second,{std::numeric_limits<float>::quiet_NaN(),0,0},105);
+        assert(!live.Read(second,105,current));
+        live.Refresh(second,106);
+        assert(!live.Read(second,106,current));
+        live.Publish(second,front,107);
+        assert(live.Read(second,107,current)&&current==front);
+        assert(!live.Read(second,208,current));
+        live.Publish(second,rear,209);
+        assert(live.Read(second,209,current)&&current==rear);
+    }
     Publication pub;Point out{};
     pub.Refresh(pistol,1900);
     assert(!pub.Owns(pistol)&&!pub.Read(pistol,1900,out)); // first legacy grip cannot poison acquisition

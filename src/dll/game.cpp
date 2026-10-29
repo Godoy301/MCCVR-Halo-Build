@@ -50412,9 +50412,9 @@ void Game_PublishAuthoredGrip(GameTitle title,uint32_t generation,uint32_t unit,
     for(int axis=0;axis<3;++axis)for(int j=0;j<3;++j)
         local[axis]+=basis[axis*3+j]*(target.translation[j]-d.translation[j])/units;
     const authored_grab::Point point{-local[1],local[2],-local[0]};
-    static thread_local authored_grab::Learner learner;
-    const bool ready=learner.Observe(key,point,now);
-    authored_grab::publication.Publish(key,point,now,ready);
+    // Acquisition follows the current authored support hand immediately. Keep
+    // updating while detached instead of caching an equip/reload pose.
+    authored_grab::publication.Publish(key,point,now);
 }
 
 bool Game_IsHooked() { return g_hooked; }

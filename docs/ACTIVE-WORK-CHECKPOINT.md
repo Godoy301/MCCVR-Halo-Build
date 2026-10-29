@@ -1,3 +1,25 @@
+## Latest: immediate authored support-grip acquisition
+
+User accepts preceding alignment/shake changes and requests removing the grip
+wait on weapon pickup/switch. The 500ms minimum plus 500ms quiet interval was
+in the VR-side authored_grab::Learner, not a native attachment requirement.
+Already-engaged grip only refreshes its endpoint and does not need acquisition.
+
+Game_PublishAuthoredGrip now publishes each valid detached authored endpoint
+immediately for all existing title adapters. It continuously follows geometry;
+no permanent equip/reload pose cache. Existing attached Refresh remains owner
+checked and cannot create a new endpoint. Invalid live geometry now invalidates
+readiness rather than refreshing a previous point. Owner/generation validation,
+100ms freshness and geometry bounds remain. The old learner is retained dormant.
+Animation reference timing and aim influence are unchanged.
+
+Portable authored-grab tests pass, including first-frame pickup, replacement,
+motion, attach/release, invalid geometry and recovery across all six titles.
+This removes the artificial timer, not the requirement for a fresh native pose;
+headset acceptance is pending. Test pistol/rifle switches, pickup while holding
+and releasing grip, and immediate reload after pickup, including Reach/H4.
+No Windows build requested or performed; accepted release pointer unchanged.
+
 ## Latest: absolute alignment defaults, H2 visual identity and needle shake timing
 
 User explicitly supersedes the additive request: use the latest list as final

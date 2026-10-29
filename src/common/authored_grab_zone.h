@@ -8,7 +8,8 @@ using Key=std::array<uint32_t,4>; // title, generation, unit, weapon
 using Point=std::array<float,3>; // primary-controller local OpenXR metres
 inline bool Valid(Point p){float n=0;for(float v:p){if(!std::isfinite(v))return false;n+=v*v;}return n<=1.0f;}
 inline float Distance2(Point a,Point b){float n=0;for(int i=0;i<3;++i)n+=(a[i]-b[i])*(a[i]-b[i]);return n;}
-// Continuously relearn after motion; never permanently cache an equip/reload pose.
+// Retained settling implementation; live grip acquisition no longer uses this
+// timer. Animation reference settling is separate and remains unchanged.
 struct Learner {
     Key key{};Point anchor{};uint64_t start{},quiet{},last{};bool active=false;
     bool Observe(Key k,Point p,uint64_t now){
@@ -26,9 +27,11 @@ struct Publication {
         bool same=true;for(int i=0;i<4;++i)same=same&&key[i].load()==k[i];
         if(!same)calibrated.store(false);
         for(int i=0;i<4;++i)key[i].store(k[i]);
-        if(ready&&now&&Valid(p)){
-            for(int i=0;i<3;++i)point[i].store(p[i]);
-            calibrated.store(true);
+        if(ready){
+            // Invalid live geometry must not refresh an older valid endpoint.
+            const bool valid=now&&Valid(p);
+            if(valid)for(int i=0;i<3;++i)point[i].store(p[i]);
+            calibrated.store(valid);
         }
         at.store(now);sequence.store(seq+2);
     }
