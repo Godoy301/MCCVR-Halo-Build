@@ -36,8 +36,8 @@ namespace support_grab
 {
 // Exact pre-fix acceptance values. These are product defaults; changing one
 // is a separate evidence-backed candidate, never a unit-test convenience.
-inline constexpr float kAlongMinimumM = 0.08f;
-inline constexpr float kAlongMaximumM = 0.80f;
+inline constexpr float kAlongMinimumM = 0.12f;
+inline constexpr float kAlongMaximumM = 0.78f;
 inline constexpr float kLateralMaximumM = 0.09f;
 inline constexpr float kZoneRightClampM = 0.10f;
 

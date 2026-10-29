@@ -1,3 +1,20 @@
+## Latest: grip side baseline and asymmetric length reduction
+
+User accepts immediate grip acquisition. Set the stored physical side-offset
+factory default to .080 m, with menu displaying adjustment relative to .080 m
+(default 0.000). Existing saved absolute offsets are preserved. Physical limits
+remain -.10..+.10 m; displayed limits are -.180..+.020 m. The authored short
+zone now receives the side translation too, without reclassifying a short grip
+based on its translated centre.
+
+Trim rear 4cm and front 2cm in all acquisition shapes: OpenXR local capsule
+segment -.13..+.11 (previous -.15..+.15), short zone Z -.16..+.12 (previous
+-.18..+.16), fallback forward interval .12...78 (previous .08...80). Width,
+downward extent, close-hand aim influence and immediate acquisition preserved.
+Update boundary fixtures; static diff and numeric boundary checks performed.
+User explicitly requests commit without compiling: no C++ tests, DLL build or
+workflow dispatch. Headset validation pending; accepted pointer unchanged.
+
 ## Latest: immediate authored support-grip acquisition
 
 User accepts preceding alignment/shake changes and requests removing the grip
