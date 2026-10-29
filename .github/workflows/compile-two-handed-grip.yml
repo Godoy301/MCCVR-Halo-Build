@@ -1,0 +1,187 @@
+name: Compile latest two-handed-grip commit
+
+on:
+  push:
+    branches:
+      - two-handed-grip
+    paths:
+      - .github/workflows/compile-two-handed-grip.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mccvr-two-handed-grip-only
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 120
+    steps:
+      - name: Check out the source commit from two-handed-grip
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.before }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify the branch and exact source commit
+        shell: pwsh
+        env:
+          EXPECTED_SOURCE_SHA: ${{ github.event.before }}
+        run: |
+          if ($env:GITHUB_REF_NAME -ne 'two-handed-grip') {
+            throw "Refusing to build unexpected branch: $env:GITHUB_REF_NAME"
+          }
+          $expectedSourceSha = 'a91a054807f5307ca233247f9502775af2611247'
+          if ($env:EXPECTED_SOURCE_SHA -ne $expectedSourceSha) {
+            throw "Source revision differs from the reviewed two-handed-grip commit. Expected $expectedSourceSha, got $env:EXPECTED_SOURCE_SHA. Refusing to build a different revision."
+          }
+          $actual = (& git rev-parse HEAD).Trim()
+          if ($actual -ne $env:EXPECTED_SOURCE_SHA) {
+            throw "Checkout SHA mismatch. Expected $env:EXPECTED_SOURCE_SHA, got $actual"
+          }
+          $baselineSha = '6e13ded07d7e6d93f3ef5a10a8eb9a6c01d07767'
+          git merge-base --is-ancestor $baselineSha $actual
+          if ($LASTEXITCODE -ne 0) {
+            throw "Refusing to build a source commit that does not descend from the accepted baseline $baselineSha."
+          }
+          Write-Host "Requested branch: two-handed-grip"
+          Write-Host "Exact source commit being built: $actual"
+          Write-Host "The main and compilation-test branches are not used as source."
+
+      - name: Verify all-title authored grip acquisition source
+        shell: pwsh
+        run: |
+          $logic = Get-Content 'src/common/authored_grab_zone.h' -Raw
+          $game = Get-Content 'src/dll/game.cpp' -Raw
+          $vr = Get-Content 'src/dll/vr.cpp' -Raw
+          $cmake = Get-Content 'CMakeLists.txt' -Raw
+          $test = Get-Content 'tests/authored_grab_zone_tests.cpp' -Raw
+          if (-not $logic.Contains('struct Learner') -or -not $logic.Contains('struct Publication')) {
+            throw "This source is missing the authored-grip learner/publication logic."
+          }
+          if (-not $logic.Contains('void Refresh(Key k,uint64_t now)') -or
+              -not $game.Contains('authored_grab::publication.Refresh(key,now)')) {
+            throw "This source is missing owner-safe attached refresh behavior."
+          }
+
+          if (-not $game.Contains('Game_PublishAuthoredGrip') -or
+              -not $vr.Contains('AuthoredSupportGrabHit')) {
+            throw "The shared authored wrist acquisition adapter is incomplete."
+          }
+          if (-not $cmake.Contains('authored_grab_zone_tests') -or
+              -not $test.Contains('Publication pub')) {
+            throw "The authored-grip zone test is not registered in this source."
+          }
+          $motion = Get-Content 'src/common/weapon_animation_motion.h' -Raw
+          $motionTests = Get-Content 'tests/weapon_animation_motion_tests.cpp' -Raw
+          if (-not $motion.Contains('now-started<500||now-stableSince<500') -or
+              -not $motionTests.Contains('reference.Update(key,idle,500,.33f,delta)') -or
+              -not $motionTests.Contains('movingReference.Update(key,idle,800,.33f,delta)')) {
+            throw "The 500ms weapon-animation settling change or its regression tests are missing."
+          }
+          $reloadTests = Get-Content 'tests/reload_identity_tests.cpp' -Raw
+          if (-not $reloadTests.Contains('void VR_ObserveSecondaryWeaponModel(GameTitle,uint32_t,uint64_t) noexcept {}')) {
+            throw "The reload-identity fixture is missing the secondary weapon observer stub."
+          }
+          if (-not $reloadTests.Contains('primary weapon identity remains available for visual defaults when manual reload is disabled') -or
+              -not $reloadTests.Contains('per-gun alignment retains primary identity with manual reload disabled')) {
+            throw "The reload-identity tests do not cover primary visual-default identity when manual reload is disabled."
+          }
+          $visualDefaults = Get-Content 'src/common/legacy_weapon_visual_defaults.h' -Raw
+          $visualDefaultsTests = Get-Content 'tests/weapon_defaults_tests.cpp' -Raw
+          if (-not $cmake.Contains('add_test(NAME halomccvr_weapon_defaults_tests COMMAND halomccvr_weapon_defaults_tests') -or
+              -not $visualDefaults.Contains('Halo2VisualIdentity') -or
+              -not $visualDefaultsTests.Contains('ReachWeaponDefaults(0x11091511ull).barrelPitch==-1.f')) {
+            throw "The current weapon visual-default changes or their registered regression test are missing."
+          }
+          $interaction = Get-Content 'src/common/weapon_interaction_logic.h' -Raw
+          $interactionTests = Get-Content 'tests/weapon_interaction_tests.cpp' -Raw
+          if (-not $interaction.Contains('uint64_t poseNow{}') -or
+              -not $interaction.Contains('if(last_&&now==last_&&travel_==travel)return false;') -or
+              -not $interactionTests.Contains('every catalogued needle weapon reloads with coarse wall time and duplicate poses')) {
+            throw "The Needler pose-timing fix or its coarse-wall-clock regression test is missing."
+          }
+          $dualShakeTests = Get-Content 'tests/dual_wield_shake_tests.cpp' -Raw
+          if (-not $dualShakeTests.Contains('duplicate coarse wall-clock polls no longer reset the high-rate gesture') -or
+              -not $dualShakeTests.Contains('oldRequests==3')) {
+            throw "The dual-wield shake regression expectation is not aligned with duplicate timestamp handling."
+          }
+
+      - name: Set up Python for test generation
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Populate the exact dependency commits pinned by this source
+        shell: pwsh
+        run: |
+          $dependencies = @(
+            @{ Name = 'openxr'; Url = 'https://github.com/KhronosGroup/OpenXR-SDK.git'; Sha = '5267613edf3d937e3d77556a106a65c2f82b25c6' },
+            @{ Name = 'minhook'; Url = 'https://github.com/TsudaKageyu/minhook.git'; Sha = 'c3fcafdc10146beb5919319d0683e44e3c30d537' },
+            @{ Name = 'imgui'; Url = 'https://github.com/ocornut/imgui.git'; Sha = '8936b58fe26e8c3da834b8f60b06511d537b4c63' }
+          )
+          New-Item -ItemType Directory -Force 'out/deps' | Out-Null
+          foreach ($dependency in $dependencies) {
+            $path = "out/deps/$($dependency.Name)-src"
+            git clone --quiet --filter=blob:none --depth 1 --no-checkout $dependency.Url $path
+            if ($LASTEXITCODE -ne 0) { throw "Could not clone $($dependency.Name)." }
+            git -C $path fetch --quiet --depth 1 origin $dependency.Sha
+            if ($LASTEXITCODE -ne 0) { throw "Could not fetch pinned $($dependency.Name) commit." }
+            git -C $path checkout --quiet --detach $dependency.Sha
+            if ($LASTEXITCODE -ne 0) { throw "Could not check out pinned $($dependency.Name) commit." }
+          }
+
+      - name: Show Windows build toolchain
+        shell: pwsh
+        run: |
+          cmake --version
+          python --version
+          git --version
+
+      - name: Clean build, run tests, and package the exact two-handed-grip source
+        shell: pwsh
+        run: .\\tools\\package-candidate.ps1 -Clean
+
+      - name: Verify package files and record source identity
+        shell: pwsh
+        env:
+          EXPECTED_SOURCE_SHA: ${{ github.event.before }}
+        run: |
+          $builds = @(Get-ChildItem 'out/candidates' -Filter '*-Build.zip' -File)
+          $sources = @(Get-ChildItem 'out/candidates' -Filter '*-Source.zip' -File)
+          $checksums = @(Get-ChildItem 'out/candidates' -Filter '*-SHA256.txt' -File)
+          if ($builds.Count -ne 1 -or $sources.Count -ne 1 -or $checksums.Count -ne 1) {
+            throw "Expected one build ZIP, one source ZIP, and one checksum file. Found builds=$($builds.Count), sources=$($sources.Count), checksums=$($checksums.Count)."
+          }
+          $checksumText = Get-Content $checksums[0].FullName -Raw
+          if ($checksumText -notmatch [regex]::Escape($env:EXPECTED_SOURCE_SHA)) {
+            throw "The package checksum receipt does not identify expected two-handed-grip commit $env:EXPECTED_SOURCE_SHA."
+          }
+          @"
+          Source branch: two-handed-grip
+          Exact source commit: $env:EXPECTED_SOURCE_SHA
+          Change under test: 500 ms authored-grip and weapon-animation settling minimums, current weapon visual defaults and Halo 2 visual-only alias, plus Needler shake timing based on predicted pose timestamps while retaining wall-clock cooldowns. Duplicate timestamps are ignored by the shared shake detector; the dual-wield regression verifies a high-rate stroke remains valid with coarse tick samples.
+          Includes: all current weapon alignment defaults, independent game brightness, Reach/H4 grip reacquisition fix, downward grip-zone expansion, both 500 ms settling minimums, and duplicate-pose-safe Needler and dual-wield shake timing.
+          Windows build/test validation is performed by this workflow. Headset behavior remains a separate validation.
+          Use the Build ZIP from this artifact, not one from a different workflow run.
+          "@ | Set-Content 'out/candidates/BUILD-IDENTITY.txt'
+          Write-Host "Source branch: two-handed-grip"
+          Write-Host "Source commit: $env:EXPECTED_SOURCE_SHA"
+          Get-FileHash $builds[0].FullName -Algorithm SHA256
+          Get-FileHash $sources[0].FullName -Algorithm SHA256
+          Get-Content $checksums[0].FullName
+
+      - name: Upload two-handed-grip build and matching source
+        uses: actions/upload-artifact@v4
+        with:
+          name: MCCVR-two-handed-grip-${{ github.event.before }}
+          path: |
+            out/candidates/*-Build.zip
+            out/candidates/*-Source.zip
+            out/candidates/*-SHA256.txt
+            out/candidates/BUILD-IDENTITY.txt
+          if-no-files-found: error
+          retention-days: 14

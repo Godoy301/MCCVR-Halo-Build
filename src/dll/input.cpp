@@ -579,7 +579,7 @@ namespace
             gameplayMode&&inputMode==RuntimeMode::Gameplay,g_config.manual_reload,g_config.weapon_holsters);
         const uint32_t gestureActions=((crouchButtons|gestureMelee)>>18)|
             manual_weapon_input::Gestures(pad.weaponButtons,pad.weaponReloadBinding,pad.weaponSwitchBinding);
-        if(semanticMode||blockedWeaponActions) NativeVrActions_Publish(state,currentTitle,inputNow,
+        if(semanticMode||blockedWeaponActions||(currentTitle==GameTitle::Halo3&&g_config.two_handed_aim)) NativeVrActions_Publish(state,currentTitle,inputNow,
             manual_weapon_input::Publish(routedActions.published,gestureActions,blockedWeaponActions),
             directActions,blockedWeaponActions);
         btn |= static_cast<WORD>(gestureMelee & 0xFFFF);

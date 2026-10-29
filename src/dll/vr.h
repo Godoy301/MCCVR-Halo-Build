@@ -1110,11 +1110,16 @@ void VR_GetPadState(VrPadState& out);
 const char* VR_ControllerProfileName(bool left);
 // Cold worker only: optional gesture status/counters, never render-hook logs.
 void VR_ReportWeaponInteractions(uint64_t nowMs);
+void VR_ReachDefaultVisualAngles(float& yaw,float& pitch,float& roll) noexcept;
+void VR_ObserveSecondaryWeaponModel(GameTitle title,uint32_t generation,uint64_t identity) noexcept;
+void VR_LegacyDefaultVisualAngles(bool secondary,bool classic,float& yaw,float& pitch,float& roll) noexcept;
+float VR_DefaultWeaponVisualYaw() noexcept;
 void VR_UpdateWeaponAlignment(); // cold title worker, after title-profile selection
 namespace contact_melee { struct TrackingToWorld; }
 void VR_PublishReloadTarget(GameTitle title,uint32_t generation,uint64_t identity,uint64_t serial,
     const contact_melee::TrackingToWorld& trackingToWorld,const float world[3]) noexcept;
 // Optional, read-only equipped-model observations. No inventory or animation writes.
+void VR_ObserveHalo2VisualModel(bool secondary,uint32_t generation,uint64_t identity) noexcept;
 void VR_ObserveWeaponModel(GameTitle title,uint32_t generation,uint64_t identity) noexcept;
 uint64_t VR_GetWeaponModelIdentity(GameTitle title,uint32_t generation,uint64_t space,uint64_t now) noexcept;
 #if HALOMCCVR_EXPERIMENTAL_REACH_RENDER_CANDIDATE
