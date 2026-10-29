@@ -118,7 +118,7 @@ jobs:
           @"
           Source branch: godoy-development
           Exact source commit: $env:EXPECTED_SOURCE_SHA
-          Preserve the requested Reach Needler barrel pitch -10 degrees and ODST Needler barrel correction -10 degrees.
+          Shorter grip zone; side adjustment +/-0.100 m and both hands gun offsets +/-0.300 m from calibrated zero.
           Windows build and all registered tests are executed by this workflow.
           Headset/runtime behavior is a separate validation step.
           Use the Build ZIP from this artifact, not an artifact from another branch or run.
