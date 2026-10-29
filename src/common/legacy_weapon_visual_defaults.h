@@ -59,7 +59,7 @@ inline LegacyVisualDefaults LegacyWeaponVisualDefaults(GameTitle title,uint64_t 
 // Explicit ODST barrel corrections, separate from the visual pitch defaults.
 inline float OdstBarrelPitch(uint64_t model) noexcept {
     switch(model) {
-    case 0x10190A19ull: return -10.f; // Needler
+    case 0x10190A19ull: return -12.f; // Needler
     case 0x17141007ull: return -8.f; // Brute Shot
     default: return 0.f;
     }
