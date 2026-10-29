@@ -34,7 +34,7 @@ jobs:
           if ($env:GITHUB_REF_NAME -ne 'two-handed-grip') {
             throw "Refusing to build unexpected branch: $env:GITHUB_REF_NAME"
           }
-          $expectedSourceSha = 'd524406de5aa64f43fdeb38f2d64498a4553da9c'
+          $expectedSourceSha = 'd30d0e23fb64288f4576fb2a59932287d5564955'
           if ($env:EXPECTED_SOURCE_SHA -ne $expectedSourceSha) {
             throw "Source revision differs from the reviewed two-handed-grip commit. Expected $expectedSourceSha, got $env:EXPECTED_SOURCE_SHA. Refusing to build a different revision."
           }
@@ -144,8 +144,8 @@ jobs:
           @"
           Source branch: two-handed-grip
           Exact source commit: $env:EXPECTED_SOURCE_SHA
-          Change under test: reduce the weapon-animation reference's initial settling minimum from 1000 ms to 500 ms while retaining the independent 500 ms quiet window.
-          Includes: the full accepted two-handed-grip source and all-title authored grip adapters; weapon animation reference initial minimum 500 ms, unchanged 500 ms quiet window after observed motion, updated stable/moving/reacquisition regression cases. The separate authored-grip learning delay remains unchanged at 1000 ms.
+          Change under test: authored grip acquisition minimum 500 ms, with the existing 500 ms quiet window.
+          Includes: all current weapon alignment defaults, independent game brightness, Reach/H4 grip reacquisition fix, downward grip-zone expansion, and 500 ms minimums for both grip acquisition and weapon-animation reference settling.
           Windows build/test validation is performed by this workflow. Headset behavior remains a separate validation.
           Use the Build ZIP from this artifact, not one from a different workflow run.
           "@ | Set-Content 'out/candidates/BUILD-IDENTITY.txt'
