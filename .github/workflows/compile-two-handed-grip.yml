@@ -34,7 +34,7 @@ jobs:
           if ($env:GITHUB_REF_NAME -ne 'two-handed-grip') {
             throw "Refusing to build unexpected branch: $env:GITHUB_REF_NAME"
           }
-          $expectedSourceSha = '685f1d727f56499f4ae1b1fa4876c01056672f2c'
+          $expectedSourceSha = 'a91a054807f5307ca233247f9502775af2611247'
           if ($env:EXPECTED_SOURCE_SHA -ne $expectedSourceSha) {
             throw "Source revision differs from the reviewed two-handed-grip commit. Expected $expectedSourceSha, got $env:EXPECTED_SOURCE_SHA. Refusing to build a different revision."
           }
@@ -104,6 +104,11 @@ jobs:
               -not $interactionTests.Contains('every catalogued needle weapon reloads with coarse wall time and duplicate poses')) {
             throw "The Needler pose-timing fix or its coarse-wall-clock regression test is missing."
           }
+          $dualShakeTests = Get-Content 'tests/dual_wield_shake_tests.cpp' -Raw
+          if (-not $dualShakeTests.Contains('duplicate coarse wall-clock polls no longer reset the high-rate gesture') -or
+              -not $dualShakeTests.Contains('oldRequests==3')) {
+            throw "The dual-wield shake regression expectation is not aligned with duplicate timestamp handling."
+          }
 
       - name: Set up Python for test generation
         uses: actions/setup-python@v5
@@ -158,8 +163,8 @@ jobs:
           @"
           Source branch: two-handed-grip
           Exact source commit: $env:EXPECTED_SOURCE_SHA
-          Change under test: 500 ms authored-grip and weapon-animation settling minimums, current weapon visual defaults and Halo 2 visual-only alias, plus Needler shake timing based on predicted pose timestamps while retaining wall-clock cooldowns.
-          Includes: all current weapon alignment defaults, independent game brightness, Reach/H4 grip reacquisition fix, downward grip-zone expansion, both 500 ms settling minimums, and duplicate-pose-safe Needler shake timing.
+          Change under test: 500 ms authored-grip and weapon-animation settling minimums, current weapon visual defaults and Halo 2 visual-only alias, plus Needler shake timing based on predicted pose timestamps while retaining wall-clock cooldowns. Duplicate timestamps are ignored by the shared shake detector; the dual-wield regression verifies a high-rate stroke remains valid with coarse tick samples.
+          Includes: all current weapon alignment defaults, independent game brightness, Reach/H4 grip reacquisition fix, downward grip-zone expansion, both 500 ms settling minimums, and duplicate-pose-safe Needler and dual-wield shake timing.
           Windows build/test validation is performed by this workflow. Headset behavior remains a separate validation.
           Use the Build ZIP from this artifact, not one from a different workflow run.
           "@ | Set-Content 'out/candidates/BUILD-IDENTITY.txt'
